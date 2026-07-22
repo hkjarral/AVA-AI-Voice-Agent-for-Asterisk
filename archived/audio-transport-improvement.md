@@ -260,14 +260,20 @@ Validate audio quality and transport integrity across the maintainer-approved re
   guard pass. Fresh AI engine, Admin UI, and Local AI Server production images
   all build successfully from the branch. Existing frontend dependency-age,
   bundle-size, and test-framework warnings are unchanged and non-blocking.
-- **Authoritative PR freeze gate (2026-07-22, second review-fix batch):** the
+- **Authoritative PR freeze gate (2026-07-22, third review-fix batch):** the
   CI-selected root suite passes 1,777 tests with 6 skips and 139 documented
-  deselections. The complete Admin backend suite passes 482/482 and the complete
+  deselections. The complete Admin backend suite passes 484/484 and the complete
   frontend suite passes 219/219. Frontend lint remains within the repository's
   existing warning budget with zero errors, the production build succeeds, and
   Python compilation, shell syntax, and diff whitespace checks pass. These are
   the release criteria for the next PR head; the older 1,849, 1,826, 1,831,
-  1,728, 481, and 480 results above are explicitly historical scoped runs.
+  1,728, 482, 481, and 480 results above are explicitly historical scoped runs.
+- **Default-profile inheritance guard (2026-07-22):** the final review-fix batch
+  treats a `profiles.default` mapping change as a cross-store Agent-impacting
+  operation even when no profile body changes. Null or blank Agent assignments
+  now block that change with the same fail-closed 409 workflow; explicitly
+  assigned Agents do not block a default-only change. Focused and complete Admin
+  backend regression gates pass, including both outcomes.
 - **Generalized backend canary deployment (2026-07-21 21:10 PDT):** after a
   complete rollback archive at
   `/root/Asterisk-AI-Voice-Agent/backups/audio-transport-src-20260721-2112-complete.tar.gz`,

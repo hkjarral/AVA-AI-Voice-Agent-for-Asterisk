@@ -165,6 +165,57 @@ def test_profile_usage_guard_blocks_default_inherited_agent(tmp_path, monkeypatc
     assert "Blank Agent" in str(exc_info.value.detail)
 
 
+def test_profile_usage_guard_blocks_default_only_change_for_inherited_agent(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "agents.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE agents (slug TEXT, display_name TEXT, audio_profile TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO agents VALUES (?, ?, ?)",
+            ("default-agent", "Default Agent", None),
+        )
+    monkeypatch.setenv("AGENTS_DB_PATH", str(db_path))
+    profiles = {
+        "telephony_ulaw_8k": {"transport_out": {"encoding": "ulaw"}},
+        "telephony_enhanced_8k": {"transport_out": {"encoding": "ulaw"}},
+    }
+    old = {"profiles": {"default": "telephony_ulaw_8k", **profiles}}
+    new = {"profiles": {"default": "telephony_enhanced_8k", **profiles}}
+
+    with pytest.raises(HTTPException) as exc_info:
+        config._assert_in_use_audio_profiles_unchanged(old, new)
+
+    assert exc_info.value.status_code == 409
+    assert "profiles.default" in str(exc_info.value.detail)
+    assert "Default Agent" in str(exc_info.value.detail)
+
+
+def test_profile_usage_guard_allows_default_change_without_inherited_agents(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "agents.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE agents (slug TEXT, display_name TEXT, audio_profile TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO agents VALUES (?, ?, ?)",
+            ("explicit-agent", "Explicit Agent", "telephony_ulaw_8k"),
+        )
+    monkeypatch.setenv("AGENTS_DB_PATH", str(db_path))
+    profiles = {
+        "telephony_ulaw_8k": {"transport_out": {"encoding": "ulaw"}},
+        "telephony_enhanced_8k": {"transport_out": {"encoding": "ulaw"}},
+    }
+    old = {"profiles": {"default": "telephony_ulaw_8k", **profiles}}
+    new = {"profiles": {"default": "telephony_enhanced_8k", **profiles}}
+
+    config._assert_in_use_audio_profiles_unchanged(old, new)
+
+
 def test_profile_usage_guard_fails_closed_when_agent_store_is_invalid(
     tmp_path, monkeypatch
 ):

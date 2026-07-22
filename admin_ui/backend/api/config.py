@@ -49,15 +49,23 @@ def _assert_in_use_audio_profiles_unchanged(
         for name in (set(old_profiles) | set(new_profiles)) - {"default"}
         if old_profiles.get(name) != new_profiles.get(name)
     }
-    if not changed_profiles:
-        return
-
-    configured_default = old_profiles.get("default")
-    default_profile = (
-        configured_default
-        if isinstance(configured_default, str) and configured_default
+    configured_old_default = old_profiles.get("default")
+    old_default_profile = (
+        configured_old_default.strip()
+        if isinstance(configured_old_default, str) and configured_old_default.strip()
         else "telephony_ulaw_8k"
     )
+    configured_new_default = new_profiles.get("default")
+    new_default_profile = (
+        configured_new_default.strip()
+        if isinstance(configured_new_default, str) and configured_new_default.strip()
+        else "telephony_ulaw_8k"
+    )
+    default_changed = old_default_profile != new_default_profile
+    if not changed_profiles and not default_changed:
+        return
+
+    inheritance_impacted = default_changed or old_default_profile in changed_profiles
 
     db_path = Path(
         os.getenv("AGENTS_DB_PATH", "/app/data/operator/agents.db")
@@ -68,16 +76,20 @@ def _assert_in_use_audio_profiles_unchanged(
     try:
         db_uri = db_path.resolve().as_uri() + "?mode=ro"
         with sqlite3.connect(db_uri, uri=True) as conn:
-            placeholders = ",".join("?" for _ in changed_profiles)
-            inheritance_clause = (
-                " OR audio_profile IS NULL OR TRIM(audio_profile) = ''"
-                if default_profile in changed_profiles
-                else ""
-            )
+            where_clauses = []
+            query_params = []
+            if changed_profiles:
+                placeholders = ",".join("?" for _ in changed_profiles)
+                where_clauses.append(f"audio_profile IN ({placeholders})")
+                query_params.extend(sorted(changed_profiles))
+            if inheritance_impacted:
+                where_clauses.append(
+                    "(audio_profile IS NULL OR TRIM(audio_profile) = '')"
+                )
             rows = conn.execute(
                 "SELECT slug, display_name, audio_profile FROM agents "
-                f"WHERE audio_profile IN ({placeholders}){inheritance_clause}",
-                tuple(sorted(changed_profiles)),
+                f"WHERE {' OR '.join(where_clauses)}",
+                tuple(query_params),
             ).fetchall()
     except (OSError, sqlite3.Error) as exc:
         logger.warning(
@@ -98,7 +110,16 @@ def _assert_in_use_audio_profiles_unchanged(
             explicit_profile = (
                 profile_name.strip() if isinstance(profile_name, str) else ""
             )
-            effective_profile = explicit_profile or default_profile
+            if not explicit_profile and default_changed:
+                reference_name = (
+                    "profiles.default "
+                    f"({old_default_profile} -> {new_default_profile})"
+                )
+                references.setdefault(reference_name, []).append(
+                    str(display_name or slug)
+                )
+                continue
+            effective_profile = explicit_profile or old_default_profile
             if effective_profile not in changed_profiles:
                 continue
             references.setdefault(str(effective_profile), []).append(
@@ -113,8 +134,8 @@ def _assert_in_use_audio_profiles_unchanged(
         raise HTTPException(
             status_code=409,
             detail=(
-                "Cannot modify or delete an audio profile used by an Agent. "
-                f"Clone/migrate the Agent first ({detail})."
+                "Cannot change audio profile configuration used by an Agent. "
+                f"Assign or migrate the Agent first ({detail})."
             ),
         )
 
