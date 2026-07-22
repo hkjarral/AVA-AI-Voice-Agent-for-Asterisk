@@ -219,9 +219,28 @@ def test_update_recover_branch_bootstrap_builds_selected_ref(tmp_path: Path) -> 
         "if [ -n \"${GIT_CONFIG_GLOBAL:-}\" ] && grep -q '/home/owner/.git-credentials' \"$GIT_CONFIG_GLOBAL\"; then\n"
         "  printf 'git_config_has_credential yes\\n' >>\"$AAVA_TEST_LOG\"\n"
         "fi\n"
+        "if [ \"$1\" = ls-remote ]; then\n"
+        "  printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\trefs/heads/codex/update-recovery-script\\n'\n"
+        "  exit 0\n"
+        "fi\n"
         "if [ \"$1\" = clone ]; then\n"
         "  dest=\"${@: -1}\"\n"
         "  mkdir -p \"$dest/cli\"\n"
+        "  printf 'module x\\n' >\"$dest/cli/go.mod\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"$1\" = -C ]; then\n"
+        "  repo=\"$2\"\n"
+        "  shift 2\n"
+        "  case \"$1\" in\n"
+        "    rev-parse) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\n' ;;\n"
+        "    fsck) exit 0 ;;\n"
+        "    archive)\n"
+        "      out=''\n"
+        "      for arg in \"$@\"; do case \"$arg\" in --output=*) out=\"${arg#--output=}\" ;; esac; done\n"
+        "      /usr/bin/tar -C \"$repo\" -cf \"$out\" .\n"
+        "      ;;\n"
+        "  esac\n"
         "fi\n",
         encoding="utf-8",
     )
@@ -293,6 +312,9 @@ install_branch_cli codex/update-recovery-script
     assert "unsafe-helper" not in commands
     assert "golang:1.22-bookworm" in commands
     assert "AAVA_CLI_VERSION=codex/update-recovery-script" in commands
+    assert "git ls-remote -- aava-recovery-origin:" in commands
+    assert "git -C " in commands
+    assert " archive --format=tar --output=" in commands
     assert ":/src:ro,Z" in commands
     assert ":/out:Z" in commands
     assert agent_bin.exists()
@@ -315,7 +337,12 @@ def test_update_recover_branch_bootstrap_does_not_hand_root_temp_to_owner() -> N
     assert 'chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}/repo" "${tmp_src}/out"' not in install_branch
     assert 'chown -R 0:0 "${owner_clone}"' in install_branch
     assert 'git -C "${owner_clone}" diff --quiet HEAD --' not in install_branch
-    assert 'cp -a -- "${owner_clone}/." "${build_repo}/"' in install_branch
+    assert 'git ls-remote -- "${clone_url}"' in install_branch
+    assert 'actual_oid="$(git -C "${owner_clone}" rev-parse --verify HEAD^{commit})"' in install_branch
+    assert 'git -C "${owner_clone}" fsck --no-progress' in install_branch
+    assert 'git -C "${owner_clone}" archive --format=tar --output="${source_tar}" HEAD' in install_branch
+    assert 'tar -C "${build_repo}" -xf "${source_tar}"' in install_branch
+    assert 'cp -a -- "${owner_clone}/." "${build_repo}/"' not in install_branch
     assert 'chmod -R u+rwX,go-rwx "${build_repo}" "${build_out}"' in install_branch
     assert 'chmod 0400 "${tmp_src}/gitconfig"' in install_branch
     assert ': >"${clone_err}"' in install_branch
@@ -776,6 +803,10 @@ def test_update_recover_branch_clone_failure_redacts_remote_query(tmp_path: Path
     fake_bin.mkdir()
     (fake_bin / "git").write_text(
         "#!/bin/bash\n"
+        "if [ \"$1\" = ls-remote ]; then\n"
+        "  printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\trefs/heads/feature/ref\\n'\n"
+        "  exit 0\n"
+        "fi\n"
         "if [ \"$1\" = clone ]; then\n"
         "  cat \"$GIT_CONFIG_GLOBAL\" >&2\n"
         "  exit 1\n"
@@ -844,15 +875,13 @@ def test_update_recover_preserves_state_before_overwrite_can_run() -> None:
     assert 'UNMERGED_COPIED="false"' in script
     assert "backup_sqlite_snapshot" in script
     assert "src.backup(dst)" in script
-    assert "open_pinned_sqlite" in script
-    assert 'parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))' in script
-    assert 'source_fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)' in script
-    assert "verify_pinned_source" in script
-    assert 'verify_pinned_source(parent_fd, source_name, source_st, "before connect")' in script
-    assert 'verify_pinned_source(parent_fd, source_name, source_st, "after backup")' in script
+    assert 'run_as_checkout_owner_home python3 - "${REPO}" "${rel}" "${owner_snapshot}"' in script
+    assert "open_pinned_sqlite" not in script
+    assert "verify_pinned_source" not in script
     assert "copy_pinned_source" not in script
     assert 'os.link(fd_path, target, follow_symlinks=True)' not in script
-    assert 'sqlite3.connect("file:" + pinned_source + "?mode=ro", uri=True, timeout=30)' in script
+    assert 'sqlite3.connect(uri, uri=True, timeout=30)' in script
+    assert "skipping SQLite snapshot" in script
     assert "data/operator/agents.db-wal" not in script
 
 

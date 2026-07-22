@@ -28,6 +28,7 @@ TRAVERSAL_STATE=""
 TEMP_HOME=""
 TEMP_CLI_DIR=""
 TEMP_BRANCH_CLI_DIR=""
+TEMP_SQLITE_DIR=""
 SETPRIV_BIN=""
 TARGET_UID=""
 TARGET_GID=""
@@ -627,95 +628,69 @@ copy_unmerged_files() {
 backup_sqlite_snapshot() {
   local rel="$1"
   local backup_dir="$2"
-  python3 - "${REPO}" "${rel}" "${backup_dir}" <<'PY'
+  local dest owner_tmp owner_snapshot
+  dest="${backup_dir}/${rel}"
+  TEMP_SQLITE_DIR="$(mktemp -d /tmp/aava-sqlite-snapshot.XXXXXXXXXX)" \
+    || die "failed to create temporary SQLite snapshot directory"
+  chmod 0700 -- "${TEMP_SQLITE_DIR}" || die "failed to secure temporary SQLite snapshot directory"
+  chown "${TARGET_UID}:${TARGET_GID}" "${TEMP_SQLITE_DIR}" \
+    || die "failed to hand temporary SQLite snapshot directory to checkout owner"
+  owner_tmp="${TEMP_SQLITE_DIR}"
+  owner_snapshot="${owner_tmp}/snapshot.db"
+
+  if ! run_as_checkout_owner_home python3 - "${REPO}" "${rel}" "${owner_snapshot}" <<'PY'
 import os
 import sqlite3
 import stat
 import sys
+import urllib.parse
 
-repo, rel, backup_dir = sys.argv[1:4]
+repo, rel, dest = sys.argv[1:4]
 source = os.path.join(repo, rel)
-dest = os.path.join(backup_dir, rel)
-
-def open_pinned_sqlite(path):
-    parent = os.path.dirname(path)
-    name = os.path.basename(path)
-    try:
-        parent_st = os.lstat(parent)
-    except FileNotFoundError:
-        raise
-    if stat.S_ISLNK(parent_st.st_mode) or not stat.S_ISDIR(parent_st.st_mode):
-        raise SystemExit(f"refusing unsafe SQLite parent: {parent}")
-    parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
-    try:
-        pinned_parent_st = os.fstat(parent_fd)
-        if not stat.S_ISDIR(pinned_parent_st.st_mode) or (
-            pinned_parent_st.st_dev,
-            pinned_parent_st.st_ino,
-        ) != (parent_st.st_dev, parent_st.st_ino):
-            raise SystemExit(f"refusing changed SQLite parent: {parent}")
-        try:
-            st = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            raise
-        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
-            raise SystemExit(f"refusing unsafe SQLite source: {path}")
-        source_fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
-        try:
-            source_st = os.fstat(source_fd)
-            if not stat.S_ISREG(source_st.st_mode) or (
-                source_st.st_dev,
-                source_st.st_ino,
-            ) != (st.st_dev, st.st_ino):
-                raise SystemExit(f"refusing changed SQLite source: {path}")
-            return parent_fd, source_fd, source_st, f"/proc/self/fd/{parent_fd}/{name}"
-        except Exception:
-            os.close(source_fd)
-            raise
-    except Exception:
-        os.close(parent_fd)
-        raise
-
-def verify_pinned_source(parent_fd, name, fd_st, label):
-    st = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
-        raise SystemExit(f"refusing unsafe SQLite source {label}: {source}")
-    if not stat.S_ISREG(st.st_mode) or (st.st_dev, st.st_ino) != (fd_st.st_dev, fd_st.st_ino):
-        raise SystemExit(f"refusing changed SQLite source {label}: {source}")
 
 try:
-    parent_fd, source_fd, source_st, pinned_source = open_pinned_sqlite(source)
+    st = os.lstat(source)
 except FileNotFoundError:
     raise SystemExit(0)
 
-os.makedirs(os.path.dirname(dest), exist_ok=True)
+if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+    raise SystemExit(f"refusing unsafe SQLite source: {source}")
+
 tmp = dest + ".tmp"
-source_name = os.path.basename(source)
 try:
     os.unlink(tmp)
 except FileNotFoundError:
     pass
 
+uri = "file:" + urllib.parse.quote(source, safe="/") + "?mode=ro"
+src = sqlite3.connect(uri, uri=True, timeout=30)
 try:
-    verify_pinned_source(parent_fd, source_name, source_st, "before connect")
-    src = sqlite3.connect("file:" + pinned_source + "?mode=ro", uri=True, timeout=30)
+    dst = sqlite3.connect(tmp)
     try:
-        verify_pinned_source(parent_fd, source_name, source_st, "after connect")
-        dst = sqlite3.connect(tmp)
-        try:
-            with dst:
-                src.backup(dst)
-        finally:
-            dst.close()
-        verify_pinned_source(parent_fd, source_name, source_st, "after backup")
+        with dst:
+            src.backup(dst)
     finally:
-        src.close()
+        dst.close()
 finally:
-    os.close(source_fd)
-    os.close(parent_fd)
+    src.close()
 
 os.replace(tmp, dest)
 PY
+  then
+    warn "skipping SQLite snapshot for ${rel}; checkout owner could not read it safely"
+    rm -rf -- "${owner_tmp}"
+    TEMP_SQLITE_DIR=""
+    return 0
+  fi
+
+  if [ -f "${owner_snapshot}" ]; then
+    mkdir -p -- "$(dirname "${dest}")" \
+      || die "failed to create SQLite backup directory for ${rel}"
+    install -m 0600 "${owner_snapshot}" "${dest}" \
+      || die "failed to preserve SQLite snapshot for ${rel}"
+  fi
+  rm -rf -- "${owner_tmp}"
+  TEMP_SQLITE_DIR=""
 }
 
 capture_preupdate_artifacts() {
@@ -1069,8 +1044,9 @@ PY
 install_branch_cli() {
   local ref="$1"
   need_cmd docker
+  need_cmd tar
   local remote_url tmp_src clone_err clone_url escaped_remote_url owner_gitconfig xdg_gitconfig escaped_include
-  local owner_clone build_repo build_out
+  local owner_clone build_repo build_out expected_oid actual_oid source_tar
   remote_url="$(git_repo ls-remote --get-url "${REMOTE}" 2>/dev/null || true)"
   if [ -z "${remote_url}" ]; then
     remote_url="$(git_repo config --get "remote.${REMOTE}.url" 2>/dev/null || true)"
@@ -1116,6 +1092,21 @@ install_branch_cli() {
   chmod 0600 "${clone_err}" || die "failed to secure temporary Git clone diagnostics"
   clone_url="aava-recovery-origin:"
   log "==> Building agent CLI from ${REMOTE}/${ref}"
+  expected_oid="$(
+    run_as_checkout_owner_home /usr/bin/env "GIT_CONFIG_GLOBAL=${tmp_src}/gitconfig" \
+      git ls-remote -- "${clone_url}" "refs/heads/${ref}" "refs/tags/${ref}" "refs/tags/${ref}^{}" \
+      | awk -v ref="${ref}" '
+          $2 == "refs/heads/" ref { head = $1 }
+          $2 == "refs/tags/" ref "^{}" { peeled = $1 }
+          $2 == "refs/tags/" ref { tag = $1 }
+          END {
+            if (head) print head
+            else if (peeled) print peeled
+            else if (tag) print tag
+            else exit 1
+          }'
+  )" || die "failed to resolve selected CLI ref ${ref} from $(printf '%s\n' "${remote_url}" | redact_remote_url)"
+  [ -n "${expected_oid}" ] || die "selected CLI ref ${ref} resolved to an empty object id"
   if ! run_as_checkout_owner_home /usr/bin/env "GIT_CONFIG_GLOBAL=${tmp_src}/gitconfig" \
     git clone --quiet --depth 1 --single-branch --branch "${ref}" -- "${clone_url}" "${owner_clone}" \
     2>"${clone_err}"; then
@@ -1128,8 +1119,17 @@ install_branch_cli() {
     || die "failed to freeze fetched CLI source ownership"
   chmod -R u+rwX,go-rwx "${owner_clone}" \
     || die "failed to freeze fetched CLI source permissions"
-  cp -a -- "${owner_clone}/." "${build_repo}/" \
-    || die "failed to copy fetched CLI source into root-owned build directory"
+  actual_oid="$(git -C "${owner_clone}" rev-parse --verify HEAD^{commit})" \
+    || die "failed to inspect fetched CLI source commit"
+  [ "${actual_oid}" = "${expected_oid}" ] \
+    || die "fetched CLI source ${actual_oid} does not match expected ${expected_oid} for ${ref}"
+  git -C "${owner_clone}" fsck --no-progress \
+    || die "fetched CLI source failed Git object validation"
+  source_tar="${tmp_src}/source.tar"
+  git -C "${owner_clone}" archive --format=tar --output="${source_tar}" HEAD \
+    || die "failed to archive validated CLI source"
+  tar -C "${build_repo}" -xf "${source_tar}" \
+    || die "failed to unpack validated CLI source into root-owned build directory"
   chmod -R u+rwX,go-rwx "${build_repo}" "${build_out}" \
     || die "failed to secure root-owned CLI build directories"
   docker run --rm \
@@ -1450,6 +1450,9 @@ cleanup() {
   fi
   if [ -n "${TEMP_BRANCH_CLI_DIR}" ]; then
     rm -rf -- "${TEMP_BRANCH_CLI_DIR}" 2>/dev/null || true
+  fi
+  if [ -n "${TEMP_SQLITE_DIR}" ]; then
+    rm -rf -- "${TEMP_SQLITE_DIR}" 2>/dev/null || true
   fi
   if [ -n "${RECOVERY_DIR}" ] && [ -d "${RECOVERY_DIR}" ] && [ ! -L "${RECOVERY_DIR}" ] \
     && [ -n "${TARGET_UID}" ] && [ -n "${TARGET_GID}" ]; then
