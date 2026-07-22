@@ -5849,7 +5849,7 @@ async def _probe_asterisk_ari(settings: dict, live: dict) -> None:
                         matched = None
                         for m in all_modules:
                             name = m.get("name", "")
-                            if name in {req_mod, f"{req_mod}.so"}:
+                            if req_mod in name:
                                 matched = m
                                 break
                         if matched:

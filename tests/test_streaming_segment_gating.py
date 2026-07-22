@@ -48,24 +48,6 @@ def test_diag_taps_enabled_by_explicit_config(monkeypatch):
     assert mgr.diag_enable_taps is True
 
 
-def test_diag_taps_create_private_output_directory_before_use(monkeypatch, tmp_path):
-    monkeypatch.delenv("AAVA_AUDIO_DIAGNOSTICS", raising=False)
-    tap_dir = tmp_path / "diagnostics" / "audio-taps"
-
-    StreamingPlaybackManager(
-        session_store=SessionStore(),
-        ari_client=_DummyARI(),
-        conversation_coordinator=None,
-        streaming_config={
-            "diag_enable_taps": True,
-            "diag_out_dir": str(tap_dir),
-        },
-    )
-
-    assert tap_dir.is_dir()
-    assert tap_dir.stat().st_mode & 0o777 == 0o700
-
-
 def test_diag_taps_enabled_by_env(monkeypatch):
     """LOW-R1: AAVA_AUDIO_DIAGNOSTICS env var opts in to diagnostic taps."""
     monkeypatch.setenv("AAVA_AUDIO_DIAGNOSTICS", "1")

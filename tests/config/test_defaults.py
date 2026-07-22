@@ -10,10 +10,7 @@ Tests cover:
 """
 
 import os
-from pathlib import Path
-
 import pytest
-import yaml
 
 from src.config.defaults import (
     apply_transport_defaults,
@@ -284,16 +281,8 @@ class TestApplyDiagnosticDefaults:
         assert streaming['diag_enable_taps'] is False
         assert streaming['diag_pre_secs'] == 1
         assert streaming['diag_post_secs'] == 1
-        assert streaming['diag_out_dir'] == '/app/data/diagnostics/audio-taps'
+        assert streaming['diag_out_dir'] == '/tmp/ai-engine-taps'
         assert streaming['logging_level'] == 'info'
-
-    def test_bundled_config_keeps_diagnostic_taps_opt_in(self):
-        """The shipped config must not capture caller audio without opt-in."""
-        project_root = Path(__file__).resolve().parents[2]
-        with (project_root / 'config' / 'ai-agent.yaml').open(encoding='utf-8') as config_file:
-            bundled = yaml.safe_load(config_file)
-
-        assert bundled['streaming']['diag_enable_taps'] is False
     
     def test_env_overrides_egress_swap_mode(self, monkeypatch):
         """Should override egress swap mode from environment."""
@@ -368,55 +357,6 @@ class TestApplyDiagnosticDefaults:
         apply_diagnostic_defaults(config_data)
         
         assert config_data['streaming']['logging_level'] == 'debug'
-
-    def test_preserves_yaml_values_when_environment_is_absent(self, monkeypatch):
-        """Admin UI/YAML diagnostics must survive config default application."""
-        for name in (
-            'DIAG_EGRESS_SWAP_MODE',
-            'DIAG_EGRESS_FORCE_MULAW',
-            'DIAG_ATTACK_MS',
-            'DIAG_ENABLE_TAPS',
-            'DIAG_TAP_PRE_SECS',
-            'DIAG_TAP_POST_SECS',
-            'DIAG_TAP_OUTPUT_DIR',
-            'STREAMING_LOG_LEVEL',
-        ):
-            monkeypatch.delenv(name, raising=False)
-
-        config_data = {
-            'streaming': {
-                'egress_swap_mode': 'auto',
-                'egress_force_mulaw': True,
-                'attack_ms': 25,
-                'diag_enable_taps': True,
-                'diag_pre_secs': 3,
-                'diag_post_secs': 4,
-                'diag_out_dir': '/var/tmp/aava-taps',
-                'logging_level': 'warning',
-            }
-        }
-
-        apply_diagnostic_defaults(config_data)
-
-        assert config_data['streaming'] == {
-            'egress_swap_mode': 'auto',
-            'egress_force_mulaw': True,
-            'attack_ms': 25,
-            'diag_enable_taps': True,
-            'diag_pre_secs': 3,
-            'diag_post_secs': 4,
-            'diag_out_dir': '/var/tmp/aava-taps',
-            'logging_level': 'warning',
-        }
-
-    def test_explicit_false_environment_disables_yaml_taps(self, monkeypatch):
-        """An explicit environment value remains the highest-priority rollback."""
-        monkeypatch.setenv('DIAG_ENABLE_TAPS', 'false')
-        config_data = {'streaming': {'diag_enable_taps': True}}
-
-        apply_diagnostic_defaults(config_data)
-
-        assert config_data['streaming']['diag_enable_taps'] is False
     
     def test_creates_streaming_block_if_missing(self):
         """Should create streaming block if it doesn't exist."""

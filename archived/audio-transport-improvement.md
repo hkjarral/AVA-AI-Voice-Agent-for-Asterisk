@@ -4,16 +4,15 @@ Validate audio quality and transport integrity across the maintainer-approved re
 
 ## Progress
 
-- **Codex review hardening (2026-07-22):** the shipped configuration now keeps
-  diagnostic taps and mixed call recording disabled until an operator opts in;
-  runtime environment overrides and Admin UI/YAML persistence remain intact.
-  `format_wav` and the Asterisk recording spool are surfaced as optional
-  diagnostic capabilities instead of required voice-agent modules, so their
-  absence does not present a false core-readiness failure. The review-fix gate
-  passed 1,778 core tests (6 skipped, 139 deselected), 485 Admin backend tests,
-  and 220 frontend tests; frontend lint/build and Python compilation also
-  passed. Regression coverage locks both deployment defaults and the Admin UI
-  classification.
+- **Diagnostics removed from the release candidate (2026-07-22):** every
+  diagnostics-only change introduced during this investigation was reverted to
+  `origin/main`. PR #555 does not change diagnostic YAML/environment
+  precedence, tap paths, ARI recording behavior, Asterisk module/spool checks,
+  installer/preflight behavior, or Admin UI diagnostics controls. Diagnostic
+  calls and captures retained below are historical RCA evidence only. The
+  post-removal gate passed 1,888 core tests (18 skipped), 484 Admin backend
+  tests, and 219 frontend tests; frontend lint/build, Python compilation, shell
+  syntax, and whitespace validation also passed.
 
 - **Codex Deepgram full-agent follow-up (2026-07-22):** generic full-agent
   providers now receive the same per-call profile/provider output-resampler
@@ -646,13 +645,10 @@ Validate audio quality and transport integrity across the maintainer-approved re
   diagnostics fix must record the bridge or start channel recording before
   bridge membership, verify artifact creation, and report actual failure rather
   than optimistic "started" status.
-- **Diagnostics implementation update:** AudioSocket diagnostics now request a
-  mixed bridge recording after both media legs are attached and propagate ARI
-  non-2xx responses as failures. Preflight/install and the Admin UI Asterisk
-  checklist now cover `format_wav` plus a writable
-  `/var/spool/asterisk/recording`. Focused lifecycle tests pass 25/25, Admin
-  backend tests pass 15/15, shell syntax/compile checks pass, and the affected
-  frontend tests/build pass. Live artifact verification is still required.
+- **Diagnostics experiment excluded from candidate:** the mixed-bridge
+  recording and Asterisk module/spool readiness work explored during RCA was
+  removed from PR #555. It remains historical evidence and requires an
+  independently scoped design and review before any future release.
 - **OpenAI diagnostics verification attempt:** SIP channel `1784688120.1015`,
   archived at `logs/archived/rca-20260722-024159`; excluded unanswered attempt.
   It was destroyed pre-Stasis after 30 seconds and produced no AAVA media or
@@ -716,14 +712,9 @@ Validate audio quality and transport integrity across the maintainer-approved re
   - Validate impossible or unsupported combinations in both frontend and backend, identify the affected Agents/providers/pipelines, and fail closed without partially updating runtime state.
   - Update Audio Profiles from the retired “Used By Contexts” model to “Used By Agents,” correct transport-specific tooltips, display golden/experimental/support status, and prevent deleting or mutating an in-use GA baseline without explicit migration.
   - Make Save versus Apply/Restart state unambiguous; show active-call protection, pending generation, runtime-effective values, health confirmation, and a recoverable rollback action when reload/restart fails.
-  - Add a diagnostics status panel with tap activity, path, disk/retention warning, last captured call ID, download/support-bundle action, and automatic warning that captures may contain sensitive caller audio.
-  - Add Asterisk recording-spool readiness (`/var/spool/asterisk/recording`,
-    ownership/mode, writable check, and `format_wav`) to install/runtime status;
-    fail with a specific prerequisite message instead of ARI's generic 500.
-  - Start ARI diagnostics at a recordable lifecycle point or use bridge
-    recording; do not report active until Asterisk confirms and the output
-    artifact exists.
-  - Cover profile round trips, compatibility validation, active-Agent impact, restart classification, failed-apply rollback, diagnostics activation, accessibility, frontend tests, backend API tests, production build, and browser console/API checks.
+  - Diagnostic UI, recording, and readiness changes are outside this release
+    candidate and must be designed, reviewed, and tracked independently.
+  - Cover profile round trips, compatibility validation, active-Agent impact, restart classification, failed-apply rollback, accessibility, frontend tests, backend API tests, production build, and browser console/API checks.
 
 - [x] **Close the implementation validation gate and prepare the review phase.**
   - Update this document with every call ID, archive, finding, threshold, exception, and final architecture decision; link any newly filed issues.

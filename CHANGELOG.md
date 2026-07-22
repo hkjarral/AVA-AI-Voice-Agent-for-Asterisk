@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Audio diagnostics, interruption, and teardown now preserve the active media lifecycle** ([#553](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/553)): diagnostic settings saved in YAML are no longer discarded or overwritten when no environment override exists, AudioSocket diagnostics record the completed mixed bridge, and Asterisk readiness reports the optional WAV module/spool prerequisites. Provider and pipeline resampler state resets at response, interruption, and call boundaries; interrupted playback skips tail grace; a completed stream cannot clean up its replacement; pipeline LLM/TTS output fails closed once call teardown owns the session; ElevenLabs and Grok retain scoped short-utterance barge-in fallbacks; and Local Whisper no longer duplicates the first speech frame or retains a stale session override.
+- **Audio interruption and teardown now preserve the active media lifecycle** ([#553](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/553)): Provider and pipeline resampler state resets at response, interruption, and call boundaries; interrupted playback skips tail grace; a completed stream cannot clean up its replacement; pipeline LLM/TTS output fails closed once call teardown owns the session; ElevenLabs and Grok retain scoped short-utterance barge-in fallbacks; and Local Whisper no longer duplicates the first speech frame or retains a stale session override.
 
 ## [7.4.1] - 2026-07-18
 

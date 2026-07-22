@@ -459,15 +459,8 @@ class Engine:
         # Captures are written under /tmp/ai-engine-captures/<call_id>/stream_name.wav,
         # which is what scripts/rca_collect.sh expects when building the "captures" bundle.
         capture_dir = "/tmp/ai-engine-captures"
-        # Keep captures when diagnostics are enabled by the effective merged
-        # config or the compatibility environment switch. Looking only at
-        # DIAG_ENABLE_TAPS made Admin UI/YAML opt-in capture files disappear at
-        # cleanup even while runtime taps were active.
-        config_diag_taps = bool(getattr(config.streaming, "diag_enable_taps", False))
-        env_audio_diagnostics = os.getenv("AAVA_AUDIO_DIAGNOSTICS", "").lower() in (
-            "true", "1", "yes", "on"
-        )
-        keep_captures = config_diag_taps or env_audio_diagnostics
+        # Use DIAG_ENABLE_TAPS as a generic switch for keeping capture files after calls complete.
+        keep_captures = os.getenv("DIAG_ENABLE_TAPS", "false").lower() in ("true", "1", "yes")
         self.audio_capture = AudioCaptureManager(base_dir=capture_dir, keep_files=keep_captures)
         logger.info(
             "Audio capture initialized",
@@ -5990,29 +5983,22 @@ class Engine:
             if not session.provider_session_active:
                 await self._ensure_provider_session_started(caller_channel_id)
 
-            # Start one mixed bridge recording only after both caller and
-            # AudioSocket legs are attached. Asterisk rejects channel recording
-            # once the channel is in a bridge.
+            # Start ARI channel recording on the AudioSocket channel (only when diagnostics enabled)
+            # Check if diagnostic taps are enabled
             diag_enabled = False
             try:
-                # StreamingPlaybackManager owns the effective tap policy for
-                # this running generation (config plus compatibility env
-                # switch). Use the same decision for ARI recording so the two
-                # diagnostic paths cannot report contradictory states.
-                diag_enabled = bool(
-                    getattr(self.streaming_playback_manager, 'diag_enable_taps', False)
-                )
+                diag_enabled = bool(getattr(self.config.streaming, 'diag_enable_taps', False)) if hasattr(self.config, 'streaming') else False
             except Exception:
                 pass
             
             if diag_enabled:
                 try:
                     ts = time.strftime("%Y%m%d-%H%M%S")
-                    rec_name = f"call-{caller_channel_id}-{ts}"
-                    ok = await self.ari_client.record_bridge(
-                        bridge_id,
+                    rec_name = f"out-{caller_channel_id}-{ts}"
+                    ok = await self.ari_client.record_channel(
+                        audiosocket_channel_id,
                         name=rec_name,
-                        recording_format="wav",
+                        format="wav",
                         if_exists="overwrite",
                         max_duration_seconds=360,
                         max_silence_seconds=0,
@@ -6021,28 +6007,21 @@ class Engine:
                     )
                     if ok:
                         logger.info(
-                            "📼 ARI diagnostic bridge recording started",
+                            "📼 ARI channel recording started on AudioSocket channel",
                             audiosocket_channel_id=audiosocket_channel_id,
-                            bridge_id=bridge_id,
                             name=rec_name,
                         )
                     else:
-                        logger.warning(
-                            "ARI diagnostic bridge recording failed to start",
+                        logger.debug(
+                            "ARI channel recording failed to start (diagnostic recording)",
                             audiosocket_channel_id=audiosocket_channel_id,
-                            bridge_id=bridge_id,
                             name=rec_name,
                         )
                 except Exception:
-                    logger.warning(
-                        "ARI diagnostic bridge recording start raised",
-                        audiosocket_channel_id=audiosocket_channel_id,
-                        bridge_id=bridge_id,
-                        exc_info=True,
-                    )
+                    logger.debug("ARI channel recording start failed (diagnostic recording)", exc_info=True)
             else:
                 logger.debug(
-                    "ARI bridge recording skipped (diag_enable_taps not enabled)",
+                    "ARI channel recording skipped (diag_enable_taps not enabled)",
                     audiosocket_channel_id=audiosocket_channel_id,
                 )
         except Exception as exc:

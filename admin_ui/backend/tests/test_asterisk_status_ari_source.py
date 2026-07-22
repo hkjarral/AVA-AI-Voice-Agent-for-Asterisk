@@ -19,11 +19,6 @@ sys.path.insert(0, str(BACKEND_ROOT))
 from api import system  # noqa: E402
 
 
-def test_required_module_list_excludes_optional_diagnostics():
-    """Missing WAV support must not make the core Asterisk module gate fail."""
-    assert "format_wav" not in system._REQUIRED_MODULES
-
-
 @pytest.mark.asyncio
 async def test_ari_reachable_prefers_engine_connected_true(monkeypatch):
     """When the engine reports ari_connected=True, ari_reachable is True and stays True

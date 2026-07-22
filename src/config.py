@@ -951,18 +951,6 @@ class StreamingConfig(BaseModel):
     egress_swap_mode: str = Field(default="auto")
     # When true, force outbound streaming audio to μ-law regardless of provider encoding.
     egress_force_mulaw: bool = Field(default=False)
-    # Diagnostic capture settings are part of the canonical model because
-    # engine call setup reads them after Pydantic validation. Leaving them as
-    # ignored YAML extras caused the playback manager (environment opt-in) and
-    # ARI recording path (validated config) to disagree about whether taps were
-    # active.
-    attack_ms: int = Field(default=0, ge=0)
-    diag_enable_taps: bool = Field(default=False)
-    diag_pre_secs: int = Field(default=1, ge=0)
-    diag_post_secs: int = Field(default=1, ge=0)
-    diag_out_dir: str = Field(
-        default="/app/data/diagnostics/audio-taps", min_length=1
-    )
     # Overlap LLM token streaming with TTS synthesis in modular pipelines.
     # Streams tokens → splits into sentences → synthesizes each sentence concurrently.
     pipeline_streaming_overlap: bool = Field(default=True)

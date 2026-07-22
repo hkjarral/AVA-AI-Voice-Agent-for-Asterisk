@@ -20,38 +20,6 @@ def test_connection_audio_uri_normalization():
 
 
 @pytest.mark.asyncio
-async def test_ari_bridge_recording_uses_bridge_route_and_reports_success():
-    client = ARIClient.__new__(ARIClient)
-    client.send_command = AsyncMock(return_value={"name": "call-123"})
-
-    assert await client.record_bridge("bridge-123", "call-123") is True
-
-    client.send_command.assert_awaited_once_with(
-        "POST",
-        "bridges/bridge-123/record",
-        params={
-            "name": "call-123",
-            "format": "wav",
-            "ifExists": "overwrite",
-            "maxDurationSeconds": "180",
-            "maxSilenceSeconds": "0",
-            "beep": "false",
-            "terminateOn": "none",
-        },
-    )
-
-
-@pytest.mark.asyncio
-async def test_ari_bridge_recording_propagates_non_success_status():
-    client = ARIClient.__new__(ARIClient)
-    client.send_command = AsyncMock(
-        return_value={"status": 500, "reason": "recording unavailable"}
-    )
-
-    assert await client.record_bridge("bridge-500", "call-500") is False
-
-
-@pytest.mark.asyncio
 async def test_connection_audio_starts_on_caller_channel_and_stops_idempotently():
     """Connection audio targets only the caller and duplicate stops are harmless."""
     engine = Engine.__new__(Engine)

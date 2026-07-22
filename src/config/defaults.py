@@ -110,12 +110,11 @@ def apply_externalmedia_defaults(config_data: Dict[str, Any]) -> None:
 
 def apply_diagnostic_defaults(config_data: Dict[str, Any]) -> None:
     """
-    Apply diagnostic defaults with optional environment overrides.
+    Apply diagnostic settings from environment variables only.
     
     Diagnostic settings control egress swap mode, force mulaw, attack envelope,
-    audio taps, and streaming log verbosity. Values saved in YAML remain active
-    when the corresponding environment variable is absent; an explicitly set
-    environment variable takes precedence for emergency/runtime overrides.
+    audio taps, and streaming log verbosity. These are read from environment
+    variables to avoid polluting YAML configs.
     
     Environment variables:
     - DIAG_EGRESS_SWAP_MODE: Egress swap mode (default: none)
@@ -124,7 +123,7 @@ def apply_diagnostic_defaults(config_data: Dict[str, Any]) -> None:
     - DIAG_ENABLE_TAPS: Enable diagnostic audio taps (default: false)
     - DIAG_TAP_PRE_SECS: Pre-event tap duration (default: 1)
     - DIAG_TAP_POST_SECS: Post-event tap duration (default: 1)
-    - DIAG_TAP_OUTPUT_DIR: Tap output directory (default: /app/data/diagnostics/audio-taps)
+    - DIAG_TAP_OUTPUT_DIR: Tap output directory (default: /tmp/ai-engine-taps)
     - STREAMING_LOG_LEVEL: Streaming log verbosity (default: info)
     
     Args:
@@ -132,49 +131,31 @@ def apply_diagnostic_defaults(config_data: Dict[str, Any]) -> None:
         
     Complexity: 6
     """
-    # Ensure streaming block exists.
-    if not isinstance(config_data.get('streaming'), dict):
+    # Ensure streaming block exists
+    if 'streaming' not in config_data:
         config_data['streaming'] = {}
     
     streaming_cfg = config_data['streaming']
     
-    # Defaults preserve the merged YAML value. Environment variables override
-    # only when explicitly present; using os.getenv(..., default) here would
-    # silently replace values saved by the Admin UI on every engine load.
-    streaming_cfg.setdefault('egress_swap_mode', 'none')
-    if 'DIAG_EGRESS_SWAP_MODE' in os.environ:
-        streaming_cfg['egress_swap_mode'] = os.environ['DIAG_EGRESS_SWAP_MODE']
+    # Egress swap mode (diagnostic only)
+    streaming_cfg['egress_swap_mode'] = os.getenv('DIAG_EGRESS_SWAP_MODE', 'none')
     
     # Egress force mulaw (diagnostic only)
-    streaming_cfg.setdefault('egress_force_mulaw', False)
-    if 'DIAG_EGRESS_FORCE_MULAW' in os.environ:
-        env_force_mulaw = os.environ['DIAG_EGRESS_FORCE_MULAW']
-        streaming_cfg['egress_force_mulaw'] = env_force_mulaw.lower() in ('true', '1', 'yes')
+    env_force_mulaw = os.getenv('DIAG_EGRESS_FORCE_MULAW', 'false')
+    streaming_cfg['egress_force_mulaw'] = env_force_mulaw.lower() in ('true', '1', 'yes')
     
     # Attack ms (diagnostic only - disabled by default)
-    streaming_cfg.setdefault('attack_ms', 0)
-    if 'DIAG_ATTACK_MS' in os.environ:
-        streaming_cfg['attack_ms'] = int(os.environ['DIAG_ATTACK_MS'])
+    streaming_cfg['attack_ms'] = int(os.getenv('DIAG_ATTACK_MS', '0'))
     
     # Diagnostic audio taps (disabled by default)
-    streaming_cfg.setdefault('diag_enable_taps', False)
-    streaming_cfg.setdefault('diag_pre_secs', 1)
-    streaming_cfg.setdefault('diag_post_secs', 1)
-    streaming_cfg.setdefault('diag_out_dir', '/app/data/diagnostics/audio-taps')
-    if 'DIAG_ENABLE_TAPS' in os.environ:
-        env_taps = os.environ['DIAG_ENABLE_TAPS']
-        streaming_cfg['diag_enable_taps'] = env_taps.lower() in ('true', '1', 'yes')
-    if 'DIAG_TAP_PRE_SECS' in os.environ:
-        streaming_cfg['diag_pre_secs'] = int(os.environ['DIAG_TAP_PRE_SECS'])
-    if 'DIAG_TAP_POST_SECS' in os.environ:
-        streaming_cfg['diag_post_secs'] = int(os.environ['DIAG_TAP_POST_SECS'])
-    if 'DIAG_TAP_OUTPUT_DIR' in os.environ:
-        streaming_cfg['diag_out_dir'] = os.environ['DIAG_TAP_OUTPUT_DIR']
+    env_taps = os.getenv('DIAG_ENABLE_TAPS', 'false')
+    streaming_cfg['diag_enable_taps'] = env_taps.lower() in ('true', '1', 'yes')
+    streaming_cfg['diag_pre_secs'] = int(os.getenv('DIAG_TAP_PRE_SECS', '1'))
+    streaming_cfg['diag_post_secs'] = int(os.getenv('DIAG_TAP_POST_SECS', '1'))
+    streaming_cfg['diag_out_dir'] = os.getenv('DIAG_TAP_OUTPUT_DIR', '/tmp/ai-engine-taps')
     
     # Streaming logger verbosity
-    streaming_cfg.setdefault('logging_level', 'info')
-    if 'STREAMING_LOG_LEVEL' in os.environ:
-        streaming_cfg['logging_level'] = os.environ['STREAMING_LOG_LEVEL']
+    streaming_cfg['logging_level'] = os.getenv('STREAMING_LOG_LEVEL', 'info')
 
 
 def apply_barge_in_defaults(config_data: Dict[str, Any]) -> None:

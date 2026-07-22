@@ -293,14 +293,9 @@ class StreamingPlaybackManager:
         except Exception:
             self.diag_post_secs = 2
         try:
-            self.diag_out_dir = str(
-                self.streaming_config.get(
-                    'diag_out_dir', '/app/data/diagnostics/audio-taps'
-                )
-                or '/app/data/diagnostics/audio-taps'
-            )
+            self.diag_out_dir = str(self.streaming_config.get('diag_out_dir', '/tmp/ai-engine-taps') or '/tmp/ai-engine-taps')
         except Exception:
-            self.diag_out_dir = '/app/data/diagnostics/audio-taps'
+            self.diag_out_dir = '/tmp/ai-engine-taps'
         if self.diag_enable_taps:
             try:
                 os.makedirs(self.diag_out_dir, mode=0o700, exist_ok=True)
