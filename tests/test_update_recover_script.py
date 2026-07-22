@@ -876,6 +876,11 @@ def test_update_recover_preserves_state_before_overwrite_can_run() -> None:
     assert "backup_sqlite_snapshot" in script
     assert "src.backup(dst)" in script
     assert 'run_as_checkout_owner_home python3 - "${REPO}" "${rel}" "${owner_snapshot}"' in script
+    assert 'python3 - "${owner_snapshot}" "${dest}"' in script
+    assert "flags |= os.O_NOFOLLOW" in script
+    assert "st = os.fstat(fd)" in script
+    assert 'with os.fdopen(fd, "rb", closefd=False) as src' in script
+    assert 'install -m 0600 "${owner_snapshot}" "${dest}"' not in script
     assert "open_pinned_sqlite" not in script
     assert "verify_pinned_source" not in script
     assert "copy_pinned_source" not in script

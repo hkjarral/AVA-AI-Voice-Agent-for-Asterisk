@@ -686,8 +686,43 @@ PY
   if [ -f "${owner_snapshot}" ]; then
     mkdir -p -- "$(dirname "${dest}")" \
       || die "failed to create SQLite backup directory for ${rel}"
-    install -m 0600 "${owner_snapshot}" "${dest}" \
-      || die "failed to preserve SQLite snapshot for ${rel}"
+    if ! python3 - "${owner_snapshot}" "${dest}" <<'PY'
+import os
+import shutil
+import stat
+import sys
+
+source, dest = sys.argv[1:3]
+flags = os.O_RDONLY
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+
+fd = os.open(source, flags)
+try:
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode):
+        raise SystemExit(f"refusing unsafe SQLite snapshot: {source}")
+
+    tmp = dest + ".tmp"
+    out_fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "rb", closefd=False) as src, os.fdopen(out_fd, "wb", closefd=True) as out:
+            shutil.copyfileobj(src, out)
+            out.flush()
+            os.fsync(out.fileno())
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+    os.replace(tmp, dest)
+finally:
+    os.close(fd)
+PY
+    then
+      die "failed to preserve SQLite snapshot for ${rel}"
+    fi
   fi
   rm -rf -- "${owner_tmp}"
   TEMP_SQLITE_DIR=""
