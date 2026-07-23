@@ -90,6 +90,10 @@ def test_targeted_codex_review_pins_model_and_tooling() -> None:
     assert workflow["permissions"]["pull-requests"] == "write"
     assert "issues" not in workflow["permissions"]
     assert steps["openai"]["env"]["CODEX_REVIEW_MODEL"] == "${{ vars.CODEX_REVIEW_MODEL }}"
+    preflight = steps["openai"]["run"]
+    assert 'if [ -z "${CODEX_REVIEW_MODEL}" ]; then' in preflight
+    assert '"https://api.openai.com/v1/models"' in preflight
+    assert ".data | any(.id == $model)" in preflight
 
     codex_step = steps["run_codex"]
     assert (
