@@ -6,7 +6,7 @@ docker==7.0.0
 pydantic==2.6.1
 httpx==0.27.0
 urllib3<2
-requests==2.31.0
+requests==2.33.0
 psutil==5.9.8
 passlib[bcrypt]==1.7.4
 python-jose[cryptography]==3.3.0
