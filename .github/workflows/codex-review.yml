@@ -95,11 +95,22 @@ jobs:
             exit 1
           fi
 
-          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+          models_file="$(mktemp)"
+          trap 'rm -f "${models_file}"' EXIT
+          status="$(curl --silent --show-error --output "${models_file}" --write-out '%{http_code}' \
             --header "Authorization: Bearer ${OPENAI_API_KEY}" \
-            "https://api.openai.com/v1/models/${CODEX_REVIEW_MODEL}")"
+            "https://api.openai.com/v1/models")"
           if [ "${status}" != "200" ]; then
-            echo "The configured Codex review model '${CODEX_REVIEW_MODEL}' is not available to the OPENAI_API_KEY project (HTTP ${status})." >&2
+            echo "Unable to list models for the OPENAI_API_KEY project (HTTP ${status})." >&2
+            exit 1
+          fi
+
+          if ! jq --exit-status --arg model "${CODEX_REVIEW_MODEL}" \
+            '.data | any(.id == $model)' "${models_file}" >/dev/null; then
+            echo "The configured Codex review model '${CODEX_REVIEW_MODEL}' is not available to the OPENAI_API_KEY project." >&2
+            echo "Available GPT-5/Codex model IDs:" >&2
+            jq --raw-output '.data[].id | select(test("^gpt-5|codex"; "i"))' "${models_file}" \
+              | sort -u >&2
             exit 1
           fi
 
