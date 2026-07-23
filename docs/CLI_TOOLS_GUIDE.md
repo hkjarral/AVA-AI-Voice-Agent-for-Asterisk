@@ -151,7 +151,7 @@ Apply an update:
 
 ```bash
 agent update
-agent update --ref v7.2.0
+agent update --ref v7.5.0
 agent update --checkout --ref main
 agent update --rebuild auto
 agent update --rebuild none
@@ -164,7 +164,7 @@ agent update --backup-id before-upgrade
 agent update --self-update=false
 ```
 
-Before changing Git state, the updater backs up operator configuration and uses SQLite's online backup API to snapshot `data/operator/agents.db` and `data/call_history.db`. This includes committed WAL data without requiring containers to stop. Updates are fast-forward only and never use a hard reset.
+Before changing Git state, the updater backs up operator configuration and uses SQLite's online backup API to snapshot `data/operator/agents.db` and `data/call_history.db`. This includes committed WAL data without requiring containers to stop. Release updates are fast-forward only. The explicit `--local-changes=overwrite` policy discards tracked source edits after backup; use `retain` or `abort` unless that loss is intentional.
 
 With `--plan --plan-json`, progress is written to stderr and stdout contains valid JSON for automation.
 

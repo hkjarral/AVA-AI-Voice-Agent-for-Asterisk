@@ -254,7 +254,7 @@ voicemail mailboxes it should be allowed to use.**
   working.
 
 Before upgrading—especially from v7.3.0–v7.3.3—read the
-[v7.4 upgrade procedure](docs/INSTALLATION.md#upgrade-to-v740-existing-checkout)
+[current upgrade procedure](docs/INSTALLATION.md#upgrade-to-v750-existing-checkout)
 and [Contexts → Agents migration guide](docs/OPERATOR_MIGRATION.md).
 
 </details>

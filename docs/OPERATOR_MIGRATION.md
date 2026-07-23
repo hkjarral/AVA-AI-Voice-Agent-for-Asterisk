@@ -5,7 +5,7 @@ v7.4 removes Contexts from product navigation and runtime routing. Agents stored
 prompts, voices, and per-Agent tool access.
 
 See [AGENTS.md](AGENTS.md) for day-to-day Agent configuration and
-[INSTALLATION.md](INSTALLATION.md#upgrade-to-v740-existing-checkout) for the complete
+[INSTALLATION.md](INSTALLATION.md#upgrade-to-v750-existing-checkout) for the complete
 upgrade procedure.
 
 ## Before the first v7.4 start

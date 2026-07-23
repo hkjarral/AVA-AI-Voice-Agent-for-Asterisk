@@ -1,18 +1,20 @@
-# Asterisk AI Voice Agent - Installation and Upgrade Guide (v7.4)
+# Asterisk AI Voice Agent - Installation and Upgrade Guide (v7.5)
 
-This guide covers fresh installations and the supported upgrade path to the latest v7.4 release.
-For release-specific behavior changes, also read the [v7.4 migration notes](MIGRATION.md#v73x-to-v740).
+This guide covers fresh installations and the supported upgrade path to v7.5.0.
+For release-specific behavior changes, also read the
+[v7.5.0 migration notes](MIGRATION.md#v741-to-v750). Operators upgrading from
+v7.3.x or earlier must also follow the [v7.4 Agent migration](MIGRATION.md#v73x-to-v740).
 
 ## Three Setup Paths
 
 Choose the path that best fits your experience level:
 
-## Upgrade to v7.4.2 (Existing Checkout)
+## Upgrade to v7.5.0 (Existing Checkout)
 
 This section is for operators upgrading an existing repo checkout (not a fresh install).
 
 > ### ⚠️ Upgrading from 6.x? v7.0.0 introduced breaking changes — read first
-> (v7.4 includes them; if you are already on 7.x this is an in-place upgrade.)
+> (v7.5 includes them; if you are already on 7.x this is an in-place upgrade.)
 > Before upgrading from 6.x, review the **Upgrade Notes** at the top of the
 > [v7.0.0 CHANGELOG entry](../CHANGELOG.md) and the
 > [Agents migration guide](OPERATOR_MIGRATION.md). In short:
@@ -35,8 +37,9 @@ Run these commands from your actual checkout path. Do not assume it is `/root/..
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 git status --short
-git diff --binary > ../aava-pre-v742-working-tree.patch
-git diff --binary --cached > ../aava-pre-v742-staged.patch
+git diff --binary > ../aava-pre-v750-working-tree.patch
+git diff --binary --cached > ../aava-pre-v750-staged.patch
+docker compose config --quiet
 ```
 
 Back up at least:
@@ -46,13 +49,13 @@ Back up at least:
 - `data/operator/agents.db` and `data/call_history.db` when present; and
 - any custom secrets, certificates, recordings, or media stored outside those paths.
 
-The v7.4 updater also creates a per-job backup under `.agent/update-backups/` and
+The v7.5 updater also creates a per-job backup under `.agent/update-backups/` and
 uses SQLite's online backup API for `agents.db` and `call_history.db`. An independent
 off-host backup is still recommended.
 
 ### 1) Choose how to handle tracked source changes
 
-v7.4 never silently decides what to do with edits to tracked project files:
+The updater never silently decides what to do with edits to tracked project files:
 
 | Choice | Use it when | Result |
 |---|---|---|
@@ -63,13 +66,13 @@ v7.4 never silently decides what to do with edits to tracked project files:
 Untracked files are not overwritten by default. Review `git status --short` before
 choosing. If in doubt, choose `abort` and preserve the changes outside the checkout.
 
-### 2) Update using the v7.4 updater
+### 2) Update using the v7.5 updater
 
 Preferred CLI path:
 
 ```bash
 git fetch origin --prune --tags
-agent update --ref v7.4.2 --include-ui --local-changes=retain
+agent update --ref v7.5.0 --include-ui --local-changes=retain
 ```
 
 Replace `retain` with your explicit `overwrite` or `abort` decision. In an interactive
@@ -79,6 +82,13 @@ specify a policy.
 The Admin UI path is **System → Updates**. Preview the plan, select **Retain local
 changes**, **Overwrite local changes**, or **Abort**, then proceed. Use a published tag
 for production; untagged branches belong on development systems only.
+
+Leave **Update Admin UI** and **Update Agent CLI** enabled for a release upgrade. Before
+starting, verify that `docker compose config --quiet` succeeds as the checkout owner.
+Review any local `docker-compose.override.yml` carefully: Docker loads it automatically,
+but it is normally untracked, so the updater cannot validate its history or preserve it as
+release source. It must be readable by the checkout owner and must not reference a temporary
+test checkout.
 
 #### Update planner recovery, including issue [#518](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/518)
 
@@ -93,7 +103,7 @@ Run the host recovery script from an SSH shell on the AAVA server. This path doe
 depend on the failing Admin UI planner container:
 
 ```bash
-AAVA_RECOVERY_REF=v7.4.2
+AAVA_RECOVERY_REF=v7.5.0
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -129,7 +139,7 @@ terminal:
 For non-interactive recovery, pass the decision explicitly:
 
 ```bash
-AAVA_RECOVERY_REF=v7.4.2
+AAVA_RECOVERY_REF=v7.5.0
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -144,7 +154,7 @@ Use `overwrite` only when the operator accepts that tracked local code changes w
 discarded:
 
 ```bash
-AAVA_RECOVERY_REF=v7.4.2
+AAVA_RECOVERY_REF=v7.5.0
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -231,8 +241,30 @@ git diff > ../aava-update-conflict.patch
 Resolve and commit the conflict if the changes are wanted. If you intentionally choose
 to abandon the interrupted merge, `git merge --abort` is the first recovery action.
 When Git says no merge is active but the index is still conflicted, preserve the patch
-and stash before using `git reset --merge HEAD`. Then rerun the v7.4 updater with an
+and stash before using `git reset --merge HEAD`. Then rerun the v7.5 updater with an
 explicit policy. Never use `git reset --hard` as generic upgrade advice.
+
+#### If Git updated but Docker deployment failed
+
+Do not treat a second update run as proof that the containers were updated. If the first
+job reached **Fast-forwarding code** and then failed during Docker Compose, the checkout may
+already be at v7.5.0 while the old containers are still running. Save the failed job log and
+either use its **Rollback** action or, after fixing the reported Compose/build error, reconcile
+only the services that were running before the update:
+
+```bash
+cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
+docker compose config --quiet
+docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate ai_engine admin_ui
+
+# Only when Local AI was already in use before the update:
+docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate local_ai_server
+
+agent check
+```
+
+This manual recovery is required because a retry at the target Git commit may have no
+remaining source diff from which to reconstruct the failed Docker action plan.
 
 #### If the update fails with “No such image: ...local-ai-server:latest”
 

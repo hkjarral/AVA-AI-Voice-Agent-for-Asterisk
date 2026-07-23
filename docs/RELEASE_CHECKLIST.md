@@ -50,6 +50,23 @@ Run at least one successful call for each baseline you intend to claim as suppor
   `docs/Transport-Mode-Compatibility.md` and the provider setup guides. A
   historical pass is not sufficient for a new release candidate.
 
+## v7.5.0 Audio Transport Gate
+
+- Use `docs/baselines/golden/v7.5.0-validation-matrix.md`; record the exact
+  candidate revision, Audio Profile, provider/pipeline, transport, call ID,
+  archive label, objective media result, lifecycle result, and maintainer verdict.
+- Confirm `telephony_ulaw_8k` remains the compatibility default and that
+  `telephony_enhanced_8k` is opt-in, per-call, and immediately reversible by
+  Agent reassignment.
+- Validate every provider/pipeline claimed for the enhanced profile. Mark
+  unavailable or waived lanes explicitly as untested; do not infer support from
+  a different provider or from automated DSP tests alone.
+- Remove diagnostic-only environment, tap, recording, and Compose overrides
+  before the release-candidate freeze, then repeat the focused automated gate.
+- Exercise a real update from the prior stable release through the Admin UI,
+  including Compose validation, ownership recovery, service recreation, CLI
+  update, post-update health, and at least one call on the deployed release head.
+
 ## v7.4.0 Agent Tools Gate
 
 - Use `docs/baselines/golden/v7.4.0-validation-matrix.md`; retain exact call IDs,
@@ -117,10 +134,12 @@ remains visible in the validation matrix rather than being rewritten as a pass.
 
 ## Documentation Checklist (current release)
 
-- [ ] `docs/INSTALLATION.md` contains the target release and prior-release recovery path
-- [ ] `SECURITY.md` supported-version table is updated when v7.4.0 is tagged
-- [ ] `docs/ROADMAP.md` records v7.4.0 accurately
+- [ ] `python3 scripts/check_release_docs.py` passes on the frozen release head
+- [ ] `docs/INSTALLATION.md` contains the target release, exact pinned recovery commands, Compose preflight, and partial-deployment recovery path
+- [ ] `docs/MIGRATION.md` marks the target release as shipped and describes its operator-visible migration/compatibility boundaries
+- [ ] `SECURITY.md` lists the two most recent minor release trains as supported
+- [ ] `docs/ROADMAP.md` and `docs/contributing/README.md` identify the target as latest stable
 - [ ] `docs/README.md` links verify with no broken renamed/deleted files
-- [ ] README and CHANGELOG describe the same v7.4 scope and compatibility boundaries
+- [ ] README, CHANGELOG, migration notes, and the release validation matrix describe the same scope and compatibility boundaries
 - [ ] Provider, PBX, tool, and architecture examples use `AI_AGENT`; `AI_CONTEXT` remains only where deprecation/legacy behavior is being explained
 - [ ] `AVA.mdc` is reviewed for Agent-only routing, tool generations, provider roster, guardrails, and its verification stamp

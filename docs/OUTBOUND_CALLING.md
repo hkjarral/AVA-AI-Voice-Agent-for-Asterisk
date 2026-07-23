@@ -1,6 +1,10 @@
 # Outbound Calling — Outbound Campaign Dialer
 
-Outbound calling is available through **Admin UI → Call Scheduling**. Version 7.4.1 focuses on correctness and scheduling safety while the broader Outbound Campaigns redesign remains planned for 7.5.0.
+Outbound calling is available through **Admin UI → Call Scheduling**. The v7.5.0
+release retains AAVA-managed scheduling for FreePBX and generic Asterisk deployments.
+VICIdial deployments must use the separate
+[VICIdial Remote Agent integration](Vicidial-Setup.md), which keeps campaign and
+terminal-state ownership in VICIdial.
 
 This feature adds a simple, AI-native outbound dialer inspired by Vicidial-style campaigns, but designed to stay aligned with AAVA’s **ARI-first** architecture and Admin UI model.
 
@@ -55,7 +59,7 @@ See `docs/Configuration-Reference.md` for the full list and semantics. The most 
 
 ## Setup Steps (FreePBX-friendly)
 
-1. Update to AAVA `v7.4.1` (or the corresponding development branch) and start `admin_ui` + `ai_engine`.
+1. Update to AAVA `v7.5.0` and start `admin_ui` + `ai_engine`.
 2. In Admin UI, open **Call Scheduling** and create a campaign.
 3. Configure (optional):
    - Consent gate

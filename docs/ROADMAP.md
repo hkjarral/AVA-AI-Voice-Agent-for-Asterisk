@@ -18,6 +18,16 @@ Active and upcoming work. Pick something up and [get involved](#how-to-contribut
 
 Outbound dialer shipped as Alpha in v5.0.0 — core scheduling, AMD, voicemail drop, consent gate, and Admin UI are working. Current focus: DNC, retry automation, outcome classification, and resilience hardening (see Phases 6-8 in spec).
 
+### v7.5.0 — Enhanced Telephony Audio and VICIdial Remote Agents (Shipped July 2026)
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **Enhanced 8 kHz telephony profile** | Opt-in `telephony_enhanced_8k` profile adds stateful band-limited downsampling while preserving the established 8 kHz Asterisk wire contract. | ✅ Shipped |
+| **Provider and pipeline audio policy** | Hosted providers and modular TTS pipelines inherit the per-call Audio Profile, with explicit compatibility overrides and validated encoding/rate combinations. | ✅ Shipped |
+| **Interruption and teardown hardening** | Resampler, playback, barge-in, farewell, and cleanup state is isolated across calls and response boundaries. | ✅ Shipped |
+| **VICIdial Remote Agents** | VICIdial remains authoritative for campaigns and terminal state while AAVA supplies mapped AI conversations through fail-closed Remote Agent lifecycle controls. | ✅ Shipped (Alpha) |
+| **Upgrade recovery** | The pinned host recovery script handles mixed ownership, stale updater images, tracked edits, and older Admin UI planner failures with bounded preservation. | ✅ Shipped |
+
 ### v7.4.0 — Agents and Agent-Scoped Tools
 
 | Feature | Description | Status |
@@ -205,4 +215,4 @@ Longer-term goals that will shape the project's direction:
 
 ---
 
-**Last Updated**: July 2026 | **Latest Stable**: v7.3.5 | **Next**: v7.4.0
+**Last Updated**: July 2026 | **Latest Stable**: v7.5.0 | **Next**: Unreleased

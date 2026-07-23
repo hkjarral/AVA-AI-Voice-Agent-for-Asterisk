@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release documentation consistency:** corrected the v7.5.0 installation,
+  migration, recovery, support-policy, roadmap, contributor, outbound-calling,
+  CLI, and validation-matrix references. CI now derives the current release
+  from `CHANGELOG.md` and rejects stale operator-facing release documentation.
+
 ## [7.5.0] - 2026-07-22
 
 ### Added

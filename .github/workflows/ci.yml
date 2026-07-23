@@ -39,6 +39,10 @@ jobs:
         run: |
           python -m compileall -q .
 
+      - name: Check current release documentation
+        run: |
+          python scripts/check_release_docs.py
+
       - name: Preflight script smoke (syntax)
         run: |
           bash -n preflight.sh

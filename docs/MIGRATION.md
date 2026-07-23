@@ -2,7 +2,26 @@
 
 This guide covers upgrading between major versions of Asterisk AI Voice Agent.
 
-## v7.4.1 to v7.5.0 (unreleased)
+## v7.4.1 to v7.5.0
+
+Released 2026-07-22. Follow the
+[v7.5.0 upgrade procedure](INSTALLATION.md#upgrade-to-v750-existing-checkout),
+including the local-change decision, Compose validation, backup, and post-update checks.
+
+### Audio transport and profiles
+
+- Existing Agents keep their assigned Audio Profile. The established
+  `telephony_ulaw_8k` profile retains compatibility downsampling behavior.
+- `telephony_enhanced_8k` is opt-in. Assign it per Agent to use stateful,
+  band-limited 16/24 kHz-to-8 kHz downsampling while preserving the existing
+  8 kHz Asterisk wire contract.
+- Hosted-provider and modular-pipeline output settings inherit the selected
+  per-call Audio Profile unless an explicit narrower override is configured.
+- Roll back the audio change by assigning the Agent back to
+  `telephony_ulaw_8k`; no database or transport migration is required.
+
+Review Agents after the upgrade and do not assume the enhanced profile was
+assigned automatically.
 
 The VICIdial integration now uses VICIdial's native Remote Agent lifecycle. VICIdial originates
 and owns customer calls; AAVA supplies the mapped AI conversation and requests terminal actions
@@ -51,8 +70,8 @@ v7.4 removes Contexts as a product and runtime model. Agents in
 
 ### Before upgrading
 
-1. Follow the [v7.4 upgrade procedure](INSTALLATION.md#upgrade-to-v740-existing-checkout),
-   including the documented v7.3.0–v7.3.3 updater recovery path.
+1. Follow the [current upgrade procedure](INSTALLATION.md#upgrade-to-v750-existing-checkout),
+   including the documented older-installation updater recovery path.
 2. Back up `data/operator/agents.db`, `data/call_history.db`, `.env`, operator YAML,
    `config/users.json`, and any legacy `config/contexts/` files.
 3. Record intentional tracked source changes and choose `retain`, `overwrite`, or
