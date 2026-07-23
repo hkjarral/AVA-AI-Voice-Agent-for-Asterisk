@@ -952,7 +952,7 @@ async def _recreate_via_compose(service_name: str, health_check: bool = True):
                 "Failed to remove recreate rollback tag",
                 extra={
                     "service": safe_container_name,
-                    "rollback_ref": rollback_ref,
+                    "rollback_ref": _sanitize_for_log(rollback_ref),
                 },
                 exc_info=True,
             )
