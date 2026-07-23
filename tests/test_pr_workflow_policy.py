@@ -88,6 +88,7 @@ def test_targeted_codex_review_pins_model_and_tooling() -> None:
     steps = {step["id"]: step for step in review_job["steps"] if "id" in step}
 
     assert workflow["permissions"]["pull-requests"] == "write"
+    assert "issues" not in workflow["permissions"]
     assert steps["openai"]["env"]["CODEX_REVIEW_MODEL"] == "${{ vars.CODEX_REVIEW_MODEL }}"
 
     codex_step = steps["run_codex"]

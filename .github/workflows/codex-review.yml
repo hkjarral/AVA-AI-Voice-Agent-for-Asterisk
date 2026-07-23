@@ -12,7 +12,7 @@ on:
 
 permissions:
   contents: read
-  issues: write
+  # PR conversation comments returned 403 with issues: write alone.
   pull-requests: write
 
 concurrency:
