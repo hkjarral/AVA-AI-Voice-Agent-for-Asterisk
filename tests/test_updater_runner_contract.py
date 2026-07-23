@@ -187,6 +187,23 @@ def test_updater_image_embeds_the_requested_cli_version() -> None:
     assert "AAVA_CLI_VERSION=${{ steps.meta.outputs.version }}" in release_workflow
 
 
+def test_release_admin_ui_uses_repo_root_and_manual_runs_checkout_the_tag() -> None:
+    release_workflow = (ROOT / ".github" / "workflows" / "release-images.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "release_ref:" in release_workflow
+    assert (
+        "ref: ${{ github.event_name == 'workflow_dispatch' "
+        "&& inputs.release_ref || github.ref }}" in release_workflow
+    )
+    assert (
+        "RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' "
+        "&& inputs.release_ref || github.ref_name }}" in release_workflow
+    )
+    assert "context: .\n          file: ./admin_ui/Dockerfile" in release_workflow
+
+
 def test_nested_runtime_databases_are_ignored() -> None:
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
 

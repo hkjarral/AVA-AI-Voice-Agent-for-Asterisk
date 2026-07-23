@@ -2,6 +2,11 @@ name: Release Images (GHCR)
 
 on:
   workflow_dispatch:
+    inputs:
+      release_ref:
+        description: "Existing release tag to publish (for example v7.5.1)"
+        required: true
+        type: string
   push:
     tags:
       - "v*.*.*"
@@ -19,6 +24,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_ref || github.ref }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -32,10 +38,17 @@ jobs:
 
       - name: Compute tags
         id: meta
+        env:
+          RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.release_ref || github.ref_name }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${RELEASE_REF}"
           OWNER="${GITHUB_REPOSITORY_OWNER,,}"
           VERSION="${TAG#v}"
+
+          if [[ ! "${TAG}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: ${TAG}" >&2
+            exit 1
+          fi
 
           # Only publish :latest for clean GA semver tags (no "-rc", "-beta", etc.).
           PUBLISH_LATEST=false
@@ -112,7 +125,7 @@ jobs:
       - name: Build and push admin-ui
         uses: docker/build-push-action@v7
         with:
-          context: ./admin_ui
+          context: .
           file: ./admin_ui/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.admin_ui_tags }}
