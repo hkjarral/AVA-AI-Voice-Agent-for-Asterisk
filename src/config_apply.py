@@ -74,7 +74,7 @@ def classify_config_change(old_config: Any, new_config: Any) -> ConfigApplyDecis
     changed = frozenset(
         key
         for key in set(old) | set(new)
-        if old.get(key) != new.get(key)
+        if key not in old or key not in new or old[key] != new[key]
     )
     apply_required = bool(changed)
     restart_required = apply_required and not changed.issubset(

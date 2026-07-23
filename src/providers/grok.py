@@ -2126,10 +2126,14 @@ class GrokProvider(AIProviderInterface):
             return
 
         if event_type == "response.output_text.delta":
-            delta = event.get("delta") or {}
-            text = delta.get("text")
+            delta = event.get("delta")
+            text = delta.get("text") if isinstance(delta, dict) else delta
             if text:
                 await self._emit_assistant_transcript(event, text, is_final=False)
+            return
+
+        if event_type == "response.output_text.done":
+            await self._emit_assistant_transcript(event, "", is_final=True)
             return
 
         # xAI's native text-delta event name (vs OpenAI's response.output_text.delta).
@@ -2600,9 +2604,10 @@ class GrokProvider(AIProviderInterface):
         response = event.get("response") or {}
         response_id = event.get("response_id") or response.get("id") or self._current_response_id
         item_id = event.get("item_id")
+        response_key = response_id or "unscoped"
         if item_id:
-            return f"{response_id or 'response'}:{item_id}"
-        return str(response_id or "unscoped")
+            return f"{response_key}:{item_id}"
+        return str(response_key)
 
     async def _emit_assistant_transcript(
         self,
@@ -2631,10 +2636,16 @@ class GrokProvider(AIProviderInterface):
                 for candidate in self._assistant_transcript_buffers
                 if candidate.startswith(prefix)
             )
-        complete = "".join(
+        parts = [
             self._assistant_transcript_buffers.pop(candidate, "")
             for candidate in dict.fromkeys(keys)
-        )
+        ]
+        parts = [part for part in parts if part]
+        complete = ""
+        for part in parts:
+            if complete and not complete[-1].isspace() and not part[0].isspace():
+                complete += " "
+            complete += part
         if not complete:
             return
         await self._track_conversation("assistant", complete)

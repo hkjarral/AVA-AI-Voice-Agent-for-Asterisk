@@ -56,6 +56,60 @@ async def test_compose_failure_keeps_still_running_service_available():
 
 
 @pytest.mark.asyncio
+async def test_digest_only_previous_image_aborts_before_compose():
+    previous = MagicMock()
+    previous.status = "running"
+    previous.attrs = {"Config": {}}
+    previous.image.id = "sha256:abcdef123456"
+    client = MagicMock()
+
+    with patch.object(
+        system, "_project_host_root_from_admin_ui_container", return_value="/srv/aava"
+    ), patch.object(system, "_current_project_head_sha", return_value="abc123"), patch.object(
+        system, "_ensure_updater_image_for_ref", return_value="updater:test"
+    ), patch.object(system.docker, "from_env", return_value=client), patch.object(
+        system, "_find_compose_service_container", return_value=previous
+    ), patch.object(system, "_run_updater_ephemeral") as run_updater:
+        with pytest.raises(HTTPException) as exc:
+            await system._recreate_via_compose("ai_engine", health_check=False)
+
+    assert "no restorable tag" in exc.value.detail
+    previous.image.tag.assert_not_called()
+    run_updater.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rollback_tag_cleanup_failure_does_not_hide_success():
+    previous = MagicMock()
+    previous.status = "running"
+    previous.id = "old-container"
+    previous.attrs = {"Config": {"Image": "aava-ai-engine:latest"}}
+    previous.image.tag.return_value = True
+    replacement = MagicMock()
+    replacement.status = "running"
+    replacement.id = "new-container"
+    client = MagicMock()
+    client.images.remove.side_effect = RuntimeError("cleanup failed")
+
+    with patch.object(
+        system, "_project_host_root_from_admin_ui_container", return_value="/srv/aava"
+    ), patch.object(system, "_current_project_head_sha", return_value="abc123"), patch.object(
+        system, "_ensure_updater_image_for_ref", return_value="updater:test"
+    ), patch.object(system.docker, "from_env", return_value=client), patch.object(
+        system,
+        "_find_compose_service_container",
+        side_effect=[previous, replacement, replacement],
+    ), patch.object(
+        system, "_run_updater_ephemeral", return_value=(0, "service recreated")
+    ):
+        result = await system._recreate_via_compose("ai_engine", health_check=False)
+
+    assert result["status"] == "success"
+    assert result["service_available"] is True
+    client.images.remove.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_compose_failure_restores_previous_image_when_service_disappears(
     monkeypatch, tmp_path
 ):

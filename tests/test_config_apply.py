@@ -32,3 +32,12 @@ def test_provider_change_fails_closed_to_restart():
     assert decision.restart_required is True
     assert decision.recommended_apply_method == "restart"
     assert decision.apply_plan()[0]["endpoint"].endswith("/restart")
+
+
+def test_missing_key_differs_from_explicit_none():
+    decision = classify_config_change({"tools": None}, {})
+
+    assert decision.changed_keys == frozenset({"tools"})
+    assert decision.apply_required is True
+    assert decision.restart_required is False
+    assert decision.recommended_apply_method == "hot_reload"

@@ -904,12 +904,26 @@ async def _recreate_via_compose(service_name: str, health_check: bool = True):
         previous_environment = list(
             ((getattr(previous, "attrs", None) or {}).get("Config", {}).get("Env") or [])
         )
-        if previous_running and getattr(previous, "image", None) is not None:
+        if previous_running:
+            previous_image = getattr(previous, "image", None)
+            if (
+                previous_image is None
+                or not previous_image_ref
+                or previous_image_ref.startswith("sha256:")
+                or "@" in previous_image_ref
+            ):
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "Cannot safely recreate the service because its current "
+                        "image has no restorable tag; service was not changed"
+                    ),
+                )
             rollback_ref = (
                 f"aava-recreate-rollback/{service_name}:"
                 f"{uuid.uuid4().hex[:12]}"
             )
-            if not previous.image.tag(rollback_ref):
+            if not previous_image.tag(rollback_ref):
                 raise HTTPException(
                     status_code=500,
                     detail="Failed to create a rollback image tag; service was not changed",
@@ -936,8 +950,10 @@ async def _recreate_via_compose(service_name: str, health_check: bool = True):
         except Exception:
             logger.debug(
                 "Failed to remove recreate rollback tag",
-                service=safe_container_name,
-                rollback_ref=rollback_ref,
+                extra={
+                    "service": safe_container_name,
+                    "rollback_ref": rollback_ref,
+                },
                 exc_info=True,
             )
 
@@ -945,7 +961,7 @@ async def _recreate_via_compose(service_name: str, health_check: bool = True):
         if not rollback_ref or not previous_image_ref:
             return
         image = client.images.get(rollback_ref)
-        if "@" in previous_image_ref:
+        if previous_image_ref.startswith("sha256:") or "@" in previous_image_ref:
             raise RuntimeError("Cannot restore a digest-only image reference")
         slash = previous_image_ref.rfind("/")
         colon = previous_image_ref.rfind(":")
