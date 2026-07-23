@@ -10,6 +10,7 @@ import logging
 import re
 import subprocess
 import threading
+import tempfile
 import time
 import uuid
 import yaml
@@ -978,14 +979,16 @@ async def _recreate_via_compose(service_name: str, health_check: bool = True):
                     os.chmod(recovery_dir, 0o700)
                 except OSError:
                     pass
-                recovery_override_path = os.path.join(
-                    recovery_dir, f"{service_name}-{uuid.uuid4().hex}.yml"
+                # Do not include request-derived service data in the path. The
+                # OS creates the file atomically under the fixed recovery
+                # directory, and the open descriptor is restricted before any
+                # captured environment is written.
+                fd, recovery_override_path = tempfile.mkstemp(
+                    prefix="recreate-",
+                    suffix=".yml",
+                    dir=recovery_dir,
                 )
-                fd = os.open(
-                    recovery_override_path,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                    0o600,
-                )
+                os.fchmod(fd, 0o600)
                 with os.fdopen(fd, "w", encoding="utf-8") as recovery_file:
                     yaml.safe_dump(
                         {
