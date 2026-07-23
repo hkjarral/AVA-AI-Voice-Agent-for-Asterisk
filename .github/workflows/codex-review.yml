@@ -97,9 +97,16 @@ jobs:
 
           models_file="$(mktemp)"
           trap 'rm -f "${models_file}"' EXIT
-          status="$(curl --silent --show-error --output "${models_file}" --write-out '%{http_code}' \
+          if ! status="$(curl --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 30 \
+            --output "${models_file}" \
+            --write-out '%{http_code}' \
             --header "Authorization: Bearer ${OPENAI_API_KEY}" \
-            "https://api.openai.com/v1/models")"
+            "https://api.openai.com/v1/models")"; then
+            echo "Unable to list models for the OPENAI_API_KEY project." >&2
+            exit 1
+          fi
           if [ "${status}" != "200" ]; then
             echo "Unable to list models for the OPENAI_API_KEY project (HTTP ${status})." >&2
             exit 1

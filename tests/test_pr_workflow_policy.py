@@ -88,10 +88,12 @@ def test_targeted_codex_review_pins_model_and_tooling() -> None:
     steps = {step["id"]: step for step in review_job["steps"] if "id" in step}
 
     assert workflow["permissions"]["pull-requests"] == "write"
-    assert "vars.CODEX_REVIEW_MODEL" in steps["openai"]["env"]["CODEX_REVIEW_MODEL"]
+    assert steps["openai"]["env"]["CODEX_REVIEW_MODEL"] == "${{ vars.CODEX_REVIEW_MODEL }}"
 
     codex_step = steps["run_codex"]
-    assert codex_step["uses"].startswith("openai/codex-action@")
-    assert not codex_step["uses"].endswith("@v1")
+    assert (
+        codex_step["uses"]
+        == "openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56"
+    )
     assert codex_step["with"]["model"] == "${{ steps.openai.outputs.model }}"
     assert codex_step["with"]["codex-version"] == "0.145.0"
