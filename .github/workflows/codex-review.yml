@@ -13,7 +13,7 @@ on:
 permissions:
   contents: read
   issues: write
-  pull-requests: read
+  pull-requests: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr_number }}
@@ -77,21 +77,41 @@ jobs:
             "${BASE_REF}" \
             "+refs/pull/${PR_NUMBER}/head"
 
-      - name: Validate OpenAI API key
+      - name: Validate OpenAI API key and model access
+        id: openai
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_REVIEW_MODEL: ${{ vars.CODEX_REVIEW_MODEL }}
         run: |
           set -euo pipefail
+
           if [ -z "${OPENAI_API_KEY}" ]; then
             echo "OPENAI_API_KEY repository secret is required for Codex Targeted Review." >&2
             exit 1
           fi
 
+          if [ -z "${CODEX_REVIEW_MODEL}" ]; then
+            echo "CODEX_REVIEW_MODEL repository variable is required for Codex Targeted Review." >&2
+            exit 1
+          fi
+
+          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${OPENAI_API_KEY}" \
+            "https://api.openai.com/v1/models/${CODEX_REVIEW_MODEL}")"
+          if [ "${status}" != "200" ]; then
+            echo "The configured Codex review model '${CODEX_REVIEW_MODEL}' is not available to the OPENAI_API_KEY project (HTTP ${status})." >&2
+            exit 1
+          fi
+
+          echo "model=${CODEX_REVIEW_MODEL}" >> "${GITHUB_OUTPUT}"
+
       - name: Run targeted Codex review
         id: run_codex
-        uses: openai/codex-action@v1
+        uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56 # v1 observed 2026-07-22
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          model: ${{ steps.openai.outputs.model }}
+          codex-version: 0.145.0
           sandbox: read-only
           effort: medium
           prompt: |

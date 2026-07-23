@@ -30,6 +30,8 @@ Path-scoped security and image workflows continue to run when their files change
 - `@coderabbitai full review` — request a fresh CodeRabbit review of the frozen final diff.
 - `@coderabbitai pause` / `@coderabbitai resume` — override automatic CodeRabbit review behavior when needed.
 
+The optional targeted Codex workflow requires the `OPENAI_API_KEY` repository secret and a `CODEX_REVIEW_MODEL` repository variable naming a model available to that key's API project. The action and CLI versions are pinned so model defaults cannot change between review runs.
+
 CodeRabbit and Codex reviews are advisory. The protected branch requires the consolidated CI gate, CodeQL, a pull request, and resolved conversations. Maintainers retain an emergency administrator bypass; force pushes and branch deletion remain blocked.
 
 ## Maintainer checklist

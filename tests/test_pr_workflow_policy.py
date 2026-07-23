@@ -80,3 +80,18 @@ def test_coderabbit_reviews_one_draft_checkpoint_then_pauses() -> None:
     assert auto_review["drafts"] == "true"
     assert auto_review["auto_incremental_review"] == "true"
     assert auto_review["auto_pause_after_reviewed_commits"] == "1"
+
+
+def test_targeted_codex_review_pins_model_and_tooling() -> None:
+    workflow = _load_yaml(ROOT / ".github" / "workflows" / "codex-review.yml")
+    review_job = workflow["jobs"]["review"]
+    steps = {step["id"]: step for step in review_job["steps"] if "id" in step}
+
+    assert workflow["permissions"]["pull-requests"] == "write"
+    assert "vars.CODEX_REVIEW_MODEL" in steps["openai"]["env"]["CODEX_REVIEW_MODEL"]
+
+    codex_step = steps["run_codex"]
+    assert codex_step["uses"].startswith("openai/codex-action@")
+    assert not codex_step["uses"].endswith("@v1")
+    assert codex_step["with"]["model"] == "${{ steps.openai.outputs.model }}"
+    assert codex_step["with"]["codex-version"] == "0.145.0"
