@@ -8,7 +8,7 @@ hash mismatch from being presented as an unconditional restart requirement.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, FrozenSet, Mapping
+from typing import Any, Dict, FrozenSet, Mapping, Optional
 
 
 HOT_RELOADABLE_ROOT_KEYS: FrozenSet[str] = frozenset(
@@ -28,18 +28,29 @@ HOT_RELOADABLE_ROOT_KEYS: FrozenSet[str] = frozenset(
     }
 )
 
+_INVALID_CONFIG_CHANGE_KEY = "__invalid_config__"
 
-def _as_mapping(config: Any) -> Mapping[str, Any]:
+
+def _as_mapping(config: Any) -> Optional[Mapping[str, Any]]:
+    """Return a mapping representation, or ``None`` when conversion is unsafe."""
     if isinstance(config, Mapping):
         return config
     model_dump = getattr(config, "model_dump", None)
     if callable(model_dump):
-        return model_dump()
+        try:
+            dumped = model_dump()
+        except Exception:
+            return None
+        return dumped if isinstance(dumped, Mapping) else None
     legacy_dict = getattr(config, "dict", None)
     if callable(legacy_dict):
-        return legacy_dict()
+        try:
+            dumped = legacy_dict()
+        except Exception:
+            return None
+        return dumped if isinstance(dumped, Mapping) else None
     raw = getattr(config, "__dict__", None)
-    return raw if isinstance(raw, Mapping) else {}
+    return raw if isinstance(raw, Mapping) else None
 
 
 @dataclass(frozen=True)
@@ -71,6 +82,13 @@ def classify_config_change(old_config: Any, new_config: Any) -> ConfigApplyDecis
 
     old = _as_mapping(old_config)
     new = _as_mapping(new_config)
+    if old is None or new is None:
+        return ConfigApplyDecision(
+            changed_keys=frozenset({_INVALID_CONFIG_CHANGE_KEY}),
+            apply_required=True,
+            restart_required=True,
+            recommended_apply_method="restart",
+        )
     changed = frozenset(
         key
         for key in set(old) | set(new)

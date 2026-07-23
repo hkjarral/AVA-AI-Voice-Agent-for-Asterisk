@@ -41,3 +41,24 @@ def test_missing_key_differs_from_explicit_none():
     assert decision.apply_required is True
     assert decision.restart_required is False
     assert decision.recommended_apply_method == "hot_reload"
+
+
+def test_invalid_config_input_fails_closed_to_restart():
+    decision = classify_config_change({"tools": {}}, None)
+
+    assert decision.apply_required is True
+    assert decision.restart_required is True
+    assert decision.recommended_apply_method == "restart"
+    assert decision.apply_plan()[0]["endpoint"].endswith("/restart")
+
+
+def test_non_mapping_serializer_result_fails_closed_to_restart():
+    class InvalidConfig:
+        def model_dump(self):
+            return []
+
+    decision = classify_config_change({"tools": {}}, InvalidConfig())
+
+    assert decision.apply_required is True
+    assert decision.restart_required is True
+    assert decision.recommended_apply_method == "restart"

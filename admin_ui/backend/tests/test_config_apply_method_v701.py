@@ -22,6 +22,11 @@ def _patch_io(monkeypatch, old_merged, new_parsed):
     monkeypatch.setattr(config_api, "_compute_local_override", lambda base, parsed: parsed)
     monkeypatch.setattr(config_api, "_write_local_config", lambda content: None)
 
+    async def _no_engine_state():
+        return None
+
+    monkeypatch.setattr(config_api, "_fetch_engine_config_state", _no_engine_state)
+
 
 @pytest.mark.asyncio
 async def test_streaming_only_save_recommends_restart(monkeypatch):
@@ -61,3 +66,26 @@ async def test_streaming_plus_vad_save_recommends_restart(monkeypatch):
     _patch_io(monkeypatch, old, new)
     resp = await update_yaml_config(ConfigUpdate(content="x"))
     assert resp["recommended_apply_method"] == "restart"
+
+
+@pytest.mark.asyncio
+async def test_pending_engine_restart_overrides_hot_reload_save(monkeypatch):
+    old = {"tools": {}}
+    new = {"tools": {"lookup": {"kind": "generic_http_lookup"}}}
+    _patch_io(monkeypatch, old, new)
+
+    async def _pending_restart():
+        return {"restart_required": True}
+
+    monkeypatch.setattr(config_api, "_fetch_engine_config_state", _pending_restart)
+
+    resp = await update_yaml_config(ConfigUpdate(content="x"))
+
+    assert resp["apply_required"] is True
+    assert resp["restart_required"] is True
+    assert resp["recommended_apply_method"] == "restart"
+    assert resp["apply_plan"] == [{
+        "service": "ai_engine",
+        "method": "restart",
+        "endpoint": "/api/system/containers/ai_engine/restart",
+    }]

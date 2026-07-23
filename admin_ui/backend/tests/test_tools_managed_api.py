@@ -18,7 +18,7 @@ def client(monkeypatch):
     }
     monkeypatch.setattr(tools_api, "_load_cfg", lambda: copy.deepcopy(state["cfg"]))
 
-    def fake_persist(cfg):
+    async def fake_persist(cfg):
         state["cfg"] = copy.deepcopy(cfg)
         return {
             "status": "success",
@@ -568,6 +568,11 @@ def email_client(monkeypatch):
         state["cfg"] = yaml.safe_load(content) or {}
 
     monkeypatch.setattr(config_api, "_write_local_config", _record_write)
+
+    async def _no_engine_state():
+        return None
+
+    monkeypatch.setattr(config_api, "_fetch_engine_config_state", _no_engine_state)
 
     app = FastAPI()
     app.include_router(tools_api.router, prefix="/api/tools")

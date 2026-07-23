@@ -809,6 +809,43 @@ def persist_config_content(content: str) -> dict:
     }
 
 
+async def _fetch_engine_config_state() -> Optional[Dict[str, Any]]:
+    """Read engine-owned apply state without making config saves depend on it."""
+    import httpx
+
+    engine_url = os.getenv("AI_ENGINE_HEALTH_URL", "http://localhost:15000")
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(engine_url.rstrip("/") + "/config/state")
+        if response.status_code != 200:
+            return None
+        payload = response.json()
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        logger.debug("Engine config state unavailable after config save", exc_info=True)
+        return None
+
+
+async def reconcile_apply_result_with_engine_state(result: dict) -> dict:
+    """Overlay a pre-existing deferred restart onto save-time diff metadata."""
+    state = await _fetch_engine_config_state()
+    if not state or state.get("restart_required") is not True:
+        return result
+
+    reconciled = dict(result)
+    reconciled["restart_required"] = True
+    reconciled["recommended_apply_method"] = "restart"
+    reconciled["apply_plan"] = [{
+        "service": "ai_engine",
+        "method": "restart",
+        "endpoint": "/api/system/containers/ai_engine/restart",
+    }]
+    reconciled["message"] = (
+        "Configuration saved. Restart AI Engine to finish applying pending changes."
+    )
+    return reconciled
+
+
 @router.get("")
 @router.get("/")
 async def get_config():
@@ -821,7 +858,8 @@ async def update_yaml_config(update: ConfigUpdate):
         # Persist via the shared helper (also used by the structured tools CRUD
         # API). MED-E1 email validation now lives inside persist_config_content
         # so every persistence path enforces it (not just this endpoint).
-        return persist_config_content(update.content)
+        result = persist_config_content(update.content)
+        return await reconcile_apply_result_with_engine_state(result)
     except HTTPException:
         raise
     except Exception as e:

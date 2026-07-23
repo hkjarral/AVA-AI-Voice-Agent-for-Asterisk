@@ -1282,9 +1282,10 @@ def _load_cfg() -> Dict[str, Any]:
     return cfg
 
 
-def _persist_cfg(cfg: Dict[str, Any]) -> dict:
+async def _persist_cfg(cfg: Dict[str, Any]) -> dict:
     content = yaml.dump(cfg, default_flow_style=False, sort_keys=False)
-    return config_api.persist_config_content(content)
+    result = config_api.persist_config_content(content)
+    return await config_api.reconcile_apply_result_with_engine_state(result)
 
 
 def _apply_metadata(result: Optional[dict]) -> Dict[str, Any]:
@@ -1361,7 +1362,7 @@ async def create_managed_tool(body: ManagedToolWrite):
         raise HTTPException(status_code=500, detail=f"Config '{block}' block is not a mapping")
     section[name] = doc
 
-    apply_result = _persist_cfg(cfg)
+    apply_result = await _persist_cfg(cfg)
     return _to_out(block, name, doc, apply_result)
 
 
@@ -1393,7 +1394,7 @@ async def replace_managed_tool(name: str, body: ManagedToolWrite):
         raise HTTPException(status_code=500, detail=f"Config '{target_block}' block is not a mapping")
     section[name] = doc
 
-    apply_result = _persist_cfg(cfg)
+    apply_result = await _persist_cfg(cfg)
     return _to_out(target_block, name, doc, apply_result)
 
 
@@ -1441,7 +1442,7 @@ async def patch_managed_tool(name: str, body: ManagedToolPatch):
         raise HTTPException(status_code=500, detail=f"Config '{target_block}' block is not a mapping")
     section[name] = merged
 
-    apply_result = _persist_cfg(cfg)
+    apply_result = await _persist_cfg(cfg)
     return _to_out(target_block, name, merged, apply_result)
 
 
@@ -1453,7 +1454,7 @@ async def delete_managed_tool(name: str):
     if block is None:
         raise HTTPException(status_code=404, detail=f"Tool '{name}' not found")
     _remove_tool_everywhere(cfg, name)
-    apply_result = _persist_cfg(cfg)
+    apply_result = await _persist_cfg(cfg)
     return ManagedToolDeleteOut(name=name, **_apply_metadata(apply_result))
 
 
@@ -1592,7 +1593,7 @@ async def patch_builtin_tool(name: str, body: Dict[str, Any]):
         raise HTTPException(status_code=500, detail="Config 'tools' block is not a mapping")
     current = tools.get(name)
     tools[name] = _deep_merge(current if isinstance(current, dict) else {}, body)
-    _persist_cfg(cfg)
+    await _persist_cfg(cfg)
     return _builtin_to_out(name, cfg)
 
 
@@ -1607,7 +1608,7 @@ async def replace_builtin_tool(name: str, body: Dict[str, Any]):
     if not isinstance(tools, dict):
         raise HTTPException(status_code=500, detail="Config 'tools' block is not a mapping")
     tools[name] = dict(body)
-    _persist_cfg(cfg)
+    await _persist_cfg(cfg)
     return _builtin_to_out(name, cfg)
 
 
@@ -1686,7 +1687,7 @@ async def patch_tools_settings(body: Dict[str, Any]):
                 raise HTTPException(status_code=422, detail=f"'{k}' looks like a managed tool (has 'kind'); use POST/PUT /api/tools/managed/{k}")
         cfg["tools"] = _deep_merge(tools, patch)
 
-    _persist_cfg(cfg)
+    await _persist_cfg(cfg)
     delay = cfg.get(_FAREWELL_DELAY_KEY)
     return ToolsSettingsOut(
         farewell_hangup_delay_sec=delay if isinstance(delay, (int, float)) else None,
