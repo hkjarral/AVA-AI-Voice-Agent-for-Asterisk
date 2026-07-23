@@ -80,3 +80,25 @@ def test_coderabbit_reviews_one_draft_checkpoint_then_pauses() -> None:
     assert auto_review["drafts"] == "true"
     assert auto_review["auto_incremental_review"] == "true"
     assert auto_review["auto_pause_after_reviewed_commits"] == "1"
+
+
+def test_targeted_codex_review_pins_model_and_tooling() -> None:
+    workflow = _load_yaml(ROOT / ".github" / "workflows" / "codex-review.yml")
+    review_job = workflow["jobs"]["review"]
+    steps = {step["id"]: step for step in review_job["steps"] if "id" in step}
+
+    assert workflow["permissions"]["pull-requests"] == "write"
+    assert "issues" not in workflow["permissions"]
+    assert steps["openai"]["env"]["CODEX_REVIEW_MODEL"] == "${{ vars.CODEX_REVIEW_MODEL }}"
+    preflight = steps["openai"]["run"]
+    assert 'if [ -z "${CODEX_REVIEW_MODEL}" ]; then' in preflight
+    assert '"https://api.openai.com/v1/models"' in preflight
+    assert ".data | any(.id == $model)" in preflight
+
+    codex_step = steps["run_codex"]
+    assert (
+        codex_step["uses"]
+        == "openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56"
+    )
+    assert codex_step["with"]["model"] == "${{ steps.openai.outputs.model }}"
+    assert codex_step["with"]["codex-version"] == "0.145.0"
