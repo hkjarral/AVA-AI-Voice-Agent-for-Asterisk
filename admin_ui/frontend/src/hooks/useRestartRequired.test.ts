@@ -67,6 +67,7 @@ describe('useRestartRequired', () => {
         expect(result.current.applyRequired).toBe(true);
         expect(result.current.restartRequired).toBe(false);
         expect(result.current.recommendedApplyMethod).toBe('hot_reload');
+        expect(result.current.stateStale).toBe(false);
 
         unmount();
     });
@@ -88,13 +89,34 @@ describe('useRestartRequired', () => {
         unmount();
     });
 
-    it('treats request errors as no restart required', async () => {
+    it('keeps conservative defaults but reports stale state on an initial error', async () => {
         mockedGet.mockRejectedValue(new Error('network down'));
 
         const { result, unmount } = renderHook(() => useRestartRequired());
 
         await waitFor(() => expect(result.current.loading).toBe(false));
         expect(result.current.restartRequired).toBe(false);
+        expect(result.current.applyRequired).toBe(false);
+        expect(result.current.stateStale).toBe(true);
+
+        unmount();
+    });
+
+    it('preserves the last-known apply action when a later poll fails', async () => {
+        mockedGet.mockResolvedValueOnce(hotReloadState);
+
+        const { result, unmount } = renderHook(() => useRestartRequired());
+
+        await waitFor(() => expect(result.current.loading).toBe(false));
+        mockedGet.mockRejectedValueOnce(new Error('temporary outage'));
+        await act(async () => {
+            await result.current.refetch();
+        });
+
+        expect(result.current.applyRequired).toBe(true);
+        expect(result.current.restartRequired).toBe(false);
+        expect(result.current.recommendedApplyMethod).toBe('hot_reload');
+        expect(result.current.stateStale).toBe(true);
 
         unmount();
     });

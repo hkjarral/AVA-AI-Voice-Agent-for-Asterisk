@@ -99,6 +99,24 @@ def test_invalid_disk_config_is_safe(monkeypatch):
     assert state["apply_required"] is False
 
 
+def test_invalid_disk_config_preserves_deferred_restart(monkeypatch):
+    engine = _make_engine_from_disk()
+    engine._restart_required_after_reload = True
+
+    def _raise(*a, **k):
+        raise ValueError("temporarily invalid YAML")
+
+    monkeypatch.setattr(engine_mod, "load_config", _raise)
+
+    state = engine._compute_config_state()
+
+    assert state["disk_config_valid"] is False
+    assert state["apply_required"] is False
+    assert state["restart_required"] is True
+    assert state["recommended_apply_method"] == "restart"
+    assert state["apply_plan"] == []
+
+
 def test_hot_reloadable_disk_change_reports_apply_not_restart(monkeypatch):
     engine = _make_engine_from_disk()
     mutated = load_config(_CONFIG_PATH)

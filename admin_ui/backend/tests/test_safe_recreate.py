@@ -63,7 +63,11 @@ async def test_compose_failure_restores_previous_image_when_service_disappears(
     previous = MagicMock()
     previous.status = "running"
     previous.attrs = {"Config": {"Image": "asterisk-ai-voice-agent-ai-engine:latest"}}
-    previous.attrs["Config"]["Env"] = ["OPENAI_API_KEY=old-secret", "TZ=UTC"]
+    previous.attrs["Config"]["Env"] = [
+        "OPENAI_API_KEY=old-secret",
+        "TOKEN=ab$cd",
+        "TZ=UTC",
+    ]
     previous.image.tag.return_value = True
     recovered = MagicMock()
     recovered.status = "running"
@@ -71,6 +75,26 @@ async def test_compose_failure_restores_previous_image_when_service_disappears(
     rollback_image.tag.return_value = True
     client = MagicMock()
     client.images.get.return_value = rollback_image
+
+    captured_recovery_environment = []
+    updater_calls = 0
+
+    def run_updater(*args, **kwargs):
+        nonlocal updater_calls
+        updater_calls += 1
+        if updater_calls == 1:
+            return 1, "replacement failed after stop"
+        override_paths = list(
+            (tmp_path / ".agent" / "recreate-recovery").glob("*.yml")
+        )
+        assert len(override_paths) == 1
+        override = system.yaml.safe_load(
+            override_paths[0].read_text(encoding="utf-8")
+        )
+        captured_recovery_environment.extend(
+            override["services"]["ai_engine"]["environment"]
+        )
+        return 0, "previous image restored"
 
     with patch.object(
         system, "_project_host_root_from_admin_ui_container", return_value="/srv/aava"
@@ -83,7 +107,7 @@ async def test_compose_failure_restores_previous_image_when_service_disappears(
     ), patch.object(
         system,
         "_run_updater_ephemeral",
-        side_effect=[(1, "replacement failed after stop"), (0, "previous image restored")],
+        side_effect=run_updater,
     ) as run_updater:
         with pytest.raises(HTTPException) as exc:
             await system._recreate_via_compose("ai_engine", health_check=False)
@@ -94,6 +118,9 @@ async def test_compose_failure_restores_previous_image_when_service_disappears(
     rollback_image.tag.assert_called_once_with(
         "asterisk-ai-voice-agent-ai-engine", tag="latest", force=True
     )
+    # Compose reduces $$ to a literal $, so the restored container receives the
+    # original TOKEN=ab$cd rather than interpolating $cd from the host.
+    assert "TOKEN=ab$$cd" in captured_recovery_environment
     assert list((tmp_path / ".agent" / "recreate-recovery").glob("*.yml")) == []
     previous.stop.assert_not_called()
     previous.remove.assert_not_called()

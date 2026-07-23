@@ -97,6 +97,8 @@ async def test_reload_does_not_misclassify_pipeline_adapters_as_new_providers():
     }
     old_config.providers = adapters
     new_config.providers = adapters
+    old_config.dict()["providers"] = adapters
+    new_config.dict()["providers"] = adapters
     engine.config = old_config
     engine._build_tool_generation = lambda _config: new
 

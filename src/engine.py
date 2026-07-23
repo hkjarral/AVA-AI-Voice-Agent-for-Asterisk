@@ -16746,12 +16746,17 @@ class Engine:
             disk_config = load_config()
         except Exception as e:
             logger.warning("Failed to load disk config for state check", error=str(e))
+            deferred_restart = bool(
+                getattr(self, "_restart_required_after_reload", False)
+            )
             return {
                 "running_config_hash": running_hash,
                 "disk_config_hash": None,
                 "apply_required": False,
-                "restart_required": False,
-                "recommended_apply_method": "none",
+                "restart_required": deferred_restart,
+                "recommended_apply_method": (
+                    "restart" if deferred_restart else "none"
+                ),
                 "apply_plan": [],
                 "disk_config_valid": False,
             }

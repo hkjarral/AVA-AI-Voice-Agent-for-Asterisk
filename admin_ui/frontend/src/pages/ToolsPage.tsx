@@ -42,7 +42,7 @@ const ToolsPage = () => {
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [saving, setSaving] = useState(false);
     const [applyStatus, setApplyStatus] = useState<string | null>(null);
-    const { restartRequired, applyRequired, recommendedApplyMethod, refetch } = useRestartRequired();
+    const { restartRequired, applyRequired, recommendedApplyMethod, stateStale, refetch } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
     const [activePhase, setActivePhase] = useState<ToolPhase>('in_call');
     const [toolCatalog, setToolCatalog] = useState<ToolDef[]>([]);
@@ -338,9 +338,12 @@ const ToolsPage = () => {
                 <div className="bg-orange-500/15 border-orange-500/30 border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
                     <div className="flex items-center">
                         <AlertCircle className="w-5 h-5 mr-2" />
-                        {recommendedApplyMethod === 'hot_reload'
-                            ? 'Saved tool changes are ready to apply to new calls. Active calls will remain unchanged.'
-                            : 'Some saved configuration changes require an AI Engine restart to take effect.'}
+                        <span>
+                            {recommendedApplyMethod === 'hot_reload'
+                                ? 'Saved tool changes are ready to apply to new calls. Active calls will remain unchanged.'
+                                : 'Some saved configuration changes require an AI Engine restart to take effect.'}
+                            {stateStale && ' Status refresh failed; showing the last known action.'}
+                        </span>
                     </div>
                     <button
                         onClick={handleApplyAIEngine}
@@ -356,6 +359,12 @@ const ToolsPage = () => {
                             ? (recommendedApplyMethod === 'hot_reload' ? 'Applying...' : 'Restarting...')
                             : (recommendedApplyMethod === 'hot_reload' ? 'Apply Changes' : 'Restart AI Engine')}
                     </button>
+                </div>
+            )}
+            {stateStale && !applyRequired && !restartRequired && (
+                <div className="bg-yellow-500/10 border-yellow-500/30 border text-yellow-800 dark:text-yellow-500 p-3 rounded-md flex items-center">
+                    <AlertCircle className="w-5 h-5 mr-2" />
+                    Unable to refresh the AI Engine apply status. No pending action is known; retry after connectivity recovers.
                 </div>
             )}
             {applyStatus && (

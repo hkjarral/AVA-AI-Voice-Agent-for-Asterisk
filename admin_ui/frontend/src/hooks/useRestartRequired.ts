@@ -18,12 +18,14 @@ export function useRestartRequired(): {
     restartRequired: boolean;
     applyRequired: boolean;
     recommendedApplyMethod: 'none' | 'hot_reload' | 'restart';
+    stateStale: boolean;
     refetch: () => Promise<void>;
     loading: boolean;
 } {
     const [restartRequired, setRestartRequired] = useState(false);
     const [applyRequired, setApplyRequired] = useState(false);
     const [recommendedApplyMethod, setRecommendedApplyMethod] = useState<'none' | 'hot_reload' | 'restart'>('none');
+    const [stateStale, setStateStale] = useState(false);
     const [loading, setLoading] = useState(true);
     // Latest-response-wins: a slower older request (e.g. the 15s poll) must not
     // overwrite a newer one (e.g. a post-save/restart refetch) with stale data.
@@ -43,13 +45,13 @@ export function useRestartRequired(): {
                         ? 'restart'
                         : (res.data?.recommended_apply_method || (needsApply ? 'hot_reload' : 'none'))
                 );
+                setStateStale(false);
             }
         } catch {
-            // Never false-alarm: treat any error as "no restart required".
+            // Keep the last known action visible during transient failures.
+            // On an initial failure the conservative defaults remain false.
             if (seq === requestSeq.current) {
-                setRestartRequired(false);
-                setApplyRequired(false);
-                setRecommendedApplyMethod('none');
+                setStateStale(true);
             }
         } finally {
             if (seq === requestSeq.current) {
@@ -73,5 +75,5 @@ export function useRestartRequired(): {
         };
     }, [refetch]);
 
-    return { restartRequired, applyRequired, recommendedApplyMethod, refetch, loading };
+    return { restartRequired, applyRequired, recommendedApplyMethod, stateStale, refetch, loading };
 }

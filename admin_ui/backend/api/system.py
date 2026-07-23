@@ -153,6 +153,11 @@ def _compose_files_flags_for_recovery(
     return f"{flags} -f docker-compose.gpu.yml"
 
 
+def _escape_compose_environment(previous_environment: List[str]) -> List[str]:
+    """Preserve literal dollar signs when values pass through Compose YAML."""
+    return [entry.replace("$", "$$") for entry in previous_environment]
+
+
 def _sanitize_for_log(value: str) -> str:
     """Best-effort: prevent log injection via control characters."""
     try:
@@ -994,7 +999,9 @@ async def _recreate_via_compose(service_name: str, health_check: bool = True):
                         {
                             "services": {
                                 service_name: {
-                                    "environment": previous_environment,
+                                    "environment": _escape_compose_environment(
+                                        previous_environment
+                                    ),
                                 }
                             }
                         },
