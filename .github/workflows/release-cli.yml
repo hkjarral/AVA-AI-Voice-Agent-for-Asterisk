@@ -87,7 +87,15 @@ jobs:
             bin/SHA256SUMS
             asterisk-ai-agent-cli-${{ steps.get_version.outputs.version }}.tar.gz
           body: |
-            ## Asterisk AI Voice Agent CLI Tools v${{ steps.get_version.outputs.version }}
+            ## Asterisk AI Voice Agent ${{ steps.get_version.outputs.version }}
+
+            Application release notes and operator guidance:
+
+            - [Release changelog](https://github.com/${{ github.repository }}/blob/${{ steps.get_version.outputs.version }}/CHANGELOG.md)
+            - [Installation and upgrade guide](https://github.com/${{ github.repository }}/blob/main/docs/INSTALLATION.md)
+            - [Migration guide](https://github.com/${{ github.repository }}/blob/main/docs/MIGRATION.md)
+
+            ### Agent CLI Tools
             
             Pre-built binaries for the agent CLI tools.
             
