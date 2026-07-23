@@ -42,7 +42,7 @@ const ToolsPage = () => {
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [saving, setSaving] = useState(false);
     const [applyStatus, setApplyStatus] = useState<string | null>(null);
-    const { restartRequired, refetch } = useRestartRequired();
+    const { restartRequired, applyRequired, recommendedApplyMethod, refetch } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
     const [activePhase, setActivePhase] = useState<ToolPhase>('in_call');
     const [toolCatalog, setToolCatalog] = useState<ToolDef[]>([]);
@@ -215,6 +215,34 @@ const ToolsPage = () => {
         }
     };
 
+    const handleApplyAIEngine = async () => {
+        if (recommendedApplyMethod !== 'hot_reload') {
+            await handleRestartAIEngine(false);
+            return;
+        }
+        setRestartingEngine(true);
+        try {
+            const response = await axios.post('/api/system/containers/ai_engine/reload', {}, {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: 30000,
+            });
+            if (response.data?.restart_required) {
+                setApplyStatus('Hot reload applied partially. Restart the AI Engine to finish applying changes.');
+                toast.warning('Restart still required', { description: response.data?.message });
+            } else {
+                const generation = response.data?.tool_generation;
+                const message = `Applied${generation ? ` as tool generation ${generation}` : ''}. New calls use it; active calls remain unchanged.`;
+                setApplyStatus(message);
+                toast.success('Changes applied', { description: message });
+            }
+            await refetch();
+        } catch (error: any) {
+            toast.error('Failed to apply changes', { description: error.response?.data?.detail || error.message });
+        } finally {
+            setRestartingEngine(false);
+        }
+    };
+
     const mergeToolsConfig = (baseConfig: any, newToolsConfig: any) => {
         // Extract root-level settings that should not be nested under tools
         const {
@@ -306,14 +334,16 @@ const ToolsPage = () => {
 
     return (
         <div className="space-y-6">
-            {restartRequired && (
+            {(applyRequired || restartRequired) && (
                 <div className="bg-orange-500/15 border-orange-500/30 border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
                     <div className="flex items-center">
                         <AlertCircle className="w-5 h-5 mr-2" />
-                        Some saved configuration changes require an AI Engine restart to take effect.
+                        {recommendedApplyMethod === 'hot_reload'
+                            ? 'Saved tool changes are ready to apply to new calls. Active calls will remain unchanged.'
+                            : 'Some saved configuration changes require an AI Engine restart to take effect.'}
                     </div>
                     <button
-                        onClick={() => handleRestartAIEngine(false)}
+                        onClick={handleApplyAIEngine}
                         disabled={restartingEngine}
                         className="flex items-center text-xs px-3 py-1.5 rounded transition-colors bg-orange-500 text-white hover:bg-orange-600 font-medium disabled:opacity-50"
                     >
@@ -322,7 +352,9 @@ const ToolsPage = () => {
                         ) : (
                             <RefreshCw className="w-3 h-3 mr-1.5" />
                         )}
-                        {restartingEngine ? 'Restarting...' : 'Restart AI Engine'}
+                        {restartingEngine
+                            ? (recommendedApplyMethod === 'hot_reload' ? 'Applying...' : 'Restarting...')
+                            : (recommendedApplyMethod === 'hot_reload' ? 'Apply Changes' : 'Restart AI Engine')}
                     </button>
                 </div>
             )}

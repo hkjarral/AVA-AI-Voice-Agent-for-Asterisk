@@ -46,6 +46,7 @@ from .config import (
     OpenAIRealtimeProviderConfig,
     GrokProviderConfig,
 )
+from .config_apply import classify_config_change
 from .config.provider_instances import (
     FULL_AGENT_KINDS,
     provider_kind,
@@ -316,6 +317,7 @@ class Engine:
         self._start_time = time.time()  # Track engine start time for uptime
         self._config_hash = self._compute_config_hash()
         self._config_loaded_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        self._restart_required_after_reload = False
         base_url = f"{config.asterisk.scheme}://{config.asterisk.host}:{config.asterisk.port}/ari"
         self.ari_client = ARIClient(
             username=config.asterisk.username,
@@ -16747,14 +16749,38 @@ class Engine:
             return {
                 "running_config_hash": running_hash,
                 "disk_config_hash": None,
+                "apply_required": False,
                 "restart_required": False,
+                "recommended_apply_method": "none",
+                "apply_plan": [],
                 "disk_config_valid": False,
             }
         disk_hash = self._compute_config_hash(disk_config)
+        decision = classify_config_change(self.config, disk_config)
+        deferred_restart = bool(
+            getattr(self, "_restart_required_after_reload", False)
+        )
+        restart_required = decision.restart_required or deferred_restart
+        apply_required = decision.apply_required
+        if restart_required:
+            recommended_method = "restart"
+        else:
+            recommended_method = decision.recommended_apply_method
         return {
             "running_config_hash": running_hash,
             "disk_config_hash": disk_hash,
-            "restart_required": running_hash != disk_hash,
+            "apply_required": apply_required,
+            "restart_required": restart_required,
+            "recommended_apply_method": recommended_method,
+            "apply_plan": (
+                [{
+                    "service": "ai_engine",
+                    "method": "restart",
+                    "endpoint": "/api/system/containers/ai_engine/restart",
+                }]
+                if restart_required
+                else decision.apply_plan()
+            ),
             "disk_config_valid": True,
             "tool_generation": getattr(getattr(self, "_tool_generation", None), "generation_id", None),
             "tool_config_hash": getattr(getattr(self, "_tool_generation", None), "config_hash", None),
@@ -19882,6 +19908,8 @@ class Engine:
                     "errors": errors
                 }, status=500)
 
+            apply_decision = classify_config_change(self.config, new_config)
+
             # Build every new-call runtime object off-side. Nothing running is
             # mutated unless both tool construction and orchestration validation
             # succeed completely.
@@ -19905,11 +19933,7 @@ class Engine:
                     status=500,
                 )
             
-            # Step 2: Compare and update provider configurations
-            old_providers = set(self.providers.keys()) if self.providers else set()
-            
             # Update config reference
-            old_config = self.config
             self.config = new_config
             self.transport_orchestrator = new_transport_orchestrator
             self._tool_generation = new_tool_generation
@@ -19919,6 +19943,10 @@ class Engine:
             # Recompute config hash after reload so health endpoint shows current state
             self._config_hash = self._compute_config_hash()
             self._config_loaded_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            self._restart_required_after_reload = bool(
+                getattr(self, "_restart_required_after_reload", False)
+                or apply_decision.restart_required
+            )
             changes.append("Configuration updated")
             changes.append(
                 f"Tool runtime generation {new_tool_generation.generation_id} applied "
@@ -19929,36 +19957,14 @@ class Engine:
             # It also refreshes legacy Context data retained strictly for migration diagnostics.
             changes.append("TransportOrchestrator rebuilt (profiles/agents refreshed)")
             
-            # Step 3: Reinitialize providers that have changed
-            try:
-                # Re-register providers with new config
-                new_providers_config = getattr(new_config, 'providers', {})
-                
-                for provider_name, provider_config in new_providers_config.items():
-                    if not getattr(provider_config, 'enabled', True):
-                        continue
-                    
-                    # Check if provider exists and needs update
-                    if provider_name in self.providers:
-                        # Provider exists - check if config changed
-                        old_prov_config = getattr(old_config, 'providers', {}).get(provider_name)
-                        if old_prov_config != provider_config:
-                            changes.append(f"Provider '{provider_name}' configuration updated")
-                    else:
-                        changes.append(f"Provider '{provider_name}' detected (restart needed to add)")
-                
-                # Check for removed providers
-                for old_name in old_providers:
-                    if old_name not in new_providers_config:
-                        changes.append(f"Provider '{old_name}' removed from config (restart needed)")
-                        
-            except Exception as e:
-                errors.append(f"Error updating providers: {str(e)}")
-            
-            # MCP process/credential replacement is intentionally outside the
-            # v7.4 new-call tool-generation contract.
-            if getattr(old_config, "mcp", None) != getattr(new_config, "mcp", None):
-                changes.append("MCP configuration changed (engine restart required)")
+            # Non-hot-reloadable sections are recorded once from the same policy
+            # used by the Admin UI. This avoids treating pipeline adapters such as
+            # local_stt/openai_llm as newly added full-agent providers.
+            if apply_decision.restart_required:
+                changed = ", ".join(sorted(apply_decision.changed_keys))
+                changes.append(
+                    f"Restart required to fully apply configuration sections: {changed}"
+                )
             
             # Step 5: Update prompts
             try:
@@ -19978,6 +19984,11 @@ class Engine:
                 "note": "Changes apply to new calls. Active calls use their captured generation.",
                 "tool_generation": new_tool_generation.generation_id,
                 "tool_config_hash": new_tool_generation.config_hash,
+                "apply_required": False,
+                "restart_required": self._restart_required_after_reload,
+                "recommended_apply_method": (
+                    "restart" if self._restart_required_after_reload else "none"
+                ),
             })
             
         except Exception as exc:

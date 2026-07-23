@@ -117,6 +117,41 @@ def _compose_files_flags_for_service(service_name: str) -> str:
     return "-f docker-compose.yml -f docker-compose.gpu.yml"
 
 
+def _compose_files_flags_for_recovery(
+    service_name: str,
+    previous_environment: List[str],
+    project_root: str,
+) -> str:
+    """Rebuild the prior service with the Compose topology it actually used."""
+    svc = {
+        "local-ai-server": "local_ai_server",
+        "ai-engine": "ai_engine",
+        "admin-ui": "admin_ui",
+    }.get(service_name, service_name)
+    if svc != "local_ai_server":
+        return "-f docker-compose.yml"
+
+    previous_values = {}
+    for entry in previous_environment:
+        key, separator, value = entry.partition("=")
+        if separator:
+            previous_values[key] = value
+
+    flags = "-f docker-compose.yml"
+    if not _is_truthy_env(previous_values.get("GPU_AVAILABLE")):
+        return flags
+
+    gpu_compose = os.path.join(project_root, "docker-compose.gpu.yml")
+    if not os.path.exists(gpu_compose):
+        logger.warning(
+            "Previously running local_ai_server used GPU_AVAILABLE=true but %s "
+            "is unavailable during recovery; falling back to base compose",
+            _sanitize_for_log(gpu_compose),
+        )
+        return flags
+    return f"{flags} -f docker-compose.gpu.yml"
+
+
 def _sanitize_for_log(value: str) -> str:
     """Best-effort: prevent log injection via control characters."""
     try:
@@ -789,7 +824,6 @@ async def _recreate_via_compose(service_name: str, health_check: bool = True):
     Returns:
         Dict with status, method, and health_status fields
     """
-    import httpx
     host_root = _project_host_root_from_admin_ui_container()
 
     # Normalize legacy hyphenated service names to canonical underscored service names.
@@ -828,73 +862,248 @@ async def _recreate_via_compose(service_name: str, health_check: bool = True):
     container_name = config["container"]
     safe_container_name = _sanitize_for_log(container_name)
 
-    try:
-        # First stop and remove the existing container to avoid name conflicts
+    compose_files = _compose_files_flags_for_service(service_name)
+    compose_prefix = f"{compose_files} " if compose_files else ""
+    timeout_sec = 600 if service_name == "local_ai_server" else 300
+
+    # Prepare the runner before inspecting or changing the service. Build, pull,
+    # permission, network, and disk failures therefore leave the current
+    # container completely untouched.
+    sha = _current_project_head_sha()
+    updater_tag = _ensure_updater_image_for_ref(
+        host_root,
+        _updater_image_tag_for_sha(sha),
+        prefer_pull_ref=None,
+        allow_build=True,
+    )
+
+    client = docker.from_env()
+    previous_running = False
+    previous_container_id: Optional[str] = None
+    previous_image_ref: Optional[str] = None
+    previous_environment: List[str] = []
+    rollback_ref: Optional[str] = None
+    previous = _find_compose_service_container(client, container_name)
+    if previous is not None:
         try:
-            client = docker.from_env()
-            container = client.containers.get(container_name)
-            logger.info("Stopping container %s before recreate", safe_container_name)
-            container.stop(timeout=10)
-            container.remove()
-            logger.info("Container %s stopped and removed", safe_container_name)
-        except docker.errors.NotFound:
-            logger.info("Container %s not found, will create fresh", safe_container_name)
-        except Exception as e:
-            logger.warning("Error stopping container %s", safe_container_name, exc_info=True)
-        
-        # Run compose in updater-runner so relative binds resolve on the host correctly.
-        compose_files = _compose_files_flags_for_service(service_name)
-        compose_prefix = f"{compose_files} " if compose_files else ""
-        cmd = (
-            "set -euo pipefail; "
-            "cd \"$PROJECT_ROOT\"; "
-            f"docker compose {compose_prefix}-p asterisk-ai-voice-agent up -d --force-recreate --no-build {service_name}"
+            previous.reload()
+        except Exception:
+            pass
+        previous_running = getattr(previous, "status", None) == "running"
+        previous_container_id = getattr(previous, "id", None)
+        previous_image_ref = (
+            (getattr(previous, "attrs", None) or {}).get("Config", {}).get("Image")
+            or getattr(getattr(previous, "image", None), "id", None)
         )
-        timeout_sec = 600 if service_name == "local_ai_server" else 300
-        code, out = _run_updater_ephemeral(
-            host_root,
-            env={"PROJECT_ROOT": host_root},
-            command=cmd,
-            timeout_sec=timeout_sec,
+        previous_environment = list(
+            ((getattr(previous, "attrs", None) or {}).get("Config", {}).get("Env") or [])
         )
-        if code != 0:
-            raise HTTPException(status_code=500, detail=f"Failed to recreate via compose: {(out or '').strip()[:800]}")
-        
-        # Health check polling after successful recreate
-        health_status = "skipped"
-        if health_check:
-            health_status = await _poll_health(
-                service_name,
-                timeout_seconds=config["health_timeout"],
+        if previous_running and getattr(previous, "image", None) is not None:
+            rollback_ref = (
+                f"aava-recreate-rollback/{service_name}:"
+                f"{uuid.uuid4().hex[:12]}"
             )
-        
-        # Return appropriate status based on health check result
-        # Don't claim success if health check timed out or failed
-        if health_status == "timeout":
-            return {
-                "status": "degraded",
-                "method": "docker-compose",
-                "output": (out or "").strip() or "Service recreated but health check timed out",
-                "health_status": health_status,
-            }
-        elif health_status == "unhealthy":
-            return {
-                "status": "degraded",
-                "method": "docker-compose",
-                "output": (out or "").strip() or "Service recreated but not healthy",
-                "health_status": health_status,
-            }
-        
-        return {
-            "status": "success", 
-            "method": "docker-compose", 
-            "output": (out or "").strip() or "Service recreated",
-            "health_status": health_status,
+            if not previous.image.tag(rollback_ref):
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to create a rollback image tag; service was not changed",
+                )
+
+    def _service_state() -> tuple[bool, Optional[str]]:
+        current = _find_compose_service_container(client, container_name)
+        if current is None:
+            return False, None
+        try:
+            current.reload()
+        except Exception:
+            pass
+        return (
+            getattr(current, "status", None) == "running",
+            getattr(current, "id", None),
+        )
+
+    def _remove_rollback_tag() -> None:
+        if not rollback_ref:
+            return
+        try:
+            client.images.remove(rollback_ref, noprune=True)
+        except Exception:
+            logger.debug(
+                "Failed to remove recreate rollback tag",
+                service=safe_container_name,
+                rollback_ref=rollback_ref,
+                exc_info=True,
+            )
+
+    def _restore_previous_image_tag() -> None:
+        if not rollback_ref or not previous_image_ref:
+            return
+        image = client.images.get(rollback_ref)
+        if "@" in previous_image_ref:
+            raise RuntimeError("Cannot restore a digest-only image reference")
+        slash = previous_image_ref.rfind("/")
+        colon = previous_image_ref.rfind(":")
+        if colon > slash:
+            repository, tag = previous_image_ref[:colon], previous_image_ref[colon + 1:]
+        else:
+            repository, tag = previous_image_ref, "latest"
+        if not image.tag(repository, tag=tag, force=True):
+            raise RuntimeError("Docker refused the rollback image tag")
+
+    async def _raise_recreate_failure(
+        message: str,
+        *,
+        original_output: str,
+        health_status: Optional[str] = None,
+    ) -> None:
+        service_available, current_container_id = _service_state()
+        recovery_status = "not_needed" if service_available else "unavailable"
+        recovery_output = ""
+
+        if previous_running and rollback_ref and (
+            not service_available
+            or current_container_id != previous_container_id
+            or health_status in {"timeout", "unhealthy"}
+        ):
+            recovery_override_path: Optional[str] = None
+            try:
+                _restore_previous_image_tag()
+                # Compose must use the exact environment captured from the
+                # previously running container, not the newly saved .env values
+                # that may have caused the failed replacement.
+                project_root = os.getenv("PROJECT_ROOT", "/app/project")
+                recovery_dir = os.path.join(project_root, ".agent", "recreate-recovery")
+                os.makedirs(recovery_dir, mode=0o700, exist_ok=True)
+                try:
+                    os.chmod(recovery_dir, 0o700)
+                except OSError:
+                    pass
+                recovery_override_path = os.path.join(
+                    recovery_dir, f"{service_name}-{uuid.uuid4().hex}.yml"
+                )
+                fd = os.open(
+                    recovery_override_path,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+                with os.fdopen(fd, "w", encoding="utf-8") as recovery_file:
+                    yaml.safe_dump(
+                        {
+                            "services": {
+                                service_name: {
+                                    "environment": previous_environment,
+                                }
+                            }
+                        },
+                        recovery_file,
+                        default_flow_style=False,
+                        sort_keys=False,
+                    )
+                override_rel = os.path.relpath(recovery_override_path, project_root)
+                recovery_files = _compose_files_flags_for_recovery(
+                    service_name,
+                    previous_environment,
+                    project_root,
+                )
+                recovery_files = f"{recovery_files} -f {override_rel}"
+                recovery_cmd = (
+                    "set -euo pipefail; "
+                    "cd \"$PROJECT_ROOT\"; "
+                    f"docker compose {recovery_files} -p asterisk-ai-voice-agent "
+                    f"up -d --force-recreate --no-build {service_name}"
+                )
+                recovery_code, recovery_output = _run_updater_ephemeral(
+                    host_root,
+                    env={"PROJECT_ROOT": host_root},
+                    command=recovery_cmd,
+                    timeout_sec=timeout_sec,
+                    prepared_image=updater_tag,
+                )
+                service_running, _ = _service_state()
+                service_available = recovery_code == 0 and service_running
+                recovery_status = "recovered" if service_available else "failed"
+            except Exception as recovery_error:
+                recovery_status = "failed"
+                recovery_output = str(recovery_error)
+            finally:
+                if recovery_override_path:
+                    try:
+                        os.remove(recovery_override_path)
+                    except OSError:
+                        logger.warning(
+                            "Failed to remove temporary recreate recovery file",
+                            extra={"service": safe_container_name},
+                            exc_info=True,
+                        )
+
+        if recovery_status in {"not_needed", "recovered"}:
+            _remove_rollback_tag()
+
+        detail = {
+            "message": message,
+            "service": service_name,
+            "service_available": service_available,
+            "recovery_status": recovery_status,
+            "error_output": (original_output or "").strip()[-1200:],
+            "recovery_output": (recovery_output or "").strip()[-1200:],
         }
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise
-        raise HTTPException(status_code=500, detail="Failed to recreate service") from e
+        logger.error(
+            "Compose recreate failed",
+            extra={
+                "service": safe_container_name,
+                "service_available": service_available,
+                "recovery_status": recovery_status,
+            },
+        )
+        raise HTTPException(status_code=500, detail=detail)
+
+    cmd = (
+        "set -euo pipefail; "
+        "cd \"$PROJECT_ROOT\"; "
+        f"docker compose {compose_prefix}-p asterisk-ai-voice-agent "
+        f"up -d --force-recreate --no-build {service_name}"
+    )
+    code, out = _run_updater_ephemeral(
+        host_root,
+        env={"PROJECT_ROOT": host_root},
+        command=cmd,
+        timeout_sec=timeout_sec,
+        prepared_image=updater_tag,
+    )
+    if code != 0:
+        await _raise_recreate_failure(
+            "Failed to apply environment changes with Docker Compose",
+            original_output=out or "",
+        )
+
+    if not _service_state()[0]:
+        await _raise_recreate_failure(
+            "Docker Compose returned successfully but the replacement service is not running",
+            original_output=out or "",
+        )
+
+    health_status = "skipped"
+    if health_check:
+        health_status = await _poll_health(
+            service_name,
+            timeout_seconds=config["health_timeout"],
+        )
+    if health_status in {"timeout", "unhealthy"}:
+        await _raise_recreate_failure(
+            "Replacement service did not become healthy; the previous image was restored when possible",
+            original_output=out or "",
+            health_status=health_status,
+        )
+
+    _remove_rollback_tag()
+    return {
+        "status": "success",
+        "method": "docker-compose",
+        "output": (out or "").strip() or "Service recreated",
+        "health_status": health_status,
+        "recovery_status": "not_needed",
+        "service_available": _service_state()[0],
+    }
 
 
 async def _poll_health(service_name: str, timeout_seconds: int = 30) -> str:
@@ -1033,12 +1242,14 @@ async def reload_ai_engine():
         if resp.status_code == 200:
             data = resp.json()
             changes = data.get("changes", [])
-                
-            # Check if any change requires a restart (new providers, removed providers, deferred reload)
-            restart_required = any(
-                any(marker in str(c).lower() for marker in ("restart needed", "restart required", "reload deferred"))
-                for c in changes
-            )
+            # Prefer the engine's shared classification. Keep marker detection
+            # only as a compatibility fallback for older engine versions.
+            restart_required = data.get("restart_required")
+            if restart_required is None:
+                restart_required = any(
+                    any(marker in str(c).lower() for marker in ("restart needed", "restart required", "reload deferred"))
+                    for c in changes
+                )
                 
             if restart_required:
                 return {
@@ -1046,6 +1257,8 @@ async def reload_ai_engine():
                     "message": "Config updated but some changes require a restart to fully apply",
                     "changes": changes,
                     "restart_required": True,
+                    "apply_required": False,
+                    "recommended_apply_method": "restart",
                     "tool_generation": data.get("tool_generation"),
                     "tool_config_hash": data.get("tool_config_hash"),
                 }
@@ -1055,6 +1268,8 @@ async def reload_ai_engine():
                 "message": data.get("message", "Configuration reloaded"),
                 "changes": changes,
                 "restart_required": False,
+                "apply_required": False,
+                "recommended_apply_method": "none",
                 "tool_generation": data.get("tool_generation"),
                 "tool_config_hash": data.get("tool_config_hash"),
             }
@@ -4411,6 +4626,7 @@ def _run_updater_ephemeral(
     capture_stderr: bool = True,
     prefer_pull_ref: Optional[str] = None,
     allow_build: bool = True,
+    prepared_image: Optional[str] = None,
 ) -> tuple[int, str]:
     """
     Run the updater image as a short-lived container and return (exit_code, stdout/stderr).
@@ -4419,16 +4635,19 @@ def _run_updater_ephemeral(
     """
     import uuid
 
-    sha = _current_project_head_sha()
-    tag = _updater_image_tag_for_sha(sha)
-    source_ref = None if prefer_pull_ref else (env or {}).get("AAVA_UPDATE_REF")
-    tag = _ensure_updater_image_for_ref(
-        host_project_root,
-        tag,
-        prefer_pull_ref=prefer_pull_ref,
-        allow_build=allow_build,
-        source_ref=source_ref,
-    )
+    if prepared_image:
+        tag = _validate_docker_image_ref(prepared_image)
+    else:
+        sha = _current_project_head_sha()
+        tag = _updater_image_tag_for_sha(sha)
+        source_ref = None if prefer_pull_ref else (env or {}).get("AAVA_UPDATE_REF")
+        tag = _ensure_updater_image_for_ref(
+            host_project_root,
+            tag,
+            prefer_pull_ref=prefer_pull_ref,
+            allow_build=allow_build,
+            source_ref=source_ref,
+        )
 
     client = docker.from_env()
     name = f"aava-update-ephemeral-{uuid.uuid4().hex[:10]}"
@@ -5969,7 +6188,10 @@ async def asterisk_status():
 _CONFIG_STATE_SAFE_FALLBACK = {
     "running_config_hash": None,
     "disk_config_hash": None,
+    "apply_required": False,
     "restart_required": False,
+    "recommended_apply_method": "none",
+    "apply_plan": [],
     "disk_config_valid": True,
     "engine_reachable": False,
 }

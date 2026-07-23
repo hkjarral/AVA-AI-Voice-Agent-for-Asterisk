@@ -58,6 +58,8 @@ def test_unchanged_config_reports_no_restart(monkeypatch):
         f"running={state['running_config_hash']} disk={state['disk_config_hash']}"
     )
     assert state["restart_required"] is False
+    assert state["apply_required"] is False
+    assert state["recommended_apply_method"] == "none"
 
 
 def test_changed_disk_config_requires_restart(monkeypatch):
@@ -75,6 +77,8 @@ def test_changed_disk_config_requires_restart(monkeypatch):
     assert state["disk_config_valid"] is True
     assert state["running_config_hash"] != state["disk_config_hash"]
     assert state["restart_required"] is True
+    assert state["apply_required"] is True
+    assert state["recommended_apply_method"] == "restart"
 
 
 def test_invalid_disk_config_is_safe(monkeypatch):
@@ -92,6 +96,41 @@ def test_invalid_disk_config_is_safe(monkeypatch):
     assert state["disk_config_valid"] is False
     assert state["disk_config_hash"] is None
     assert state["restart_required"] is False
+    assert state["apply_required"] is False
+
+
+def test_hot_reloadable_disk_change_reports_apply_not_restart(monkeypatch):
+    engine = _make_engine_from_disk()
+    mutated = load_config(_CONFIG_PATH)
+    mutated.tools = dict(mutated.tools or {})
+    mutated.tools["test_lookup"] = {
+        "kind": "generic_http_lookup",
+        "phase": "pre_call",
+        "url": "https://example.com",
+    }
+    monkeypatch.setattr(engine_mod, "load_config", lambda *a, **k: mutated)
+
+    state = engine._compute_config_state()
+
+    assert state["apply_required"] is True
+    assert state["restart_required"] is False
+    assert state["recommended_apply_method"] == "hot_reload"
+    assert state["apply_plan"][0]["endpoint"].endswith("/reload")
+
+
+def test_deferred_restart_survives_hash_reconciliation(monkeypatch):
+    engine = _make_engine_from_disk()
+    engine._restart_required_after_reload = True
+    monkeypatch.setattr(
+        engine_mod, "load_config", lambda *a, **k: load_config(_CONFIG_PATH)
+    )
+
+    state = engine._compute_config_state()
+
+    assert state["apply_required"] is False
+    assert state["restart_required"] is True
+    assert state["recommended_apply_method"] == "restart"
+    assert state["apply_plan"][0]["endpoint"].endswith("/restart")
 
 
 def test_compute_config_hash_accepts_arg():

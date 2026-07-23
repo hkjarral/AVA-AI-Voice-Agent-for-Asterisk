@@ -70,6 +70,8 @@ async def test_reload_publishes_new_generation_without_mutating_active_call():
     payload = json.loads(response.text)
     assert response.status == 200
     assert payload["tool_generation"] == 2
+    assert payload["restart_required"] is False
+    assert payload["recommended_apply_method"] == "none"
     assert engine._tool_generation is new
     assert engine._next_tool_generation_id == 3
     assert Engine._tool_registry_for_session(engine, active_call) is old.registry
@@ -79,6 +81,34 @@ async def test_reload_publishes_new_generation_without_mutating_active_call():
     assert Engine._tool_registry_for_session(engine, None) is new.registry
     assert offloaded == [engine._build_tool_generation]
     assert not engine._tool_reload_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_reload_does_not_misclassify_pipeline_adapters_as_new_providers():
+    old = ToolRuntimeGeneration.build(generation_id=1, config=_config("old").dict())
+    new = ToolRuntimeGeneration.build(generation_id=2, config=_config("new").dict())
+    engine = _engine(old)
+    old_config = _config("old")
+    new_config = _config("new")
+    adapters = {
+        "local_stt": {"enabled": True},
+        "openai_llm": {"enabled": True},
+        "local_tts": {"enabled": True},
+    }
+    old_config.providers = adapters
+    new_config.providers = adapters
+    engine.config = old_config
+    engine._build_tool_generation = lambda _config: new
+
+    with patch("src.config.load_config", return_value=new_config), patch(
+        "src.engine.TransportOrchestrator", return_value=SimpleNamespace()
+    ):
+        response = await Engine._reload_handler(engine, SimpleNamespace())
+
+    payload = json.loads(response.text)
+    assert response.status == 200
+    assert payload["restart_required"] is False
+    assert not any("detected" in change.lower() for change in payload["changes"])
 
 
 @pytest.mark.asyncio

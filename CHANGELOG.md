@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Admin UI environment apply is recoverable** ([#552](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/552)): updater-image preparation now finishes before a running service is touched, and runtime data, secrets, and updater state are excluded from Docker build contexts. Compose replacements retain a rollback image and the previous container environment; a failed or unhealthy replacement restores the prior service when possible and returns its exact recovery state to the UI instead of leaving `ai_engine` absent.
+- **OpenAI and Grok call history retains complete assistant replies** ([#554](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/554)): assistant transcript accumulation is scoped by response/item and caller-final transcripts no longer clear it. Interleaved caller speech, consecutive replies, cancellations, and both supported realtime transcript event variants finalize independently. The fix is forward-only and does not rewrite existing call records.
+- **Tool changes distinguish Apply from Restart** ([#556](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/556)): managed-tool create, replace, patch, and delete responses now report `apply_required`, `restart_required`, `recommended_apply_method`, and an apply plan. Engine and Admin UI reconciliation share one classifier, pipeline STT/LLM/TTS adapters are no longer reported as newly added full-agent providers, and the Tools page offers hot reload for tool-only changes while preserving restarts for provider and process-level changes.
 - **Release documentation consistency:** corrected the v7.5.0 installation,
   migration, recovery, support-policy, roadmap, contributor, outbound-calling,
   CLI, and validation-matrix references. CI now derives the current release

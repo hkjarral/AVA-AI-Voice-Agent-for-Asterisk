@@ -20,7 +20,17 @@ def client(monkeypatch):
 
     def fake_persist(cfg):
         state["cfg"] = copy.deepcopy(cfg)
-        return {"status": "success", "restart_required": True}
+        return {
+            "status": "success",
+            "apply_required": True,
+            "restart_required": False,
+            "recommended_apply_method": "hot_reload",
+            "apply_plan": [{
+                "service": "ai_engine",
+                "method": "hot_reload",
+                "endpoint": "/api/system/containers/ai_engine/reload",
+            }],
+        }
 
     monkeypatch.setattr(tools_api, "_persist_cfg", fake_persist)
 
@@ -46,6 +56,9 @@ def test_crud_roundtrip_pre_call(client):
     assert body["block"] == "tools"
     assert body["config"]["method"] == "GET"  # pre_call default
     assert body["config"]["timeout_ms"] == 2000
+    assert body["apply_required"] is True
+    assert body["restart_required"] is False
+    assert body["recommended_apply_method"] == "hot_reload"
 
     # List excludes ai_identity but includes our tool
     names = {t["name"] for t in client.get("/api/tools/managed").json()}
@@ -63,7 +76,20 @@ def test_crud_roundtrip_pre_call(client):
     assert r.json()["config"]["url"] == "https://api.example.com/lookup"
 
     # Delete
-    assert client.delete("/api/tools/managed/crm_lookup").status_code == 204
+    deleted = client.delete("/api/tools/managed/crm_lookup")
+    assert deleted.status_code == 200
+    assert deleted.json() == {
+        "name": "crm_lookup",
+        "deleted": True,
+        "apply_required": True,
+        "restart_required": False,
+        "recommended_apply_method": "hot_reload",
+        "apply_plan": [{
+            "service": "ai_engine",
+            "method": "hot_reload",
+            "endpoint": "/api/system/containers/ai_engine/reload",
+        }],
+    }
     assert client.get("/api/tools/managed/crm_lookup").status_code == 404
 
 
@@ -491,8 +517,12 @@ def test_openapi_surfaces_managed_tool_schema():
     assert "/api/tools/managed/{name}" in spec["paths"]
     assert "ManagedToolOut" in spec["components"]["schemas"]
     out = spec["components"]["schemas"]["ManagedToolOut"]
-    for col in ("name", "phase", "kind", "block", "enabled", "is_global", "config"):
+    for col in (
+        "name", "phase", "kind", "block", "enabled", "is_global", "config",
+        "apply_required", "restart_required", "recommended_apply_method", "apply_plan",
+    ):
         assert col in out["properties"], col
+    assert "ManagedToolDeleteOut" in spec["components"]["schemas"]
     list_schema = spec["paths"]["/api/tools/managed"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
     assert list_schema.get("type") == "array"
     # Built-in + settings resources are present and typed too.

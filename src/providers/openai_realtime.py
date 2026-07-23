@@ -172,7 +172,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         self._output_resampler_mode: str = configured_output_resampler
         self._output_resampler_source: str = output_resampler_source
         self._output_resampler_logged: bool = False
-        self._transcript_buffer: str = ""
+        self._assistant_transcript_buffers: Dict[str, str] = {}
         self._input_info_logged: bool = False
         self._allowed_tools: Optional[List[str]] = None
         
@@ -406,7 +406,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         self._input_resample_state = None
         self._output_resample_state = None
         self._output_resampler_logged = False
-        self._transcript_buffer = ""
+        self._assistant_transcript_buffers.clear()
         self._closing = False
         self._closed = False
         
@@ -958,7 +958,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             self._in_audio_burst = False
             self._input_resample_state = None
             self._output_resample_state = None
-            self._transcript_buffer = ""
+            self._assistant_transcript_buffers.clear()
             logger.info("OpenAI Realtime session stopped")
             self._clear_metrics(previous_call_id)
 
@@ -1826,10 +1826,9 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             elif delta_type == "output_text.delta":
                 text = delta.get("text")
                 if text:
-                    await self._emit_transcript(text, is_final=False)
+                    await self._emit_assistant_transcript(event, text, is_final=False)
             elif delta_type == "output_text.done":
-                if self._transcript_buffer:
-                    await self._emit_transcript("", is_final=True)
+                await self._emit_assistant_transcript(event, "", is_final=True)
             return
 
         # Modern event naming variants (top-level types)
@@ -1888,14 +1887,11 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 elif isinstance(delta, str):
                     text = delta
             if text:
-                await self._emit_transcript(text, is_final=False)
+                await self._emit_assistant_transcript(event, text, is_final=False)
             return
 
         if event_type == "response.audio_transcript.done":
-            if self._transcript_buffer:
-                # Track assistant conversation for email tools
-                await self._track_conversation("assistant", self._transcript_buffer)
-                await self._emit_transcript("", is_final=True)
+            await self._emit_assistant_transcript(event, "", is_final=True)
             return
 
         if event_type in ("response.completed", "response.error", "response.cancelled", "response.done"):
@@ -2046,9 +2042,8 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 pass
 
             self._pending_response = False
+            await self._emit_assistant_transcript(event, "", is_final=True)
             self._current_response_id = None  # Clear response ID after completion
-            if self._transcript_buffer:
-                await self._emit_transcript("", is_final=True)
             return
 
         if event_type == "conversation.item.input_audio_transcription.completed":
@@ -2080,7 +2075,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             delta = event.get("delta") or {}
             text = delta.get("text")
             if text:
-                await self._emit_transcript(text, is_final=False)
+                await self._emit_assistant_transcript(event, text, is_final=False)
             return
 
         # Optional acks/telemetry for audio buffer operations
@@ -2173,14 +2168,11 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             elif isinstance(delta, str):
                 text = delta
             if text:
-                await self._emit_transcript(text, is_final=False)
+                await self._emit_assistant_transcript(event, text, is_final=False)
             return
 
         if event_type == "response.output_audio_transcript.done":
-            if self._transcript_buffer:
-                # Track assistant conversation for email tools
-                await self._track_conversation("assistant", self._transcript_buffer)
-                await self._emit_transcript("", is_final=True)
+            await self._emit_assistant_transcript(event, "", is_final=True)
             return
 
         # CRITICAL FIX #1: Handle session.updated ACK (following Deepgram pattern)
@@ -2497,13 +2489,10 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         if not self.on_event or not self._call_id:
             return
 
-        if text:
-            self._transcript_buffer += text
-
         payload = {
             "type": "Transcript",
             "call_id": self._call_id,
-            "text": text or self._transcript_buffer,
+            "text": text,
             "is_final": is_final,
         }
         try:
@@ -2511,8 +2500,54 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         except Exception:
             logger.error("Failed to emit transcript event", call_id=self._call_id, exc_info=True)
 
-        if is_final:
-            self._transcript_buffer = ""
+
+    def _assistant_transcript_key(self, event: Dict[str, Any]) -> str:
+        response = event.get("response") or {}
+        response_id = event.get("response_id") or response.get("id") or self._current_response_id
+        item_id = event.get("item_id")
+        if item_id:
+            return f"{response_id or 'response'}:{item_id}"
+        return str(response_id or "unscoped")
+
+    async def _emit_assistant_transcript(
+        self,
+        event: Dict[str, Any],
+        text: str,
+        *,
+        is_final: bool,
+    ) -> None:
+        """Accumulate/finalize only the matching assistant response item.
+
+        Caller-final events bypass this state entirely, so an interleaved input
+        transcription cannot erase an assistant prefix.
+        """
+        key = self._assistant_transcript_key(event)
+        if text:
+            self._assistant_transcript_buffers[key] = (
+                self._assistant_transcript_buffers.get(key, "") + text
+            )
+            if not is_final:
+                await self._emit_transcript(text, is_final=False)
+                return
+
+        if not is_final:
+            return
+        keys = [key]
+        if not event.get("item_id"):
+            prefix = f"{key}:"
+            keys.extend(
+                candidate
+                for candidate in self._assistant_transcript_buffers
+                if candidate.startswith(prefix)
+            )
+        complete = "".join(
+            self._assistant_transcript_buffers.pop(candidate, "")
+            for candidate in dict.fromkeys(keys)
+        )
+        if not complete:
+            return
+        await self._track_conversation("assistant", complete)
+        await self._emit_transcript(complete, is_final=True)
 
     async def _track_conversation(self, role: str, text: str):
         """Track conversation turns for email tools (similar to Deepgram implementation)."""

@@ -153,8 +153,8 @@ services:
     image: asterisk-ai-voice-agent-admin-ui:latest
     pull_policy: build
     build:
-      context: ./admin_ui
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: admin_ui/Dockerfile
       network: host
     container_name: admin_ui
     network_mode: host

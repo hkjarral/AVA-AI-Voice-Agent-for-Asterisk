@@ -18,6 +18,18 @@ const configState = (restart_required: boolean) => ({
     },
 });
 
+const hotReloadState = {
+    data: {
+        running_config_hash: 'a',
+        disk_config_hash: 'b',
+        apply_required: true,
+        restart_required: false,
+        recommended_apply_method: 'hot_reload' as const,
+        disk_config_valid: true,
+        engine_reachable: true,
+    },
+};
+
 describe('useRestartRequired', () => {
     afterEach(() => {
         vi.useRealTimers();
@@ -42,6 +54,19 @@ describe('useRestartRequired', () => {
 
         await waitFor(() => expect(result.current.loading).toBe(false));
         expect(result.current.restartRequired).toBe(false);
+
+        unmount();
+    });
+
+    it('distinguishes a hot-reload apply from a restart', async () => {
+        mockedGet.mockResolvedValue(hotReloadState);
+
+        const { result, unmount } = renderHook(() => useRestartRequired());
+
+        await waitFor(() => expect(result.current.loading).toBe(false));
+        expect(result.current.applyRequired).toBe(true);
+        expect(result.current.restartRequired).toBe(false);
+        expect(result.current.recommendedApplyMethod).toBe('hot_reload');
 
         unmount();
     });

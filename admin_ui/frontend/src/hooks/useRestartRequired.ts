@@ -5,6 +5,8 @@ interface ConfigState {
     running_config_hash: string | null;
     disk_config_hash: string | null;
     restart_required: boolean;
+    apply_required?: boolean;
+    recommended_apply_method?: 'none' | 'hot_reload' | 'restart';
     disk_config_valid: boolean;
     engine_reachable: boolean;
 }
@@ -14,10 +16,14 @@ const POLL_INTERVAL_MS = 15000;
 
 export function useRestartRequired(): {
     restartRequired: boolean;
+    applyRequired: boolean;
+    recommendedApplyMethod: 'none' | 'hot_reload' | 'restart';
     refetch: () => Promise<void>;
     loading: boolean;
 } {
     const [restartRequired, setRestartRequired] = useState(false);
+    const [applyRequired, setApplyRequired] = useState(false);
+    const [recommendedApplyMethod, setRecommendedApplyMethod] = useState<'none' | 'hot_reload' | 'restart'>('none');
     const [loading, setLoading] = useState(true);
     // Latest-response-wins: a slower older request (e.g. the 15s poll) must not
     // overwrite a newer one (e.g. a post-save/restart refetch) with stale data.
@@ -28,12 +34,22 @@ export function useRestartRequired(): {
         try {
             const res = await axios.get<ConfigState>(CONFIG_STATE_URL);
             if (seq === requestSeq.current) {
-                setRestartRequired(res.data?.restart_required === true);
+                const needsRestart = res.data?.restart_required === true;
+                const needsApply = res.data?.apply_required === true;
+                setRestartRequired(needsRestart);
+                setApplyRequired(needsApply);
+                setRecommendedApplyMethod(
+                    needsRestart
+                        ? 'restart'
+                        : (res.data?.recommended_apply_method || (needsApply ? 'hot_reload' : 'none'))
+                );
             }
         } catch {
             // Never false-alarm: treat any error as "no restart required".
             if (seq === requestSeq.current) {
                 setRestartRequired(false);
+                setApplyRequired(false);
+                setRecommendedApplyMethod('none');
             }
         } finally {
             if (seq === requestSeq.current) {
@@ -57,5 +73,5 @@ export function useRestartRequired(): {
         };
     }, [refetch]);
 
-    return { restartRequired, refetch, loading };
+    return { restartRequired, applyRequired, recommendedApplyMethod, refetch, loading };
 }

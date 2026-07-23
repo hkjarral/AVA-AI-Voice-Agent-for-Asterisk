@@ -2,6 +2,32 @@
 
 This guide covers upgrading between major versions of Asterisk AI Voice Agent.
 
+## v7.5.0 to v7.5.1
+
+v7.5.1 is an in-place hotfix with no database migration, audio-profile change,
+or provider-default change. Follow the normal tagged-release update procedure
+once the release is published.
+
+After upgrading:
+
+1. Recreate both `admin_ui` and `ai_engine` so the UI, API classification, and
+   runtime reconciliation use the same v7.5.1 code.
+2. Open **Tools & Capabilities**. Tool-only changes should show **Apply Changes**
+   and hot reload into a new immutable tool generation; they should not request
+   an AI Engine restart.
+3. Open **System → Environment**, save a harmless environment edit, and apply it
+   only when no calls are active. If replacement preparation or Compose fails,
+   the UI reports whether the previous service stayed available or was restored.
+4. Verify `ai_engine` health before returning the system to production traffic.
+
+Managed-tool `DELETE /api/tools/managed/{name}` now returns HTTP 200 with the
+deleted resource name and apply metadata instead of an empty HTTP 204 response.
+Clients that accepted any 2xx response remain compatible; clients pinned to 204
+must accept the structured 200 response.
+
+The transcript fix applies only to future OpenAI Realtime and Grok calls. It
+does not alter historical Call History records.
+
 ## v7.4.1 to v7.5.0
 
 Released 2026-07-22. Follow the

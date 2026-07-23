@@ -421,7 +421,22 @@ const EnvPage = () => {
             setApplyPlan([]);
             toast.success('Changes applied');
         } catch (error: any) {
-            toast.error('Failed to apply changes', { description: error.response?.data?.detail || error.message });
+            const detail = error.response?.data?.detail;
+            if (detail && typeof detail === 'object') {
+                const recovered = detail.recovery_status === 'recovered' || (
+                    detail.recovery_status === 'not_needed' && detail.service_available
+                );
+                const description = recovered
+                    ? `${detail.message || 'Changes were not applied.'} The previous service is running; you can correct the setting and retry.`
+                    : `${detail.message || 'Changes were not applied.'} Automatic recovery did not complete; check the container status before retrying.`;
+                if (recovered) {
+                    toast.warning('Changes not applied; service remains available', { description });
+                } else {
+                    toast.error('Failed to apply changes', { description });
+                }
+            } else {
+                toast.error('Failed to apply changes', { description: detail || error.message });
+            }
         } finally {
             setRestartingEngine(false);
         }

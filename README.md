@@ -167,6 +167,27 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>Upcoming v7.5.1 — Safer Admin apply and complete call history</b></summary>
+
+The v7.5.1 hotfix focuses on recovery and observability without changing audio
+profiles, provider transport, or fresh-install defaults.
+
+- **Recoverable Apply Changes** — the Admin UI prepares its updater runner
+  before touching a live service and restores the previous image and container
+  environment if a Compose replacement fails or does not become healthy.
+- **Complete realtime transcripts** — OpenAI and Grok keep assistant transcript
+  state separate from interleaved caller-final events, preventing clipped
+  prefixes in Call History and post-call consumers.
+- **Apply instead of unnecessary restart** — tool-only edits advertise and use
+  hot reload for new calls. Provider, environment, and process-level changes
+  remain on the restart/recreate path.
+
+No database migration or audio-profile reassignment is required. Existing
+stored transcripts are not rewritten.
+
+</details>
+
+<details>
 <summary><b>v7.5.0 — Enhanced telephony audio and VICIdial integration 🎧</b></summary>
 
 **v7.5.0 improves narrowband call audio without changing the established

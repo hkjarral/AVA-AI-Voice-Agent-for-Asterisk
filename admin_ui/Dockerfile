@@ -1,11 +1,11 @@
 # Stage 1: Build Frontend
 FROM node:20-bookworm-slim AS frontend-builder
 WORKDIR /app/frontend
-COPY frontend/package.json frontend/package-lock.json* ./
+COPY admin_ui/frontend/package.json admin_ui/frontend/package-lock.json* ./
 # Install all deps including devDependencies for build (vite, typescript, etc.)
 RUN npm ci || npm install
 ARG CACHEBUST=1
-COPY frontend/ .
+COPY admin_ui/frontend/ .
 RUN npm run build
 # Note: devDependencies are only in builder stage, not in final image
 
@@ -45,17 +45,22 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 RUN useradd --create-home -u 1000 appuser
 
 # Install Python dependencies (bcrypt has manylinux wheels, no gcc needed)
-COPY backend/requirements.txt .
+COPY admin_ui/backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy backend code
-COPY backend/ .
+COPY admin_ui/backend/ .
+
+# Keep config apply/restart classification identical to the AI Engine. The
+# Admin image has a separate runtime tree, so copy the dependency-free shared
+# policy into its import root from the same repository source file.
+COPY src/config_apply.py ./config_apply.py
 
 # Copy built frontend assets to backend's static directory
 COPY --from=frontend-builder /app/frontend/dist ./static
 
 # Entrypoint: ensure appuser can access the Docker socket regardless of host docker group GID.
-COPY entrypoint.sh /app/entrypoint.sh
+COPY admin_ui/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # Expose default port (can be overridden by UVICORN_PORT)
