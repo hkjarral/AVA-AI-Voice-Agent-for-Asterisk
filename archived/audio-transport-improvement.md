@@ -786,6 +786,20 @@ Validate audio quality and transport integrity across the maintainer-approved re
     and generated two unintended responses. The narrow correction will defer
     only OpenAI greeting gating release through the existing caller-facing
     drain observer; normal responses and other providers remain unchanged.
+  - OpenAI greeting retest `1784934934.36`, archived at
+    `logs/archived/rca-20260724-231549`, **failed** despite the engine gate being
+    retained to drain. The caller remained silent, but OpenAI's continuous-input
+    path bypassed `audio_capture_enabled`, detected its own still-playing
+    greeting at `16:15:40.548`, truncated 5,760 queued bytes, transcribed
+    `Good to go.`, and created an unsolicited response. This is not a new 16 kHz
+    regression: archived 8 kHz call `1784670034.942` shows the same pre-drain
+    speech-start and false `Bye.` transcript. The revised provider-scoped fix
+    sends provider-rate silence only during the initial OpenAI greeting, clears
+    OpenAI's input buffer at the verified transport-drain boundary, and then
+    restores normal full-duplex input. Other turns, providers, formats, and
+    resampler policies remain unchanged. The corrective revision passes 68
+    focused provider/lifecycle/transport tests and the full backend gate (2,010
+    passed, 7 skipped). A fresh OpenAI live retest is pending.
 - [x] Run the full backend/frontend regression gates. Backend passed 1,981
   tests with 18 skips; frontend passed 221 tests, production build, and lint
   with existing warnings only. Focused wideband/provider/pipeline coverage

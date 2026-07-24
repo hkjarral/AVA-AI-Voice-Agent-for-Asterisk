@@ -1,6 +1,7 @@
 import asyncio
 import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -61,6 +62,65 @@ async def test_greeting_audio_done_defers_tts_gating_until_transport_drain(opena
             "defer_tts_gating_until_drain": True,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_greeting_transport_guard_sends_silence_until_engine_releases(openai_config):
+    provider = OpenAIRealtimeProvider(openai_config, on_event=AsyncMock())
+    provider._call_id = "call-greeting-input-guard"
+    provider.websocket = _OpenWebSocket()
+    provider._greeting_transport_guard_active = True
+    provider._in_audio_burst = True
+    provider._pacer_underruns = 0
+    provider._send_audio_to_openai = AsyncMock()
+
+    caller_audio = b"\x01\x02" * 160
+    await provider.send_audio(
+        caller_audio,
+        sample_rate=24000,
+        encoding="linear16",
+    )
+
+    provider._send_audio_to_openai.assert_awaited_once_with(b"\x00" * len(caller_audio))
+
+
+@pytest.mark.asyncio
+async def test_greeting_transport_guard_clears_buffer_before_release(openai_config):
+    provider = OpenAIRealtimeProvider(openai_config, on_event=AsyncMock())
+    provider._call_id = "call-greeting-input-release"
+    provider.websocket = _OpenWebSocket()
+    provider._greeting_transport_guard_active = True
+    provider._pending_audio_provider_rate.extend(b"stale-audio")
+    provider._send_json = AsyncMock()
+
+    await provider.release_greeting_transport_guard()
+
+    assert provider._greeting_transport_guard_active is False
+    assert provider._pending_audio_provider_rate == bytearray()
+    payload = provider._send_json.await_args.args[0]
+    assert payload["type"] == "input_audio_buffer.clear"
+    assert payload["event_id"].startswith("clear-greeting-")
+
+
+@pytest.mark.asyncio
+async def test_speech_started_cannot_flush_openai_greeting_transport_tail(openai_config):
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = OpenAIRealtimeProvider(openai_config, on_event=on_event)
+    provider._call_id = "call-greeting-tail-vad"
+    provider._greeting_response_id = "resp-greeting"
+    provider._greeting_completed = True
+    provider._current_response_id = None
+    provider._greeting_transport_guard_active = True
+    provider._outbuf.extend(b"greeting-tail")
+
+    await provider._handle_event({"type": "input_audio_buffer.speech_started"})
+
+    assert provider._outbuf == bytearray(b"greeting-tail")
+    assert events == []
 
 
 def _function_call_event(response_id="resp-1", call_id="call-1", name="lookup"):

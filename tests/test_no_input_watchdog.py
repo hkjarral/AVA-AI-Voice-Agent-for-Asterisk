@@ -419,6 +419,10 @@ async def test_openai_greeting_gating_is_released_only_after_transport_drain():
     engine._provider_output_operations = {}
     engine._provider_output_drain_tasks = {}
     engine._agent_output_active_calls = set()
+    greeting_provider = SimpleNamespace(
+        release_greeting_transport_guard=AsyncMock(),
+    )
+    engine._call_providers = {"call-openai-greeting-tail": greeting_provider}
     engine.config = SimpleNamespace(audio_transport="audiosocket")
     engine.no_input_watchdog = SimpleNamespace(
         note_agent_output_start=AsyncMock(),
@@ -477,6 +481,7 @@ async def test_openai_greeting_gating_is_released_only_after_transport_drain():
     after = await engine.session_store.get_by_call_id(session.call_id)
     assert after.audio_capture_enabled is False
     assert after.tts_tokens == {"stream:next-response"}
+    greeting_provider.release_greeting_transport_guard.assert_awaited_once_with()
 
     await engine.conversation_coordinator.on_tts_end(
         session.call_id,

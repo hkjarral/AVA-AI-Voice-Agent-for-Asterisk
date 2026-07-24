@@ -118,6 +118,10 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         self._current_response_id: Optional[str] = None  # Track active response for cancellation
         self._greeting_response_id: Optional[str] = None  # Track greeting to protect from barge-in
         self._greeting_completed: bool = False  # Track if greeting has finished
+        # GA server VAD cannot be disabled for the greeting. Keep caller input
+        # silent until the engine confirms caller-facing transport drain.
+        self._greeting_transport_guard_active: bool = False
+        self._greeting_guard_silence_logged: bool = False
         # Debounce engine-level barge-in signals (prevents flush storms).
         self._last_barge_in_emit_ts: float = 0.0
         self._farewell_response_id: Optional[str] = None  # Track farewell response for hangup
@@ -603,6 +607,15 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             
             if not pcm16:
                 return
+
+            if self._greeting_transport_guard_active:
+                pcm16 = b"\x00" * len(pcm16)
+                if not self._greeting_guard_silence_logged:
+                    logger.info(
+                        "Silencing OpenAI caller input until greeting transport drains",
+                        call_id=self._call_id,
+                    )
+                    self._greeting_guard_silence_logged = True
             
             # ECHO GATING for speakerphone support:
             # Gate input ONLY while we're outputting real audio from OpenAI.
@@ -611,7 +624,11 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             # 
             # When _pacer_underruns > 0, we're just emitting silence - allow input.
             try:
-                if self._in_audio_burst and self._pacer_underruns == 0:
+                if (
+                    not self._greeting_transport_guard_active
+                    and self._in_audio_burst
+                    and self._pacer_underruns == 0
+                ):
                     # Agent is outputting REAL audio - gate input to prevent echo
                     return
             except Exception:
@@ -625,6 +642,34 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             await self._reconnect_with_backoff()
         except Exception:
             logger.error("Failed to send audio to OpenAI Realtime", call_id=self._call_id, exc_info=True)
+
+    async def release_greeting_transport_guard(self) -> None:
+        """Resume real caller input after the greeting is fully emitted to the caller."""
+        if not self._greeting_transport_guard_active:
+            return
+        try:
+            async with self._audio_lock:
+                self._pending_audio_provider_rate.clear()
+            if self.websocket and self.websocket.state.name == "OPEN":
+                await self._send_json(
+                    {
+                        "type": "input_audio_buffer.clear",
+                        "event_id": f"clear-greeting-{uuid.uuid4()}",
+                    }
+                )
+        except Exception:
+            logger.warning(
+                "Failed clearing OpenAI input buffer at greeting drain boundary",
+                call_id=self._call_id,
+                exc_info=True,
+            )
+        finally:
+            self._greeting_transport_guard_active = False
+            self._greeting_guard_silence_logged = False
+            logger.info(
+                "OpenAI greeting transport guard released",
+                call_id=self._call_id,
+            )
 
     async def speak_text(self, text: str) -> bool:
         """Create a tools-disabled response in the active configured voice."""
@@ -960,6 +1005,8 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             self._closed = True
             self._pending_response = False
             self._in_audio_burst = False
+            self._greeting_transport_guard_active = False
+            self._greeting_guard_silence_logged = False
             self._input_resample_state = None
             self._output_resample_state = None
             self._assistant_transcript_buffers.clear()
@@ -1289,6 +1336,10 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         )
 
         await self._send_json(response_payload)
+        # Activate only after response.create is accepted by the websocket.
+        # A failed greeting request must not leave caller input muted forever.
+        self._greeting_transport_guard_active = True
+        self._greeting_guard_silence_logged = False
         self._pending_response = True
         
         logger.info(
@@ -1986,6 +2037,8 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                                 "defer_until_drain": had_audio_for_response,
                             }
                         )
+                    if not had_audio_for_response:
+                        await self.release_greeting_transport_guard()
                 except Exception:
                     logger.debug(
                         "Failed to emit ClearTtsGating event",
@@ -2100,7 +2153,10 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             # Handle barge-in: cancel ongoing response when user starts speaking
             elif event_type == "input_audio_buffer.speech_started" and self._current_response_id:
                 # Protect greeting response from barge-in cancellation
-                if self._current_response_id == self._greeting_response_id and not self._greeting_completed:
+                if self._greeting_transport_guard_active or (
+                    self._current_response_id == self._greeting_response_id
+                    and not self._greeting_completed
+                ):
                     logger.info(
                         "🛡️  Barge-in blocked - protecting greeting response",
                         call_id=self._call_id,
@@ -2140,7 +2196,9 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 # we still want the platform to flush local playback immediately on speech_started.
                 if event_type == "input_audio_buffer.speech_started":
                     # Never interrupt the greeting turn via platform flush.
-                    if self._greeting_response_id and not self._greeting_completed:
+                    if self._greeting_transport_guard_active or (
+                        self._greeting_response_id and not self._greeting_completed
+                    ):
                         logger.info(
                             "🛡️  Barge-in blocked - protecting greeting response",
                             call_id=self._call_id,
@@ -2694,6 +2752,8 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 # Reset minor state
                 self._pending_response = False
                 self._in_audio_burst = False
+                self._greeting_transport_guard_active = False
+                self._greeting_guard_silence_logged = False
                 self._first_output_chunk_logged = False
                 self._output_resample_state = None
                 self._output_resampler_logged = False

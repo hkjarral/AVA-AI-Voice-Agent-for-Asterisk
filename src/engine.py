@@ -1474,6 +1474,17 @@ class Engine:
         session = await self.session_store.get_by_call_id(call_id)
         if not session or bool(getattr(session, "cleanup_in_progress", False)):
             return
+        try:
+            provider = getattr(self, "_call_providers", {}).get(call_id)
+            release_guard = getattr(provider, "release_greeting_transport_guard", None)
+            if callable(release_guard):
+                await release_guard()
+        except Exception:
+            logger.debug(
+                "Failed releasing provider greeting transport guard",
+                call_id=call_id,
+                exc_info=True,
+            )
         for token in tokens:
             try:
                 if self.conversation_coordinator:
@@ -9711,22 +9722,19 @@ class Engine:
                     return
                 if not getattr(session, "provider_session_active", False):
                     return
-                # CRITICAL FIX: Google Live needs gating, but OpenAI/Deepgram don't
-                # - Google Live: Bidirectional audio, NO server-side echo cancellation → NEEDS gating
-                # - OpenAI Realtime: Server-side AEC → gating harmful
-                # - Deepgram: Text-based output → no echo risk
+                # Google Live needs silence substitution during ordinary output.
+                # Other native full-agent providers keep caller audio flowing so
+                # their provider-owned VAD/barge-in remains functional.
                 needs_gating = self._get_provider_kind(provider_name) == "google_live"
                 
                 if needs_gating and not session.audio_capture_enabled:
-                    # CRITICAL: Google Live requires continuous audio stream (like WebRTC)
-                    # Send SILENCE frames instead of blocking to maintain stream continuity
-                    # This prevents echo while keeping VAD healthy
+                    # Send silence instead of blocking so Google Live's continuous
+                    # input timing and VAD state remain stable.
                     logger.debug(
                         "🔇 GATING ACTIVE - Sending silence frame for Google Live (TTS playing)",
                         call_id=caller_channel_id,
                         audio_capture_enabled=session.audio_capture_enabled,
                     )
-                    # Replace audio with silence (zero-filled PCM16)
                     pcm_bytes = b'\x00' * len(pcm_bytes)
 
                 # Provider-agnostic upstream squelch: replace non-speech audio with silence so
