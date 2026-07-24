@@ -1341,7 +1341,13 @@ class Engine:
             if watchdog is not None:
                 await watchdog.note_agent_output_start(call_id)
 
-    async def _note_provider_output_end(self, call_id: str, session: Optional[CallSession]) -> None:
+    async def _note_provider_output_end(
+        self,
+        call_id: str,
+        session: Optional[CallSession],
+        *,
+        clear_tts_gating_after_drain: bool = False,
+    ) -> None:
         """Observe generation completion and defer idle timing until transport drain."""
         operations = getattr(self, "_provider_output_operations", {})
         operation = operations.get(call_id)
@@ -1360,9 +1366,20 @@ class Engine:
         except Exception:
             logger.debug("Failed clearing provider silence-turn marker", call_id=call_id, exc_info=True)
 
+        deferred_tts_tokens: Tuple[str, ...] = ()
+        if clear_tts_gating_after_drain:
+            deferred_tts_tokens = tuple(
+                getattr(session, "tts_tokens", set()) or ()
+            )
+
         active = getattr(self, "_agent_output_active_calls", set())
         watchdog = getattr(self, "no_input_watchdog", None)
         if call_id not in active:
+            if clear_tts_gating_after_drain:
+                await self._clear_tts_gating_after_provider_drain(
+                    call_id,
+                    deferred_tts_tokens,
+                )
             if watchdog is not None:
                 await watchdog.note_agent_output_end(
                     call_id,
@@ -1388,6 +1405,8 @@ class Engine:
                 call_id,
                 reset_timer=reset_timer,
                 preserve_policy_state=preserve_policy_state,
+                clear_tts_gating_after_drain=clear_tts_gating_after_drain,
+                deferred_tts_tokens=deferred_tts_tokens,
             ),
             name=f"provider-output-drain-{call_id}",
         )
@@ -1399,6 +1418,8 @@ class Engine:
         *,
         reset_timer: bool,
         preserve_policy_state: bool,
+        clear_tts_gating_after_drain: bool = False,
+        deferred_tts_tokens: Tuple[str, ...] = (),
     ) -> None:
         """Clear provider-output state only after queued caller audio is emitted."""
         current_task = asyncio.current_task()
@@ -1424,6 +1445,11 @@ class Engine:
         session = await self.session_store.get_by_call_id(call_id)
         if not session or bool(getattr(session, "cleanup_in_progress", False)):
             return
+        if clear_tts_gating_after_drain:
+            await self._clear_tts_gating_after_provider_drain(
+                call_id,
+                deferred_tts_tokens,
+            )
         watchdog = getattr(self, "no_input_watchdog", None)
         if watchdog is not None:
             await watchdog.note_agent_output_end(
@@ -1437,6 +1463,39 @@ class Engine:
             audio_drained=drained,
             reset_timer=reset_timer,
             preserve_policy_state=preserve_policy_state,
+        )
+
+    async def _clear_tts_gating_after_provider_drain(
+        self,
+        call_id: str,
+        tokens: Tuple[str, ...],
+    ) -> None:
+        """Release greeting echo protection after caller-facing audio is quiet."""
+        session = await self.session_store.get_by_call_id(call_id)
+        if not session or bool(getattr(session, "cleanup_in_progress", False)):
+            return
+        for token in tokens:
+            try:
+                if self.conversation_coordinator:
+                    await self.conversation_coordinator.on_tts_end(
+                        call_id,
+                        token,
+                        reason="provider-output-drained",
+                        notify_no_input=False,
+                    )
+                else:
+                    await self.session_store.clear_gating_token(call_id, token)
+            except Exception:
+                logger.debug(
+                    "Failed clearing deferred TTS gating after provider drain",
+                    call_id=call_id,
+                    token=token,
+                    exc_info=True,
+                )
+        logger.info(
+            "Deferred TTS gating cleared after provider drain",
+            call_id=call_id,
+            token_count=len(tokens),
         )
 
     async def _no_input_should_pause(self, call_id: str) -> bool:
@@ -12107,6 +12166,13 @@ class Engine:
 
             # Provider requests early TTS gating clear (e.g., OpenAI greeting complete)
             if etype == "ClearTtsGating":
+                if bool(event.get("defer_until_drain", False)):
+                    logger.info(
+                        "Deferring provider-requested TTS gating clear until transport drain",
+                        call_id=call_id,
+                        reason=event.get("reason"),
+                    )
+                    return
                 try:
                     tokens = list(getattr(session, "tts_tokens", set()) or [])
                 except Exception:
@@ -12722,6 +12788,9 @@ class Engine:
                 # Provider generation has ended. The downstream transport may
                 # still hold seconds of audio, so lifecycle completion and drain
                 # completion remain separate signals.
+                defer_gating_until_drain = bool(
+                    event.get("defer_tts_gating_until_drain", False)
+                )
                 # If we were suppressing output due to barge-in, end suppression at a segment boundary.
                 # This prevents cutting into the next (new) response once the provider finishes the interrupted one.
                 try:
@@ -12747,30 +12816,38 @@ class Engine:
                         await self.streaming_playback_manager.mark_segment_boundary(call_id)
                     except Exception:
                         logger.debug("Failed to mark segment boundary", call_id=call_id, exc_info=True)
-                    try:
-                        await self.streaming_playback_manager.end_segment_gating(
-                            call_id,
-                            notify_no_input=False,
+                    if defer_gating_until_drain:
+                        logger.info(
+                            "Retaining greeting TTS gating until transport drain",
+                            call_id=call_id,
+                            provider=getattr(session, "provider_name", None),
                         )
-                    except Exception:
-                        logger.debug("Failed to end segment gating", call_id=call_id, exc_info=True)
-                    # Also clear fallback gating token if direct gating was applied
-                    try:
-                        _fallback_token = f"tts_segment:{call_id}"
-                        if self.conversation_coordinator:
-                            await self.conversation_coordinator.on_tts_end(
+                    else:
+                        try:
+                            await self.streaming_playback_manager.end_segment_gating(
                                 call_id,
-                                _fallback_token,
-                                reason="segment-end-fallback",
                                 notify_no_input=False,
                             )
-                        else:
-                            await self.session_store.clear_gating_token(call_id, _fallback_token)
-                    except Exception:
-                        pass
-                    # CRITICAL FIX #1: Do NOT discard call_id for providers with server-side AEC
-                    # (OpenAI, Deepgram, etc.) — discarding causes repeated re-gating interruptions.
-                    # Re-arm only for providers/backends that need self-echo suppression.
+                        except Exception:
+                            logger.debug("Failed to end segment gating", call_id=call_id, exc_info=True)
+                        # Also clear fallback gating token if direct gating was applied
+                        try:
+                            _fallback_token = f"tts_segment:{call_id}"
+                            if self.conversation_coordinator:
+                                await self.conversation_coordinator.on_tts_end(
+                                    call_id,
+                                    _fallback_token,
+                                    reason="segment-end-fallback",
+                                    notify_no_input=False,
+                                )
+                            else:
+                                await self.session_store.clear_gating_token(call_id, _fallback_token)
+                        except Exception:
+                            pass
+                    # Keep provider-native VAD/barge-in paths continuously armed
+                    # after their one-time greeting gate. Re-gating every response
+                    # would suppress caller interruption audio. Providers without
+                    # that path must re-arm engine-side echo suppression.
                     _prov = getattr(session, 'provider_name', None)
                     should_rearm_segment_gating = self._get_provider_kind(_prov) in ("google_live", "local")
                     if should_rearm_segment_gating:
@@ -12799,7 +12876,11 @@ class Engine:
                 # Publish generation completion only after the stream boundary
                 # or sentinel is in place. The lifecycle observer then keeps raw
                 # VAD/watchdog output state active until those buffers drain.
-                await self._note_provider_output_end(call_id, session)
+                await self._note_provider_output_end(
+                    call_id,
+                    session,
+                    clear_tts_gating_after_drain=defer_gating_until_drain,
+                )
 
                 # Signal farewell done event if we're waiting for hangup
                 farewell_key = f"farewell_done_{call_id}"

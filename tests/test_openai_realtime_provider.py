@@ -38,6 +38,31 @@ def _cleanup_metrics(call_id: str) -> None:
     return
 
 
+@pytest.mark.asyncio
+async def test_greeting_audio_done_defers_tts_gating_until_transport_drain(openai_config):
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = OpenAIRealtimeProvider(openai_config, on_event=on_event)
+    provider._call_id = "call-greeting-drain"
+    provider._greeting_response_id = "resp-greeting"
+    provider._current_response_id = "resp-greeting"
+    provider._in_audio_burst = True
+
+    await provider._emit_audio_done()
+
+    assert events == [
+        {
+            "type": "AgentAudioDone",
+            "streaming_done": True,
+            "call_id": "call-greeting-drain",
+            "defer_tts_gating_until_drain": True,
+        }
+    ]
+
+
 def _function_call_event(response_id="resp-1", call_id="call-1", name="lookup"):
     return {
         "type": "response.output_item.done",

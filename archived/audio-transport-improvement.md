@@ -759,9 +759,40 @@ Validate audio quality and transport integrity across the maintainer-approved re
 - [ ] Deploy one frozen revision to voiprnd and execute direct-extension calls
   for every configured/credentialed full-agent provider and modular pipeline.
   Archive each call before analysis and retain objective and subjective results.
-- [ ] Run the full backend/frontend regression gates, update the validation
-  matrix with pass/partial/untested classifications, and prepare the branch for
-  the repository PR workflow.
+  - Revision `49f60b09` is deployed and healthy on voiprnd.
+  - ElevenLabs full-agent call `1784932129.24`, archived at
+    `logs/archived/rca-20260724-223012`, objectively passed the direct G.722 to
+    `slin16@16000` to provider PCM16/16 kHz path in both directions with no
+    resampling, zero RTP loss, functional barge-in, and clean teardown. The one
+    spoken seven-digit sequence was transcribed exactly but the demo agent
+    declined to repeat it; the sibilance phrase was transcribed and repeated
+    exactly. Subjective caller verdict is pending.
+  - Google Live call `1784932604.28`, archived at
+    `logs/archived/rca-20260724-223726`, passed objectively and subjectively.
+    G.722/16 kHz caller audio reached Google as linear PCM16/16 kHz without
+    input resampling; Google native 24 kHz PCM was converted once by the
+    profile-selected linear resampler to `slin16@16000`. The seven-digit and
+    sibilance rows were transcribed and repeated exactly, barge-in worked, RTP
+    loss was zero, teardown was clean, and the maintainer described the voice
+    quality as awesome/great. The conversion reports `alias_safe=false`, which
+    is retained as an explicit property of the compatibility linear policy.
+  - OpenAI Realtime call `1784932927.32`, archived at
+    `logs/archived/rca-20260724-224324`, passed the G.722 → 16 kHz AudioSocket →
+    OpenAI 24 kHz input and OpenAI 24→16 kHz output paths. Digits and the
+    sibilance phrase were exact, RTP loss was zero, normal-turn audio sounded
+    great, and teardown was clean. The row remains **PARTIAL** because startup
+    echo was admitted after provider generation ended but before the greeting
+    transport drained: OpenAI transcribed loopback fragments `you` and `Bye.`
+    and generated two unintended responses. The narrow correction will defer
+    only OpenAI greeting gating release through the existing caller-facing
+    drain observer; normal responses and other providers remain unchanged.
+- [x] Run the full backend/frontend regression gates. Backend passed 1,981
+  tests with 18 skips; frontend passed 221 tests, production build, and lint
+  with existing warnings only. Focused wideband/provider/pipeline coverage
+  passed 111 tests with one skip; compile, secret, release-doc, and diff checks
+  passed.
+- [ ] Complete the live validation matrix with pass/partial/untested
+  classifications and prepare the branch for the repository PR workflow.
 
 Release guidance: `wideband_pcm_16k` is opt-in. Recommend it only when the SIP
 endpoint or trunk provider supports and actually negotiates G.722 (or another

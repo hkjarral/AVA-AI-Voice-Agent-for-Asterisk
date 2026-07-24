@@ -1973,7 +1973,9 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 # Re-enable turn_detection now that greeting is fully generated
                 await self._re_enable_vad()
 
-                # Request early TTS gating clear so caller audio can flow after greeting
+                # AgentAudioDone retains greeting gating through caller-facing
+                # drain. A no-audio greeting has nothing to drain and clears
+                # immediately through the same event contract.
                 try:
                     if self.on_event and self._call_id:
                         await self.on_event(
@@ -1981,6 +1983,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                                 "type": "ClearTtsGating",
                                 "call_id": self._call_id,
                                 "reason": "greeting_completed",
+                                "defer_until_drain": had_audio_for_response,
                             }
                         )
                 except Exception:
@@ -2453,11 +2456,19 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             return
         try:
             if self._in_audio_burst:
+                is_greeting = bool(
+                    self._greeting_response_id
+                    and self._current_response_id == self._greeting_response_id
+                )
                 await self.on_event(
                     {
                         "type": "AgentAudioDone",
                         "streaming_done": True,
                         "call_id": self._call_id,
+                        # Provider generation can finish before paced caller
+                        # playback. Retain greeting echo protection until the
+                        # engine confirms that transport has drained.
+                        "defer_tts_gating_until_drain": is_greeting,
                     }
                 )
         except Exception:
