@@ -22,6 +22,7 @@ from typing import Dict, Any, Optional, List, Union
 from structlog import get_logger
 
 from ..providers.base import ProviderCapabilities
+from ..audio.audiosocket_protocol import normalize_slin_format
 
 logger = get_logger(__name__)
 
@@ -485,15 +486,29 @@ class TransportOrchestrator:
         """
         Negotiate formats between profile preferences and provider capabilities.
         
-        Wire format: For AudioSocket, use audiosocket.format (authoritative).
-                     For RTP, use profile.transport_out (negotiated codec).
+        Wire format: AudioSocket signed-linear profiles may opt into their
+                     rate-specific wire format. Companded profiles retain the
+                     global AudioSocket fallback for backward compatibility.
+                     RTP always uses profile.transport_out.
         Provider format: try profile preference, fallback to provider's supported formats.
         """
         # CRITICAL: Wire format depends on transport type
         if self.audio_transport == "audiosocket":
-            # AudioSocket: use actual format from audiosocket.format config
+            # AudioSocket message types represent signed-linear sample rates.
+            # Allow a profile such as wideband_pcm_16k to select slin16 while
+            # preserving legacy ulaw/alaw profiles that depend on the global
+            # AudioSocket format (normally slin@8 kHz).
             wire_enc = self.audiosocket_format
             wire_rate = self.audiosocket_sample_rate
+            profile_wire_enc = profile.transport_out.get('encoding', '')
+            profile_wire_rate = profile.transport_out.get('sample_rate_hz')
+            try:
+                wire_enc, wire_rate = normalize_slin_format(
+                    profile_wire_enc,
+                    int(profile_wire_rate) if profile_wire_rate is not None else None,
+                )
+            except (TypeError, ValueError):
+                pass
             if not wire_rate:
                 # Infer rate from format: slin=8kHz, slin16=16kHz
                 wire_enc_lower = wire_enc.lower().strip()

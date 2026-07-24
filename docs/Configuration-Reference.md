@@ -126,6 +126,15 @@ contract plus alias-safe provider-output downsampling. It reduces sibilant hiss
 when a provider emits 16 or 24 kHz PCM; native 8 kHz output is unchanged. To
 roll back a test, assign the Agent back to `telephony_ulaw_8k`.
 
+`wideband_pcm_16k` is the opt-in end-to-end wideband profile for AudioSocket.
+It originates the media channel as `c(slin16)`, receives PCM16 at 16 kHz in
+AudioSocket type `0x12`, and stamps outbound frames with the same type. This is
+per call, so 8 and 16 kHz Agents can run concurrently. It requires Asterisk
+20.17+, 21.12+, 22.7+, or 23.1+ and a wideband caller leg (for example G.722).
+Older or unrecognized Asterisk versions fail the call closed with a remediation
+message. Use `telephony_ulaw_8k` or `telephony_enhanced_8k` for PSTN/G.711 calls;
+upsampling an 8 kHz trunk cannot restore frequencies that the trunk discarded.
+
 The profile field is `output_resampler: linear | bandlimited`. Provider and
 pipeline fields default to `inherit`. Narrow overrides resolve in this order:
 full-agent environment override, pipeline override, provider override, audio
@@ -295,7 +304,7 @@ contains configuration and verification evidence, but never the referenced API p
 - audiosocket.host: Bind address for AudioSocket listener.
 - audiosocket.advertise_host: Address Asterisk connects to (optional; defaults to `audiosocket.host`). Use for NAT/VPN.
 - audiosocket.port: TCP port.
-- audiosocket.format: shipped YAML uses `slin` (16-bit signed linear @ 8 kHz) — this is what runs in production and is the validated default. The Pydantic code default is `slin16` if you remove the YAML override; `slin16`, `slin24`, `ulaw`, and `alaw` are also accepted by the validator but are not currently exercised in CI or the dev server. Stick with `slin` unless you have a specific reason.
+- audiosocket.format: fallback wire format for legacy/companded profiles. Shipped YAML uses `slin` (16-bit signed linear @ 8 kHz), the validated compatibility default. Signed-linear Audio Profiles override this per call: `wideband_pcm_16k` selects `slin16` without changing the global value. Keep the fallback at `slin`; select wideband on the Agent or with `AI_AUDIO_PROFILE` rather than changing it globally.
 
 ## ExternalMedia
 

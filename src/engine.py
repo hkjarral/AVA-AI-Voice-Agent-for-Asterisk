@@ -57,6 +57,11 @@ from .logging_config import get_logger, configure_logging
 from .live_status_publisher import LiveStatusPublisher, live_status_component
 from .rtp_server import RTPServer
 from .audio.audiosocket_server import AudioSocketServer
+from .audio.audiosocket_protocol import (
+    AudioSocketAudioFrame,
+    normalize_slin_format,
+    supports_multirate_audiosocket,
+)
 from .audio.resampler import resample_audio, resolve_output_resampler_policy
 from .providers.base import AIProviderInterface
 from .providers.deepgram import DeepgramProvider
@@ -7944,17 +7949,17 @@ class Engine:
         if advertise_host in ("0.0.0.0", "::"):
             advertise_host = "127.0.0.1"
         port = self.config.audiosocket.port
-        # Match channel interface codec to YAML audiosocket.format
+        # Match the channel codec to this call's resolved profile. The global
+        # AudioSocket format remains the fallback for legacy sessions.
         codec = "slin"
         try:
-            fmt = (getattr(self.config.audiosocket, 'format', '') or '').lower()
-            if fmt in ("ulaw", "mulaw", "g711_ulaw", "mu-law"):
-                codec = "ulaw"
-            elif fmt in ("slin16", "linear16", "pcm16"):
-                codec = "slin16"
-            else:
-                # Treat any other/legacy value (e.g., 'slin') as 8 kHz PCM16
-                codec = "slin"
+            session = await self.session_store.get_by_call_id(caller_channel_id)
+            transport = getattr(session, "transport_profile", None) if session else None
+            fmt = getattr(transport, "wire_encoding", None)
+            rate = getattr(transport, "wire_sample_rate", None)
+            if not fmt:
+                fmt = getattr(self.config.audiosocket, 'format', '') or 'slin'
+            codec, _ = normalize_slin_format(fmt, rate)
         except Exception:
             codec = "slin"
         endpoint = f"AudioSocket/{advertise_host}:{port}/{audio_uuid}/c({codec})"
@@ -9270,8 +9275,15 @@ class Engine:
             logger.error("Error binding AudioSocket UUID", conn_id=conn_id, uuid=uuid_str, error=str(exc), exc_info=True)
             return False
 
-    async def _audiosocket_handle_audio(self, conn_id: str, audio_bytes: bytes) -> None:
+    async def _audiosocket_handle_audio(
+        self,
+        conn_id: str,
+        frame: AudioSocketAudioFrame,
+    ) -> None:
         """Forward inbound AudioSocket audio to the active provider for the bound call."""
+        audio_bytes = frame.payload
+        frame_format = frame.encoding
+        frame_rate = frame.sample_rate
         # Track every frame for diagnostics
         if not hasattr(self, '_audiosocket_frame_count'):
             self._audiosocket_frame_count = {}
@@ -9304,6 +9316,9 @@ class Engine:
                     call_id=caller_channel_id,
                     frame_num=frame_num,
                     frame_bytes=len(audio_bytes),
+                    message_type=f"0x{frame.message_type:02x}",
+                    wire_format=frame_format,
+                    sample_rate=frame_rate,
                     conn_id=conn_id,
                 )
 
@@ -9325,8 +9340,12 @@ class Engine:
 
             diagnostics_flags = session.audio_diagnostics
             if "inbound_first_frame" not in diagnostics_flags:
-                fmt, rate = self._infer_transport_from_frame(len(audio_bytes))
-                await self._update_transport_profile(session, fmt=fmt, sample_rate=rate, source="audiosocket")
+                await self._update_transport_profile(
+                    session,
+                    fmt=frame_format,
+                    sample_rate=frame_rate,
+                    source="audiosocket-header",
+                )
                 diagnostics_flags["inbound_first_frame"] = True
 
             # Per-call RX bytes
@@ -9342,11 +9361,8 @@ class Engine:
                 vad_state = session.vad_state = {}
             if not vad_state.get('format_probe_done'):
                 try:
-                    try:
-                        as_fmt = (getattr(self.config, 'audiosocket', None).format or 'ulaw').lower()
-                    except Exception:
-                        as_fmt = 'ulaw'
-                    if as_fmt in ('slin16', 'linear16', 'pcm16'):
+                    as_fmt = frame_format
+                    if as_fmt.startswith('slin'):
                         rms_native = audioop.rms(audio_bytes, 2)
                         try:
                             swapped = audioop.byteswap(audio_bytes, 2)
@@ -9357,6 +9373,8 @@ class Engine:
                             "AudioSocket frame probe",
                             call_id=caller_channel_id,
                             audiosocket_format=as_fmt,
+                            sample_rate=frame_rate,
+                            message_type=f"0x{frame.message_type:02x}",
                             frame_bytes=len(audio_bytes),
                             rms_native=rms_native,
                             rms_swapped=rms_swapped,
@@ -9404,22 +9422,10 @@ class Engine:
             except Exception:
                 swap_needed_flag = False
             try:
-                # CRITICAL: AudioSocket format is authoritative for AudioSocket transport
-                # For RTP, use transport profile (negotiated codec)
                 if self.config.audio_transport == "audiosocket":
-                    # Use AudioSocket's actual format (from YAML)
-                    profile_fmt = getattr(self.config.audiosocket, "format", "slin16")
-                    # Get sample rate from AudioSocket config or infer from format
-                    profile_rate = getattr(self.config.audiosocket, "sample_rate", None)
-                    if not profile_rate:
-                        # Infer rate from format: slin=8kHz, slin16=16kHz
-                        canonical_fmt = self._canonicalize_encoding(profile_fmt)
-                        if canonical_fmt == "slin":
-                            profile_rate = 8000
-                        elif canonical_fmt == "slin16":
-                            profile_rate = 16000
-                        else:
-                            profile_rate = getattr(self.config.streaming, "sample_rate", 8000)
+                    # The TLV message type is the authoritative per-frame format.
+                    profile_fmt = frame_format
+                    profile_rate = frame_rate
                 else:
                     # For RTP: use transport profile (negotiated codec)
                     profile_fmt = session.transport_profile.format or "ulaw"
@@ -9427,8 +9433,8 @@ class Engine:
             except Exception:
                 # Safe fallback based on transport type
                 if self.config.audio_transport == "audiosocket":
-                    profile_fmt = "slin16"
-                    profile_rate = 16000
+                    profile_fmt = frame_format
+                    profile_rate = frame_rate
                 else:
                     profile_fmt = "ulaw"
                     profile_rate = 8000
@@ -16155,6 +16161,30 @@ class Engine:
                 # same agent for audio-profile lookup as for prompt/tools (Finding 1).
                 routing_method=session.routing_method,
             )
+
+            if (
+                getattr(self.config, "audio_transport", "audiosocket") == "audiosocket"
+                and int(transport.wire_sample_rate or 0) > 8000
+            ):
+                asterisk_version = getattr(self.ari_client, "asterisk_version", None)
+                if not supports_multirate_audiosocket(asterisk_version):
+                    message = (
+                        "audio_profile_incompatible: AudioSocket wideband requires "
+                        "Asterisk 20.17+, 21.12+, 22.7+, or 23.1+; "
+                        f"detected {asterisk_version or 'an unknown version'}"
+                    )
+                    session.context_resolution_error = message
+                    session.error_message = message
+                    await self._save_session(session)
+                    logger.error(
+                        "Wideband AudioSocket profile rejected on incompatible Asterisk",
+                        call_id=session.call_id,
+                        profile=transport.profile_name,
+                        wire_format=f"{transport.wire_encoding}@{transport.wire_sample_rate}Hz",
+                        asterisk_version=asterisk_version,
+                        remediation="Upgrade Asterisk or select an 8 kHz audio profile",
+                    )
+                    return
             
             # Store transport in session (keep as object, not dict, for legacy code compatibility)
             session.transport_profile = transport
@@ -16164,13 +16194,9 @@ class Engine:
             
             await self._save_session(session)
             
-            # Apply to streaming manager
-            # CRITICAL: Do NOT set global sample_rate - it's shared across all calls!
-            # Each call must pass target_sample_rate explicitly to start_streaming_playback()
+            # Apply timing defaults only. Wire format and sample rate are
+            # per-call and flow with each playback frame.
             try:
-                self.streaming_playback_manager.audiosocket_format = transport.wire_encoding
-                # REMOVED: self.streaming_playback_manager.sample_rate = transport.wire_sample_rate
-                # Global sample_rate causes race condition when multiple calls use different rates
                 if hasattr(self.streaming_playback_manager, 'chunk_size_ms'):
                     self.streaming_playback_manager.chunk_size_ms = transport.chunk_ms
                 if hasattr(self.streaming_playback_manager, 'idle_cutoff_ms'):

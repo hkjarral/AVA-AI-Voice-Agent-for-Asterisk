@@ -70,7 +70,7 @@ describe('ProfilesPage audio contract safety', () => {
         expect(await screen.findByText('Provider Native · 8 kHz Wire')).toBeInTheDocument();
         expect(screen.getByText('Enhanced Telephony')).toBeInTheDocument();
         expect(screen.getByText('Alias-safe')).toBeInTheDocument();
-        expect(screen.getByText('Experimental Wideband')).toBeInTheDocument();
+        expect(screen.getByText('Wideband · Asterisk 20.17+')).toBeInTheDocument();
         expect(await screen.findByText('Used By Agents')).toBeInTheDocument();
         expect(screen.getByText('Ava Demo')).toBeInTheDocument();
 

@@ -56,6 +56,7 @@ class ARIClient:
         self._reconnect_attempt = 0
         self._max_reconnect_backoff = 60  # Max seconds between reconnect attempts
         self._connected = False  # True readiness state for /ready endpoint
+        self.asterisk_version: Optional[str] = None
         self._listener_active = False  # Guard against duplicate listener supervisors
         self.event_handlers: Dict[str, List[Callable]] = {}
         self.active_playbacks: Dict[str, str] = {}
@@ -106,7 +107,15 @@ class ARIClient:
             async with self.http_session.get(f"{self.http_url}/asterisk/info") as response:
                 if response.status != 200:
                     raise ConnectionError(f"Failed to connect to ARI HTTP endpoint. Status: {response.status}")
-                logger.info("Successfully connected to ARI HTTP endpoint.", scheme=http_scheme, ssl_verify=self.ssl_verify)
+                info = await response.json(content_type=None)
+                system_info = info.get("system", {}) if isinstance(info, dict) else {}
+                self.asterisk_version = str(system_info.get("version") or "").strip() or None
+                logger.info(
+                    "Successfully connected to ARI HTTP endpoint.",
+                    scheme=http_scheme,
+                    ssl_verify=self.ssl_verify,
+                    asterisk_version=self.asterisk_version,
+                )
 
             # Then, connect to the WebSocket. Close any stale socket first so a reconnect
             # never reuses a dead iterator.

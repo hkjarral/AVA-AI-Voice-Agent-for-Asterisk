@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-call 16 kHz AudioSocket transport:** the `wideband_pcm_16k` Audio Profile now selects Asterisk `slin16` and the rate-specific AudioSocket `0x12` frame type in both directions without changing the global transport or other active calls. Inbound decoding follows the AudioSocket header instead of guessing from payload length, while the existing 8 kHz profiles retain `slin`/`0x10`. Wideband calls fail closed with a clear compatibility error unless ARI reports Asterisk 20.17+, 21.12+, 22.7+, or 23.1+.
+
 ## [7.5.1] - 2026-07-23
 
 ### Fixed

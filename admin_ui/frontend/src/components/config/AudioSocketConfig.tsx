@@ -15,7 +15,7 @@ const AudioSocketConfig: React.FC<AudioSocketConfigProps> = ({ config, onChange 
             <div>
                 <h3 className="text-lg font-semibold mb-2">AudioSocket Configuration</h3>
                 <p className="text-sm text-muted-foreground mb-4">
-                    Configure AudioSocket transport for legacy TCP-based audio streaming
+                    Configure the AudioSocket TCP transport and its legacy fallback format
                 </p>
             </div>
 
@@ -28,9 +28,12 @@ const AudioSocketConfig: React.FC<AudioSocketConfigProps> = ({ config, onChange 
                         onChange={(e) => handleChange('format', e.target.value)}
                     >
                         <option value="slin">SLIN (8kHz PCM)</option>
+                        <option value="slin16">SLIN16 (16kHz PCM)</option>
                         <option value="ulaw">μ-law (8kHz)</option>
                     </select>
-                    <p className="text-xs text-muted-foreground">Audio format for AudioSocket stream</p>
+                    <p className="text-xs text-muted-foreground">
+                        Fallback for Agents whose audio profile does not select a signed-linear wire format
+                    </p>
                 </div>
 
                 <div className="space-y-2">
@@ -60,8 +63,8 @@ const AudioSocketConfig: React.FC<AudioSocketConfigProps> = ({ config, onChange 
 
             <div className="mt-4 p-4 bg-muted/50 rounded-lg">
                 <p className="text-sm text-muted-foreground">
-                    <strong>Note:</strong> AudioSocket is a legacy transport method. For new deployments,
-                    consider using External Media (RTP) for better performance and lower latency.
+                    <strong>Wideband:</strong> Select the <code>wideband_pcm_16k</code> profile on an
+                    Agent to use 16 kHz per call. It requires Asterisk 20.17+, 21.12+, 22.7+, or 23.1+.
                 </p>
             </div>
         </div>

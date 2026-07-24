@@ -251,9 +251,10 @@ const ProfilesPage = () => {
             .filter(Boolean);
     };
 
-    const getProfileSupport = (profileName: string, profile: any): 'ga' | 'enhanced' | 'experimental' | 'provider-native' | 'custom' => {
+    const getProfileSupport = (profileName: string, profile: any): 'ga' | 'enhanced' | 'wideband' | 'experimental' | 'provider-native' | 'custom' => {
         if (profileName === 'telephony_enhanced_8k') return 'enhanced';
         if (profileName === 'telephony_ulaw_8k' || profileName === 'telephony_responsive') return 'ga';
+        if (profileName === 'wideband_pcm_16k') return 'wideband';
         const wireRate = Number(profile?.transport_out?.sample_rate_hz || 0);
         if (wireRate > 8000) return 'experimental';
         const providerRate = Number(profile?.provider_pref?.output_sample_rate_hz || profile?.internal_rate_hz || 0);
@@ -267,7 +268,7 @@ const ProfilesPage = () => {
             'telephony_responsive': 'GA 8 kHz telephony transport with adaptive timing',
             'telephony_ulaw_8k': 'GA 8 kHz telephony transport matching G.711 μ-law',
             'telephony_enhanced_8k': 'Opt-in 8 kHz telephony with alias-safe downsampling for clearer 16/24 kHz provider audio',
-            'wideband_pcm_16k': 'Experimental 16 kHz wire transport; requires an end-to-end wideband call path',
+            'wideband_pcm_16k': '16 kHz AudioSocket transport; requires Asterisk 20.17+, 21.12+, 22.7+, or 23.1+ and a wideband call path',
             'openai_realtime_24k': 'Experimental profile with 24 kHz provider-native processing and an 8 kHz Asterisk wire leg'
         };
         return descriptions[profileName] || 'Custom audio profile';
@@ -486,6 +487,8 @@ const ProfilesPage = () => {
                                                         ? 'bg-green-500/15 text-green-700 dark:text-green-300'
                                                         : support === 'enhanced'
                                                             ? 'bg-blue-500/15 text-blue-700 dark:text-blue-300'
+                                                        : support === 'wideband'
+                                                            ? 'bg-violet-500/15 text-violet-700 dark:text-violet-300'
                                                         : support === 'experimental' || support === 'provider-native'
                                                             ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
                                                             : 'bg-secondary text-muted-foreground'
@@ -494,6 +497,8 @@ const ProfilesPage = () => {
                                                         ? 'GA Telephony'
                                                         : support === 'enhanced'
                                                             ? 'Enhanced Telephony'
+                                                        : support === 'wideband'
+                                                            ? 'Wideband · Asterisk 20.17+'
                                                         : support === 'experimental'
                                                             ? 'Experimental Wideband'
                                                             : support === 'provider-native'

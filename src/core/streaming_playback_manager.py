@@ -2693,6 +2693,22 @@ class StreamingPlaybackManager:
                 if not conn_id:
                     logger.warning("Streaming transport missing AudioSocket connection", call_id=call_id)
                     return False
+                fmt = (
+                    self._canonicalize_encoding(target_fmt)
+                    or self._canonicalize_encoding(stream_info.get("target_format"))
+                    or self._canonicalize_encoding(self.audiosocket_format)
+                    or "ulaw"
+                )
+                try:
+                    sample_rate = int(
+                        target_rate
+                        or stream_info.get("target_sample_rate")
+                        or self.sample_rate
+                    )
+                except Exception:
+                    sample_rate = self.sample_rate
+                if sample_rate <= 0:
+                    sample_rate = self._default_sample_rate_for_format(fmt, self.sample_rate)
                 if self.audio_capture_manager:
                     try:
                         self.audio_capture_manager.append_encoded(
@@ -2706,17 +2722,6 @@ class StreamingPlaybackManager:
                         logger.debug("Outbound audio capture failed", call_id=call_id, exc_info=True)
                 # One-time debug for first outbound frame to identify codec/format
                 if call_id not in self._first_send_logged:
-                    fmt = (
-                        self._canonicalize_encoding(target_fmt)
-                        or self._canonicalize_encoding(self.audiosocket_format)
-                        or "ulaw"
-                    )
-                    try:
-                        sample_rate = int(target_rate if target_rate is not None else self.sample_rate)
-                    except Exception:
-                        sample_rate = self.sample_rate
-                    if sample_rate <= 0:
-                        sample_rate = self._default_sample_rate_for_format(fmt, self.sample_rate)
                     logger.info(
                         "🎵 STREAMING OUTBOUND - First frame",
                         call_id=call_id,
@@ -2777,7 +2782,12 @@ class StreamingPlaybackManager:
                     conns = list(set(getattr(session, 'audiosocket_conns', []) or []))
                     sent = 0
                     for cid in conns or [conn_id]:
-                        if await self.audiosocket_server.send_audio(cid, chunk):
+                        if await self.audiosocket_server.send_audio(
+                            cid,
+                            chunk,
+                            encoding=fmt,
+                            sample_rate=sample_rate,
+                        ):
                             sent += 1
                     if sent == 0:
                         logger.warning("AudioSocket broadcast send failed (no recipients)", call_id=call_id, stream_id=stream_id)
@@ -2786,7 +2796,12 @@ class StreamingPlaybackManager:
                         logger.debug("AudioSocket broadcast sent", call_id=call_id, stream_id=stream_id, recipients=len(conns))
                     return True
                 # Normal single-conn send
-                success = await self.audiosocket_server.send_audio(conn_id, chunk)
+                success = await self.audiosocket_server.send_audio(
+                    conn_id,
+                    chunk,
+                    encoding=fmt,
+                    sample_rate=sample_rate,
+                )
                 if not success:
                     logger.warning("AudioSocket streaming send failed", call_id=call_id, stream_id=stream_id)
                 else:
