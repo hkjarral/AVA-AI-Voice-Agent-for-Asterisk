@@ -799,7 +799,19 @@ Validate audio quality and transport integrity across the maintainer-approved re
     restores normal full-duplex input. Other turns, providers, formats, and
     resampler policies remain unchanged. The corrective revision passes 68
     focused provider/lifecycle/transport tests and the full backend gate (2,010
-    passed, 7 skipped). A fresh OpenAI live retest is pending.
+    passed, 7 skipped).
+  - OpenAI corrected greeting retest `1784936478.40`, archived at
+    `logs/archived/rca-20260724-234100`, **passed** on revision `e26a9e0a`.
+    Provider-rate silence was sent throughout the initial greeting; when
+    provider generation ended, 242,880 stream bytes and 19 jitter frames still
+    remained, and the guard correctly stayed active until caller-facing drain
+    completed at `16:41:30.840`. OpenAI's input buffer was then cleared before
+    the guard released. No speech-start, caller transcript, barge-in, or
+    unsolicited response occurred during the silent greeting window. The first
+    speech-start was real caller input more than 12 seconds after release;
+    OpenAI transcribed `731-9462` exactly and repeated all seven digits in
+    order. G.722/`slin16@16000`, zero RTP loss, and clean teardown were retained.
+    The OpenAI wideband full-agent row is now **PASS**.
 - [x] Run the full backend/frontend regression gates. Backend passed 1,981
   tests with 18 skips; frontend passed 221 tests, production build, and lint
   with existing warnings only. Focused wideband/provider/pipeline coverage
