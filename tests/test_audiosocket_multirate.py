@@ -194,6 +194,46 @@ async def test_streaming_manager_keeps_audiosocket_framing_per_call():
 
 
 @pytest.mark.asyncio
+async def test_streaming_start_honors_wideband_target_over_global_fallback():
+    session = SimpleNamespace(
+        provider_name="elevenlabs_agent",
+        transport_profile=SimpleNamespace(
+            wire_sample_rate=16000,
+            provider_output_sample_rate=16000,
+        ),
+        streaming_started=False,
+        current_stream_id=None,
+    )
+    session_store = SimpleNamespace(
+        get_by_call_id=AsyncMock(return_value=session),
+        upsert_call=AsyncMock(),
+    )
+    manager = StreamingPlaybackManager(
+        session_store,
+        ari_client=SimpleNamespace(),
+        streaming_config={"sample_rate": 8000},
+        audio_transport="audiosocket",
+    )
+    manager.audiosocket_format = "slin"
+
+    stream_id = await manager.start_streaming_playback(
+        "call-wideband",
+        asyncio.Queue(),
+        source_encoding="slin16",
+        source_sample_rate=16000,
+        target_encoding="slin16",
+        target_sample_rate=16000,
+    )
+    try:
+        assert stream_id
+        assert manager.active_streams["call-wideband"]["target_format"] == "slin16"
+        assert manager.active_streams["call-wideband"]["target_sample_rate"] == 16000
+    finally:
+        if stream_id:
+            await manager.stop_streaming_playback("call-wideband")
+
+
+@pytest.mark.asyncio
 async def test_engine_originates_wideband_channel_from_call_profile():
     session = SimpleNamespace(
         transport_profile=SimpleNamespace(

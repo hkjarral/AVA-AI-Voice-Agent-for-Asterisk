@@ -688,8 +688,12 @@ class StreamingPlaybackManager:
                     resolved_target_format,
                     self.sample_rate,
                 )
-            # For ExternalMedia/RTP, use codec from session instead of audiosocket_format
-            transport_format = self.audiosocket_format
+            # The caller already resolved a per-call target above. AudioSocket
+            # must honor it so an 8 kHz and a 16 kHz call can coexist; the
+            # process-wide value is only a fallback when no target was passed.
+            transport_format = resolved_target_format
+            # ExternalMedia/RTP remains channel-owned and uses the codec ARI
+            # negotiated for that specific media channel.
             if self.audio_transport == "externalmedia":
                 session = await self.session_store.get_by_call_id(call_id)
                 if session and hasattr(session, 'external_media_codec') and session.external_media_codec:

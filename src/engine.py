@@ -17307,6 +17307,13 @@ class Engine:
                 except Exception:
                     transport_rate = None
 
+        # A resolved call profile is authoritative over the manager's process-
+        # wide fallback. Report the wire format the call actually requested.
+        if transport_fmt:
+            wire_encoding = transport_fmt
+        if transport_rate:
+            wire_rate = transport_rate
+
         def _canon_rate(value: Optional[Any]) -> Optional[int]:
             if value is None:
                 return None
