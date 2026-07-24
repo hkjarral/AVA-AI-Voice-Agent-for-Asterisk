@@ -822,6 +822,18 @@ Validate audio quality and transport integrity across the maintainer-approved re
     stale audio. RTP loss was zero, teardown was clean, and the maintainer
     described it as a great call with great quality. The Grok wideband
     full-agent row is now **PASS**.
+  - Deepgram full-agent call `1784937142.48`, archived at
+    `logs/archived/rca-20260724-235400`, is **PARTIAL**. The Agent profile and
+    caller path resolved to `slin16@16000`, and Deepgram accepted linear16/16
+    kHz input, recognized all seven digits and the sibilance phrase exactly,
+    handled two local-VAD interruptions, and cleaned up normally. However, its
+    Settings payload still requested μ-law/8 kHz output. Root cause was a stale
+    constructor-time output-format cache created before call-owned transport
+    overrides were applied. The provider now refreshes its session output
+    baseline from the live per-call config when building Settings; 108 focused
+    Deepgram/provider/transport tests and the full backend gate (2,011 passed,
+    7 skipped) pass. A native 16/16 kHz live retest is required before marking
+    the row passed.
 - [x] Run the full backend/frontend regression gates. Backend passed 1,981
   tests with 18 skips; frontend passed 221 tests, production build, and lint
   with existing warnings only. Focused wideband/provider/pipeline coverage
