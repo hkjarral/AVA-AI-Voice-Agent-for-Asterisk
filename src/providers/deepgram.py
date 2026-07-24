@@ -491,8 +491,8 @@ class DeepgramProvider(AIProviderInterface):
             # Audio format capabilities
             input_encodings=["mulaw", "linear16"],
             input_sample_rates_hz=[8000, 16000],
-            output_encodings=["mulaw"],
-            output_sample_rates_hz=[8000],
+            output_encodings=["linear16", "mulaw"],
+            output_sample_rates_hz=[16000, 24000, 8000],
             preferred_chunk_ms=20,
             can_negotiate=True,  # Uses SettingsApplied ACK for runtime negotiation
             # Provider type and audio processing capabilities
@@ -500,6 +500,10 @@ class DeepgramProvider(AIProviderInterface):
             has_native_vad=True,  # Deepgram Voice Agent has built-in VAD
             has_native_barge_in=True,  # Handles interruptions internally
             requires_continuous_audio=True,  # Needs continuous audio for VAD
+            wideband_input_encoding="linear16",
+            wideband_input_sample_rate_hz=16000,
+            wideband_output_encoding="linear16",
+            wideband_output_sample_rate_hz=16000,
         )
     
     def parse_ack(self, event_data: Dict[str, Any]) -> Optional[ProviderCapabilities]:

@@ -152,6 +152,10 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             has_native_vad=True,
             has_native_barge_in=True,
             requires_continuous_audio=True,
+            wideband_input_encoding="pcm16",
+            wideband_input_sample_rate_hz=16000,
+            wideband_output_encoding="pcm16",
+            wideband_output_sample_rate_hz=16000,
         )
     
     async def start_session(

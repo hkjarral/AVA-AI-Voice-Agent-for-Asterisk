@@ -342,10 +342,10 @@ class GrokProvider(AIProviderInterface):
         return ProviderCapabilities(
             # Audio format capabilities
             input_encodings=["ulaw", "linear16"],
-            input_sample_rates_hz=[8000, 16000],
+            input_sample_rates_hz=[8000, 16000, 24000],
             # Output depends on session.update and downstream target; we advertise both
             output_encodings=["mulaw", "pcm16"],
-            output_sample_rates_hz=[8000, 24000],
+            output_sample_rates_hz=[8000, 16000, 24000],
             preferred_chunk_ms=20,
             can_negotiate=False,  # Uses static session.update config, not runtime ACK
             # Provider type and audio processing capabilities
@@ -354,6 +354,10 @@ class GrokProvider(AIProviderInterface):
             has_native_barge_in=True,  # Handles interruptions via cancel_response
             has_native_aec=False,  # AEC only available on client-side WebRTC paths, not server-side WebSocket
             requires_continuous_audio=True,  # Needs continuous audio for server-side VAD
+            wideband_input_encoding="linear16",
+            wideband_input_sample_rate_hz=16000,
+            wideband_output_encoding="pcm16",
+            wideband_output_sample_rate_hz=16000,
         )
     
     def parse_ack(self, event_data: Dict[str, Any]) -> Optional[ProviderCapabilities]:
@@ -373,8 +377,21 @@ class GrokProvider(AIProviderInterface):
             input_format = session.get('input_audio_format', 'pcm16')
             output_format = session.get('output_audio_format', 'pcm16')
             
-            # Grok Voice Agent API only supports 24kHz
-            sample_rate = 24000
+            audio = session.get("audio", {}) if isinstance(session, dict) else {}
+            input_audio = audio.get("input", {}) if isinstance(audio, dict) else {}
+            output_audio = audio.get("output", {}) if isinstance(audio, dict) else {}
+            input_format_obj = input_audio.get("format", {}) if isinstance(input_audio, dict) else {}
+            output_format_obj = output_audio.get("format", {}) if isinstance(output_audio, dict) else {}
+            input_rate = int(
+                input_format_obj.get("rate")
+                or getattr(self.config, "provider_input_sample_rate_hz", 0)
+                or 24000
+            )
+            output_rate = int(
+                output_format_obj.get("rate")
+                or getattr(self.config, "output_sample_rate_hz", 0)
+                or 24000
+            )
             
             # Map xAI format names to our encoding names
             format_map = {
@@ -391,14 +408,15 @@ class GrokProvider(AIProviderInterface):
                 call_id=self._call_id,
                 input_format=input_format,
                 output_format=output_format,
-                sample_rate=sample_rate,
+                input_sample_rate=input_rate,
+                output_sample_rate=output_rate,
             )
             
             return ProviderCapabilities(
                 input_encodings=[input_enc],
-                input_sample_rates_hz=[sample_rate],
+                input_sample_rates_hz=[input_rate],
                 output_encodings=[output_enc],
-                output_sample_rates_hz=[sample_rate],
+                output_sample_rates_hz=[output_rate],
                 preferred_chunk_ms=20,
                 can_negotiate=False,  # ACK confirmed static session configuration
             )

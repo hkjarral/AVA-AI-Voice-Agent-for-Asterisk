@@ -903,6 +903,12 @@ class OpenAILLMAdapter(LLMComponent):
 class OpenAITTSAdapter(TTSComponent):
     """# Milestone7: OpenAI TTS adapter calling the audio.speech REST API."""
 
+    wideband_output_format = {
+        "encoding": "linear16",
+        "sample_rate": 16000,
+        "options": {"response_format": "pcm"},
+    }
+
     def __init__(
         self,
         component_key: str,

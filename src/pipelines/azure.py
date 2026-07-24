@@ -859,6 +859,12 @@ class AzureTTSAdapter(TTSComponent):
     Output:   Audio bytes in the format specified by X-Microsoft-OutputFormat header
     """
 
+    wideband_output_format = {
+        "encoding": "linear16",
+        "sample_rate": 16000,
+        "options": {"output_format": "raw-16khz-16bit-mono-pcm"},
+    }
+
     def __init__(
         self,
         component_key: str,

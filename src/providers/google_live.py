@@ -711,10 +711,10 @@ class GoogleLiveProvider(AIProviderInterface):
         """Return capabilities of Google Live provider for transport orchestration."""
         return ProviderCapabilities(
             # Audio format capabilities
-            input_encodings=["ulaw", "pcm16"],  # μ-law or PCM16
-            input_sample_rates_hz=[8000, 16000],  # Telephony or wideband
-            output_encodings=["ulaw", "pcm16"],  # Output resampled to telephony
-            output_sample_rates_hz=[8000, 16000, 24000],  # Gemini native is 24kHz
+            input_encodings=["pcm16"],
+            input_sample_rates_hz=[16000],  # Gemini's native input boundary
+            output_encodings=["pcm16"],
+            output_sample_rates_hz=[24000],  # Gemini Live output is fixed at 24 kHz
             preferred_chunk_ms=20,  # 20ms chunks for smooth streaming
             can_negotiate=True,  # Can adapt to different formats
             # Provider type and audio processing capabilities
@@ -722,6 +722,10 @@ class GoogleLiveProvider(AIProviderInterface):
             has_native_vad=True,  # Gemini Live has built-in Voice Activity Detection
             has_native_barge_in=True,  # Handles interruptions automatically
             requires_continuous_audio=True,  # Needs continuous audio stream for VAD
+            wideband_input_encoding="pcm16",
+            wideband_input_sample_rate_hz=16000,
+            wideband_output_encoding="pcm16",
+            wideband_output_sample_rate_hz=24000,
         )
     
     @property

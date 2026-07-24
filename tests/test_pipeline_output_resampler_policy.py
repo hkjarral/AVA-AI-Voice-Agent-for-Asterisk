@@ -392,6 +392,158 @@ def test_pipeline_policy_precedence_and_call_isolation():
     assert rollback.tts_options["output_resampler_source"] == "pipeline"
 
 
+@pytest.mark.parametrize(
+    ("adapter_type", "config"),
+    [
+        (OpenAITTSAdapter, OpenAIProviderConfig()),
+        (GoogleTTSAdapter, GoogleProviderConfig()),
+        (DeepgramTTSAdapter, DeepgramProviderConfig()),
+        (GroqTTSAdapter, GroqTTSProviderConfig()),
+        (ElevenLabsTTSAdapter, ElevenLabsProviderConfig()),
+        (CambAiTTSAdapter, CambAiProviderConfig()),
+        (AzureTTSAdapter, AzureTTSProviderConfig()),
+    ],
+)
+def test_wideband_profile_applies_native_pipeline_output_per_call(
+    adapter_type, config
+):
+    engine = object.__new__(Engine)
+    adapter = adapter_type("tts", _app_config(), config)
+    resolution = SimpleNamespace(
+        pipeline_name="wideband_pipeline",
+        tts_adapter=adapter,
+        tts_options={"output_resampler": "inherit"},
+    )
+    session = _session("call-wideband", "wideband_pcm_16k", "linear")
+    session.transport_profile.wire_encoding = "slin16"
+    session.transport_profile.wire_sample_rate = 16000
+
+    engine._apply_pipeline_output_resampler_policy(session, resolution)
+
+    assert resolution.tts_options["format"] == {
+        "encoding": "linear16",
+        "sample_rate": 16000,
+    }
+    assert resolution.tts_options["target_format"] == {
+        "encoding": "linear16",
+        "sample_rate": 16000,
+    }
+    assert resolution.tts_options["target_encoding"] == "linear16"
+    assert resolution.tts_options["target_sample_rate_hz"] == 16000
+    assert resolution.tts_options["_wideband_output_applied"] is True
+
+
+def test_wideband_profile_preserves_legacy_output_for_undeclared_adapter():
+    engine = object.__new__(Engine)
+    adapter = SimpleNamespace(
+        _provider_defaults=SimpleNamespace(output_resampler="inherit")
+    )
+    resolution = SimpleNamespace(
+        pipeline_name="legacy_tts_pipeline",
+        tts_adapter=adapter,
+        tts_options={
+            "output_resampler": "inherit",
+            "format": {"encoding": "mulaw", "sample_rate": 8000},
+        },
+    )
+    session = _session("call-partial", "wideband_pcm_16k", "linear")
+    session.transport_profile.wire_encoding = "slin16"
+    session.transport_profile.wire_sample_rate = 16000
+
+    engine._apply_pipeline_output_resampler_policy(session, resolution)
+
+    assert resolution.tts_options["format"] == {
+        "encoding": "mulaw",
+        "sample_rate": 8000,
+    }
+    assert resolution.tts_options["_wideband_output_applied"] is False
+
+
+def test_legacy_profile_does_not_change_pipeline_output_format():
+    engine = object.__new__(Engine)
+    adapter = OpenAITTSAdapter("tts", _app_config(), OpenAIProviderConfig())
+    resolution = SimpleNamespace(
+        pipeline_name="legacy_pipeline",
+        tts_adapter=adapter,
+        tts_options={
+            "output_resampler": "inherit",
+            "format": {"encoding": "mulaw", "sample_rate": 8000},
+        },
+    )
+
+    engine._apply_pipeline_output_resampler_policy(
+        _session("call-legacy", "telephony_ulaw_8k", "linear"), resolution
+    )
+
+    assert resolution.tts_options["format"] == {
+        "encoding": "mulaw",
+        "sample_rate": 8000,
+    }
+    assert resolution.tts_options["_wideband_output_applied"] is False
+
+
+def test_elevenlabs_wideband_options_accept_pcm_and_chunk_at_16khz():
+    adapter = ElevenLabsTTSAdapter(
+        "tts", _app_config(), ElevenLabsProviderConfig(output_format="ulaw_8000")
+    )
+    merged = adapter._compose_options(
+        {"format": {"encoding": "linear16", "sample_rate": 16000}}
+    )
+
+    assert merged["format"] == {"encoding": "linear16", "sample_rate": 16000}
+    assert [len(chunk) for chunk in adapter._chunk_audio(
+        b"\x00\x00" * 320, "linear16", 16000, 20
+    )] == [640]
+
+
+@pytest.mark.parametrize(
+    ("adapter", "expected"),
+    [
+        (
+            OpenAITTSAdapter("tts", _app_config(), OpenAIProviderConfig()),
+            {"response_format": "pcm"},
+        ),
+        (
+            GoogleTTSAdapter("tts", _app_config(), GoogleProviderConfig()),
+            {"audio_encoding": "LINEAR16", "audio_sample_rate": 16000},
+        ),
+        (
+            DeepgramTTSAdapter("tts", _app_config(), DeepgramProviderConfig()),
+            {"source_format": {"encoding": "linear16", "sample_rate": 16000}},
+        ),
+        (
+            ElevenLabsTTSAdapter("tts", _app_config(), ElevenLabsProviderConfig()),
+            {"output_format": "pcm_16000"},
+        ),
+        (
+            CambAiTTSAdapter("tts", _app_config(), CambAiProviderConfig()),
+            {"output_format": "pcm_s16le"},
+        ),
+        (
+            AzureTTSAdapter("tts", _app_config(), AzureTTSProviderConfig()),
+            {"output_format": "raw-16khz-16bit-mono-pcm"},
+        ),
+    ],
+)
+def test_wideband_pipeline_applies_provider_native_request_options(
+    adapter, expected
+):
+    engine = object.__new__(Engine)
+    resolution = SimpleNamespace(
+        pipeline_name="native_tts",
+        tts_adapter=adapter,
+        tts_options={"output_resampler": "inherit"},
+    )
+    session = _session("call-native", "wideband_pcm_16k", "linear")
+    session.transport_profile.wire_encoding = "slin16"
+    session.transport_profile.wire_sample_rate = 16000
+
+    engine._apply_pipeline_output_resampler_policy(session, resolution)
+
+    for key, value in expected.items():
+        assert resolution.tts_options[key] == value
+
+
 def test_openai_modular_conversion_passes_explicit_policy(monkeypatch):
     import src.pipelines.openai as module
 

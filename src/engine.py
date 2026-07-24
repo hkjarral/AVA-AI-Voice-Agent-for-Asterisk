@@ -16213,6 +16213,10 @@ class Engine:
                 session.provider_overrides = dict(getattr(session, "provider_overrides", {}) or {})
                 session.provider_overrides["target_encoding"] = transport.wire_encoding
                 session.provider_overrides["target_sample_rate_hz"] = transport.wire_sample_rate
+                session.provider_overrides["provider_input_encoding"] = transport.provider_input_encoding
+                session.provider_overrides["provider_input_sample_rate_hz"] = transport.provider_input_sample_rate
+                session.provider_overrides["provider_output_encoding"] = transport.provider_output_encoding
+                session.provider_overrides["provider_output_sample_rate_hz"] = transport.provider_output_sample_rate
                 await self._save_session(session)
             except Exception:
                 logger.debug(
@@ -17477,6 +17481,46 @@ class Engine:
         )
         resolution.tts_options["output_resampler"] = mode
         resolution.tts_options["output_resampler_source"] = source
+
+        wire_encoding = str(getattr(transport, "wire_encoding", "") or "").lower()
+        wire_rate = int(getattr(transport, "wire_sample_rate", 0) or 0)
+        wideband_format = getattr(adapter, "wideband_output_format", None)
+        wideband_applied = False
+        if wire_encoding in {"linear16", "pcm16", "slin16"} and wire_rate >= 16000:
+            if wideband_format:
+                target_encoding = str(wideband_format.get("encoding") or "linear16")
+                target_rate = int(wideband_format.get("sample_rate") or wire_rate)
+                # Adapters use one of these three option shapes. Supplying all
+                # of them is harmless and keeps the capability declaration
+                # independent of an adapter's legacy configuration schema.
+                resolution.tts_options["format"] = {
+                    "encoding": target_encoding,
+                    "sample_rate": target_rate,
+                }
+                resolution.tts_options["target_format"] = {
+                    "encoding": target_encoding,
+                    "sample_rate": target_rate,
+                }
+                resolution.tts_options["target_encoding"] = target_encoding
+                resolution.tts_options["target_sample_rate_hz"] = target_rate
+                for option_name, option_value in dict(
+                    wideband_format.get("options") or {}
+                ).items():
+                    resolution.tts_options[option_name] = (
+                        dict(option_value)
+                        if isinstance(option_value, dict)
+                        else option_value
+                    )
+                wideband_applied = True
+            else:
+                logger.warning(
+                    "Pipeline TTS has no native wideband output declaration; legacy output will be converted at the transport boundary",
+                    call_id=session.call_id,
+                    pipeline=resolution.pipeline_name,
+                    adapter=type(adapter).__name__,
+                    wire_sample_rate=wire_rate,
+                )
+        resolution.tts_options["_wideband_output_applied"] = wideband_applied
         resolution.tts_options["_output_resampler_resolved"] = True
         logger.info(
             "Pipeline output resampler policy resolved",
@@ -17485,6 +17529,7 @@ class Engine:
             profile=getattr(transport, "profile_name", None),
             mode=mode,
             source=source,
+            wideband_output_applied=wideband_applied,
         )
 
     async def _assign_pipeline_to_session(
@@ -17670,7 +17715,7 @@ class Engine:
         bg_task.add_done_callback(_done)
 
     def _apply_provider_overrides(self, provider: AIProviderInterface, session: CallSession) -> None:
-        """Apply per-call overrides (greeting/prompt/target format) to a provider instance."""
+        """Apply per-call prompt and negotiated audio formats to a provider instance."""
         overrides = {}
         try:
             overrides = dict(getattr(session, "provider_overrides", {}) or {})
@@ -17694,6 +17739,13 @@ class Engine:
         prompt = overrides.get("prompt")
         target_encoding = overrides.get("target_encoding")
         target_rate = overrides.get("target_sample_rate_hz")
+        provider_input_encoding = overrides.get("provider_input_encoding")
+        provider_input_rate = overrides.get("provider_input_sample_rate_hz")
+        provider_output_encoding = overrides.get("provider_output_encoding")
+        provider_output_rate = overrides.get("provider_output_sample_rate_hz")
+        transport = getattr(session, "transport_profile", None)
+        wire_encoding = getattr(transport, "wire_encoding", None) if transport else None
+        wire_rate = getattr(transport, "wire_sample_rate", None) if transport else None
 
         try:
             if isinstance(cfg, dict):
@@ -17707,6 +17759,25 @@ class Engine:
                     cfg["target_encoding"] = target_encoding
                 if target_rate:
                     cfg["target_sample_rate_hz"] = target_rate
+                # Dict-backed full-agent configs (currently uncommon) use
+                # provider_input_* when available; Deepgram's legacy contract
+                # declares the provider boundary directly as input_*.
+                if "provider_input_encoding" in cfg:
+                    cfg["provider_input_encoding"] = provider_input_encoding
+                    cfg["provider_input_sample_rate_hz"] = provider_input_rate
+                    if wire_encoding:
+                        cfg["input_encoding"] = wire_encoding
+                    if wire_rate:
+                        cfg["input_sample_rate_hz"] = wire_rate
+                else:
+                    if provider_input_encoding:
+                        cfg["input_encoding"] = provider_input_encoding
+                    if provider_input_rate:
+                        cfg["input_sample_rate_hz"] = provider_input_rate
+                if provider_output_encoding:
+                    cfg["output_encoding"] = provider_output_encoding
+                if provider_output_rate:
+                    cfg["output_sample_rate_hz"] = provider_output_rate
             else:
                 if greeting and hasattr(cfg, "greeting"):
                     setattr(cfg, "greeting", greeting)
@@ -17719,6 +17790,26 @@ class Engine:
                     setattr(cfg, "target_encoding", target_encoding)
                 if target_rate and hasattr(cfg, "target_sample_rate_hz"):
                     setattr(cfg, "target_sample_rate_hz", target_rate)
+                if hasattr(cfg, "provider_input_encoding"):
+                    if provider_input_encoding:
+                        setattr(cfg, "provider_input_encoding", provider_input_encoding)
+                    if provider_input_rate and hasattr(cfg, "provider_input_sample_rate_hz"):
+                        setattr(cfg, "provider_input_sample_rate_hz", provider_input_rate)
+                    if wire_encoding and hasattr(cfg, "input_encoding"):
+                        setattr(cfg, "input_encoding", wire_encoding)
+                    if wire_rate and hasattr(cfg, "input_sample_rate_hz"):
+                        setattr(cfg, "input_sample_rate_hz", wire_rate)
+                else:
+                    # Deepgram Voice Agent exposes its provider boundary as
+                    # input_* rather than provider_input_*.
+                    if provider_input_encoding and hasattr(cfg, "input_encoding"):
+                        setattr(cfg, "input_encoding", provider_input_encoding)
+                    if provider_input_rate and hasattr(cfg, "input_sample_rate_hz"):
+                        setattr(cfg, "input_sample_rate_hz", provider_input_rate)
+                if provider_output_encoding and hasattr(cfg, "output_encoding"):
+                    setattr(cfg, "output_encoding", provider_output_encoding)
+                if provider_output_rate and hasattr(cfg, "output_sample_rate_hz"):
+                    setattr(cfg, "output_sample_rate_hz", provider_output_rate)
         except Exception:
             logger.debug("Failed applying provider overrides", call_id=session.call_id, exc_info=True)
 
@@ -17989,17 +18080,19 @@ class Engine:
                     if self.config.audio_transport == 'externalmedia':
                         provider.set_input_mode('pcm16_16k')
                     else:
-                        # Determine input mode from AudioSocket format
-                        as_fmt = None
-                        try:
-                            if self.config.audiosocket and hasattr(self.config.audiosocket, 'format'):
-                                as_fmt = (self.config.audiosocket.format or '').lower()
-                        except Exception:
-                            as_fmt = None
+                        # Determine input mode from this call's resolved wire
+                        # format, not the process-wide AudioSocket fallback.
+                        as_fmt = str(
+                            getattr(getattr(session, "transport_profile", None), "wire_encoding", "")
+                            or ""
+                        ).lower()
+                        as_rate = int(
+                            getattr(getattr(session, "transport_profile", None), "wire_sample_rate", 0)
+                            or 0
+                        )
                         if as_fmt in ('ulaw', 'mulaw', 'g711_ulaw'):
                             provider.set_input_mode('mulaw8k')
-                        elif as_fmt in ('slin16', 'linear16', 'pcm16'):
-                            # slin16 is 16kHz PCM16, set correct input mode
+                        elif as_fmt in ('slin16', 'linear16', 'pcm16') and as_rate >= 16000:
                             provider.set_input_mode('pcm16_16k')
                         else:
                             # Default to PCM16 at 8 kHz for slin (8kHz) or unspecified

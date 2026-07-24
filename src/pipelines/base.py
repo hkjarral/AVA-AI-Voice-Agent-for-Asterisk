@@ -341,6 +341,15 @@ class LLMComponent(Component):
 class TTSComponent(Component):
     """Text-to-speech component."""
 
+    # Adapters set this only when they can return native linear PCM suitable for
+    # a 16 kHz AudioSocket call.  The engine uses the declaration to opt a
+    # pipeline into wideband on a per-call basis; legacy 8 kHz options remain
+    # untouched for adapters without an explicit declaration.
+    # ``options`` may carry adapter-specific provider-request overrides (for
+    # example Google/Azure source encoding and rate) in addition to the common
+    # downstream ``encoding`` and ``sample_rate`` fields.
+    wideband_output_format: Optional[Dict[str, Any]] = None
+
     @abstractmethod
     async def synthesize(
         self,

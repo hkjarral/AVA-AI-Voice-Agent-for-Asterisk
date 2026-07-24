@@ -8,7 +8,8 @@ API Reference: https://elevenlabs.io/docs/api-reference/text-to-speech
 from __future__ import annotations
 
 from ..audio.resampler import (
-    pcm16le_to_mulaw,
+    convert_pcm16le_to_target_format,
+    mulaw_to_pcm16le,
     resample_audio,
     resolve_output_resampler_policy,
 )
@@ -29,9 +30,14 @@ class ElevenLabsTTSAdapter(TTSComponent):
     """
     ElevenLabs TTS adapter for pipeline orchestrator.
     
-    Converts text to speech using ElevenLabs API with automatic
-    audio format conversion to μ-law 8kHz for telephony.
+    Converts ElevenLabs' native audio into the per-call transport format.
     """
+
+    wideband_output_format = {
+        "encoding": "linear16",
+        "sample_rate": 16000,
+        "options": {"output_format": "pcm_16000"},
+    }
 
     def __init__(
         self,
@@ -92,7 +98,7 @@ class ElevenLabsTTSAdapter(TTSComponent):
             options: Runtime options (can override defaults)
             
         Yields:
-            Audio chunks in μ-law 8kHz format
+            Audio chunks in the negotiated per-call transport format.
         """
         if not text:
             return
@@ -108,6 +114,18 @@ class ElevenLabsTTSAdapter(TTSComponent):
         voice_id = merged.get("voice_id", self._provider_config.voice_id)
         model_id = merged.get("model_id", self._provider_config.model_id)
         output_format = merged.get("output_format", "ulaw_8000")
+        target_encoding = merged["format"]["encoding"]
+        target_sample_rate = int(merged["format"]["sample_rate"])
+
+        # The historical adapter requested native μ-law for 8 kHz calls.
+        # A wideband call must request PCM so no 8 kHz bottleneck is introduced
+        # before the AudioSocket boundary.
+        if (
+            target_encoding.lower() in {"linear16", "pcm16", "slin16"}
+            and target_sample_rate >= 16000
+            and output_format == "ulaw_8000"
+        ):
+            output_format = "pcm_16000"
         
         request_id = f"11labs-tts-{uuid.uuid4().hex[:12]}"
         
@@ -133,7 +151,7 @@ class ElevenLabsTTSAdapter(TTSComponent):
         headers = {
             "xi-api-key": api_key,
             "Content-Type": "application/json",
-            "Accept": "audio/basic",  # μ-law audio
+            "Accept": "audio/*",
         }
         
         params = {
@@ -169,28 +187,31 @@ class ElevenLabsTTSAdapter(TTSComponent):
                 raw_audio = await response.read()
                 latency_ms = (time.perf_counter() - started_at) * 1000.0
                 
-                # Convert if needed (ulaw_8000 is native telephony format)
+                source_rate: Optional[int]
                 if output_format == "ulaw_8000":
-                    converted = raw_audio
+                    pcm_audio = mulaw_to_pcm16le(raw_audio)
+                    source_rate = 8000
                 elif output_format == "pcm_16000":
-                    # Convert PCM16 16kHz to μ-law 8kHz
-                    resampled, _ = resample_audio(
-                        raw_audio, 16000, 8000, mode=merged["output_resampler"]
-                    )
-                    converted = pcm16le_to_mulaw(resampled)
+                    pcm_audio = raw_audio
+                    source_rate = 16000
                 elif output_format == "pcm_24000":
-                    # Convert PCM16 24kHz to μ-law 8kHz
-                    resampled, _ = resample_audio(
-                        raw_audio, 24000, 8000, mode=merged["output_resampler"]
-                    )
-                    converted = pcm16le_to_mulaw(resampled)
+                    pcm_audio = raw_audio
+                    source_rate = 24000
                 else:
-                    # For other formats, assume it's already usable or skip conversion
-                    logger.warning(
-                        "Unknown output format, passing through raw audio",
-                        output_format=output_format,
+                    raise RuntimeError(
+                        f"Unsupported ElevenLabs TTS output format: {output_format}"
                     )
-                    converted = raw_audio
+
+                if source_rate != target_sample_rate:
+                    pcm_audio, _ = resample_audio(
+                        pcm_audio,
+                        source_rate,
+                        target_sample_rate,
+                        mode=merged["output_resampler"],
+                    )
+                converted = convert_pcm16le_to_target_format(
+                    pcm_audio, target_encoding
+                )
                 
                 logger.info(
                     "ElevenLabs TTS synthesis completed",
@@ -199,11 +220,15 @@ class ElevenLabsTTSAdapter(TTSComponent):
                     latency_ms=round(latency_ms, 2),
                     raw_bytes=len(raw_audio),
                     output_bytes=len(converted),
+                    target_encoding=target_encoding,
+                    target_sample_rate=target_sample_rate,
                 )
                 
                 # Yield in chunks for streaming playback
                 chunk_ms = int(merged.get("chunk_size_ms", 20))
-                for chunk in self._chunk_audio(converted, chunk_ms):
+                for chunk in self._chunk_audio(
+                    converted, target_encoding, target_sample_rate, chunk_ms
+                ):
                     if chunk:
                         yield chunk
                         
@@ -226,6 +251,8 @@ class ElevenLabsTTSAdapter(TTSComponent):
     def _compose_options(self, runtime_options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Merge runtime options with defaults."""
         runtime_options = runtime_options or {}
+        runtime_format = runtime_options.get("format") or runtime_options.get("target_format") or {}
+        default_format = self._pipeline_defaults.get("format") or self._pipeline_defaults.get("target_format") or {}
         
         # Priority: runtime > pipeline defaults > provider config
         merged = {
@@ -239,6 +266,16 @@ class ElevenLabsTTSAdapter(TTSComponent):
                 self._pipeline_defaults.get("base_url", self._provider_config.base_url)),
             "output_format": runtime_options.get("output_format",
                 self._pipeline_defaults.get("output_format", self._provider_config.output_format)),
+            "format": {
+                "encoding": runtime_format.get(
+                    "encoding", default_format.get("encoding", "mulaw")
+                ),
+                "sample_rate": int(
+                    runtime_format.get(
+                        "sample_rate", default_format.get("sample_rate", 8000)
+                    )
+                ),
+            },
             "stability": runtime_options.get("stability",
                 self._pipeline_defaults.get("stability", self._provider_config.stability)),
             "similarity_boost": runtime_options.get("similarity_boost",
@@ -261,11 +298,19 @@ class ElevenLabsTTSAdapter(TTSComponent):
         )[0]
         return merged
 
-    def _chunk_audio(self, audio: bytes, chunk_ms: int = 20) -> list:
-        """Split μ-law audio into chunks for streaming playback."""
-        # μ-law at 8kHz: 8 bytes per ms
-        bytes_per_ms = 8
-        chunk_size = bytes_per_ms * chunk_ms
+    def _chunk_audio(
+        self,
+        audio: bytes,
+        encoding: str,
+        sample_rate: int,
+        chunk_ms: int = 20,
+    ) -> list:
+        """Split encoded audio into transport-sized playback chunks."""
+        bytes_per_sample = 1 if encoding.lower() in {"ulaw", "mulaw", "mu-law"} else 2
+        chunk_size = max(
+            bytes_per_sample,
+            int(sample_rate * (chunk_ms / 1000.0) * bytes_per_sample),
+        )
         
         chunks = []
         for i in range(0, len(audio), chunk_size):

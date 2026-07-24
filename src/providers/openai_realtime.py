@@ -326,7 +326,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         return ProviderCapabilities(
             # Audio format capabilities
             input_encodings=["ulaw", "linear16"],
-            input_sample_rates_hz=[8000, 16000],
+            input_sample_rates_hz=[24000, 8000],
             # Output depends on session.update and downstream target; we advertise both
             output_encodings=["mulaw", "pcm16"],
             output_sample_rates_hz=[8000, 24000],
@@ -338,6 +338,10 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             has_native_barge_in=True,  # Handles interruptions via cancel_response
             has_native_aec=False,  # AEC only available on client-side WebRTC paths, not server-side WebSocket
             requires_continuous_audio=True,  # Needs continuous audio for server-side VAD
+            wideband_input_encoding="linear16",
+            wideband_input_sample_rate_hz=24000,
+            wideband_output_encoding="pcm16",
+            wideband_output_sample_rate_hz=24000,
         )
     
     def parse_ack(self, event_data: Dict[str, Any]) -> Optional[ProviderCapabilities]:

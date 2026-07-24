@@ -268,7 +268,7 @@ const ProfilesPage = () => {
             'telephony_responsive': 'GA 8 kHz telephony transport with adaptive timing',
             'telephony_ulaw_8k': 'GA 8 kHz telephony transport matching G.711 μ-law',
             'telephony_enhanced_8k': 'Opt-in 8 kHz telephony with alias-safe downsampling for clearer 16/24 kHz provider audio',
-            'wideband_pcm_16k': '16 kHz AudioSocket transport; requires Asterisk 20.17+, 21.12+, 22.7+, or 23.1+ and a wideband call path',
+            'wideband_pcm_16k': 'Opt-in 16 kHz AudioSocket transport with provider-native PCM conversion; use only with a G.722 or other end-to-end wideband call path',
             'openai_realtime_24k': 'Experimental profile with 24 kHz provider-native processing and an 8 kHz Asterisk wire leg'
         };
         return descriptions[profileName] || 'Custom audio profile';
@@ -498,7 +498,7 @@ const ProfilesPage = () => {
                                                         : support === 'enhanced'
                                                             ? 'Enhanced Telephony'
                                                         : support === 'wideband'
-                                                            ? 'Wideband · Asterisk 20.17+'
+                                                            ? 'Opt-in Wideband · Asterisk 20.17+'
                                                         : support === 'experimental'
                                                             ? 'Experimental Wideband'
                                                             : support === 'provider-native'

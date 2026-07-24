@@ -242,6 +242,7 @@ async def test_deepgram_tts_adapter_synthesizes_chunks():
     assert request["json"] == {"text": "Hello caller"}
     assert request["params"]["target_encoding"] == "mulaw"
     assert request["params"]["target_sample_rate"] == 8000
+    assert request["params"]["container"] == "none"
 
 
 @pytest.mark.asyncio

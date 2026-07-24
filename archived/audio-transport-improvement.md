@@ -735,3 +735,34 @@ Validate audio quality and transport integrity across the maintainer-approved re
   path use the retained golden dataset; Local Full, `hybrid_elevenlabs`, and
   `telnyx_hybrid` are explicitly untested/non-blocking. `telephony_ulaw_8k`
   remains the GA wire baseline and alternate profiles remain experimental.
+
+## Opt-in 16 kHz AudioSocket expansion (2026-07-24)
+
+- [x] Prove Asterisk 20.17+ multirate AudioSocket framing on a direct G.722
+  extension with `wideband_pcm_16k`; call `1784929286.8` was objectively
+  `slin16@16000` and subjectively a clear improvement.
+- [x] Preserve every existing 8 kHz profile and provider default. Wideband
+  selection is per Agent/per call and remains immediately reversible.
+- [x] Declare provider-native wideband boundaries independently of the
+  Asterisk wire contract: ElevenLabs/Deepgram/Grok 16 kHz, Google 16 kHz input
+  and 24 kHz output, OpenAI 24 kHz input/output, and Local as partial 16 kHz
+  input with legacy 8 kHz output.
+- [x] Extend supported modular TTS adapters to produce native PCM for a 16 kHz
+  call. OpenAI, Google, Deepgram, ElevenLabs, Groq, Azure, and CAMB AI opt in;
+  Local TTS stays explicitly partial because its current websocket protocol
+  has no output-format negotiation.
+- [x] Add focused compatibility and per-call isolation coverage; the initial
+  transport/pipeline/provider-adapter suite passes 111/111. Google LINEAR16
+  and MULAW WAV containers are stripped before AudioSocket playback, and
+  Deepgram REST TTS explicitly requests `container=none` as recommended for
+  raw VoIP audio.
+- [ ] Deploy one frozen revision to voiprnd and execute direct-extension calls
+  for every configured/credentialed full-agent provider and modular pipeline.
+  Archive each call before analysis and retain objective and subjective results.
+- [ ] Run the full backend/frontend regression gates, update the validation
+  matrix with pass/partial/untested classifications, and prepare the branch for
+  the repository PR workflow.
+
+Release guidance: `wideband_pcm_16k` is opt-in. Recommend it only when the SIP
+endpoint or trunk provider supports and actually negotiates G.722 (or another
+true wideband codec). Keep PSTN/G.711 routes on an 8 kHz profile.

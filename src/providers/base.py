@@ -103,6 +103,18 @@ class ProviderCapabilities:
     has_native_aec: bool = False  # True if provider has built-in Acoustic Echo Cancellation (safe to skip local VAD on telephony)
     requires_continuous_audio: bool = False  # True if provider needs continuous audio stream (not VAD-gated)
 
+    # Provider-native formats to use when an Audio Profile explicitly opts a
+    # call into a wideband linear-PCM transport.  These are deliberately
+    # separate from the general capability lists: some APIs accept several
+    # rates but have one native/recommended boundary (for example Gemini Live
+    # receives 16 kHz PCM and emits 24 kHz PCM).  None means that the provider
+    # has no declared wideband route in AAVA and the normal configured format
+    # remains authoritative.
+    wideband_input_encoding: Optional[str] = None
+    wideband_input_sample_rate_hz: Optional[int] = None
+    wideband_output_encoding: Optional[str] = None
+    wideband_output_sample_rate_hz: Optional[int] = None
+
 
 def _safe_list(val: Optional[List[Any]]) -> List[Any]:
     try:

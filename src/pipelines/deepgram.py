@@ -608,6 +608,14 @@ class DeepgramTTSAdapter(TTSComponent):
     # Milestone7: Deepgram REST TTS adapter with μ-law conversion and chunking.
     """
 
+    wideband_output_format = {
+        "encoding": "linear16",
+        "sample_rate": 16000,
+        "options": {
+            "source_format": {"encoding": "linear16", "sample_rate": 16000}
+        },
+    }
+
     def __init__(
         self,
         component_key: str,
@@ -760,6 +768,7 @@ class DeepgramTTSAdapter(TTSComponent):
         merged["source_format"] = {
             "encoding": source_cfg.get("encoding", "linear16"),
             "sample_rate": int(source_cfg.get("sample_rate", default_source_rate)),
+            "container": source_cfg.get("container", "none"),
         }
         merged["output_resampler"] = resolve_output_resampler_policy(
             provider_mode=merged.get("output_resampler")
@@ -782,6 +791,7 @@ class DeepgramTTSAdapter(TTSComponent):
         params["encoding"] = source_format.get("encoding", "linear16")
         # Request provider to emit audio at the downstream target sample rate by default
         params["sample_rate"] = int(source_format.get("sample_rate", target_sample_rate))
+        params["container"] = source_format.get("container", "none")
         params["target_encoding"] = target_encoding
         params["target_sample_rate"] = target_sample_rate
         # Remove None values

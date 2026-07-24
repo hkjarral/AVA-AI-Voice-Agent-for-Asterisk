@@ -18,8 +18,8 @@ from typing import Any, AsyncIterator, Callable, Dict, Optional
 import aiohttp
 
 from ..audio import (
+    convert_pcm16le_to_target_format,
     resample_audio,
-    pcm16le_to_mulaw,
     resolve_output_resampler_policy,
 )
 from ..config import AppConfig, CambAiProviderConfig
@@ -36,9 +36,15 @@ class CambAiTTSAdapter(TTSComponent):
     """
     CAMB AI TTS adapter for pipeline orchestrator.
 
-    Converts text to speech using CAMB AI's MARS models with automatic
-    audio format conversion to μ-law 8kHz for telephony.
+    Converts text to speech using CAMB AI's MARS models and adapts its
+    native PCM output to the negotiated per-call transport.
     """
+
+    wideband_output_format = {
+        "encoding": "linear16",
+        "sample_rate": 16000,
+        "options": {"output_format": "pcm_s16le"},
+    }
 
     def __init__(
         self,
@@ -89,7 +95,7 @@ class CambAiTTSAdapter(TTSComponent):
         """
         Synthesize text to speech using CAMB AI streaming TTS API.
 
-        Yields audio chunks in μ-law 8kHz format for telephony playback.
+        Yields audio chunks in the negotiated per-call transport format.
         """
         if not text:
             return
@@ -106,6 +112,8 @@ class CambAiTTSAdapter(TTSComponent):
         speech_model = merged.get("speech_model", self._provider_config.speech_model)
         language = merged.get("language", self._provider_config.language)
         output_format = merged.get("output_format", self._provider_config.output_format)
+        target_encoding = merged["format"]["encoding"]
+        target_sample_rate = int(merged["format"]["sample_rate"])
 
         request_id = f"camb-tts-{uuid.uuid4().hex[:12]}"
 
@@ -153,9 +161,12 @@ class CambAiTTSAdapter(TTSComponent):
                 raw_audio = await response.read()
                 latency_ms = (time.perf_counter() - started_at) * 1000.0
 
-                # Convert PCM16 to μ-law 8kHz for telephony
-                converted = self._convert_to_ulaw(
-                    raw_audio, output_format, merged["output_resampler"]
+                converted = self._convert_audio(
+                    raw_audio,
+                    output_format,
+                    target_encoding,
+                    target_sample_rate,
+                    merged["output_resampler"],
                 )
 
                 logger.info(
@@ -165,10 +176,14 @@ class CambAiTTSAdapter(TTSComponent):
                     latency_ms=round(latency_ms, 2),
                     raw_bytes=len(raw_audio),
                     output_bytes=len(converted),
+                    target_encoding=target_encoding,
+                    target_sample_rate=target_sample_rate,
                 )
 
                 chunk_ms = int(merged.get("chunk_size_ms", 20))
-                for chunk in self._chunk_audio(converted, chunk_ms):
+                for chunk in self._chunk_audio(
+                    converted, target_encoding, target_sample_rate, chunk_ms
+                ):
                     if chunk:
                         yield chunk
 
@@ -181,37 +196,36 @@ class CambAiTTSAdapter(TTSComponent):
             )
             raise
 
-    def _convert_to_ulaw(
+    def _convert_audio(
         self,
         raw_audio: bytes,
         output_format: str,
+        target_encoding: str,
+        target_sample_rate: int,
         output_resampler: str = "linear",
     ) -> bytes:
-        """Convert CAMB AI audio output to μ-law 8kHz for telephony."""
+        """Convert CAMB AI audio output to the negotiated transport."""
         if output_format == "pcm_s16le":
-            # Raw PCM 16-bit signed little-endian at 24kHz -> resample to 8kHz -> μ-law
-            resampled, _ = resample_audio(
-                raw_audio,
-                CAMB_AI_PCM_SAMPLE_RATE,
-                8000,
-                mode=output_resampler,
-            )
-            return pcm16le_to_mulaw(resampled)
+            pcm_data = raw_audio
+            source_rate = CAMB_AI_PCM_SAMPLE_RATE
         elif output_format == "wav":
             # Parse WAV container to extract raw PCM frames and sample rate
             with wave.open(io.BytesIO(raw_audio), "rb") as wf:
                 pcm_data = wf.readframes(wf.getnframes())
                 source_rate = wf.getframerate()
-            resampled, _ = resample_audio(
-                pcm_data, source_rate, 8000, mode=output_resampler
-            )
-            return pcm16le_to_mulaw(resampled)
         else:
-            logger.warning(
-                "Unknown CAMB AI output format, passing through raw audio",
-                output_format=output_format,
+            raise RuntimeError(
+                f"Unsupported CAMB AI TTS output format: {output_format}"
             )
-            return raw_audio
+
+        if source_rate != target_sample_rate:
+            pcm_data, _ = resample_audio(
+                pcm_data,
+                source_rate,
+                target_sample_rate,
+                mode=output_resampler,
+            )
+        return convert_pcm16le_to_target_format(pcm_data, target_encoding)
 
     async def _ensure_session(self) -> None:
         if self._session and not self._session.closed:
@@ -222,6 +236,8 @@ class CambAiTTSAdapter(TTSComponent):
     def _compose_options(self, runtime_options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Merge runtime options with defaults."""
         runtime_options = runtime_options or {}
+        runtime_format = runtime_options.get("format") or runtime_options.get("target_format") or {}
+        default_format = self._pipeline_defaults.get("format") or self._pipeline_defaults.get("target_format") or {}
 
         merged = {
             "api_key": runtime_options.get("api_key",
@@ -236,6 +252,16 @@ class CambAiTTSAdapter(TTSComponent):
                 self._pipeline_defaults.get("base_url", self._provider_config.base_url)),
             "output_format": runtime_options.get("output_format",
                 self._pipeline_defaults.get("output_format", self._provider_config.output_format)),
+            "format": {
+                "encoding": runtime_format.get(
+                    "encoding", default_format.get("encoding", "mulaw")
+                ),
+                "sample_rate": int(
+                    runtime_format.get(
+                        "sample_rate", default_format.get("sample_rate", 8000)
+                    )
+                ),
+            },
             "chunk_size_ms": runtime_options.get("chunk_size_ms",
                 self._pipeline_defaults.get("chunk_size_ms", 20)),
             "output_resampler": runtime_options.get(
@@ -251,11 +277,19 @@ class CambAiTTSAdapter(TTSComponent):
         )[0]
         return merged
 
-    def _chunk_audio(self, audio: bytes, chunk_ms: int = 20) -> list:
-        """Split μ-law audio into chunks for streaming playback."""
-        # μ-law at 8kHz: 8 bytes per ms
-        bytes_per_ms = 8
-        chunk_size = bytes_per_ms * chunk_ms
+    def _chunk_audio(
+        self,
+        audio: bytes,
+        encoding: str,
+        sample_rate: int,
+        chunk_ms: int = 20,
+    ) -> list:
+        """Split encoded audio into transport-sized playback chunks."""
+        bytes_per_sample = 1 if encoding.lower() in {"ulaw", "mulaw", "mu-law"} else 2
+        chunk_size = max(
+            bytes_per_sample,
+            int(sample_rate * (chunk_ms / 1000.0) * bytes_per_sample),
+        )
 
         chunks = []
         for i in range(0, len(audio), chunk_size):

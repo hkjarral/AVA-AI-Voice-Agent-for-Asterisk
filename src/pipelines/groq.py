@@ -358,6 +358,8 @@ class GroqSTTAdapter(STTComponent):
 class GroqTTSAdapter(TTSComponent):
     """Groq Orpheus TTS adapter (REST, WAV response)."""
 
+    wideband_output_format = {"encoding": "linear16", "sample_rate": 16000}
+
     def __init__(
         self,
         component_key: str,

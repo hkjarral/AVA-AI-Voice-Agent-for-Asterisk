@@ -64,7 +64,9 @@ const AudioSocketConfig: React.FC<AudioSocketConfigProps> = ({ config, onChange 
             <div className="mt-4 p-4 bg-muted/50 rounded-lg">
                 <p className="text-sm text-muted-foreground">
                     <strong>Wideband:</strong> Select the <code>wideband_pcm_16k</code> profile on an
-                    Agent to use 16 kHz per call. It requires Asterisk 20.17+, 21.12+, 22.7+, or 23.1+.
+                    Agent only when its endpoint or SIP trunk negotiates G.722 (or another true wideband
+                    codec). It uses provider-native PCM conversion at a 16 kHz AudioSocket boundary and
+                    requires Asterisk 20.17+, 21.12+, 22.7+, or 23.1+. G.711/PSTN calls should keep an 8 kHz profile.
                 </p>
             </div>
         </div>

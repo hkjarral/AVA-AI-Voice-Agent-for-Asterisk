@@ -129,11 +129,22 @@ roll back a test, assign the Agent back to `telephony_ulaw_8k`.
 `wideband_pcm_16k` is the opt-in end-to-end wideband profile for AudioSocket.
 It originates the media channel as `c(slin16)`, receives PCM16 at 16 kHz in
 AudioSocket type `0x12`, and stamps outbound frames with the same type. This is
-per call, so 8 and 16 kHz Agents can run concurrently. It requires Asterisk
+per call, so 8 and 16 kHz Agents can run concurrently. Full-agent providers use
+their declared native PCM boundary (16 or 24 kHz), and supported modular TTS
+adapters request PCM and convert once to the 16 kHz AudioSocket boundary. It requires Asterisk
 20.17+, 21.12+, 22.7+, or 23.1+ and a wideband caller leg (for example G.722).
 Older or unrecognized Asterisk versions fail the call closed with a remediation
 message. Use `telephony_ulaw_8k` or `telephony_enhanced_8k` for PSTN/G.711 calls;
 upsampling an 8 kHz trunk cannot restore frequencies that the trunk discarded.
+
+The wideband provider boundary is call-scoped and does not rewrite provider
+defaults. OpenAI Realtime uses PCM at 24 kHz in both directions; Google Live
+uses 16 kHz input and fixed 24 kHz output; ElevenLabs, Deepgram, and Grok use
+their declared 16 kHz PCM route. Their output is converted to the 16 kHz wire
+rate where necessary. The local full-agent and local TTS paths do not yet
+negotiate native wideband output, so they remain partial/untested and retain
+their legacy output contract. Switching the Agent back to an 8 kHz profile is
+an immediate per-call rollback.
 
 The profile field is `output_resampler: linear | bandlimited`. Provider and
 pipeline fields default to `inherit`. Narrow overrides resolve in this order:

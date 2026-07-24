@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import struct
 import json
 import os
 import time
@@ -93,6 +94,38 @@ def _decode_google_audio(audio_content: str) -> bytes:
     except (base64.binascii.Error, TypeError):
         logger.error("Failed to decode Google TTS audioContent payload")
         return b""
+
+
+def _unwrap_google_wav(audio_bytes: bytes) -> Tuple[bytes, Optional[int]]:
+    """Return the WAV data chunk and declared rate from Google TTS output.
+
+    Google wraps both LINEAR16 and MULAW results in RIFF/WAV.  AudioSocket
+    consumes headerless media, so treating the container bytes as samples
+    causes a click/static burst at the start of each utterance.
+    """
+    if not (
+        len(audio_bytes) >= 12
+        and audio_bytes[:4] == b"RIFF"
+        and audio_bytes[8:12] == b"WAVE"
+    ):
+        return audio_bytes, None
+
+    offset = 12
+    sample_rate: Optional[int] = None
+    while offset + 8 <= len(audio_bytes):
+        chunk_id = audio_bytes[offset : offset + 4]
+        chunk_size = int.from_bytes(audio_bytes[offset + 4 : offset + 8], "little")
+        payload_start = offset + 8
+        payload_end = payload_start + chunk_size
+        if payload_end > len(audio_bytes):
+            raise RuntimeError("Google TTS returned a truncated WAV container")
+        if chunk_id == b"fmt " and chunk_size >= 8:
+            sample_rate = struct.unpack_from("<I", audio_bytes, payload_start + 4)[0]
+        elif chunk_id == b"data":
+            return audio_bytes[payload_start:payload_end], sample_rate
+        offset = payload_end + (chunk_size % 2)
+
+    raise RuntimeError("Google TTS WAV response did not contain an audio data chunk")
 
 
 class _GoogleCredentialManager:
@@ -461,6 +494,12 @@ class GoogleLLMAdapter(LLMComponent):
 class GoogleTTSAdapter(TTSComponent):
     """# Milestone7: Google Cloud Text-to-Speech adapter with μ-law/PCM chunking."""
 
+    wideband_output_format = {
+        "encoding": "linear16",
+        "sample_rate": 16000,
+        "options": {"audio_encoding": "LINEAR16", "audio_sample_rate": 16000},
+    }
+
     def __init__(
         self,
         component_key: str,
@@ -645,6 +684,10 @@ class GoogleTTSAdapter(TTSComponent):
     ) -> bytes:
         if not audio_bytes:
             return b""
+
+        audio_bytes, container_rate = _unwrap_google_wav(audio_bytes)
+        if container_rate:
+            source_rate = int(container_rate)
 
         fmt = (source_encoding or "").lower()
         if fmt in ("ulaw", "mulaw", "mu-law", "g711_ulaw"):

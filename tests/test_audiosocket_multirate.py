@@ -15,6 +15,7 @@ from src.audio.audiosocket_server import AudioSocketServer, TYPE_TERMINATE, TYPE
 from src.core.streaming_playback_manager import StreamingPlaybackManager
 from src.core.transport_orchestrator import TransportOrchestrator
 from src.engine import Engine
+from src.providers.base import ProviderCapabilities
 
 
 class _Writer:
@@ -156,6 +157,141 @@ def test_audiosocket_profile_selects_wideband_without_changing_legacy_profile():
 
     assert (legacy.wire_encoding, legacy.wire_sample_rate) == ("slin", 8000)
     assert (wideband.wire_encoding, wideband.wire_sample_rate) == ("slin16", 16000)
+
+
+@pytest.mark.parametrize(
+    (
+        "provider_name",
+        "wideband_input_rate",
+        "wideband_output_rate",
+        "expected_input_rate",
+        "expected_output_rate",
+    ),
+    [
+        ("elevenlabs_agent", 16000, 16000, 16000, 16000),
+        ("google_live", 16000, 24000, 16000, 24000),
+        ("openai_realtime", 24000, 24000, 24000, 24000),
+        ("grok", 16000, 16000, 16000, 16000),
+        ("deepgram", 16000, 16000, 16000, 16000),
+        ("local", 16000, 8000, 16000, 8000),
+    ],
+)
+def test_wideband_profile_uses_provider_native_boundary(
+    provider_name,
+    wideband_input_rate,
+    wideband_output_rate,
+    expected_input_rate,
+    expected_output_rate,
+):
+    orchestrator = TransportOrchestrator(_orchestrator_config())
+    caps = ProviderCapabilities(
+        input_encodings=["linear16", "ulaw"],
+        input_sample_rates_hz=[wideband_input_rate, 8000],
+        output_encodings=["pcm16", "ulaw"],
+        output_sample_rates_hz=[wideband_output_rate, 8000],
+        wideband_input_encoding="linear16",
+        wideband_input_sample_rate_hz=wideband_input_rate,
+        wideband_output_encoding="pcm16" if wideband_output_rate >= 16000 else "ulaw",
+        wideband_output_sample_rate_hz=wideband_output_rate,
+    )
+    configured = SimpleNamespace(
+        provider_input_encoding="ulaw",
+        provider_input_sample_rate_hz=8000,
+        output_encoding="ulaw",
+        output_sample_rate_hz=8000,
+    )
+
+    resolved = orchestrator.resolve_transport(
+        provider_name,
+        caps,
+        {"AI_AUDIO_PROFILE": "wideband_pcm_16k"},
+        provider_config=configured,
+    )
+
+    assert resolved.provider_input_sample_rate == expected_input_rate
+    assert resolved.provider_output_sample_rate == expected_output_rate
+
+
+def test_legacy_profile_keeps_configured_provider_boundary():
+    orchestrator = TransportOrchestrator(_orchestrator_config())
+    caps = ProviderCapabilities(
+        input_encodings=["linear16", "ulaw"],
+        input_sample_rates_hz=[24000, 8000],
+        output_encodings=["pcm16", "ulaw"],
+        output_sample_rates_hz=[24000, 8000],
+        wideband_input_encoding="linear16",
+        wideband_input_sample_rate_hz=24000,
+        wideband_output_encoding="pcm16",
+        wideband_output_sample_rate_hz=24000,
+    )
+    configured = SimpleNamespace(
+        provider_input_encoding="ulaw",
+        provider_input_sample_rate_hz=8000,
+        output_encoding="ulaw",
+        output_sample_rate_hz=8000,
+    )
+
+    resolved = orchestrator.resolve_transport(
+        "test", caps, {}, provider_config=configured
+    )
+
+    assert resolved.provider_input_encoding == "ulaw"
+    assert resolved.provider_input_sample_rate == 8000
+    assert resolved.provider_output_encoding == "ulaw"
+    assert resolved.provider_output_sample_rate == 8000
+
+
+def test_engine_applies_wideband_provider_formats_without_mutating_template():
+    engine = Engine.__new__(Engine)
+    provider = SimpleNamespace(
+        config=SimpleNamespace(
+            input_encoding="ulaw",
+            input_sample_rate_hz=8000,
+            provider_input_encoding="ulaw",
+            provider_input_sample_rate_hz=8000,
+            output_encoding="ulaw",
+            output_sample_rate_hz=8000,
+            target_encoding="ulaw",
+            target_sample_rate_hz=8000,
+            output_resampler="inherit",
+        )
+    )
+    session = SimpleNamespace(
+        call_id="call-wideband",
+        transport_profile=SimpleNamespace(
+            profile_name="wideband_pcm_16k",
+            wire_encoding="slin16",
+            wire_sample_rate=16000,
+            output_resampler="linear",
+        ),
+        provider_overrides={
+            "target_encoding": "slin16",
+            "target_sample_rate_hz": 16000,
+            "provider_input_encoding": "linear16",
+            "provider_input_sample_rate_hz": 24000,
+            "provider_output_encoding": "pcm16",
+            "provider_output_sample_rate_hz": 24000,
+        },
+    )
+
+    engine._apply_provider_overrides(provider, session)
+
+    assert (provider.config.input_encoding, provider.config.input_sample_rate_hz) == (
+        "slin16",
+        16000,
+    )
+    assert (
+        provider.config.provider_input_encoding,
+        provider.config.provider_input_sample_rate_hz,
+    ) == ("linear16", 24000)
+    assert (provider.config.output_encoding, provider.config.output_sample_rate_hz) == (
+        "pcm16",
+        24000,
+    )
+    assert (provider.config.target_encoding, provider.config.target_sample_rate_hz) == (
+        "slin16",
+        16000,
+    )
 
 
 @pytest.mark.asyncio

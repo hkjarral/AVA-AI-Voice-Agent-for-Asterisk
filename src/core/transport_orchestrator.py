@@ -525,7 +525,10 @@ class TransportOrchestrator:
             wire_enc = profile.transport_out.get('encoding', 'slin')
             wire_rate = profile.transport_out.get('sample_rate_hz', 8000)
         
-        # CRITICAL: Read provider's actual requirements from provider config
+        # Read the provider's configured requirements. Compatibility profiles
+        # retain these values exactly. An explicitly selected wideband linear
+        # profile may replace them below with the provider's declared native
+        # wideband boundary, keeping the choice call-scoped.
         # Modern providers (Google Live, OpenAI) have provider_input_* fields
         # Legacy providers (Deepgram Voice Agent) use input_* fields
         # Fall back to profile preferences if provider config unavailable
@@ -563,6 +566,27 @@ class TransportOrchestrator:
             pref_out_enc = profile.provider_pref.get('output_encoding', 'linear16')
             pref_in_rate = profile.provider_pref.get('input_sample_rate_hz', 16000)
             pref_out_rate = profile.provider_pref.get('output_sample_rate_hz', 16000)
+
+        normalized_wire = self._normalize_encoding(str(wire_enc or ""))
+        wideband_selected = bool(
+            normalized_wire == "linear16" and int(wire_rate or 0) >= 16000
+        )
+        provider_format_source = "provider-config"
+        if wideband_selected and provider_caps:
+            wideband_values = (
+                provider_caps.wideband_input_encoding,
+                provider_caps.wideband_input_sample_rate_hz,
+                provider_caps.wideband_output_encoding,
+                provider_caps.wideband_output_sample_rate_hz,
+            )
+            if all(value is not None for value in wideband_values):
+                pref_in_enc = str(provider_caps.wideband_input_encoding)
+                pref_in_rate = int(provider_caps.wideband_input_sample_rate_hz)
+                pref_out_enc = str(provider_caps.wideband_output_encoding)
+                pref_out_rate = int(provider_caps.wideband_output_sample_rate_hz)
+                provider_format_source = "provider-wideband-capability"
+            else:
+                provider_format_source = "provider-config-no-wideband-route"
         
         # Negotiate with provider if capabilities available
         if provider_caps:
@@ -623,6 +647,8 @@ class TransportOrchestrator:
             "Negotiated transport profile",
             profile=profile.name,
             transport=transport,
+            provider_format_source=provider_format_source,
+            wideband_selected=wideband_selected,
         )
         
         return transport
@@ -737,6 +763,12 @@ class TransportOrchestrator:
             issues.append(
                 f"Provider may not support input rate {transport.provider_input_sample_rate} Hz "
                 f"(supported: {provider_caps.input_sample_rates_hz})"
+            )
+
+        if transport.provider_output_sample_rate not in provider_caps.output_sample_rates_hz:
+            issues.append(
+                f"Provider may not support output rate {transport.provider_output_sample_rate} Hz "
+                f"(supported: {provider_caps.output_sample_rates_hz})"
             )
         
         # Add remediation if issues found

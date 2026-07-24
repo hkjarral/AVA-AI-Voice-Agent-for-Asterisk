@@ -872,6 +872,10 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             output_sample_rates_hz=[8000],
             is_full_agent=True,
             requires_continuous_audio=True,
+            wideband_input_encoding="pcm16",
+            wideband_input_sample_rate_hz=16000,
+            wideband_output_encoding="ulaw",
+            wideband_output_sample_rate_hz=8000,
         )
 
     def is_ready(self) -> bool:
