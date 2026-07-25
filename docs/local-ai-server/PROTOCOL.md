@@ -8,7 +8,7 @@ This document describes the WebSocket API exposed by the local AI server (defaul
 - Optional auth: `LOCAL_WS_AUTH_TOKEN` (server-side)
 - Modes: `full`, `stt`, `llm`, `tts` (default `full`)
 - Binary messages (client → server): raw PCM16 mono frames (assumed 16 kHz unless you set `rate` on JSON `audio`)
-- Binary messages (server → client): μ-law 8 kHz audio bytes for TTS playback (used by `full` pipeline)
+- Binary messages (server → client): negotiated TTS audio bytes. Legacy clients receive μ-law 8 kHz; Piper can emit linear PCM 16 kHz when requested per call.
 - JSON messages: control, status, text requests, or base64 audio frames
 
 Source of truth:
@@ -113,7 +113,7 @@ Notes:
 - `llm_tool_request` → Run tool-call parser/repair/structured gateway; responds with `llm_tool_response`.
 - `tool_context` → Set session-scoped tool state (allowed tools, schemas, policy) before `llm_tool_request`. No direct response. **(Added in v6.5.0 for #368.)**
 - `tool_result` → Deliver a tool's execution result back to the local LLM after the engine ran it; triggers a follow-up LLM turn whose final spoken text is delivered via `llm_response` (and audio via the server-side TTS output path active for the current session mode), not another tool call. **(Added in v6.5.0 for #368.)**
-- `tts_request` → Synthesize TTS from text; responds with `tts_response` (base64 μ-law).
+- `tts_request` → Synthesize TTS from text; responds with `tts_response` containing base64 audio and truthful format metadata.
 - `reload_models` → Reload all models; responds with `reload_response`.
 - `reload_llm` → Reload only LLM; responds with `reload_response`.
 - `switch_model` → Switch backend/model paths at runtime; responds with `switch_response`.
@@ -416,7 +416,9 @@ Request:
   "type": "tts_request",
   "text": "Hello, how can I help you?",
   "call_id": "1234-5678",
-  "request_id": "t1"
+  "request_id": "t1",
+  "output_encoding": "linear16",
+  "output_sample_rate_hz": 16000
 }
 ```
 
@@ -428,12 +430,17 @@ Response:
   "text": "Hello, how can I help you?",
   "call_id": "1234-5678",
   "request_id": "t1",
-  "audio_data": "<base64 mulaw bytes>",
-  "encoding": "mulaw",
-  "sample_rate_hz": 8000,
-  "byte_length": 12446
+  "audio_data": "<base64 PCM16 bytes>",
+  "encoding": "linear16",
+  "sample_rate_hz": 16000,
+  "byte_length": 49784
 }
 ```
+
+The output fields are optional and do not change protocol version 2. Omitting
+them preserves μ-law/8 kHz. Native linear16/16 kHz output is initially enabled
+for Piper; unsupported backend/format combinations fall back to truthful
+μ-law/8 kHz metadata so upgraded clients can convert safely.
 
 ---
 

@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from constants import DEFAULT_MODE
+from constants import DEFAULT_MODE, ULAW_SAMPLE_RATE
 from optional_imports import KaldiRecognizer
 
 
@@ -75,3 +75,7 @@ class SessionContext:
     # pipeline. None inherits the Local AI Server environment/default.
     stt_segment_energy_threshold: Optional[int] = None
     stt_segment_silence_ms: Optional[int] = None
+    # Per-call TTS egress contract. Legacy clients omit these fields and retain
+    # the historical μ-law/8 kHz behavior.
+    tts_output_encoding: str = "mulaw"
+    tts_output_sample_rate_hz: int = ULAW_SAMPLE_RATE

@@ -22,7 +22,10 @@ async def test_hangup_tool_result_speaks_exact_farewell_without_second_llm_turn(
     server_mod = _load("server")
     session_mod = _load("session")
     server = object.__new__(server_mod.LocalAIServer)
-    server.process_tts = AsyncMock(return_value=b"farewell-audio")
+    audio_mod = _load("audio_processor")
+    server._process_session_tts = AsyncMock(
+        return_value=audio_mod.SynthesizedAudio(b"farewell-audio")
+    )
     server._emit_llm_response = AsyncMock(return_value=True)
     server._emit_tts_audio = AsyncMock()
     session = session_mod.SessionContext(call_id="call-farewell")
@@ -44,7 +47,10 @@ async def test_hangup_tool_result_speaks_exact_farewell_without_second_llm_turn(
         },
     )
 
-    server.process_tts.assert_awaited_once_with("Thank you for calling Ava. Goodbye!")
+    server._process_session_tts.assert_awaited_once_with(
+        "Thank you for calling Ava. Goodbye!",
+        session,
+    )
     assert session.llm_messages[-1] == {
         "role": "assistant",
         "content": "Thank you for calling Ava. Goodbye!",

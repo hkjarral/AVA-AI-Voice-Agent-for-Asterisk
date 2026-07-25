@@ -7,8 +7,21 @@ import os
 import subprocess
 import tempfile
 import wave
+from dataclasses import dataclass
 
 from constants import ULAW_SAMPLE_RATE
+
+
+@dataclass(frozen=True)
+class SynthesizedAudio:
+    """TTS bytes with the format metadata required by downstream playback."""
+
+    data: bytes
+    encoding: str = "mulaw"
+    sample_rate_hz: int = ULAW_SAMPLE_RATE
+
+    def __bool__(self) -> bool:
+        return bool(self.data)
 
 
 class AudioProcessor:

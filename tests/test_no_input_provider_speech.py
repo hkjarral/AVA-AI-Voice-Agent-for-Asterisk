@@ -244,6 +244,8 @@ async def test_local_provider_requests_tts_for_active_call():
         "type": "tts_request",
         "text": "Are you still there?",
         "call_id": "call-local",
+        "output_encoding": "mulaw",
+        "output_sample_rate_hz": 8000,
     }
 
     provider.speak_text = AsyncMock(return_value=True)

@@ -95,6 +95,10 @@ class LocalProviderConfig(BaseModel):
     auth_token: Optional[str] = None
     connect_timeout_sec: float = Field(default=5.0)
     response_timeout_sec: float = Field(default=5.0)
+    # Per-call TTS egress target. Audio profiles override these on call-owned
+    # provider instances; defaults preserve the historical Local AI contract.
+    target_encoding: str = Field(default="mulaw")
+    target_sample_rate_hz: int = Field(default=8000)
     # MED-R3: max total wall-time the mid-call background reconnect will keep
     # retrying after the Local AI Server WebSocket drops mid-call. While retrying,
     # inbound caller audio is dropped (the caller hears silence), so this bounds

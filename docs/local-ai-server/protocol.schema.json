@@ -79,6 +79,18 @@
           "type": "integer",
           "minimum": 100,
           "maximum": 5000
+        },
+        "output_encoding": {
+          "enum": [
+            "mulaw",
+            "linear16"
+          ]
+        },
+        "output_sample_rate_hz": {
+          "enum": [
+            8000,
+            16000
+          ]
         }
       },
       "additionalProperties": true
@@ -120,6 +132,18 @@
           ],
           "minimum": 100,
           "maximum": 5000
+        },
+        "output_encoding": {
+          "enum": [
+            "mulaw",
+            "linear16"
+          ]
+        },
+        "output_sample_rate_hz": {
+          "enum": [
+            8000,
+            16000
+          ]
         }
       },
       "additionalProperties": true
@@ -907,6 +931,18 @@
         },
         "protocol_version": {
           "type": "integer"
+        },
+        "output_encoding": {
+          "enum": [
+            "mulaw",
+            "linear16"
+          ]
+        },
+        "output_sample_rate_hz": {
+          "enum": [
+            8000,
+            16000
+          ]
         }
       },
       "additionalProperties": true
@@ -935,6 +971,21 @@
         },
         "encoding": {
           "type": "string"
+        },
+        "sample_rate_hz": {
+          "type": "integer"
+        },
+        "output_encoding": {
+          "enum": [
+            "mulaw",
+            "linear16"
+          ]
+        },
+        "output_sample_rate_hz": {
+          "enum": [
+            8000,
+            16000
+          ]
         }
       },
       "additionalProperties": true
@@ -1002,6 +1053,18 @@
         },
         "request_id": {
           "type": "string"
+        },
+        "output_encoding": {
+          "enum": [
+            "mulaw",
+            "linear16"
+          ]
+        },
+        "output_sample_rate_hz": {
+          "enum": [
+            8000,
+            16000
+          ]
         }
       },
       "additionalProperties": true

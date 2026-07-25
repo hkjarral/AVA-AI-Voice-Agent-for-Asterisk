@@ -28,6 +28,14 @@ class _FakeServer:
         self.cancel_calls = []
         self.rollback_calls = []
 
+    def _apply_tts_output_preferences(self, session, data, *, reset_if_missing=False):
+        encoding = data.get("output_encoding")
+        rate = data.get("output_sample_rate_hz")
+        if encoding is None and rate is None and not reset_if_missing:
+            return
+        session.tts_output_encoding = encoding or "mulaw"
+        session.tts_output_sample_rate_hz = int(rate or 8000)
+
     async def _send_json(self, _websocket, payload):
         self.sent_payloads.append(payload)
 
@@ -65,6 +73,8 @@ async def test_set_mode_applies_scoped_whisper_segmenter_policy():
         "call_id": "call-policy",
         "segment_energy_threshold": 800,
         "segment_silence_ms": 1200,
+        "output_encoding": "mulaw",
+        "output_sample_rate_hz": 8000,
     }
 
 
@@ -111,7 +121,30 @@ async def test_set_mode_omission_restores_server_segmenter_defaults():
         "call_id": "call-defaults",
         "segment_energy_threshold": None,
         "segment_silence_ms": None,
+        "output_encoding": "mulaw",
+        "output_sample_rate_hz": 8000,
     }
+
+
+@pytest.mark.asyncio
+async def test_set_mode_negotiates_per_session_tts_output():
+    ws_protocol_mod, session_mod, _constants_mod = _load_ws_protocol_modules()
+    protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
+    session = session_mod.SessionContext(call_id="seed")
+
+    await protocol.handle_json_message(
+        websocket=None,
+        session=session,
+        message=(
+            '{"type":"set_mode","mode":"tts","call_id":"call-wideband",'
+            '"output_encoding":"linear16","output_sample_rate_hz":16000}'
+        ),
+    )
+
+    assert session.tts_output_encoding == "linear16"
+    assert session.tts_output_sample_rate_hz == 16000
+    assert protocol._server.sent_payloads[-1]["output_encoding"] == "linear16"
+    assert protocol._server.sent_payloads[-1]["output_sample_rate_hz"] == 16000
 
 
 @pytest.mark.asyncio

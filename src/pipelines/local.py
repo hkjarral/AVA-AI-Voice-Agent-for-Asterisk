@@ -51,6 +51,48 @@ def _merge_dicts(base: Dict[str, Any], override: Optional[Dict[str, Any]]) -> Di
     return merged
 
 
+def _tts_output_contract(options: Dict[str, Any]) -> Tuple[str, int]:
+    format_options = options.get("format") if isinstance(options.get("format"), dict) else {}
+    encoding = str(
+        format_options.get("encoding")
+        or options.get("target_encoding")
+        or "mulaw"
+    ).strip().lower()
+    if encoding in {"linear16", "pcm16", "slin16", "slin"}:
+        encoding = "linear16"
+        default_rate = 16000
+    else:
+        encoding = "mulaw"
+        default_rate = 8000
+    try:
+        sample_rate = int(
+            format_options.get("sample_rate")
+            or format_options.get("sample_rate_hz")
+            or options.get("target_sample_rate_hz")
+            or default_rate
+        )
+    except (TypeError, ValueError):
+        sample_rate = default_rate
+    return encoding, sample_rate
+
+
+def _convert_tts_output(
+    data: bytes,
+    source_encoding: str,
+    source_rate: int,
+    target_encoding: str,
+    target_rate: int,
+) -> bytes:
+    """Keep the adapter's declared output truthful if an older server falls back."""
+    source_encoding = "linear16" if source_encoding in {"linear16", "pcm16", "slin16", "slin"} else "mulaw"
+    if source_encoding == target_encoding and source_rate == target_rate:
+        return data
+    pcm = audioop.ulaw2lin(data, 2) if source_encoding == "mulaw" else data
+    if source_rate != target_rate:
+        pcm, _ = resample_audio(pcm, source_rate, target_rate, state=None)
+    return audioop.lin2ulaw(pcm, 2) if target_encoding == "mulaw" else pcm
+
+
 @dataclass
 class _LocalSessionState:
     websocket: ClientConnection
@@ -213,6 +255,10 @@ class _LocalAdapterBase:
             for key in ("segment_energy_threshold", "segment_silence_ms"):
                 if merged.get(key) is not None:
                     set_mode_payload[key] = merged[key]
+        elif mode == "tts":
+            output_encoding, output_rate = _tts_output_contract(merged)
+            set_mode_payload["output_encoding"] = output_encoding
+            set_mode_payload["output_sample_rate_hz"] = output_rate
         await self._send_json(session, set_mode_payload)
         try:
             logger.info(
@@ -1191,6 +1237,11 @@ class LocalLLMAdapter(_LocalAdapterBase, LLMComponent):
 class LocalTTSAdapter(_LocalAdapterBase, TTSComponent):
     """# Milestone7: TTS adapter backed by the local AI server."""
 
+    wideband_output_format = {
+        "encoding": "linear16",
+        "sample_rate": 16000,
+    }
+
     def __init__(
         self,
         component_key: str,
@@ -1231,6 +1282,7 @@ class LocalTTSAdapter(_LocalAdapterBase, TTSComponent):
             yield  # Unreachable but makes this an async generator
 
         merged = self._compose_options(runtime_options)
+        output_encoding, output_rate = _tts_output_contract(merged)
         logger.debug(
             "Sending TTS request",
             component=self.component_key,
@@ -1242,6 +1294,8 @@ class LocalTTSAdapter(_LocalAdapterBase, TTSComponent):
             "call_id": call_id,
             "mode": "tts",
             "text": text,
+            "output_encoding": output_encoding,
+            "output_sample_rate_hz": output_rate,
         }
 
         # Use retry logic for TTS send
@@ -1271,6 +1325,7 @@ class LocalTTSAdapter(_LocalAdapterBase, TTSComponent):
         timeout = float(merged.get("response_timeout_sec", 8.0))
         started_at = time.perf_counter()
         yielded_audio = False
+        response_meta: Dict[str, Any] = {}
 
         try:
             while True:
@@ -1299,6 +1354,25 @@ class LocalTTSAdapter(_LocalAdapterBase, TTSComponent):
                     msg_type = message.get("type")
                     if msg_type == "tts_response" and message.get("audio_data"):
                         decoded = base64.b64decode(message["audio_data"])
+                        source_encoding = str(message.get("encoding") or "mulaw").strip().lower()
+                        source_rate = int(message.get("sample_rate_hz") or 8000)
+                        if source_encoding != output_encoding or source_rate != output_rate:
+                            logger.warning(
+                                "Local TTS server output did not match requested contract; converting in adapter",
+                                component=self.component_key,
+                                call_id=call_id,
+                                source_encoding=source_encoding,
+                                source_rate=source_rate,
+                                target_encoding=output_encoding,
+                                target_rate=output_rate,
+                            )
+                            decoded = _convert_tts_output(
+                                decoded,
+                                source_encoding,
+                                source_rate,
+                                output_encoding,
+                                output_rate,
+                            )
                         latency_ms = (time.perf_counter() - started_at) * 1000.0
                         logger.info(
                             "Local TTS response (base64) received",
@@ -1311,6 +1385,7 @@ class LocalTTSAdapter(_LocalAdapterBase, TTSComponent):
                         yield decoded
                         break
                     if msg_type == "tts_audio":
+                        response_meta = dict(message)
                         logger.debug(
                             "Local TTS metadata received",
                             component=self.component_key,
@@ -1321,6 +1396,16 @@ class LocalTTSAdapter(_LocalAdapterBase, TTSComponent):
                     continue
 
                 if kind == "binary":
+                    source_encoding = str(response_meta.get("encoding") or "mulaw").strip().lower()
+                    source_rate = int(response_meta.get("sample_rate_hz") or 8000)
+                    if source_encoding != output_encoding or source_rate != output_rate:
+                        message = _convert_tts_output(
+                            message,
+                            source_encoding,
+                            source_rate,
+                            output_encoding,
+                            output_rate,
+                        )
                     latency_ms = (time.perf_counter() - started_at) * 1000.0
                     logger.info(
                         "Local TTS audio chunk received",

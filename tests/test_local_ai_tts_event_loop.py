@@ -5,6 +5,7 @@ import importlib
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -75,3 +76,32 @@ async def test_shared_tts_backend_access_is_serialized():
         instance._process_tts_melotts("two"),
     )
     assert peak == 1
+
+
+@pytest.mark.asyncio
+async def test_piper_can_emit_native_linear16_16k_with_truthful_metadata():
+    server_mod = _server_module()
+    audio_mod = importlib.import_module("audio_processor")
+    instance = object.__new__(server_mod.LocalAIServer)
+    instance.tts_backend = "piper"
+    instance.tts_model_path = "/models/piper.onnx"
+    instance.silero_speaker = ""
+    instance.kokoro_voice = ""
+    instance.config = SimpleNamespace(
+        tts_phrase_cache_enabled=False,
+        tts_phrase_cache_max_text_len=120,
+    )
+    instance._tts_cache = {}
+    instance._tts_lock = asyncio.Lock()
+    instance.audio_processor = audio_mod.AudioProcessor()
+    instance._synthesize_piper_pcm16 = lambda _text: b"\x01\x00" * 2205
+
+    result = await instance.process_tts_audio(
+        "wideband",
+        output_encoding="linear16",
+        output_sample_rate_hz=16000,
+    )
+
+    assert result.encoding == "linear16"
+    assert result.sample_rate_hz == 16000
+    assert 3180 <= len(result.data) <= 3220

@@ -71,6 +71,10 @@ class _MockWebSocket:
         self._queue.put_nowait(message)
 
 
+async def _collect_async(iterator):
+    return [item async for item in iterator]
+
+
 @pytest.mark.asyncio
 async def test_local_stt_adapter_transcribes(monkeypatch):
     app_config = _build_app_config()
@@ -345,6 +349,44 @@ async def test_local_tts_adapter_synthesizes(monkeypatch):
     assert tts_message["type"] == "tts_request"
     assert tts_message["call_id"] == "call-3"
     assert tts_message["text"] == "Hello world"
+    assert tts_message["output_encoding"] == "mulaw"
+    assert tts_message["output_sample_rate_hz"] == 8000
+
+
+@pytest.mark.asyncio
+async def test_local_tts_adapter_requests_native_wideband(monkeypatch):
+    app_config = _build_app_config()
+    provider_config = LocalProviderConfig(**app_config.providers["local"])
+    adapter = LocalTTSAdapter("local_tts", app_config, provider_config, {"mode": "tts"})
+    mock_ws = _MockWebSocket()
+
+    async def fake_connect(*_args, **_kwargs):
+        return mock_ws
+
+    monkeypatch.setattr("src.pipelines.local.websockets.connect", fake_connect)
+    options = {"format": {"encoding": "linear16", "sample_rate": 16000}}
+    await adapter.start()
+    await adapter.open_call("call-wideband", options)
+
+    pcm16 = b"\x01\x00" * 160
+    task = asyncio.create_task(
+        _collect_async(adapter.synthesize("call-wideband", "Wideband hello", options))
+    )
+    await asyncio.sleep(0)
+    mock_ws.push(json.dumps({
+        "type": "tts_response",
+        "audio_data": base64.b64encode(pcm16).decode("ascii"),
+        "encoding": "linear16",
+        "sample_rate_hz": 16000,
+    }))
+
+    assert await task == [pcm16]
+    set_mode = json.loads(mock_ws.sent[0])
+    request = json.loads(mock_ws.sent[1])
+    assert set_mode["output_encoding"] == "linear16"
+    assert set_mode["output_sample_rate_hz"] == 16000
+    assert request["output_encoding"] == "linear16"
+    assert request["output_sample_rate_hz"] == 16000
 
 
 @pytest.mark.asyncio

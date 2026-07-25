@@ -56,12 +56,14 @@ async def test_barge_in_generation_drops_completed_tts_request():
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def slow_tts(_text):
+    audio_mod = _load("audio_processor")
+
+    async def slow_tts(_text, _session):
         started.set()
         await release.wait()
-        return b"audio"
+        return audio_mod.SynthesizedAudio(b"audio")
 
-    instance.process_tts = slow_tts
+    instance._process_session_tts = slow_tts
     session = session_mod.SessionContext(call_id="call-1", mode="tts")
     ws = _WebSocket()
     task = asyncio.create_task(instance._handle_tts_request(

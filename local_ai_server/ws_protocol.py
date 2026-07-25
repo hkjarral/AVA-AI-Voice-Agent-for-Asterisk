@@ -108,6 +108,11 @@ class WebSocketProtocol:
             call_id = data.get("call_id")
             if call_id:
                 session.call_id = call_id
+            self._server._apply_tts_output_preferences(
+                session,
+                data,
+                reset_if_missing=True,
+            )
             for key, minimum, maximum in (
                 ("segment_energy_threshold", 0, 32767),
                 ("segment_silence_ms", 100, 5000),
@@ -136,11 +141,14 @@ class WebSocketProtocol:
                     "call_id": session.call_id,
                     "segment_energy_threshold": session.stt_segment_energy_threshold,
                     "segment_silence_ms": session.stt_segment_silence_ms,
+                    "output_encoding": session.tts_output_encoding,
+                    "output_sample_rate_hz": session.tts_output_sample_rate_hz,
                 },
             )
             return
 
         if msg_type == "audio":
+            self._server._apply_tts_output_preferences(session, data)
             await self._server._handle_audio_payload(websocket, session, data)
             return
 
@@ -169,6 +177,7 @@ class WebSocketProtocol:
             return
 
         if msg_type == "tts_request":
+            self._server._apply_tts_output_preferences(session, data)
             self._server._start_session_response_task(
                 session,
                 self._server._handle_tts_request(websocket, session, data),
@@ -193,6 +202,7 @@ class WebSocketProtocol:
             return
 
         if msg_type == "tool_result":
+            self._server._apply_tts_output_preferences(session, data)
             self._server._start_session_response_task(
                 session,
                 self._server._handle_tool_result(websocket, session, data),

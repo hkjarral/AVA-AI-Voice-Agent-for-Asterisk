@@ -4,6 +4,32 @@ Validate audio quality and transport integrity across the maintainer-approved re
 
 ## Progress
 
+- **Local AI Server native-wideband slice in progress (2026-07-24):** branch
+  `codex/audiosocket-multirate` now carries an opt-in, per-call TTS output
+  contract for Local AI Server protocol v2. Legacy clients and 8 kHz profiles
+  continue to receive Piper μ-law/8 kHz. A wideband profile requests
+  `linear16@16000`; Piper is synthesized once at its native 22.05 kHz and
+  resampled directly to 16 kHz without the former intermediate μ-law/8 kHz
+  companding step. Format/rate are included in phrase-cache keys, response
+  metadata, echo-suppression duration, greetings, normal turns, tool-result
+  turns, terminal farewells, and streaming chunks. Local Hybrid declares the
+  native-wideband contract to the pipeline resolver and retains a defensive
+  conversion fallback when an older server returns legacy audio. The focused
+  regression gate passes 120 tests (2 warnings), including legacy defaults,
+  per-session negotiation, Piper native output, cancellation, terminal
+  farewell, provider timing, and pipeline output policy. The broader
+  container gate passes 1,946 tests with 18 expected skips after excluding two
+  harness-only suites whose stripped PATH lacks host `git`/`python3`; the Local
+  AI Server and AI Engine production images both build successfully.
+- **Local Hybrid 8 kHz before-call (2026-07-24):** call
+  `1784944618.100`, archived at
+  `logs/archived/rca-20260725-015750`, is the comparison control. It used
+  `local_stt → openai_llm → local_tts`, `telephony_ulaw_8k`, Piper
+  μ-law/8 kHz, and `slin@8000` AudioSocket. The 42-second call completed via
+  agent hangup with media RX confirmed. The post-change comparison will reuse
+  extension 3000 and the same conversation after the rebuilt Local AI Server
+  and AI Engine are deployed.
+
 - **Diagnostics removed from the release candidate (2026-07-22):** every
   diagnostics-only change introduced during this investigation was reverted to
   `origin/main`. PR #555 does not change diagnostic YAML/environment
