@@ -217,6 +217,18 @@ const ProfilesPage = () => {
         setProfileForm({ ...profileForm, [field]: value });
     };
 
+    const updateOptionalProfileNumber = (field: string, rawValue: string) => {
+        setProfileForm((current) => {
+            const next = { ...current };
+            if (rawValue.trim() === '') {
+                delete next[field];
+            } else {
+                next[field] = parseInt(rawValue, 10);
+            }
+            return next;
+        });
+    };
+
     const updateNestedField = (section: string, field: string, value: any) => {
         setProfileForm({
             ...profileForm,
@@ -696,7 +708,7 @@ const ProfilesPage = () => {
                                 min={1}
                                 max={32768}
                                 value={profileForm.talk_detect_talking_threshold ?? config.barge_in?.pipeline_talk_detect_talking_threshold ?? 256}
-                                onChange={(e) => updateProfileField('talk_detect_talking_threshold', parseInt(e.target.value))}
+                                onChange={(e) => updateOptionalProfileNumber('talk_detect_talking_threshold', e.target.value)}
                                 tooltip="Per-profile Asterisk DSP magnitude threshold for pipeline barge-in. Higher values reject more playback echo. The wideband profile uses 1000; profiles without an override inherit the global barge-in value."
                             />
                             <FormSelect

@@ -3,6 +3,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import axios from 'axios';
+import yaml from 'js-yaml';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ProfilesPage from './ProfilesPage';
@@ -110,5 +111,30 @@ describe('ProfilesPage audio contract safety', () => {
         await waitFor(() => expect(mocks.toastError).toHaveBeenCalled());
         expect(mocks.confirm).not.toHaveBeenCalled();
         expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    it('removes a per-profile TALK_DETECT threshold when the field is cleared', async () => {
+        vi.mocked(axios.get).mockResolvedValue({ data: [] });
+        vi.mocked(axios.post).mockResolvedValue({
+            data: { recommended_apply_method: 'restart' },
+        });
+
+        render(<ProfilesPage />);
+
+        fireEvent.click(await screen.findByText('wideband_pcm_16k'));
+        const threshold = screen.getByRole('spinbutton', {
+            name: /TALK_DETECT Talking Threshold/i,
+        });
+        fireEvent.change(threshold, { target: { value: '' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+        await waitFor(() => expect(axios.post).toHaveBeenCalled());
+        const request = vi.mocked(axios.post).mock.calls[0][1] as { content: string };
+        const saved = yaml.load(request.content) as {
+            profiles: Record<string, Record<string, unknown>>;
+        };
+        expect(saved.profiles.wideband_pcm_16k).not.toHaveProperty(
+            'talk_detect_talking_threshold'
+        );
     });
 });

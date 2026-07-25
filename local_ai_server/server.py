@@ -3178,26 +3178,40 @@ class LocalAIServer:
                 return cached
 
         if encoding == "linear16" and self.tts_backend in {"piper", "kokoro"}:
-            if self.tts_backend == "piper":
-                async with self._tts_lock:
-                    native_pcm = await asyncio.to_thread(self._synthesize_piper_pcm16, text)
-                native_rate = 22050
+            result_bytes = b""
+            if self.tts_backend == "piper" and not getattr(self, "tts_model", None):
+                logging.error("Piper TTS model not loaded")
             else:
-                native_pcm, native_rate = await self._synthesize_kokoro_pcm16(text)
-            result_bytes = await asyncio.to_thread(
-                self.audio_processor.resample_audio,
-                native_pcm,
-                native_rate,
-                sample_rate_hz,
-            )
-            logging.info(
-                "🔊 TTS RESULT - %s generated linear16 audio: %s bytes native_sample_rate_hz=%s sample_rate_hz=%s call_id=%s",
-                self.tts_backend.capitalize(),
-                len(result_bytes),
-                native_rate,
-                sample_rate_hz,
-                _CALL_LOG_CONTEXT.get(),
-            )
+                try:
+                    if self.tts_backend == "piper":
+                        async with self._tts_lock:
+                            native_pcm = await asyncio.to_thread(
+                                self._synthesize_piper_pcm16, text
+                            )
+                        native_rate = 22050
+                    else:
+                        native_pcm, native_rate = await self._synthesize_kokoro_pcm16(text)
+                    result_bytes = await asyncio.to_thread(
+                        self.audio_processor.resample_audio,
+                        native_pcm,
+                        native_rate,
+                        sample_rate_hz,
+                    )
+                    logging.info(
+                        "🔊 TTS RESULT - %s generated linear16 audio: %s bytes native_sample_rate_hz=%s sample_rate_hz=%s call_id=%s",
+                        self.tts_backend.capitalize(),
+                        len(result_bytes),
+                        native_rate,
+                        sample_rate_hz,
+                        _CALL_LOG_CONTEXT.get(),
+                    )
+                except Exception as exc:
+                    logging.error(
+                        "Wideband TTS synthesis failed backend=%s: %s",
+                        self.tts_backend,
+                        exc,
+                        exc_info=True,
+                    )
         elif self.tts_backend == "kokoro":
             result_bytes = await self._process_tts_kokoro(text)
         elif self.tts_backend == "melotts":
@@ -5317,7 +5331,11 @@ class LocalAIServer:
             return
 
         tts_text = self._strip_tool_calls_for_tts(llm_response or "")
-        audio_response = await self._process_session_tts(tts_text, session) if tts_text else SynthesizedAudio(b"")
+        audio_response = (
+            await self._process_session_tts(tts_text, session)
+            if tts_text
+            else self._empty_session_tts(session)
+        )
         await self._emit_tts_audio(
             websocket,
             audio_response,
@@ -5369,6 +5387,15 @@ class LocalAIServer:
             text,
             output_encoding=session.tts_output_encoding,
             output_sample_rate_hz=session.tts_output_sample_rate_hz,
+        )
+
+    @staticmethod
+    def _empty_session_tts(session: SessionContext) -> SynthesizedAudio:
+        """Return an empty marker that retains the negotiated session contract."""
+        return SynthesizedAudio(
+            b"",
+            session.tts_output_encoding,
+            session.tts_output_sample_rate_hz,
         )
 
     async def _emit_tts_audio(
@@ -5873,7 +5900,7 @@ class LocalAIServer:
             if tts_text:
                 audio_response = await self._process_session_tts(tts_text, session)
             else:
-                audio_response = SynthesizedAudio(b"")  # No spoken text, just tool call
+                audio_response = self._empty_session_tts(session)
             await self._emit_tts_audio(
                 websocket,
                 audio_response,

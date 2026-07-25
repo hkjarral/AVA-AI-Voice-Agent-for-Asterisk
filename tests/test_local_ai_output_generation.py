@@ -78,6 +78,23 @@ async def test_full_local_audio_without_request_id_is_scoped_by_metadata():
     assert ws.sent[1] == b"reply"
 
 
+def test_empty_session_tts_marker_preserves_wideband_contract():
+    server_mod = _load("server")
+    session_mod = _load("session")
+    instance = object.__new__(server_mod.LocalAIServer)
+    session = session_mod.SessionContext(
+        call_id="wideband-empty",
+        tts_output_encoding="linear16",
+        tts_output_sample_rate_hz=16000,
+    )
+
+    audio = instance._empty_session_tts(session)
+
+    assert audio.data == b""
+    assert audio.encoding == "linear16"
+    assert audio.sample_rate_hz == 16000
+
+
 @pytest.mark.asyncio
 async def test_barge_in_generation_drops_completed_tts_request():
     server_mod = _load("server")

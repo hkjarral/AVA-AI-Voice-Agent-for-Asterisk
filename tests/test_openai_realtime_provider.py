@@ -39,6 +39,14 @@ def _cleanup_metrics(call_id: str) -> None:
     return
 
 
+def test_capabilities_include_telephony_pcm16_input_rate(openai_config):
+    capabilities = OpenAIRealtimeProvider(
+        openai_config, on_event=AsyncMock()
+    ).get_capabilities()
+
+    assert 16000 in capabilities.input_sample_rates_hz
+
+
 @pytest.mark.asyncio
 async def test_greeting_audio_done_defers_tts_gating_until_transport_drain(openai_config):
     events = []

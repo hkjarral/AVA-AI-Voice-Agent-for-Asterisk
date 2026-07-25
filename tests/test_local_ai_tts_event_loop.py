@@ -95,6 +95,7 @@ async def test_piper_can_emit_native_linear16_16k_with_truthful_metadata():
     )
     instance._tts_cache = {}
     instance._tts_lock = asyncio.Lock()
+    instance.tts_model = object()
     instance.audio_processor = audio_mod.AudioProcessor()
     instance._synthesize_piper_pcm16 = lambda _text: b"\x01\x00" * 2205
 
@@ -107,6 +108,69 @@ async def test_piper_can_emit_native_linear16_16k_with_truthful_metadata():
     assert result.encoding == "linear16"
     assert result.sample_rate_hz == 16000
     assert 3180 <= len(result.data) <= 3220
+
+
+@pytest.mark.asyncio
+async def test_piper_wideband_missing_model_returns_safe_empty_contract():
+    server_mod = _server_module()
+    audio_mod = importlib.import_module("audio_processor")
+    instance = object.__new__(server_mod.LocalAIServer)
+    instance.tts_backend = "piper"
+    instance.tts_model = None
+    instance.tts_model_path = "/models/missing.onnx"
+    instance.silero_speaker = ""
+    instance.kokoro_voice = ""
+    instance.config = SimpleNamespace(
+        tts_phrase_cache_enabled=False,
+        tts_phrase_cache_max_text_len=120,
+    )
+    instance._tts_cache = {}
+    instance._tts_lock = asyncio.Lock()
+    instance.audio_processor = audio_mod.AudioProcessor()
+
+    result = await instance.process_tts_audio(
+        "wideband",
+        output_encoding="linear16",
+        output_sample_rate_hz=16000,
+    )
+
+    assert result.data == b""
+    assert result.encoding == "linear16"
+    assert result.sample_rate_hz == 16000
+
+
+@pytest.mark.asyncio
+async def test_piper_wideband_synthesis_failure_returns_safe_empty_contract():
+    server_mod = _server_module()
+    audio_mod = importlib.import_module("audio_processor")
+    instance = object.__new__(server_mod.LocalAIServer)
+    instance.tts_backend = "piper"
+    instance.tts_model = object()
+    instance.tts_model_path = "/models/piper.onnx"
+    instance.silero_speaker = ""
+    instance.kokoro_voice = ""
+    instance.config = SimpleNamespace(
+        tts_phrase_cache_enabled=False,
+        tts_phrase_cache_max_text_len=120,
+    )
+    instance._tts_cache = {}
+    instance._tts_lock = asyncio.Lock()
+    instance.audio_processor = audio_mod.AudioProcessor()
+
+    def fail_synthesis(_text: str) -> bytes:
+        raise RuntimeError("synthesis failed")
+
+    instance._synthesize_piper_pcm16 = fail_synthesis
+
+    result = await instance.process_tts_audio(
+        "wideband",
+        output_encoding="linear16",
+        output_sample_rate_hz=16000,
+    )
+
+    assert result.data == b""
+    assert result.encoding == "linear16"
+    assert result.sample_rate_hz == 16000
 
 
 def _kokoro_server(server_mod, *, mode: str = "local"):

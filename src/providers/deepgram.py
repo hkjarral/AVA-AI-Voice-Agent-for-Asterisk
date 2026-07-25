@@ -877,7 +877,12 @@ class DeepgramProvider(AIProviderInterface):
             self._last_settings_minimal = {
                 "type": "Settings",
                 "audio": {
-                    "input": { "encoding": input_format, "sample_rate": int(input_sample_rate) }
+                    "input": { "encoding": input_format, "sample_rate": int(input_sample_rate) },
+                    "output": {
+                        "encoding": self._dg_output_encoding,
+                        "sample_rate": self._dg_output_rate,
+                        "container": "none",
+                    },
                 },
                 "agent": {
                     "greeting": greeting_val,

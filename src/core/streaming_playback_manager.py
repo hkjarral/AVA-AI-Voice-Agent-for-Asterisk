@@ -3845,9 +3845,11 @@ class StreamingPlaybackManager:
                         if sr <= 0:
                             sr = self._default_sample_rate_for_format(fmt, self.sample_rate)
                         frame_size = self._frame_size_bytes(call_id)
-                        # Zero-pad to a full frame boundary to avoid truncation artifacts
+                        filler_byte = b"\xFF" if self._is_mulaw(fmt) else b"\x00"
+                        # Pad with encoding-specific silence to avoid a click at
+                        # the final frame boundary.
                         if len(rem) < frame_size:
-                            rem = rem + (b"\x00" * (frame_size - len(rem)))
+                            rem = rem + (filler_byte * (frame_size - len(rem)))
                         await self._send_audio_chunk(call_id, stream_id, rem[:frame_size], target_fmt=fmt, target_rate=sr)
                         # small pacing to let Asterisk play the last frame
                         cleanup_chunk_ms = int(

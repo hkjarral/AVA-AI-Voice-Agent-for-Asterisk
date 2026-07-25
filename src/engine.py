@@ -10059,6 +10059,8 @@ class Engine:
                         pcm_rate_hz=pcm_rate,
                         audiosocket_wire=audio_bytes,
                         source="audiosocket",
+                        wire_encoding=frame_format,
+                        wire_sample_rate=frame_rate,
                     )
                 except Exception:
                     logger.debug("Provider barge-in fallback check failed (AudioSocket)", call_id=caller_channel_id, exc_info=True)
@@ -10102,7 +10104,12 @@ class Engine:
                 _vad_flag = bool(self.vad_manager) and self._should_use_local_vad(session.provider_name)
             if self.vad_manager and _vad_flag:
                 try:
-                    vad_result = await self._run_enhanced_vad(session, audio_bytes)
+                    vad_result = await self._run_enhanced_vad(
+                        session,
+                        audio_bytes,
+                        wire_encoding=frame_format,
+                        wire_sample_rate=frame_rate,
+                    )
                 except Exception:
                     logger.debug(
                         "Enhanced VAD processing error",
@@ -10583,29 +10590,46 @@ class Engine:
         except Exception as exc:
             logger.error("Error handling AudioSocket audio", conn_id=conn_id, error=str(exc), exc_info=True)
 
-    async def _run_enhanced_vad(self, session: CallSession, audio_bytes: bytes) -> Optional[VADResult]:
+    async def _run_enhanced_vad(
+        self,
+        session: CallSession,
+        audio_bytes: bytes,
+        *,
+        wire_encoding: Optional[str] = None,
+        wire_sample_rate: Optional[int] = None,
+    ) -> Optional[VADResult]:
         """Normalize inbound AudioSocket audio to PCM16 @ 8 kHz 20 ms frames and run enhanced VAD."""
         if not self.vad_manager or not audio_bytes:
             return None
 
         try:
-            # Detect AudioSocket wire format from session first (actual negotiated),
-            # then fall back to YAML. Map 'slin' (Asterisk) to PCM16 @ 8 kHz.
-            try:
-                fmt_token = (session.transport_profile.format or '').lower()
-            except Exception:
-                fmt_token = ''
+            # The AudioSocket TLV header is authoritative. Fall back to the
+            # resolved per-call profile, then YAML for legacy sessions.
+            fmt_token = str(wire_encoding or "").lower()
+            if not fmt_token:
+                try:
+                    fmt_token = str(
+                        getattr(session.transport_profile, "wire_encoding", "") or ""
+                    ).lower()
+                except Exception:
+                    fmt_token = ""
             if not fmt_token:
                 try:
                     fmt_token = (getattr(self.config, 'audiosocket', None).format or 'ulaw').lower()
                 except Exception:
                     fmt_token = 'ulaw'
 
-            # Determine source rate preference from session profile when available
             try:
-                prof_rate = int(session.transport_profile.sample_rate or 0)
+                prof_rate = int(wire_sample_rate or 0)
             except Exception:
                 prof_rate = 0
+            if prof_rate <= 0:
+                try:
+                    prof_rate = int(
+                        getattr(session.transport_profile, "wire_sample_rate", 0) or 0
+                    )
+                except Exception:
+                    prof_rate = 0
 
             if fmt_token in ('ulaw', 'mulaw', 'g711_ulaw', 'mu-law'):
                 pcm_src = EnhancedVADManager.mu_law_to_pcm16(audio_bytes)
@@ -10786,6 +10810,8 @@ class Engine:
         pcm_rate_hz: int,
         audiosocket_wire: Optional[bytes],
         source: str,
+        wire_encoding: Optional[str] = None,
+        wire_sample_rate: Optional[int] = None,
     ) -> None:
         """Local VAD fallback for provider-owned mode (flush-only, no provider cancellation)."""
         try:
@@ -10887,7 +10913,12 @@ class Engine:
             if self.vad_manager:
                 try:
                     if source == "audiosocket":
-                        vad_result = await self._run_enhanced_vad(session, audiosocket_wire or b"")
+                        vad_result = await self._run_enhanced_vad(
+                            session,
+                            audiosocket_wire or b"",
+                            wire_encoding=wire_encoding,
+                            wire_sample_rate=wire_sample_rate,
+                        )
                     else:
                         vad_result = await self._run_enhanced_vad_pcm16(session, pcm16, int(pcm_rate_hz or 0) or 16000)
                 except Exception:

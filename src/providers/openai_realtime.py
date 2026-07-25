@@ -330,7 +330,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         return ProviderCapabilities(
             # Audio format capabilities
             input_encodings=["ulaw", "linear16"],
-            input_sample_rates_hz=[24000, 8000],
+            input_sample_rates_hz=[24000, 16000, 8000],
             # Output depends on session.update and downstream target; we advertise both
             output_encodings=["mulaw", "pcm16"],
             output_sample_rates_hz=[8000, 24000],

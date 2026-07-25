@@ -579,7 +579,9 @@ class TransportOrchestrator:
 
         normalized_wire = self._normalize_encoding(str(wire_enc or ""))
         wideband_selected = bool(
-            normalized_wire == "linear16" and int(wire_rate or 0) >= 16000
+            self.audio_transport == "audiosocket"
+            and normalized_wire == "linear16"
+            and int(wire_rate or 0) >= 16000
         )
         provider_format_source = "provider-config"
         if wideband_selected and provider_caps:

@@ -68,6 +68,7 @@ async def test_deepgram_session_uses_late_per_call_wideband_output_override():
     }
     assert provider._dg_output_encoding == "linear16"
     assert provider._dg_output_rate == 16000
+    assert provider._last_settings_minimal["audio"] == settings["audio"]
 
 
 @pytest.mark.asyncio

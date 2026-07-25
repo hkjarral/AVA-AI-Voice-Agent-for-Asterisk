@@ -240,6 +240,8 @@ async def test_dialplan_pipeline_override_keeps_agent_audio_profile():
             return context if name == "sales" else None
 
     class ARI:
+        asterisk_version = "20.17.0"
+
         async def send_command(self, method, path, params=None, tolerate_statuses=None):
             variable = (params or {}).get("variable")
             if variable == "AI_AGENT":
@@ -255,7 +257,7 @@ async def test_dialplan_pipeline_override_keeps_agent_audio_profile():
     engine.config = SimpleNamespace(
         default_provider="local",
         pipelines={"hybrid_elevenlabs": object()},
-        audio_transport="externalmedia",
+        audio_transport="audiosocket",
     )
     engine.streaming_playback_manager = SimpleNamespace()
     engine.no_input_watchdog = None

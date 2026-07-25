@@ -173,6 +173,40 @@ def test_companded_profile_does_not_inherit_global_wideband_format():
     assert (legacy.wire_encoding, legacy.wire_sample_rate) == ("slin", 8000)
 
 
+def test_externalmedia_does_not_select_provider_wideband_capabilities():
+    config = _orchestrator_config()
+    config["audio_transport"] = "externalmedia"
+    orchestrator = TransportOrchestrator(config)
+    caps = ProviderCapabilities(
+        input_encodings=["linear16", "ulaw"],
+        input_sample_rates_hz=[24000, 8000],
+        output_encodings=["pcm16", "ulaw"],
+        output_sample_rates_hz=[24000, 8000],
+        wideband_input_encoding="linear16",
+        wideband_input_sample_rate_hz=24000,
+        wideband_output_encoding="pcm16",
+        wideband_output_sample_rate_hz=24000,
+    )
+    configured = SimpleNamespace(
+        provider_input_encoding="ulaw",
+        provider_input_sample_rate_hz=8000,
+        output_encoding="ulaw",
+        output_sample_rate_hz=8000,
+    )
+
+    resolved = orchestrator.resolve_transport(
+        "test",
+        caps,
+        {"AI_AUDIO_PROFILE": "wideband_pcm_16k"},
+        provider_config=configured,
+    )
+
+    assert resolved.provider_input_encoding == "ulaw"
+    assert resolved.provider_input_sample_rate == 8000
+    assert resolved.provider_output_encoding == "ulaw"
+    assert resolved.provider_output_sample_rate == 8000
+
+
 def test_asterisk_parenthesized_g722_format_is_detected_as_wideband_pcm():
     assert Engine._normalize_audio_format("(g722)") == (
         "slin16",
@@ -471,6 +505,75 @@ async def test_streaming_manager_keeps_audiosocket_framing_per_call():
         "encoding": "slin16",
         "sample_rate": 16000,
     }
+
+
+@pytest.mark.asyncio
+async def test_audiosocket_mulaw_remainder_uses_mulaw_silence_padding():
+    call_id = "call-mulaw-tail"
+    stream_id = "stream-mulaw-tail"
+    session_store = SimpleNamespace(clear_gating_token=AsyncMock(return_value=True))
+    manager = StreamingPlaybackManager(
+        session_store,
+        ari_client=SimpleNamespace(),
+        streaming_config={"sample_rate": 8000, "chunk_size_ms": 20},
+        audio_transport="audiosocket",
+    )
+    manager.provider_grace_ms = 0
+    manager._send_audio_chunk = AsyncMock(return_value=True)
+    manager.active_streams[call_id] = {
+        "stream_id": stream_id,
+        "target_format": "ulaw",
+        "target_sample_rate": 8000,
+        "chunk_size_ms": 20,
+        "diag_enabled": False,
+        "end_reason": "completed",
+    }
+    manager.frame_remainders[call_id] = b"\x7f"
+
+    await manager._cleanup_stream(call_id, stream_id)
+
+    sent = manager._send_audio_chunk.await_args.args[2]
+    assert sent == b"\x7f" + (b"\xFF" * 159)
+    assert manager._send_audio_chunk.await_args.kwargs == {
+        "target_fmt": "ulaw",
+        "target_rate": 8000,
+    }
+
+
+@pytest.mark.asyncio
+async def test_enhanced_vad_uses_audiosocket_frame_rate(monkeypatch):
+    resample_calls = []
+
+    def fake_resample(data, source_rate, target_rate, *, state=None):
+        resample_calls.append((data, source_rate, target_rate, state))
+        return b"\x00\x00" * 160, None
+
+    monkeypatch.setattr("src.engine.resample_audio", fake_resample)
+    vad_result = SimpleNamespace(is_speech=False, confidence=0.0, energy_level=0)
+    engine = Engine.__new__(Engine)
+    engine.vad_manager = SimpleNamespace(
+        process_frame=AsyncMock(return_value=vad_result)
+    )
+    engine._resample_state_vad8k = {}
+    engine.config = SimpleNamespace(audiosocket=SimpleNamespace(format="ulaw"))
+    session = SimpleNamespace(
+        call_id="call-vad-wideband",
+        transport_profile=SimpleNamespace(
+            wire_encoding="slin16", wire_sample_rate=16000
+        ),
+        vad_state={},
+    )
+
+    result = await engine._run_enhanced_vad(
+        session,
+        b"\x01\x00" * 320,
+        wire_encoding="slin16",
+        wire_sample_rate=16000,
+    )
+
+    assert result is vad_result
+    assert resample_calls[0][1:3] == (16000, 8000)
+    engine.vad_manager.process_frame.assert_awaited_once()
 
 
 @pytest.mark.asyncio
