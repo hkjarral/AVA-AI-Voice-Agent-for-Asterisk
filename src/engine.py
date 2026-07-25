@@ -16183,23 +16183,35 @@ class Engine:
         context_pipeline = str(
             getattr(no_input_context, "pipeline", None) or ""
         ).strip()
-        pipeline_profile_only = bool(
-            context_pipeline
-            and not str(getattr(no_input_context, "provider", None) or "").strip()
-            and not channel_vars.get("AI_PROVIDER")
+        configured_pipelines = getattr(self.config, "pipelines", {}) or {}
+        channel_pipeline = (
+            provider_name
+            if provider_name and provider_name in configured_pipelines
+            else ""
         )
-        # A manually configured pipeline Agent has no monolithic provider by
-        # design. Do not let CallSession's compatibility default accidentally
-        # select one; use the pipeline identity and profile preferences directly.
+        effective_pipeline = channel_pipeline or context_pipeline
+        pipeline_profile_only = bool(
+            effective_pipeline
+            and (
+                channel_pipeline
+                or not str(
+                    getattr(no_input_context, "provider", None) or ""
+                ).strip()
+            )
+        )
+        # Pipeline-only Agents and an explicit AI_PROVIDER=<pipeline> dialplan
+        # selection have no monolithic provider by design. Do not let
+        # CallSession's compatibility default accidentally select one; use the
+        # pipeline identity and the Agent/profile preferences directly.
         if pipeline_profile_only:
-            provider_name = context_pipeline
+            provider_name = effective_pipeline
             provider = None
         else:
             provider = (
                 getattr(self, "_call_providers", {}).get(session.call_id)
                 or self.providers.get(provider_name)
             )
-        if not provider and not context_pipeline:
+        if not provider and not effective_pipeline:
             logger.warning(
                 "Provider not found for audio profile resolution",
                 call_id=session.call_id,
@@ -16216,7 +16228,7 @@ class Engine:
             logger.info(
                 "Resolving pipeline Agent audio profile without monolithic provider",
                 call_id=session.call_id,
-                pipeline=context_pipeline,
+                pipeline=effective_pipeline,
                 profile=getattr(no_input_context, "profile", None),
                 context_name=session.context_name,
             )

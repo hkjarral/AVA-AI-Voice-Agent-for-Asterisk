@@ -355,6 +355,7 @@ async def test_stop_owns_cleanup_when_blocked_producer_is_cancelled():
     )
     assert producer.done()
     assert producer.cancelled()
+    assert jitter_buffer.empty()
     assert call_id not in mgr.active_streams
 
 def test_low_water_expiry_resets_when_a_full_frame_arrives():

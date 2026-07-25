@@ -893,6 +893,25 @@ Validate audio quality and transport integrity across the maintainer-approved re
     clean with no active resources. Combined with the maintainer's prior
     subjective wideband-quality acceptance, the Deepgram full-agent wideband
     row is now **PASS**.
+  - Hybrid ElevenLabs call `1784939918.68`, archived at
+    `logs/archived/rca-20260725-003955`, is **FAILED / INVALID FOR WIDEBAND
+    COMPARISON**. The custom dialplan selected `AI_PROVIDER=hybrid_elevenlabs`,
+    but audio-profile resolution treated that pipeline name as an unknown
+    monolithic provider and returned before applying the Agent's
+    `wideband_pcm_16k` profile. The call consequently used μ-law/8 kHz in
+    ElevenLabs and `slin@8000` on AudioSocket; the maintainer reported aggressive
+    clipping. RTP QoS was healthy, but repeated TalkDetect interruptions
+    intentionally truncated several responses, and one aborted pipeline TTS
+    producer remained blocked on its full jitter queue past the stop timeout.
+    The correction recognizes an explicit configured pipeline during profile
+    resolution, preserving the selected Agent profile, and discards queued tail
+    audio before abort cancellation so the producer cannot remain blocked.
+    Focused profile, pipeline-output, and streaming lifecycle coverage passes
+    88 tests. The broad backend suite passes 1,985 tests with 18 expected skips;
+    its seven reported failures are environment-only because the minimal test
+    container lacks `git` and system `python3`, matching the previously verified
+    updater-test prerequisite limitation. A true 16 kHz Hybrid ElevenLabs live
+    retest is required.
 - [x] Run the full backend/frontend regression gates. Backend passed 1,981
   tests with 18 skips; frontend passed 221 tests, production build, and lint
   with existing warnings only. Focused wideband/provider/pipeline coverage

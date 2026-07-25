@@ -3340,6 +3340,24 @@ class StreamingPlaybackManager:
             # while this method is waiting for all stream tasks to settle.
             stream_info['stop_requested'] = True
 
+            # An aborted stream does not need to preserve queued provider audio.
+            # Release a producer blocked on a full jitter queue before cancelling
+            # it. This is especially important for pipeline TTS, which can enqueue
+            # an entire synthesized response much faster than the pacer consumes
+            # it. Cancelling both ends while the queue remains full can otherwise
+            # leave the producer pending until garbage collection.
+            if not drain:
+                jitter_buffer = self.jitter_buffers.get(call_id)
+                if jitter_buffer is not None:
+                    while True:
+                        try:
+                            jitter_buffer.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    stream_info['buffered_bytes'] = 0
+                    stream_info['jitter_depth'] = 0
+                self.frame_remainders.pop(call_id, None)
+
             cancelled_tasks = []
             seen_tasks = set()
 
