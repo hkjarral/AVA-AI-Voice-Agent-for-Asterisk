@@ -912,6 +912,23 @@ Validate audio quality and transport integrity across the maintainer-approved re
     container lacks `git` and system `python3`, matching the previously verified
     updater-test prerequisite limitation. A true 16 kHz Hybrid ElevenLabs live
     retest is required.
+  - Hybrid ElevenLabs profile-handoff retest `1784940689.72`, archived at
+    `logs/archived/rca-20260725-005225`, is **FAILED / INVALID FOR WIDEBAND
+    COMPARISON**. The previous profile-resolution fix worked: the pipeline
+    selected `wideband_pcm_16k`, originated `c(slin16)`, and requested native
+    ElevenLabs `pcm_16000`. However, pipeline streaming callers omitted the
+    already-resolved per-call target when opening playback, so the streaming
+    manager fell back to its process-wide `slin@8000` default and downsampled
+    provider audio at the final boundary. The call also reproduced a perceived
+    self-hearing/cutoff issue: TalkDetect events queued during playback resumed
+    4–8 ms after gating cleared and applied three stale barge-in actions at the
+    exact tail of the greeting/reply. No self-transcript was generated, but the
+    false tail interruption explains the audible behavior. Streaming playback
+    now inherits the target encoding/rate from the call-owned transport profile
+    whenever a caller omits explicit targets, and TalkDetect revalidates current
+    gating after its async work before applying barge-in. The focused AudioSocket,
+    pipeline, gating, and cleanup suite passes 151 tests. A clean native 16 kHz
+    live retest remains required.
 - [x] Run the full backend/frontend regression gates. Backend passed 1,981
   tests with 18 skips; frontend passed 221 tests, production build, and lint
   with existing warnings only. Focused wideband/provider/pipeline coverage

@@ -8385,6 +8385,44 @@ class Engine:
 
             await self._no_input_note_activity(call_id, "asterisk:talk_detect_barge_in")
 
+            # The event may have entered this handler while playback was gated
+            # and then waited behind stream/session cleanup. Revalidate after
+            # the awaits above so a stale echo-tail event cannot barge into a
+            # stream that has already ended or pause listening immediately
+            # after gating reopens.
+            latest_session = await self.session_store.get_by_call_id(call_id)
+            if latest_session is not None:
+                session = latest_session
+            if bool(getattr(session, "audio_capture_enabled", True)) and not bool(
+                getattr(session, "tts_playing", False)
+            ):
+                latest_tts_ended_ts = float(
+                    getattr(session, "tts_ended_ts", 0.0) or 0.0
+                )
+                latest_elapsed_ms = (
+                    max(
+                        0,
+                        int(
+                            (time.time() - latest_tts_ended_ts) * 1000
+                        ),
+                    )
+                    if latest_tts_ended_ts > 0
+                    else post_guard_ms
+                )
+                if post_guard_ms > 0 and latest_elapsed_ms < post_guard_ms:
+                    logger.info(
+                        "Stale TalkDetect suppressed after playback ended",
+                        call_id=call_id,
+                        channel_id=channel_id,
+                        elapsed_ms=latest_elapsed_ms,
+                        protection_ms=post_guard_ms,
+                    )
+                else:
+                    await self._no_input_note_input_state(
+                        call_id, True, "asterisk:talk_detect"
+                    )
+                return
+
             # Treat talk detection as sufficient evidence of an active media path for platform flush.
             try:
                 if not bool(getattr(session, "media_rx_confirmed", False)):

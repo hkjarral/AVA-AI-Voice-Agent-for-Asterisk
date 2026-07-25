@@ -334,6 +334,7 @@ async def test_streaming_start_honors_wideband_target_over_global_fallback():
     session = SimpleNamespace(
         provider_name="elevenlabs_agent",
         transport_profile=SimpleNamespace(
+            wire_encoding="slin16",
             wire_sample_rate=16000,
             provider_output_sample_rate=16000,
         ),
@@ -343,6 +344,8 @@ async def test_streaming_start_honors_wideband_target_over_global_fallback():
     session_store = SimpleNamespace(
         get_by_call_id=AsyncMock(return_value=session),
         upsert_call=AsyncMock(),
+        set_gating_token=AsyncMock(return_value=True),
+        clear_gating_token=AsyncMock(return_value=True),
     )
     manager = StreamingPlaybackManager(
         session_store,
@@ -367,6 +370,49 @@ async def test_streaming_start_honors_wideband_target_over_global_fallback():
     finally:
         if stream_id:
             await manager.stop_streaming_playback("call-wideband")
+
+
+@pytest.mark.asyncio
+async def test_streaming_start_inherits_wideband_target_from_call_profile():
+    """Pipeline callers may omit explicit targets after profile resolution."""
+    session = SimpleNamespace(
+        provider_name="pipeline",
+        transport_profile=SimpleNamespace(
+            wire_encoding="slin16",
+            wire_sample_rate=16000,
+            provider_output_sample_rate=16000,
+        ),
+        streaming_started=False,
+        current_stream_id=None,
+    )
+    session_store = SimpleNamespace(
+        get_by_call_id=AsyncMock(return_value=session),
+        upsert_call=AsyncMock(),
+        set_gating_token=AsyncMock(return_value=True),
+        clear_gating_token=AsyncMock(return_value=True),
+    )
+    manager = StreamingPlaybackManager(
+        session_store,
+        ari_client=SimpleNamespace(),
+        streaming_config={"sample_rate": 8000},
+        audio_transport="audiosocket",
+    )
+    manager.audiosocket_format = "slin"
+
+    stream_id = await manager.start_streaming_playback(
+        "call-pipeline-wideband",
+        asyncio.Queue(),
+        source_encoding="linear16",
+        source_sample_rate=16000,
+    )
+    try:
+        assert stream_id
+        info = manager.active_streams["call-pipeline-wideband"]
+        assert info["target_format"] == "slin16"
+        assert info["target_sample_rate"] == 16000
+    finally:
+        if stream_id:
+            await manager.stop_streaming_playback("call-pipeline-wideband")
 
 
 @pytest.mark.asyncio

@@ -670,8 +670,17 @@ class StreamingPlaybackManager:
                 src_rate = self.sample_rate
 
             # Determine downstream target format/sample rate for this stream.
+            transport_profile = getattr(session, "transport_profile", None)
+            profile_target_encoding = getattr(
+                transport_profile, "wire_encoding", None
+            )
+            profile_target_rate = getattr(
+                transport_profile, "wire_sample_rate", None
+            )
             resolved_target_format = (
-                self._canonicalize_encoding(target_encoding)
+                self._canonicalize_encoding(
+                    target_encoding or profile_target_encoding
+                )
                 or self._canonicalize_encoding(self.audiosocket_format)
                 or "ulaw"
             )
@@ -679,7 +688,7 @@ class StreamingPlaybackManager:
                 resolved_target_rate = (
                     int(target_sample_rate)
                     if target_sample_rate is not None
-                    else int(self.sample_rate)
+                    else int(profile_target_rate or self.sample_rate)
                 )
             except Exception:
                 resolved_target_rate = self.sample_rate

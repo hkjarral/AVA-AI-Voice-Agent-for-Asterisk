@@ -353,6 +353,48 @@ async def test_talk_detect_after_post_tts_guard_pauses_no_input_watchdog():
 
 
 @pytest.mark.asyncio
+async def test_talk_detect_rechecks_gating_after_async_cleanup_race():
+    """An echo event queued during TTS must not interrupt after TTS ends."""
+    engine = Engine.__new__(Engine)
+    engine.session_store = SessionStore()
+    engine.config = SimpleNamespace(
+        barge_in=SimpleNamespace(
+            enabled=True,
+            post_tts_end_protection_ms=600,
+            talk_detect_initial_protection_ms=0,
+            cooldown_ms=0,
+        )
+    )
+    engine._no_input_note_input_state = AsyncMock()
+    engine._apply_barge_in_action = AsyncMock()
+    engine._save_session = AsyncMock()
+    session = CallSession(
+        call_id="call-stale-talk-detect",
+        caller_channel_id="channel-stale-talk-detect",
+    )
+    session.audio_capture_enabled = False
+    session.tts_playing = True
+    session.tts_started_ts = time.time() - 2.0
+    await engine.session_store.upsert_call(session)
+
+    async def finish_playback_during_handler(*_args, **_kwargs):
+        session.tts_playing = False
+        session.audio_capture_enabled = True
+        session.tts_ended_ts = time.time()
+
+    engine._no_input_note_activity = AsyncMock(
+        side_effect=finish_playback_during_handler
+    )
+
+    await engine._handle_channel_talking_started(
+        {"channel": {"id": session.caller_channel_id}}
+    )
+
+    engine._apply_barge_in_action.assert_not_awaited()
+    engine._no_input_note_input_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_no_input_provider_output_drains_without_resetting_policy_state():
     engine = Engine.__new__(Engine)
     engine.session_store = SessionStore()
