@@ -952,6 +952,21 @@ Validate audio quality and transport integrity across the maintainer-approved re
     opt-in `wideband_pcm_16k` Audio Profile rather than changing the global 256
     default used by existing 8 kHz profiles. Backend validation, runtime
     resolution, UI display/editing, and focused regression coverage are included.
+  - Final profile-scoped call `1784942426.88`, archived at
+    `logs/archived/rca-20260725-012132`, confirmed that the temporary global
+    override was absent and the live call selected
+    `threshold_source=audio_profile`, `talking_threshold=1000`. Native 16 kHz
+    ordinary replies and three real caller interruptions worked. The calendar
+    tool turn exposed a separate **FAILED** media path: after the tool result,
+    the legacy LLM-continuation branch wrote 237,772 bytes of ElevenLabs
+    PCM16/16 kHz to a `.ulaw` file. Asterisk interpreted the approximately
+    7.43-second response as 29.72 seconds of μ-law/8 kHz and produced the
+    caller-reported garbled audio. Tool continuation TTS now uses the same
+    call-owned negotiated stream as ordinary pipeline responses, drains before
+    follow-up work, and persists the tool/result continuation in call history.
+    Focused regression coverage verifies linear16/16 kHz source metadata and
+    that all PCM chunks drain through streaming. A live meeting-tool retest is
+    required before the Hybrid ElevenLabs pipeline row can pass.
 - [x] Run the full backend/frontend regression gates. Backend passed 1,981
   tests with 18 skips; frontend passed 221 tests, production build, and lint
   with existing warnings only. Focused wideband/provider/pipeline coverage

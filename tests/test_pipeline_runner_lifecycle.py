@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -153,6 +154,39 @@ class _StreamOwnershipStub:
         return self.active and stream_id == self.stream_id
 
 
+class _DrainingStreamingStub(_StreamOwnershipStub):
+    def __init__(self):
+        super().__init__("tool-stream")
+        self.start_args = None
+        self.queue = None
+        self.drained = []
+
+    async def start_streaming_playback(self, call_id, queue, **kwargs):
+        self.start_args = (call_id, kwargs)
+        self.queue = queue
+        return self.stream_id
+
+    async def stop_streaming_playback(self, call_id, *, drain=False):
+        assert call_id == "call-tool"
+        if drain:
+            while True:
+                chunk = await self.queue.get()
+                if chunk is None:
+                    break
+                self.drained.append(chunk)
+        self.active = False
+        return True
+
+
+class _PCM16TTS:
+    downstream_mode_override = "auto"
+
+    async def synthesize(self, call_id, text, options):
+        assert (call_id, text) == ("call-tool", "Available slots")
+        yield b"pcm16-a"
+        yield b"pcm16-b"
+
+
 @pytest.mark.asyncio
 async def test_pipeline_stream_put_exits_when_barge_in_stops_full_queue():
     engine = Engine.__new__(Engine)
@@ -199,6 +233,37 @@ async def test_pipeline_stream_put_allows_healthy_consumer():
         "call-healthy", "stream-1", queue, b"audio"
     )
     assert await queue.get() == b"audio"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_tool_continuation_uses_negotiated_stream_and_drains():
+    engine = Engine.__new__(Engine)
+    engine.config = SimpleNamespace(downstream_mode="stream")
+    manager = _DrainingStreamingStub()
+    engine.streaming_playback_manager = manager
+    pipeline = SimpleNamespace(
+        tts_adapter=_PCM16TTS(),
+        tts_options={"format": {"encoding": "linear16", "sample_rate_hz": 16000}},
+    )
+
+    stream_id = await engine._stream_pipeline_tts_text(
+        "call-tool",
+        SimpleNamespace(),
+        pipeline,
+        "Available slots",
+    )
+
+    assert stream_id == "tool-stream"
+    assert manager.start_args == (
+        "call-tool",
+        {
+            "playback_type": "pipeline-tts",
+            "source_encoding": "linear16",
+            "source_sample_rate": 16000,
+        },
+    )
+    assert manager.drained == [b"pcm16-a", b"pcm16-b"]
+    assert engine._pipeline_tts_uses_streaming(pipeline) is True
 
 
 def test_pipeline_terminal_fallback_matches_first_live_farewell():

@@ -7175,6 +7175,106 @@ class Engine:
                 # slow consumer keeps draining; a cancelled/replaced stream exits.
                 continue
 
+    def _pipeline_tts_uses_streaming(self, pipeline: Any) -> bool:
+        """Resolve the pipeline TTS delivery mode for every response path."""
+        override = (
+            getattr(pipeline.tts_adapter, "downstream_mode_override", "auto")
+            or "auto"
+        )
+        if override == "stream":
+            return True
+        if override == "file":
+            return False
+        return self.config.downstream_mode != "file"
+
+    @staticmethod
+    def _pipeline_tts_source_format(pipeline: Any) -> Tuple[str, int]:
+        """Return the adapter audio format used as the streaming source."""
+        tts_format = (pipeline.tts_options or {}).get("format")
+        if not isinstance(tts_format, dict):
+            tts_format = (pipeline.tts_options or {}).get("target_format")
+        if not isinstance(tts_format, dict):
+            tts_format = {}
+        encoding = str(
+            tts_format.get("encoding") or tts_format.get("format") or "mulaw"
+        )
+        try:
+            sample_rate = int(
+                tts_format.get("sample_rate")
+                or tts_format.get("sample_rate_hz")
+                or 8000
+            )
+        except (TypeError, ValueError):
+            sample_rate = 8000
+        return encoding, sample_rate
+
+    async def _stream_pipeline_tts_text(
+        self,
+        call_id: str,
+        session: CallSession,
+        pipeline: Any,
+        text: str,
+        *,
+        playback_type: str = "pipeline-tts",
+    ) -> Optional[str]:
+        """Synthesize one pipeline response onto the call-owned media stream.
+
+        Tool-result continuations historically bypassed this path and handed
+        PCM16/16 kHz bytes to the file player as if they were μ-law/8 kHz. Keep
+        continuations on the same negotiated AudioSocket stream as ordinary
+        pipeline replies and wait for the stream to drain before proceeding.
+        """
+        stream_queue: asyncio.Queue = asyncio.Queue(maxsize=256)
+        source_encoding, source_rate = self._pipeline_tts_source_format(pipeline)
+        stream_id = await self.streaming_playback_manager.start_streaming_playback(
+            call_id,
+            stream_queue,
+            playback_type=playback_type,
+            source_encoding=source_encoding,
+            source_sample_rate=source_rate,
+        )
+        if not stream_id:
+            raise RuntimeError("start_streaming_playback returned no stream_id")
+
+        logger.info(
+            "Pipeline tool continuation streaming started",
+            call_id=call_id,
+            stream_id=stream_id,
+            source_encoding=source_encoding,
+            source_sample_rate=source_rate,
+        )
+        try:
+            async for chunk in pipeline.tts_adapter.synthesize(
+                call_id, text, pipeline.tts_options
+            ):
+                if chunk:
+                    await self._put_pipeline_stream_chunk(
+                        call_id, stream_id, stream_queue, chunk
+                    )
+            await self._put_pipeline_stream_chunk(
+                call_id, stream_id, stream_queue, None
+            )
+            await self.streaming_playback_manager.stop_streaming_playback(
+                call_id, drain=True
+            )
+            logger.info(
+                "Pipeline tool continuation streaming completed",
+                call_id=call_id,
+                stream_id=stream_id,
+            )
+            return stream_id
+        except Exception:
+            try:
+                await self.streaming_playback_manager.stop_streaming_playback(call_id)
+            except Exception:
+                logger.debug(
+                    "Pipeline tool continuation stop failed",
+                    call_id=call_id,
+                    stream_id=stream_id,
+                    exc_info=True,
+                )
+            raise
+
     @staticmethod
     def _is_pipeline_farewell_without_tool(
         user_text: str,
@@ -15528,6 +15628,8 @@ class Engine:
                                             "tool", tool_result_msg,
                                             tool_call_id=f"call_{name}"
                                         ))
+                                        session.conversation_history = list(conversation_history)
+                                        await self.session_store.upsert_call(session)
                                         logger.info("Tool result added to conversation, triggering LLM continuation", tool=name, call_id=call_id)
                                         
                                         # Trigger LLM to generate follow-up response
@@ -15545,22 +15647,55 @@ class Engine:
                                                     response_text = llm_response.text.strip()
                                                     if response_text:
                                                         conversation_history.append(_ts_msg("assistant", response_text))
+                                                        session.conversation_history = list(conversation_history)
+                                                        await self.session_store.upsert_call(session)
                                                         logger.info("LLM continuation response", preview=response_text[:80], call_id=call_id)
-                                                        
-                                                        # Synthesize and play TTS
-                                                        tts_bytes = bytearray()
-                                                        async for chunk in pipeline.tts_adapter.synthesize(call_id, response_text, pipeline.tts_options):
-                                                            if chunk:
-                                                                tts_bytes.extend(chunk)
-                                                        if tts_bytes:
-                                                            pid = await self.playback_manager.play_audio(call_id, bytes(tts_bytes), "pipeline-tts")
-                                                            duration_sec = len(tts_bytes) / 8000.0
-                                                            if pid:
-                                                                await self.playback_manager.wait_for_playback_end(
+
+                                                        if not self._pipeline_output_allowed(
+                                                            call_id,
+                                                            session,
+                                                            stage="tool-continuation-tts",
+                                                        ):
+                                                            return
+
+                                                        if self._pipeline_tts_uses_streaming(pipeline):
+                                                            try:
+                                                                await self._stream_pipeline_tts_text(
                                                                     call_id,
-                                                                    pid,
-                                                                    timeout_sec=(duration_sec + 3.0),
+                                                                    session,
+                                                                    pipeline,
+                                                                    response_text,
                                                                 )
+                                                            except _PipelinePlaybackInterrupted:
+                                                                logger.info(
+                                                                    "Pipeline tool continuation interrupted",
+                                                                    call_id=call_id,
+                                                                )
+                                                                return
+                                                        else:
+                                                            # File-mode adapters are required to emit
+                                                            # the file player's μ-law/8 kHz contract.
+                                                            tts_bytes = bytearray()
+                                                            async for chunk in pipeline.tts_adapter.synthesize(
+                                                                call_id,
+                                                                response_text,
+                                                                pipeline.tts_options,
+                                                            ):
+                                                                if chunk:
+                                                                    tts_bytes.extend(chunk)
+                                                            if tts_bytes:
+                                                                pid = await self.playback_manager.play_audio(
+                                                                    call_id,
+                                                                    bytes(tts_bytes),
+                                                                    "pipeline-tts",
+                                                                )
+                                                                duration_sec = len(tts_bytes) / 8000.0
+                                                                if pid:
+                                                                    await self.playback_manager.wait_for_playback_end(
+                                                                        call_id,
+                                                                        pid,
+                                                                        timeout_sec=(duration_sec + 3.0),
+                                                                    )
                                                 
                                                 # Handle tool calls (with or without text)
                                                 if getattr(llm_response, 'tool_calls', None):
