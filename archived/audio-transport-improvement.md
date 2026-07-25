@@ -54,8 +54,20 @@ Validate audio quality and transport integrity across the maintainer-approved re
   two warnings. The broad backend gate passes 1,959 tests with 18 expected
   skips; its sole reported failure is the stripped test image lacking `git` for
   the repository secret-scan harness, and the same scan passes on the host.
-  Source compilation and whitespace validation pass. Implementation is frozen
-  before one Local AI Server rebuild and a Kokoro live canary.
+  Source compilation and whitespace validation pass. The local Kokoro live
+  canary `1784947714.116`, archived at
+  `logs/archived/rca-20260724-194952`, **failed the interactive-latency gate**
+  even though the media contract was correct. AudioSocket remained
+  `slin16@16000`, local STT recognized all three caller utterances, and Kokoro
+  returned truthful `linear16@16000`. However, the greeting took 9.28 seconds
+  to synthesize; the first 20.63-second conversational reply took 17.87 seconds,
+  and a 3.25-second reply took 4.02 seconds. The caller heard silence while
+  waiting and spoke again, correctly triggering TalkDetect cancellation before
+  each late response arrived. This is a whole-utterance local Kokoro CPU latency
+  limitation, not an AudioSocket, resampling, recognition, or false-barge-in
+  regression. Piper was restored on voiprnd. Local Kokoro wideband remains
+  implemented but **UNVALIDATED / NOT RELEASE-READY** until faster inference or
+  incremental synthesis is designed and tested.
 
 - **Diagnostics removed from the release candidate (2026-07-22):** every
   diagnostics-only change introduced during this investigation was reverted to
@@ -1040,6 +1052,15 @@ Validate audio quality and transport integrity across the maintainer-approved re
     interrupted by real caller speech after the existing five-second greeting
     protection window, matching the earlier 8 kHz control rather than exposing
     a wideband regression.
+  - Local Hybrid Kokoro native-wideband canary `1784947714.116`, archived at
+    `logs/archived/rca-20260724-194952`, **failed** the interactive-latency
+    gate. The 16 kHz contract and local STT were correct, but local Kokoro's
+    whole-utterance CPU synthesis took 9.28 seconds for the greeting, 17.87
+    seconds for a 20.63-second reply, and 4.02 seconds for a 3.25-second reply.
+    The maintainer heard silence after the greeting and spoke again; the two
+    resulting TalkDetect actions correctly canceled the late replies. This row
+    remains **UNVALIDATED / NOT RELEASE-READY**, and voiprnd was restored to
+    Piper.
 - [x] Run the full backend/frontend regression gates. Backend passed 1,981
   tests with 18 skips; frontend passed 221 tests, production build, and lint
   with existing warnings only. Focused wideband/provider/pipeline coverage

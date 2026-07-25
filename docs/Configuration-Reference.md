@@ -144,9 +144,12 @@ their declared 16 kHz PCM route. Their output is converted to the 16 kHz wire
 rate where necessary. Local TTS negotiates native `linear16@16000` output for
 Piper and Kokoro (local or API mode); MeloTTS, Matcha, and Silero retain a
 truthful μ-law/8 kHz fallback. The Local Hybrid Piper path is live-validated;
-Kokoro and the local full-agent path remain untested until their respective
-live canaries complete. Switching the Agent back to an 8 kHz profile is an
-immediate per-call rollback.
+the local Kokoro CPU canary preserved correct 16 kHz media but failed the
+interactive-latency gate because whole-utterance synthesis was approximately
+real-time or slower. Kokoro API mode and the local full-agent path remain
+untested. Use Piper for CPU deployments unless local Kokoro performance has
+been measured on the target host. Switching the Agent back to an 8 kHz profile
+is an immediate per-call rollback.
 
 The profile field is `output_resampler: linear | bandlimited`. Provider and
 pipeline fields default to `inherit`. Narrow overrides resolve in this order:
