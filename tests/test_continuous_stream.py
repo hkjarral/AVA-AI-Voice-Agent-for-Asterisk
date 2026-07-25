@@ -272,6 +272,29 @@ def test_interrupted_end_reason_requires_known_exact_value():
         "generic-task-cancellation-error"
     )
 
+
+@pytest.mark.asyncio
+async def test_cancelled_producer_does_not_block_on_full_jitter_queue():
+    mgr = make_manager(fallback_timeout_ms=10_000)
+    audio_chunks = asyncio.Queue()
+    jitter_buffer = asyncio.Queue(maxsize=1)
+    jitter_buffer.put_nowait(b"queued-audio")
+
+    producer = asyncio.create_task(
+        mgr._stream_audio_loop(
+            "test-call-cancel-full-jitter",
+            "stream:resp:test-call-cancel-full-jitter:1",
+            audio_chunks,
+            jitter_buffer,
+        )
+    )
+    await asyncio.sleep(0)
+    producer.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(producer, timeout=0.2)
+    assert producer.done()
+
 def test_low_water_expiry_resets_when_a_full_frame_arrives():
     mgr = make_manager(provider_grace_ms=200)
     call_id = "test-call-resumed-audio"

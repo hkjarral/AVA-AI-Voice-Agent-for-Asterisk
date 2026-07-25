@@ -1036,8 +1036,23 @@ class StreamingPlaybackManager:
                     logger.debug("Failed to flush pending byte counters on exit", call_id=call_id, exc_info=True)
                 bytes_since_last_upsert = 0
             if not sentinel_sent:
-                with suppress(asyncio.CancelledError, Exception):
-                    await jitter_buffer.put(_JITTER_SENTINEL)
+                # On an abort (for example, barge-in), stop_streaming_playback
+                # cancels both producer and pacer.  A full jitter queue can no
+                # longer drain in that state, so awaiting put() here strands
+                # the producer task until it is garbage-collected.  Natural
+                # end-of-stream still waits for capacity so the active pacer
+                # receives the boundary after all queued audio.
+                current_task = asyncio.current_task()
+                cancelling = bool(
+                    current_task
+                    and getattr(current_task, "cancelling", lambda: 0)()
+                )
+                if cancelling:
+                    with suppress(asyncio.QueueFull):
+                        jitter_buffer.put_nowait(_JITTER_SENTINEL)
+                else:
+                    with suppress(asyncio.CancelledError, Exception):
+                        await jitter_buffer.put(_JITTER_SENTINEL)
                 sentinel_sent = True
             pacer_task: Optional[asyncio.Task] = None
             stream_info = self.active_streams.get(call_id)

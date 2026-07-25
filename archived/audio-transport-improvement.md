@@ -848,6 +848,21 @@ Validate audio quality and transport integrity across the maintainer-approved re
     transport, and realtime-provider gate passes 63 tests, and the full backend
     gate passes 2,013 tests with 7 expected skips. A live barge-in retest is
     pending.
+  - Deepgram barge-in retest `1784938060.56`, archived at
+    `logs/archived/rca-20260725-000835`, **passed** the intended media and
+    interruption behavior on revision `b551c8f5`. Deepgram and AudioSocket were
+    native linear16/16 kHz; five active-playback interruptions were applied
+    (four provider events and one local fallback), each replacement request was
+    recognized and answered, the complete terminal farewell was protected and
+    drained, and the maintainer reported that it worked perfectly. RTP QoS
+    reported 3 locally lost packets out of 2,239 received (~0.13%) and zero
+    remote loss, with no audible impairment. Post-call health was clean. The
+    call exposed three non-user-visible pending producer-task errors: abort
+    cleanup could wait forever while placing a sentinel into a full jitter
+    queue after its pacer was cancelled. Cancellation now uses a nonblocking
+    sentinel write while natural completion retains ordered drain semantics;
+    111 focused transport/lifecycle tests and the full 2,014-test backend gate
+    (7 expected skips) pass. A clean live cleanup retest is pending.
 - [x] Run the full backend/frontend regression gates. Backend passed 1,981
   tests with 18 skips; frontend passed 221 tests, production build, and lint
   with existing warnings only. Focused wideband/provider/pipeline coverage
