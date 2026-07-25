@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
             },
             wideband_pcm_16k: {
                 internal_rate_hz: 16000,
+                talk_detect_talking_threshold: 1000,
                 provider_pref: { output_sample_rate_hz: 16000 },
                 transport_out: { encoding: 'slin16', sample_rate_hz: 16000 },
             },
@@ -71,6 +72,7 @@ describe('ProfilesPage audio contract safety', () => {
         expect(screen.getByText('Enhanced Telephony')).toBeInTheDocument();
         expect(screen.getByText('Alias-safe')).toBeInTheDocument();
         expect(screen.getByText('Opt-in Wideband · Asterisk 20.17+')).toBeInTheDocument();
+        expect(screen.getByText('1000')).toBeInTheDocument();
         expect(await screen.findByText('Used By Agents')).toBeInTheDocument();
         expect(screen.getByText('Ava Demo')).toBeInTheDocument();
 

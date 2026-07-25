@@ -65,6 +65,7 @@ class AudioProfile:
     output_resampler: str = "linear"
     chunk_ms: str | int = "auto"
     idle_cutoff_ms: int = 1200
+    talk_detect_talking_threshold: Optional[int] = None
 
 
 @dataclass
@@ -195,6 +196,7 @@ class TransportProfile:
     output_resampler_source: str = "profile"
     context: Optional[str] = None
     remediation: Optional[str] = None
+    talk_detect_talking_threshold: Optional[int] = None
 
 
 class TransportOrchestrator:
@@ -251,6 +253,9 @@ class TransportOrchestrator:
                     output_resampler=profile_dict.get('output_resampler', 'linear'),
                     chunk_ms=profile_dict.get('chunk_ms', 'auto'),
                     idle_cutoff_ms=profile_dict.get('idle_cutoff_ms', 1200),
+                    talk_detect_talking_threshold=profile_dict.get(
+                        'talk_detect_talking_threshold'
+                    ),
                 )
                 logger.debug("Loaded audio profile", name=name, profile=profiles[name])
             except Exception as exc:
@@ -641,6 +646,7 @@ class TransportOrchestrator:
             output_resampler=profile.output_resampler,
             output_resampler_source=f"profile:{profile.name}",
             context=context_name,  # Propagate context for greeting/prompt injection
+            talk_detect_talking_threshold=profile.talk_detect_talking_threshold,
         )
         
         logger.debug(

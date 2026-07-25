@@ -8243,7 +8243,16 @@ class Engine:
             if bool(td.get("enabled", False)):
                 return
             silence_ms = int(getattr(cfg, "pipeline_talk_detect_silence_ms", 1200))
-            talking_thr = int(getattr(cfg, "pipeline_talk_detect_talking_threshold", 128))
+            talking_thr = int(getattr(cfg, "pipeline_talk_detect_talking_threshold", 256))
+            threshold_source = "barge_in"
+            profile_threshold = getattr(
+                getattr(session, "transport_profile", None),
+                "talk_detect_talking_threshold",
+                None,
+            )
+            if profile_threshold is not None:
+                talking_thr = int(profile_threshold)
+                threshold_source = "audio_profile"
             value = f"{silence_ms},{talking_thr}"
             ok = await self.ari_client.set_channel_var(channel_id, "TALK_DETECT(set)", value)
             td.update(
@@ -8263,6 +8272,7 @@ class Engine:
                     channel_id=channel_id,
                     silence_ms=silence_ms,
                     talking_threshold=talking_thr,
+                    threshold_source=threshold_source,
                     is_pipeline=bool(self._pipeline_forced.get(call_id)),
                 )
             else:

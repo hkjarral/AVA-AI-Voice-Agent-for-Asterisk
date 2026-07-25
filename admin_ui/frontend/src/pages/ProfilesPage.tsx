@@ -556,7 +556,7 @@ const ProfilesPage = () => {
 	                                    </div>
 	                                </div>
 
-                                <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+                                <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-sm">
                                     <div className="bg-secondary/30 p-2 rounded-md">
                                         <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block">Internal Rate</span>
                                         <p className="text-foreground font-mono">{profile.internal_rate_hz || 8000} Hz</p>
@@ -577,6 +577,12 @@ const ProfilesPage = () => {
                                         <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block">Downsampling</span>
                                         <p className="text-foreground font-mono">
                                             {profile.output_resampler === 'bandlimited' ? 'Alias-safe' : 'Compatibility'}
+                                        </p>
+                                    </div>
+                                    <div className="bg-secondary/30 p-2 rounded-md">
+                                        <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block">Barge DSP</span>
+                                        <p className="text-foreground font-mono">
+                                            {profile.talk_detect_talking_threshold ?? config.barge_in?.pipeline_talk_detect_talking_threshold ?? 256}
                                         </p>
                                     </div>
                                 </div>
@@ -683,6 +689,15 @@ const ProfilesPage = () => {
                                 value={profileForm.internal_rate_hz || 8000}
                                 onChange={(e) => updateProfileField('internal_rate_hz', parseInt(e.target.value))}
                                 tooltip="Processing sample rate (8000, 16000, 24000)."
+                            />
+                            <FormInput
+                                label="TALK_DETECT Talking Threshold"
+                                type="number"
+                                min={1}
+                                max={32768}
+                                value={profileForm.talk_detect_talking_threshold ?? config.barge_in?.pipeline_talk_detect_talking_threshold ?? 256}
+                                onChange={(e) => updateProfileField('talk_detect_talking_threshold', parseInt(e.target.value))}
+                                tooltip="Per-profile Asterisk DSP magnitude threshold for pipeline barge-in. Higher values reject more playback echo. The wideband profile uses 1000; profiles without an override inherit the global barge-in value."
                             />
                             <FormSelect
                                 label="Output Downsampling"

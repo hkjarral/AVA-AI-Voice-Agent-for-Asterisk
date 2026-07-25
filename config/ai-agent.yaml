@@ -189,6 +189,10 @@ profiles:
       sample_rate_hz: 8000
   wideband_pcm_16k:
     output_resampler: linear
+    # Wideband endpoints can expose more playback echo to Asterisk's raw DSP.
+    # This live-validated profile override rejects that echo while preserving
+    # intentional barge-in; 8 kHz profiles retain the global value of 256.
+    talk_detect_talking_threshold: 1000
     chunk_ms: auto
     idle_cutoff_ms: 1200
     internal_rate_hz: 16000

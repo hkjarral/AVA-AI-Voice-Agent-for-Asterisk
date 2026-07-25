@@ -92,6 +92,24 @@ def test_audio_profile_rejects_impossible_telephony_encoding_rate_pair():
         AppConfig(**data)
 
 
+@pytest.mark.parametrize("invalid_threshold", [0, 32769, "1000", None, True])
+def test_audio_profile_rejects_invalid_talk_detect_threshold(invalid_threshold):
+    config = _app_config()
+    data = config.model_dump()
+    data["profiles"] = {
+        "default": "wideband_pcm_16k",
+        "wideband_pcm_16k": {
+            "talk_detect_talking_threshold": invalid_threshold,
+            "transport_out": {"encoding": "slin16", "sample_rate_hz": 16000},
+        },
+    }
+    with pytest.raises(
+        ValidationError,
+        match=r"profiles\.wideband_pcm_16k\.talk_detect_talking_threshold",
+    ):
+        AppConfig(**data)
+
+
 def test_audio_profile_rejects_missing_default_target():
     config = _app_config()
     data = config.model_dump()

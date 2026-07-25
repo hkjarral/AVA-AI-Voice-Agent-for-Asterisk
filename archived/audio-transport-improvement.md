@@ -929,6 +929,29 @@ Validate audio quality and transport integrity across the maintainer-approved re
     gating after its async work before applying barge-in. The focused AudioSocket,
     pipeline, gating, and cleanup suite passes 151 tests. A clean native 16 kHz
     live retest remains required.
+  - Hybrid ElevenLabs native-wideband retest `1784941103.76`, archived at
+    `logs/archived/rca-20260725-005924`, proved the corrected media path:
+    AudioSocket, local STT, ElevenLabs `pcm_16000`, and streaming playback all
+    remained native 16 kHz. It also isolated the remaining clipping to false
+    Asterisk TalkDetect barge-in. Each conversational reply was stopped after
+    only about 0.84–0.86 seconds when the global DSP magnitude threshold of 256
+    treated playback echo as caller speech; no self-transcript was generated.
+  - PCM-only barge-in canary `1784941554.80`, archived at
+    `logs/archived/rca-20260725-010659`, disabled TalkDetect and confirmed full,
+    unclipped 16 kHz responses (including a 31.58-second response). It also
+    showed that PCM-only fallback is not viable on this endpoint: AudioSocket
+    delivered RMS-0 caller frames for the complete TTS gates, so intentional
+    caller speech could not form a barge-in candidate.
+  - Hybrid ElevenLabs threshold canary `1784941838.84`, archived at
+    `logs/archived/rca-20260725-011138`, **passed**. Restored TalkDetect with a
+    DSP magnitude threshold of 1000 preserved the complete 10.46-second greeting
+    and 7.68-second farewell while three real caller overlaps interrupted active
+    responses and produced matching subsequent transcripts. Media remained
+    native 16 kHz, teardown and post-call health were clean, and the maintainer
+    reported that it worked perfectly. The threshold is now carried by the
+    opt-in `wideband_pcm_16k` Audio Profile rather than changing the global 256
+    default used by existing 8 kHz profiles. Backend validation, runtime
+    resolution, UI display/editing, and focused regression coverage are included.
 - [x] Run the full backend/frontend regression gates. Backend passed 1,981
   tests with 18 skips; frontend passed 221 tests, production build, and lint
   with existing warnings only. Focused wideband/provider/pipeline coverage

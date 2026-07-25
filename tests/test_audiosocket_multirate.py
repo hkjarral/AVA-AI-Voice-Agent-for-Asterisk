@@ -140,6 +140,7 @@ def _orchestrator_config():
             },
             "wideband_pcm_16k": {
                 "internal_rate_hz": 16000,
+                "talk_detect_talking_threshold": 1000,
                 "transport_out": {"encoding": "slin16", "sample_rate_hz": 16000},
                 "provider_pref": {},
             },
@@ -157,6 +158,39 @@ def test_audiosocket_profile_selects_wideband_without_changing_legacy_profile():
 
     assert (legacy.wire_encoding, legacy.wire_sample_rate) == ("slin", 8000)
     assert (wideband.wire_encoding, wideband.wire_sample_rate) == ("slin16", 16000)
+    assert legacy.talk_detect_talking_threshold is None
+    assert wideband.talk_detect_talking_threshold == 1000
+
+
+@pytest.mark.asyncio
+async def test_pipeline_talk_detect_prefers_per_profile_threshold():
+    engine = Engine.__new__(Engine)
+    engine.config = SimpleNamespace(
+        barge_in=SimpleNamespace(
+            pipeline_talk_detect_enabled=True,
+            pipeline_talk_detect_silence_ms=1200,
+            pipeline_talk_detect_talking_threshold=256,
+        )
+    )
+    engine.ari_client = SimpleNamespace(set_channel_var=AsyncMock(return_value=True))
+    engine._save_session = AsyncMock()
+    engine._pipeline_forced = {"call-wideband": True}
+    session = SimpleNamespace(
+        call_id="call-wideband",
+        caller_channel_id="channel-wideband",
+        vad_state={},
+        transport_profile=SimpleNamespace(
+            profile_name="wideband_pcm_16k",
+            talk_detect_talking_threshold=1000,
+        ),
+    )
+
+    await engine._enable_pipeline_talk_detect(session)
+
+    engine.ari_client.set_channel_var.assert_awaited_once_with(
+        "channel-wideband", "TALK_DETECT(set)", "1200,1000"
+    )
+    assert session.vad_state["pipeline_talk_detect"]["talking_threshold"] == 1000
 
 
 @pytest.mark.parametrize(

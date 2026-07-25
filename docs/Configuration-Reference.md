@@ -345,7 +345,7 @@ Controls interruption of TTS playback when the caller speaks.
 - barge_in.pipeline_energy_threshold: 200–1200. Pipeline-only RMS threshold (more sensitive than full-agent mode).
 - barge_in.pipeline_talk_detect_enabled: true/false. Pipeline-only; uses Asterisk `TALK_DETECT` (ARI `ChannelTalkingStarted`) to trigger barge-in during channel playback.
 - barge_in.pipeline_talk_detect_silence_ms: 800–2000. Pipeline-only; `TALK_DETECT(set)` silence window.
-- barge_in.pipeline_talk_detect_talking_threshold: 64–256. Pipeline-only; `TALK_DETECT(set)` talking threshold.
+- barge_in.pipeline_talk_detect_talking_threshold: 1–32768 (default 256). Pipeline-only; global Asterisk `TALK_DETECT(set)` DSP magnitude threshold. Audio profiles can override it with `profiles.<name>.talk_detect_talking_threshold`; `wideband_pcm_16k` uses the live-validated value 1000 to reject wideband playback echo while retaining caller barge-in.
 
 Notes (pipelines / `local_hybrid`):
 

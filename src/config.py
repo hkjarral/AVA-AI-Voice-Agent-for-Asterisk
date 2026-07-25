@@ -1222,6 +1222,14 @@ class AppConfig(BaseModel):
         for profile_name, raw_profile in self.profiles.items():
             if profile_name == "default" or not isinstance(raw_profile, dict):
                 continue
+            if "talk_detect_talking_threshold" in raw_profile:
+                threshold = raw_profile.get("talk_detect_talking_threshold")
+                if type(threshold) is not int or not 1 <= threshold <= 32768:
+                    raise ValueError(
+                        f"profiles.{profile_name}.talk_detect_talking_threshold "
+                        "must be an integer from 1 to 32768; "
+                        f"got {threshold!r}"
+                    )
             if "output_resampler" in raw_profile:
                 validate_resampler(
                     f"profiles.{profile_name}.output_resampler",

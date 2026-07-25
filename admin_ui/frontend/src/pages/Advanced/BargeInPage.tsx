@@ -387,7 +387,7 @@ const BargeInPage = () => {
                                     <FormInput
                                         label="TALK_DETECT Talking Threshold"
                                         type="number"
-                                        value={bargeInConfig.pipeline_talk_detect_talking_threshold ?? 128}
+                                        value={bargeInConfig.pipeline_talk_detect_talking_threshold ?? 256}
                                         onChange={(e) => updateBargeInConfig('pipeline_talk_detect_talking_threshold', parseInt(e.target.value))}
                                         tooltip="Asterisk TALK_DETECT(set) talking threshold (DSP energy). Higher requires louder speech to trigger."
                                     />
