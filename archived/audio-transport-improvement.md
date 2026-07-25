@@ -967,6 +967,15 @@ Validate audio quality and transport integrity across the maintainer-approved re
     Focused regression coverage verifies linear16/16 kHz source metadata and
     that all PCM chunks drain through streaming. A live meeting-tool retest is
     required before the Hybrid ElevenLabs pipeline row can pass.
+  - Calendar continuation retest `1784942907.92`, archived at
+    `logs/archived/rca-20260725-013123`, **passed** and closes the Hybrid
+    ElevenLabs wideband row. The Microsoft calendar lookup succeeded;
+    ElevenLabs produced 364,088 bytes of `pcm_16000`, and the continuation
+    streamed as `linear16@16000 -> slin16@16000` for 11.4 effective seconds with -2.6%
+    pacing drift. No audio file or `.ulaw` event occurred. Stream gating and
+    cleanup completed, later turns stayed native 16 kHz, the 165-second call
+    ended cleanly, and post-call health had no active resources. The maintainer
+    confirmed the calendar response sounded normal and the call worked fine.
 - [x] Run the full backend/frontend regression gates. Backend passed 1,981
   tests with 18 skips; frontend passed 221 tests, production build, and lint
   with existing warnings only. Focused wideband/provider/pipeline coverage
