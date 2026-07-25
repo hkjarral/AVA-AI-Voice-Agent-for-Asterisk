@@ -1369,7 +1369,10 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                     call_id=self._call_id
                 )
                 self._greeting_completed = True
-                await self._re_enable_vad()
+                try:
+                    await self._re_enable_vad()
+                finally:
+                    await self.release_greeting_transport_guard()
         except asyncio.CancelledError:
             pass  # Task cancelled on session stop
         except Exception:

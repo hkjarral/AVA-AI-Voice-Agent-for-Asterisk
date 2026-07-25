@@ -18052,8 +18052,10 @@ class Engine:
                 # provider_input_* when available; Deepgram's legacy contract
                 # declares the provider boundary directly as input_*.
                 if "provider_input_encoding" in cfg:
-                    cfg["provider_input_encoding"] = provider_input_encoding
-                    cfg["provider_input_sample_rate_hz"] = provider_input_rate
+                    if provider_input_encoding:
+                        cfg["provider_input_encoding"] = provider_input_encoding
+                    if provider_input_rate:
+                        cfg["provider_input_sample_rate_hz"] = provider_input_rate
                     if wire_encoding:
                         cfg["input_encoding"] = wire_encoding
                     if wire_rate:
@@ -18212,6 +18214,27 @@ class Engine:
             )
         return converted, target_rate
 
+    def _provider_input_mode_for_transport(self, session: CallSession) -> str:
+        """Resolve the provider input mode without losing legacy AudioSocket config."""
+        if self.config.audio_transport == "externalmedia":
+            return "pcm16_16k"
+
+        transport = getattr(session, "transport_profile", None)
+        wire_format = str(getattr(transport, "wire_encoding", "") or "").lower()
+        wire_rate = int(getattr(transport, "wire_sample_rate", 0) or 0)
+        if not wire_format:
+            wire_format = str(
+                getattr(getattr(self.config, "audiosocket", None), "format", "") or ""
+            ).lower()
+        if not wire_rate and wire_format in {"slin16", "linear16", "pcm16"}:
+            wire_rate = 16000
+
+        if wire_format in {"ulaw", "mulaw", "g711_ulaw"}:
+            return "mulaw8k"
+        if wire_format in {"slin16", "linear16", "pcm16"} and wire_rate >= 16000:
+            return "pcm16_16k"
+        return "pcm16_8k"
+
     async def _start_provider_session(self, call_id: str) -> None:
         """Start the provider session for a call when media path is ready."""
         provider: Optional[AIProviderInterface] = None
@@ -18366,26 +18389,9 @@ class Engine:
             # Set provider input mode based on transport so send_audio can convert properly
             try:
                 if hasattr(provider, 'set_input_mode'):
-                    if self.config.audio_transport == 'externalmedia':
-                        provider.set_input_mode('pcm16_16k')
-                    else:
-                        # Determine input mode from this call's resolved wire
-                        # format, not the process-wide AudioSocket fallback.
-                        as_fmt = str(
-                            getattr(getattr(session, "transport_profile", None), "wire_encoding", "")
-                            or ""
-                        ).lower()
-                        as_rate = int(
-                            getattr(getattr(session, "transport_profile", None), "wire_sample_rate", 0)
-                            or 0
-                        )
-                        if as_fmt in ('ulaw', 'mulaw', 'g711_ulaw'):
-                            provider.set_input_mode('mulaw8k')
-                        elif as_fmt in ('slin16', 'linear16', 'pcm16') and as_rate >= 16000:
-                            provider.set_input_mode('pcm16_16k')
-                        else:
-                            # Default to PCM16 at 8 kHz for slin (8kHz) or unspecified
-                            provider.set_input_mode('pcm16_8k')
+                    provider.set_input_mode(
+                        self._provider_input_mode_for_transport(session)
+                    )
             except Exception:
                 logger.debug("Provider set_input_mode failed or unsupported", exc_info=True)
 

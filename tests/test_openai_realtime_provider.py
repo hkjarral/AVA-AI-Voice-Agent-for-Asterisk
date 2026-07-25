@@ -103,6 +103,43 @@ async def test_greeting_transport_guard_clears_buffer_before_release(openai_conf
 
 
 @pytest.mark.asyncio
+async def test_greeting_vad_fallback_releases_transport_guard(
+    openai_config, monkeypatch
+):
+    provider = OpenAIRealtimeProvider(openai_config, on_event=AsyncMock())
+    provider._call_id = "call-greeting-fallback"
+    provider._greeting_completed = False
+    provider._greeting_transport_guard_active = True
+    provider._re_enable_vad = AsyncMock()
+    provider.release_greeting_transport_guard = AsyncMock()
+    monkeypatch.setattr(openai_realtime_module.asyncio, "sleep", AsyncMock())
+
+    await provider._greeting_vad_fallback()
+
+    assert provider._greeting_completed is True
+    provider._re_enable_vad.assert_awaited_once_with()
+    provider.release_greeting_transport_guard.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_greeting_vad_fallback_releases_guard_when_vad_update_fails(
+    openai_config, monkeypatch
+):
+    provider = OpenAIRealtimeProvider(openai_config, on_event=AsyncMock())
+    provider._call_id = "call-greeting-fallback-error"
+    provider._greeting_completed = False
+    provider._greeting_transport_guard_active = True
+    provider._re_enable_vad = AsyncMock(side_effect=RuntimeError("socket closed"))
+    provider.release_greeting_transport_guard = AsyncMock()
+    monkeypatch.setattr(openai_realtime_module.asyncio, "sleep", AsyncMock())
+
+    await provider._greeting_vad_fallback()
+
+    assert provider._greeting_completed is True
+    provider.release_greeting_transport_guard.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
 async def test_speech_started_cannot_flush_openai_greeting_transport_tail(openai_config):
     events = []
 

@@ -802,6 +802,7 @@ class StreamingPlaybackManager:
                 'last_chunk_time': time.time(),
                 'chunk_size_ms': call_chunk_ms,
                 'idle_cutoff_ms': call_idle_cutoff_ms,
+                'low_watermark_chunks': low_watermark_chunks,
                 'startup_ready': bool(initial_startup_ready),
                 'first_frame_observed': False,
                 'min_start_chunks': min_start_chunks,

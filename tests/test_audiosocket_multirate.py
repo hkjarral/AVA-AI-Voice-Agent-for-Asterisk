@@ -347,6 +347,75 @@ def test_engine_applies_wideband_provider_formats_without_mutating_template():
     )
 
 
+def test_engine_preserves_dict_provider_input_when_override_is_absent():
+    engine = Engine.__new__(Engine)
+    provider = SimpleNamespace(
+        config={
+            "input_encoding": "ulaw",
+            "input_sample_rate_hz": 8000,
+            "provider_input_encoding": "ulaw",
+            "provider_input_sample_rate_hz": 8000,
+            "target_encoding": "ulaw",
+            "target_sample_rate_hz": 8000,
+            "output_resampler": "inherit",
+        }
+    )
+    session = SimpleNamespace(
+        call_id="call-legacy-dict",
+        transport_profile=SimpleNamespace(
+            profile_name="telephony_ulaw_8k",
+            wire_encoding="slin",
+            wire_sample_rate=8000,
+            output_resampler="linear",
+        ),
+        provider_overrides={
+            "target_encoding": "slin",
+            "target_sample_rate_hz": 8000,
+        },
+    )
+
+    engine._apply_provider_overrides(provider, session)
+
+    assert provider.config["provider_input_encoding"] == "ulaw"
+    assert provider.config["provider_input_sample_rate_hz"] == 8000
+
+
+@pytest.mark.parametrize(
+    ("configured_format", "expected_mode"),
+    [
+        ("ulaw", "mulaw8k"),
+        ("slin", "pcm16_8k"),
+        ("slin16", "pcm16_16k"),
+    ],
+)
+def test_provider_input_mode_falls_back_to_legacy_audiosocket_config(
+    configured_format, expected_mode
+):
+    engine = Engine.__new__(Engine)
+    engine.config = SimpleNamespace(
+        audio_transport="audiosocket",
+        audiosocket=SimpleNamespace(format=configured_format),
+    )
+    session = SimpleNamespace(transport_profile=None)
+
+    assert engine._provider_input_mode_for_transport(session) == expected_mode
+
+
+def test_provider_input_mode_prefers_resolved_wideband_transport():
+    engine = Engine.__new__(Engine)
+    engine.config = SimpleNamespace(
+        audio_transport="audiosocket",
+        audiosocket=SimpleNamespace(format="ulaw"),
+    )
+    session = SimpleNamespace(
+        transport_profile=SimpleNamespace(
+            wire_encoding="slin16", wire_sample_rate=16000
+        )
+    )
+
+    assert engine._provider_input_mode_for_transport(session) == "pcm16_16k"
+
+
 def test_local_tts_preferences_use_supported_contract_for_each_wire_rate():
     provider = LocalProvider.__new__(LocalProvider)
 
@@ -537,9 +606,17 @@ async def test_stream_timing_is_isolated_per_call_profile():
         assert stream_40 and stream_20
         assert manager.active_streams["call-40ms"]["chunk_size_ms"] == 40
         assert manager.active_streams["call-40ms"]["idle_cutoff_ms"] == 600
+        assert "low_watermark_chunks" in manager.active_streams["call-40ms"]
+        assert manager._get_low_watermark_frames("call-40ms") == (
+            manager.active_streams["call-40ms"]["low_watermark_chunks"]
+        )
         assert manager._frame_size_bytes("call-40ms") == 1280
         assert manager.active_streams["call-20ms"]["chunk_size_ms"] == 20
         assert manager.active_streams["call-20ms"]["idle_cutoff_ms"] == 1200
+        assert "low_watermark_chunks" in manager.active_streams["call-20ms"]
+        assert manager._get_low_watermark_frames("call-20ms") == (
+            manager.active_streams["call-20ms"]["low_watermark_chunks"]
+        )
         assert manager._frame_size_bytes("call-20ms") == 320
         assert manager.chunk_size_ms == 20
     finally:
