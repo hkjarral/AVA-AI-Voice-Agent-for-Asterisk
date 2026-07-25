@@ -877,8 +877,22 @@ Validate audio quality and transport integrity across the maintainer-approved re
     The focused transport suite passes 49 tests. The broad backend run passes
     1,985 tests with 18 expected skips; six updater tests initially failed only
     because the minimal test image lacked `/usr/bin/python3`, and that complete
-    updater suite passes 33/33 with the prerequisite present. One final live
-    Deepgram cleanup retest is pending.
+    updater suite passes 33/33 with the prerequisite present. The final live
+    verification below closes the cleanup gate.
+  - Final Deepgram cleanup verification `1784939486.64`, archived at
+    `logs/archived/rca-20260725-003248`, **passed** on revision `ca340f02`.
+    AudioSocket and both Deepgram directions remained raw linear16/16 kHz. Seven
+    active-playback interruptions were applied (six provider events and one
+    local fallback); all replacement requests were recognized and answered.
+    Eight cancelled producers yielded cleanup ownership to the stop path, all
+    eight matching stream cleanups completed, and there were zero stop-timeout,
+    pending-task, traceback, exception, or runtime-error events. Interrupt
+    cleanup settled in roughly 3–10 ms, while the terminal farewell drained and
+    cleaned up in approximately 205 ms. RTP loss was 2 of 2,595 received packets
+    (about 0.077%) with zero remote loss and low jitter. Post-call health was
+    clean with no active resources. Combined with the maintainer's prior
+    subjective wideband-quality acceptance, the Deepgram full-agent wideband
+    row is now **PASS**.
 - [x] Run the full backend/frontend regression gates. Backend passed 1,981
   tests with 18 skips; frontend passed 221 tests, production build, and lint
   with existing warnings only. Focused wideband/provider/pipeline coverage
