@@ -476,6 +476,42 @@ class DeepgramProvider(AIProviderInterface):
         """Set the session store for turn latency tracking (Milestone 21)."""
         self._session_store = session_store
 
+    async def _handle_user_started_speaking(self) -> None:
+        """Bridge Deepgram's native VAD signal into platform playback flush.
+
+        Deepgram owns response cancellation and turn-taking.  The engine still
+        owns AudioSocket/ARI playback buffers, so it needs an explicit
+        ``ProviderBargeIn`` event to discard audio already queued locally.
+        """
+        logger.info(
+            "🎤 Deepgram UserStartedSpeaking",
+            call_id=self.call_id,
+            request_id=getattr(self, "request_id", None),
+        )
+        if not self.on_event:
+            return
+        if self.terminal_output_protected:
+            logger.info(
+                "Deepgram provider barge-in suppressed during terminal farewell",
+                call_id=self.call_id,
+            )
+            return
+        try:
+            await self.on_event(
+                {
+                    "type": "ProviderBargeIn",
+                    "call_id": self.call_id,
+                    "provider": self.provider_event_name(),
+                    "event": "UserStartedSpeaking",
+                }
+            )
+        except Exception:
+            logger.debug(
+                "Failed to emit Deepgram ProviderBargeIn",
+                call_id=self.call_id,
+                exc_info=True,
+            )
+
     @property
     def supported_codecs(self) -> List[str]:
         return ["ulaw"]
@@ -1540,11 +1576,7 @@ class DeepgramProvider(AIProviderInterface):
                                     session_id=getattr(self, "session_id", None),
                                 )
                             elif et == "UserStartedSpeaking":
-                                logger.info(
-                                    "🎤 Deepgram UserStartedSpeaking",
-                                    call_id=self.call_id,
-                                    request_id=getattr(self, "request_id", None),
-                                )
+                                await self._handle_user_started_speaking()
                             elif et == "UserStoppedSpeaking":
                                 logger.info(
                                     "🔇 Deepgram UserStoppedSpeaking",

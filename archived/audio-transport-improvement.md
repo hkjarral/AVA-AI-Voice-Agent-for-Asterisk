@@ -834,6 +834,20 @@ Validate audio quality and transport integrity across the maintainer-approved re
     Deepgram/provider/transport tests and the full backend gate (2,011 passed,
     7 skipped) pass. A native 16/16 kHz live retest is required before marking
     the row passed.
+  - Deepgram native-wideband retest `1784937530.52`, archived at
+    `logs/archived/rca-20260724-235900`, confirmed that the output correction
+    works: AudioSocket and both Deepgram directions were raw linear16/16 kHz,
+    the engine skipped output resampling, RTP loss was zero, teardown was clean,
+    and the maintainer found the audio quality good. The row remains
+    **PARTIAL** because barge-in failed. Deepgram emitted four
+    `UserStartedSpeaking` events while agent audio was active, but the adapter
+    only logged them; no engine `ProviderBargeIn`, playback stop, or queue flush
+    occurred. The adapter now bridges that native VAD signal to the existing
+    platform flush contract while retaining Deepgram-owned response
+    cancellation and terminal-farewell protection. The focused lifecycle,
+    transport, and realtime-provider gate passes 63 tests, and the full backend
+    gate passes 2,013 tests with 7 expected skips. A live barge-in retest is
+    pending.
 - [x] Run the full backend/frontend regression gates. Backend passed 1,981
   tests with 18 skips; frontend passed 221 tests, production build, and lint
   with existing warnings only. Focused wideband/provider/pipeline coverage
