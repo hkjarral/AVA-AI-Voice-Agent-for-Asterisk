@@ -295,6 +295,68 @@ async def test_cancelled_producer_does_not_block_on_full_jitter_queue():
         await asyncio.wait_for(producer, timeout=0.2)
     assert producer.done()
 
+
+@pytest.mark.asyncio
+async def test_stop_owns_cleanup_when_blocked_producer_is_cancelled():
+    mgr = make_manager(fallback_timeout_ms=10_000)
+    call_id = "test-call-stop-full-jitter"
+    stream_id = "stream:resp:test-call-stop-full-jitter:1"
+    audio_chunks = asyncio.Queue()
+    audio_chunks.put_nowait(b"new-provider-audio")
+
+    class ObservedQueue(asyncio.Queue):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.put_started = asyncio.Event()
+
+        async def put(self, item):
+            self.put_started.set()
+            await super().put(item)
+
+    jitter_buffer = ObservedQueue(maxsize=1)
+    jitter_buffer.put_nowait(b"queued-audio")
+
+    class BlockProducerSessionStore(Dummy):
+        producer = None
+
+        async def get_by_call_id(self, *_args, **_kwargs):
+            if asyncio.current_task() is self.producer:
+                await asyncio.Event().wait()
+            return None
+
+    session_store = BlockProducerSessionStore()
+    mgr.session_store = session_store
+    producer = asyncio.create_task(
+        mgr._stream_audio_loop(call_id, stream_id, audio_chunks, jitter_buffer)
+    )
+    session_store.producer = producer
+    mgr.active_streams[call_id] = {
+        "stream_id": stream_id,
+        "streaming_task": producer,
+        "pacer_task": None,
+        "keepalive_task": None,
+        "end_reason": "barge-in",
+    }
+    mgr.jitter_buffers[call_id] = jitter_buffer
+
+    # Let the producer consume its input and block on the already-full jitter
+    # queue. Its normal finally path would then block on the session write.
+    await asyncio.wait_for(jitter_buffer.put_started.wait(), timeout=0.2)
+    assert audio_chunks.empty()
+
+    async def cleanup(_call_id, _stream_id):
+        mgr.active_streams.pop(_call_id, None)
+        mgr.jitter_buffers.pop(_call_id, None)
+
+    mgr._cleanup_stream = cleanup
+
+    assert await asyncio.wait_for(
+        mgr.stop_streaming_playback(call_id), timeout=0.2
+    )
+    assert producer.done()
+    assert producer.cancelled()
+    assert call_id not in mgr.active_streams
+
 def test_low_water_expiry_resets_when_a_full_frame_arrives():
     mgr = make_manager(provider_grace_ms=200)
     call_id = "test-call-resumed-audio"

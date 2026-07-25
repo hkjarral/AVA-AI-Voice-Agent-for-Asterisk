@@ -1024,6 +1024,31 @@ class StreamingPlaybackManager:
                         pass
                     continue
         finally:
+            current_task = asyncio.current_task()
+            cancelling = bool(
+                current_task
+                and getattr(current_task, "cancelling", lambda: 0)()
+            )
+            stream_info = self.active_streams.get(call_id)
+            externally_stopped = bool(
+                cancelling
+                and stream_info is not None
+                and stream_info.get("stop_requested")
+            )
+            if externally_stopped:
+                # stop_streaming_playback() owns the async cleanup in this path.
+                # Do not perform session writes or wait on the pacer here: the
+                # producer may have been cancelled while blocked on a full
+                # jitter queue, and another slow await in this finally block can
+                # outlive the stop timeout and leave a pending task behind.
+                stream_info["producer_closed"] = True
+                logger.debug(
+                    "Streaming producer yielded cleanup to stop owner",
+                    call_id=call_id,
+                    stream_id=stream_id,
+                )
+                raise asyncio.CancelledError
+
             # Flush any pending byte counters on all exit paths (M9 fix)
             if bytes_since_last_upsert > 0:
                 try:
@@ -1042,11 +1067,6 @@ class StreamingPlaybackManager:
                 # the producer task until it is garbage-collected.  Natural
                 # end-of-stream still waits for capacity so the active pacer
                 # receives the boundary after all queued audio.
-                current_task = asyncio.current_task()
-                cancelling = bool(
-                    current_task
-                    and getattr(current_task, "cancelling", lambda: 0)()
-                )
                 if cancelling:
                     with suppress(asyncio.QueueFull):
                         jitter_buffer.put_nowait(_JITTER_SENTINEL)
@@ -3314,6 +3334,11 @@ class StreamingPlaybackManager:
                         raise
                     except Exception:
                         logger.debug("Streaming drain failed; aborting playback", call_id=call_id, stream_id=stream_id, exc_info=True)
+
+            # The caller now owns cleanup. Mark this before cancelling the
+            # producer so its finally block cannot duplicate slow async cleanup
+            # while this method is waiting for all stream tasks to settle.
+            stream_info['stop_requested'] = True
 
             cancelled_tasks = []
             seen_tasks = set()

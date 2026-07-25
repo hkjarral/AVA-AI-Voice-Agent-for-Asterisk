@@ -862,7 +862,23 @@ Validate audio quality and transport integrity across the maintainer-approved re
     queue after its pacer was cancelled. Cancellation now uses a nonblocking
     sentinel write while natural completion retains ordered drain semantics;
     111 focused transport/lifecycle tests and the full 2,014-test backend gate
-    (7 expected skips) pass. A clean live cleanup retest is pending.
+    (7 expected skips) pass. Cleanup retest `1784938538.60`, archived at
+    `logs/archived/rca-20260725-001642`, retained native 16 kHz media, six
+    functional interruptions, protected farewell, low RTP loss, and clean
+    post-call health, but **failed** the internal lifecycle gate: one producer
+    cancelled at a full jitter-queue enqueue remained pending beyond the
+    two-second stop wait and was garbage-collected. The remaining wait was not
+    the sentinel; it was the producer's duplicate async finalization (including
+    session persistence) racing the caller-owned stop cleanup. The stop path now
+    marks itself as the sole cleanup owner before cancellation, and an externally
+    stopped producer propagates cancellation without entering duplicate async
+    finalization. A regression test reproduces a full queue plus a permanently
+    blocked final session write and verifies cancellation/cleanup within 200 ms.
+    The focused transport suite passes 49 tests. The broad backend run passes
+    1,985 tests with 18 expected skips; six updater tests initially failed only
+    because the minimal test image lacked `/usr/bin/python3`, and that complete
+    updater suite passes 33/33 with the prerequisite present. One final live
+    Deepgram cleanup retest is pending.
 - [x] Run the full backend/frontend regression gates. Backend passed 1,981
   tests with 18 skips; frontend passed 221 tests, production build, and lint
   with existing warnings only. Focused wideband/provider/pipeline coverage
