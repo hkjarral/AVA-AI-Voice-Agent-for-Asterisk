@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '../../hooks/useConfirmDialog';
@@ -12,9 +12,34 @@ import { sanitizeConfigForSave } from '../../utils/configSanitizers';
 import { getCachedConfig, loadConfigYaml } from '../../utils/configCache';
 import { useRestartRequired } from '../../hooks/useRestartRequired';
 
+type TransportConfig = Record<string, unknown> & {
+    audio_transport?: string;
+    asterisk?: { app_name?: string };
+    audiosocket?: {
+        host?: string;
+        advertise_host?: string;
+        port?: number;
+        format?: string;
+    };
+    external_media?: {
+        rtp_host?: string;
+        advertise_host?: string;
+        rtp_port?: number;
+        port_range?: string;
+        allowed_remote_hosts?: string[] | string | null;
+        codec?: string;
+        direction?: string;
+        format?: string;
+        sample_rate?: number;
+        lock_remote_endpoint?: boolean;
+    };
+};
+
 const TransportPage = () => {
     const { confirm } = useConfirmDialog();
-    const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+    const [config, setConfig] = useState<TransportConfig>(
+        () => (getCachedConfig()?.config ?? {}) as TransportConfig
+    );
     const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [saving, setSaving] = useState(false);
@@ -33,7 +58,7 @@ const TransportPage = () => {
     const fetchConfig = async (force = false) => {
         try {
             const r = await loadConfigYaml(force);
-            setConfig(r.config);
+            setConfig(r.config as TransportConfig);
             setYamlError(r.yamlError);
         } catch (err) {
             console.error('Failed to load config', err);
@@ -115,23 +140,32 @@ const TransportPage = () => {
                 toast.success('AI Engine restarted! Changes are now active.');
                 return;
             }
-        } catch (error: any) {
+        } catch (error: unknown) {
             const actionLabel = applyMethod === 'hot_reload' ? 'hot reload' : 'restart';
-            toast.error(`Failed to ${actionLabel} AI Engine`, { description: error.response?.data?.detail || error.message });
+            const description = axios.isAxiosError(error)
+                ? error.response?.data?.detail || error.message
+                : error instanceof Error
+                    ? error.message
+                    : String(error);
+            toast.error(`Failed to ${actionLabel} AI Engine`, { description });
         } finally {
             setRestartingEngine(false);
         }
     };
 
-    const updateConfig = (field: string, value: any) => {
+    const updateConfig = (field: string, value: unknown) => {
         setConfig({ ...config, [field]: value });
     };
 
-    const updateSectionConfig = (section: string, field: string, value: any) => {
+    const updateSectionConfig = (section: string, field: string, value: unknown) => {
+        const currentSection = config[section];
+        const sectionConfig = currentSection && typeof currentSection === 'object'
+            ? currentSection as Record<string, unknown>
+            : {};
         setConfig({
             ...config,
             [section]: {
-                ...config[section],
+                ...sectionConfig,
                 [field]: value
             }
         });
@@ -269,6 +303,18 @@ const TransportPage = () => {
                 <ConfigSection title="External Media (RTP) Settings" description="Configuration for RTP-based audio transport.">
                     <ConfigCard>
                         <div className="space-y-6">
+                            <div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
+                                <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+                                <div>
+                                    <p className="font-medium">Supported Audio Profiles</p>
+                                    <p className="mt-1">
+                                        ExternalMedia RTP is supported with the 8 kHz <code>telephony_ulaw_8k</code> and{' '}
+                                        <code>telephony_enhanced_8k</code> profiles. The <code>wideband_pcm_16k</code> profile is
+                                        AudioSocket-only; select AudioSocket for end-to-end 16 kHz audio.
+                                    </p>
+                                </div>
+                            </div>
+
                             <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Network Configuration</h4>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <FormInput

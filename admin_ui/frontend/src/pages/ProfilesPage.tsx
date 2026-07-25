@@ -768,7 +768,7 @@ const ProfilesPage = () => {
                                     { value: 'slin16', label: 'SLIN16 (16kHz)' },
                                     { value: 'ulaw', label: 'μ-law' }
                                 ]}
-                                tooltip="Encoding written back to the Asterisk ExternalMedia socket. SLIN/SLIN16 are 16-bit linear PCM; μ-law is the PSTN-native G.711 codec."
+                                tooltip="Encoding written to the selected Asterisk media transport. SLIN16 wideband is supported through AudioSocket; ExternalMedia RTP uses the 8 kHz telephony profiles."
                             />
                             <FormInput
                                 label="Sample Rate (Hz)"

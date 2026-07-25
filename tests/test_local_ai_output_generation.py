@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import sys
 import threading
 from pathlib import Path
@@ -43,6 +44,38 @@ async def test_closed_session_drops_llm_and_tts_output():
         ws, b"late audio", session, "req", source_mode="full", generation=3
     )
     assert ws.sent == []
+
+
+@pytest.mark.asyncio
+async def test_full_local_audio_without_request_id_is_scoped_by_metadata():
+    server_mod = _load("server")
+    session_mod = _load("session")
+    audio_mod = _load("audio_processor")
+    instance = object.__new__(server_mod.LocalAIServer)
+    instance.config = type("Config", (), {})()
+    instance.stt_backend = "vosk"
+    instance.sherpa_backend = None
+    instance.tone_backend = None
+    session = session_mod.SessionContext(call_id="full-local")
+    ws = _WebSocket()
+
+    await instance._emit_tts_audio(
+        ws,
+        audio_mod.SynthesizedAudio(b"reply", "mulaw", 8000),
+        session,
+        None,
+        source_mode="full",
+    )
+
+    assert json.loads(ws.sent[0]) == {
+        "type": "tts_audio",
+        "call_id": "full-local",
+        "mode": "full",
+        "encoding": "mulaw",
+        "sample_rate_hz": 8000,
+        "byte_length": 5,
+    }
+    assert ws.sent[1] == b"reply"
 
 
 @pytest.mark.asyncio

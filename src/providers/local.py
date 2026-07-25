@@ -867,13 +867,11 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
 
     def _tts_output_preferences(self) -> Dict[str, Any]:
         config = getattr(self, "config", None)
-        encoding = str(getattr(config, "target_encoding", "mulaw") or "mulaw").strip().lower()
-        if encoding in {"linear16", "pcm16", "slin16", "slin"}:
-            encoding = "linear16"
-            default_rate = 16000
-        else:
-            encoding = "mulaw"
-            default_rate = 8000
+        target_encoding = str(
+            getattr(config, "target_encoding", "mulaw") or "mulaw"
+        ).strip().lower()
+        signed_linear = target_encoding in {"linear16", "pcm16", "slin16", "slin"}
+        default_rate = 16000 if target_encoding in {"linear16", "pcm16", "slin16"} else 8000
         try:
             sample_rate = int(
                 getattr(config, "target_sample_rate_hz", default_rate)
@@ -881,6 +879,17 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             )
         except (TypeError, ValueError):
             sample_rate = default_rate
+
+        # The Local AI Server's native output contracts are μ-law/8 kHz and
+        # linear PCM/16 kHz.  AudioSocket's legacy ``slin`` carrier is PCM at
+        # 8 kHz, but requesting ``linear16@8000`` from the server is invalid;
+        # retain the legacy μ-law response and let the engine perform the
+        # established μ-law -> slin wire conversion.
+        if signed_linear and sample_rate == 16000:
+            encoding = "linear16"
+        else:
+            encoding = "mulaw"
+            sample_rate = 8000
         return {
             "output_encoding": encoding,
             "output_sample_rate_hz": sample_rate,

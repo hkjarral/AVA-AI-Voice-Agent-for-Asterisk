@@ -483,6 +483,22 @@ class StreamingPlaybackManager:
                 logger.error("Cannot start streaming - call session not found",
                            call_id=call_id)
                 return None
+
+            transport_profile = getattr(session, "transport_profile", None)
+            call_chunk_ms = self._resolve_chunk_size_ms(
+                getattr(transport_profile, "chunk_ms", self.chunk_size_ms)
+            )
+            try:
+                raw_idle_cutoff_ms = int(
+                    getattr(transport_profile, "idle_cutoff_ms", self.idle_cutoff_ms)
+                )
+            except (TypeError, ValueError):
+                raw_idle_cutoff_ms = self.idle_cutoff_ms
+            call_idle_cutoff_ms = (
+                0
+                if raw_idle_cutoff_ms == 0
+                else self._resolve_idle_cutoff_ms(raw_idle_cutoff_ms)
+            )
             
             # Generate stream ID
             stream_id = self._generate_stream_id(call_id, playback_type)
@@ -532,7 +548,7 @@ class StreamingPlaybackManager:
             
             # Initialize jitter buffer sized from intelligent calculation
             try:
-                chunk_ms = max(1, int(self.chunk_size_ms))
+                chunk_ms = max(1, int(call_chunk_ms))
                 jb_ms = max(0, int(self.jitter_buffer_ms))
                 jb_chunks = max(1, int(math.ceil(jb_ms / chunk_ms)))
             except Exception:
@@ -569,7 +585,11 @@ class StreamingPlaybackManager:
                 scaled_lw = int(max(0, math.ceil(min_start_chunks * (2.0/3.0))))
             except Exception:
                 scaled_lw = min_start_chunks // 2
-            configured_low_watermark = max(self.low_watermark_chunks, scaled_lw)
+            per_call_low_watermark_chunks = max(
+                0,
+                int(math.ceil(self.low_watermark_ms / max(1, call_chunk_ms))),
+            )
+            configured_low_watermark = max(per_call_low_watermark_chunks, scaled_lw)
             low_watermark_chunks = 0
             if configured_low_watermark:
                 max_low = max(0, min_start_chunks - 1)
@@ -655,7 +675,7 @@ class StreamingPlaybackManager:
             
             # Start pacer (consumer) task to drain jitter buffer independently of producer
             pacer_task = asyncio.create_task(
-                self._pacer_loop(call_id, stream_id, jitter_buffer)
+                self._pacer_loop(call_id, stream_id, jitter_buffer, call_chunk_ms)
             )
             # Start keepalive task
             keepalive_task = asyncio.create_task(
@@ -670,7 +690,6 @@ class StreamingPlaybackManager:
                 src_rate = self.sample_rate
 
             # Determine downstream target format/sample rate for this stream.
-            transport_profile = getattr(session, "transport_profile", None)
             profile_target_encoding = getattr(
                 transport_profile, "wire_encoding", None
             )
@@ -760,7 +779,10 @@ class StreamingPlaybackManager:
             self._resample_states[call_id] = None
             # Store stream info
             try:
-                idle_cutoff_ticks = max(1, int(math.ceil(self.idle_cutoff_ms / max(1, self.chunk_size_ms))))
+                idle_cutoff_ticks = max(
+                    1,
+                    int(math.ceil(call_idle_cutoff_ms / max(1, call_chunk_ms))),
+                ) if call_idle_cutoff_ms > 0 else 0
             except Exception:
                 idle_cutoff_ticks = 60
             # Small pre-start wait to allow inbound endianness probe to populate session.vad_state
@@ -778,7 +800,8 @@ class StreamingPlaybackManager:
                 'seg_start_ts': time.time(),
                 'chunks_sent': 0,
                 'last_chunk_time': time.time(),
-                'idle_cutoff_ms': self.idle_cutoff_ms,
+                'chunk_size_ms': call_chunk_ms,
+                'idle_cutoff_ms': call_idle_cutoff_ms,
                 'startup_ready': bool(initial_startup_ready),
                 'first_frame_observed': False,
                 'min_start_chunks': min_start_chunks,
@@ -856,7 +879,7 @@ class StreamingPlaybackManager:
                     "🎼 STREAM FRAME SIZE",
                     call_id=call_id,
                     frame_size_bytes=self._frame_size_bytes(call_id),
-                    chunk_ms=int(self.chunk_size_ms),
+                    chunk_ms=int(call_chunk_ms),
                     target_format=resolved_target_format,
                     target_rate=resolved_target_rate,
                 )
@@ -1093,7 +1116,12 @@ class StreamingPlaybackManager:
                     frames_remaining = self._estimate_available_frames(call_id, jitter_buffer, include_remainder=True)
                 except Exception:
                     frames_remaining = 0
-                chunk_sec = max(0.02, self.chunk_size_ms / 1000.0)
+                stream_chunk_ms = int(
+                    (self.active_streams.get(call_id) or {}).get(
+                        "chunk_size_ms", self.chunk_size_ms
+                    )
+                )
+                chunk_sec = max(0.02, stream_chunk_ms / 1000.0)
                 # NOTE: Do not cap drain time too aggressively.
                 # In downstream streaming mode, providers/pipelines may enqueue a large amount of audio quickly
                 # and then signal end-of-stream. The pacer must be allowed to drain frame remainders;
@@ -1120,9 +1148,13 @@ class StreamingPlaybackManager:
         call_id: str,
         stream_id: str,
         jitter_buffer: asyncio.Queue,
+        chunk_size_ms: Optional[int] = None,
     ) -> None:
         """Drain jitter buffer at steady cadence so producer and consumer are independent."""
-        tick_seconds = max(0.02, self.chunk_size_ms / 1000.0)
+        tick_seconds = max(
+            0.02,
+            int(chunk_size_ms or self.chunk_size_ms) / 1000.0,
+        )
         next_tick = time.perf_counter()
         try:
             while True:
@@ -2778,7 +2810,7 @@ class StreamingPlaybackManager:
                         audiosocket_format=fmt,
                         frame_bytes=len(chunk),
                         sample_rate=sample_rate,
-                        chunk_size_ms=self.chunk_size_ms,
+                        chunk_size_ms=int(stream_info.get("chunk_size_ms", self.chunk_size_ms)),
                         conn_id=conn_id,
                     )
                     self._first_send_logged.add(call_id)
@@ -3061,7 +3093,15 @@ class StreamingPlaybackManager:
                     stream_info_keys=list(info.keys()) if info else [],
                 )
         bytes_per_sample = 1 if self._is_mulaw(fmt) else 2
-        frame_size = int(sample_rate * (self.chunk_size_ms / 1000.0) * bytes_per_sample)
+        chunk_size_ms = self.chunk_size_ms
+        if call_id and call_id in self.active_streams:
+            try:
+                chunk_size_ms = int(
+                    self.active_streams[call_id].get("chunk_size_ms", chunk_size_ms)
+                )
+            except (TypeError, ValueError):
+                chunk_size_ms = self.chunk_size_ms
+        frame_size = int(sample_rate * (chunk_size_ms / 1000.0) * bytes_per_sample)
         if frame_size <= 0:
             frame_size = 160 if bytes_per_sample == 1 else 320
         return frame_size
@@ -3803,14 +3843,16 @@ class StreamingPlaybackManager:
                             sr = self.sample_rate
                         if sr <= 0:
                             sr = self._default_sample_rate_for_format(fmt, self.sample_rate)
-                        bytes_per_sample = 1 if self._is_mulaw(fmt) else 2
-                        frame_size = int(sr * (self.chunk_size_ms / 1000.0) * bytes_per_sample) or (160 if bytes_per_sample == 1 else 320)
+                        frame_size = self._frame_size_bytes(call_id)
                         # Zero-pad to a full frame boundary to avoid truncation artifacts
                         if len(rem) < frame_size:
                             rem = rem + (b"\x00" * (frame_size - len(rem)))
                         await self._send_audio_chunk(call_id, stream_id, rem[:frame_size], target_fmt=fmt, target_rate=sr)
                         # small pacing to let Asterisk play the last frame
-                        await asyncio.sleep(self.chunk_size_ms / 1000.0)
+                        cleanup_chunk_ms = int(
+                            info.get("chunk_size_ms", self.chunk_size_ms)
+                        )
+                        await asyncio.sleep(cleanup_chunk_ms / 1000.0)
                     else:
                         # ExternalMedia/RTP: flush at most one frame to avoid
                         # sending oversized RTP packets that cause audio artifacts.

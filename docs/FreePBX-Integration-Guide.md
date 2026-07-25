@@ -371,6 +371,10 @@ For a SIP trunk, confirm that the provider and the negotiated trunk leg both
 support G.722 before assigning the profile. This profile does not improve a
 PSTN/G.711 leg, which remains limited to 8 kHz.
 
+`wideband_pcm_16k` is not supported with ExternalMedia RTP. Use
+`telephony_ulaw_8k` or `telephony_enhanced_8k` for ExternalMedia, or switch the
+global transport to AudioSocket before assigning the wideband profile.
+
 ### 3.4 Advanced: Agent-Based Routing (No Provider Override)
 
 Use `AI_AGENT` alone to select an agent and change greeting/prompt while keeping the default provider (`local_hybrid`). `AI_CONTEXT` is also accepted (legacy, equivalent).

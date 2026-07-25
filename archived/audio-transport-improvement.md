@@ -4,6 +4,37 @@ Validate audio quality and transport integrity across the maintainer-approved re
 
 ## Progress
 
+- **G.722-capable public demo trunk available; final validation pending
+  (2026-07-24):** the public demo number is now `(909) 788-2282` on a SIP trunk
+  that supports G.722. README wording advertises HD Voice only when the caller's
+  carrier/device and the complete negotiated path preserve wideband audio, with
+  standard telephony fallback otherwise. Before final PR freeze, place a call
+  through the public number and capture the Asterisk channel codec plus one
+  representative `wideband_pcm_16k` provider call ID. Trunk capability alone
+  does not prove that an individual PSTN or mobile call negotiated G.722.
+
+- **ExternalMedia RTP wideband experiment rejected; prototype removed
+  (2026-07-24):** Google call `1784951517.124`, archived at
+  `logs/archived/rca-20260725-035425`, selected `wideband_pcm_16k` while the
+  ExternalMedia channel remained `ulaw@8000`. Google produced the greeting, but
+  provider PCM was emitted as payload-type-0 μ-law and reached the caller as
+  noise. A follow-up prototype originated `slin16`, returned payload type 118,
+  and proved with packet captures and Asterisk RTP debug that the engine sent
+  valid 16 kHz frames. Calls `1784952572.145`, `1784952964.152`, and
+  `1784953234.159` nevertheless produced silence because RTP ExternalMedia has
+  no SDP negotiation for the dynamic `slin16` payload mapping; Asterisk received
+  the packets but did not translate them into the G.722 caller leg. This matches
+  the [Asterisk maintainer guidance](https://community.asterisk.org/t/ari-external-media-code-issue/110111/4)
+  that dynamic payload types are unsupported for RTP ExternalMedia. All
+  experimental RTP code and tests were removed, so
+  ExternalMedia remains on its prior supported `ulaw`/8 kHz baseline with
+  `telephony_ulaw_8k` or `telephony_enhanced_8k`. Supported 16 kHz remains an
+  AudioSocket-only opt-in. Asterisk Media over WebSocket is a possible future
+  transport, not part of this branch; see the
+  [official Asterisk Media WebSocket documentation](https://docs.asterisk.org/Configuration/Channel-Drivers/WebSocket/).
+  The post-removal gate passed 77 focused backend transport tests and all 222
+  Admin UI tests, plus the frontend production build and lint budget.
+
 - **Local AI Server native-wideband slice validated (2026-07-24):** branch
   `codex/audiosocket-multirate` now carries an opt-in, per-call TTS output
   contract for Local AI Server protocol v2. Legacy clients and 8 kHz profiles
@@ -1061,14 +1092,47 @@ Validate audio quality and transport integrity across the maintainer-approved re
     resulting TalkDetect actions correctly canceled the late replies. This row
     remains **UNVALIDATED / NOT RELEASE-READY**, and voiprnd was restored to
     Piper.
+  - Public G.722 trunk matrix on revision `23044911` validated Grok
+    (`1784954386.176`), Google (`1784954445.180`), Deepgram
+    (`1784954498.184`), OpenAI (`1784954557.188`), Local Hybrid
+    (`1784954701.192`), and ElevenLabs (`1784954766.196`). Asterisk reported
+    `(g722)` on every caller leg, and all six agents/pipelines used AudioSocket
+    `slin16@16000`, exchanged conversational media, cleaned up, and left green
+    health with no active resources. The test also exposed an observer defect
+    where parenthesized Asterisk format values were logged as `ulaw@8000`; the
+    branch now strips the presentation parentheses before codec mapping.
+  - Full Local call `1784954842.200` is **FAILED / NOT A WIDEBAND TEST** because
+    that Agent retained `slin@8000`. Its greeting, STT, 10.15-second local LLM,
+    and Piper synthesis all completed, but the engine rejected the 72,725-byte
+    reply because the server emitted binary audio without a `tts_audio` header
+    when the continuous request lacked a `request_id`. The protocol correction
+    now always scopes binary audio with metadata and keeps `request_id`
+    optional. Narrowband Local TTS also resolves to its supported μ-law/8 kHz
+    contract instead of requesting invalid `linear16@8000` on every frame. A
+    focused Full Local retest is required after deployment. The correction was
+    deployed to voiprnd with exact source hashes verified inside both rebuilt
+    containers; Local AI and engine health are green with zero restarts. The
+    focused gate passes 130 tests and the broad backend gate passes 1,899 tests
+    with 6 expected skips and 139 deselections.
+  - Full Local compatibility retest `1784955816.212`, archived at
+    `logs/archived/rca-20260725-050500`, **passed**. Asterisk's `(g722)` value
+    normalized correctly to `slin16@16000`, while the Agent intentionally kept
+    its legacy `slin@8000` profile. Four caller turns were recognized. The
+    initial Qwen/Piper answer generated 71,982 μ-law bytes and drained 144,000
+    AudioSocket wire bytes over 9.0 seconds; two later replies also drained
+    completely. There were zero unscoped Local audio drops, invalid
+    `linear16@8000` warnings, exceptions, or leaked resources. This closes the
+    Full Local protocol regression and the public-trunk validation matrix.
 - [x] Run the full backend/frontend regression gates. Backend passed 1,981
-  tests with 18 skips; frontend passed 221 tests, production build, and lint
+  tests with 18 skips; frontend passed 222 tests, production build, and lint
   with existing warnings only. Focused wideband/provider/pipeline coverage
   passed 111 tests with one skip; compile, secret, release-doc, and diff checks
   passed.
 - [x] Complete the live validation matrix with pass/partial/untested
   classifications and prepare the branch for the repository PR workflow.
 
-Release guidance: `wideband_pcm_16k` is opt-in. Recommend it only when the SIP
-endpoint or trunk provider supports and actually negotiates G.722 (or another
-true wideband codec). Keep PSTN/G.711 routes on an 8 kHz profile.
+Release guidance: `wideband_pcm_16k` is an AudioSocket-only opt-in. Recommend it
+only when the SIP endpoint or trunk provider supports and actually negotiates
+G.722 (or another true wideband codec). Keep PSTN/G.711 routes and all
+ExternalMedia RTP deployments on `telephony_ulaw_8k` or
+`telephony_enhanced_8k`.

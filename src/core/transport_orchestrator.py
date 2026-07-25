@@ -500,9 +500,9 @@ class TransportOrchestrator:
         # CRITICAL: Wire format depends on transport type
         if self.audio_transport == "audiosocket":
             # AudioSocket message types represent signed-linear sample rates.
-            # Allow a profile such as wideband_pcm_16k to select slin16 while
-            # preserving legacy ulaw/alaw profiles that depend on the global
-            # AudioSocket format (normally slin@8 kHz).
+            # A signed-linear profile selects its matching wire type. Companded
+            # profiles use the 8 kHz signed-linear compatibility carrier; they
+            # must never inherit a process-wide slin16 setting from another call.
             wire_enc = self.audiosocket_format
             wire_rate = self.audiosocket_sample_rate
             profile_wire_enc = profile.transport_out.get('encoding', '')
@@ -513,7 +513,12 @@ class TransportOrchestrator:
                     int(profile_wire_rate) if profile_wire_rate is not None else None,
                 )
             except (TypeError, ValueError):
-                pass
+                profile_encoding = str(profile_wire_enc or "").strip().lower()
+                if profile_encoding in {
+                    "ulaw", "mulaw", "mu-law", "g711_ulaw",
+                    "alaw", "a-law", "g711_alaw",
+                }:
+                    wire_enc, wire_rate = "slin", 8000
             if not wire_rate:
                 # Infer rate from format: slin=8kHz, slin16=16kHz
                 wire_enc_lower = wire_enc.lower().strip()

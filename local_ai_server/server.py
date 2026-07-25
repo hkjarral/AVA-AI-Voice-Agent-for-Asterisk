@@ -5414,26 +5414,29 @@ class LocalAIServer:
             encoding=audio_encoding,
             sample_rate_hz=audio_sample_rate_hz,
         )
+        # Every binary payload must be scoped by a preceding metadata frame.
+        # Continuous full-local audio requests do not carry request IDs, and
+        # omitting this header makes the engine reject otherwise valid audio as
+        # unscoped/stale.  ``request_id`` remains optional in the protocol.
+        metadata = {
+            "type": "tts_audio",
+            "call_id": session.call_id,
+            "mode": source_mode,
+            "encoding": audio_encoding,
+            "sample_rate_hz": audio_sample_rate_hz,
+            "byte_length": len(audio_bytes or b""),
+        }
         if request_id:
-            # Milestone7: emit metadata event for selective TTS while keeping binary transport.
-            metadata = {
-                "type": "tts_audio",
-                "call_id": session.call_id,
-                "mode": source_mode,
-                "request_id": request_id,
-                "encoding": audio_encoding,
-                "sample_rate_hz": audio_sample_rate_hz,
-                "byte_length": len(audio_bytes or b""),
-            }
-            # Multi-chunk streaming metadata (v2 extension, backward-compatible)
-            if utterance_id is not None:
-                metadata["utterance_id"] = utterance_id
-            if chunk_index is not None:
-                metadata["chunk_index"] = chunk_index
-            if is_final_chunk is not None:
-                metadata["is_final"] = is_final_chunk
-            if not await self._send_json(websocket, metadata):
-                return
+            metadata["request_id"] = request_id
+        # Multi-chunk streaming metadata (v2 extension, backward-compatible)
+        if utterance_id is not None:
+            metadata["utterance_id"] = utterance_id
+        if chunk_index is not None:
+            metadata["chunk_index"] = chunk_index
+        if is_final_chunk is not None:
+            metadata["is_final"] = is_final_chunk
+        if not await self._send_json(websocket, metadata):
+            return
         if audio_bytes:
             await self._send_bytes(websocket, audio_bytes)
 

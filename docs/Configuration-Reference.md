@@ -131,11 +131,20 @@ It originates the media channel as `c(slin16)`, receives PCM16 at 16 kHz in
 AudioSocket type `0x12`, and stamps outbound frames with the same type. This is
 per call, so 8 and 16 kHz Agents can run concurrently. Full-agent providers use
 their declared native PCM boundary (16 or 24 kHz), and supported modular TTS
-adapters request PCM and convert once to the 16 kHz AudioSocket boundary. It requires Asterisk
-20.17+, 21.12+, 22.7+, or 23.1+ and a wideband caller leg (for example G.722).
-Older or unrecognized Asterisk versions fail the call closed with a remediation
-message. Use `telephony_ulaw_8k` or `telephony_enhanced_8k` for PSTN/G.711 calls;
+adapters request PCM and convert once to the 16 kHz AudioSocket boundary. It
+requires Asterisk 20.17+, 21.12+, 22.7+, or 23.1+ and a wideband caller leg
+(for example G.722). Older or unrecognized Asterisk versions fail the call
+closed with a remediation message. Use
+`telephony_ulaw_8k` or `telephony_enhanced_8k` for PSTN/G.711 calls;
 upsampling an 8 kHz trunk cannot restore frequencies that the trunk discarded.
+
+ExternalMedia RTP supports the shipped `telephony_ulaw_8k` and
+`telephony_enhanced_8k` profiles only. Do not assign `wideband_pcm_16k` while
+`audio_transport: externalmedia` is active. RTP ExternalMedia has no SDP offer
+and therefore cannot negotiate the dynamic payload mapping used by Asterisk for
+`slin16`; returning payload type 118 produced no caller audio in live testing.
+Asterisk Media over WebSocket can carry `slin16`, but AAVA does not currently
+implement that separate transport. Use AudioSocket for supported wideband audio.
 
 The wideband provider boundary is call-scoped and does not rewrite provider
 defaults. OpenAI Realtime uses PCM at 24 kHz in both directions; Google Live
@@ -328,7 +337,7 @@ contains configuration and verification evidence, but never the referenced API p
 - external_media.advertise_host: Address Asterisk sends RTP to (optional; defaults to `external_media.rtp_host`). Use for NAT/VPN.
 - external_media.rtp_port: Port for inbound RTP.
 - external_media.port_range: Optional range (`start:end`) for dynamic per-call RTP allocation; defaults to `rtp_port`.
-- external_media.codec: `ulaw` | `slin16` (8 kHz).
+- external_media.codec: Asterisk RTP wire codec. The supported release baseline is `ulaw` at 8 kHz with `telephony_ulaw_8k` or `telephony_enhanced_8k`. `slin16`/16 kHz RTP is not supported; use AudioSocket with `wideband_pcm_16k` instead.
 - external_media.direction: `both` | `sendonly` | `recvonly`.
 - external_media.lock_remote_endpoint: When true (default), **do not** accept mid-call changes to the inbound RTP source `(ip,port)` for that call.
 - external_media.allowed_remote_hosts: Optional list of **IP addresses** allowed as inbound RTP sources. When set, packets from other sources are dropped (recommended when the RTP source IP is stable).

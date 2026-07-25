@@ -694,7 +694,7 @@ pipelines:
 - **Agent CLI Tools**: `setup`, `check`, `rca`, `update`, `version` commands (legacy aliases: `init`, `doctor`, `troubleshoot`).
 - **Modular Pipeline System**: Independent STT, LLM, and TTS provider selection.
 - **Dual Transport Support**: AudioSocket (default in `config/ai-agent.yaml`) and ExternalMedia RTP (both supported — see the transport matrix).
-- **Per-Agent Audio Profiles**: Stable and enhanced 8 kHz telephony profiles, plus opt-in 16 kHz AudioSocket with provider-native PCM conversion on supported Asterisk versions and G.722/wideband endpoint or trunk legs. G.711/PSTN Agents remain on an 8 kHz profile.
+- **Per-Agent Audio Profiles**: Stable and enhanced 8 kHz telephony profiles, plus opt-in 16 kHz AudioSocket with provider-native PCM conversion on supported Asterisk versions and G.722/wideband endpoint or trunk legs. ExternalMedia RTP remains on the supported 8 kHz profiles; G.711/PSTN Agents remain on an 8 kHz profile.
 - **Streaming-First Downstream**: Streaming playback when possible, with automatic fallback to file playback for robustness.
 - **High-Performance Architecture**: Separate `ai_engine` and `local_ai_server` containers.
 - **Observability**: Built-in **Call History** for per-call debugging + optional `/metrics` scraping.
@@ -729,7 +729,12 @@ docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_u
 
 Experience our production-ready configurations with a single phone call:
 
-**Dial: (925) 736-6718**
+- **Standard Voice:** (925) 736-6718
+- **HD Voice:** (909) 788-2282
+
+The HD Voice demo line uses a G.722-capable SIP trunk. Wideband audio is
+available when the caller's carrier and device negotiate a G.722 path; other
+calls fall back to standard telephony audio.
 
 - **Press 4** → xAI Grok Realtime (NEW in v6.5.2)
 - **Press 5** → Google Live API (Multimodal AI with Gemini 2.0)

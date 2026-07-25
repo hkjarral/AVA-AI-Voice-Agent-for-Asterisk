@@ -16,6 +16,7 @@ from src.core.streaming_playback_manager import StreamingPlaybackManager
 from src.core.transport_orchestrator import TransportOrchestrator
 from src.engine import Engine
 from src.providers.base import ProviderCapabilities
+from src.providers.local import LocalProvider
 
 
 class _Writer:
@@ -160,6 +161,24 @@ def test_audiosocket_profile_selects_wideband_without_changing_legacy_profile():
     assert (wideband.wire_encoding, wideband.wire_sample_rate) == ("slin16", 16000)
     assert legacy.talk_detect_talking_threshold is None
     assert wideband.talk_detect_talking_threshold == 1000
+
+
+def test_companded_profile_does_not_inherit_global_wideband_format():
+    config = _orchestrator_config()
+    config["audiosocket"] = {"format": "slin16", "sample_rate": 16000}
+    orchestrator = TransportOrchestrator(config)
+
+    legacy = orchestrator.resolve_transport("test", None, {})
+
+    assert (legacy.wire_encoding, legacy.wire_sample_rate) == ("slin", 8000)
+
+
+def test_asterisk_parenthesized_g722_format_is_detected_as_wideband_pcm():
+    assert Engine._normalize_audio_format("(g722)") == (
+        "slin16",
+        16000,
+        "(g722)",
+    )
 
 
 @pytest.mark.asyncio
@@ -328,6 +347,28 @@ def test_engine_applies_wideband_provider_formats_without_mutating_template():
     )
 
 
+def test_local_tts_preferences_use_supported_contract_for_each_wire_rate():
+    provider = LocalProvider.__new__(LocalProvider)
+
+    provider.config = SimpleNamespace(
+        target_encoding="slin",
+        target_sample_rate_hz=8000,
+    )
+    assert provider._tts_output_preferences() == {
+        "output_encoding": "mulaw",
+        "output_sample_rate_hz": 8000,
+    }
+
+    provider.config = SimpleNamespace(
+        target_encoding="slin16",
+        target_sample_rate_hz=16000,
+    )
+    assert provider._tts_output_preferences() == {
+        "output_encoding": "linear16",
+        "output_sample_rate_hz": 16000,
+    }
+
+
 @pytest.mark.asyncio
 async def test_streaming_manager_keeps_audiosocket_framing_per_call():
     sessions = {
@@ -447,6 +488,65 @@ async def test_streaming_start_inherits_wideband_target_from_call_profile():
     finally:
         if stream_id:
             await manager.stop_streaming_playback("call-pipeline-wideband")
+
+
+@pytest.mark.asyncio
+async def test_stream_timing_is_isolated_per_call_profile():
+    sessions = {
+        "call-40ms": SimpleNamespace(
+            provider_name="test",
+            transport_profile=SimpleNamespace(
+                wire_encoding="slin16",
+                wire_sample_rate=16000,
+                provider_output_sample_rate=16000,
+                chunk_ms=40,
+                idle_cutoff_ms=600,
+            ),
+            streaming_started=False,
+            current_stream_id=None,
+        ),
+        "call-20ms": SimpleNamespace(
+            provider_name="test",
+            transport_profile=SimpleNamespace(
+                wire_encoding="slin",
+                wire_sample_rate=8000,
+                provider_output_sample_rate=8000,
+                chunk_ms=20,
+                idle_cutoff_ms=1200,
+            ),
+            streaming_started=False,
+            current_stream_id=None,
+        ),
+    }
+    session_store = SimpleNamespace(
+        get_by_call_id=AsyncMock(side_effect=lambda call_id: sessions[call_id]),
+        upsert_call=AsyncMock(),
+        set_gating_token=AsyncMock(return_value=True),
+        clear_gating_token=AsyncMock(return_value=True),
+    )
+    manager = StreamingPlaybackManager(
+        session_store,
+        ari_client=SimpleNamespace(),
+        streaming_config={"chunk_size_ms": 20},
+        audio_transport="audiosocket",
+    )
+
+    stream_40 = await manager.start_streaming_playback("call-40ms", asyncio.Queue())
+    stream_20 = await manager.start_streaming_playback("call-20ms", asyncio.Queue())
+    try:
+        assert stream_40 and stream_20
+        assert manager.active_streams["call-40ms"]["chunk_size_ms"] == 40
+        assert manager.active_streams["call-40ms"]["idle_cutoff_ms"] == 600
+        assert manager._frame_size_bytes("call-40ms") == 1280
+        assert manager.active_streams["call-20ms"]["chunk_size_ms"] == 20
+        assert manager.active_streams["call-20ms"]["idle_cutoff_ms"] == 1200
+        assert manager._frame_size_bytes("call-20ms") == 320
+        assert manager.chunk_size_ms == 20
+    finally:
+        if stream_40:
+            await manager.stop_streaming_playback("call-40ms")
+        if stream_20:
+            await manager.stop_streaming_playback("call-20ms")
 
 
 @pytest.mark.asyncio

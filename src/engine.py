@@ -16081,7 +16081,13 @@ class Engine:
     def _normalize_audio_format(raw_format: Optional[str]) -> Tuple[str, int, str]:
         """Map assorted codec tokens to canonical AudioSocket format + sample rate."""
         reported = (raw_format or "").strip()
-        token = reported.lower()
+        token = reported.lower().strip()
+        # Asterisk may render a single native format as ``(g722)`` (and
+        # similarly wrap other codec names).  Normalize that presentation
+        # before applying aliases so observability and any detected-profile
+        # fallback retain the actual caller codec.
+        while len(token) >= 2 and token[0] == "(" and token[-1] == ")":
+            token = token[1:-1].strip()
 
         alias_map = {
             "mulaw": "ulaw",
@@ -16477,20 +16483,6 @@ class Engine:
             # so pipeline mode gets it even if provider not found
             
             await self._save_session(session)
-            
-            # Apply timing defaults only. Wire format and sample rate are
-            # per-call and flow with each playback frame.
-            try:
-                if hasattr(self.streaming_playback_manager, 'chunk_size_ms'):
-                    self.streaming_playback_manager.chunk_size_ms = transport.chunk_ms
-                if hasattr(self.streaming_playback_manager, 'idle_cutoff_ms'):
-                    self.streaming_playback_manager.idle_cutoff_ms = transport.idle_cutoff_ms
-            except Exception as exc:
-                logger.warning(
-                    "Failed to apply transport to streaming manager",
-                    call_id=session.call_id,
-                    error=str(exc),
-                )
             
             # Store per-call provider overrides (do NOT mutate global provider templates).
             try:
@@ -17594,6 +17586,19 @@ class Engine:
                     transport_rate = int(rate) if rate else None
                 except Exception:
                     transport_rate = None
+
+            try:
+                profile_chunk_ms = getattr(session.transport_profile, "chunk_ms", None)
+                if profile_chunk_ms is not None:
+                    chunk_ms = int(profile_chunk_ms)
+            except Exception:
+                pass
+            try:
+                profile_idle_cutoff_ms = getattr(session.transport_profile, "idle_cutoff_ms", None)
+                if profile_idle_cutoff_ms is not None:
+                    idle_cutoff_ms = int(profile_idle_cutoff_ms)
+            except Exception:
+                pass
 
         # A resolved call profile is authoritative over the manager's process-
         # wide fallback. Report the wire format the call actually requested.
