@@ -4,7 +4,7 @@ Validate audio quality and transport integrity across the maintainer-approved re
 
 ## Progress
 
-- **Local AI Server native-wideband slice in progress (2026-07-24):** branch
+- **Local AI Server native-wideband slice validated (2026-07-24):** branch
   `codex/audiosocket-multirate` now carries an opt-in, per-call TTS output
   contract for Local AI Server protocol v2. Legacy clients and 8 kHz profiles
   continue to receive Piper μ-law/8 kHz. A wideband profile requests
@@ -26,9 +26,24 @@ Validate audio quality and transport integrity across the maintainer-approved re
   `logs/archived/rca-20260725-015750`, is the comparison control. It used
   `local_stt → openai_llm → local_tts`, `telephony_ulaw_8k`, Piper
   μ-law/8 kHz, and `slin@8000` AudioSocket. The 42-second call completed via
-  agent hangup with media RX confirmed. The post-change comparison will reuse
-  extension 3000 and the same conversation after the rebuilt Local AI Server
-  and AI Engine are deployed.
+  agent hangup with media RX confirmed. The completed post-change comparison
+  reused extension 3000 and the same representative conversation after the
+  rebuilt Local AI Server and AI Engine were deployed.
+- **Local Hybrid native-wideband after-call (2026-07-24):** call
+  `1784946127.104`, archived at `logs/archived/rca-20260725-022309`, validates
+  the opt-in Local TTS contract on deployed revision `bd3e8216`. The call used
+  G.722 from extension 6000, AudioSocket type `0x12` / `slin16@16000`, Local STT
+  PCM16/16 kHz, and Piper `linear16@16000`. Greeting, ordinary replies, and the
+  terminal farewell all opened as `slin16@16000 -> slin16@16000`, with no
+  legacy mu-law stage and no output resampling. The maintainer reported that
+  the conversation after the greeting worked fine. The greeting itself was
+  interrupted after 4.98 caller-facing seconds by the real utterance `Hello,
+  can you hear me?`; the 8 kHz control shows the same five-second
+  greeting-protection/barge-in pattern, so this is not a wideband regression.
+  The farewell drained, the 46-second call ended cleanly, and post-call health
+  had no active resources. The Local Hybrid wideband row is **PASS**; shortening
+  the demo greeting or changing greeting interruption policy is optional UX
+  follow-up outside this transport slice.
 
 - **Diagnostics removed from the release candidate (2026-07-22):** every
   diagnostics-only change introduced during this investigation was reverted to
@@ -771,20 +786,22 @@ Validate audio quality and transport integrity across the maintainer-approved re
   selection is per Agent/per call and remains immediately reversible.
 - [x] Declare provider-native wideband boundaries independently of the
   Asterisk wire contract: ElevenLabs/Deepgram/Grok 16 kHz, Google 16 kHz input
-  and 24 kHz output, OpenAI 24 kHz input/output, and Local as partial 16 kHz
-  input with legacy 8 kHz output.
+  and 24 kHz output, OpenAI 24 kHz input/output, and Local as 16 kHz input plus
+  opt-in native Piper `linear16@16000` output (legacy clients/profiles remain
+  mu-law/8 kHz).
 - [x] Extend supported modular TTS adapters to produce native PCM for a 16 kHz
   call. OpenAI, Google, Deepgram, ElevenLabs, Groq, Azure, and CAMB AI opt in;
-  Local TTS stays explicitly partial because its current websocket protocol
-  has no output-format negotiation.
+  Local TTS now negotiates an optional protocol-v2 format/rate contract for
+  native Piper output while preserving the legacy response by default.
 - [x] Add focused compatibility and per-call isolation coverage; the initial
   transport/pipeline/provider-adapter suite passes 111/111. Google LINEAR16
   and MULAW WAV containers are stripped before AudioSocket playback, and
   Deepgram REST TTS explicitly requests `container=none` as recommended for
   raw VoIP audio.
-- [ ] Deploy one frozen revision to voiprnd and execute direct-extension calls
-  for every configured/credentialed full-agent provider and modular pipeline.
-  Archive each call before analysis and retain objective and subjective results.
+- [x] Deploy frozen revisions to voiprnd and execute the maintainer-approved
+  direct-extension validation set, retaining excluded rows as explicitly
+  untested. Archive each call before analysis and retain objective and
+  subjective results.
   - Revision `49f60b09` is deployed and healthy on voiprnd.
   - ElevenLabs full-agent call `1784932129.24`, archived at
     `logs/archived/rca-20260724-223012`, objectively passed the direct G.722 to
@@ -1002,12 +1019,20 @@ Validate audio quality and transport integrity across the maintainer-approved re
     cleanup completed, later turns stayed native 16 kHz, the 165-second call
     ended cleanly, and post-call health had no active resources. The maintainer
     confirmed the calendar response sounded normal and the call worked fine.
+  - Local Hybrid native-wideband call `1784946127.104`, archived at
+    `logs/archived/rca-20260725-022309`, **passed** on revision `bd3e8216`.
+    AudioSocket, Local STT, and Local Piper TTS remained native PCM16/16 kHz;
+    caller-facing playback required no output conversion. Normal turns and the
+    fully drained farewell were subjectively accepted. The long greeting was
+    interrupted by real caller speech after the existing five-second greeting
+    protection window, matching the earlier 8 kHz control rather than exposing
+    a wideband regression.
 - [x] Run the full backend/frontend regression gates. Backend passed 1,981
   tests with 18 skips; frontend passed 221 tests, production build, and lint
   with existing warnings only. Focused wideband/provider/pipeline coverage
   passed 111 tests with one skip; compile, secret, release-doc, and diff checks
   passed.
-- [ ] Complete the live validation matrix with pass/partial/untested
+- [x] Complete the live validation matrix with pass/partial/untested
   classifications and prepare the branch for the repository PR workflow.
 
 Release guidance: `wideband_pcm_16k` is opt-in. Recommend it only when the SIP
