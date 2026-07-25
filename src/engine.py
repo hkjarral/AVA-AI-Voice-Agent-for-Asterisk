@@ -16404,9 +16404,12 @@ class Engine:
             getattr(no_input_context, "pipeline", None) or ""
         ).strip()
         configured_pipelines = getattr(self.config, "pipelines", {}) or {}
+        explicit_channel_provider = str(
+            channel_vars.get("AI_PROVIDER") or ""
+        ).strip()
         channel_pipeline = (
-            provider_name
-            if provider_name and provider_name in configured_pipelines
+            explicit_channel_provider
+            if explicit_channel_provider in configured_pipelines
             else ""
         )
         effective_pipeline = channel_pipeline or context_pipeline
@@ -16414,9 +16417,12 @@ class Engine:
             effective_pipeline
             and (
                 channel_pipeline
-                or not str(
-                    getattr(no_input_context, "provider", None) or ""
-                ).strip()
+                or (
+                    not explicit_channel_provider
+                    and not str(
+                        getattr(no_input_context, "provider", None) or ""
+                    ).strip()
+                )
             )
         )
         # Pipeline-only Agents and an explicit AI_PROVIDER=<pipeline> dialplan

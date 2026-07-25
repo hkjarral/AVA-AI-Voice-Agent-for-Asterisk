@@ -283,6 +283,89 @@ async def test_dialplan_pipeline_override_keeps_agent_audio_profile():
 
 
 @pytest.mark.asyncio
+async def test_explicit_provider_wins_over_pipeline_only_agent_context():
+    """AI_PROVIDER=<provider> must not be replaced by the Agent's pipeline."""
+    context = SimpleNamespace(
+        provider="",
+        pipeline="hybrid_elevenlabs",
+        profile="telephony_ulaw_8k",
+        connection_audio=None,
+        no_input=None,
+        email_recipient=None,
+        email_from=None,
+        email_enabled=None,
+        greeting=None,
+        prompt=None,
+        background_music=None,
+    )
+    transport = SimpleNamespace(
+        profile_name="telephony_ulaw_8k",
+        wire_encoding="ulaw",
+        wire_sample_rate=8000,
+        provider_input_encoding="ulaw",
+        provider_input_sample_rate=8000,
+        provider_output_encoding="ulaw",
+        provider_output_sample_rate=8000,
+        chunk_ms=20,
+        idle_cutoff_ms=1200,
+        context="sales",
+    )
+    capabilities = object()
+    provider_config = SimpleNamespace(name="google-live-config")
+    provider = SimpleNamespace(
+        config=provider_config,
+        get_capabilities=MagicMock(return_value=capabilities),
+    )
+
+    class Orchestrator:
+        agent_store = SimpleNamespace(default_slug=lambda: None)
+
+        def __init__(self):
+            self.resolve_transport = MagicMock(return_value=transport)
+
+        def get_context_config(self, name, routing_method=None):
+            return context if name == "sales" else None
+
+    class ARI:
+        async def send_command(self, method, path, params=None, tolerate_statuses=None):
+            variable = (params or {}).get("variable")
+            if variable == "AI_AGENT":
+                return {"value": "sales"}
+            if variable == "AI_PROVIDER":
+                return {"value": "google_live"}
+            return {"value": ""}
+
+    engine = Engine.__new__(Engine)
+    engine.ari_client = ARI()
+    engine.transport_orchestrator = Orchestrator()
+    engine.providers = {"google_live": provider}
+    engine.config = SimpleNamespace(
+        default_provider="local",
+        pipelines={"hybrid_elevenlabs": object()},
+        audio_transport="audiosocket",
+    )
+    engine.streaming_playback_manager = SimpleNamespace()
+    engine.no_input_watchdog = None
+    engine._save_session = AsyncMock()
+    session = CallSession(call_id="call-explicit-provider", caller_channel_id="caller")
+
+    await Engine._resolve_audio_profile(engine, session, session.caller_channel_id)
+
+    assert session.provider_name == "google_live"
+    engine.transport_orchestrator.resolve_transport.assert_called_once_with(
+        provider_name="google_live",
+        provider_caps=capabilities,
+        channel_vars={
+            "AI_PROVIDER": "google_live",
+            "AI_AGENT": "sales",
+        },
+        provider_config=provider_config,
+        resolved_context="sales",
+        routing_method="ai_agent",
+    )
+
+
+@pytest.mark.asyncio
 async def test_first_provider_audio_stops_connection_audio_before_playback_work():
     """The first accepted provider chunk stops ringback before playback begins."""
     engine = Engine.__new__(Engine)
