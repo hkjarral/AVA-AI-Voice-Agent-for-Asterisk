@@ -8,7 +8,7 @@ This document describes the WebSocket API exposed by the local AI server (defaul
 - Optional auth: `LOCAL_WS_AUTH_TOKEN` (server-side)
 - Modes: `full`, `stt`, `llm`, `tts` (default `full`)
 - Binary messages (client → server): raw PCM16 mono frames (assumed 16 kHz unless you set `rate` on JSON `audio`)
-- Binary messages (server → client): negotiated TTS audio bytes. Legacy clients receive μ-law 8 kHz; Piper can emit linear PCM 16 kHz when requested per call.
+- Binary messages (server → client): negotiated TTS audio bytes. Legacy clients receive μ-law 8 kHz; Piper and Kokoro can emit linear PCM 16 kHz when requested per call.
 - JSON messages: control, status, text requests, or base64 audio frames
 
 Source of truth:
@@ -438,9 +438,11 @@ Response:
 ```
 
 The output fields are optional and do not change protocol version 2. Omitting
-them preserves μ-law/8 kHz. Native linear16/16 kHz output is initially enabled
-for Piper; unsupported backend/format combinations fall back to truthful
-μ-law/8 kHz metadata so upgraded clients can convert safely.
+them preserves μ-law/8 kHz. Native linear16/16 kHz output is enabled for Piper
+and Kokoro (local or API mode); unsupported backend/format combinations fall
+back to truthful μ-law/8 kHz metadata so upgraded clients can convert safely.
+Kokoro API WAV responses are decoded using their reported sample rate before
+the single conversion to 16 kHz.
 
 ---
 

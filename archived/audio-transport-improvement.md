@@ -44,6 +44,18 @@ Validate audio quality and transport integrity across the maintainer-approved re
   had no active resources. The Local Hybrid wideband row is **PASS**; shortening
   the demo greeting or changing greeting interruption policy is optional UX
   follow-up outside this transport slice.
+- **Kokoro-only Local TTS expansion (2026-07-24):** the maintainer limited the
+  remaining Local AI Server scope to Kokoro to avoid repeated long image
+  rebuilds. Kokoro local and API mode now converge on raw PCM plus the actual
+  native sample rate and perform one conversion to negotiated
+  `linear16@16000`. Legacy clients still receive μ-law/8 kHz; MeloTTS, Matcha,
+  and Silero reject the wideband request to the existing truthful 8 kHz
+  fallback. The focused Local TTS/pipeline contract suite passes 124 tests with
+  two warnings. The broad backend gate passes 1,959 tests with 18 expected
+  skips; its sole reported failure is the stripped test image lacking `git` for
+  the repository secret-scan harness, and the same scan passes on the host.
+  Source compilation and whitespace validation pass. Implementation is frozen
+  before one Local AI Server rebuild and a Kokoro live canary.
 
 - **Diagnostics removed from the release candidate (2026-07-22):** every
   diagnostics-only change introduced during this investigation was reverted to
@@ -787,12 +799,13 @@ Validate audio quality and transport integrity across the maintainer-approved re
 - [x] Declare provider-native wideband boundaries independently of the
   Asterisk wire contract: ElevenLabs/Deepgram/Grok 16 kHz, Google 16 kHz input
   and 24 kHz output, OpenAI 24 kHz input/output, and Local as 16 kHz input plus
-  opt-in native Piper `linear16@16000` output (legacy clients/profiles remain
-  mu-law/8 kHz).
+  opt-in native Piper/Kokoro `linear16@16000` output (legacy clients/profiles
+  remain mu-law/8 kHz).
 - [x] Extend supported modular TTS adapters to produce native PCM for a 16 kHz
   call. OpenAI, Google, Deepgram, ElevenLabs, Groq, Azure, and CAMB AI opt in;
   Local TTS now negotiates an optional protocol-v2 format/rate contract for
-  native Piper output while preserving the legacy response by default.
+  native Piper and Kokoro output while preserving the legacy response by
+  default.
 - [x] Add focused compatibility and per-call isolation coverage; the initial
   transport/pipeline/provider-adapter suite passes 111/111. Google LINEAR16
   and MULAW WAV containers are stripped before AudioSocket playback, and

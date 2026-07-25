@@ -3087,7 +3087,11 @@ class LocalAIServer:
         except (TypeError, ValueError):
             rate = ULAW_SAMPLE_RATE
 
-        if normalized == "linear16" and rate == PCM16_TARGET_RATE and self.tts_backend == "piper":
+        if (
+            normalized == "linear16"
+            and rate == PCM16_TARGET_RATE
+            and self.tts_backend in {"piper", "kokoro"}
+        ):
             return "linear16", PCM16_TARGET_RATE
         if normalized == "mulaw" and rate == ULAW_SAMPLE_RATE:
             return "mulaw", ULAW_SAMPLE_RATE
@@ -3173,18 +3177,24 @@ class LocalAIServer:
                 logging.debug("🔊 TTS CACHE HIT - text=%s bytes=%d encoding=%s sample_rate_hz=%d", text[:40], len(cached.data), cached.encoding, cached.sample_rate_hz)
                 return cached
 
-        if self.tts_backend == "piper" and encoding == "linear16":
-            async with self._tts_lock:
-                native_pcm = await asyncio.to_thread(self._synthesize_piper_pcm16, text)
+        if encoding == "linear16" and self.tts_backend in {"piper", "kokoro"}:
+            if self.tts_backend == "piper":
+                async with self._tts_lock:
+                    native_pcm = await asyncio.to_thread(self._synthesize_piper_pcm16, text)
+                native_rate = 22050
+            else:
+                native_pcm, native_rate = await self._synthesize_kokoro_pcm16(text)
             result_bytes = await asyncio.to_thread(
                 self.audio_processor.resample_audio,
                 native_pcm,
-                22050,
+                native_rate,
                 sample_rate_hz,
             )
             logging.info(
-                "🔊 TTS RESULT - Piper generated linear16 audio: %s bytes sample_rate_hz=%s call_id=%s",
+                "🔊 TTS RESULT - %s generated linear16 audio: %s bytes native_sample_rate_hz=%s sample_rate_hz=%s call_id=%s",
+                self.tts_backend.capitalize(),
                 len(result_bytes),
+                native_rate,
                 sample_rate_hz,
                 _CALL_LOG_CONTEXT.get(),
             )
@@ -3299,28 +3309,17 @@ class LocalAIServer:
             return wf.readframes(wf.getnframes())
 
     async def _process_tts_kokoro(self, text: str) -> bytes:
-        """Process TTS using Kokoro backend (24kHz output)."""
+        """Process native Kokoro local/API PCM into legacy μ-law/8 kHz."""
         try:
-            if self.kokoro_mode == "api":
-                return await self._process_tts_kokoro_api(text)
-
-            if not self.kokoro_backend:
-                logging.error("Kokoro TTS backend not initialized")
-                return b""
-
-            logging.debug("🔊 TTS INPUT - Generating 24kHz audio for: '%s'", text)
-
-            # Get PCM16 audio at 24kHz from Kokoro
-            async with self._tts_lock:
-                pcm16_data = await asyncio.to_thread(self.kokoro_backend.synthesize, text)
-            
+            pcm16_data, native_rate = await self._synthesize_kokoro_pcm16(text)
             if not pcm16_data:
                 logging.warning("⚠️ Kokoro returned empty audio")
                 return b""
 
-            # Convert PCM16 24kHz directly to 8kHz uLaw (no temp WAV file)
+            # Preserve the legacy response contract for clients that did not
+            # negotiate native linear PCM.
             ulaw_data = await asyncio.to_thread(
-                self.audio_processor.pcm16_to_ulaw_8k, pcm16_data, 24000
+                self.audio_processor.pcm16_to_ulaw_8k, pcm16_data, native_rate
             )
 
             logging.info("🔊 TTS RESULT - Kokoro generated uLaw 8kHz audio: %s bytes call_id=%s", len(ulaw_data), _CALL_LOG_CONTEXT.get())
@@ -3329,6 +3328,48 @@ class LocalAIServer:
         except Exception as exc:
             logging.error("Kokoro TTS processing failed: %s", exc, exc_info=True)
             return b""
+
+    @staticmethod
+    def _decode_wav_pcm16_mono(wav_data: bytes) -> Tuple[bytes, int]:
+        """Decode a PCM WAV payload to raw mono PCM16 and its actual rate."""
+        with wave.open(io.BytesIO(wav_data), "rb") as wav_file:
+            pcm_data = wav_file.readframes(wav_file.getnframes())
+            channels = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            sample_rate = wav_file.getframerate()
+
+        if channels > 1:
+            pcm_data = audioop.tomono(pcm_data, sample_width, 1, 1)
+        if sample_width != 2:
+            pcm_data = audioop.lin2lin(pcm_data, sample_width, 2)
+        return pcm_data, int(sample_rate)
+
+    async def _synthesize_kokoro_pcm16(self, text: str) -> Tuple[bytes, int]:
+        """Return Kokoro local/API audio as raw PCM16 plus its native rate."""
+        if self.kokoro_mode == "api":
+            if not self.kokoro_api_base_url:
+                logging.error("Kokoro API mode selected but KOKORO_API_BASE_URL is empty")
+                return b"", 24000
+            logging.debug(
+                "🔊 TTS INPUT - Kokoro API (%s) voice=%s text='%s'",
+                self.kokoro_api_base_url,
+                self.kokoro_voice,
+                text,
+            )
+            wav_data = await asyncio.to_thread(self._kokoro_api_speech_request, text)
+            if not wav_data:
+                return b"", 24000
+            return await asyncio.to_thread(self._decode_wav_pcm16_mono, wav_data)
+
+        if not self.kokoro_backend:
+            logging.error("Kokoro TTS backend not initialized")
+            return b"", 24000
+
+        native_rate = int(getattr(self.kokoro_backend, "sample_rate", 24000) or 24000)
+        logging.debug("🔊 TTS INPUT - Generating %dHz Kokoro audio for: '%s'", native_rate, text)
+        async with self._tts_lock:
+            pcm16_data = await asyncio.to_thread(self.kokoro_backend.synthesize, text)
+        return pcm16_data, native_rate
 
     def _kokoro_api_speech_request(self, text: str) -> bytes:
         """Blocking HTTP request to Kokoro Web API (OpenAI-compatible audio/speech)."""
@@ -3339,7 +3380,8 @@ class LocalAIServer:
             "model": self.kokoro_api_model,
             "voice": self.kokoro_voice,
             "input": text,
-            # Request WAV so we can feed it directly into sox for ulaw conversion.
+            # Request WAV so the response carries its actual sample rate and can
+            # converge on the same raw-PCM path as local Kokoro.
             "response_format": "wav",
             "speed": 1.0,
         }
@@ -3376,23 +3418,11 @@ class LocalAIServer:
     async def _process_tts_kokoro_api(self, text: str) -> bytes:
         """Process TTS using Kokoro Web API, returning 8kHz µ-law bytes."""
         try:
-            if not self.kokoro_api_base_url:
-                logging.error("Kokoro API mode selected but KOKORO_API_BASE_URL is empty")
+            pcm16_data, native_rate = await self._synthesize_kokoro_pcm16(text)
+            if not pcm16_data:
                 return b""
-
-            logging.debug(
-                "🔊 TTS INPUT - Kokoro API (%s) voice=%s text='%s'",
-                self.kokoro_api_base_url,
-                self.kokoro_voice,
-                text,
-            )
-
-            wav_data = await asyncio.to_thread(self._kokoro_api_speech_request, text)
-            if not wav_data:
-                return b""
-
             ulaw_data = await asyncio.to_thread(
-                self.audio_processor.convert_to_ulaw_8k, wav_data, 24000
+                self.audio_processor.pcm16_to_ulaw_8k, pcm16_data, native_rate
             )
             logging.info(
                 "🔊 TTS RESULT - Kokoro API generated uLaw 8kHz audio: %s bytes call_id=%s",

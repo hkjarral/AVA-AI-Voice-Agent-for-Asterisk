@@ -141,10 +141,12 @@ The wideband provider boundary is call-scoped and does not rewrite provider
 defaults. OpenAI Realtime uses PCM at 24 kHz in both directions; Google Live
 uses 16 kHz input and fixed 24 kHz output; ElevenLabs, Deepgram, and Grok use
 their declared 16 kHz PCM route. Their output is converted to the 16 kHz wire
-rate where necessary. The local full-agent and local TTS paths do not yet
-negotiate native wideband output, so they remain partial/untested and retain
-their legacy output contract. Switching the Agent back to an 8 kHz profile is
-an immediate per-call rollback.
+rate where necessary. Local TTS negotiates native `linear16@16000` output for
+Piper and Kokoro (local or API mode); MeloTTS, Matcha, and Silero retain a
+truthful μ-law/8 kHz fallback. The Local Hybrid Piper path is live-validated;
+Kokoro and the local full-agent path remain untested until their respective
+live canaries complete. Switching the Agent back to an 8 kHz profile is an
+immediate per-call rollback.
 
 The profile field is `output_resampler: linear | bandlimited`. Provider and
 pipeline fields default to `inherit`. Narrow overrides resolve in this order:
