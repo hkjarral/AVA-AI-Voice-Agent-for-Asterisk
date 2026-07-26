@@ -1,9 +1,9 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/banner_dark_mode.png?v=9">
-  <source media="(prefers-color-scheme: light)" srcset="assets/banner_light_mode.png?v=9">
-  <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/banner_dark_mode.png?v=10">
+  <source media="(prefers-color-scheme: light)" srcset="assets/banner_light_mode.png?v=10">
+  <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=10" width="100%">
 </picture>
 
 ![Version](https://img.shields.io/badge/version-7.5.2-blue.svg)
@@ -16,7 +16,7 @@
 <br>
 <a href="https://www.producthunt.com/products/ava-ai-voice-agent-for-asterisk?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-ava-ai-voice-agent-for-asterisk" target="_blank" rel="noopener noreferrer"><img alt="AVA - AI Voice Agent for Asterisk - Open-source AI voice agent for any phone system | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1120145&amp;theme=light&amp;t=1775845744279"></a>
 
-The most powerful, flexible open-source AI voice agent for Asterisk/FreePBX. Featuring a **modular pipeline architecture** that lets you mix and match STT, LLM, and TTS providers, plus **6 production-ready golden baselines** validated for enterprise deployment.
+The most powerful, flexible open-source AI voice agent for Asterisk/FreePBX. Featuring a **modular pipeline architecture** that lets you mix and match STT, LLM, and TTS providers, plus **7 production-ready golden baselines** validated for enterprise deployment.
 
 [Quick Start](#-quick-start) • [Features](#-features) • [Roadmap](docs/ROADMAP.md) • [Demo](#-demo) • [Docs](docs/README.md) • [Community](#-community)
 
