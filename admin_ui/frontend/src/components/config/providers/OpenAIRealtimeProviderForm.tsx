@@ -184,6 +184,8 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                                         ...config,
                                         api_version: apiVersion,
                                         model: isGaModel ? config.model : 'gpt-realtime',
+                                        output_encoding: 'linear16',
+                                        output_sample_rate_hz: 24000,
                                     });
                                 } else {
                                     onChange({ ...config, api_version: apiVersion });

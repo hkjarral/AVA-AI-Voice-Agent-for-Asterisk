@@ -9,6 +9,7 @@ Tests cover:
 
 import pytest
 
+from src.config.audio_baselines import BUILTIN_PROFILE_BASELINES
 from src.config.normalization import (
     _compose_provider_components,
     _generate_default_pipeline,
@@ -221,23 +222,13 @@ class TestNormalizeProfiles:
         
         assert 'profiles' in config_data
         assert 'telephony_ulaw_8k' in config_data['profiles']
-        
-        profile = config_data['profiles']['telephony_ulaw_8k']
-        assert profile['internal_rate_hz'] == 8000
-        assert profile['transport_out']['encoding'] == 'ulaw'
-        assert profile['idle_cutoff_ms'] == 1200
-        assert profile['output_resampler'] == 'linear'
-        assert profile['provider_pref'] == {
-            'input_encoding': 'mulaw',
-            'input_sample_rate_hz': 8000,
-            'output_encoding': 'mulaw',
-            'output_sample_rate_hz': 8000,
-            'preferred_chunk_ms': 20,
-        }
 
-        enhanced = config_data['profiles']['telephony_enhanced_8k']
-        assert enhanced['transport_out'] == {'encoding': 'ulaw', 'sample_rate_hz': 8000}
-        assert enhanced['output_resampler'] == 'bandlimited'
+        assert config_data['profiles']['telephony_ulaw_8k'] == dict(
+            BUILTIN_PROFILE_BASELINES['telephony_ulaw_8k']
+        )
+        assert config_data['profiles']['telephony_enhanced_8k'] == dict(
+            BUILTIN_PROFILE_BASELINES['telephony_enhanced_8k']
+        )
     
     def test_sets_default_profile_selector(self):
         """Should set default profile selector if missing."""

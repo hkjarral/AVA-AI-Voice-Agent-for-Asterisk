@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -52,5 +52,33 @@ describe('provider audio displayed defaults', () => {
         expect(controlBesideLabel('Output Sample Rate (Hz)')).toHaveValue(24000);
         expect(controlBesideLabel('Output Sample Rate (Hz)')).toBeDisabled();
         expect(screen.getByText(/Fixed by the GA wire contract/i)).toBeInTheDocument();
+    });
+
+    it('replaces stale Beta output fields when switching to the GA wire contract', () => {
+        const onChange = vi.fn();
+        render(
+            <OpenAIRealtimeProviderForm
+                config={{
+                    api_version: 'beta',
+                    model: 'gpt-4o-realtime-preview',
+                    output_encoding: 'mulaw',
+                    output_sample_rate_hz: 8000,
+                    voice: 'alloy',
+                }}
+                onChange={onChange}
+            />,
+        );
+
+        fireEvent.change(controlBesideLabel('Realtime API Version'), {
+            target: { value: 'ga' },
+        });
+
+        expect(onChange).toHaveBeenCalledWith({
+            api_version: 'ga',
+            model: 'gpt-realtime',
+            output_encoding: 'linear16',
+            output_sample_rate_hz: 24000,
+            voice: 'alloy',
+        });
     });
 });

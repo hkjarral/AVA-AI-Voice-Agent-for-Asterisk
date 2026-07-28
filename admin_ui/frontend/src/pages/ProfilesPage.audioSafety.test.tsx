@@ -57,15 +57,40 @@ vi.mock('../utils/configCache', () => ({
     loadConfigYaml: vi.fn().mockResolvedValue({ config: mocks.config, yamlError: null }),
 }));
 
+const mockProfilePageGets = (
+    agents: unknown[] | Error,
+    builtInProfiles = [
+        'telephony_ulaw_8k',
+        'telephony_enhanced_8k',
+        'openai_realtime_24k',
+        'wideband_pcm_16k',
+    ],
+) => {
+    vi.mocked(axios.get).mockImplementation(async (url) => {
+        if (url === '/api/config/profiles/audio/baselines') {
+            return {
+                data: {
+                    built_in_profiles: builtInProfiles,
+                },
+            };
+        }
+        if (url === '/api/agents') {
+            if (agents instanceof Error) throw agents;
+            return { data: agents };
+        }
+        return { data: {} };
+    });
+};
+
 describe('ProfilesPage audio contract safety', () => {
     beforeEach(() => {
         vi.clearAllMocks();
     });
 
     it('shows the effective support class and blocks deletion of an in-use profile', async () => {
-        vi.mocked(axios.get).mockResolvedValue({
-            data: [{ slug: 'ava-demo', name: 'Ava Demo', audio_profile: 'openai_realtime_24k' }],
-        });
+        mockProfilePageGets([
+            { slug: 'ava-demo', name: 'Ava Demo', audio_profile: 'openai_realtime_24k' },
+        ]);
 
         render(<ProfilesPage />);
 
@@ -86,7 +111,7 @@ describe('ProfilesPage audio contract safety', () => {
 
     it('fails closed when Agent usage cannot be loaded', async () => {
         const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-        vi.mocked(axios.get).mockRejectedValue(new Error('unavailable'));
+        mockProfilePageGets(new Error('unavailable'));
 
         render(<ProfilesPage />);
 
@@ -99,9 +124,9 @@ describe('ProfilesPage audio contract safety', () => {
     });
 
     it('treats agents without an explicit profile as users of the configured default', async () => {
-        vi.mocked(axios.get).mockResolvedValue({
-            data: [{ slug: 'default-agent', display_name: 'Default Agent', audio_profile: null }],
-        });
+        mockProfilePageGets([
+            { slug: 'default-agent', display_name: 'Default Agent', audio_profile: null },
+        ]);
 
         render(<ProfilesPage />);
 
@@ -114,7 +139,7 @@ describe('ProfilesPage audio contract safety', () => {
     });
 
     it('removes a per-profile TALK_DETECT threshold when the field is cleared', async () => {
-        vi.mocked(axios.get).mockResolvedValue({ data: [] });
+        mockProfilePageGets([]);
         vi.mocked(axios.post).mockResolvedValue({
             data: { recommended_apply_method: 'restart' },
         });
@@ -139,9 +164,9 @@ describe('ProfilesPage audio contract safety', () => {
     });
 
     it('restores an in-use built-in profile through the dedicated backend action', async () => {
-        vi.mocked(axios.get).mockResolvedValue({
-            data: [{ slug: 'default-agent', display_name: 'Default Agent', audio_profile: null }],
-        });
+        mockProfilePageGets([
+            { slug: 'default-agent', display_name: 'Default Agent', audio_profile: null },
+        ]);
         mocks.confirm.mockResolvedValue(true);
         vi.mocked(axios.post).mockResolvedValue({
             data: { recommended_apply_method: 'hot_reload' },
@@ -158,7 +183,31 @@ describe('ProfilesPage audio contract safety', () => {
                 '/api/config/profiles/telephony_ulaw_8k/audio/reset',
             );
         });
+        expect(axios.get).toHaveBeenCalledWith('/api/config/profiles/audio/baselines');
+        expect(mocks.confirm.mock.calls[0][0].description).toMatch(/built-in profile.*shipped baseline/i);
         expect(mocks.confirm.mock.calls[0][0].description).toMatch(/Agent assignments.*not changed/i);
         expect(await screen.findByText('Changes saved. Apply to make them active.')).toBeInTheDocument();
+    });
+
+    it('uses server metadata rather than local profile-name assumptions', async () => {
+        mockProfilePageGets([], []);
+        mocks.confirm.mockResolvedValue(true);
+        vi.mocked(axios.post).mockResolvedValue({
+            data: { recommended_apply_method: 'none' },
+        });
+
+        render(<ProfilesPage />);
+
+        await waitFor(() => {
+            expect(axios.get).toHaveBeenCalledWith('/api/config/profiles/audio/baselines');
+        });
+        fireEvent.click(screen.getByRole('button', {
+            name: 'Restore profile baseline for telephony_enhanced_8k',
+        }));
+
+        await waitFor(() => expect(mocks.confirm).toHaveBeenCalled());
+        expect(mocks.confirm.mock.calls[0][0].description).toMatch(
+            /custom profile.*standard 8 kHz telephony baseline/i,
+        );
     });
 });

@@ -760,6 +760,7 @@ class UnifiedTransferTool(Tool):
             transfer_target=description,
         )
 
+        caller_channel_present: Optional[bool] = None
         try:
             handed_off = await context.ari_client.continue_in_dialplan(
                 context.caller_channel_id,
@@ -768,7 +769,7 @@ class UnifiedTransferTool(Tool):
                 priority=priority,
             )
         except Exception:
-            handed_off = False
+            handed_off = None
             logger.warning(
                 "Transfer dialplan handoff raised",
                 call_id=context.call_id,
@@ -777,6 +778,10 @@ class UnifiedTransferTool(Tool):
                 context=dialplan_context,
                 exc_info=True,
             )
+
+        handoff_indeterminate = handed_off is not True and handed_off is not False
+        if handoff_indeterminate:
+            caller_channel_present = await self._caller_channel_presence(context)
 
         if handed_off is True:
             logger.info(
@@ -793,30 +798,90 @@ class UnifiedTransferTool(Tool):
                 "type": transfer_type,
             }
 
-        # A rejected/ambiguous continue leaves the channel under AAVA ownership.
-        # Restore the exact prior state so cleanup and a deferred retry remain safe.
-        try:
-            await context.update_session(**previous_transfer_state)
-        except Exception:
-            logger.error(
-                "Failed to restore transfer ownership after rejected handoff",
+        # An explicit rejection leaves the channel under AAVA ownership. After an
+        # indeterminate response, only restore when the follow-up probe confirms
+        # the caller is still controllable; the continue may already have succeeded.
+        restore_ownership = handed_off is False or (
+            handoff_indeterminate and caller_channel_present is True
+        )
+        if restore_ownership:
+            try:
+                await context.update_session(**previous_transfer_state)
+            except Exception:
+                logger.error(
+                    "Failed to restore transfer ownership after unconfirmed handoff",
+                    call_id=context.call_id,
+                    transfer_type=transfer_type,
+                    target=target,
+                    context=dialplan_context,
+                    exc_info=True,
+                )
+        else:
+            logger.warning(
+                "Transfer handoff outcome indeterminate; retaining transfer ownership",
                 call_id=context.call_id,
                 transfer_type=transfer_type,
                 target=target,
                 context=dialplan_context,
-                exc_info=True,
+                caller_channel_present=caller_channel_present,
             )
 
         logger.error(
-            "Transfer dialplan handoff rejected",
+            "Transfer dialplan handoff was not confirmed",
             call_id=context.call_id,
             transfer_type=transfer_type,
             target=target,
             context=dialplan_context,
+            handoff_indeterminate=handoff_indeterminate,
+            ownership_restored=restore_ownership,
         )
-        return {
+        result = {
             "status": "failed",
             "message": f"Unable to transfer to {description}.",
             "destination": target,
             "type": transfer_type,
         }
+        if handoff_indeterminate:
+            result["handoff_indeterminate"] = True
+        return result
+
+    async def _caller_channel_presence(
+        self,
+        context: ToolExecutionContext,
+    ) -> Optional[bool]:
+        """Return whether ARI still controls the caller after an uncertain handoff.
+
+        ``False`` means the channel is no longer visible to ARI, while ``None``
+        means the follow-up probe itself was inconclusive. Both outcomes retain
+        transfer ownership because cleanup must not hang up a possibly handed-off
+        caller.
+        """
+        channel_id = str(context.caller_channel_id or "").strip()
+        if not channel_id:
+            return None
+
+        try:
+            response = await context.ari_client.send_command(
+                method="GET",
+                resource=f"channels/{channel_id}",
+                tolerate_statuses=[404],
+            )
+        except Exception:
+            logger.warning(
+                "Caller channel presence probe raised after uncertain handoff",
+                call_id=context.call_id,
+                channel_id=channel_id,
+                exc_info=True,
+            )
+            return None
+
+        if not isinstance(response, dict):
+            return None
+        if response.get("id") == channel_id:
+            return True
+
+        status = response.get("status")
+        try:
+            return False if int(status) == 404 else None
+        except (TypeError, ValueError):
+            return None

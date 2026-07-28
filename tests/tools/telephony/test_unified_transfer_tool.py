@@ -461,15 +461,14 @@ class TestUnifiedTransferTool:
         )
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("continue_result", [False, None])
     async def test_rejected_handoff_fails_and_restores_prior_transfer_ownership(
-        self, tool, tool_context, mock_ari_client, continue_result
+        self, tool, tool_context, mock_ari_client
     ):
         session = tool_context.session_store.get_by_call_id.return_value
         session.transfer_active = False
         session.transfer_state = "ready"
         session.transfer_target = "previous"
-        mock_ari_client.continue_in_dialplan.return_value = continue_result
+        mock_ari_client.continue_in_dialplan.return_value = False
 
         result = await tool._transfer_to_queue(tool_context, "1000", "Technical Support")
 
@@ -478,20 +477,109 @@ class TestUnifiedTransferTool:
         assert session.transfer_state == "ready"
         assert session.transfer_target == "previous"
         assert tool_context.session_store.upsert_call.await_count == 2
+        mock_ari_client.send_command.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_handoff_exception_fails_and_restores_transfer_ownership(
+    async def test_indeterminate_handoff_result_probes_before_restoring_ownership(
+        self, tool, tool_context, mock_ari_client
+    ):
+        session = tool_context.session_store.get_by_call_id.return_value
+        session.transfer_state = "ready"
+        session.transfer_target = "previous"
+        mock_ari_client.continue_in_dialplan.return_value = None
+        mock_ari_client.send_command.side_effect = None
+        mock_ari_client.send_command.return_value = {
+            "id": tool_context.caller_channel_id,
+            "state": "Up",
+        }
+
+        result = await tool._transfer_to_queue(tool_context, "1000", "Technical Support")
+
+        assert result["status"] == "failed"
+        assert result["handoff_indeterminate"] is True
+        assert session.transfer_active is False
+        assert session.transfer_state == "ready"
+        assert session.transfer_target == "previous"
+        assert tool_context.session_store.upsert_call.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_indeterminate_handoff_result_retains_ownership_when_caller_left_ari(
+        self, tool, tool_context, mock_ari_client
+    ):
+        session = tool_context.session_store.get_by_call_id.return_value
+        mock_ari_client.continue_in_dialplan.return_value = None
+        mock_ari_client.send_command.side_effect = None
+        mock_ari_client.send_command.return_value = {"status": 404}
+
+        result = await tool._transfer_to_queue(tool_context, "1000", "Technical Support")
+
+        assert result["status"] == "failed"
+        assert result["handoff_indeterminate"] is True
+        assert session.transfer_active is True
+        assert session.transfer_state == "in_queue"
+        assert session.transfer_target == "Technical Support"
+        assert tool_context.session_store.upsert_call.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_handoff_exception_restores_ownership_when_caller_remains_in_ari(
         self, tool, tool_context, mock_ari_client
     ):
         session = tool_context.session_store.get_by_call_id.return_value
         mock_ari_client.continue_in_dialplan.side_effect = RuntimeError("ARI unavailable")
+        mock_ari_client.send_command.side_effect = None
+        mock_ari_client.send_command.return_value = {
+            "id": tool_context.caller_channel_id,
+            "state": "Up",
+        }
 
         result = await tool._transfer_to_ringgroup(tool_context, "600", "Support Ring Group")
 
         assert result["status"] == "failed"
+        assert result["handoff_indeterminate"] is True
         assert session.transfer_active is False
         assert session.transfer_state is None
         assert session.transfer_target is None
+        mock_ari_client.send_command.assert_awaited_once_with(
+            method="GET",
+            resource=f"channels/{tool_context.caller_channel_id}",
+            tolerate_statuses=[404],
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("channel_response", [{"status": 404}, {"status": 503}, None])
+    async def test_handoff_exception_retains_ownership_when_channel_not_confirmed_present(
+        self, tool, tool_context, mock_ari_client, channel_response
+    ):
+        session = tool_context.session_store.get_by_call_id.return_value
+        mock_ari_client.continue_in_dialplan.side_effect = RuntimeError("response lost")
+        mock_ari_client.send_command.side_effect = None
+        mock_ari_client.send_command.return_value = channel_response
+
+        result = await tool._transfer_to_ringgroup(tool_context, "600", "Support Ring Group")
+
+        assert result["status"] == "failed"
+        assert result["handoff_indeterminate"] is True
+        assert session.transfer_active is True
+        assert session.transfer_state == "in_ringgroup"
+        assert session.transfer_target == "Support Ring Group"
+        assert tool_context.session_store.upsert_call.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_handoff_exception_retains_ownership_when_channel_probe_raises(
+        self, tool, tool_context, mock_ari_client
+    ):
+        session = tool_context.session_store.get_by_call_id.return_value
+        mock_ari_client.continue_in_dialplan.side_effect = RuntimeError("response lost")
+        mock_ari_client.send_command.side_effect = RuntimeError("ARI still unavailable")
+
+        result = await tool._transfer_to_queue(tool_context, "1000", "Technical Support")
+
+        assert result["status"] == "failed"
+        assert result["handoff_indeterminate"] is True
+        assert session.transfer_active is True
+        assert session.transfer_state == "in_queue"
+        assert session.transfer_target == "Technical Support"
+        assert tool_context.session_store.upsert_call.await_count == 1
 
     @pytest.mark.asyncio
     async def test_rejected_deferred_handoff_keeps_action_for_retry_and_restores_ownership(

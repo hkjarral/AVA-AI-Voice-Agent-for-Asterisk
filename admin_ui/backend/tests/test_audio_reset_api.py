@@ -1,7 +1,9 @@
 """Contextual provider/profile/pipeline audio baseline recovery."""
 
+import asyncio
 import sqlite3
 import sys
+import threading
 from copy import deepcopy
 from pathlib import Path
 
@@ -16,7 +18,9 @@ sys.path.insert(0, str(BACKEND_ROOT))
 from api import config  # noqa: E402
 from src.config.audio_baselines import (  # noqa: E402
     BUILTIN_PROFILE_BASELINES,
+    FULL_AGENT_AUDIO_FIELDS,
     PROVIDER_AUDIO_BASELINES,
+    provider_audio_fields,
 )
 from src.config.normalization import normalize_legacy_openai_audio  # noqa: E402
 
@@ -130,6 +134,54 @@ def test_local_provider_baseline_does_not_write_ignored_resampler():
         "target_encoding": "mulaw",
         "target_sample_rate_hz": 8000,
     }
+
+
+def test_provider_audio_fields_normalizes_kind_once():
+    class ProviderKind:
+        def __str__(self):
+            return "google_live"
+
+    assert provider_audio_fields(ProviderKind()) == FULL_AGENT_AUDIO_FIELDS
+
+
+def test_profile_baseline_metadata_comes_from_canonical_registry():
+    response = _client().get("/api/config/profiles/audio/baselines")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "built_in_profiles": sorted(BUILTIN_PROFILE_BASELINES)
+    }
+
+
+def test_audio_reset_persistence_runs_blocking_write_off_event_loop(monkeypatch):
+    caller_thread = threading.get_ident()
+    captured = {}
+
+    def fake_persist(content, *, trusted_profile_reset=None):
+        captured["thread"] = threading.get_ident()
+        captured["content"] = content
+        captured["trusted"] = trusted_profile_reset
+        return _success_result()
+
+    async def fake_reconcile(result):
+        return result
+
+    monkeypatch.setattr(config, "persist_config_content", fake_persist)
+    monkeypatch.setattr(
+        config, "reconcile_apply_result_with_engine_state", fake_reconcile
+    )
+
+    result = asyncio.run(
+        config._persist_audio_reset(
+            {"profiles": {}},
+            trusted_profile_reset=("example", {"chunk_ms": "auto"}),
+        )
+    )
+
+    assert result == _success_result()
+    assert captured["thread"] != caller_thread
+    assert yaml.safe_load(captured["content"]) == {"profiles": {}}
+    assert captured["trusted"] == ("example", {"chunk_ms": "auto"})
 
 
 def test_profile_reset_restores_builtin_exactly(monkeypatch):
@@ -371,6 +423,27 @@ def test_pipeline_reset_removes_only_audio_overrides(monkeypatch):
     assert updated["options"]["tts"] == {"streaming_overlap": False}
 
 
+def test_pipeline_shorthand_reset_is_noop_without_persistence(monkeypatch):
+    monkeypatch.setattr(
+        config,
+        "_read_merged_config_dict",
+        lambda: {"pipelines": {"legacy": "openai_realtime"}},
+    )
+
+    async def fail_if_persisted(*args, **kwargs):
+        pytest.fail("a shorthand pipeline reset must not rewrite config")
+
+    monkeypatch.setattr(config, "_persist_audio_reset", fail_if_persisted)
+
+    response = _client().post("/api/config/pipelines/legacy/audio/reset")
+
+    assert response.status_code == 200
+    assert response.json()["recommended_apply_method"] == "none"
+    assert response.json()["apply_required"] is False
+    assert response.json()["pipeline_name"] == "legacy"
+    assert response.json()["removed_audio_overrides"] == {}
+
+
 def test_provider_validation_rejects_named_instance_g711_at_non_8khz():
     parsed = yaml.safe_load(Path(config.settings.CONFIG_PATH).read_text())
     parsed["providers"]["customer_google"] = {
@@ -384,16 +457,22 @@ def test_provider_validation_rejects_named_instance_g711_at_non_8khz():
         config._validate_ai_agent_config(yaml.safe_dump(parsed, sort_keys=False))
 
     assert exc_info.value.status_code == 400
-    assert "providers.customer_google" in str(exc_info.value.detail)
-    assert "ulaw requires 8000 Hz" in str(exc_info.value.detail)
+    detail = str(exc_info.value.detail)
+    assert "providers.customer_google" in detail
+    assert "input_encoding/input_sample_rate_hz" in detail
+    assert "ulaw requires 8000 Hz" in detail
+    assert "/api/config/providers/customer_google/audio/reset" in detail
 
 
-def test_legacy_openai_audio_migration_covers_named_instances_only_for_exact_pair():
+@pytest.mark.parametrize("legacy_encoding", ["mulaw", "ulaw", "mu-law"])
+def test_legacy_openai_audio_migration_covers_named_instances_only_for_exact_pair(
+    legacy_encoding,
+):
     config_data = {
         "providers": {
             "customer_openai": {
                 "type": "openai_realtime",
-                "output_encoding": "mulaw",
+                "output_encoding": legacy_encoding,
                 "output_sample_rate_hz": 24000,
             },
             "valid_openai": {

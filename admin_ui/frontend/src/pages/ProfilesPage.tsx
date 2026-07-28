@@ -14,14 +14,6 @@ import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
 import AudioResetButton, { AudioResetResponse } from '../components/config/AudioResetButton';
 import AudioEnvironmentOverrideWarning from '../components/config/AudioEnvironmentOverrideWarning';
 
-const BUILT_IN_AUDIO_PROFILES = new Set([
-    'telephony_responsive',
-    'telephony_ulaw_8k',
-    'telephony_enhanced_8k',
-    'wideband_pcm_16k',
-    'openai_realtime_24k',
-]);
-
 const ProfilesPage = () => {
 	const { confirm } = useConfirmDialog();
 	const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
@@ -38,11 +30,33 @@ const ProfilesPage = () => {
 	const [pendingApply, setPendingApply] = useState(false);
 	const [applying, setApplying] = useState(false);
 	const [applyMethod, setApplyMethod] = useState<'hot_reload' | 'restart'>('restart');
+    const [builtInAudioProfiles, setBuiltInAudioProfiles] = useState<ReadonlySet<string> | null>(null);
 
     useEffect(() => {
         fetchConfig();
         fetchAgents();
+        fetchProfileAudioBaselines();
     }, []);
+
+    const fetchProfileAudioBaselines = async () => {
+        try {
+            const response = await axios.get<{ built_in_profiles?: unknown }>(
+                '/api/config/profiles/audio/baselines',
+            );
+            const profiles = response.data?.built_in_profiles;
+            if (!Array.isArray(profiles) || !profiles.every((name) => typeof name === 'string')) {
+                throw new Error('Invalid profile audio baseline metadata');
+            }
+            setBuiltInAudioProfiles(new Set(profiles));
+        } catch (err) {
+            console.error('Failed to load profile audio baseline metadata', err);
+            setBuiltInAudioProfiles(null);
+        }
+    };
+
+    const isCustomAudioProfile = (profileName: string): boolean | undefined => (
+        builtInAudioProfiles ? !builtInAudioProfiles.has(profileName) : undefined
+    );
 
     const fetchAgents = async () => {
         setAgentsLoading(true);
@@ -554,7 +568,7 @@ const ProfilesPage = () => {
 	                                        <AudioResetButton
 	                                            scope="profile"
 	                                            target={profileName}
-	                                            customProfile={!BUILT_IN_AUDIO_PROFILES.has(profileName)}
+	                                            customProfile={isCustomAudioProfile(profileName)}
 	                                            compact
 	                                            onResetComplete={(response) => handleProfileAudioResetComplete(profileName, response)}
 	                                        />
@@ -669,7 +683,7 @@ const ProfilesPage = () => {
                                         <AudioResetButton
                                             scope="profile"
                                             target={editingProfile}
-                                            customProfile={!BUILT_IN_AUDIO_PROFILES.has(editingProfile)}
+                                            customProfile={isCustomAudioProfile(editingProfile)}
                                             onResetComplete={(response) => handleProfileAudioResetComplete(editingProfile, response)}
                                         />
                                     )}

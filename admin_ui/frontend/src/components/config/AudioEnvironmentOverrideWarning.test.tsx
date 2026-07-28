@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import axios from 'axios';
 import { MemoryRouter } from 'react-router-dom';
@@ -37,7 +37,12 @@ describe('AudioEnvironmentOverrideWarning', () => {
     });
 
     it('stays hidden when no known override is active', async () => {
-        vi.mocked(axios.get).mockResolvedValue({ data: { OPENAI_API_KEY: 'hidden' } });
+        const dataRead = vi.fn(() => ({ OPENAI_API_KEY: 'hidden' }));
+        vi.mocked(axios.get).mockResolvedValue({
+            get data() {
+                return dataRead();
+            },
+        });
 
         render(
             <MemoryRouter>
@@ -45,7 +50,10 @@ describe('AudioEnvironmentOverrideWarning', () => {
             </MemoryRouter>,
         );
 
-        await Promise.resolve();
+        await waitFor(() => {
+            expect(dataRead).toHaveBeenCalled();
+        });
+        expect(axios.get).toHaveBeenCalledWith('/api/config/env');
         expect(screen.queryByText('Environment audio override active')).not.toBeInTheDocument();
     });
 });

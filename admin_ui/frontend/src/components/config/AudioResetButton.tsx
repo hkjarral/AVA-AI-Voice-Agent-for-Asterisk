@@ -29,7 +29,7 @@ const labels: Record<AudioResetScope, string> = {
 const confirmationCopy = (
     scope: AudioResetScope,
     target: string,
-    customProfile: boolean,
+    customProfile: boolean | undefined,
 ): string => {
     if (scope === 'provider') {
         return [
@@ -43,9 +43,11 @@ const confirmationCopy = (
         ].join('\n');
     }
     if (scope === 'profile') {
-        const baseline = customProfile
+        const baseline = customProfile === true
             ? 'This custom profile will copy the standard 8 kHz telephony baseline while keeping its current name.'
-            : 'This built-in profile will return to its shipped baseline.';
+            : customProfile === false
+                ? 'This built-in profile will return to its shipped baseline.'
+                : 'The server will restore the canonical baseline available for this profile.';
         return [
             `Restore the audio baseline for profile "${target}"?`,
             '',
@@ -94,7 +96,7 @@ const AudioResetButton = ({
     scope,
     target,
     onResetComplete,
-    customProfile = false,
+    customProfile,
     compact = false,
     className = '',
 }: AudioResetButtonProps) => {
@@ -118,8 +120,11 @@ const AudioResetButton = ({
                 `/api/config/${scope}s/${encodeURIComponent(target)}/audio/reset`,
             );
             await onResetComplete(response.data || {});
+            const method = (response.data || {}).recommended_apply_method;
             toast.success(label, {
-                description: `Audio settings for "${target}" were restored. Review the apply banner before placing new calls.`,
+                description: method === 'none'
+                    ? `Audio settings for "${target}" were restored and are already active.`
+                    : `Audio settings for "${target}" were restored. Review the apply banner before placing new calls.`,
             });
         } catch (error) {
             toast.error(`Failed to restore audio settings for "${target}"`, {

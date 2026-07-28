@@ -65,14 +65,17 @@ async def test_dialplan_target_exists_rejects_function_argument_injection():
     [
         ({"status": 200}, True),
         ({"status": 204}, True),
-        ({"status": 302}, False),
+        ({"status": 302}, None),
         ({"status": 400}, False),
-        ({"status": "invalid"}, False),
-        ({}, False),
-        (None, False),
+        ({"status": 404}, False),
+        ({"status": 500}, None),
+        ({"status": 503}, None),
+        ({"status": "invalid"}, None),
+        ({}, None),
+        (None, None),
     ],
 )
-async def test_continue_in_dialplan_requires_confirmed_success_status(response, expected):
+async def test_continue_in_dialplan_returns_tri_state_status(response, expected):
     client = _client(response)
 
     assert await client.continue_in_dialplan(

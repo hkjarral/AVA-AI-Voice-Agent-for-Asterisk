@@ -83,4 +83,29 @@ describe('AudioResetButton', () => {
             );
         });
     });
+
+    it('does not direct the operator to an apply banner when the reset is already active', async () => {
+        mocks.confirm.mockResolvedValue(true);
+        vi.mocked(axios.post).mockResolvedValue({
+            data: { recommended_apply_method: 'none' },
+        });
+
+        render(
+            <AudioResetButton
+                scope="pipeline"
+                target="local_only"
+                onResetComplete={vi.fn()}
+            />,
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: 'Restore audio defaults' }));
+
+        await waitFor(() => {
+            expect(mocks.toastSuccess).toHaveBeenCalledWith(
+                'Restore audio defaults',
+                { description: 'Audio settings for "local_only" were restored and are already active.' },
+            );
+        });
+        expect(mocks.toastSuccess.mock.calls[0][1].description).not.toMatch(/apply banner/i);
+    });
 });

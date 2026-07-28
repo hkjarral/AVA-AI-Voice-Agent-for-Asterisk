@@ -421,8 +421,15 @@ class ARIClient:
         extension: str = "s",
         priority: int = 1,
         label: Optional[str] = None,
-    ) -> bool:
-        """Return a Stasis channel back to the dialplan (POST /channels/{id}/continue)."""
+    ) -> Optional[bool]:
+        """Return the tri-state outcome of handing a Stasis channel to dialplan.
+
+        A 2xx response confirms acceptance, an explicit 4xx response rejects the
+        command, and ``None`` represents an indeterminate 5xx, missing, redirect,
+        or malformed response. Callers must retain ownership while reconciling an
+        indeterminate result because Asterisk may have accepted the request before
+        the HTTP response was lost.
+        """
         params: Dict[str, Any] = {
             "context": str(context),
             "extension": str(extension),
@@ -433,11 +440,16 @@ class ARIClient:
         resp = await self.send_command("POST", f"channels/{channel_id}/continue", params=params)
         status = resp.get("status") if isinstance(resp, dict) else None
         if status is None:
-            return False
+            return None
         try:
-            return 200 <= int(status) < 300
+            status_code = int(status)
         except (TypeError, ValueError):
+            return None
+        if 200 <= status_code < 300:
+            return True
+        if 400 <= status_code < 500:
             return False
+        return None
 
     async def dialplan_target_exists(
         self,

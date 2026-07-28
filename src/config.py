@@ -1175,7 +1175,9 @@ class AppConfig(BaseModel):
                 raise ValueError(
                     f"providers.{provider_name} has unsupported "
                     f"{encoding_field}/{rate_field} pair {encoding}@{rate}; "
-                    f"{encoding} requires {expected} Hz"
+                    f"{encoding} requires {expected} Hz (G.711). Restore audio "
+                    "defaults in the Admin UI or POST "
+                    f"/api/config/providers/{provider_name}/audio/reset."
                 )
 
         # ``providers`` remains intentionally open-ended for third-party

@@ -881,6 +881,7 @@ async def reconcile_apply_result_with_engine_state(result: dict) -> dict:
 
 
 def _audio_baseline_helpers() -> dict[str, Any]:
+    """Load canonical audio baseline helpers in source and image layouts."""
     project_root = getattr(settings, "PROJECT_ROOT", None)
     if project_root and project_root not in sys.path:
         sys.path.insert(0, project_root)
@@ -954,8 +955,10 @@ async def _persist_audio_reset(
     *,
     trusted_profile_reset: Optional[tuple[str, Dict[str, Any]]] = None,
 ) -> dict:
+    """Persist a reset without blocking the Admin UI event loop."""
     content = yaml.dump(merged, default_flow_style=False, sort_keys=False)
-    result = persist_config_content(
+    result = await asyncio.to_thread(
+        persist_config_content,
         content,
         trusted_profile_reset=trusted_profile_reset,
     )
@@ -964,6 +967,7 @@ async def _persist_audio_reset(
 
 @router.post("/providers/{provider_key}/audio/reset")
 async def reset_provider_audio(provider_key: str):
+    """Restore a provider instance's managed audio fields to its baseline."""
     merged, provider_cfg, audio_kind = _get_resettable_provider_block(provider_key)
     helpers = _audio_baseline_helpers()
     baseline = helpers["provider_baseline"](audio_kind)
@@ -986,8 +990,16 @@ async def reset_provider_audio(provider_key: str):
     }
 
 
+@router.get("/profiles/audio/baselines")
+async def get_profile_audio_baselines():
+    """List profile names backed by canonical shipped audio baselines."""
+    helpers = _audio_baseline_helpers()
+    return {"built_in_profiles": sorted(helpers["profile_baselines"])}
+
+
 @router.post("/profiles/{profile_name}/audio/reset")
 async def reset_profile_audio(profile_name: str):
+    """Restore an existing profile to its built-in or telephony baseline."""
     if profile_name == "default":
         raise HTTPException(status_code=400, detail="profiles.default is a selector, not a profile")
     merged = _read_merged_config_dict()
@@ -1016,6 +1028,7 @@ async def reset_profile_audio(profile_name: str):
 
 @router.post("/pipelines/{pipeline_name}/audio/reset")
 async def reset_pipeline_audio(pipeline_name: str):
+    """Remove pipeline audio overrides so profile policy is inherited."""
     merged = _read_merged_config_dict()
     pipelines = merged.get("pipelines")
     if not isinstance(pipelines, dict) or pipeline_name not in pipelines:
@@ -1024,8 +1037,17 @@ async def reset_pipeline_audio(pipeline_name: str):
     if not isinstance(pipeline, dict):
         # Legacy shorthand pipelines have no options and therefore already
         # inherit profile audio policy.
-        result = await _persist_audio_reset(merged)
-        return {**result, "pipeline_name": pipeline_name, "removed_audio_overrides": {}}
+        return {
+            "status": "success",
+            "apply_required": False,
+            "restart_required": False,
+            "recommended_apply_method": "none",
+            "apply_plan": [],
+            "message": "Pipeline already inherits profile audio policy.",
+            "warnings": [],
+            "pipeline_name": pipeline_name,
+            "removed_audio_overrides": {},
+        }
 
     helpers = _audio_baseline_helpers()
     options = pipeline.get("options")

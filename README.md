@@ -167,6 +167,36 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>Upcoming v7.5.3 — One-click audio recovery and safer transfers</b></summary>
+
+v7.5.3 focuses on getting an installation back to a known-good configuration
+without undoing the operator's unrelated work.
+
+- **Restore audio defaults in context** — Providers, Audio Profiles, and
+  modular Pipelines each expose their own restore action in the Admin UI.
+  Provider restores keep credentials, models, voices, prompts, enabled state,
+  and provider identity; profile restores keep Agent assignments; pipeline
+  restores keep STT/LLM/TTS provider selections and non-audio options.
+- **Backend-owned baselines** — restore values come from the same canonical
+  registry used by validation, including the supported OpenAI Realtime GA
+  `linear16`/24 kHz contract. Environment-owned overrides remain visible and
+  are never silently rewritten.
+- **Explicit apply guidance** — each restore reports whether no action, a hot
+  reload, or an AI Engine restart is needed before new calls use the baseline.
+- **Fail-closed dialplan transfers** — extension, queue, and ring-group
+  transfers validate known-missing targets, require a confirmed ARI handoff,
+  and preserve ownership safely when Asterisk's response is indeterminate.
+  FreePBX queues use the standard `ext-queues` context by default ([#577](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/577)).
+
+These recovery actions are intentionally narrow: they do not provide a global
+factory reset and do not change secrets or Agent routing.
+
+See the [Unreleased changelog](CHANGELOG.md#unreleased) for implementation and
+compatibility details.
+
+</details>
+
+<details>
 <summary><b>v7.5.2 — Opt-in HD Voice over 16 kHz AudioSocket</b></summary>
 
 v7.5.2 adds a call-scoped wideband path without changing existing Agent

@@ -228,12 +228,15 @@ PIPELINE_AUDIO_FIELDS: Mapping[str, frozenset[str]] = {
 
 
 def provider_audio_baseline(kind: str) -> dict[str, Any] | None:
+    """Return an isolated copy of the canonical baseline for ``kind``."""
     baseline = PROVIDER_AUDIO_BASELINES.get(str(kind))
     return deepcopy(dict(baseline)) if baseline is not None else None
 
 
 def provider_audio_fields(kind: str) -> frozenset[str]:
-    baseline = PROVIDER_AUDIO_BASELINES.get(str(kind))
+    """Return every provider field managed by an audio baseline reset."""
+    kind = str(kind)
+    baseline = PROVIDER_AUDIO_BASELINES.get(kind)
     if baseline is None:
         return frozenset()
     if kind in {
@@ -249,6 +252,7 @@ def provider_audio_fields(kind: str) -> frozenset[str]:
 
 
 def profile_audio_baseline(profile_name: str) -> dict[str, Any]:
+    """Return a built-in profile baseline or the standard custom fallback."""
     baseline = BUILTIN_PROFILE_BASELINES.get(profile_name)
     if baseline is None:
         baseline = BUILTIN_PROFILE_BASELINES[STANDARD_TELEPHONY_PROFILE]

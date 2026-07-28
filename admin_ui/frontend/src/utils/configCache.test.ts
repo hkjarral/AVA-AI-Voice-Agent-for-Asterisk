@@ -58,6 +58,16 @@ describe('configCache', () => {
         expect(getCachedConfig()).toBeNull();
     });
 
+    it.each([
+        '/api/config/providers/openai_realtime/audio',
+        '/api/config/providers/openai_realtime/reset',
+    ])('does not invalidate the cache for non-reset audio path %s', async (url) => {
+        vi.mocked(axios.get).mockResolvedValue({ data: { content: 'k: 1' } });
+        await loadConfigYaml();
+        handleConfigWrite({ config: { method: 'post', url } });
+        expect(getCachedConfig()).not.toBeNull();
+    });
+
     it('ignores writes to other endpoints', async () => {
         vi.mocked(axios.get).mockResolvedValue({ data: { content: 'k: 1' } });
         await loadConfigYaml();
