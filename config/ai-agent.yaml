@@ -469,7 +469,7 @@ providers:
     api_version: ga
     model: gpt-realtime
     organization: ''
-    output_encoding: mulaw
+    output_encoding: linear16
     output_sample_rate_hz: 24000
     provider_input_encoding: linear16
     provider_input_sample_rate_hz: 24000

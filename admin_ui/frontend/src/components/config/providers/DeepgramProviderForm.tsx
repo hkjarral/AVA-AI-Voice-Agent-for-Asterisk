@@ -490,7 +490,7 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                         </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
-                            value={config.input_encoding || 'linear16'}
+                            value={config.input_encoding || 'mulaw'}
                             onChange={(e) => handleChange('input_encoding', e.target.value)}
                         >
                             <option value="linear16">Linear16 (PCM)</option>
@@ -647,59 +647,6 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                         />
                     </div>
 
-                    <div className="space-y-2">
-                        <div className="flex items-center gap-1.5">
-                            <label className="text-sm font-medium">Provider Input Encoding</label>
-                            <HelpTooltip
-                                content={
-                                    <>
-                                        <strong>Provider Input Encoding</strong> — codec the engine sends TO Deepgram (after any internal upsampling from telephony).
-                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                            <li><code>linear16</code> — recommended for best STT accuracy</li>
-                                            <li><code>mulaw</code> — saves bandwidth, slightly lower accuracy</li>
-                                        </ul>
-                                    </>
-                                }
-                            />
-                        </div>
-                        <select
-                            className="w-full p-2 rounded border border-input bg-background"
-                            value={config.provider_input_encoding || 'linear16'}
-                            onChange={(e) => handleChange('provider_input_encoding', e.target.value)}
-                        >
-                            <option value="linear16">Linear16 (PCM)</option>
-                            <option value="mulaw">μ-law</option>
-                        </select>
-                        <p className="text-xs text-muted-foreground">
-                            Format sent to Deepgram. Linear16 recommended for best STT accuracy.
-                        </p>
-                    </div>
-
-                    <div className="space-y-2">
-                        <div className="flex items-center gap-1.5">
-                            <label className="text-sm font-medium">Provider Input Sample Rate (Hz)</label>
-                            <HelpTooltip
-                                content={
-                                    <>
-                                        <strong>Provider Input Sample Rate</strong> — sample rate sent TO Deepgram for STT.
-                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                            <li><code>16000</code> Hz — optimal for Nova / Flux models</li>
-                                            <li><code>8000</code> Hz — telephony-native, skips upsampling</li>
-                                        </ul>
-                                    </>
-                                }
-                            />
-                        </div>
-                        <input
-                            type="number"
-                            className="w-full p-2 rounded border border-input bg-background"
-                            value={config.provider_input_sample_rate_hz || 16000}
-                            onChange={(e) => handleChange('provider_input_sample_rate_hz', parseInt(e.target.value))}
-                        />
-                        <p className="text-xs text-muted-foreground">
-                            Sample rate for Deepgram input. 16000 Hz optimal for Nova models.
-                        </p>
-                    </div>
                 </div>
 
                 <div className="space-y-2">

@@ -80,13 +80,18 @@ export function invalidateConfigYaml(): void {
 // of them must drop the cache, or a cached page could reopen with stale config and
 // overwrite those changes on its next save.
 const CONFIG_WRITE_PATHS = ['/api/config/yaml', '/api/config/import', '/api/wizard/save'];
+const CONFIG_AUDIO_RESET_PATH = /^\/api\/config\/(providers|profiles|pipelines)\/[^/]+\/audio\/reset$/;
 
 /** Invalidate when a response is a successful write to the shared config document. */
 export function handleConfigWrite(response: { config?: { method?: string; url?: string } }): void {
     const cfg = response?.config;
     const method = cfg?.method?.toLowerCase();
     const path = cfg?.url?.split('?')[0];
-    if (path && (method === 'post' || method === 'put') && CONFIG_WRITE_PATHS.includes(path)) {
+    if (
+        path
+        && (method === 'post' || method === 'put')
+        && (CONFIG_WRITE_PATHS.includes(path) || CONFIG_AUDIO_RESET_PATH.test(path))
+    ) {
         invalidateConfigYaml();
     }
 }

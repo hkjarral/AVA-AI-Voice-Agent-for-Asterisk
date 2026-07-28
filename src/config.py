@@ -34,7 +34,12 @@ from src.config.defaults import (
     apply_diagnostic_defaults,
     apply_barge_in_defaults,
 )
-from src.config.normalization import normalize_pipelines, normalize_profiles, normalize_local_provider_tokens
+from src.config.normalization import (
+    normalize_legacy_openai_audio,
+    normalize_local_provider_tokens,
+    normalize_pipelines,
+    normalize_profiles,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -1138,15 +1143,62 @@ class AppConfig(BaseModel):
                     f"{location} must be one of {sorted(allowed)!r}; got {value!r}"
                 )
 
+        g711_rates = {
+            "ulaw": 8000,
+            "mulaw": 8000,
+            "mu-law": 8000,
+            "alaw": 8000,
+            "a-law": 8000,
+        }
+
+        def validate_provider_pair(
+            provider_name: str,
+            provider_config: Dict[str, Any],
+            encoding_field: str,
+            rate_field: str,
+        ) -> None:
+            """Reject G.711 values paired with a non-telephony sample rate."""
+            if encoding_field not in provider_config or rate_field not in provider_config:
+                return
+            encoding = str(provider_config.get(encoding_field) or "").strip().lower()
+            expected = g711_rates.get(encoding)
+            if expected is None:
+                return
+            raw_rate = provider_config.get(rate_field)
+            try:
+                rate = int(raw_rate)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"providers.{provider_name}.{rate_field} must be an integer"
+                ) from exc
+            if rate != expected:
+                raise ValueError(
+                    f"providers.{provider_name} has unsupported "
+                    f"{encoding_field}/{rate_field} pair {encoding}@{rate}; "
+                    f"{encoding} requires {expected} Hz"
+                )
+
         # ``providers`` remains intentionally open-ended for third-party
         # adapters, so enforce this shared transport policy explicitly rather
         # than relying on provider-specific Pydantic models being selected.
         for provider_name, provider_config in self.providers.items():
-            if isinstance(provider_config, dict) and "output_resampler" in provider_config:
+            if not isinstance(provider_config, dict):
+                continue
+            if "output_resampler" in provider_config:
                 validate_resampler(
                     f"providers.{provider_name}.output_resampler",
                     provider_config.get("output_resampler"),
                     allow_inherit=True,
+                )
+            for encoding_field, rate_field in (
+                ("input_encoding", "input_sample_rate_hz"),
+                ("provider_input_encoding", "provider_input_sample_rate_hz"),
+                ("output_encoding", "output_sample_rate_hz"),
+                ("target_encoding", "target_sample_rate_hz"),
+                ("tts_audio_encoding", "tts_sample_rate_hz"),
+            ):
+                validate_provider_pair(
+                    str(provider_name), provider_config, encoding_field, rate_field
                 )
 
         # Per-pipeline TTS options are the narrow rollback/canary override.
@@ -1359,6 +1411,10 @@ def load_config(path: str = "config/ai-agent.yaml") -> AppConfig:
     normalize_pipelines(config_data)
     normalize_profiles(config_data)
     normalize_local_provider_tokens(config_data)
+    if normalize_legacy_openai_audio(config_data):
+        logger.warning(
+            "Migrated legacy OpenAI Realtime mulaw@24000 output to linear16@24000"
+        )
     
     # Phase 4b: Validate normalized configuration
     from src.config.normalization import validate_providers, validate_pipelines, ConfigValidationError

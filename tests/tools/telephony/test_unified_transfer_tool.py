@@ -12,7 +12,9 @@ from src.tools.telephony.unified_transfer import UnifiedTransferTool
 
 class TestUnifiedTransferTool:
     @pytest.fixture
-    def tool(self):
+    def tool(self, mock_ari_client):
+        mock_ari_client.dialplan_target_exists = AsyncMock(return_value=True)
+        mock_ari_client.continue_in_dialplan = AsyncMock(return_value=True)
         return UnifiedTransferTool()
 
     def test_definition_uses_generic_destination_language(self, tool):
@@ -40,9 +42,12 @@ class TestUnifiedTransferTool:
         assert result["type"] == "extension"
         assert result["destination"] == "6000"
 
-        call_args = mock_ari_client.send_command.call_args.kwargs
-        assert call_args["resource"] == f"channels/{tool_context.caller_channel_id}/continue"
-        assert call_args["params"]["extension"] == "6000"
+        mock_ari_client.continue_in_dialplan.assert_awaited_once_with(
+            tool_context.caller_channel_id,
+            context="from-internal",
+            extension="6000",
+            priority=1,
+        )
 
     @pytest.mark.asyncio
     async def test_human_intent_maps_to_single_extension_destination(self, tool, tool_context):
@@ -87,9 +92,12 @@ class TestUnifiedTransferTool:
         assert result["type"] == "extension"
         assert result["destination"] == "6000"
 
-        call_args = mock_ari_client.send_command.call_args.kwargs
-        assert call_args["resource"] == f"channels/{tool_context.caller_channel_id}/continue"
-        assert call_args["params"]["extension"] == "6000"
+        mock_ari_client.continue_in_dialplan.assert_awaited_once_with(
+            tool_context.caller_channel_id,
+            context="from-internal",
+            extension="6000",
+            priority=1,
+        )
 
     @pytest.mark.asyncio
     async def test_default_defers_transfer_and_stores_destination_context(self, tool, tool_context, mock_ari_client):
@@ -354,9 +362,18 @@ class TestUnifiedTransferTool:
         result = await tool.commit_deferred_action(action, tool_context)
 
         assert result["status"] == "success"
-        call_args = mock_ari_client.send_command.call_args.kwargs
-        assert call_args["params"]["context"] == "custom-queues"
-        assert call_args["params"]["extension"] == "301"
+        mock_ari_client.dialplan_target_exists.assert_awaited_once_with(
+            tool_context.caller_channel_id,
+            context="custom-queues",
+            extension="301",
+            priority=1,
+        )
+        mock_ari_client.continue_in_dialplan.assert_awaited_once_with(
+            tool_context.caller_channel_id,
+            context="custom-queues",
+            extension="301",
+            priority=1,
+        )
 
     @pytest.mark.asyncio
     async def test_direct_queue_transfer_without_context_uses_default_context(self, tool, tool_context, mock_ari_client):
@@ -367,9 +384,12 @@ class TestUnifiedTransferTool:
         result = await tool._transfer_to_queue(tool_context, "301", "Support Queue")
 
         assert result["status"] == "success"
-        call_args = mock_ari_client.send_command.call_args.kwargs
-        assert call_args["params"]["context"] == "custom-queues"
-        assert call_args["params"]["extension"] == "301"
+        mock_ari_client.continue_in_dialplan.assert_awaited_once_with(
+            tool_context.caller_channel_id,
+            context="custom-queues",
+            extension="301",
+            priority=1,
+        )
 
     @pytest.mark.asyncio
     async def test_direct_ringgroup_transfer_without_context_uses_default_context(self, tool, tool_context, mock_ari_client):
@@ -380,9 +400,127 @@ class TestUnifiedTransferTool:
         result = await tool._transfer_to_ringgroup(tool_context, "600", "Support Ring Group")
 
         assert result["status"] == "success"
-        call_args = mock_ari_client.send_command.call_args.kwargs
-        assert call_args["params"]["context"] == "custom-groups"
-        assert call_args["params"]["extension"] == "600"
+        mock_ari_client.continue_in_dialplan.assert_awaited_once_with(
+            tool_context.caller_channel_id,
+            context="custom-groups",
+            extension="600",
+            priority=1,
+        )
+
+    @pytest.mark.asyncio
+    async def test_default_queue_context_is_validated_and_handed_to_ext_queues(
+        self, tool, tool_context, mock_ari_client
+    ):
+        result = await tool._transfer_to_queue(tool_context, "1000", "Technical Support")
+
+        assert result["status"] == "success"
+        mock_ari_client.dialplan_target_exists.assert_awaited_once_with(
+            tool_context.caller_channel_id,
+            context="ext-queues",
+            extension="1000",
+            priority=1,
+        )
+        mock_ari_client.continue_in_dialplan.assert_awaited_once_with(
+            tool_context.caller_channel_id,
+            context="ext-queues",
+            extension="1000",
+            priority=1,
+        )
+        assert tool_context.session_store.get_by_call_id.return_value.transfer_active is True
+
+    @pytest.mark.asyncio
+    async def test_missing_dialplan_target_fails_before_transfer_ownership_changes(
+        self, tool, tool_context, mock_ari_client
+    ):
+        session = tool_context.session_store.get_by_call_id.return_value
+        mock_ari_client.dialplan_target_exists.return_value = False
+
+        result = await tool._transfer_to_queue(tool_context, "1000", "Technical Support")
+
+        assert result["status"] == "failed"
+        assert getattr(session, "transfer_active", False) is False
+        assert getattr(session, "transfer_state", None) is None
+        assert getattr(session, "transfer_target", None) is None
+        mock_ari_client.continue_in_dialplan.assert_not_awaited()
+        tool_context.session_store.upsert_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unavailable_target_discovery_still_attempts_guarded_handoff(
+        self, tool, tool_context, mock_ari_client
+    ):
+        mock_ari_client.dialplan_target_exists.return_value = None
+
+        result = await tool._transfer_to_queue(tool_context, "1000", "Technical Support")
+
+        assert result["status"] == "success"
+        mock_ari_client.continue_in_dialplan.assert_awaited_once_with(
+            tool_context.caller_channel_id,
+            context="ext-queues",
+            extension="1000",
+            priority=1,
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("continue_result", [False, None])
+    async def test_rejected_handoff_fails_and_restores_prior_transfer_ownership(
+        self, tool, tool_context, mock_ari_client, continue_result
+    ):
+        session = tool_context.session_store.get_by_call_id.return_value
+        session.transfer_active = False
+        session.transfer_state = "ready"
+        session.transfer_target = "previous"
+        mock_ari_client.continue_in_dialplan.return_value = continue_result
+
+        result = await tool._transfer_to_queue(tool_context, "1000", "Technical Support")
+
+        assert result["status"] == "failed"
+        assert session.transfer_active is False
+        assert session.transfer_state == "ready"
+        assert session.transfer_target == "previous"
+        assert tool_context.session_store.upsert_call.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_handoff_exception_fails_and_restores_transfer_ownership(
+        self, tool, tool_context, mock_ari_client
+    ):
+        session = tool_context.session_store.get_by_call_id.return_value
+        mock_ari_client.continue_in_dialplan.side_effect = RuntimeError("ARI unavailable")
+
+        result = await tool._transfer_to_ringgroup(tool_context, "600", "Support Ring Group")
+
+        assert result["status"] == "failed"
+        assert session.transfer_active is False
+        assert session.transfer_state is None
+        assert session.transfer_target is None
+
+    @pytest.mark.asyncio
+    async def test_rejected_deferred_handoff_keeps_action_for_retry_and_restores_ownership(
+        self, tool, tool_context, mock_ari_client
+    ):
+        action = {
+            "id": "queue-retry",
+            "kind": "transfer",
+            "source_tool": "blind_transfer",
+            "commit_tool": "blind_transfer",
+            "transfer_type": "queue",
+            "target": "1000",
+            "description": "Technical Support",
+            "dialplan_context": "ext-queues",
+        }
+        session = tool_context.session_store.get_by_call_id.return_value
+        session.pending_deferred_transfer = dict(action)
+        registry = Mock()
+        registry.get.return_value = tool
+        tool_context.tool_registry = registry
+        mock_ari_client.continue_in_dialplan.return_value = False
+
+        result = await deferred_transfer_mod.commit_pending_deferred_transfer(tool_context)
+
+        assert result["status"] == "failed"
+        assert session.pending_deferred_transfer == action
+        assert session.transfer_active is False
+        assert session.transfer_state is None
+        assert session.transfer_target is None
 
     @pytest.mark.asyncio
     async def test_human_intent_without_extension_destination_fails(self, tool, tool_context):

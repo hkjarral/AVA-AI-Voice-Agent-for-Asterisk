@@ -12,6 +12,7 @@ import sys
 import logging
 import ssl
 import smtplib
+from copy import deepcopy
 from email.message import EmailMessage
 from contextlib import contextmanager
 from pathlib import Path
@@ -40,6 +41,8 @@ logger = logging.getLogger(__name__)
 def _assert_in_use_audio_profiles_unchanged(
     old_config: Dict[str, Any],
     new_config: Dict[str, Any],
+    *,
+    trusted_profile_reset: Optional[tuple[str, Dict[str, Any]]] = None,
 ) -> None:
     """Fail closed before mutating a profile referenced by an Agent.
 
@@ -59,6 +62,17 @@ def _assert_in_use_audio_profiles_unchanged(
         for name in (set(old_profiles) | set(new_profiles)) - {"default"}
         if old_profiles.get(name) != new_profiles.get(name)
     }
+    if trusted_profile_reset is not None:
+        reset_name, expected_body = trusted_profile_reset
+        # This exception is deliberately value-bound.  Callers cannot bypass
+        # the Agent-reference guard merely by naming a profile: the resulting
+        # body must be the exact backend-owned canonical reset value.
+        if (
+            reset_name != "default"
+            and reset_name in changed_profiles
+            and new_profiles.get(reset_name) == expected_body
+        ):
+            changed_profiles.remove(reset_name)
     configured_old_default = old_profiles.get("default")
     old_default_profile = (
         configured_old_default.strip()
@@ -740,7 +754,11 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
     return {"warnings": warnings}
 
 
-def persist_config_content(content: str) -> dict:
+def persist_config_content(
+    content: str,
+    *,
+    trusted_profile_reset: Optional[tuple[str, Dict[str, Any]]] = None,
+) -> dict:
     """
     Validate and persist a full merged ai-agent config (YAML string).
 
@@ -768,6 +786,18 @@ def persist_config_content(content: str) -> dict:
     if not isinstance(new_parsed, dict):
         raise HTTPException(status_code=400, detail="Config YAML must be a mapping at the top level")
 
+    # Persist the canonical replacement for the exact v7.5.2 OpenAI audio
+    # typo. Runtime load performs the same migration so an existing local
+    # override cannot prevent startup; rewriting on the next save removes the
+    # stale pair from operator-owned YAML as well.
+    from src.config.normalization import normalize_legacy_openai_audio
+
+    if normalize_legacy_openai_audio(new_parsed):
+        content = yaml.dump(new_parsed, default_flow_style=False, sort_keys=False)
+        validation = _validate_ai_agent_config(content)
+        migrated_warnings = validation.get("warnings")
+        warnings = warnings if migrated_warnings is None else migrated_warnings
+
     if _migrate_inline_provider_secrets(new_parsed):
         content = yaml.dump(new_parsed, default_flow_style=False, sort_keys=False)
         validation = _validate_ai_agent_config(content)
@@ -780,7 +810,11 @@ def persist_config_content(content: str) -> dict:
     # Audio profiles are referenced from the independent Agent store. Guard
     # every persistence path (structured pages and Raw YAML), not only the
     # frontend button flow, before writing the local override.
-    _assert_in_use_audio_profiles_unchanged(old_merged, new_parsed)
+    _assert_in_use_audio_profiles_unchanged(
+        old_merged,
+        new_parsed,
+        trusted_profile_reset=trusted_profile_reset,
+    )
 
     # Convert desired merged config into a minimal local override (supports deletions).
     base = _read_base_config_dict()
@@ -844,6 +878,177 @@ async def reconcile_apply_result_with_engine_state(result: dict) -> dict:
         "Configuration saved. Restart AI Engine to finish applying pending changes."
     )
     return reconciled
+
+
+def _audio_baseline_helpers() -> dict[str, Any]:
+    project_root = getattr(settings, "PROJECT_ROOT", None)
+    if project_root and project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from src.config.audio_baselines import (
+        BUILTIN_PROFILE_BASELINES,
+        PIPELINE_AUDIO_FIELDS,
+        PROVIDER_AUDIO_BASELINES,
+        profile_audio_baseline,
+        provider_audio_baseline,
+        provider_audio_fields,
+    )
+
+    return {
+        "pipeline_fields": PIPELINE_AUDIO_FIELDS,
+        "provider_baselines": PROVIDER_AUDIO_BASELINES,
+        "profile_baselines": BUILTIN_PROFILE_BASELINES,
+        "profile_baseline": profile_audio_baseline,
+        "provider_baseline": provider_audio_baseline,
+        "provider_fields": provider_audio_fields,
+    }
+
+
+def _get_resettable_provider_block(
+    provider_key: str,
+) -> tuple[Dict[str, Any], Dict[str, Any], str]:
+    """Resolve a configured provider instance to its canonical audio kind."""
+    instance_helpers = _provider_instances_module()
+    try:
+        instance_helpers["validate_provider_key"](provider_key)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    merged = _read_merged_config_dict()
+    providers = merged.get("providers")
+    if not isinstance(providers, dict):
+        raise HTTPException(status_code=404, detail="No providers are configured")
+    provider_cfg = providers.get(provider_key)
+    if not isinstance(provider_cfg, dict):
+        raise HTTPException(status_code=404, detail=f"Provider '{provider_key}' not found")
+
+    baseline_helpers = _audio_baseline_helpers()
+    known_kinds = baseline_helpers["provider_baselines"]
+    full_agent_kind = instance_helpers["provider_kind"](provider_key, provider_cfg)
+    candidates = [full_agent_kind, provider_key]
+
+    capabilities = provider_cfg.get("capabilities") or []
+    if isinstance(capabilities, str):
+        capabilities = [capabilities]
+    roles = [role for role in ("stt", "tts") if role in capabilities]
+    raw_type = str(provider_cfg.get("type") or "").strip()
+    if len(roles) == 1 and raw_type:
+        candidates.append(f"{raw_type}_{roles[0]}")
+
+    audio_kind = next(
+        (str(candidate) for candidate in candidates if candidate in known_kinds),
+        None,
+    )
+    if audio_kind is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Provider '{provider_key}' does not have a recognized audio "
+                "baseline"
+            ),
+        )
+    return merged, provider_cfg, audio_kind
+
+
+async def _persist_audio_reset(
+    merged: Dict[str, Any],
+    *,
+    trusted_profile_reset: Optional[tuple[str, Dict[str, Any]]] = None,
+) -> dict:
+    content = yaml.dump(merged, default_flow_style=False, sort_keys=False)
+    result = persist_config_content(
+        content,
+        trusted_profile_reset=trusted_profile_reset,
+    )
+    return await reconcile_apply_result_with_engine_state(result)
+
+
+@router.post("/providers/{provider_key}/audio/reset")
+async def reset_provider_audio(provider_key: str):
+    merged, provider_cfg, audio_kind = _get_resettable_provider_block(provider_key)
+    helpers = _audio_baseline_helpers()
+    baseline = helpers["provider_baseline"](audio_kind)
+    if baseline is None:  # Defensive; resolver only returns registered kinds.
+        raise HTTPException(status_code=400, detail="Provider audio baseline not found")
+
+    updated_provider = deepcopy(provider_cfg)
+    reset_fields = helpers["provider_fields"](audio_kind)
+    for field in reset_fields:
+        updated_provider.pop(field, None)
+    updated_provider.update(baseline)
+    merged["providers"][provider_key] = updated_provider
+
+    result = await _persist_audio_reset(merged)
+    return {
+        **result,
+        "provider_key": provider_key,
+        "provider_kind": audio_kind,
+        "audio_baseline": baseline,
+    }
+
+
+@router.post("/profiles/{profile_name}/audio/reset")
+async def reset_profile_audio(profile_name: str):
+    if profile_name == "default":
+        raise HTTPException(status_code=400, detail="profiles.default is a selector, not a profile")
+    merged = _read_merged_config_dict()
+    profiles = merged.get("profiles")
+    if not isinstance(profiles, dict) or not isinstance(profiles.get(profile_name), dict):
+        raise HTTPException(status_code=404, detail=f"Audio profile '{profile_name}' not found")
+
+    helpers = _audio_baseline_helpers()
+    built_in = profile_name in helpers.get("profile_baselines", {})
+    # The helper deliberately maps custom profiles to the standard 8 kHz
+    # telephony body while preserving the custom profile key.
+    baseline = helpers["profile_baseline"](profile_name)
+    profiles[profile_name] = baseline
+
+    result = await _persist_audio_reset(
+        merged,
+        trusted_profile_reset=(profile_name, baseline),
+    )
+    return {
+        **result,
+        "profile_name": profile_name,
+        "baseline_kind": "built_in" if built_in else "standard_telephony",
+        "audio_baseline": baseline,
+    }
+
+
+@router.post("/pipelines/{pipeline_name}/audio/reset")
+async def reset_pipeline_audio(pipeline_name: str):
+    merged = _read_merged_config_dict()
+    pipelines = merged.get("pipelines")
+    if not isinstance(pipelines, dict) or pipeline_name not in pipelines:
+        raise HTTPException(status_code=404, detail=f"Pipeline '{pipeline_name}' not found")
+    pipeline = pipelines.get(pipeline_name)
+    if not isinstance(pipeline, dict):
+        # Legacy shorthand pipelines have no options and therefore already
+        # inherit profile audio policy.
+        result = await _persist_audio_reset(merged)
+        return {**result, "pipeline_name": pipeline_name, "removed_audio_overrides": {}}
+
+    helpers = _audio_baseline_helpers()
+    options = pipeline.get("options")
+    removed: Dict[str, Dict[str, Any]] = {}
+    if isinstance(options, dict):
+        for role, fields in helpers["pipeline_fields"].items():
+            role_options = options.get(role)
+            if not isinstance(role_options, dict):
+                continue
+            role_removed = {
+                field: role_options.pop(field)
+                for field in tuple(role_options)
+                if field in fields
+            }
+            if role_removed:
+                removed[role] = role_removed
+
+    result = await _persist_audio_reset(merged)
+    return {
+        **result,
+        "pipeline_name": pipeline_name,
+        "removed_audio_overrides": removed,
+    }
 
 
 @router.get("")

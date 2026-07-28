@@ -11,6 +11,16 @@ import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
 import { FormInput, FormSelect } from '../components/ui/FormComponents';
 import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
+import AudioResetButton, { AudioResetResponse } from '../components/config/AudioResetButton';
+import AudioEnvironmentOverrideWarning from '../components/config/AudioEnvironmentOverrideWarning';
+
+const BUILT_IN_AUDIO_PROFILES = new Set([
+    'telephony_responsive',
+    'telephony_ulaw_8k',
+    'telephony_enhanced_8k',
+    'wideband_pcm_16k',
+    'openai_realtime_24k',
+]);
 
 const ProfilesPage = () => {
 	const { confirm } = useConfirmDialog();
@@ -61,6 +71,7 @@ const ProfilesPage = () => {
                 setError(null);
                 setYamlError(null);
             }
+            return r.config || {};
         } catch (err) {
             console.error('Failed to load config', err);
             const status = (err as any)?.response?.status;
@@ -70,8 +81,23 @@ const ProfilesPage = () => {
                 setError('Failed to load configuration. Check backend logs and try again.');
             }
             setYamlError(null);
+            return null;
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleProfileAudioResetComplete = async (profileName: string, response: AudioResetResponse) => {
+        const method = response?.recommended_apply_method || 'restart';
+        if (method === 'none') {
+            setPendingApply(false);
+        } else {
+            setApplyMethod(method);
+            setPendingApply(true);
+        }
+        const refreshed = await fetchConfig(true);
+        if (refreshed && editingProfile === profileName) {
+            setProfileForm({ ...(refreshed.profiles?.[profileName] || {}) });
         }
     };
 
@@ -446,6 +472,7 @@ const ProfilesPage = () => {
                     </button>
                 </div>
             )}
+            <AudioEnvironmentOverrideWarning />
 			<div className="flex justify-between items-center">
 				<div>
 					<h1 className="text-3xl font-bold tracking-tight">Audio Profiles</h1>
@@ -523,7 +550,14 @@ const ProfilesPage = () => {
                                             </p>
                                         </div>
                                     </div>
-	                                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+	                                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
+	                                        <AudioResetButton
+	                                            scope="profile"
+	                                            target={profileName}
+	                                            customProfile={!BUILT_IN_AUDIO_PROFILES.has(profileName)}
+	                                            compact
+	                                            onResetComplete={(response) => handleProfileAudioResetComplete(profileName, response)}
+	                                        />
 	                                        <button
 	                                            onClick={(e) => {
 	                                                e.stopPropagation();
@@ -630,22 +664,32 @@ const ProfilesPage = () => {
 					footer={
 						<>
                             {!isNewProfile && (
-                                <button
-                                    onClick={() => {
-                                        if (editingProfile) {
-                                            handleDeleteProfile(editingProfile);
-                                        }
-                                    }}
-                                    disabled={!editingProfile || profileKeys.length <= 1 || agentsLoading || agentsLoadFailed}
-                                    title={agentsLoading || agentsLoadFailed
-                                        ? 'Agent usage must be verified before deleting a profile'
-                                        : profileKeys.length <= 1
-                                            ? 'Cannot delete the last remaining audio profile'
-                                            : undefined}
-                                    className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-destructive/30 text-destructive hover:bg-destructive/10 h-9 px-4 py-2 mr-auto"
-                                >
-                                    Delete
-                                </button>
+                                <div className="flex items-center gap-2 mr-auto">
+                                    {editingProfile && (
+                                        <AudioResetButton
+                                            scope="profile"
+                                            target={editingProfile}
+                                            customProfile={!BUILT_IN_AUDIO_PROFILES.has(editingProfile)}
+                                            onResetComplete={(response) => handleProfileAudioResetComplete(editingProfile, response)}
+                                        />
+                                    )}
+                                    <button
+                                        onClick={() => {
+                                            if (editingProfile) {
+                                                handleDeleteProfile(editingProfile);
+                                            }
+                                        }}
+                                        disabled={!editingProfile || profileKeys.length <= 1 || agentsLoading || agentsLoadFailed}
+                                        title={agentsLoading || agentsLoadFailed
+                                            ? 'Agent usage must be verified before deleting a profile'
+                                            : profileKeys.length <= 1
+                                                ? 'Cannot delete the last remaining audio profile'
+                                                : undefined}
+                                        className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-destructive/30 text-destructive hover:bg-destructive/10 h-9 px-4 py-2"
+                                    >
+                                        Delete
+                                    </button>
+                                </div>
                             )}
 							<button
 								onClick={() => {

@@ -13,6 +13,8 @@ import { Modal } from '../components/ui/Modal';
 import HelpTooltip from '../components/ui/HelpTooltip';
 import { useRestartRequired } from '../hooks/useRestartRequired';
 import { localAIStatusFromLiveSnapshot } from '../utils/liveStatus';
+import AudioResetButton from '../components/config/AudioResetButton';
+import AudioEnvironmentOverrideWarning from '../components/config/AudioEnvironmentOverrideWarning';
 
 // Provider Forms
 import GenericProviderForm from '../components/config/providers/GenericProviderForm';
@@ -89,6 +91,7 @@ const ProvidersPage: React.FC = () => {
             setConfig(r.config);
             setYamlError(r.yamlError);
             setError(null);
+            return r.config;
         } catch (err) {
             console.error('Failed to load config', err);
             const status = (err as any)?.response?.status;
@@ -98,8 +101,20 @@ const ProvidersPage: React.FC = () => {
                 setError('Failed to load configuration. Check backend logs and try again.');
             }
             setYamlError(null);
+            return null;
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleProviderAudioResetComplete = async () => {
+        const refreshed = await fetchConfig(true);
+        await refetch();
+        if (refreshed && editingProvider) {
+            const providerData = refreshed.providers?.[editingProvider];
+            if (providerData) {
+                setProviderForm({ ...providerData, name: editingProvider });
+            }
         }
     };
 
@@ -851,6 +866,8 @@ const ProvidersPage: React.FC = () => {
                 </div>
             )}
 
+            <AudioEnvironmentOverrideWarning />
+
             <div className="flex justify-between items-center">
                 <div>
                     <h1 className="text-3xl font-bold tracking-tight">Providers</h1>
@@ -1378,6 +1395,22 @@ const ProvidersPage: React.FC = () => {
                                     </div>
                                 );
                             })()}
+                        </div>
+                    )}
+
+                    {!isNewProvider && editingProvider && (
+                        <div className="flex flex-col gap-3 rounded-lg border border-border bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                                <div className="text-sm font-semibold">Audio recovery</div>
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                    Restore the shipped audio contract for this provider without changing credentials, models, voices, prompts, or provider identity.
+                                </p>
+                            </div>
+                            <AudioResetButton
+                                scope="provider"
+                                target={editingProvider}
+                                onResetComplete={handleProviderAudioResetComplete}
+                            />
                         </div>
                     )}
 

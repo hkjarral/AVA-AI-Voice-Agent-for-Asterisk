@@ -13,6 +13,7 @@ from src.config.provider_instances import (
     FULL_AGENT_KINDS,
     VALID_ROLE_SUFFIXES,
     full_agent_default,
+    provider_kind,
     validate_provider_instances,
 )
 
@@ -300,6 +301,34 @@ def normalize_local_provider_tokens(config_data: Dict[str, Any]) -> None:
     except Exception:
         # Non-fatal; Pydantic may still coerce correctly
         pass
+
+
+def normalize_legacy_openai_audio(config_data: Dict[str, Any]) -> bool:
+    """Migrate the exact legacy OpenAI GA output pair to its wire truth.
+
+    The v7.5.2 shipped YAML accidentally combined ``mulaw`` with ``24000``.
+    GA sessions always request PCM16 at 24 kHz, so only this exact historical
+    pair is rewritten. Other operator choices remain subject to validation.
+    """
+    providers = config_data.get("providers")
+    if not isinstance(providers, dict):
+        return False
+
+    changed = False
+    for provider_key, provider_cfg in providers.items():
+        if not isinstance(provider_cfg, dict):
+            continue
+        if provider_kind(str(provider_key), provider_cfg) != "openai_realtime":
+            continue
+        encoding = str(provider_cfg.get("output_encoding") or "").strip().lower()
+        try:
+            rate = int(provider_cfg.get("output_sample_rate_hz"))
+        except (TypeError, ValueError):
+            continue
+        if encoding == "mulaw" and rate == 24000:
+            provider_cfg["output_encoding"] = "linear16"
+            changed = True
+    return changed
 
 
 class ConfigValidationError(Exception):

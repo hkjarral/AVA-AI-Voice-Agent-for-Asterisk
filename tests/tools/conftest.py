@@ -40,6 +40,36 @@ def mock_ari_client():
             }
     
     client.send_command = AsyncMock(side_effect=send_command_mock)
+
+    # Unified dialplan transfers validate the resolved target and only report a
+    # handoff after ARI confirms continueInDialplan. Keep the shared fake close
+    # to the real ARIClient while retaining send_command assertions in older
+    # transfer tests.
+    client.dialplan_target_exists = AsyncMock(return_value=True)
+
+    async def continue_in_dialplan_mock(
+        channel_id,
+        *,
+        context,
+        extension="s",
+        priority=1,
+        label=None,
+    ):
+        params = {
+            "context": str(context),
+            "extension": str(extension),
+            "priority": int(priority),
+        }
+        if label:
+            params["label"] = str(label)
+        await client.send_command(
+            method="POST",
+            resource=f"channels/{channel_id}/continue",
+            params=params,
+        )
+        return True
+
+    client.continue_in_dialplan = AsyncMock(side_effect=continue_in_dialplan_mock)
     
     # Channel hangup
     client.hangup_channel = AsyncMock()

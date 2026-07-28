@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Contextual audio baseline recovery:** provider, Audio Profile, and modular pipeline editors can restore only their audio encoding, sample-rate, and resampler settings to a canonical backend-owned baseline without changing credentials, models, voices, prompts, provider identity, Agent assignments, or pipeline composition. Built-in profiles restore their shipped contract, custom profiles can return to the standard 8 kHz telephony contract under the same name, named provider instances resolve defaults by implementation kind, and active environment-level resampler overrides remain visible without being silently changed.
+
+### Fixed
+
+- **Transfer handoffs fail closed on rejected Asterisk continuations** ([#577](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/577)): queue, ring-group, and extension transfers validate an explicitly missing dialplan target, require a successful ARI continuation before reporting success, and restore transfer ownership when validation or handoff fails. Dialplan discovery remains tolerant of unavailable probes so valid custom and FreePBX `ext-queues` routes can still be attempted.
+
 ## [7.5.2] - 2026-07-25
 
 ### Added

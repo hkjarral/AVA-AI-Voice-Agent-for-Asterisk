@@ -137,4 +137,28 @@ describe('ProfilesPage audio contract safety', () => {
             'talk_detect_talking_threshold'
         );
     });
+
+    it('restores an in-use built-in profile through the dedicated backend action', async () => {
+        vi.mocked(axios.get).mockResolvedValue({
+            data: [{ slug: 'default-agent', display_name: 'Default Agent', audio_profile: null }],
+        });
+        mocks.confirm.mockResolvedValue(true);
+        vi.mocked(axios.post).mockResolvedValue({
+            data: { recommended_apply_method: 'hot_reload' },
+        });
+
+        render(<ProfilesPage />);
+
+        fireEvent.click(await screen.findByRole('button', {
+            name: 'Restore profile baseline for telephony_ulaw_8k',
+        }));
+
+        await waitFor(() => {
+            expect(axios.post).toHaveBeenCalledWith(
+                '/api/config/profiles/telephony_ulaw_8k/audio/reset',
+            );
+        });
+        expect(mocks.confirm.mock.calls[0][0].description).toMatch(/Agent assignments.*not changed/i);
+        expect(await screen.findByText('Changes saved. Apply to make them active.')).toBeInTheDocument();
+    });
 });

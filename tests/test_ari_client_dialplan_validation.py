@@ -31,13 +31,22 @@ async def test_dialplan_target_exists_reads_asterisk_function():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("response", [{"value": "0"}, {"status": 404}, {}, None])
-async def test_dialplan_target_exists_fails_closed(response):
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ({"value": "0"}, False),
+        ({"value": "false"}, False),
+        ({"status": 404}, None),
+        ({}, None),
+        (None, None),
+    ],
+)
+async def test_dialplan_target_exists_distinguishes_missing_from_unavailable(response, expected):
     client = _client(response)
 
-    assert not await client.dialplan_target_exists(
+    assert await client.dialplan_target_exists(
         "chan-1", context="missing", extension="s", priority=1
-    )
+    ) is expected
 
 
 @pytest.mark.asyncio
@@ -48,6 +57,27 @@ async def test_dialplan_target_exists_rejects_function_argument_injection():
         "chan-1", context="safe),SHELL(id", extension="s", priority=1
     )
     client.send_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ({"status": 200}, True),
+        ({"status": 204}, True),
+        ({"status": 302}, False),
+        ({"status": 400}, False),
+        ({"status": "invalid"}, False),
+        ({}, False),
+        (None, False),
+    ],
+)
+async def test_continue_in_dialplan_requires_confirmed_success_status(response, expected):
+    client = _client(response)
+
+    assert await client.continue_in_dialplan(
+        "chan-1", context="ext-queues", extension="1000", priority=1
+    ) is expected
 
 
 @pytest.mark.asyncio

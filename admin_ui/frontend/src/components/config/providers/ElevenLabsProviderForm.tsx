@@ -325,15 +325,14 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                     <div className="flex items-center gap-1.5">
-                        <label className="text-sm font-medium">Input Sample Rate (Hz)</label>
+                        <label className="text-sm font-medium">Asterisk Input Sample Rate (Hz)</label>
                         <HelpTooltip
                             content={
                                 <>
-                                    <strong>Input Sample Rate</strong> — sample rate of the audio sent <em>to</em> ElevenLabs (caller's voice in Agent mode).
+                                    <strong>Asterisk Input Sample Rate</strong> — sample rate of caller audio arriving from Asterisk.
                                     <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                        <li><strong>16000 Hz</strong> — recommended for telephony; Asterisk transcodes 8 kHz PCM/μ-law up to 16 kHz for the agent.</li>
-                                        <li>Higher rates increase bandwidth without improving STT accuracy on phone-grade audio.</li>
-                                        <li>This field is only meaningful in Conversational Agent mode; TTS-only mode does not consume input audio here.</li>
+                                        <li><strong>8000 Hz</strong> — shipped baseline for μ-law telephony.</li>
+                                        <li>This describes the wire-facing input. The engine separately converts it to ElevenLabs' provider-native format below.</li>
                                     </ul>
                                 </>
                             }
@@ -342,11 +341,36 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                     <input
                         type="number"
                         className="w-full p-2 rounded border border-input bg-background"
-                        value={config.input_sample_rate_hz || 16000}
+                        value={config.input_sample_rate_hz || 8000}
                         onChange={(e) => handleChange('input_sample_rate_hz', parseInt(e.target.value))}
                     />
                     <p className="text-xs text-muted-foreground">
-                        Audio sample rate for input. 16000 Hz recommended.
+                        Asterisk-facing caller audio. Standard telephony uses 8000 Hz.
+                    </p>
+                </div>
+                <div className="space-y-2">
+                    <div className="flex items-center gap-1.5">
+                        <label className="text-sm font-medium">ElevenLabs Input Sample Rate (Hz)</label>
+                        <HelpTooltip
+                            content={
+                                <>
+                                    <strong>ElevenLabs Input Sample Rate</strong> — provider-native PCM rate sent to the ElevenLabs Conversational Agent after engine conversion.
+                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                        <li><strong>16000 Hz</strong> — shipped and recommended provider-native rate.</li>
+                                        <li>This is independent of the 8 kHz Asterisk input above.</li>
+                                    </ul>
+                                </>
+                            }
+                        />
+                    </div>
+                    <input
+                        type="number"
+                        className="w-full p-2 rounded border border-input bg-background"
+                        value={config.provider_input_sample_rate_hz || 16000}
+                        onChange={(e) => handleChange('provider_input_sample_rate_hz', parseInt(e.target.value))}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                        Provider-native PCM input sent to ElevenLabs. Baseline: 16000 Hz.
                     </p>
                 </div>
                 <div className="space-y-2">
