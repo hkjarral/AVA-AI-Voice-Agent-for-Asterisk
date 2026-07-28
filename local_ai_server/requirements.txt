@@ -6,7 +6,7 @@ numpy==1.26.4
 sherpa-onnx==1.13.4
 faster-whisper==1.0.3
 kokoro==0.9.4
-torch==2.5.1
+torch==2.13.0
 torchaudio==2.5.1
 transformers==4.27.4
 huggingface-hub==0.36.2
