@@ -158,7 +158,7 @@ jobs:
 
       - name: Post review comment
         if: always()
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           CODEX_OUTCOME: ${{ steps.run_codex.outcome }}
