@@ -2,7 +2,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import '@testing-library/jest-dom/vitest';
-import { PhaseToolGroup } from './ToolExecutionGroups';
+import { InCallToolGroup, PhaseToolGroup } from './ToolExecutionGroups';
 
 describe('PhaseToolGroup', () => {
     it('renders HTTP diagnostics and extracted output variables', () => {
@@ -47,6 +47,34 @@ describe('PhaseToolGroup', () => {
 
         expect(screen.getByText('Post-call (1)')).toBeInTheDocument();
         expect(screen.getAllByText('HTTP 502')).toHaveLength(2);
+        expect(screen.getByText('error')).toBeInTheDocument();
+    });
+});
+
+describe('InCallToolGroup', () => {
+    it('renders the enriched contract and treats normalized status as authoritative', () => {
+        render(
+            <InCallToolGroup
+                entries={[{
+                    type: 'tool_result',
+                    call_id: 'call-1',
+                    tool_call_id: 'tool-1',
+                    name: 'google_calendar',
+                    action: 'create_event',
+                    status: 'failure',
+                    target_id: 'event-42',
+                    params: { summary: 'Consultation' },
+                    result: 'success',
+                    message: 'Provider rejected the operation',
+                    timestamp: '2026-07-29T04:00:00+00:00',
+                    duration_ms: 12.4,
+                }]}
+            />,
+        );
+
+        expect(screen.getByText('In-call (1)')).toBeInTheDocument();
+        expect(screen.getByText('create_event')).toBeInTheDocument();
+        expect(screen.getByText('event-42')).toBeInTheDocument();
         expect(screen.getByText('error')).toBeInTheDocument();
     });
 });

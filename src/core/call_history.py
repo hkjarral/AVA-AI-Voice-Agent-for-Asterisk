@@ -62,7 +62,8 @@ class CallRecord:
     external_metadata: Dict[str, Any] = field(default_factory=dict)
     
     # Tool executions (debugging)
-    # tool_calls = in-call tool invocations issued by the LLM during the conversation.
+    # tool_calls = append-only terminal in-call tool results. Entries retain
+    # legacy fields and include stable tool_call_id/status/target_id metadata.
     # pre_call_tool_calls = pre-call enrichment tool execution metadata (lookup tools).
     # post_call_tool_calls = post-call webhook/notification execution metadata (fire-and-forget).
     # All three share the same per-entry shape (see ToolCallEntry typedef in admin_ui frontend).

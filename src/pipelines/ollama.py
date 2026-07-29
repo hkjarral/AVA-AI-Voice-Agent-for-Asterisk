@@ -34,6 +34,7 @@ import aiohttp
 from urllib.parse import urlparse
 
 from ..logging_config import get_logger
+from ..tools.execution_history import stable_tool_call_id
 from ..tools.registry import tool_registry
 from .base import Component, LLMComponent, LLMResponse
 
@@ -113,6 +114,22 @@ class OllamaLLMAdapter(LLMComponent):
         """Check if model is known to support tool calling."""
         model_base = model.split(":")[0].lower()
         return model_base in _TOOL_CAPABLE_MODELS
+
+    @staticmethod
+    def _parse_tool_calls(tool_calls_raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Normalize Ollama calls without reusing positional ids across turns."""
+        parsed_tool_calls: List[Dict[str, Any]] = []
+        for tool_call in tool_calls_raw:
+            function = tool_call.get("function", {})
+            parsed_tool_calls.append(
+                {
+                    "id": stable_tool_call_id(tool_call.get("id")),
+                    "name": function.get("name"),
+                    "parameters": function.get("arguments", {}),
+                    "type": "function",
+                }
+            )
+        return parsed_tool_calls
 
     # Config keys the adapter actually consumes (plus provider-level meta keys
     # that legitimately appear in the YAML provider block). Anything outside this
@@ -352,16 +369,8 @@ class OllamaLLMAdapter(LLMComponent):
                 tool_calls_raw = message.get("tool_calls", [])
                 
                 # Parse tool calls if present
-                parsed_tool_calls = []
-                if tool_calls_raw:
-                    for tc in tool_calls_raw:
-                        func = tc.get("function", {})
-                        parsed_tool_calls.append({
-                            "id": tc.get("id", f"call_{len(parsed_tool_calls)}"),
-                            "name": func.get("name"),
-                            "parameters": func.get("arguments", {}),
-                            "type": "function",
-                        })
+                parsed_tool_calls = self._parse_tool_calls(tool_calls_raw)
+                if parsed_tool_calls:
                     logger.info(
                         "Ollama tool calls detected",
                         call_id=call_id,

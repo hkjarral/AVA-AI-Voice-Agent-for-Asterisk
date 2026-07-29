@@ -6,7 +6,9 @@ import pytest
 
 from src.config import AppConfig
 from src.engine import Engine, _PipelinePlaybackInterrupted
-from src.pipelines.base import STTComponent, LLMComponent, TTSComponent
+from src.pipelines.base import STTComponent, LLMComponent, LLMResponse, TTSComponent
+from src.tools.base import Tool, ToolCategory, ToolDefinition
+from src.tools.registry import ToolRegistry
 from src.tools.telephony.hangup_policy import normalize_hangup_policy
 
 
@@ -99,6 +101,41 @@ class _BlockingLLM(LLMComponent):
         return "late response after caller hangup"
 
 
+class _ToolOnlyThenTextLLM(LLMComponent):
+    def __init__(self):
+        self.calls = 0
+        self.completed = asyncio.Event()
+
+    async def generate(self, call_id, transcript, context, options):
+        self.calls += 1
+        if self.calls == 1:
+            return LLMResponse(
+                text="",
+                tool_calls=[
+                    {
+                        "id": "pipeline-tool-1",
+                        "name": "transcript_tool",
+                        "parameters": {},
+                    }
+                ],
+            )
+        self.completed.set()
+        return LLMResponse(text="Done", tool_calls=[])
+
+
+class _TranscriptTool(Tool):
+    @property
+    def definition(self):
+        return ToolDefinition(
+            name="transcript_tool",
+            description="Test tool",
+            category=ToolCategory.BUSINESS,
+        )
+
+    async def execute(self, parameters, context):
+        return {"status": "success", "message": "Tool completed"}
+
+
 class _CancellationResistantLLM(LLMComponent):
     """Model a provider request that completes after task cancellation."""
 
@@ -121,6 +158,12 @@ class _CancellationResistantLLM(LLMComponent):
 class _StubTTS(TTSComponent):
     async def synthesize(self, call_id, text, options):
         yield b"ulaw-bytes"
+
+
+class _SilentTTS(TTSComponent):
+    async def synthesize(self, call_id, text, options):
+        if False:
+            yield b""
 
 
 class _RecordingTTS(TTSComponent):
@@ -336,7 +379,6 @@ async def test_pipeline_hanging_greeting_stops_connection_audio_after_timeout(mo
         "get_pipeline",
         lambda *args, **kwargs: resolution,
     )
-
     from src.core.models import CallSession
 
     call_id = "call-hanging-greeting"
@@ -468,6 +510,78 @@ async def test_pipeline_runner_lifecycle(monkeypatch):
     assert call_id not in engine._pipeline_tasks
     assert call_id not in engine._pipeline_queues
     assert call_id not in engine._pipeline_forced
+
+
+@pytest.mark.asyncio
+async def test_pipeline_tool_only_turn_keeps_persisted_history_transcript_only(monkeypatch):
+    config_data = {
+        "default_provider": "local",
+        "providers": {"local": {"enabled": True}},
+        "asterisk": {
+            "host": "127.0.0.1",
+            "port": 8088,
+            "username": "u",
+            "password": "p",
+            "app_name": "ai-voice-agent",
+        },
+        "llm": {"initial_greeting": "", "prompt": "You are helpful", "model": "gpt-4o"},
+        "pipelines": {"tool_only": {}},
+        "active_pipeline": "tool_only",
+        "audio_transport": "audiosocket",
+    }
+    engine = Engine(AppConfig(**config_data))
+    engine.pipeline_orchestrator._started = True
+    stt = _ResultStreamingStubSTT()
+    llm = _ToolOnlyThenTextLLM()
+    resolution = _StubResolution(
+        stt_adapter=stt,
+        stt_options={"streaming": True, "chunk_ms": 80},
+        llm_adapter=llm,
+        tts_adapter=_SilentTTS(),
+    )
+    monkeypatch.setattr(
+        engine.pipeline_orchestrator,
+        "get_pipeline",
+        lambda *args, **kwargs: resolution,
+    )
+    monkeypatch.setattr(
+        engine.transport_orchestrator,
+        "get_context_config",
+        lambda *args, **kwargs: SimpleNamespace(
+            prompt=None,
+            greeting=None,
+            tools=["transcript_tool"],
+            in_call_http_tools={},
+            disable_global_in_call_tools=[],
+        ),
+    )
+    engine.ari_client.set_channel_var = AsyncMock(return_value=True)
+
+    from src.core.models import CallSession
+
+    call_id = "call-tool-only-history"
+    session = CallSession(call_id=call_id, caller_channel_id=call_id)
+    session.pipeline_name = "tool_only"
+    session.context_name = "tool-context"
+    session.allowed_tools = ["transcript_tool"]
+    registry = ToolRegistry.isolated()
+    registry.register_instance(_TranscriptTool())
+    session.tool_runtime_registry = registry
+    await engine.session_store.upsert_call(session)
+
+    await engine._ensure_pipeline_runner(session, forced=True)
+    await asyncio.wait_for(stt.started.wait(), timeout=2)
+    await stt.results.put("please run the tool")
+    await asyncio.wait_for(llm.completed.wait(), timeout=2)
+
+    assert [entry["role"] for entry in session.conversation_history] == ["user", "assistant"]
+    assert session.conversation_history[0]["content"] == "please run the tool"
+    assert session.conversation_history[1]["content"] == "Done"
+    assert all(entry.get("content") != "(tool execution)" for entry in session.conversation_history)
+    assert all("tool_calls" not in entry and "tool_call_id" not in entry for entry in session.conversation_history)
+    assert session.tool_calls[0]["tool_call_id"] == "pipeline-tool-1"
+
+    await engine._cleanup_call(call_id)
 
 
 @pytest.mark.asyncio

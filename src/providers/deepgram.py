@@ -24,6 +24,7 @@ from .base import AIProviderInterface, ProviderCapabilities
 # Tool calling support
 from src.tools.registry import tool_registry
 from src.tools.adapters.deepgram import DeepgramToolAdapter
+from src.tools.execution_history import record_in_call_tool_result
 from src.tools.telephony.hangup_policy import (
     DEFAULT_HANGUP_MARKERS,
     normalize_hangup_policy,
@@ -398,6 +399,7 @@ class DeepgramProvider(AIProviderInterface):
         self.websocket: Optional[ClientConnection] = None
         self._keep_alive_task: Optional[asyncio.Task] = None
         self._receive_task: Optional[asyncio.Task] = None
+        self._tool_call_tasks: set[asyncio.Task] = set()
         self._settings_failure_stop_task: Optional[asyncio.Task] = None
         self._is_audio_flowing = False
         self.request_id: Optional[str] = None
@@ -1219,6 +1221,20 @@ class DeepgramProvider(AIProviderInterface):
         
         Routes the function call to the appropriate tool via the tool adapter.
         """
+        function_data = (event_data.get("functions") or [{}])[0]
+        function_call_id = function_data.get("id")
+        function_name = function_data.get("name")
+        raw_parameters = function_data.get("arguments", {})
+        try:
+            parameters = json.loads(raw_parameters) if isinstance(raw_parameters, str) else raw_parameters
+        except (TypeError, json.JSONDecodeError):
+            parameters = {}
+        if not isinstance(parameters, dict):
+            parameters = {}
+        invocation_call_id = self.call_id
+        tool_started_at = time.time()
+        tool_result_recorded = False
+
         try:
             # Build context for tool execution
             # These will be injected by the engine when it sets up the provider
@@ -1254,35 +1270,35 @@ class DeepgramProvider(AIProviderInterface):
                 self._schedule_hangup_audio_fallback()
             
             # Capture function name BEFORE send_tool_result (which pops it from result)
-            func_name = result.get('function_name')
-            func_params = event_data.get('functions', [{}])[0].get('arguments', '{}')
+            func_name = result.get('function_name') or function_name
+
+            await record_in_call_tool_result(
+                session_store=getattr(self, "_session_store", None),
+                call_id=invocation_call_id,
+                tool_call_id=function_call_id,
+                tool_name=func_name,
+                canonical_name=tool_registry.canonicalize_tool_name(func_name),
+                parameters=parameters,
+                result=result,
+                duration_ms=(time.time() - tool_started_at) * 1000,
+            )
+            tool_result_recorded = True
             
             # Send result back to Deepgram
             await self.tool_adapter.send_tool_result(result, context)
-            
-            # Log tool call to session for call history (Milestone 21)
-            try:
-                session_store = getattr(self, '_session_store', None)
-                if session_store and self.call_id and func_name:
-                    from datetime import datetime
-                    session = await session_store.get_by_call_id(self.call_id)
-                    if session:
-                        tool_record = {
-                            "name": func_name,
-                            "params": func_params,
-                            "result": result.get("status", "unknown") if isinstance(result, dict) else "success",
-                            "message": result.get("message", "") if isinstance(result, dict) else str(result),
-                            "timestamp": datetime.now().isoformat(),
-                            "duration_ms": 0,
-                        }
-                        if not hasattr(session, 'tool_calls') or session.tool_calls is None:
-                            session.tool_calls = []
-                        session.tool_calls.append(tool_record)
-                        await session_store.upsert_call(session)
-                        logger.debug("Tool call logged to session", call_id=self.call_id, tool=func_name)
-            except Exception as log_err:
-                logger.debug(f"Failed to log tool call to session: {log_err}", call_id=self.call_id)
-            
+        except asyncio.CancelledError:
+            if not tool_result_recorded:
+                await record_in_call_tool_result(
+                    session_store=getattr(self, "_session_store", None),
+                    call_id=invocation_call_id,
+                    tool_call_id=function_call_id,
+                    tool_name=function_name,
+                    canonical_name=tool_registry.canonicalize_tool_name(function_name),
+                    parameters=parameters,
+                    result={"status": "cancelled", "message": "Tool execution cancelled"},
+                    duration_ms=(time.time() - tool_started_at) * 1000,
+                )
+            raise
         except Exception as e:
             logger.error(
                 "Function call handling failed",
@@ -1291,18 +1307,30 @@ class DeepgramProvider(AIProviderInterface):
                 error=str(e),
                 exc_info=True
             )
+            if not tool_result_recorded:
+                await record_in_call_tool_result(
+                    session_store=getattr(self, "_session_store", None),
+                    call_id=invocation_call_id,
+                    tool_call_id=function_call_id,
+                    tool_name=function_name,
+                    canonical_name=tool_registry.canonicalize_tool_name(function_name),
+                    parameters=parameters,
+                    result={"status": "error", "message": str(e)},
+                    duration_ms=(time.time() - tool_started_at) * 1000,
+                )
             # Send error response to Deepgram in correct format
             try:
-                function_call_id = event_data.get("id")
                 if function_call_id:
+                    error_content = {
+                        "status": "error",
+                        "message": f"Tool execution failed: {str(e)}",
+                        "error": str(e),
+                    }
                     error_response = {
-                        "type": "function_call_result",
+                        "type": "FunctionCallResponse",
                         "id": function_call_id,
-                        "function_call_result": {
-                            "status": "error",
-                            "message": f"Tool execution failed: {str(e)}",
-                            "error": str(e)
-                        }
+                        "name": function_name,
+                        "content": json.dumps(error_content),
                     }
                     if self.websocket and self.websocket.state.name == "OPEN":
                         await self.websocket.send(json.dumps(error_response))
@@ -1343,6 +1371,13 @@ class DeepgramProvider(AIProviderInterface):
                 self._receive_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._receive_task
+            tool_tasks = list(self._tool_call_tasks)
+            for task in tool_tasks:
+                if not task.done():
+                    task.cancel()
+            if tool_tasks:
+                await asyncio.gather(*tool_tasks, return_exceptions=True)
+            self._tool_call_tasks.clear()
             if self.websocket and self.websocket.state.name == "OPEN":
                 await self.websocket.close()
             if not self._closed:
@@ -1635,7 +1670,13 @@ class DeepgramProvider(AIProviderInterface):
                                     await self._handle_function_call(event_data)
                                 else:
                                     _t = asyncio.create_task(self._handle_function_call(event_data))
-                                    _t.add_done_callback(_log_provider_task_exception)
+                                    self._tool_call_tasks.add(_t)
+
+                                    def _tool_done(completed: asyncio.Task) -> None:
+                                        self._tool_call_tasks.discard(completed)
+                                        _log_provider_task_exception(completed)
+
+                                    _t.add_done_callback(_tool_done)
                             elif et == "ConnectionClosed":
                                 logger.info(
                                     "🔌 Deepgram ConnectionClosed",

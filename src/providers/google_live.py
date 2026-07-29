@@ -58,6 +58,7 @@ from src.tools.telephony.hangup_policy import normalize_hangup_policy
 # Tool calling support
 from src.tools.registry import tool_registry
 from src.tools.adapters.google import GoogleToolAdapter
+from src.tools.execution_history import record_in_call_tool_result
 
 logger = get_logger(__name__)
 
@@ -2111,6 +2112,11 @@ class GoogleLiveProvider(AIProviderInterface):
     async def _handle_tool_call(self, data: Dict[str, Any]) -> None:
         """Handle toolCall message."""
         tool_call = data.get("toolCall", {})
+        func_name = None
+        func_args: Dict[str, Any] = {}
+        call_id = None
+        tool_started_at = time.time()
+        tool_result_recorded = False
         
         if not self._tool_adapter:
             logger.warning(
@@ -2127,6 +2133,8 @@ class GoogleLiveProvider(AIProviderInterface):
                 func_name = func_call.get("name")
                 func_args = func_call.get("args", {})
                 call_id = func_call.get("id")
+                tool_started_at = time.time()
+                tool_result_recorded = False
 
                 # Guard: skip duplicate hangup_call if already pending
                 if func_name == "hangup_call" and self._hangup_after_response:
@@ -2174,6 +2182,18 @@ class GoogleLiveProvider(AIProviderInterface):
                         func_args,
                         tool_context,
                     )
+
+                await record_in_call_tool_result(
+                    session_store=getattr(self, "_session_store", None),
+                    call_id=self._call_id,
+                    tool_call_id=call_id,
+                    tool_name=func_name,
+                    canonical_name=tool_registry.canonicalize_tool_name(func_name),
+                    parameters=func_args,
+                    result=result,
+                    duration_ms=(time.time() - tool_started_at) * 1000,
+                )
+                tool_result_recorded = True
 
                 # Check for hangup intent (like OpenAI Realtime pattern)
                 if func_name == "hangup_call" and result:
@@ -2248,29 +2268,19 @@ class GoogleLiveProvider(AIProviderInterface):
                         farewell_preview=farewell[:60],
                     )
                 
-                # Log tool call to session for call history (Milestone 21)
-                try:
-                    session_store = getattr(self, '_session_store', None)
-                    if session_store and self._call_id:
-                        from datetime import datetime
-                        session = await session_store.get_by_call_id(self._call_id)
-                        if session:
-                            tool_record = {
-                                "name": func_name,
-                                "params": func_args,
-                                "result": result.get("status", "unknown") if isinstance(result, dict) else "success",
-                                "message": result.get("message", "") if isinstance(result, dict) else str(result),
-                                "timestamp": datetime.now().isoformat(),
-                                "duration_ms": 0,  # TODO: track actual duration
-                            }
-                            if not hasattr(session, 'tool_calls') or session.tool_calls is None:
-                                session.tool_calls = []
-                            session.tool_calls.append(tool_record)
-                            await session_store.upsert_call(session)
-                            logger.debug("Tool call logged to session", call_id=self._call_id, tool=func_name)
-                except Exception as e:
-                    logger.debug(f"Failed to log tool call to session: {e}", call_id=self._call_id)
-
+        except asyncio.CancelledError:
+            if func_name and not tool_result_recorded:
+                await record_in_call_tool_result(
+                    session_store=getattr(self, "_session_store", None),
+                    call_id=self._call_id,
+                    tool_call_id=call_id,
+                    tool_name=func_name,
+                    canonical_name=tool_registry.canonicalize_tool_name(func_name),
+                    parameters=func_args,
+                    result={"status": "cancelled", "message": "Tool execution cancelled"},
+                    duration_ms=(time.time() - tool_started_at) * 1000,
+                )
+            raise
         except Exception as e:
             logger.error(
                 "Error handling Google Live tool call",
@@ -2278,6 +2288,17 @@ class GoogleLiveProvider(AIProviderInterface):
                 error=str(e),
                 exc_info=True,
             )
+            if func_name and not tool_result_recorded:
+                await record_in_call_tool_result(
+                    session_store=getattr(self, "_session_store", None),
+                    call_id=self._call_id,
+                    tool_call_id=call_id,
+                    tool_name=func_name,
+                    canonical_name=tool_registry.canonicalize_tool_name(func_name),
+                    parameters=func_args,
+                    result={"status": "error", "message": str(e)},
+                    duration_ms=(time.time() - tool_started_at) * 1000,
+                )
 
     async def _handle_tool_call_cancellation(self, data: Dict[str, Any]) -> None:
         """Handle toolCallCancellation message (server canceled one or more pending tool calls)."""

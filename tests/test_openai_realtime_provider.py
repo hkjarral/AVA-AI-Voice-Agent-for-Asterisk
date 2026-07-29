@@ -468,10 +468,16 @@ async def test_invalid_tool_call_id_is_downgraded_only_for_recent_call_ids(
 @pytest.mark.asyncio
 async def test_success_tool_result_waits_for_parent_response_done(openai_config):
     provider = OpenAIRealtimeProvider(openai_config, on_event=None)
+    session = SimpleNamespace(tool_calls=[], conversation_history=[])
     adapter = _ToolAdapter(result={"status": "ok", "message": "done"})
     sentinel = asyncio.Event()
     provider.websocket = _OpenWebSocket()
     provider.tool_adapter = adapter
+    provider._call_id = "session-success"
+    provider._session_store = SimpleNamespace(
+        get_by_call_id=AsyncMock(return_value=session),
+        upsert_call=AsyncMock(),
+    )
     provider._response_done_events["resp-gated"] = sentinel
 
     task = asyncio.create_task(
@@ -486,15 +492,24 @@ async def test_success_tool_result_waits_for_parent_response_done(openai_config)
 
     assert len(adapter.sent_results) == 1
     assert adapter.sent_results[0][0]["status"] == "ok"
+    assert session.conversation_history == []
+    assert session.tool_calls[0]["tool_call_id"] == "call-gated"
+    assert session.tool_calls[0]["status"] == "success"
 
 
 @pytest.mark.asyncio
 async def test_error_tool_output_waits_for_parent_response_done(openai_config):
     provider = OpenAIRealtimeProvider(openai_config, on_event=None)
+    session = SimpleNamespace(tool_calls=[], conversation_history=[])
     sentinel = asyncio.Event()
     sent_payloads = []
     provider.websocket = _OpenWebSocket()
     provider.tool_adapter = _ToolAdapter(error=RuntimeError("boom"))
+    provider._call_id = "session-error"
+    provider._session_store = SimpleNamespace(
+        get_by_call_id=AsyncMock(return_value=session),
+        upsert_call=AsyncMock(),
+    )
     provider._response_done_events["resp-error"] = sentinel
 
     async def fake_send_json(payload):
@@ -525,3 +540,6 @@ async def test_error_tool_output_waits_for_parent_response_done(openai_config):
             },
         }
     ]
+    assert session.conversation_history == []
+    assert session.tool_calls[0]["tool_call_id"] == "call-error"
+    assert session.tool_calls[0]["status"] == "failure"

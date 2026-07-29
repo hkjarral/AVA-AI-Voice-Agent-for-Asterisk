@@ -86,3 +86,40 @@ async def test_emit_local_llm_result_uses_clean_goodbye_when_hangup_has_no_farew
 
     transcript_event = next(event for event in events if event.get("type") == "agent_transcript")
     assert transcript_event["text"] == "Goodbye!"
+
+
+@pytest.mark.asyncio
+async def test_emit_local_llm_result_assigns_unique_ids_and_preserves_upstream_id():
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = LocalProvider(LocalProviderConfig(), on_event)
+    provider._allowed_tools = {"request_transcript"}
+
+    first_call = {"name": "request_transcript", "parameters": {}}
+    second_call = {"name": "request_transcript", "parameters": {}}
+    upstream_call = {
+        "id": "local-upstream-1",
+        "name": "request_transcript",
+        "parameters": {},
+    }
+    for tool_call in (first_call, second_call, upstream_call):
+        await provider._emit_local_llm_result(
+            call_id="call-ids",
+            llm_text="",
+            clean_text="",
+            tool_calls=[tool_call],
+            tool_path="structured",
+        )
+
+    tool_ids = [
+        event["tool_calls"][0]["id"]
+        for event in events
+        if event.get("type") == "ToolCall"
+    ]
+    assert tool_ids[0].startswith("generated-")
+    assert tool_ids[1].startswith("generated-")
+    assert tool_ids[0] != tool_ids[1]
+    assert tool_ids[2] == "local-upstream-1"

@@ -187,6 +187,10 @@ without undoing the operator's unrelated work.
   transfers validate known-missing targets, require a confirmed ARI handoff,
   and preserve ownership safely when Asterisk's response is indeterminate.
   FreePBX queues use the standard `ext-queues` context by default ([#577](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/577)).
+- **Query what the agent actually did** — completed in-call tools now expose a
+  stable `tool_call_id`, normalized success/failure status, action, and
+  reconcilable `target_id` in Call History and its API without mixing telemetry
+  into the transcript ([#587](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/587)).
 
 These recovery actions are intentionally narrow: they do not provide a global
 factory reset and do not change secrets or Agent routing.

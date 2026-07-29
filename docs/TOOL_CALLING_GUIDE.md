@@ -12,6 +12,7 @@ Complete guide to AI tool calling in Asterisk AI Voice Agent—enabling AI agent
 
 - [Overview](#overview)
 - [Supported Providers](#supported-providers)
+- [Post-Call Reporting Contract](#post-call-reporting-contract)
 - [Available Tools](#available-tools)
 - [Pre-Call Tools (HTTP Lookups)](#pre-call-tools-http-lookups)
 - [In-Call HTTP Tools](#in-call-http-tools)
@@ -57,6 +58,47 @@ Tool calling enables AI agents to perform real-world actions during conversation
 | **Modular Pipelines (local_hybrid)** | ✅ Full Support | Production validated (Nov 19, 2025) - AAVA-85 |
 
 All tools work identically across supported providers—no code changes needed when switching providers.
+
+## Post-Call Reporting Contract
+
+The call-detail API returns terminal in-call executions in the persisted
+`tool_calls` array. `conversation_history` remains transcript-only and must not
+be used as a tool telemetry stream.
+
+Starting with v7.5.3, new entries retain the legacy UI fields and add a stable,
+append-only reduction contract:
+
+```json
+{
+  "type": "tool_result",
+  "call_id": "1785299332.302",
+  "tool_call_id": "provider-call-7",
+  "name": "google_calendar",
+  "action": "create_event",
+  "status": "success",
+  "target_id": "calendar-event-42",
+  "params": {"action": "create_event"},
+  "result": "success",
+  "message": "Event created",
+  "timestamp": "2026-07-29T04:00:00+00:00",
+  "duration_ms": 121.4
+}
+```
+
+- Native provider identifiers are preserved exactly. Local or pipeline calls
+  without an upstream identifier receive a unique `generated-*` id per
+  invocation; the former `local-{tool_name}` collision is not retained.
+- A provider retry that reuses its tool-call id produces another terminal entry
+  with that same id. Consumers should reduce by `tool_call_id`, not count raw
+  success entries.
+- `target_id` prefers an identifier returned by the tool and falls back to an
+  identifier supplied to compensating actions. This lets a calendar
+  `create_event` followed by `delete_event` reconcile to zero net creations.
+- `status` is normalized to `success` or `failure`; `result` retains the legacy
+  raw status for backward compatibility.
+- The event records the tool execution fact only. A successful voicemail route
+  does not claim that a message was recorded, and a successful transfer does
+  not claim that a human answered.
 
 ### MCP Tools (Experimental)
 

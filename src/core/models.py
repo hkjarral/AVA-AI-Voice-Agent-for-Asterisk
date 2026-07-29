@@ -182,7 +182,10 @@ class CallSession:
     pending_deferred_transfer: Optional[Dict[str, Any]] = None  # Transfer action waiting for TTS/audio completion
     
     # Call history tracking (Milestone 21)
-    tool_calls: List[Dict[str, Any]] = field(default_factory=list)  # [{name, params, result, timestamp, duration_ms}]
+    # Append-only terminal in-call tool-result stream. v7.5.3 adds call_id,
+    # stable tool_call_id, action, normalized status, and target_id while
+    # retaining the original fields for API/UI compatibility.
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     turn_latencies_ms: List[float] = field(default_factory=list)    # Per-turn latency tracking
     barge_in_count: int = 0                                          # Total barge-in attempts
     error_message: Optional[str] = None                              # Error if call failed

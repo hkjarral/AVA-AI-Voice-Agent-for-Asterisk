@@ -89,6 +89,11 @@ from src.tools.telephony.hangup_policy import (
     normalize_marker_list,
 )
 from src.tools.runtime_config import ToolConfigPolicyError
+from src.tools.execution_history import (
+    normalize_tool_terminal_status,
+    record_in_call_tool_result,
+    stable_tool_call_id,
+)
 
 if TYPE_CHECKING:
     from src.tools.context import ToolExecutionContext
@@ -13368,12 +13373,14 @@ class Engine:
                 for tool_call in tool_calls:
                     tool_name = tool_call.get("name")
                     parameters = tool_call.get("parameters", {})
+                    function_call_id = stable_tool_call_id(tool_call.get("id"))
+                    tool_call["id"] = function_call_id
                     
                     try:
                         result = await self._execute_provider_tool(
                             call_id=call_id,
                             function_name=tool_name,
-                            function_call_id=f"local-{tool_name}",
+                            function_call_id=function_call_id,
                             parameters=parameters,
                             session=session,
                         )
@@ -15298,8 +15305,6 @@ class Engine:
                         conversation_history.append(_ts_msg("user", transcript_text))
                         if response_text:
                             conversation_history.append(_ts_msg("assistant", response_text))
-                        elif tool_calls:
-                            conversation_history.append(_ts_msg("assistant", "(tool execution)"))
 
                         # AAVA-85: Persist session history so tools (email) can access it
                         session.conversation_history = list(conversation_history)
@@ -15529,14 +15534,18 @@ class Engine:
                         )
 
                         for tool_call in tool_calls:
+                            name = tool_call.get("name")
+                            args = tool_call.get("parameters") or {}
+                            function_call_id = stable_tool_call_id(tool_call.get("id"))
+                            tool_call["id"] = function_call_id
+                            _tool_start = time.time()
+                            tool_result_recorded = False
+                            tool_task = None
                             try:
-                                name = tool_call.get("name")
-                                args = tool_call.get("parameters") or {}
                                 tool = tool_registry.get(name)
                                 
                                 if tool:
                                     logger.info("Executing pipeline tool", tool=name, call_id=call_id)
-                                    _tool_start = time.time()
                                     # Slow-response UX (pipeline only): speak a waiting message if the tool takes too long.
                                     slow_threshold_ms = int(getattr(tool, "slow_response_threshold_ms", 0) or 0)
                                     slow_message = str(getattr(tool, "slow_response_message", "") or "").strip()
@@ -15566,22 +15575,17 @@ class Engine:
                                     tool_duration_ms = (time.time() - _tool_start) * 1000
                                     logger.info("Tool execution result", tool=name, result=result)
 
-                                    # Record tool call for call history (Milestone 21)
-                                    try:
-                                        tool_record = {
-                                            "name": name,
-                                            "params": args,
-                                            "result": result.get("status", "unknown"),
-                                            "message": result.get("message", ""),
-                                            "timestamp": datetime.now().isoformat(),
-                                            "duration_ms": round(tool_duration_ms, 2),
-                                        }
-                                        if not hasattr(session, 'tool_calls') or session.tool_calls is None:
-                                            session.tool_calls = []
-                                        session.tool_calls.append(tool_record)
-                                        await self.session_store.upsert_call(session)
-                                    except Exception:
-                                        logger.debug("Failed to log pipeline tool call to session", call_id=call_id, exc_info=True)
+                                    await record_in_call_tool_result(
+                                        session_store=self.session_store,
+                                        call_id=call_id,
+                                        tool_call_id=function_call_id,
+                                        tool_name=name,
+                                        canonical_name=tool_registry.canonicalize_tool_name(name),
+                                        parameters=args,
+                                        result=result,
+                                        duration_ms=tool_duration_ms,
+                                    )
+                                    tool_result_recorded = True
 
                                     try:
                                         from src.tools.telephony.deferred_transfer import get_deferred_transfer_action
@@ -15672,22 +15676,22 @@ class Engine:
                                     # Feed result back to LLM for continuation
                                     if not result.get("will_hangup") and canonical_tool not in ("blind_transfer", "live_agent_transfer"):
                                         tool_result_msg = result.get("message", f"Tool {name} executed successfully.")
-                                        # Add tool result to conversation history
-                                        conversation_history.append(_ts_msg(
+                                        # Tool protocol messages are LLM context only. Keep
+                                        # persisted conversation_history transcript-only.
+                                        llm_context_history = list(conversation_history)
+                                        llm_context_history.append(_ts_msg(
                                             "assistant", None,
-                                            tool_calls=[{"id": f"call_{name}", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]
+                                            tool_calls=[{"id": function_call_id, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]
                                         ))
-                                        conversation_history.append(_ts_msg(
+                                        llm_context_history.append(_ts_msg(
                                             "tool", tool_result_msg,
-                                            tool_call_id=f"call_{name}"
+                                            tool_call_id=function_call_id
                                         ))
-                                        session.conversation_history = list(conversation_history)
-                                        await self.session_store.upsert_call(session)
-                                        logger.info("Tool result added to conversation, triggering LLM continuation", tool=name, call_id=call_id)
+                                        logger.info("Tool result added to LLM context, triggering continuation", tool=name, call_id=call_id)
                                         
                                         # Trigger LLM to generate follow-up response
                                         try:
-                                            context_for_llm = {"prior_messages": _sanitize_for_llm(conversation_history)}
+                                            context_for_llm = {"prior_messages": _sanitize_for_llm(llm_context_history)}
                                             llm_response = await pipeline.llm_adapter.generate(
                                                 call_id,
                                                 "",  # Empty transcript - tool result already in context
@@ -15755,6 +15759,8 @@ class Engine:
                                                     for next_tc in llm_response.tool_calls:
                                                         next_name = next_tc.get("name")
                                                         next_args = next_tc.get("parameters") or {}
+                                                        next_function_call_id = stable_tool_call_id(next_tc.get("id"))
+                                                        next_tc["id"] = next_function_call_id
                                                         try:
                                                             if allowed_tools and tool_registry.canonicalize_tool_name(next_name) not in allowed_tools_canonical:
                                                                 logger.info(
@@ -15762,37 +15768,96 @@ class Engine:
                                                                     call_id=call_id,
                                                                     tool=next_name,
                                                                 )
+                                                                await record_in_call_tool_result(
+                                                                    session_store=self.session_store,
+                                                                    call_id=call_id,
+                                                                    tool_call_id=next_function_call_id,
+                                                                    tool_name=next_name,
+                                                                    canonical_name=tool_registry.canonicalize_tool_name(next_name),
+                                                                    parameters=next_args,
+                                                                    result={
+                                                                        "status": "blocked",
+                                                                        "message": f"Tool '{next_name}' not allowed for this call",
+                                                                    },
+                                                                )
                                                                 continue
                                                         except Exception:
                                                             pass
                                                         next_tool = tool_registry.get(next_name)
                                                         if next_tool:
                                                             logger.info("Executing follow-up tool", tool=next_name, call_id=call_id)
+                                                            next_tool_start = time.time()
                                                             slow_threshold_ms = int(getattr(next_tool, "slow_response_threshold_ms", 0) or 0)
                                                             slow_message = str(getattr(next_tool, "slow_response_message", "") or "").strip()
                                                             next_task = asyncio.create_task(next_tool.execute(next_args, tool_ctx))
-                                                            if slow_threshold_ms > 0 and slow_message:
-                                                                done, _pending = await asyncio.wait(
-                                                                    {next_task},
-                                                                    timeout=float(slow_threshold_ms) / 1000.0,
+                                                            try:
+                                                                if slow_threshold_ms > 0 and slow_message:
+                                                                    done, _pending = await asyncio.wait(
+                                                                        {next_task},
+                                                                        timeout=float(slow_threshold_ms) / 1000.0,
+                                                                    )
+                                                                    if not done:
+                                                                        try:
+                                                                            wait_bytes = bytearray()
+                                                                            async for chunk in pipeline.tts_adapter.synthesize(call_id, slow_message, pipeline.tts_options):
+                                                                                if chunk:
+                                                                                    wait_bytes.extend(chunk)
+                                                                            if wait_bytes:
+                                                                                wait_pid = await self.playback_manager.play_audio(call_id, bytes(wait_bytes), "pipeline-wait")
+                                                                                if wait_pid:
+                                                                                    await self.playback_manager.wait_for_playback_end(
+                                                                                        call_id,
+                                                                                        wait_pid,
+                                                                                        timeout_sec=(len(wait_bytes) / 8000.0 + 3.0),
+                                                                                    )
+                                                                        except Exception:
+                                                                            logger.debug("Failed to speak slow-response message", call_id=call_id, exc_info=True)
+                                                                next_result = await next_task
+                                                            except asyncio.CancelledError:
+                                                                if not next_task.done():
+                                                                    next_task.cancel()
+                                                                    with contextlib.suppress(asyncio.CancelledError):
+                                                                        await next_task
+                                                                await record_in_call_tool_result(
+                                                                    session_store=self.session_store,
+                                                                    call_id=call_id,
+                                                                    tool_call_id=next_function_call_id,
+                                                                    tool_name=next_name,
+                                                                    canonical_name=tool_registry.canonicalize_tool_name(next_name),
+                                                                    parameters=next_args,
+                                                                    result={"status": "cancelled", "message": "Tool execution cancelled"},
+                                                                    duration_ms=(time.time() - next_tool_start) * 1000,
                                                                 )
-                                                                if not done:
-                                                                    try:
-                                                                        wait_bytes = bytearray()
-                                                                        async for chunk in pipeline.tts_adapter.synthesize(call_id, slow_message, pipeline.tts_options):
-                                                                            if chunk:
-                                                                                wait_bytes.extend(chunk)
-                                                                        if wait_bytes:
-                                                                            wait_pid = await self.playback_manager.play_audio(call_id, bytes(wait_bytes), "pipeline-wait")
-                                                                            if wait_pid:
-                                                                                await self.playback_manager.wait_for_playback_end(
-                                                                                    call_id,
-                                                                                    wait_pid,
-                                                                                    timeout_sec=(len(wait_bytes) / 8000.0 + 3.0),
-                                                                                )
-                                                                    except Exception:
-                                                                        logger.debug("Failed to speak slow-response message", call_id=call_id, exc_info=True)
-                                                            next_result = await next_task
+                                                                raise
+                                                            except Exception as next_error:
+                                                                await record_in_call_tool_result(
+                                                                    session_store=self.session_store,
+                                                                    call_id=call_id,
+                                                                    tool_call_id=next_function_call_id,
+                                                                    tool_name=next_name,
+                                                                    canonical_name=tool_registry.canonicalize_tool_name(next_name),
+                                                                    parameters=next_args,
+                                                                    result={"status": "error", "message": str(next_error)},
+                                                                    duration_ms=(time.time() - next_tool_start) * 1000,
+                                                                )
+                                                                logger.error(
+                                                                    "Follow-up tool execution failed",
+                                                                    tool=next_name,
+                                                                    call_id=call_id,
+                                                                    error=str(next_error),
+                                                                    exc_info=True,
+                                                                )
+                                                                raise
+                                                            await record_in_call_tool_result(
+                                                                session_store=self.session_store,
+                                                                call_id=call_id,
+                                                                tool_call_id=next_function_call_id,
+                                                                tool_name=next_name,
+                                                                canonical_name=tool_registry.canonicalize_tool_name(next_name),
+                                                                parameters=next_args,
+                                                                result=next_result,
+                                                                duration_ms=(time.time() - next_tool_start) * 1000,
+                                                            )
                                                             try:
                                                                 from src.tools.telephony.deferred_transfer import get_deferred_transfer_action
                                                                 next_deferred_action = get_deferred_transfer_action(next_result)
@@ -15847,12 +15912,64 @@ class Engine:
                                                                     audio_already_drained=True,
                                                                 )
                                                                 return
+                                                        else:
+                                                            await record_in_call_tool_result(
+                                                                session_store=self.session_store,
+                                                                call_id=call_id,
+                                                                tool_call_id=next_function_call_id,
+                                                                tool_name=next_name,
+                                                                canonical_name=tool_registry.canonicalize_tool_name(next_name),
+                                                                parameters=next_args,
+                                                                result={
+                                                                    "status": "error",
+                                                                    "message": f"Tool '{next_name}' not found",
+                                                                },
+                                                            )
                                         except Exception as e:
                                             logger.error("LLM continuation failed", error=str(e), exc_info=True)
                                 else:
                                     logger.warning("Tool not found", tool=name)
+                                    await record_in_call_tool_result(
+                                        session_store=self.session_store,
+                                        call_id=call_id,
+                                        tool_call_id=function_call_id,
+                                        tool_name=name,
+                                        canonical_name=tool_registry.canonicalize_tool_name(name),
+                                        parameters=args,
+                                        result={"status": "error", "message": f"Tool '{name}' not found"},
+                                        duration_ms=(time.time() - _tool_start) * 1000,
+                                    )
+                                    tool_result_recorded = True
+                            except asyncio.CancelledError:
+                                if tool_task is not None and not tool_task.done():
+                                    tool_task.cancel()
+                                    with contextlib.suppress(asyncio.CancelledError):
+                                        await tool_task
+                                if not tool_result_recorded:
+                                    await record_in_call_tool_result(
+                                        session_store=self.session_store,
+                                        call_id=call_id,
+                                        tool_call_id=function_call_id,
+                                        tool_name=name,
+                                        canonical_name=tool_registry.canonicalize_tool_name(name),
+                                        parameters=args,
+                                        result={"status": "cancelled", "message": "Tool execution cancelled"},
+                                        duration_ms=(time.time() - _tool_start) * 1000,
+                                    )
+                                raise
                             except Exception as e:
                                 logger.error("Tool execution failed", tool=name, error=str(e), exc_info=True)
+                                if not tool_result_recorded:
+                                    await record_in_call_tool_result(
+                                        session_store=self.session_store,
+                                        call_id=call_id,
+                                        tool_call_id=function_call_id,
+                                        tool_name=name,
+                                        canonical_name=tool_registry.canonicalize_tool_name(name),
+                                        parameters=args,
+                                        result={"status": "error", "message": str(e)},
+                                        duration_ms=(time.time() - _tool_start) * 1000,
+                                    )
 
                 async def maybe_respond(force: bool, from_flush: bool = False) -> None:
                     nonlocal pending_segments, flush_task
@@ -19247,6 +19364,18 @@ class Engine:
                         function_name=function_name,
                         available_tools=tool_registry.list_tools() if tool_registry else [],
                     )
+        except asyncio.CancelledError:
+            await record_in_call_tool_result(
+                session_store=self.session_store,
+                call_id=call_id,
+                tool_call_id=function_call_id,
+                tool_name=function_name,
+                canonical_name=tool_registry.canonicalize_tool_name(function_name),
+                parameters=parameters,
+                result={"status": "cancelled", "message": "Tool execution cancelled"},
+                duration_ms=(time.time() - tool_start_time) * 1000,
+            )
+            raise
         except Exception as e:
             logger.error(
                 "Tool execution error",
@@ -19257,23 +19386,17 @@ class Engine:
             )
             result = {"status": "error", "message": str(e)}
         
-        # Log tool call to session for call history (Milestone 21)
-        try:
-            tool_duration_ms = (time.time() - tool_start_time) * 1000
-            tool_record = {
-                "name": function_name,
-                "params": parameters,
-                "result": result.get("status", "unknown"),
-                "message": result.get("message", ""),
-                "timestamp": datetime.now().isoformat(),
-                "duration_ms": round(tool_duration_ms, 2),
-            }
-            if not hasattr(session, 'tool_calls') or session.tool_calls is None:
-                session.tool_calls = []
-            session.tool_calls.append(tool_record)
-            await self.session_store.upsert_call(session)
-        except Exception as e:
-            logger.debug("Failed to log tool call to session", call_id=call_id, error=str(e))
+        canonical_name = tool_registry.canonicalize_tool_name(function_name)
+        await record_in_call_tool_result(
+            session_store=self.session_store,
+            call_id=call_id,
+            tool_call_id=function_call_id,
+            tool_name=function_name,
+            canonical_name=canonical_name,
+            parameters=parameters,
+            result=result,
+            duration_ms=(time.time() - tool_start_time) * 1000,
+        )
         
         # Send result back to provider. Pass the originating `call_id` so
         # the provider can correlate the result to the correct session even
@@ -19313,23 +19436,36 @@ class Engine:
             )
         if provider and hasattr(provider, 'send_tool_result') and send_provider_result:
             try:
-                is_error = result.get("status") == "error"
-                # The local provider's send_tool_result accepts an optional
-                # call_id kwarg (added in v6.5.0 review-pass response). Other
-                # provider implementations route through their tool_adapter
-                # and have their own correlation paths. Try the new signature
-                # first; fall back to the old one if the provider hasn't been
-                # updated yet.
+                is_error = normalize_tool_terminal_status(result) == "failure"
+                # Local needs both the immutable originating call id and the
+                # real tool name; its correlation id is intentionally opaque.
+                # Other full-agent providers only need the native call id.
                 try:
-                    _send_ok = await provider.send_tool_result(
-                        function_call_id, result, is_error=is_error, call_id=call_id
-                    )
+                    if self._get_provider_kind(provider_name) == "local":
+                        _send_ok = await provider.send_tool_result(
+                            function_call_id,
+                            result,
+                            is_error=is_error,
+                            call_id=call_id,
+                            tool_name=function_name,
+                        )
+                    else:
+                        _send_ok = await provider.send_tool_result(
+                            function_call_id,
+                            result,
+                            is_error=is_error,
+                        )
                 except TypeError as _te:
-                    # Narrow guard: only fall back when the provider does not
-                    # accept the call_id kwarg. Any other TypeError is a real
-                    # bug that should surface, not be silently retried. Per
-                    # CodeRabbit review of PR #384 comment 3214158827.
-                    if "unexpected keyword argument 'call_id'" not in str(_te):
+                    # Backward compatibility for a local provider implementation
+                    # that predates the explicit call_id/tool_name keywords.
+                    type_error_text = str(_te)
+                    if self._get_provider_kind(provider_name) != "local" or not any(
+                        marker in type_error_text
+                        for marker in (
+                            "unexpected keyword argument 'call_id'",
+                            "unexpected keyword argument 'tool_name'",
+                        )
+                    ):
                         raise
                     _send_ok = await provider.send_tool_result(function_call_id, result, is_error=is_error)
                 # send_tool_result returns False on transport failure (local

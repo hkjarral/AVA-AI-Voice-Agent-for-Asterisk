@@ -20,7 +20,13 @@ export interface PhaseToolCall {
 }
 
 export interface InCallToolCall {
+    type?: 'tool_result';
+    call_id?: string;
+    tool_call_id?: string;
     name: string;
+    action?: string;
+    status?: 'success' | 'failure';
+    target_id?: string | null;
     params: unknown;
     result: string;
     message?: string;
@@ -108,20 +114,29 @@ export const InCallToolGroup = ({ entries }: { entries: InCallToolCall[] }) => (
         </div>
         <div className="space-y-2">
             {entries.map((tool, i) => {
-                const status: ToolExecutionStatus = tool.result === 'success' ? 'ok' : 'error';
+                const succeeded = tool.status ? tool.status === 'success' : tool.result === 'success';
+                const status: ToolExecutionStatus = succeeded ? 'ok' : 'error';
                 const hasParams = tool.params && typeof tool.params === 'object' && Object.keys(tool.params).length > 0;
                 return (
-                    <div key={`in-${tool.name}-${i}`} className="bg-muted/30 rounded-lg p-3 text-sm">
+                    <div key={`in-${tool.tool_call_id || tool.name}-${i}`} className="bg-muted/30 rounded-lg p-3 text-sm">
                         <div className="flex items-center justify-between gap-2 flex-wrap">
                             <div className="flex items-center gap-2 min-w-0">
                                 <Wrench className="w-4 h-4 shrink-0" />
                                 <span className="font-medium truncate">{tool.name}</span>
+                                {tool.action && tool.action !== tool.name && (
+                                    <span className="text-xs text-muted-foreground truncate">{tool.action}</span>
+                                )}
                             </div>
                             <div className="flex items-center gap-2 text-muted-foreground text-xs">
                                 <span>{Math.round(tool.duration_ms)}ms</span>
                                 <StatusPill status={status} />
                             </div>
                         </div>
+                        {tool.target_id && (
+                            <div className="mt-2 text-xs text-muted-foreground break-all">
+                                Target: <span className="font-mono">{tool.target_id}</span>
+                            </div>
+                        )}
                         {tool.message && <div className="mt-2 text-xs text-muted-foreground break-words">{tool.message}</div>}
                         {hasParams && (
                             <pre className="mt-2 text-xs bg-background/50 rounded p-2 overflow-x-auto">

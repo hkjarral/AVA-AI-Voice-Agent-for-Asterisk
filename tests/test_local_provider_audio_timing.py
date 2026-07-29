@@ -253,18 +253,21 @@ async def test_send_tool_result_has_correlatable_audio_request_id():
     provider.websocket = _FakeWebSocket([])
 
     assert await provider.send_tool_result(
-        "local-hangup_call",
+        "generated-local-invocation-1",
         {
             "status": "success",
             "farewell_message": "Thanks for calling. Goodbye!",
             "will_hangup": True,
         },
         call_id="call-tool-result",
+        tool_name="hangup_call",
     )
 
     payload = json.loads(provider.websocket.sent[-1])
     assert payload["type"] == "tool_result"
     assert payload["call_id"] == "call-tool-result"
+    assert payload["function_call_id"] == "generated-local-invocation-1"
+    assert payload["tool_name"] == "hangup_call"
     assert payload["request_id"].startswith("tool-result-")
 
 

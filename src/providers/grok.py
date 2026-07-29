@@ -48,6 +48,7 @@ from ..config import GrokProviderConfig
 # Tool calling support
 from src.tools.registry import tool_registry
 from src.tools.adapters.grok import GrokToolAdapter
+from src.tools.execution_history import record_in_call_tool_result
 
 logger = get_logger(__name__)
 
@@ -789,6 +790,19 @@ class GrokProvider(AIProviderInterface):
 
         Routes the function call to the appropriate tool via the tool adapter.
         """
+        item = event_data.get("item", {})
+        function_name = item.get("name")
+        function_call_id = item.get("call_id")
+        raw_parameters = item.get("arguments", {})
+        try:
+            parameters = json.loads(raw_parameters) if isinstance(raw_parameters, str) else raw_parameters
+        except (TypeError, json.JSONDecodeError):
+            parameters = {}
+        if not isinstance(parameters, dict):
+            parameters = {}
+        tool_started_at = time.time()
+        tool_result_recorded = False
+
         try:
             # Build context for tool execution
             # These will be injected by the engine when it sets up the provider
@@ -812,8 +826,6 @@ class GrokProvider(AIProviderInterface):
             result = await self.tool_adapter.handle_tool_call_event(event_data, context)
 
             # Check if this is a hangup_call tool that will trigger hangup
-            item = event_data.get("item", {})
-            function_name = item.get("name")
             if function_name == "hangup_call" and result:
                 # Check if tool result indicates hangup will occur
                 # Tool adapter returns result directly in top-level dict
@@ -825,6 +837,18 @@ class GrokProvider(AIProviderInterface):
                         function_name=function_name,
                         farewell=result.get("message")
                     )
+
+            await record_in_call_tool_result(
+                session_store=getattr(self, "_session_store", None),
+                call_id=self._call_id,
+                tool_call_id=function_call_id,
+                tool_name=function_name,
+                canonical_name=tool_registry.canonicalize_tool_name(function_name),
+                parameters=parameters,
+                result=result,
+                duration_ms=(time.time() - tool_started_at) * 1000,
+            )
+            tool_result_recorded = True
 
             # Wait for response.done before submitting function_call_output (see
             # _await_parent_response_done for the full rationale).
@@ -881,29 +905,19 @@ class GrokProvider(AIProviderInterface):
                     except Exception:
                         logger.debug("Failed to send farewell response.create", call_id=self._call_id, exc_info=True)
             
-            # Log tool call to session for call history (Milestone 21)
-            try:
-                session_store = getattr(self, '_session_store', None)
-                if session_store and self._call_id and function_name:
-                    from datetime import datetime
-                    session = await session_store.get_by_call_id(self._call_id)
-                    if session:
-                        tool_record = {
-                            "name": function_name,
-                            "params": item.get("arguments", {}),
-                            "result": result.get("status", "unknown") if isinstance(result, dict) else "success",
-                            "message": result.get("message", "") if isinstance(result, dict) else str(result),
-                            "timestamp": datetime.now().isoformat(),
-                            "duration_ms": 0,
-                        }
-                        if not hasattr(session, 'tool_calls') or session.tool_calls is None:
-                            session.tool_calls = []
-                        session.tool_calls.append(tool_record)
-                        await session_store.upsert_call(session)
-                        logger.debug("Tool call logged to session", call_id=self._call_id, tool=function_name)
-            except Exception as log_err:
-                logger.debug(f"Failed to log tool call to session: {log_err}", call_id=self._call_id)
-            
+        except asyncio.CancelledError:
+            if not tool_result_recorded:
+                await record_in_call_tool_result(
+                    session_store=getattr(self, "_session_store", None),
+                    call_id=self._call_id,
+                    tool_call_id=function_call_id,
+                    tool_name=function_name,
+                    canonical_name=tool_registry.canonicalize_tool_name(function_name),
+                    parameters=parameters,
+                    result={"status": "cancelled", "message": "Tool execution cancelled"},
+                    duration_ms=(time.time() - tool_started_at) * 1000,
+                )
+            raise
         except Exception as e:
             logger.error(
                 "Function call handling failed",
@@ -911,6 +925,17 @@ class GrokProvider(AIProviderInterface):
                 error=str(e),
                 exc_info=True
             )
+            if not tool_result_recorded:
+                await record_in_call_tool_result(
+                    session_store=getattr(self, "_session_store", None),
+                    call_id=self._call_id,
+                    tool_call_id=function_call_id,
+                    tool_name=function_name,
+                    canonical_name=tool_registry.canonicalize_tool_name(function_name),
+                    parameters=parameters,
+                    result={"status": "error", "message": str(e)},
+                    duration_ms=(time.time() - tool_started_at) * 1000,
+                )
             # Send error response to Grok in correct format
             try:
                 item = event_data.get("item", {})

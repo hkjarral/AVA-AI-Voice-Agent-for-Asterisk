@@ -17,6 +17,7 @@ from ..config import LocalProviderConfig
 from ..audio.resampler import resample_audio
 from .base import AIProviderInterface, ProviderCapabilities, ProviderCapabilitiesMixin
 from ..tools.parser import parse_response_with_tools, validate_tool_call, has_tool_intent_markers
+from ..tools.execution_history import stable_tool_call_id
 
 logger = get_logger(__name__)
 
@@ -554,6 +555,14 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                     )
                 normalized_tool_calls = kept_tool_calls or None
 
+        # Local models do not consistently supply provider-native call ids.
+        # Assign the fallback once at the provider boundary so the same id is
+        # retained if execution/result delivery is retried, while genuinely
+        # separate invocations receive distinct ids.
+        if normalized_tool_calls:
+            for tool_call in normalized_tool_calls:
+                tool_call["id"] = stable_tool_call_id(tool_call.get("id"))
+
         hangup_farewell = self._extract_hangup_farewell(normalized_tool_calls)
         if hangup_farewell:
             response_text = hangup_farewell
@@ -790,6 +799,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         result: Any,
         is_error: bool = False,
         call_id: Optional[str] = None,
+        tool_name: Optional[str] = None,
     ) -> bool:
         """Send an executed local tool result back to local_ai_server for the final LLM turn.
 
@@ -825,9 +835,13 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             )
             return False
         function_call_id = str(function_call_id or "").strip()
-        tool_name = function_call_id
-        if tool_name.startswith("local-"):
-            tool_name = tool_name[len("local-"):]
+        effective_tool_name = str(tool_name or "").strip()
+        if not effective_tool_name:
+            # Backward compatibility for older callers that embedded the tool
+            # name in the legacy local-{tool_name} correlation id.
+            effective_tool_name = function_call_id
+            if effective_tool_name.startswith("local-"):
+                effective_tool_name = effective_tool_name[len("local-"):]
         # Originating call_id wins; provider-global fallback only as last resort.
         effective_call_id = call_id or self._active_call_id
         payload = {
@@ -836,7 +850,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             "request_id": f"tool-result-{uuid4().hex}",
             "call_id": effective_call_id,
             "function_call_id": function_call_id,
-            "tool_name": tool_name,
+            "tool_name": effective_tool_name,
             "result": result,  # preserve falsy values; do NOT coerce to {}
             "is_error": bool(is_error),
             "tool_policy": self._effective_tool_policy,
@@ -848,7 +862,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 "Sent local tool result to Local AI Server",
                 call_id=effective_call_id,
                 function_call_id=function_call_id,
-                tool_name=tool_name,
+                tool_name=effective_tool_name,
                 is_error=bool(is_error),
             )
             return True
