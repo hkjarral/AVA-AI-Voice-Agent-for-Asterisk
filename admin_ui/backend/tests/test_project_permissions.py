@@ -3,6 +3,8 @@ from __future__ import annotations
 import errno
 import os
 import stat
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 import pytest
 import yaml
@@ -317,3 +319,65 @@ def test_shared_yaml_persistence_covers_every_tools_page_family(tmp_path, monkey
 
     assert result["status"] == "success"
     assert persisted == desired
+
+
+def test_complete_config_updates_are_serialized_without_lost_fields_or_deadlock(
+    tmp_path, monkeypatch
+):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    base_path = config_dir / "ai-agent.yaml"
+    local_path = config_dir / "ai-agent.local.yaml"
+    base_path.write_text("{}\n", encoding="utf-8")
+    local_path.write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr(config_api.settings, "CONFIG_PATH", str(base_path))
+    monkeypatch.setattr(config_api.settings, "LOCAL_CONFIG_PATH", str(local_path))
+    monkeypatch.setattr(config_api, "_assert_tool_emails_valid", lambda content: None)
+    monkeypatch.setattr(config_api, "_migrate_inline_provider_secrets", lambda parsed: False)
+
+    persist_holds_lock = Event()
+    provider_attempted_update = Event()
+    allow_persist = Event()
+    first_validation = True
+
+    def controlled_validation(content):
+        nonlocal first_validation
+        if first_validation:
+            first_validation = False
+            persist_holds_lock.set()
+            assert allow_persist.wait(timeout=5)
+        return {"warnings": []}
+
+    monkeypatch.setattr(
+        config_api,
+        "_validate_ai_agent_config",
+        controlled_validation,
+    )
+    desired = yaml.safe_dump(
+        {"tools": {"request_transcript": {"enabled": True}}},
+        sort_keys=False,
+    )
+
+    def update_provider_field():
+        provider_attempted_update.set()
+        return config_api.update_yaml_provider_field(
+            "local",
+            "tts_model",
+            "kokoro",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        persist_future = executor.submit(config_api.persist_config_content, desired)
+        assert persist_holds_lock.wait(timeout=5)
+        provider_future = executor.submit(update_provider_field)
+        assert provider_attempted_update.wait(timeout=5)
+        assert not provider_future.done()
+        allow_persist.set()
+
+        assert persist_future.result(timeout=5)["status"] == "success"
+        assert provider_future.result(timeout=5) is True
+
+    merged = config_api._read_merged_config_dict()
+    assert merged["tools"]["request_transcript"]["enabled"] is True
+    assert merged["providers"]["local"]["tts_model"] == "kokoro"

@@ -143,13 +143,13 @@ async def test_outbound_agent_vars_prefer_ai_agent_and_keep_compatibility_alias(
     [
         (True, None, True),
         (False, None, False),
-        (None, {"id": "channel-1", "state": "Up"}, False),
+        (None, {"id": "channel-1", "state": "Up"}, True),
         (None, {"status": 404}, True),
         (None, {"status": 503}, True),
         (None, None, True),
     ],
 )
-async def test_outbound_amd_handoff_reconciles_before_destructive_fallback(
+async def test_outbound_amd_handoff_retains_ownership_when_indeterminate(
     outcome,
     presence,
     guard_retained,
@@ -163,6 +163,7 @@ async def test_outbound_amd_handoff_reconciles_before_destructive_fallback(
     )
 
     assert ("channel-1" in engine._outbound_awaiting_amd_channel_ids) is guard_retained
+    engine.ari_client.send_command.assert_not_awaited()
     if guard_retained:
         engine.outbound_store.finish_attempt.assert_not_awaited()
         engine.ari_client.hangup_channel.assert_not_awaited()
@@ -192,6 +193,7 @@ async def test_outbound_amd_handoff_exceptions_retain_guard():
     )
 
     assert "channel-1" in engine._outbound_awaiting_amd_channel_ids
+    engine.ari_client.send_command.assert_not_awaited()
     engine.outbound_store.finish_attempt.assert_not_awaited()
     engine.ari_client.hangup_channel.assert_not_awaited()
 

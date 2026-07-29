@@ -2928,36 +2928,6 @@ class Engine:
             return
         await self.ari_client.hangup_channel(channel_id)
 
-    async def _ari_channel_presence(self, channel_id: str) -> Optional[bool]:
-        """Return whether a channel remains controllable after an uncertain handoff.
-
-        ``False`` is reserved for an explicit ARI 404. ``None`` means the
-        reconciliation probe was unavailable or malformed; destructive cleanup
-        must retain its existing ownership guard for both outcomes.
-        """
-        try:
-            response = await self.ari_client.send_command(
-                "GET",
-                f"channels/{channel_id}",
-                tolerate_statuses=[404],
-            )
-        except Exception:
-            logger.warning(
-                "ARI channel presence probe raised after uncertain dialplan handoff",
-                channel_id=channel_id,
-                exc_info=True,
-            )
-            return None
-
-        if not isinstance(response, dict):
-            return None
-        if response.get("id") == channel_id:
-            return True
-        try:
-            return False if int(response.get("status")) == 404 else None
-        except (TypeError, ValueError):
-            return None
-
     async def _handle_outbound_answered(self, channel_id: str, channel: Dict[str, Any], args: List[Any]) -> None:
         """On answer, immediately run dialplan-assisted AMD by continuing into the AMD context."""
         attempt_id = str(args[1] or "").strip() if len(args) > 1 else ""
@@ -3040,7 +3010,6 @@ class Engine:
 
         # Exiting Stasis triggers StasisEnd; guard cleanup until AMD returns.
         self._outbound_awaiting_amd_channel_ids.add(channel_id)
-        channel_present: Optional[bool] = None
         try:
             ok = await self.ari_client.continue_in_dialplan(
                 channel_id,
@@ -3060,15 +3029,12 @@ class Engine:
         if ok is True:
             return
         if ok is None:
-            channel_present = await self._ari_channel_presence(channel_id)
-            if channel_present is not True:
-                logger.warning(
-                    "Outbound AMD handoff indeterminate; retaining caller ownership guard",
-                    channel_id=channel_id,
-                    attempt_id=attempt_id,
-                    caller_channel_present=channel_present,
-                )
-                return
+            logger.warning(
+                "Outbound AMD handoff indeterminate; retaining caller ownership guard",
+                channel_id=channel_id,
+                attempt_id=attempt_id,
+            )
+            return
 
         logger.warning("Outbound AMD continueInDialplan failed", channel_id=channel_id, attempt_id=attempt_id)
         self._outbound_awaiting_amd_channel_ids.discard(channel_id)
@@ -18880,22 +18846,16 @@ class Engine:
                         return
 
                     if redirected is None:
-                        channel_present = await self._ari_channel_presence(
-                            session.caller_channel_id
+                        logger.warning(
+                            "Provider-failure redirect indeterminate; retaining transfer ownership",
+                            call_id=session.call_id,
+                            context=context,
+                            extension=extension,
+                            priority=priority,
                         )
-                        if channel_present is not True:
-                            logger.warning(
-                                "Provider-failure redirect indeterminate; retaining transfer ownership",
-                                call_id=session.call_id,
-                                context=context,
-                                extension=extension,
-                                priority=priority,
-                                caller_channel_present=channel_present,
-                            )
-                            return
+                        return
 
-                    # An explicit rejection, or an indeterminate handoff whose
-                    # channel is confirmed present, can safely restore cleanup
+                    # Only an explicit rejection can safely restore cleanup
                     # ownership before using the announcement/hangup fallback.
                     session.transfer_active = False
                     session.transfer_state = None

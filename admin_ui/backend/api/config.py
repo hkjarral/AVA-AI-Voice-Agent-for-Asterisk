@@ -39,7 +39,9 @@ MAX_BACKUPS = 5
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-_LOCAL_CONFIG_WRITE_LOCK = threading.Lock()
+# Transactions call _write_local_config(), which re-enters this lock while
+# preserving the writer's direct-call safety for tests and synchronous helpers.
+_CONFIG_UPDATE_LOCK = threading.RLock()
 
 
 def _assert_in_use_audio_profiles_unchanged(
@@ -414,7 +416,7 @@ def _write_local_config(content: str) -> None:
     topology falls back to a validated, fsynced in-place rewrite with automatic
     rollback to the backup if the rewrite fails.
     """
-    with _LOCAL_CONFIG_WRITE_LOCK:
+    with _CONFIG_UPDATE_LOCK:
         _write_local_config_locked(content)
 
 
@@ -870,6 +872,19 @@ def persist_config_content(
 
     Raises ``HTTPException`` on validation failure (propagated to the caller).
     """
+    with _CONFIG_UPDATE_LOCK:
+        return _persist_config_content_locked(
+            content,
+            trusted_profile_reset=trusted_profile_reset,
+        )
+
+
+def _persist_config_content_locked(
+    content: str,
+    *,
+    trusted_profile_reset: Optional[tuple[str, Dict[str, Any]]] = None,
+) -> dict:
+    """Persist a complete config while the shared update lock is held."""
     # MED-E1: reject malformed tool email addresses (422) on EVERY persistence
     # path. Both the Raw YAML editor (POST /yaml) and the structured tools CRUD
     # API (api/tools.py -> _persist_cfg) funnel through here, so centralizing the
@@ -2438,6 +2453,16 @@ def update_yaml_provider_field(provider_name: str, field: str, value: Any) -> bo
     and writes the result to the LOCAL override file so the git-tracked
     base stays clean.
     """
+    with _CONFIG_UPDATE_LOCK:
+        return _update_yaml_provider_field_locked(provider_name, field, value)
+
+
+def _update_yaml_provider_field_locked(
+    provider_name: str,
+    field: str,
+    value: Any,
+) -> bool:
+    """Update one provider field while the shared config lock is held."""
     try:
         base_config = _read_base_config_dict()
         merged_config = _read_merged_config_dict()

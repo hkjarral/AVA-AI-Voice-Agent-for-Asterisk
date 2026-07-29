@@ -480,7 +480,7 @@ class TestUnifiedTransferTool:
         mock_ari_client.send_command.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_indeterminate_handoff_result_probes_before_restoring_ownership(
+    async def test_indeterminate_handoff_result_retains_ownership_without_probe(
         self, tool, tool_context, mock_ari_client
     ):
         session = tool_context.session_store.get_by_call_id.return_value
@@ -497,10 +497,11 @@ class TestUnifiedTransferTool:
 
         assert result["status"] == "failed"
         assert result["handoff_indeterminate"] is True
-        assert session.transfer_active is False
-        assert session.transfer_state == "ready"
-        assert session.transfer_target == "previous"
-        assert tool_context.session_store.upsert_call.await_count == 2
+        assert session.transfer_active is True
+        assert session.transfer_state == "in_queue"
+        assert session.transfer_target == "Technical Support"
+        assert tool_context.session_store.upsert_call.await_count == 1
+        mock_ari_client.send_command.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_indeterminate_handoff_result_retains_ownership_when_caller_left_ari(
@@ -519,9 +520,10 @@ class TestUnifiedTransferTool:
         assert session.transfer_state == "in_queue"
         assert session.transfer_target == "Technical Support"
         assert tool_context.session_store.upsert_call.await_count == 1
+        mock_ari_client.send_command.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_handoff_exception_restores_ownership_when_caller_remains_in_ari(
+    async def test_handoff_exception_retains_ownership_without_presence_probe(
         self, tool, tool_context, mock_ari_client
     ):
         session = tool_context.session_store.get_by_call_id.return_value
@@ -536,14 +538,11 @@ class TestUnifiedTransferTool:
 
         assert result["status"] == "failed"
         assert result["handoff_indeterminate"] is True
-        assert session.transfer_active is False
-        assert session.transfer_state is None
-        assert session.transfer_target is None
-        mock_ari_client.send_command.assert_awaited_once_with(
-            method="GET",
-            resource=f"channels/{tool_context.caller_channel_id}",
-            tolerate_statuses=[404],
-        )
+        assert session.transfer_active is True
+        assert session.transfer_state == "in_ringgroup"
+        assert session.transfer_target == "Support Ring Group"
+        assert tool_context.session_store.upsert_call.await_count == 1
+        mock_ari_client.send_command.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("channel_response", [{"status": 404}, {"status": 503}, None])
@@ -563,9 +562,10 @@ class TestUnifiedTransferTool:
         assert session.transfer_state == "in_ringgroup"
         assert session.transfer_target == "Support Ring Group"
         assert tool_context.session_store.upsert_call.await_count == 1
+        mock_ari_client.send_command.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_handoff_exception_retains_ownership_when_channel_probe_raises(
+    async def test_handoff_exception_does_not_run_channel_presence_probe(
         self, tool, tool_context, mock_ari_client
     ):
         session = tool_context.session_store.get_by_call_id.return_value
@@ -580,6 +580,7 @@ class TestUnifiedTransferTool:
         assert session.transfer_state == "in_queue"
         assert session.transfer_target == "Technical Support"
         assert tool_context.session_store.upsert_call.await_count == 1
+        mock_ari_client.send_command.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_rejected_deferred_handoff_keeps_action_for_retry_and_restores_ownership(
