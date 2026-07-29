@@ -162,7 +162,7 @@ _ROUTING_PARAMETER_SUFFIXES = {
     "queue",
     "mailbox",
 }
-_ROUTING_TARGET_ID_KEYS = frozenset({"destination", "target", "extension", "queue", "mailbox"})
+_ROUTING_TARGET_ID_KEYS = frozenset(_ROUTING_PARAMETER_KEYS.intersection(_TARGET_ID_KEYS))
 
 
 def stable_tool_call_id(value: Any = None) -> str:

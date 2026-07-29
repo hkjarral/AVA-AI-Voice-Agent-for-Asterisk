@@ -73,13 +73,15 @@ append-only reduction contract:
   "type": "tool_result",
   "call_id": "1785299332.302",
   "tool_call_id": "provider-call-7",
-  "name": "google_calendar",
-  "action": "create_event",
+  "name": "blind_transfer",
+  "action": "blind_transfer",
   "status": "success",
-  "target_id": "calendar-event-42",
-  "params": {"action": "create_event"},
+  "target_id": "***REDACTED***",
+  "params": {"destination": "***REDACTED***"},
   "result": "success",
-  "message": "Event created",
+  "message": "Transfer accepted for ***REDACTED***",
+  "redaction_mode": "strict",
+  "redacted_fields": ["params.destination", "target_id", "message"],
   "timestamp": "2026-07-29T04:00:00+00:00",
   "duration_ms": 121.4
 }
@@ -107,7 +109,7 @@ append-only reduction contract:
   routing-derived top-level `target_id` is redacted along with its parameter;
   resource identifiers needed for reducers (for example, calendar event ids)
   remain available. Messages that echo a redacted parameter are sanitized too.
-  Policy changes affect future entries only, and historical `REDACTED` values
+  Policy changes affect future entries only, and historical `***REDACTED***` values
   cannot be recovered.
 - The event records the tool execution fact only. A successful voicemail route
   does not claim that a message was recorded, and a successful transfer does
