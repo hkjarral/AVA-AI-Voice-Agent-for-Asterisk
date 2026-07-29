@@ -1187,7 +1187,7 @@ async def update_yaml_config(update: ConfigUpdate):
         # Persist via the shared helper (also used by the structured tools CRUD
         # API). MED-E1 email validation now lives inside persist_config_content
         # so every persistence path enforces it (not just this endpoint).
-        result = persist_config_content(update.content)
+        result = await asyncio.to_thread(persist_config_content, update.content)
         return await reconcile_apply_result_with_engine_state(result)
     except HTTPException:
         raise
@@ -2855,8 +2855,18 @@ async def upload_provider_api_key(provider_key: str, payload: Dict[str, Any]):
     if not api_key:
         raise HTTPException(status_code=400, detail="api_key is required")
     path = _provider_secret_path(provider_key, "api-key")
-    _write_provider_secret(provider_key, "api-key", api_key.encode("utf-8"))
-    _update_provider_credentials_field(provider_key, "api_key_file", path)
+    await asyncio.to_thread(
+        _write_provider_secret,
+        provider_key,
+        "api-key",
+        api_key.encode("utf-8"),
+    )
+    await asyncio.to_thread(
+        _update_provider_credentials_field,
+        provider_key,
+        "api_key_file",
+        path,
+    )
     return {"status": "success", "restart_pending": True, "path": path}
 
 
@@ -2869,8 +2879,18 @@ async def upload_provider_agent_id(provider_key: str, payload: Dict[str, Any]):
     if not agent_id:
         raise HTTPException(status_code=400, detail="agent_id is required")
     path = _provider_secret_path(provider_key, "agent-id")
-    _write_provider_secret(provider_key, "agent-id", agent_id.encode("utf-8"))
-    _update_provider_credentials_field(provider_key, "agent_id_file", path)
+    await asyncio.to_thread(
+        _write_provider_secret,
+        provider_key,
+        "agent-id",
+        agent_id.encode("utf-8"),
+    )
+    await asyncio.to_thread(
+        _update_provider_credentials_field,
+        provider_key,
+        "agent_id_file",
+        path,
+    )
     return {"status": "success", "restart_pending": True, "path": path}
 
 
@@ -2895,8 +2915,18 @@ async def upload_provider_vertex_json(provider_key: str, file: UploadFile = File
     if creds.get("type") != "service_account":
         raise HTTPException(status_code=400, detail="JSON file must be a service account key (type: service_account)")
     path = _provider_secret_path(provider_key, "vertex-json")
-    _write_provider_secret(provider_key, "vertex-json", content)
-    _update_provider_credentials_field(provider_key, "credentials_path", path)
+    await asyncio.to_thread(
+        _write_provider_secret,
+        provider_key,
+        "vertex-json",
+        content,
+    )
+    await asyncio.to_thread(
+        _update_provider_credentials_field,
+        provider_key,
+        "credentials_path",
+        path,
+    )
     return {
         "status": "success",
         "restart_pending": True,
@@ -2931,7 +2961,7 @@ async def delete_provider_credential(provider_key: str, credential_name: str):
     provider_cfg.pop(field, None)
     providers[provider_key] = provider_cfg
     merged["providers"] = providers
-    _save_merged_config(merged)
+    await asyncio.to_thread(_save_merged_config, merged)
     # Compute the on-disk path locally from (provider_key,
     # credential_name) so the unlink target is constructed from
     # validated inputs only — same no-taint shape as
@@ -2949,7 +2979,7 @@ async def delete_provider_credential(provider_key: str, credential_name: str):
         return {"status": "success", "restart_pending": True}
     canonical = Path(canonical_str)
     if canonical.exists():
-        canonical.unlink()
+        await asyncio.to_thread(canonical.unlink)
     return {"status": "success", "restart_pending": True}
 
 

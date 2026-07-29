@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
@@ -43,6 +43,7 @@ const ProvidersPage: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [editingProvider, setEditingProvider] = useState<string | null>(null);
+    const editingProviderRef = useRef<string | null>(null);
     const [providerForm, setProviderForm] = useState<any>({});
     const [isNewProvider, setIsNewProvider] = useState(false);
     const [testingProvider, setTestingProvider] = useState<string | null>(null);
@@ -108,13 +109,18 @@ const ProvidersPage: React.FC = () => {
         }
     };
 
-    const handleProviderAudioResetComplete = async () => {
+    const updateEditingProvider = (providerKey: string | null) => {
+        editingProviderRef.current = providerKey;
+        setEditingProvider(providerKey);
+    };
+
+    const handleProviderAudioResetComplete = async (resetProvider: string) => {
         const refreshed = await fetchConfig(true);
         await refetch();
-        if (refreshed && editingProvider) {
-            const providerData = refreshed.providers?.[editingProvider];
+        if (refreshed && editingProviderRef.current === resetProvider) {
+            const providerData = refreshed.providers?.[resetProvider];
             if (providerData) {
-                setProviderForm({ ...providerData, name: editingProvider });
+                setProviderForm({ ...providerData, name: resetProvider });
             }
         }
     };
@@ -182,7 +188,7 @@ const ProvidersPage: React.FC = () => {
     };
 
     const handleEditProvider = (name: string) => {
-        setEditingProvider(name);
+        updateEditingProvider(name);
         const providerData = { ...(config.providers?.[name] || {}) };
 
         // Only infer concrete type when YAML didn't specify one. Rewriting
@@ -227,7 +233,7 @@ const ProvidersPage: React.FC = () => {
     };
 
     const handleAddProvider = () => {
-        setEditingProvider('new');
+        updateEditingProvider('new');
         setProviderForm({
             name: '',
             type: 'openai_realtime',
@@ -398,7 +404,9 @@ const ProvidersPage: React.FC = () => {
                 if (!template) {
                     return;
                 }
-                nextProviders[templateKey] = template;
+                nextProviders[templateKey] = templateKey === 'openai_realtime'
+                    ? enforceOpenAIRealtimeGaAudioContract(template)
+                    : template;
                 changed = true;
             }
         });
@@ -689,7 +697,7 @@ const ProvidersPage: React.FC = () => {
         newConfig.providers[finalName] = providerData;
 
         await saveConfig(newConfig);
-        setEditingProvider(null);
+        updateEditingProvider(null);
     };
 
     const handleTestConnection = async (name: string, providerData: any) => {
@@ -1166,7 +1174,7 @@ const ProvidersPage: React.FC = () => {
 
             <Modal
                 isOpen={!!editingProvider}
-                onClose={() => setEditingProvider(null)}
+                onClose={() => updateEditingProvider(null)}
                 title={isNewProvider ? 'Add Provider' : `Edit Provider: ${editingProvider}`}
                 size="lg"
                 footer={
@@ -1195,7 +1203,7 @@ const ProvidersPage: React.FC = () => {
                         </div>
                         <div className="flex gap-2">
                             <button
-                                onClick={() => setEditingProvider(null)}
+                                onClick={() => updateEditingProvider(null)}
                                 className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"
                             >
                                 Cancel
@@ -1417,7 +1425,7 @@ const ProvidersPage: React.FC = () => {
                             <AudioResetButton
                                 scope="provider"
                                 target={editingProvider}
-                                onResetComplete={handleProviderAudioResetComplete}
+                                onResetComplete={() => handleProviderAudioResetComplete(editingProvider)}
                             />
                         </div>
                     )}

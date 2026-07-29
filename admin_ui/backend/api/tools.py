@@ -1,6 +1,8 @@
 """
 Tools API endpoints for testing HTTP tools before saving.
 """
+import asyncio
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Dict, Any, Optional, List, Literal
@@ -1284,7 +1286,7 @@ def _load_cfg() -> Dict[str, Any]:
 
 async def _persist_cfg(cfg: Dict[str, Any]) -> dict:
     content = yaml.dump(cfg, default_flow_style=False, sort_keys=False)
-    result = config_api.persist_config_content(content)
+    result = await asyncio.to_thread(config_api.persist_config_content, content)
     return await config_api.reconcile_apply_result_with_engine_state(result)
 
 

@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -8,6 +9,37 @@ from src.core.session_store import SessionStore
 from src.engine import Engine, _outbound_attempt_stale_seconds
 from src.tools.context import PreCallContext
 from src.tools.http.generic_lookup import GenericHTTPLookupTool, HTTPLookupConfig
+
+
+def _outbound_handoff_engine(outcome, presence):
+    engine = Engine.__new__(Engine)
+    engine._outbound_amd_context = "aava-outbound-amd"
+    engine._outbound_awaiting_amd_channel_ids = set()
+    engine._outbound_attempt_meta_by_attempt_id = {
+        "attempt-1": {
+            "attempt_id": "attempt-1",
+            "campaign_id": "campaign-1",
+            "lead_id": "lead-1",
+            "context": "sales",
+            "routing_method": "ai_agent",
+        }
+    }
+    engine._outbound_attempt_meta_by_channel_id = {}
+    engine._outbound_attempt_amd = {}
+    engine._set_outbound_agent_channel_vars = AsyncMock()
+    engine.ari_client = SimpleNamespace(
+        set_channel_var=AsyncMock(),
+        continue_in_dialplan=AsyncMock(return_value=outcome),
+        send_command=AsyncMock(return_value=presence),
+        hangup_channel=AsyncMock(),
+    )
+    engine.outbound_store = SimpleNamespace(
+        set_attempt_channel=AsyncMock(),
+        set_lead_state=AsyncMock(),
+        get_campaign=AsyncMock(return_value={}),
+        finish_attempt=AsyncMock(),
+    )
+    return engine
 
 
 def _campaign(**overrides):
@@ -103,6 +135,78 @@ async def test_outbound_agent_vars_prefer_ai_agent_and_keep_compatibility_alias(
     assert Engine._outbound_routing_channel_vars("sales_east", "ai_context") == {
         "AI_CONTEXT": "sales_east"
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "presence", "guard_retained"),
+    [
+        (True, None, True),
+        (False, None, False),
+        (None, {"id": "channel-1", "state": "Up"}, False),
+        (None, {"status": 404}, True),
+        (None, {"status": 503}, True),
+        (None, None, True),
+    ],
+)
+async def test_outbound_amd_handoff_reconciles_before_destructive_fallback(
+    outcome,
+    presence,
+    guard_retained,
+):
+    engine = _outbound_handoff_engine(outcome, presence)
+
+    await engine._handle_outbound_answered(
+        "channel-1",
+        {"id": "channel-1"},
+        ["outbound", "attempt-1"],
+    )
+
+    assert ("channel-1" in engine._outbound_awaiting_amd_channel_ids) is guard_retained
+    if guard_retained:
+        engine.outbound_store.finish_attempt.assert_not_awaited()
+        engine.ari_client.hangup_channel.assert_not_awaited()
+    else:
+        engine.outbound_store.finish_attempt.assert_awaited_once_with(
+            "attempt-1",
+            outcome="error",
+            error_message="continueInDialplan failed",
+        )
+        engine.ari_client.hangup_channel.assert_awaited_once_with("channel-1")
+
+
+@pytest.mark.asyncio
+async def test_outbound_amd_handoff_exceptions_retain_guard():
+    engine = _outbound_handoff_engine(None, None)
+    engine.ari_client.continue_in_dialplan.side_effect = RuntimeError(
+        "continue response lost"
+    )
+    engine.ari_client.send_command.side_effect = RuntimeError(
+        "presence probe unavailable"
+    )
+
+    await engine._handle_outbound_answered(
+        "channel-1",
+        {"id": "channel-1"},
+        ["outbound", "attempt-1"],
+    )
+
+    assert "channel-1" in engine._outbound_awaiting_amd_channel_ids
+    engine.outbound_store.finish_attempt.assert_not_awaited()
+    engine.ari_client.hangup_channel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_outbound_channel_destroyed_releases_indeterminate_amd_guard():
+    engine = Engine.__new__(Engine)
+    engine._outbound_awaiting_amd_channel_ids = {"channel-1"}
+    engine._outbound_attempt_meta_by_channel_id = {}
+
+    await engine._handle_outbound_channel_destroyed(
+        {"channel": {"id": "channel-1"}}
+    )
+
+    assert "channel-1" not in engine._outbound_awaiting_amd_channel_ids
 
 
 def test_outbound_selector_preserves_legacy_rows_and_uses_agent_for_new_rows():

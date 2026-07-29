@@ -1,10 +1,38 @@
 import copy
+import threading
+
 import pytest
 import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from api import tools as tools_api
 from api import config as config_api
+
+
+@pytest.mark.asyncio
+async def test_tools_persistence_is_offloaded_from_event_loop(monkeypatch):
+    caller_thread = threading.get_ident()
+    persistence_threads = []
+
+    def fake_persist(content):
+        persistence_threads.append(threading.get_ident())
+        return {"status": "success"}
+
+    async def fake_reconcile(result):
+        return result
+
+    monkeypatch.setattr(config_api, "persist_config_content", fake_persist)
+    monkeypatch.setattr(
+        config_api,
+        "reconcile_apply_result_with_engine_state",
+        fake_reconcile,
+    )
+
+    result = await tools_api._persist_cfg({"tools": {}})
+
+    assert result == {"status": "success"}
+    assert len(persistence_threads) == 1
+    assert persistence_threads[0] != caller_thread
 
 
 @pytest.fixture

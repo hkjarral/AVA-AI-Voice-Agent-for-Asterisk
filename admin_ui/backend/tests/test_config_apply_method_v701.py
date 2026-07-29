@@ -4,6 +4,8 @@ RESTART, not hot_reload. StreamingPlaybackManager AND the VAD/gating managers
 at construction in Engine.__init__, and _reload_handler does not rebuild them. Only
 barge_in is read live per-call (getattr(self.config, "barge_in", None)), so it stays
 hot_reload."""
+import threading
+
 import pytest
 
 from api import config as config_api
@@ -26,6 +28,23 @@ def _patch_io(monkeypatch, old_merged, new_parsed):
         return None
 
     monkeypatch.setattr(config_api, "_fetch_engine_config_state", _no_engine_state)
+
+
+@pytest.mark.asyncio
+async def test_yaml_save_offloads_persistence_from_event_loop(monkeypatch):
+    caller_thread = threading.get_ident()
+    writer_threads = []
+    _patch_io(monkeypatch, {}, {"tools": {}})
+    monkeypatch.setattr(
+        config_api,
+        "_write_local_config",
+        lambda content: writer_threads.append(threading.get_ident()),
+    )
+
+    await update_yaml_config(ConfigUpdate(content="x"))
+
+    assert len(writer_threads) == 1
+    assert writer_threads[0] != caller_thread
 
 
 @pytest.mark.asyncio

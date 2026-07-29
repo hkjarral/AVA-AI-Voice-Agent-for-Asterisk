@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import axios from 'axios';
 import yaml from 'js-yaml';
@@ -254,6 +254,31 @@ describe('ProfilesPage audio contract safety', () => {
 
         fireEvent.click(reset);
         expect(await screen.findByText('Changes saved. Restart required to make them active.')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Restart AI Engine' })).toBeInTheDocument();
+    });
+
+    it('does not downgrade a pending restart when a later profile save recommends hot reload', async () => {
+        mockProfilePageGets([]);
+        mocks.confirm.mockResolvedValue(true);
+        vi.mocked(axios.post)
+            .mockResolvedValueOnce({ data: { recommended_apply_method: 'restart' } })
+            .mockResolvedValueOnce({ data: { recommended_apply_method: 'hot_reload' } });
+
+        render(<ProfilesPage />);
+
+        fireEvent.click(await screen.findByRole('button', {
+            name: 'Restore profile baseline for telephony_enhanced_8k',
+        }));
+        expect(await screen.findByText('Changes saved. Restart required to make them active.')).toBeInTheDocument();
+
+        fireEvent.click(screen.getByText('telephony_enhanced_8k'));
+        const dialog = await screen.findByRole('dialog', {
+            name: 'Edit Profile: telephony_enhanced_8k',
+        });
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(2));
+
+        expect(screen.getByText('Changes saved. Restart required to make them active.')).toBeInTheDocument();
         expect(screen.getByRole('button', { name: 'Restart AI Engine' })).toBeInTheDocument();
     });
 });

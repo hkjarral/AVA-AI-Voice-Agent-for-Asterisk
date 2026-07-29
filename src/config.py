@@ -1165,6 +1165,10 @@ class AppConfig(BaseModel):
             if expected is None:
                 return
             raw_rate = provider_config.get(rate_field)
+            if isinstance(raw_rate, float) and not raw_rate.is_integer():
+                raise ValueError(
+                    f"providers.{provider_name}.{rate_field} must be an integer"
+                )
             try:
                 rate = int(raw_rate)
             except (TypeError, ValueError) as exc:

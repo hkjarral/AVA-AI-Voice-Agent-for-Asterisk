@@ -1312,7 +1312,12 @@ async def switch_model(request: SwitchModelRequest):
     # Sync to YAML config for consistency
     if yaml_updates:
         for field, value in yaml_updates.items():
-            update_yaml_provider_field("local", field, value)
+            await asyncio.to_thread(
+                update_yaml_provider_field,
+                "local",
+                field,
+                value,
+            )
     
     # 4. Recreate container if needed (restart doesn't reload .env)
     if requires_restart:
@@ -1327,7 +1332,12 @@ async def switch_model(request: SwitchModelRequest):
             if previous_yaml:
                 for field, value in previous_yaml.items():
                     try:
-                        update_yaml_provider_field("local", field, value)
+                        await asyncio.to_thread(
+                            update_yaml_provider_field,
+                            "local",
+                            field,
+                            value,
+                        )
                     except Exception:
                         pass
             return SwitchModelResponse(
@@ -1353,7 +1363,12 @@ async def switch_model(request: SwitchModelRequest):
     if previous_yaml:
         for field, value in previous_yaml.items():
             try:
-                update_yaml_provider_field("local", field, value)
+                await asyncio.to_thread(
+                    update_yaml_provider_field,
+                    "local",
+                    field,
+                    value,
+                )
             except Exception:
                 pass
     try:

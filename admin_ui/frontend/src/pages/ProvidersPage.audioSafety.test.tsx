@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import axios from 'axios';
 import yaml from 'js-yaml';
@@ -12,6 +12,8 @@ import ProvidersPage from './ProvidersPage';
 const mocks = vi.hoisted(() => ({
     config: {} as Record<string, unknown>,
     refetch: vi.fn().mockResolvedValue(undefined),
+    confirm: vi.fn().mockResolvedValue(true),
+    loadConfigYaml: vi.fn(),
     toastError: vi.fn(),
 }));
 
@@ -25,7 +27,7 @@ vi.mock('sonner', () => ({
     },
 }));
 vi.mock('../hooks/useConfirmDialog', () => ({
-    useConfirmDialog: () => ({ confirm: vi.fn() }),
+    useConfirmDialog: () => ({ confirm: mocks.confirm }),
 }));
 vi.mock('../hooks/useRestartRequired', () => ({
     useRestartRequired: () => ({
@@ -35,12 +37,17 @@ vi.mock('../hooks/useRestartRequired', () => ({
 }));
 vi.mock('../utils/configCache', () => ({
     getCachedConfig: () => ({ config: mocks.config, yamlError: null }),
-    loadConfigYaml: vi.fn(async () => ({ config: mocks.config, yamlError: null })),
+    loadConfigYaml: mocks.loadConfigYaml,
 }));
 
 describe('ProvidersPage OpenAI Realtime save contract', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        mocks.confirm.mockResolvedValue(true);
+        mocks.loadConfigYaml.mockImplementation(async () => ({
+            config: mocks.config,
+            yamlError: null,
+        }));
         vi.mocked(axios.get).mockResolvedValue({ data: {} });
         vi.mocked(axios.post).mockResolvedValue({ data: {}, status: 200 });
     });
@@ -116,5 +123,107 @@ describe('ProvidersPage OpenAI Realtime save contract', () => {
         } else {
             expect(saved.providers.openai_realtime.api_version).toBe(apiVersion);
         }
+    });
+
+    it('does not replace provider B form data when provider A reset completes late', async () => {
+        mocks.config = {
+            providers: {
+                provider_a: {
+                    type: 'openai_realtime',
+                    capabilities: ['stt', 'llm', 'tts'],
+                    model: 'gpt-realtime',
+                },
+                provider_b: {
+                    type: 'deepgram',
+                    capabilities: ['stt', 'llm', 'tts'],
+                    model: 'nova-3',
+                },
+            },
+        };
+        let resolveResetFetch: (value: unknown) => void = () => undefined;
+        const resetFetch = new Promise((resolve) => {
+            resolveResetFetch = resolve;
+        });
+
+        render(
+            <MemoryRouter>
+                <ProvidersPage />
+            </MemoryRouter>,
+        );
+
+        const settings = await screen.findAllByTitle('Settings');
+        fireEvent.click(settings[0]);
+        const providerADialog = await screen.findByRole('dialog', {
+            name: 'Edit Provider: provider_a',
+        });
+        mocks.loadConfigYaml.mockReturnValueOnce(resetFetch);
+        fireEvent.click(within(providerADialog).getByRole('button', {
+            name: 'Restore audio defaults',
+        }));
+        await waitFor(() => expect(mocks.loadConfigYaml).toHaveBeenCalledTimes(2));
+
+        fireEvent.click(within(providerADialog).getByRole('button', { name: 'Cancel' }));
+        fireEvent.click(screen.getAllByTitle('Settings')[1]);
+        const providerBDialog = await screen.findByRole('dialog', {
+            name: 'Edit Provider: provider_b',
+        });
+        expect(within(providerBDialog).getByDisplayValue('provider_b')).toBeInTheDocument();
+
+        await act(async () => {
+            resolveResetFetch({
+                config: {
+                    providers: {
+                        provider_a: {
+                            type: 'openai_realtime',
+                            capabilities: ['stt', 'llm', 'tts'],
+                            model: 'reset-a',
+                        },
+                        provider_b: {
+                            type: 'deepgram',
+                            capabilities: ['stt', 'llm', 'tts'],
+                            model: 'nova-3',
+                        },
+                    },
+                },
+                yamlError: null,
+            });
+        });
+
+        await waitFor(() => {
+            expect(within(providerBDialog).getByDisplayValue('provider_b')).toBeInTheDocument();
+        });
+        expect(within(providerBDialog).queryByDisplayValue('provider_a')).not.toBeInTheDocument();
+    });
+
+    it('serializes the OpenAI Realtime template with the GA output contract', async () => {
+        mocks.config = { providers: {} };
+
+        render(
+            <MemoryRouter>
+                <ProvidersPage />
+            </MemoryRouter>,
+        );
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Add Provider Templates' }));
+        const dialog = await screen.findByRole('dialog', { name: 'Add Provider Templates' });
+        fireEvent.click(within(dialog).getByRole('checkbox', { name: /OpenAI Realtime/i }));
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Add Selected' }));
+
+        await waitFor(() => {
+            expect(axios.post).toHaveBeenCalledWith(
+                '/api/config/yaml',
+                expect.objectContaining({ content: expect.any(String) }),
+            );
+        });
+        const saveCall = vi.mocked(axios.post).mock.calls.find(([url]) => url === '/api/config/yaml');
+        const body = saveCall?.[1] as { content: string };
+        const saved = yaml.load(body.content) as {
+            providers: Record<string, Record<string, unknown>>;
+        };
+        expect(saved.providers.openai_realtime).toMatchObject({
+            api_version: 'ga',
+            output_encoding: 'linear16',
+            output_sample_rate_hz: 24000,
+        });
     });
 });

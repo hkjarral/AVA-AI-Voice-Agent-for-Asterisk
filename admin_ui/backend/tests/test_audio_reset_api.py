@@ -506,6 +506,42 @@ def test_provider_validation_rejects_named_instance_g711_at_non_8khz():
     assert "/api/config/providers/customer_google/audio/reset" in detail
 
 
+def test_provider_validation_rejects_fractional_g711_sample_rate():
+    parsed = yaml.safe_load(Path(config.settings.CONFIG_PATH).read_text())
+    parsed["providers"]["customer_google"] = {
+        "type": "google_live",
+        "capabilities": ["stt", "llm", "tts"],
+        "input_encoding": "ulaw",
+        "input_sample_rate_hz": 8000.5,
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        config._validate_ai_agent_config(yaml.safe_dump(parsed, sort_keys=False))
+
+    assert exc_info.value.status_code == 400
+    assert (
+        "providers.customer_google.input_sample_rate_hz must be an integer"
+        in str(exc_info.value.detail)
+    )
+
+
+@pytest.mark.parametrize("valid_rate", [8000, 8000.0, "8000"])
+def test_provider_validation_accepts_integral_g711_sample_rate(valid_rate):
+    parsed = yaml.safe_load(Path(config.settings.CONFIG_PATH).read_text())
+    parsed["providers"]["customer_google"] = {
+        "type": "google_live",
+        "capabilities": ["stt", "llm", "tts"],
+        "input_encoding": "ulaw",
+        "input_sample_rate_hz": valid_rate,
+    }
+
+    result = config._validate_ai_agent_config(
+        yaml.safe_dump(parsed, sort_keys=False)
+    )
+
+    assert isinstance(result.get("warnings"), list)
+
+
 @pytest.mark.parametrize("legacy_encoding", ["mulaw", "ulaw", "mu-law"])
 def test_legacy_openai_audio_migration_covers_named_instances_only_for_exact_pair(
     legacy_encoding,

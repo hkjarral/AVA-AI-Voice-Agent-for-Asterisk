@@ -1,5 +1,6 @@
 import asyncio
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -42,6 +43,11 @@ class _SettingsWebSocket(_EventWebSocket):
     async def close(self):
         self.closed = True
         self.state = type("_State", (), {"name": "CLOSED"})()
+
+
+class _FailingSettingsWebSocket(_SettingsWebSocket):
+    async def send(self, payload):
+        raise RuntimeError("settings retry send failed")
 
 
 @pytest.mark.asyncio
@@ -162,6 +168,10 @@ async def test_deepgram_second_settings_rejection_fails_closed():
     provider.websocket = websocket
 
     await provider._receive_loop()
+    stop_task = provider._settings_failure_stop_task
+    assert stop_task is not None
+    assert stop_task.done() is False
+    await stop_task
     await asyncio.sleep(0)
 
     assert len(websocket.messages) == 1
@@ -170,6 +180,64 @@ async def test_deepgram_second_settings_rejection_fails_closed():
     assert provider._ready_to_stream is False
     assert provider._ack_event.is_set() is False
     assert websocket.closed is True
+    assert provider._settings_failure_stop_task is None
+
+
+@pytest.mark.asyncio
+async def test_deepgram_failed_settings_retry_send_tracks_stop_task():
+    provider = DeepgramProvider({}, LLMConfig(), None)
+    provider.call_id = "deepgram-retry-send-failed"
+    provider._ack_event = asyncio.Event()
+    provider._last_settings_minimal = {"type": "Settings"}
+    websocket = _FailingSettingsWebSocket(
+        [{"type": "Error", "description": "settings rejected"}]
+    )
+    provider.websocket = websocket
+
+    await provider._receive_loop()
+    stop_task = provider._settings_failure_stop_task
+    assert stop_task is not None
+    assert stop_task.done() is False
+    await stop_task
+    await asyncio.sleep(0)
+
+    assert provider._settings_retry_attempted is True
+    assert provider._settings_acked is False
+    assert provider._ready_to_stream is False
+    assert websocket.closed is True
+    assert provider._settings_failure_stop_task is None
+
+
+@pytest.mark.asyncio
+async def test_deepgram_settings_rejection_logs_when_retry_is_unavailable():
+    provider = DeepgramProvider({}, LLMConfig(), None)
+    provider.call_id = "deepgram-retry-unavailable"
+    provider._ack_event = asyncio.Event()
+    websocket = _SettingsWebSocket(
+        [{"type": "Error", "description": "settings rejected"}]
+    )
+    provider.websocket = websocket
+
+    with patch("src.providers.deepgram.logger.error") as log_error:
+        await provider._receive_loop()
+        stop_task = provider._settings_failure_stop_task
+        assert stop_task is not None
+        assert stop_task.done() is False
+        await stop_task
+        await asyncio.sleep(0)
+
+    messages = [call.args[0] for call in log_error.call_args_list]
+    assert (
+        "Deepgram Settings negotiation failed; retry unavailable; closing session"
+        in messages
+    )
+    assert "Deepgram Settings negotiation failed after retry; closing session" not in messages
+    assert provider._settings_retry_attempted is False
+    assert provider._settings_acked is False
+    assert provider._ready_to_stream is False
+    assert provider._ack_event.is_set() is False
+    assert websocket.closed is True
+    assert provider._settings_failure_stop_task is None
 
 
 @pytest.mark.asyncio

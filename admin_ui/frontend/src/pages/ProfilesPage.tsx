@@ -14,6 +14,20 @@ import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
 import AudioResetButton, { AudioResetResponse } from '../components/config/AudioResetButton';
 import AudioEnvironmentOverrideWarning from '../components/config/AudioEnvironmentOverrideWarning';
 
+type ApplyState = {
+    pendingApply: boolean;
+    applyMethod: 'hot_reload' | 'restart';
+};
+
+const mergeApplyRecommendation = (
+    current: ApplyState,
+    method: 'none' | 'hot_reload' | 'restart',
+): ApplyState => {
+    if (method === 'none') return current;
+    if (current.pendingApply && current.applyMethod === 'restart') return current;
+    return { pendingApply: true, applyMethod: method };
+};
+
 const ProfilesPage = () => {
 	const { confirm } = useConfirmDialog();
 	const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
@@ -28,10 +42,10 @@ const ProfilesPage = () => {
 	const [isNewProfile, setIsNewProfile] = useState(false);
 	const [newProfileName, setNewProfileName] = useState('');
 	const [applying, setApplying] = useState(false);
-    const [applyState, setApplyState] = useState<{
-        pendingApply: boolean;
-        applyMethod: 'hot_reload' | 'restart';
-    }>({ pendingApply: false, applyMethod: 'restart' });
+    const [applyState, setApplyState] = useState<ApplyState>({
+        pendingApply: false,
+        applyMethod: 'restart',
+    });
     const { pendingApply, applyMethod } = applyState;
     const [builtInAudioProfiles, setBuiltInAudioProfiles] = useState<ReadonlySet<string> | null>(null);
 
@@ -106,11 +120,7 @@ const ProfilesPage = () => {
 
     const handleProfileAudioResetComplete = async (profileName: string, response: AudioResetResponse) => {
         const method = response?.recommended_apply_method || 'restart';
-        setApplyState((current) => {
-            if (method === 'none') return current;
-            if (current.pendingApply && current.applyMethod === 'restart') return current;
-            return { pendingApply: true, applyMethod: method };
-        });
+        setApplyState((current) => mergeApplyRecommendation(current, method));
         const refreshed = await fetchConfig(true);
         if (refreshed && editingProfile === profileName) {
             setProfileForm({ ...(refreshed.profiles?.[profileName] || {}) });
@@ -122,7 +132,7 @@ const ProfilesPage = () => {
             const sanitized = sanitizeConfigForSave(newConfig);
             const response = await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
             const method = (response.data?.recommended_apply_method || 'restart') as 'hot_reload' | 'restart';
-            setApplyState({ pendingApply: true, applyMethod: method });
+            setApplyState((current) => mergeApplyRecommendation(current, method));
             setConfig(sanitized);
             return true;
         } catch (err) {
