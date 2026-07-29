@@ -2,6 +2,7 @@ import React from 'react';
 import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 import HelpTooltip from '../../ui/HelpTooltip';
 import OutputResamplerField from './OutputResamplerField';
+import { enforceOpenAIRealtimeGaAudioContract } from '../../../utils/providerAudioContracts';
 
 // Current GA Realtime model catalog. Verified against OpenAI's official model
 // pages on 2026-05-25:
@@ -180,13 +181,11 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                                 // pinned value.
                                 if (apiVersion === 'ga') {
                                     const isGaModel = OPENAI_REALTIME_MODELS.some(m => m.value === config.model);
-                                    onChange({
+                                    onChange(enforceOpenAIRealtimeGaAudioContract({
                                         ...config,
                                         api_version: apiVersion,
                                         model: isGaModel ? config.model : 'gpt-realtime',
-                                        output_encoding: 'linear16',
-                                        output_sample_rate_hz: 24000,
-                                    });
+                                    }));
                                 } else {
                                     onChange({ ...config, api_version: apiVersion });
                                 }

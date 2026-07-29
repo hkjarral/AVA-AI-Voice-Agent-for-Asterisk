@@ -27,9 +27,12 @@ const ProfilesPage = () => {
 	const [profileForm, setProfileForm] = useState<any>({});
 	const [isNewProfile, setIsNewProfile] = useState(false);
 	const [newProfileName, setNewProfileName] = useState('');
-	const [pendingApply, setPendingApply] = useState(false);
 	const [applying, setApplying] = useState(false);
-	const [applyMethod, setApplyMethod] = useState<'hot_reload' | 'restart'>('restart');
+    const [applyState, setApplyState] = useState<{
+        pendingApply: boolean;
+        applyMethod: 'hot_reload' | 'restart';
+    }>({ pendingApply: false, applyMethod: 'restart' });
+    const { pendingApply, applyMethod } = applyState;
     const [builtInAudioProfiles, setBuiltInAudioProfiles] = useState<ReadonlySet<string> | null>(null);
 
     useEffect(() => {
@@ -103,12 +106,11 @@ const ProfilesPage = () => {
 
     const handleProfileAudioResetComplete = async (profileName: string, response: AudioResetResponse) => {
         const method = response?.recommended_apply_method || 'restart';
-        if (method === 'none') {
-            setPendingApply(false);
-        } else {
-            setApplyMethod(method);
-            setPendingApply(true);
-        }
+        setApplyState((current) => {
+            if (method === 'none') return current;
+            if (current.pendingApply && current.applyMethod === 'restart') return current;
+            return { pendingApply: true, applyMethod: method };
+        });
         const refreshed = await fetchConfig(true);
         if (refreshed && editingProfile === profileName) {
             setProfileForm({ ...(refreshed.profiles?.[profileName] || {}) });
@@ -120,8 +122,7 @@ const ProfilesPage = () => {
             const sanitized = sanitizeConfigForSave(newConfig);
             const response = await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
             const method = (response.data?.recommended_apply_method || 'restart') as 'hot_reload' | 'restart';
-            setApplyMethod(method);
-            setPendingApply(true);
+            setApplyState({ pendingApply: true, applyMethod: method });
             setConfig(sanitized);
             return true;
         } catch (err) {
@@ -140,13 +141,12 @@ const ProfilesPage = () => {
 	                const response = await axios.post('/api/system/containers/ai_engine/reload');
 	                const status = response.data?.status ?? (response.status === 200 ? 'success' : undefined);
 	                if (status === 'partial' || response.data?.restart_required) {
-	                    setApplyMethod('restart');
-	                    setPendingApply(true);
+	                    setApplyState({ pendingApply: true, applyMethod: 'restart' });
 	                    toast.warning('Hot reload applied partially', { description: 'Restart AI Engine to fully apply changes' });
 	                    return;
 	                }
 	                if (status === 'success' || response.status === 200) {
-	                    setPendingApply(false);
+	                    setApplyState((current) => ({ ...current, pendingApply: false }));
 	                    toast.success('AI Engine hot reloaded! Changes are now active.');
 	                    fetchConfig(true);
 	                    return;
@@ -160,13 +160,13 @@ const ProfilesPage = () => {
 	                return;
 	            }
 	            if (status === 'degraded') {
-	                setPendingApply(false);
+	                setApplyState((current) => ({ ...current, pendingApply: false }));
 	                toast.warning('AI Engine restarted but may not be fully healthy', { description: response.data.output || 'Please verify manually' });
 	                fetchConfig(true);
 	                return;
 	            }
 	            if (status === 'success' || response.status === 200) {
-	                setPendingApply(false);
+	                setApplyState((current) => ({ ...current, pendingApply: false }));
 	                toast.success('AI Engine restarted! Changes are now active.');
 	                fetchConfig(true);
 	                return;

@@ -1034,9 +1034,27 @@ async def reset_pipeline_audio(pipeline_name: str):
     if not isinstance(pipelines, dict) or pipeline_name not in pipelines:
         raise HTTPException(status_code=404, detail=f"Pipeline '{pipeline_name}' not found")
     pipeline = pipelines.get(pipeline_name)
-    if not isinstance(pipeline, dict):
-        # Legacy shorthand pipelines have no options and therefore already
-        # inherit profile audio policy.
+    removed: Dict[str, Dict[str, Any]] = {}
+    if isinstance(pipeline, dict):
+        helpers = _audio_baseline_helpers()
+        options = pipeline.get("options")
+        if isinstance(options, dict):
+            for role, fields in helpers["pipeline_fields"].items():
+                role_options = options.get(role)
+                if not isinstance(role_options, dict):
+                    continue
+                role_removed = {
+                    field: role_options.pop(field)
+                    for field in tuple(role_options)
+                    if field in fields
+                }
+                if role_removed:
+                    removed[role] = role_removed
+
+    if not removed:
+        # Legacy shorthand and dict pipelines without audio overrides already
+        # inherit profile audio policy, so do not rotate a backup or rewrite
+        # the local override file.
         return {
             "status": "success",
             "apply_required": False,
@@ -1048,22 +1066,6 @@ async def reset_pipeline_audio(pipeline_name: str):
             "pipeline_name": pipeline_name,
             "removed_audio_overrides": {},
         }
-
-    helpers = _audio_baseline_helpers()
-    options = pipeline.get("options")
-    removed: Dict[str, Dict[str, Any]] = {}
-    if isinstance(options, dict):
-        for role, fields in helpers["pipeline_fields"].items():
-            role_options = options.get(role)
-            if not isinstance(role_options, dict):
-                continue
-            role_removed = {
-                field: role_options.pop(field)
-                for field in tuple(role_options)
-                if field in fields
-            }
-            if role_removed:
-                removed[role] = role_removed
 
     result = await _persist_audio_reset(merged)
     return {

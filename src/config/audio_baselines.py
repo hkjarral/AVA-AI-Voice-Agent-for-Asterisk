@@ -10,6 +10,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Mapping
 
+from src.config.provider_instances import FULL_AGENT_KINDS
+
 
 # Fields shared by full-agent providers.  A reset removes every managed field
 # before applying the provider-kind baseline, so stale troubleshooting fields
@@ -239,14 +241,7 @@ def provider_audio_fields(kind: str) -> frozenset[str]:
     baseline = PROVIDER_AUDIO_BASELINES.get(kind)
     if baseline is None:
         return frozenset()
-    if kind in {
-        "deepgram",
-        "google_live",
-        "local",
-        "openai_realtime",
-        "elevenlabs_agent",
-        "grok",
-    }:
+    if kind in FULL_AGENT_KINDS:
         return FULL_AGENT_AUDIO_FIELDS
     return frozenset(baseline) | PROVIDER_AUDIO_EXTRA_FIELDS.get(kind, frozenset())
 

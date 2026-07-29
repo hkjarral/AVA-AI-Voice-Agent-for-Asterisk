@@ -210,4 +210,50 @@ describe('ProfilesPage audio contract safety', () => {
             /custom profile.*standard 8 kHz telephony baseline/i,
         );
     });
+
+    it.each(['hot_reload', 'none'] as const)(
+        'does not clear or downgrade a pending restart when a later reset recommends %s',
+        async (laterMethod) => {
+            mockProfilePageGets([]);
+            mocks.confirm.mockResolvedValue(true);
+            vi.mocked(axios.post)
+                .mockResolvedValueOnce({ data: { recommended_apply_method: 'restart' } })
+                .mockResolvedValueOnce({ data: { recommended_apply_method: laterMethod } });
+
+            render(<ProfilesPage />);
+
+            const reset = await screen.findByRole('button', {
+                name: 'Restore profile baseline for telephony_enhanced_8k',
+            });
+            fireEvent.click(reset);
+            expect(await screen.findByText('Changes saved. Restart required to make them active.')).toBeInTheDocument();
+
+            fireEvent.click(reset);
+            await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(2));
+
+            expect(screen.getByText('Changes saved. Restart required to make them active.')).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: 'Restart AI Engine' })).toBeInTheDocument();
+        },
+    );
+
+    it('starts with hot reload and escalates the pending action to restart', async () => {
+        mockProfilePageGets([]);
+        mocks.confirm.mockResolvedValue(true);
+        vi.mocked(axios.post)
+            .mockResolvedValueOnce({ data: { recommended_apply_method: 'hot_reload' } })
+            .mockResolvedValueOnce({ data: { recommended_apply_method: 'restart' } });
+
+        render(<ProfilesPage />);
+
+        const reset = await screen.findByRole('button', {
+            name: 'Restore profile baseline for telephony_enhanced_8k',
+        });
+        fireEvent.click(reset);
+        expect(await screen.findByText('Changes saved. Apply to make them active.')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Apply Changes' })).toBeInTheDocument();
+
+        fireEvent.click(reset);
+        expect(await screen.findByText('Changes saved. Restart required to make them active.')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Restart AI Engine' })).toBeInTheDocument();
+    });
 });

@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import DeepgramProviderForm from './DeepgramProviderForm';
 import ElevenLabsProviderForm from './ElevenLabsProviderForm';
 import OpenAIRealtimeProviderForm from './OpenAIRealtimeProviderForm';
+import { enforceOpenAIRealtimeGaAudioContract } from '../../../utils/providerAudioContracts';
 
 vi.mock('../../../hooks/useConfirmDialog', () => ({
     useConfirmDialog: () => ({ confirm: vi.fn() }),
@@ -80,5 +81,28 @@ describe('provider audio displayed defaults', () => {
             output_sample_rate_hz: 24000,
             voice: 'alloy',
         });
+    });
+
+    it('enforces GA audio fields again at the provider save boundary', () => {
+        expect(enforceOpenAIRealtimeGaAudioContract({
+            api_version: 'ga',
+            output_encoding: 'mulaw',
+            output_sample_rate_hz: 8000,
+            voice: 'alloy',
+        })).toEqual({
+            api_version: 'ga',
+            output_encoding: 'linear16',
+            output_sample_rate_hz: 24000,
+            voice: 'alloy',
+        });
+    });
+
+    it('preserves explicitly selected Beta audio fields at the provider save boundary', () => {
+        const beta = {
+            api_version: 'beta',
+            output_encoding: 'mulaw',
+            output_sample_rate_hz: 8000,
+        };
+        expect(enforceOpenAIRealtimeGaAudioContract(beta)).toBe(beta);
     });
 });

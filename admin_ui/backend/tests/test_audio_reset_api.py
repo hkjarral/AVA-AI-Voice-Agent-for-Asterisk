@@ -23,6 +23,7 @@ from src.config.audio_baselines import (  # noqa: E402
     provider_audio_fields,
 )
 from src.config.normalization import normalize_legacy_openai_audio  # noqa: E402
+from src.config.provider_instances import FULL_AGENT_KINDS  # noqa: E402
 
 
 def _client() -> TestClient:
@@ -142,6 +143,12 @@ def test_provider_audio_fields_normalizes_kind_once():
             return "google_live"
 
     assert provider_audio_fields(ProviderKind()) == FULL_AGENT_AUDIO_FIELDS
+
+
+def test_full_agent_kinds_have_complete_audio_reset_registrations():
+    assert FULL_AGENT_KINDS <= PROVIDER_AUDIO_BASELINES.keys()
+    for kind in FULL_AGENT_KINDS:
+        assert PROVIDER_AUDIO_BASELINES[kind].keys() <= provider_audio_fields(kind)
 
 
 def test_profile_baseline_metadata_comes_from_canonical_registry():
@@ -441,6 +448,41 @@ def test_pipeline_shorthand_reset_is_noop_without_persistence(monkeypatch):
     assert response.json()["recommended_apply_method"] == "none"
     assert response.json()["apply_required"] is False
     assert response.json()["pipeline_name"] == "legacy"
+    assert response.json()["removed_audio_overrides"] == {}
+
+
+def test_pipeline_dict_without_audio_overrides_is_noop_without_persistence(
+    monkeypatch,
+):
+    original = {
+        "pipelines": {
+            "hybrid": {
+                "stt": "openai_stt",
+                "llm": "openai_llm",
+                "tts": "openai_tts",
+                "options": {
+                    "stt": {"language": "en"},
+                    "llm": {"temperature": 0.2},
+                    "tts": {"streaming_overlap": False},
+                },
+            }
+        }
+    }
+    monkeypatch.setattr(
+        config, "_read_merged_config_dict", lambda: deepcopy(original)
+    )
+
+    async def fail_if_persisted(*args, **kwargs):
+        pytest.fail("a pipeline without audio overrides must not rewrite config")
+
+    monkeypatch.setattr(config, "_persist_audio_reset", fail_if_persisted)
+
+    response = _client().post("/api/config/pipelines/hybrid/audio/reset")
+
+    assert response.status_code == 200
+    assert response.json()["recommended_apply_method"] == "none"
+    assert response.json()["apply_required"] is False
+    assert response.json()["pipeline_name"] == "hybrid"
     assert response.json()["removed_audio_overrides"] == {}
 
 

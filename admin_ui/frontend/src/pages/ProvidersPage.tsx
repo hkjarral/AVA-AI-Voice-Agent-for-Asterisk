@@ -30,6 +30,7 @@ import TelnyxProviderForm from '../components/config/providers/TelnyxProviderFor
 import AzureProviderForm from '../components/config/providers/AzureProviderForm';
 import { Capability, capabilityFromKey, ensureModularKey, isFullAgentProvider, getEffectiveFullAgentKind } from '../utils/providerNaming';
 import { GOOGLE_LIVE_DEFAULT_MODEL } from '../utils/googleLiveModels';
+import { enforceOpenAIRealtimeGaAudioContract } from '../utils/providerAudioContracts';
 
 const stripModularSuffix = (name: string): string => (name || '').replace(/_(stt|llm|tts)$/i, '');
 const FULL_AGENT_TYPES = ['openai_realtime', 'deepgram', 'google_live', 'elevenlabs_agent', 'grok', 'local'];
@@ -558,6 +559,7 @@ const ProvidersPage: React.FC = () => {
         }
 
         const isFull = isFullAgentProvider(providerForm);
+        let fullAgentKind: string | null = null;
         let finalName = (providerForm.name || '').toLowerCase();
         let capabilities = Array.isArray(providerForm.capabilities) ? providerForm.capabilities : [];
 
@@ -584,8 +586,8 @@ const ProvidersPage: React.FC = () => {
             // canonical legacy entry (e.g. google_live: { type: full }) validates
             // and saves without forcing a type change. #436
             const fullAgentKey = isNewProvider ? finalName : (editingProvider || '');
-            const effectiveKind = getEffectiveFullAgentKind(providerForm, fullAgentKey);
-            if (!effectiveKind || !FULL_AGENT_TYPES.includes(effectiveKind)) {
+            fullAgentKind = getEffectiveFullAgentKind(providerForm, fullAgentKey);
+            if (!fullAgentKind || !FULL_AGENT_TYPES.includes(fullAgentKind)) {
                 toast.error('Select a full-agent provider type.');
                 return;
             }
@@ -627,7 +629,13 @@ const ProvidersPage: React.FC = () => {
         }
 
         const existingData = !isNewProvider && editingProvider ? (config.providers?.[editingProvider] || {}) : {};
-        const providerData = { ...existingData, ...providerForm, name: finalName, capabilities };
+        let providerData = { ...existingData, ...providerForm, name: finalName, capabilities };
+        if (fullAgentKind === 'openai_realtime') {
+            // Normalize again at the persistence boundary. Async form updates
+            // (for example credential operations) can otherwise reintroduce a
+            // stale Beta audio pair after the operator switches to GA.
+            providerData = enforceOpenAIRealtimeGaAudioContract(providerData);
+        }
 
         // Telnyx LLM defaults: ensure the values shown in the form are actually persisted to YAML.
         // Without this, the form may display placeholders while the YAML remains unset, causing ai_engine
