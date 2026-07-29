@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -39,7 +40,11 @@ _TARGET_ID_KEYS = (
     "mailbox",
 )
 _REDACTED_PARAMETER_VALUE = "***REDACTED***"
-_SENSITIVE_PARAMETER_KEYS = {
+CALL_HISTORY_TOOL_REDACTION_MODES = frozenset({"strict", "show_routing", "off"})
+_DEFAULT_TOOL_REDACTION_MODE = "strict"
+_warned_invalid_redaction_modes: set[str] = set()
+
+_SECRET_PARAMETER_KEYS = {
     # Credentials and authorization material. This follows the repository-wide
     # logging and HTTP-diagnostic redaction posture without substring matches
     # that would turn ordinary keys such as ``bypass`` into false positives.
@@ -67,8 +72,9 @@ _SENSITIVE_PARAMETER_KEYS = {
     "cookies",
     "header",
     "headers",
-    # Caller-supplied PII/free text and telephony routing targets accepted by
-    # the built-in in-call tools.
+}
+_PII_PARAMETER_KEYS = {
+    # Caller-supplied PII and free text accepted by built-in in-call tools.
     "name",
     "first_name",
     "last_name",
@@ -103,6 +109,10 @@ _SENSITIVE_PARAMETER_KEYS = {
     "body",
     "query",
     "prompt",
+}
+_ROUTING_PARAMETER_KEYS = {
+    # Telephony routing targets. Operators may expose these while retaining
+    # credential and caller-PII redaction via ``show_routing`` mode.
     "destination",
     "target",
     "extension",
@@ -110,7 +120,7 @@ _SENSITIVE_PARAMETER_KEYS = {
     "queue",
     "mailbox",
 }
-_SENSITIVE_PARAMETER_SUFFIXES = {
+_SECRET_PARAMETER_SUFFIXES = {
     "api_key",
     "token",
     "secret",
@@ -125,6 +135,8 @@ _SENSITIVE_PARAMETER_SUFFIXES = {
     "private_key",
     "client_secret",
     "cookie",
+}
+_PII_PARAMETER_SUFFIXES = {
     "name",
     "email",
     "phone",
@@ -142,12 +154,15 @@ _SENSITIVE_PARAMETER_SUFFIXES = {
     "body",
     "query",
     "prompt",
+}
+_ROUTING_PARAMETER_SUFFIXES = {
     "destination",
     "target",
     "extension",
     "queue",
     "mailbox",
 }
+_ROUTING_TARGET_ID_KEYS = frozenset({"destination", "target", "extension", "queue", "mailbox"})
 
 
 def stable_tool_call_id(value: Any = None) -> str:
@@ -187,11 +202,100 @@ def _scalar_identifier(value: Any) -> Optional[str]:
     return None
 
 
-def _is_sensitive_parameter_key(key: Any) -> bool:
-    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower().replace("-", "_")
-    if normalized in _SENSITIVE_PARAMETER_KEYS:
+def normalize_call_history_tool_redaction_mode(value: Any, *, warn: bool = False) -> str:
+    """Return a supported mode, failing closed to ``strict`` when invalid."""
+    candidate = str(value or "").strip().lower()
+    if not candidate:
+        return _DEFAULT_TOOL_REDACTION_MODE
+    if candidate in CALL_HISTORY_TOOL_REDACTION_MODES:
+        return candidate
+    if warn and candidate not in _warned_invalid_redaction_modes:
+        _warned_invalid_redaction_modes.add(candidate)
+        logger.warning(
+            "Invalid call-history tool redaction mode; using strict",
+            configured_mode=candidate,
+            supported_modes=sorted(CALL_HISTORY_TOOL_REDACTION_MODES),
+        )
+    return _DEFAULT_TOOL_REDACTION_MODE
+
+
+def resolve_call_history_tool_redaction_mode() -> str:
+    """Resolve the effective runtime policy from the AI Engine environment."""
+    return normalize_call_history_tool_redaction_mode(
+        os.getenv("CALL_HISTORY_TOOL_REDACTION_MODE", _DEFAULT_TOOL_REDACTION_MODE),
+        warn=True,
+    )
+
+
+def _normalized_parameter_key(key: Any) -> str:
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower().replace("-", "_")
+
+
+def _matches_key_family(normalized: str, keys: set[str], suffixes: set[str]) -> bool:
+    if normalized in keys:
         return True
-    return any(normalized.endswith(f"_{suffix}") for suffix in _SENSITIVE_PARAMETER_SUFFIXES)
+    return any(normalized.endswith(f"_{suffix}") for suffix in suffixes)
+
+
+def _parameter_key_family(key: Any) -> Optional[str]:
+    normalized = _normalized_parameter_key(key)
+    if _matches_key_family(normalized, _SECRET_PARAMETER_KEYS, _SECRET_PARAMETER_SUFFIXES):
+        return "secret"
+    if _matches_key_family(normalized, _PII_PARAMETER_KEYS, _PII_PARAMETER_SUFFIXES):
+        return "pii"
+    if _matches_key_family(normalized, _ROUTING_PARAMETER_KEYS, _ROUTING_PARAMETER_SUFFIXES):
+        return "routing"
+    return None
+
+
+def _is_sensitive_parameter_key(key: Any, mode: str = _DEFAULT_TOOL_REDACTION_MODE) -> bool:
+    if mode == "off":
+        return False
+    family = _parameter_key_family(key)
+    if family in {"secret", "pii"}:
+        return True
+    return family == "routing" and mode == "strict"
+
+
+def _sensitive_scalar_values(value: Any) -> list[str]:
+    """Collect scalar strings from a redacted value for message echo removal."""
+    if isinstance(value, dict):
+        values: list[str] = []
+        for item in value.values():
+            values.extend(_sensitive_scalar_values(item))
+        return values
+    if isinstance(value, (list, tuple)):
+        values = []
+        for item in value:
+            values.extend(_sensitive_scalar_values(item))
+        return values
+    if isinstance(value, bool) or value is None:
+        return []
+    candidate = str(value)
+    return [candidate] if candidate else []
+
+
+def _redact_message_echoes(message: Any, sensitive_values: list[str]) -> tuple[str, bool]:
+    rendered = str(message or "")
+    if not rendered or not sensitive_values:
+        return rendered, False
+
+    changed = False
+    for candidate in sorted(set(sensitive_values), key=len, reverse=True):
+        if len(candidate) < 3:
+            # Tiny values (for example, a one-digit extension) are replaced
+            # only as standalone tokens so ordinary words and larger numbers
+            # are not corrupted while exact echoes remain protected.
+            rendered, replacements = re.subn(
+                rf"(?<!\w){re.escape(candidate)}(?!\w)",
+                _REDACTED_PARAMETER_VALUE,
+                rendered,
+            )
+            changed = changed or replacements > 0
+        elif candidate in rendered:
+            rendered = rendered.replace(candidate, _REDACTED_PARAMETER_VALUE)
+            changed = True
+    return rendered, changed
 
 
 def _redact_parameter_value(value: Any) -> Any:
@@ -202,25 +306,59 @@ def _redact_parameter_value(value: Any) -> Any:
     return _REDACTED_PARAMETER_VALUE
 
 
-def _sanitize_persisted_parameters(value: Any) -> Any:
-    """Copy tool parameters while removing secrets, PII, and routing targets."""
+def _sanitize_persisted_parameters(
+    value: Any,
+    *,
+    mode: str = _DEFAULT_TOOL_REDACTION_MODE,
+    path: str = "params",
+) -> tuple[Any, list[str], list[str]]:
+    """Copy parameters and return sanitized data, redacted paths, and echo values."""
     if isinstance(value, dict):
-        return {
-            key: (
-                _redact_parameter_value(item)
-                if _is_sensitive_parameter_key(key)
-                else _sanitize_persisted_parameters(item)
+        sanitized: Dict[Any, Any] = {}
+        redacted_fields: list[str] = []
+        sensitive_values: list[str] = []
+        for key, item in value.items():
+            item_path = f"{path}.{key}"
+            if _is_sensitive_parameter_key(key, mode):
+                sanitized[key] = _redact_parameter_value(item)
+                if item not in (None, ""):
+                    redacted_fields.append(item_path)
+                    sensitive_values.extend(_sensitive_scalar_values(item))
+                continue
+            copied, nested_fields, nested_values = _sanitize_persisted_parameters(
+                item,
+                mode=mode,
+                path=item_path,
             )
-            for key, item in value.items()
-        }
+            sanitized[key] = copied
+            redacted_fields.extend(nested_fields)
+            sensitive_values.extend(nested_values)
+        return sanitized, redacted_fields, sensitive_values
     if isinstance(value, list):
-        return [_sanitize_persisted_parameters(item) for item in value]
+        sanitized_list = []
+        redacted_fields = []
+        sensitive_values = []
+        for index, item in enumerate(value):
+            copied, nested_fields, nested_values = _sanitize_persisted_parameters(
+                item,
+                mode=mode,
+                path=f"{path}[{index}]",
+            )
+            sanitized_list.append(copied)
+            redacted_fields.extend(nested_fields)
+            sensitive_values.extend(nested_values)
+        return sanitized_list, redacted_fields, sensitive_values
     if isinstance(value, tuple):
-        return tuple(_sanitize_persisted_parameters(item) for item in value)
-    return value
+        copied, redacted_fields, sensitive_values = _sanitize_persisted_parameters(
+            list(value),
+            mode=mode,
+            path=path,
+        )
+        return tuple(copied), redacted_fields, sensitive_values
+    return value, [], []
 
 
-def _target_id(parameters: Any, result: Any) -> Optional[str]:
+def _target_id(parameters: Any, result: Any) -> tuple[Optional[str], Optional[str]]:
     # A created resource id in the result is authoritative. For compensating
     # operations (for example calendar/delete_event), fall back to the same id
     # supplied as a parameter so reducers can reconcile create/delete pairs.
@@ -230,8 +368,8 @@ def _target_id(parameters: Any, result: Any) -> Optional[str]:
         for key in _TARGET_ID_KEYS:
             candidate = _scalar_identifier(source.get(key))
             if candidate:
-                return candidate
-    return None
+                return candidate, key
+    return None, None
 
 
 def build_in_call_tool_record(
@@ -243,6 +381,7 @@ def build_in_call_tool_record(
     result: Any,
     duration_ms: float = 0.0,
     canonical_name: Optional[str] = None,
+    redaction_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the additive v7.5.3 in-call tool-result contract.
 
@@ -251,8 +390,16 @@ def build_in_call_tool_record(
     make the append-only stream reducible without mixing telemetry into the
     transcript-only ``conversation_history``.
     """
+    mode = (
+        resolve_call_history_tool_redaction_mode()
+        if redaction_mode is None
+        else normalize_call_history_tool_redaction_mode(redaction_mode)
+    )
     execution_params = parameters if isinstance(parameters, dict) else {}
-    params = _sanitize_persisted_parameters(execution_params)
+    params, redacted_fields, sensitive_values = _sanitize_persisted_parameters(
+        execution_params,
+        mode=mode,
+    )
     result_dict = result if isinstance(result, dict) else {}
     raw_status = str(result_dict.get("status") or "").strip()
     terminal_status = normalize_tool_terminal_status(result)
@@ -263,9 +410,18 @@ def build_in_call_tool_record(
     if not action:
         action = name
 
+    target_id, target_key = _target_id(execution_params, result_dict)
+    if target_id and target_key in _ROUTING_TARGET_ID_KEYS and mode == "strict":
+        sensitive_values.append(target_id)
+        target_id = _REDACTED_PARAMETER_VALUE
+        redacted_fields.append("target_id")
+
     message = result_dict.get("message")
     if message is None and not isinstance(result, dict):
         message = str(result)
+    message, message_redacted = _redact_message_echoes(message, sensitive_values)
+    if message_redacted:
+        redacted_fields.append("message")
 
     return {
         "type": "tool_result",
@@ -274,10 +430,12 @@ def build_in_call_tool_record(
         "name": name,
         "action": action,
         "status": terminal_status,
-        "target_id": _target_id(execution_params, result_dict),
+        "target_id": target_id,
         "params": params,
         "result": raw_status or terminal_status,
-        "message": str(message or ""),
+        "message": message,
+        "redaction_mode": mode,
+        "redacted_fields": list(dict.fromkeys(redacted_fields)),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "duration_ms": round(max(0.0, float(duration_ms or 0.0)), 2),
     }
@@ -293,6 +451,7 @@ async def record_in_call_tool_result(
     result: Any,
     duration_ms: float = 0.0,
     canonical_name: Optional[str] = None,
+    redaction_mode: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Append one terminal result to ``CallSession.tool_calls`` best-effort.
 
@@ -310,6 +469,7 @@ async def record_in_call_tool_result(
             result=result,
             duration_ms=duration_ms,
             canonical_name=canonical_name,
+            redaction_mode=redaction_mode,
         )
         if session_store is None:
             return None

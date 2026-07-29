@@ -92,6 +92,7 @@ const EnvPage = () => {
     const [smtpTestResult, setSmtpTestResult] = useState<{success: boolean; message?: string; error?: string} | null>(null);
     const [perInstanceRows, setPerInstanceRows] = useState<PerInstanceCredentialRow[]>([]);
     const [perInstanceLoading, setPerInstanceLoading] = useState(false);
+    const [savedCallHistoryRedactionMode, setSavedCallHistoryRedactionMode] = useState('strict');
 
     const [error, setError] = useState<string | null>(null);
 
@@ -120,6 +121,15 @@ const EnvPage = () => {
         window.addEventListener('hashchange', handleHashChange);
         return () => window.removeEventListener('hashchange', handleHashChange);
     }, []);
+
+    useEffect(() => {
+        if (activeTab !== 'system' || loading) return;
+        const section = new URLSearchParams(window.location.search).get('section');
+        if (section !== 'call-history') return;
+        window.requestAnimationFrame(() => {
+            document.getElementById('call-history-privacy')?.scrollIntoView({ block: 'start' });
+        });
+    }, [activeTab, loading]);
 
     // Load local AI server capabilities when on local-ai tab
     useEffect(() => {
@@ -267,6 +277,9 @@ const EnvPage = () => {
             });
             const loadedEnv = res.data || {};
             setEnv(loadedEnv);
+            setSavedCallHistoryRedactionMode(
+                (loadedEnv['CALL_HISTORY_TOOL_REDACTION_MODE'] || 'strict').trim().toLowerCase()
+            );
             if ((loadedEnv['KOKORO_MODE'] || '').toLowerCase() === 'hf') {
                 setShowAdvancedKokoro(true);
             }
@@ -300,6 +313,17 @@ const EnvPage = () => {
             return;
         }
 
+        const requestedRedactionMode = (env['CALL_HISTORY_TOOL_REDACTION_MODE'] || 'strict').trim().toLowerCase();
+        if (requestedRedactionMode === 'off' && savedCallHistoryRedactionMode !== 'off') {
+            const confirmed = await confirm({
+                title: 'Disable Call History redaction?',
+                description: 'Future in-call tool diagnostics may store credentials, caller information, free text, and routing data verbatim. These values can also appear in Call History exports and backups.',
+                confirmText: 'Disable redaction',
+                variant: 'destructive',
+            });
+            if (!confirmed) return;
+        }
+
         setSaving(true);
         try {
             const envToSave = { ...env };
@@ -318,6 +342,7 @@ const EnvPage = () => {
             });
             const keys = (response.data?.changed_keys || []) as string[];
             setChangedKeys(keys);
+            setSavedCallHistoryRedactionMode(requestedRedactionMode);
 
             // Prefer drift-based status (source of truth for whether containers need recreate),
             // but fall back to the immediate apply_plan from the save response.
@@ -584,7 +609,7 @@ const EnvPage = () => {
         // System - Container Permissions
         'ASTERISK_UID', 'ASTERISK_GID', 'DOCKER_GID',
         // System - Call History
-        'CALL_HISTORY_ENABLED', 'CALL_HISTORY_RETENTION_DAYS', 'CALL_HISTORY_DB_PATH',
+        'CALL_HISTORY_ENABLED', 'CALL_HISTORY_RETENTION_DAYS', 'CALL_HISTORY_DB_PATH', 'CALL_HISTORY_TOOL_REDACTION_MODE',
         // System - Outbound Campaign
         'AAVA_OUTBOUND_EXTENSION_IDENTITY', 'AAVA_OUTBOUND_AMD_CONTEXT', 'AAVA_MEDIA_DIR', 'AAVA_VM_UPLOAD_MAX_BYTES',
         'AAVA_OUTBOUND_PBX_TYPE', 'AAVA_OUTBOUND_DIAL_CONTEXT', 'AAVA_OUTBOUND_DIAL_PREFIX', 'AAVA_OUTBOUND_CHANNEL_TECH',
@@ -2081,34 +2106,56 @@ const EnvPage = () => {
                     </ConfigSection>
 
                     {/* Call History */}
-                    <ConfigSection title="Call History" description="Settings for call history persistence and retention.">
-                        <ConfigCard>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <FormSwitch
-                                    id="call-history-enabled"
-                                    label="Enable Call History"
-                                    description="Record call history for debugging and analytics."
-                                    checked={isTrue(env['CALL_HISTORY_ENABLED'])}
-                                    onChange={(e) => updateEnv('CALL_HISTORY_ENABLED', e.target.checked ? 'true' : 'false')}
-                                />
-                                <FormInput
-                                    label="Retention Days"
-                                    type="number"
-                                    value={env['CALL_HISTORY_RETENTION_DAYS'] || '0'}
-                                    onChange={(e) => updateEnv('CALL_HISTORY_RETENTION_DAYS', e.target.value)}
-                                    tooltip="0 = unlimited (keep forever)"
-                                />
-                                <div className="col-span-full">
-                                    <FormInput
-                                        label="Database Path"
-                                        value={env['CALL_HISTORY_DB_PATH'] || 'data/call_history.db'}
-                                        onChange={(e) => updateEnv('CALL_HISTORY_DB_PATH', e.target.value)}
-                                        placeholder="data/call_history.db"
+                    <div id="call-history-privacy" className="scroll-mt-6">
+                        <ConfigSection title="Call History" description="Settings for call history persistence, privacy, and retention.">
+                            <ConfigCard>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <FormSwitch
+                                        id="call-history-enabled"
+                                        label="Enable Call History"
+                                        description="Record call history for debugging and analytics."
+                                        checked={isTrue(env['CALL_HISTORY_ENABLED'])}
+                                        onChange={(e) => updateEnv('CALL_HISTORY_ENABLED', e.target.checked ? 'true' : 'false')}
                                     />
+                                    <FormInput
+                                        label="Retention Days"
+                                        type="number"
+                                        value={env['CALL_HISTORY_RETENTION_DAYS'] || '0'}
+                                        onChange={(e) => updateEnv('CALL_HISTORY_RETENTION_DAYS', e.target.value)}
+                                        tooltip="0 = unlimited (keep forever)"
+                                    />
+                                    <FormSelect
+                                        label="Tool Diagnostic Redaction"
+                                        value={(env['CALL_HISTORY_TOOL_REDACTION_MODE'] || 'strict').trim().toLowerCase()}
+                                        onChange={(e) => updateEnv('CALL_HISTORY_TOOL_REDACTION_MODE', e.target.value)}
+                                        options={[
+                                            { value: 'strict', label: 'Strict — redact caller and routing data' },
+                                            { value: 'show_routing', label: 'Show routing — keep destinations and extensions' },
+                                            { value: 'off', label: 'Off — persist tool diagnostics verbatim' },
+                                        ]}
+                                        tooltip="Controls newly persisted in-call tool parameters, routing targets, and sensitive values echoed into tool messages. Existing records are unchanged."
+                                    />
+                                    <div className="col-span-full">
+                                        <FormInput
+                                            label="Database Path"
+                                            value={env['CALL_HISTORY_DB_PATH'] || 'data/call_history.db'}
+                                            onChange={(e) => updateEnv('CALL_HISTORY_DB_PATH', e.target.value)}
+                                            placeholder="data/call_history.db"
+                                        />
+                                    </div>
                                 </div>
-                            </div>
-                        </ConfigCard>
-                    </ConfigSection>
+                                {(env['CALL_HISTORY_TOOL_REDACTION_MODE'] || 'strict').trim().toLowerCase() === 'off' && (
+                                    <div className="mt-4 flex gap-2 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">
+                                        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                                        <span>Redaction is off. Future tool diagnostics may persist credentials and caller information in the database, API, exports, and backups.</span>
+                                    </div>
+                                )}
+                                <p className="text-xs text-muted-foreground mt-3">
+                                    Changes affect future tool executions after the AI Engine is recreated. Previously redacted values cannot be recovered.
+                                </p>
+                            </ConfigCard>
+                        </ConfigSection>
+                    </div>
 
                     {/* Outbound Campaign */}
                     <ConfigSection title="Outbound Campaign (Alpha)" description="Settings for outbound calling campaigns.">

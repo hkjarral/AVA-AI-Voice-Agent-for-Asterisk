@@ -25,6 +25,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from zoneinfo import ZoneInfo
 
+import settings
+
 # Add project root to path for imports
 project_root = os.environ.get("PROJECT_ROOT", "/app/project")
 if project_root not in sys.path:
@@ -195,6 +197,15 @@ class FilterOptionsResponse(BaseModel):
     outcomes: List[str] = []
 
 
+class ToolRedactionPolicyResponse(BaseModel):
+    """Safe Call History privacy status; never returns arbitrary environment data."""
+
+    configured_mode: str = "strict"
+    configured_value_valid: bool = True
+    pending_restart: Optional[bool] = None
+    modes: Dict[str, str] = Field(default_factory=dict)
+
+
 class ProviderHealthStatus(BaseModel):
     """Health status for a single provider."""
     status: str
@@ -216,6 +227,29 @@ def _get_call_history_store():
     except ImportError as e:
         logger.error(f"Failed to import call_history module: {e}")
         raise HTTPException(status_code=500, detail="Call history module not available")
+
+
+def _configured_tool_redaction_policy() -> tuple[str, bool]:
+    """Read and validate only the Call History tool-redaction setting from .env."""
+    raw_value: Optional[str] = None
+    try:
+        from dotenv import dotenv_values
+
+        values = dotenv_values(settings.ENV_PATH) if os.path.exists(settings.ENV_PATH) else {}
+        value = (values or {}).get("CALL_HISTORY_TOOL_REDACTION_MODE")
+        raw_value = str(value) if value is not None else None
+    except Exception:
+        raw_value = None
+
+    from src.tools.execution_history import (
+        CALL_HISTORY_TOOL_REDACTION_MODES,
+        normalize_call_history_tool_redaction_mode,
+    )
+
+    normalized = normalize_call_history_tool_redaction_mode(raw_value)
+    candidate = str(raw_value or "").strip().lower()
+    valid = not candidate or candidate in CALL_HISTORY_TOOL_REDACTION_MODES
+    return normalized, valid
 
 
 def _normalize_tool_calls(tool_calls: list) -> list:
@@ -574,6 +608,34 @@ async def get_filter_options():
         pipelines=pipelines,
         contexts=contexts,
         outcomes=outcomes,
+    )
+
+
+@router.get("/calls/redaction-policy", response_model=ToolRedactionPolicyResponse)
+async def get_tool_redaction_policy():
+    """Return the configured tool-history privacy mode without exposing .env."""
+    configured_mode, configured_value_valid = _configured_tool_redaction_policy()
+    pending_restart: Optional[bool] = None
+    try:
+        from . import config as config_api
+
+        env_status = await config_api.get_env_status()
+        drift = (env_status.get("drift") or {}).get("ai_engine") or []
+        pending_restart = "CALL_HISTORY_TOOL_REDACTION_MODE" in drift
+    except Exception:
+        # Docker/env drift inspection is best-effort. The configured policy is
+        # still useful when container state cannot be inspected.
+        pending_restart = None
+
+    return ToolRedactionPolicyResponse(
+        configured_mode=configured_mode,
+        configured_value_valid=configured_value_valid,
+        pending_restart=pending_restart,
+        modes={
+            "strict": "Redact credentials, caller data, free text, and routing details.",
+            "show_routing": "Show destinations and extensions while redacting credentials and caller data.",
+            "off": "Persist in-call tool diagnostics verbatim.",
+        },
     )
 
 

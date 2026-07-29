@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Call History redaction is operator-configurable** ([#589](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/589)): persisted in-call tool diagnostics now support fail-closed `strict`, `show_routing`, and explicit `off` modes. The middle mode keeps extension, queue, mailbox, and transfer destinations useful for troubleshooting while still masking credentials and caller data; strict mode also protects routing-derived `target_id` and messages that echo hidden values. System → Environment exposes the restart-required setting with an `off` warning, while Call History shows the configured policy, pending-restart state, per-call policy metadata, and any sanitized paths. Changes apply only to future tool executions; historical redactions remain unrecoverable.
+
 ## [7.5.3] - 2026-07-28
 
 ### Added

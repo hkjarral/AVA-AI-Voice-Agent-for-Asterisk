@@ -4,7 +4,7 @@ import {
     ChevronLeft, ChevronRight, RefreshCw, X, MessageSquare,
     Wrench, AlertCircle, CheckCircle, ArrowRightLeft, PhoneOff,
     BarChart3, Users, Timer, Activity, TrendingUp, Zap, PieChart,
-    Play, Pause, Volume2, FileAudio, Search
+    Play, Pause, Volume2, FileAudio, Search, ShieldCheck, SlidersHorizontal
 } from 'lucide-react';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -91,6 +91,19 @@ interface FilterOptions {
     outcomes: string[];
 }
 
+interface ToolRedactionPolicy {
+    configured_mode: 'strict' | 'show_routing' | 'off';
+    configured_value_valid: boolean;
+    pending_restart: boolean | null;
+    modes: Record<string, string>;
+}
+
+const REDACTION_MODE_LABELS: Record<string, string> = {
+    strict: 'Strict',
+    show_routing: 'Show routing',
+    off: 'Off',
+};
+
 const formatDuration = (seconds: number): string => {
     if (seconds < 60) return `${Math.round(seconds)}s`;
     const mins = Math.floor(seconds / 60);
@@ -176,6 +189,7 @@ const CallHistoryPage = () => {
     const [calls, setCalls] = useState<CallRecordSummary[]>([]);
     const [stats, setStats] = useState<CallStats | null>(null);
     const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null);
+    const [redactionPolicy, setRedactionPolicy] = useState<ToolRedactionPolicy | null>(null);
     // slug -> display_name, so the call's context_name (== agent slug) shows the friendly name.
     const [agentNames, setAgentNames] = useState<Record<string, string>>({});
     const [loading, setLoading] = useState(true);
@@ -314,6 +328,16 @@ const CallHistoryPage = () => {
         }
     }, []);
 
+    const fetchRedactionPolicy = useCallback(async () => {
+        try {
+            const res = await axios.get('/api/calls/redaction-policy');
+            setRedactionPolicy(res.data);
+        } catch (err) {
+            // Best-effort for compatibility with older Admin API versions.
+            console.error('Failed to fetch Call History redaction policy:', err);
+        }
+    }, []);
+
     useEffect(() => {
         fetchCalls();
     }, [fetchCalls]);
@@ -329,6 +353,10 @@ const CallHistoryPage = () => {
     useEffect(() => {
         fetchAgentNames();
     }, [fetchAgentNames]);
+
+    useEffect(() => {
+        fetchRedactionPolicy();
+    }, [fetchRedactionPolicy]);
 
     const cleanupAudio = useCallback(() => {
         if (audioRef.current) {
@@ -694,6 +722,41 @@ const CallHistoryPage = () => {
                     </button>
                 </div>
             </div>
+
+            {redactionPolicy && (
+                <div className="flex flex-col gap-3 rounded-lg border bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex gap-3">
+                        <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-blue-500" />
+                        <div>
+                            <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                                <span>Tool history privacy: {REDACTION_MODE_LABELS[redactionPolicy.configured_mode] || redactionPolicy.configured_mode}</span>
+                                {redactionPolicy.pending_restart === true && (
+                                    <span className="rounded bg-amber-500/15 px-2 py-0.5 text-xs text-amber-600 dark:text-amber-400">
+                                        AI Engine restart pending
+                                    </span>
+                                )}
+                                {!redactionPolicy.configured_value_valid && (
+                                    <span className="rounded bg-red-500/15 px-2 py-0.5 text-xs text-red-600 dark:text-red-400">
+                                        Invalid setting; strict fallback
+                                    </span>
+                                )}
+                            </div>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                                {redactionPolicy.modes[redactionPolicy.configured_mode]}
+                                {' '}Changes affect future tool executions only; historical redactions cannot be reversed.
+                            </p>
+                        </div>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => navigate('/env?section=call-history#system')}
+                        className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
+                    >
+                        <SlidersHorizontal className="h-4 w-4" />
+                        Configure redaction
+                    </button>
+                </div>
+            )}
 
             {/* Quick Troubleshoot */}
             {modalCall && (

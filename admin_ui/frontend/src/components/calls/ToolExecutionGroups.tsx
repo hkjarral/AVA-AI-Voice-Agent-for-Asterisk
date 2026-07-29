@@ -30,6 +30,8 @@ export interface InCallToolCall {
     params: unknown;
     result: string;
     message?: string;
+    redaction_mode?: 'strict' | 'show_routing' | 'off';
+    redacted_fields?: string[];
     timestamp: string;
     duration_ms: number;
 }
@@ -107,10 +109,26 @@ export const PhaseToolGroup = ({ phase, entries }: { phase: Exclude<ToolPhase, '
     </div>
 );
 
-export const InCallToolGroup = ({ entries }: { entries: InCallToolCall[] }) => (
+export const InCallToolGroup = ({ entries }: { entries: InCallToolCall[] }) => {
+    const recordedModes = Array.from(new Set(entries.map(entry => entry.redaction_mode).filter(Boolean)));
+    const recordedMode = recordedModes.length === 1 ? recordedModes[0] : recordedModes.length > 1 ? 'mixed' : 'legacy';
+    const modeLabels: Record<string, string> = {
+        strict: 'Strict redaction',
+        show_routing: 'Routing details visible',
+        off: 'Redaction off',
+        mixed: 'Mixed redaction policies',
+        legacy: 'Legacy record — policy not recorded',
+    };
+
+    return (
     <div>
         <div className="text-sm font-medium text-muted-foreground mb-1">
             {PHASE_LABELS.in_call} ({entries.length})
+        </div>
+        <div className="mb-2 rounded border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">{modeLabels[recordedMode]}</span>
+            {' '}This reflects how the call was stored; changing the policy affects future tool executions only.
+            {' '}<a className="text-blue-500 hover:underline" href="/env?section=call-history#system">Configure future calls</a>.
         </div>
         <div className="space-y-2">
             {entries.map((tool, i) => {
@@ -149,9 +167,15 @@ export const InCallToolGroup = ({ entries }: { entries: InCallToolCall[] }) => (
                                 {JSON.stringify(tool.params, null, 2)}
                             </pre>
                         )}
+                        {tool.redacted_fields && tool.redacted_fields.length > 0 && (
+                            <div className="mt-2 text-xs text-muted-foreground break-words">
+                                Sanitized fields: <span className="font-mono">{tool.redacted_fields.join(', ')}</span>. Original values cannot be recovered.
+                            </div>
+                        )}
                     </div>
                 );
             })}
         </div>
     </div>
-);
+    );
+};

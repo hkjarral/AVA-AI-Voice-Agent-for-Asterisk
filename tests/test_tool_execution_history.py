@@ -6,6 +6,7 @@ import pytest
 
 from src.tools.execution_history import (
     build_in_call_tool_record,
+    normalize_call_history_tool_redaction_mode,
     normalize_tool_terminal_status,
     record_in_call_tool_result,
     stable_tool_call_id,
@@ -35,6 +36,8 @@ def test_calendar_create_record_has_stable_id_action_and_target():
         "params": {"action": "create_event", "summary": "***REDACTED***"},
         "result": "success",
         "message": "Created",
+        "redaction_mode": "strict",
+        "redacted_fields": ["params.summary"],
         "timestamp": record["timestamp"],
         "duration_ms": 12.35,
     }
@@ -167,18 +170,108 @@ def test_parameter_redaction_covers_common_pii_and_credential_shapes_without_suf
 
 
 @pytest.mark.parametrize("target_key", ["destination", "target", "extension", "queue", "mailbox"])
-def test_transfer_targets_are_not_persisted_verbatim(target_key):
+def test_strict_mode_redacts_transfer_targets_consistently(target_key):
     record = build_in_call_tool_record(
         call_id="call-transfer",
         tool_call_id="tool-transfer",
         tool_name="transfer_call",
         parameters={"action": "transfer", target_key: "private-destination"},
-        result={"status": "success"},
+        result={"status": "success", "message": "Using private-destination"},
+        redaction_mode="strict",
     )
 
     assert record["params"][target_key] == "***REDACTED***"
-    assert record["target_id"] == "private-destination"
+    assert record["target_id"] == "***REDACTED***"
+    assert record["message"] == "Using ***REDACTED***"
+    assert record["redacted_fields"] == [f"params.{target_key}", "target_id", "message"]
     assert record["action"] == "transfer"
+
+
+@pytest.mark.parametrize("target_key", ["destination", "target", "extension", "queue", "mailbox"])
+def test_show_routing_preserves_targets_but_redacts_pii_and_secrets(target_key):
+    parameters = {
+        "action": "transfer",
+        target_key: "support-6000",
+        "caller_email": "caller@example.com",
+        "authorization": "Bearer secret-token",
+    }
+    record = build_in_call_tool_record(
+        call_id="call-routing-visible",
+        tool_call_id="tool-routing-visible",
+        tool_name="blind_transfer",
+        parameters=parameters,
+        result={"status": "success", "message": "Routing support-6000 for caller@example.com"},
+        redaction_mode="show_routing",
+    )
+
+    assert record["params"][target_key] == "support-6000"
+    assert record["params"]["caller_email"] == "***REDACTED***"
+    assert record["params"]["authorization"] == "***REDACTED***"
+    assert record["target_id"] == "support-6000"
+    assert record["message"] == "Routing support-6000 for ***REDACTED***"
+    assert record["redaction_mode"] == "show_routing"
+    assert record["redacted_fields"] == ["params.caller_email", "params.authorization", "message"]
+    assert parameters["caller_email"] == "caller@example.com"
+
+
+def test_off_mode_persists_diagnostics_verbatim_without_mutating_input():
+    parameters = {
+        "destination": "Support",
+        "caller_email": "caller@example.com",
+        "metadata": {"authorization": "Bearer secret-token"},
+    }
+    record = build_in_call_tool_record(
+        call_id="call-off",
+        tool_call_id="tool-off",
+        tool_name="blind_transfer",
+        parameters=parameters,
+        result={"status": "success", "message": "Transfer Support for caller@example.com"},
+        redaction_mode="off",
+    )
+
+    assert record["params"] == parameters
+    assert record["params"] is not parameters
+    assert record["params"]["metadata"] is not parameters["metadata"]
+    assert record["target_id"] == "Support"
+    assert record["message"] == "Transfer Support for caller@example.com"
+    assert record["redaction_mode"] == "off"
+    assert record["redacted_fields"] == []
+
+
+def test_strict_mode_sanitizes_a_short_routing_value_only_as_a_token():
+    record = build_in_call_tool_record(
+        call_id="call-short-route",
+        tool_call_id="tool-short-route",
+        tool_name="blind_transfer",
+        parameters={"destination": "1"},
+        result={"status": "success", "message": "Transfer to 1; attempt 12 remains."},
+        redaction_mode="strict",
+    )
+
+    assert record["message"] == "Transfer to ***REDACTED***; attempt 12 remains."
+
+
+@pytest.mark.parametrize("configured", [None, "", "invalid", " STRICT "])
+def test_redaction_mode_normalization_fails_closed(configured):
+    expected = "strict"
+    assert normalize_call_history_tool_redaction_mode(configured) == expected
+
+
+def test_runtime_mode_is_resolved_from_environment(monkeypatch):
+    monkeypatch.setenv("CALL_HISTORY_TOOL_REDACTION_MODE", "show_routing")
+
+    record = build_in_call_tool_record(
+        call_id="call-env-policy",
+        tool_call_id="tool-env-policy",
+        tool_name="blind_transfer",
+        parameters={"destination": "support", "caller_email": "caller@example.com"},
+        result={"status": "success", "destination": "6000"},
+    )
+
+    assert record["redaction_mode"] == "show_routing"
+    assert record["params"]["destination"] == "support"
+    assert record["params"]["caller_email"] == "***REDACTED***"
+    assert record["target_id"] == "6000"
 
 
 def test_missing_ids_are_unique_per_invocation():

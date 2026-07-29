@@ -36,6 +36,7 @@ except ModuleNotFoundError:
 
 # A11: Maximum number of backups to keep
 MAX_BACKUPS = 5
+CALL_HISTORY_TOOL_REDACTION_MODES = frozenset({"strict", "show_routing", "off"})
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -1307,6 +1308,17 @@ async def update_env(env_data: Dict[str, Optional[str]]):
     - Already-quoted values from UI are stored as-is (no double-quoting)
     """
     try:
+        redaction_mode = env_data.get("CALL_HISTORY_TOOL_REDACTION_MODE")
+        if redaction_mode not in (None, "__DELETE__"):
+            normalized_mode = str(redaction_mode).strip().lower()
+            if normalized_mode not in CALL_HISTORY_TOOL_REDACTION_MODES:
+                allowed = ", ".join(sorted(CALL_HISTORY_TOOL_REDACTION_MODES))
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"CALL_HISTORY_TOOL_REDACTION_MODE must be one of: {allowed}",
+                )
+            env_data["CALL_HISTORY_TOOL_REDACTION_MODE"] = normalized_mode
+
         # If file logging is enabled but no path is provided, default to the shared media volume.
         # This matches the UI recommendation and prevents "log to file" from silently falling back
         # to a non-writable working directory inside the container.

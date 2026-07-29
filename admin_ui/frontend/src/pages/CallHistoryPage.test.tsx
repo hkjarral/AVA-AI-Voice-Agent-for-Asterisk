@@ -58,6 +58,11 @@ const LocationProbe = () => {
     return <div data-testid="location-search">{location.search}</div>;
 };
 
+const FullLocationProbe = () => {
+    const location = useLocation();
+    return <div data-testid="full-location">{`${location.pathname}${location.search}${location.hash}`}</div>;
+};
+
 describe('CallHistoryPage deep links', () => {
     beforeEach(() => {
         vi.clearAllMocks();
@@ -66,6 +71,20 @@ describe('CallHistoryPage deep links', () => {
                 return { data: { calls: [], total: 0, total_pages: 1 } };
             }
             if (url === '/api/calls/stats') return { data: null };
+            if (url === '/api/calls/redaction-policy') {
+                return {
+                    data: {
+                        configured_mode: 'show_routing',
+                        configured_value_valid: true,
+                        pending_restart: true,
+                        modes: {
+                            strict: 'Redact credentials, caller data, free text, and routing details.',
+                            show_routing: 'Show destinations and extensions while redacting credentials and caller data.',
+                            off: 'Persist in-call tool diagnostics verbatim.',
+                        },
+                    },
+                };
+            }
             if (url === '/api/calls/filters') {
                 return { data: { providers: [], pipelines: [], contexts: [], outcomes: [] } };
             }
@@ -147,5 +166,22 @@ describe('CallHistoryPage deep links', () => {
         fireEvent.keyDown(document, { key: 'Escape' });
         await waitFor(() => expect(dialog).not.toBeInTheDocument());
         expect(returnTarget).toHaveFocus();
+    });
+
+    it('surfaces the configured policy and links to its Environment setting', async () => {
+        render(
+            <MemoryRouter initialEntries={['/history']}>
+                <CallHistoryPage />
+                <FullLocationProbe />
+            </MemoryRouter>
+        );
+
+        expect(await screen.findByText('Tool history privacy: Show routing')).toBeInTheDocument();
+        expect(screen.getByText('AI Engine restart pending')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Configure redaction' }));
+
+        expect(screen.getByTestId('full-location')).toHaveTextContent(
+            '/env?section=call-history#system'
+        );
     });
 });

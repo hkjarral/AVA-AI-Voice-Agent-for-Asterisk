@@ -109,6 +109,7 @@ If you’re not sure, start without these; use `agent check` and `docs/Transport
 
 - `CALL_HISTORY_DB_PATH`: SQLite path for Call History (default in `.env.example` is `data/call_history.db`).
 - `CALL_HISTORY_RETENTION_DAYS`: retention (0 = keep indefinitely).
+- `CALL_HISTORY_TOOL_REDACTION_MODE`: privacy policy for future persisted in-call tool diagnostics. `strict` (default) redacts credentials, caller PII/free text, and routing targets; `show_routing` keeps destinations, extensions, queues, and mailboxes while still redacting credentials and caller data; `off` persists tool diagnostics verbatim and is intended only for trusted/private systems. Invalid values fail closed to `strict`. Changing the value requires an `ai_engine` restart and cannot restore values already stored as `REDACTED`.
 
 ### Logging / diagnostics
 
