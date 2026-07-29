@@ -653,7 +653,7 @@ For older releases, expand **Previous Versions** below. Full release notes in [C
    - *Best for: Enterprise deployments, quick setup.*
 
 2. **Deepgram Voice Agent** (Enterprise Cloud)
-   - Advanced Think stage for complex reasoning (<3s response).
+   - Advanced Deepgram-managed Think stage for complex reasoning (<3s response); requires only a Deepgram API key.
    - Config: `config/ai-agent.golden-deepgram.yaml`
    - *Best for: Deepgram ecosystem, advanced features.*
 

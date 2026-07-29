@@ -2956,19 +2956,15 @@ class SetupConfig(BaseModel):
 
 # ... (keep existing endpoints) ...
 
-@router.post("/save")
-async def save_setup_config(config: SetupConfig):
-    """Persist wizard configuration into `.env` and baseline config files."""
-    # Validation: Check for required keys based on provider
+def _validate_setup_provider_credentials(config: SetupConfig) -> None:
+    """Validate only credentials owned by the selected setup target."""
     if config.provider == "openai_realtime" and not config.openai_key:
-            raise HTTPException(status_code=400, detail="OpenAI API Key is required for OpenAI Realtime provider")
+        raise HTTPException(status_code=400, detail="OpenAI API Key is required for OpenAI Realtime provider")
     if config.provider == "deepgram":
         if not config.deepgram_key:
             raise HTTPException(status_code=400, detail="Deepgram API Key is required for Deepgram provider")
-        if not config.openai_key:
-            raise HTTPException(status_code=400, detail="OpenAI API Key is required for Deepgram Think stage")
     if config.provider == "google_live" and not config.google_key:
-            raise HTTPException(status_code=400, detail="Google API Key is required for Google Live provider")
+        raise HTTPException(status_code=400, detail="Google API Key is required for Google Live provider")
     # Local hybrid uses a cloud LLM (Groq/OpenAI) or Ollama
     if config.provider == "local_hybrid":
         llm_provider = (config.hybrid_llm_provider or "groq").lower()
@@ -2983,6 +2979,12 @@ async def save_setup_config(config: SetupConfig):
             raise HTTPException(status_code=400, detail="ElevenLabs Agent ID is required for ElevenLabs Conversational provider")
     if config.provider == "grok" and not config.xai_key:
         raise HTTPException(status_code=400, detail="xAI API Key is required for Grok Voice Agent provider")
+
+
+@router.post("/save")
+async def save_setup_config(config: SetupConfig):
+    """Persist wizard configuration into `.env` and baseline config files."""
+    _validate_setup_provider_credentials(config)
 
     try:
         import shutil

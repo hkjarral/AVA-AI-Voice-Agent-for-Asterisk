@@ -31,6 +31,10 @@ Add your Deepgram API key to `.env`:
 DEEPGRAM_API_KEY=your_api_key_here
 ```
 
+The default Voice Agent Think stage is managed by Deepgram. It does not require
+or send a separate `OPENAI_API_KEY`; that key is needed only by configurations
+that independently use an OpenAI provider or modular OpenAI LLM component.
+
 **Test API Key**:
 ```bash
 curl -X GET "https://api.deepgram.com/v1/projects" \

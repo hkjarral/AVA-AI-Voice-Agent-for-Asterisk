@@ -74,8 +74,8 @@ If you’re not sure, start without these; use `agent check` and `docs/Transport
 ### Health endpoints (bind / probe)
 
 - `HEALTH_BIND_HOST`, `HEALTH_BIND_PORT`: where `ai_engine` binds `/live`, `/ready`, `/health`, `/metrics`.
-- `HEALTH_CHECK_AI_ENGINE_URL`: optional override used by Admin UI for Tier-3 / non-host-network deployments.
-- `HEALTH_CHECK_LOCAL_AI_URL`: optional override used by Admin UI for Local AI Server probes.
+- `HEALTH_CHECK_AI_ENGINE_URL`: optional authoritative Admin UI probe target for Tier-3 / non-host-network deployments. When set, discovery fallbacks are not attempted.
+- `HEALTH_CHECK_LOCAL_AI_URL`: optional authoritative Admin UI Local AI Server probe target. When set, discovery fallbacks are not attempted.
 
 ### Live-status dashboard
 

@@ -511,6 +511,7 @@ Notes:
 ### Deepgram Voice Agent
 
 - providers.deepgram.api_key: injected from `DEEPGRAM_API_KEY` (env-only; do not commit secrets to YAML).
+- The default Think stage uses Deepgram-managed reasoning and does not consume or require `OPENAI_API_KEY`. Custom/BYO reasoning endpoints are not currently exposed by this provider configuration.
 - providers.deepgram.model, providers.deepgram.tts_model: Deepgram Voice Agent + Aura TTS models.
 - `providers.deepgram.agent_language`: Language for Deepgram Voice Agent mode (default: `en`).
 - providers.deepgram.greeting: Agent greeting. Leave empty to inherit `llm.initial_greeting`.

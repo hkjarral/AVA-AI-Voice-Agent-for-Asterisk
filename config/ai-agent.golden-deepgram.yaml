@@ -6,7 +6,7 @@
 #
 # Requirements:
 #   - DEEPGRAM_API_KEY in .env file
-#   - OPENAI_API_KEY in .env (for agent's "Think" stage reasoning)
+#   - Deepgram Voice Agent access (the default Think stage is managed by Deepgram)
 #   - Asterisk 18+ with ARI and AudioSocket modules
 #
 # Performance:

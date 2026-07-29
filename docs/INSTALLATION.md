@@ -519,7 +519,7 @@ cd AVA-AI-Voice-Agent-for-Asterisk
 The installer will:
 1. Guide you through **3 baseline choices** (a fast-path subset):
    - **OpenAI Realtime** - Fastest (0.5-1.5s), requires OPENAI_API_KEY
-   - **Deepgram Voice Agent** - Enterprise (1-2s), requires DEEPGRAM_API_KEY + OPENAI_API_KEY
+   - **Deepgram Voice Agent** - Enterprise (1-2s), requires DEEPGRAM_API_KEY
    - **Local Hybrid** - Privacy-focused (3-7s), requires OPENAI_API_KEY + 8GB RAM
 2. Validate ARI connection with your Asterisk server
 3. Prompt for required API keys

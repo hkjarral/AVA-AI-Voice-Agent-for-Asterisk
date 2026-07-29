@@ -7,8 +7,34 @@ import pytest
 
 from src.core.models import CallSession
 from src.engine import Engine
-from src.config import BargeInConfig, LocalProviderConfig
+from src.config import BargeInConfig, LLMConfig, LocalProviderConfig
 from src.providers.local import LocalProvider
+
+
+@pytest.mark.asyncio
+async def test_deepgram_managed_reasoning_loads_without_global_openai_key():
+    engine = Engine.__new__(Engine)
+    engine.config = SimpleNamespace(
+        providers={"deepgram": {"enabled": True}},
+        llm=LLMConfig(api_key=""),
+        tools=None,
+    )
+    engine.providers = {}
+    engine.provider_factories = {}
+    engine.provider_kinds = {}
+    engine.provider_alignment_issues = {}
+    engine.session_store = SimpleNamespace()
+    engine._audit_provider_config = lambda *_args: []
+    engine._describe_provider_alignment = lambda *_args: []
+    engine._build_deepgram_config = lambda *_args: {
+        "api_key": "deepgram-secret",
+    }
+
+    await engine._load_providers()
+
+    assert "deepgram" in engine.providers
+    assert "deepgram" in engine.provider_factories
+    assert engine.provider_kinds["deepgram"] == "deepgram"
 
 
 @pytest.mark.asyncio

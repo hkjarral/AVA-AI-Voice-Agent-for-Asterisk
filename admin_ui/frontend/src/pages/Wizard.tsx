@@ -826,10 +826,6 @@ const Wizard = () => {
                     showToast('Deepgram API key is required for Deepgram.', 'error');
                     return;
                 }
-                if (!config.openai_key) {
-                    showToast('OpenAI API key is required for Deepgram Think stage.', 'error');
-                    return;
-                }
             }
             if (config.provider === 'google_live' && !config.google_key) {
                 showToast('Google API key is required for Google Live.', 'error');
@@ -915,7 +911,6 @@ const Wizard = () => {
                 }
 
                 if (config.provider === 'deepgram') {
-                    // Deepgram requires both Deepgram key AND OpenAI key (for Think stage)
                     if (config.deepgram_key) {
                         const res = await axios.post('/api/wizard/validate-key', {
                             provider: 'deepgram',
@@ -924,16 +919,6 @@ const Wizard = () => {
                         if (!res.data.valid) throw new Error(`Deepgram Key Invalid: ${res.data.error}`);
                     } else {
                         throw new Error('Deepgram API Key is required for Deepgram provider');
-                    }
-                    // Also validate OpenAI key for Think stage
-                    if (config.openai_key) {
-                        const res = await axios.post('/api/wizard/validate-key', {
-                            provider: 'openai',
-                            api_key: config.openai_key
-                        });
-                        if (!res.data.valid) throw new Error(`OpenAI Key Invalid (for Think stage): ${res.data.error}`);
-                    } else {
-                        throw new Error('OpenAI API Key is required for Deepgram Think stage');
                     }
                 }
 
@@ -1825,7 +1810,7 @@ const Wizard = () => {
                                 <div className="bg-blue-50/50 dark:bg-blue-900/10 p-4 rounded-md border border-blue-100 dark:border-blue-900/20 text-sm text-blue-800 dark:text-blue-300">
                                     <p className="font-semibold mb-1">Deepgram Voice Agent</p>
                                     <p className="text-blue-700 dark:text-blue-400">
-                                        Requires both Deepgram API key (for STT/TTS) and OpenAI API key (for Think stage LLM).
+                                        Requires one Deepgram API key. Deepgram manages the Think-stage model for this provider.
                                     </p>
                                 </div>
                                 <div className="space-y-2">
@@ -1862,44 +1847,9 @@ const Wizard = () => {
                                             Test
                                         </button>
                                     </div>
-                                    <p className="text-xs text-muted-foreground">For Deepgram STT and TTS.</p>
-                                </div>
-                                <div className="space-y-2">
-                                    <div className="flex items-center gap-1.5">
-                                        <label className="text-sm font-medium">OpenAI API Key (for Think stage)</label>
-                                        <HelpTooltip
-                                            content={
-                                                <>
-                                                    <strong>OpenAI API Key</strong> — Deepgram's Voice Agent routes the "think" stage through OpenAI for LLM reasoning.
-                                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                                        <li>Starts with <code>sk-</code></li>
-                                                        <li>Stored as <code>OPENAI_API_KEY</code></li>
-                                                        <li>Separate from your Deepgram key</li>
-                                                    </ul>
-                                                </>
-                                            }
-                                            link="https://platform.openai.com/api-keys"
-                                            linkText="Get an API key"
-                                        />
-                                    </div>
-                                    <div className="flex space-x-2">
-                                        <input
-                                            type="password"
-                                            className="w-full p-2 rounded-md border border-input bg-background"
-                                            value={config.openai_key}
-                                            onChange={e => setConfig({ ...config, openai_key: e.target.value })}
-                                            placeholder="sk-..."
-                                        />
-                                        <button
-                                            type="button"
-                                            onClick={() => handleTestKey('openai', config.openai_key || '')}
-                                            className="px-3 py-2 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80"
-                                            disabled={loading}
-                                        >
-                                            Test
-                                        </button>
-                                    </div>
-                                    <p className="text-xs text-muted-foreground">Deepgram's Think stage uses OpenAI for LLM reasoning.</p>
+                                    <p className="text-xs text-muted-foreground">
+                                        Authorizes the complete Deepgram Voice Agent session, including managed reasoning.
+                                    </p>
                                 </div>
                             </div>
                         )}

@@ -3529,11 +3529,6 @@ class Engine:
                     if not deepgram_config:
                         continue
 
-                    # Validate OpenAI dependency for Deepgram
-                    if not self.config.llm.api_key:
-                        logger.error("Deepgram provider requires OpenAI API key in LLM config")
-                        continue
-
                     hangup_policy = resolve_hangup_policy(
                         getattr(self.config, "tools", None)
                     )
@@ -3558,7 +3553,11 @@ class Engine:
                         key,
                         p_kind,
                     )
-                    logger.info("Provider loaded successfully with OpenAI LLM dependency.", provider=name, kind=kind)
+                    logger.info(
+                        "Provider loaded successfully with Deepgram-managed reasoning",
+                        provider=name,
+                        kind=kind,
+                    )
 
                     runtime_issues = self._describe_provider_alignment(name, provider)
                     if runtime_issues:

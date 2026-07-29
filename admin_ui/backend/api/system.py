@@ -1659,13 +1659,16 @@ async def get_system_health():
             env_uri = (_dotenv_value("HEALTH_CHECK_LOCAL_AI_URL") or "").strip()
             if not env_uri:
                 env_uri = (os.getenv("HEALTH_CHECK_LOCAL_AI_URL") or "").strip()
-            candidates = _dedupe_preserve_order([
-                env_uri,
-                "ws://127.0.0.1:8765",
-                "ws://local_ai_server:8765",
-                "ws://local-ai-server:8765",
-                "ws://host.docker.internal:8765",
-            ])
+            candidates = (
+                [env_uri]
+                if env_uri
+                else _dedupe_preserve_order([
+                    "ws://127.0.0.1:8765",
+                    "ws://local_ai_server:8765",
+                    "ws://local-ai-server:8765",
+                    "ws://host.docker.internal:8765",
+                ])
+            )
 
             last_error: Optional[str] = None
             errors_by_uri: dict = {}
@@ -1719,12 +1722,6 @@ async def get_system_health():
                             data["silero_speaker"] = silero.get("speaker")
                             data["silero_model_id"] = silero.get("model_id")
                             
-                            warning = None
-                            if env_uri and uri != env_uri:
-                                warning = (
-                                    f"HEALTH_CHECK_LOCAL_AI_URL is set but unreachable ({env_uri}); "
-                                    f"connected via fallback ({uri})."
-                                )
                             return {
                                 "status": "connected",
                                 "details": data,
@@ -1734,7 +1731,7 @@ async def get_system_health():
                                     "errors": errors_by_uri,
                                 }
                                 ,
-                                "warning": warning,
+                                "warning": None,
                             }
                         else:
                             last_error = "Invalid response type"
@@ -1776,13 +1773,16 @@ async def get_system_health():
             env_url = (_dotenv_value("HEALTH_CHECK_AI_ENGINE_URL") or "").strip()
             if not env_url:
                 env_url = (os.getenv("HEALTH_CHECK_AI_ENGINE_URL") or "").strip()
-            candidates = _dedupe_preserve_order([
-                env_url,
-                "http://127.0.0.1:15000/health",
-                "http://ai_engine:15000/health",
-                "http://ai-engine:15000/health",
-                "http://host.docker.internal:15000/health",
-            ])
+            candidates = (
+                [env_url]
+                if env_url
+                else _dedupe_preserve_order([
+                    "http://127.0.0.1:15000/health",
+                    "http://ai_engine:15000/health",
+                    "http://ai-engine:15000/health",
+                    "http://host.docker.internal:15000/health",
+                ])
+            )
 
             # connect=5s (was 1.5s): the engine's event loop can be blocked
             # for >1s during heavy call traffic / audio processing, which made
@@ -1805,12 +1805,6 @@ async def get_system_health():
                         resp = await client.get(url)
                         logger.debug("AI Engine response: %s", resp.status_code)
                         if resp.status_code == 200:
-                            warning = None
-                            if env_url and url != env_url:
-                                warning = (
-                                    f"HEALTH_CHECK_AI_ENGINE_URL is set but unreachable ({env_url}); "
-                                    f"connected via fallback ({url})."
-                                )
                             return {
                                 "status": "connected",
                                 "details": resp.json(),
@@ -1819,7 +1813,7 @@ async def get_system_health():
                                     "attempted": candidates,
                                 }
                                 ,
-                                "warning": warning,
+                                "warning": None,
                             }
                         last_error = f"HTTP {resp.status_code}"
                     except Exception as e:
