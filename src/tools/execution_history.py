@@ -300,16 +300,17 @@ async def record_in_call_tool_result(
     before provider delivery, so a failed provider response and retry retain
     the original execution fact under the upstream ``tool_call_id``.
     """
-    record = build_in_call_tool_record(
-        call_id=call_id,
-        tool_call_id=tool_call_id,
-        tool_name=tool_name,
-        parameters=parameters,
-        result=result,
-        duration_ms=duration_ms,
-        canonical_name=canonical_name,
-    )
+    record: Optional[Dict[str, Any]] = None
     try:
+        record = build_in_call_tool_record(
+            call_id=call_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            parameters=parameters,
+            result=result,
+            duration_ms=duration_ms,
+            canonical_name=canonical_name,
+        )
         if session_store is None:
             return None
         atomic_append = getattr(session_store, "append_tool_call_if_active", None)
@@ -353,8 +354,8 @@ async def record_in_call_tool_result(
         logger.debug(
             "Failed to record tool result in call history",
             call_id=call_id,
-            tool=record["name"],
-            tool_call_id=record["tool_call_id"],
+            tool=record["name"] if record else str(canonical_name or tool_name or ""),
+            tool_call_id=record["tool_call_id"] if record else str(tool_call_id or ""),
             exc_info=True,
         )
         return None

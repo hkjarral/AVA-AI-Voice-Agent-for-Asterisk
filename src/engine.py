@@ -15575,17 +15575,26 @@ class Engine:
                                     tool_duration_ms = (time.time() - _tool_start) * 1000
                                     logger.info("Tool execution result", tool=name, result=result)
 
-                                    await record_in_call_tool_result(
-                                        session_store=self.session_store,
-                                        call_id=call_id,
-                                        tool_call_id=function_call_id,
-                                        tool_name=name,
-                                        canonical_name=tool_registry.canonicalize_tool_name(name),
-                                        parameters=args,
-                                        result=result,
-                                        duration_ms=tool_duration_ms,
-                                    )
                                     tool_result_recorded = True
+                                    try:
+                                        await record_in_call_tool_result(
+                                            session_store=self.session_store,
+                                            call_id=call_id,
+                                            tool_call_id=function_call_id,
+                                            tool_name=name,
+                                            canonical_name=tool_registry.canonicalize_tool_name(name),
+                                            parameters=args,
+                                            result=result,
+                                            duration_ms=tool_duration_ms,
+                                        )
+                                    except Exception:
+                                        logger.warning(
+                                            "Failed to persist pipeline tool result",
+                                            call_id=call_id,
+                                            tool=name,
+                                            tool_call_id=function_call_id,
+                                            exc_info=True,
+                                        )
 
                                     try:
                                         from src.tools.telephony.deferred_transfer import get_deferred_transfer_action
@@ -15834,28 +15843,46 @@ class Engine:
                                                                     next_task.cancel()
                                                                     with contextlib.suppress(asyncio.CancelledError):
                                                                         await next_task
-                                                                await record_in_call_tool_result(
-                                                                    session_store=self.session_store,
-                                                                    call_id=call_id,
-                                                                    tool_call_id=next_function_call_id,
-                                                                    tool_name=next_name,
-                                                                    canonical_name=tool_registry.canonicalize_tool_name(next_name),
-                                                                    parameters=next_args,
-                                                                    result={"status": "cancelled", "message": "Tool execution cancelled"},
-                                                                    duration_ms=(time.time() - next_tool_start) * 1000,
-                                                                )
+                                                                try:
+                                                                    await record_in_call_tool_result(
+                                                                        session_store=self.session_store,
+                                                                        call_id=call_id,
+                                                                        tool_call_id=next_function_call_id,
+                                                                        tool_name=next_name,
+                                                                        canonical_name=tool_registry.canonicalize_tool_name(next_name),
+                                                                        parameters=next_args,
+                                                                        result={"status": "cancelled", "message": "Tool execution cancelled"},
+                                                                        duration_ms=(time.time() - next_tool_start) * 1000,
+                                                                    )
+                                                                except Exception:
+                                                                    logger.warning(
+                                                                        "Failed to persist cancelled follow-up tool result",
+                                                                        call_id=call_id,
+                                                                        tool=next_name,
+                                                                        tool_call_id=next_function_call_id,
+                                                                        exc_info=True,
+                                                                    )
                                                                 raise
                                                             except Exception as next_error:
-                                                                await record_in_call_tool_result(
-                                                                    session_store=self.session_store,
-                                                                    call_id=call_id,
-                                                                    tool_call_id=next_function_call_id,
-                                                                    tool_name=next_name,
-                                                                    canonical_name=tool_registry.canonicalize_tool_name(next_name),
-                                                                    parameters=next_args,
-                                                                    result={"status": "error", "message": str(next_error)},
-                                                                    duration_ms=(time.time() - next_tool_start) * 1000,
-                                                                )
+                                                                try:
+                                                                    await record_in_call_tool_result(
+                                                                        session_store=self.session_store,
+                                                                        call_id=call_id,
+                                                                        tool_call_id=next_function_call_id,
+                                                                        tool_name=next_name,
+                                                                        canonical_name=tool_registry.canonicalize_tool_name(next_name),
+                                                                        parameters=next_args,
+                                                                        result={"status": "error", "message": str(next_error)},
+                                                                        duration_ms=(time.time() - next_tool_start) * 1000,
+                                                                    )
+                                                                except Exception:
+                                                                    logger.warning(
+                                                                        "Failed to persist failed follow-up tool result",
+                                                                        call_id=call_id,
+                                                                        tool=next_name,
+                                                                        tool_call_id=next_function_call_id,
+                                                                        exc_info=True,
+                                                                    )
                                                                 logger.error(
                                                                     "Follow-up tool execution failed",
                                                                     tool=next_name,
@@ -15864,16 +15891,25 @@ class Engine:
                                                                     exc_info=True,
                                                                 )
                                                                 raise
-                                                            await record_in_call_tool_result(
-                                                                session_store=self.session_store,
-                                                                call_id=call_id,
-                                                                tool_call_id=next_function_call_id,
-                                                                tool_name=next_name,
-                                                                canonical_name=tool_registry.canonicalize_tool_name(next_name),
-                                                                parameters=next_args,
-                                                                result=next_result,
-                                                                duration_ms=(time.time() - next_tool_start) * 1000,
-                                                            )
+                                                            try:
+                                                                await record_in_call_tool_result(
+                                                                    session_store=self.session_store,
+                                                                    call_id=call_id,
+                                                                    tool_call_id=next_function_call_id,
+                                                                    tool_name=next_name,
+                                                                    canonical_name=tool_registry.canonicalize_tool_name(next_name),
+                                                                    parameters=next_args,
+                                                                    result=next_result,
+                                                                    duration_ms=(time.time() - next_tool_start) * 1000,
+                                                                )
+                                                            except Exception:
+                                                                logger.warning(
+                                                                    "Failed to persist follow-up tool result",
+                                                                    call_id=call_id,
+                                                                    tool=next_name,
+                                                                    tool_call_id=next_function_call_id,
+                                                                    exc_info=True,
+                                                                )
                                                             try:
                                                                 from src.tools.telephony.deferred_transfer import get_deferred_transfer_action
                                                                 next_deferred_action = get_deferred_transfer_action(next_result)
@@ -15929,63 +15965,99 @@ class Engine:
                                                                 )
                                                                 return
                                                         else:
-                                                            await record_in_call_tool_result(
-                                                                session_store=self.session_store,
-                                                                call_id=call_id,
-                                                                tool_call_id=next_function_call_id,
-                                                                tool_name=next_name,
-                                                                canonical_name=tool_registry.canonicalize_tool_name(next_name),
-                                                                parameters=next_args,
-                                                                result={
-                                                                    "status": "error",
-                                                                    "message": f"Tool '{next_name}' not found",
-                                                                },
-                                                            )
+                                                            try:
+                                                                await record_in_call_tool_result(
+                                                                    session_store=self.session_store,
+                                                                    call_id=call_id,
+                                                                    tool_call_id=next_function_call_id,
+                                                                    tool_name=next_name,
+                                                                    canonical_name=tool_registry.canonicalize_tool_name(next_name),
+                                                                    parameters=next_args,
+                                                                    result={
+                                                                        "status": "error",
+                                                                        "message": f"Tool '{next_name}' not found",
+                                                                    },
+                                                                )
+                                                            except Exception:
+                                                                logger.warning(
+                                                                    "Failed to persist missing follow-up tool result",
+                                                                    call_id=call_id,
+                                                                    tool=next_name,
+                                                                    tool_call_id=next_function_call_id,
+                                                                    exc_info=True,
+                                                                )
                                         except Exception as e:
                                             logger.error("LLM continuation failed", error=str(e), exc_info=True)
                                 else:
                                     logger.warning("Tool not found", tool=name)
-                                    await record_in_call_tool_result(
-                                        session_store=self.session_store,
-                                        call_id=call_id,
-                                        tool_call_id=function_call_id,
-                                        tool_name=name,
-                                        canonical_name=tool_registry.canonicalize_tool_name(name),
-                                        parameters=args,
-                                        result={"status": "error", "message": f"Tool '{name}' not found"},
-                                        duration_ms=(time.time() - _tool_start) * 1000,
-                                    )
                                     tool_result_recorded = True
+                                    try:
+                                        await record_in_call_tool_result(
+                                            session_store=self.session_store,
+                                            call_id=call_id,
+                                            tool_call_id=function_call_id,
+                                            tool_name=name,
+                                            canonical_name=tool_registry.canonicalize_tool_name(name),
+                                            parameters=args,
+                                            result={"status": "error", "message": f"Tool '{name}' not found"},
+                                            duration_ms=(time.time() - _tool_start) * 1000,
+                                        )
+                                    except Exception:
+                                        logger.warning(
+                                            "Failed to persist missing pipeline tool result",
+                                            call_id=call_id,
+                                            tool=name,
+                                            tool_call_id=function_call_id,
+                                            exc_info=True,
+                                        )
                             except asyncio.CancelledError:
                                 if tool_task is not None and not tool_task.done():
                                     tool_task.cancel()
                                     with contextlib.suppress(asyncio.CancelledError):
                                         await tool_task
                                 if not tool_result_recorded:
-                                    await record_in_call_tool_result(
-                                        session_store=self.session_store,
-                                        call_id=call_id,
-                                        tool_call_id=function_call_id,
-                                        tool_name=name,
-                                        canonical_name=tool_registry.canonicalize_tool_name(name),
-                                        parameters=args,
-                                        result={"status": "cancelled", "message": "Tool execution cancelled"},
-                                        duration_ms=(time.time() - _tool_start) * 1000,
-                                    )
+                                    try:
+                                        await record_in_call_tool_result(
+                                            session_store=self.session_store,
+                                            call_id=call_id,
+                                            tool_call_id=function_call_id,
+                                            tool_name=name,
+                                            canonical_name=tool_registry.canonicalize_tool_name(name),
+                                            parameters=args,
+                                            result={"status": "cancelled", "message": "Tool execution cancelled"},
+                                            duration_ms=(time.time() - _tool_start) * 1000,
+                                        )
+                                    except Exception:
+                                        logger.warning(
+                                            "Failed to persist cancelled pipeline tool result",
+                                            call_id=call_id,
+                                            tool=name,
+                                            tool_call_id=function_call_id,
+                                            exc_info=True,
+                                        )
                                 raise
                             except Exception as e:
                                 logger.error("Tool execution failed", tool=name, error=str(e), exc_info=True)
                                 if not tool_result_recorded:
-                                    await record_in_call_tool_result(
-                                        session_store=self.session_store,
-                                        call_id=call_id,
-                                        tool_call_id=function_call_id,
-                                        tool_name=name,
-                                        canonical_name=tool_registry.canonicalize_tool_name(name),
-                                        parameters=args,
-                                        result={"status": "error", "message": str(e)},
-                                        duration_ms=(time.time() - _tool_start) * 1000,
-                                    )
+                                    try:
+                                        await record_in_call_tool_result(
+                                            session_store=self.session_store,
+                                            call_id=call_id,
+                                            tool_call_id=function_call_id,
+                                            tool_name=name,
+                                            canonical_name=tool_registry.canonicalize_tool_name(name),
+                                            parameters=args,
+                                            result={"status": "error", "message": str(e)},
+                                            duration_ms=(time.time() - _tool_start) * 1000,
+                                        )
+                                    except Exception:
+                                        logger.warning(
+                                            "Failed to persist failed pipeline tool result",
+                                            call_id=call_id,
+                                            tool=name,
+                                            tool_call_id=function_call_id,
+                                            exc_info=True,
+                                        )
 
                 async def maybe_respond(force: bool, from_flush: bool = False) -> None:
                     nonlocal pending_segments, flush_task
@@ -19381,16 +19453,25 @@ class Engine:
                         available_tools=tool_registry.list_tools() if tool_registry else [],
                     )
         except asyncio.CancelledError:
-            await record_in_call_tool_result(
-                session_store=self.session_store,
-                call_id=call_id,
-                tool_call_id=function_call_id,
-                tool_name=function_name,
-                canonical_name=tool_registry.canonicalize_tool_name(function_name),
-                parameters=parameters,
-                result={"status": "cancelled", "message": "Tool execution cancelled"},
-                duration_ms=(time.time() - tool_start_time) * 1000,
-            )
+            try:
+                await record_in_call_tool_result(
+                    session_store=self.session_store,
+                    call_id=call_id,
+                    tool_call_id=function_call_id,
+                    tool_name=function_name,
+                    canonical_name=tool_registry.canonicalize_tool_name(function_name),
+                    parameters=parameters,
+                    result={"status": "cancelled", "message": "Tool execution cancelled"},
+                    duration_ms=(time.time() - tool_start_time) * 1000,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to persist cancelled provider tool result",
+                    call_id=call_id,
+                    tool=function_name,
+                    tool_call_id=function_call_id,
+                    exc_info=True,
+                )
             raise
         except Exception as e:
             logger.error(
@@ -19402,17 +19483,26 @@ class Engine:
             )
             result = {"status": "error", "message": str(e)}
         
-        canonical_name = tool_registry.canonicalize_tool_name(function_name)
-        await record_in_call_tool_result(
-            session_store=self.session_store,
-            call_id=call_id,
-            tool_call_id=function_call_id,
-            tool_name=function_name,
-            canonical_name=canonical_name,
-            parameters=parameters,
-            result=result,
-            duration_ms=(time.time() - tool_start_time) * 1000,
-        )
+        try:
+            canonical_name = tool_registry.canonicalize_tool_name(function_name)
+            await record_in_call_tool_result(
+                session_store=self.session_store,
+                call_id=call_id,
+                tool_call_id=function_call_id,
+                tool_name=function_name,
+                canonical_name=canonical_name,
+                parameters=parameters,
+                result=result,
+                duration_ms=(time.time() - tool_start_time) * 1000,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to persist provider tool result",
+                call_id=call_id,
+                tool=function_name,
+                tool_call_id=function_call_id,
+                exc_info=True,
+            )
         
         # Send result back to provider. Pass the originating `call_id` so
         # the provider can correlate the result to the correct session even

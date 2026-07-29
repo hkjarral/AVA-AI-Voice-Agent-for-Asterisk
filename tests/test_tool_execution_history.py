@@ -218,6 +218,28 @@ async def test_retries_append_with_same_stable_tool_call_id_and_leave_transcript
 
 
 @pytest.mark.asyncio
+async def test_record_construction_failure_is_best_effort():
+    store = SimpleNamespace(
+        get_by_call_id=AsyncMock(),
+        upsert_call=AsyncMock(),
+    )
+
+    recorded = await record_in_call_tool_result(
+        session_store=store,
+        call_id="call-invalid-duration",
+        tool_call_id="tool-invalid-duration",
+        tool_name="lookup",
+        parameters={},
+        result={"status": "success"},
+        duration_ms="not-a-number",
+    )
+
+    assert recorded is None
+    store.get_by_call_id.assert_not_awaited()
+    store.upsert_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_completed_call_persists_enriched_tool_result(tmp_path, monkeypatch):
     monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
     from src.core.call_history import CallHistoryStore, CallRecord

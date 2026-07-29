@@ -837,17 +837,25 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                         farewell=result.get("message")
                     )
 
-            await record_in_call_tool_result(
-                session_store=getattr(self, "_session_store", None),
-                call_id=self._call_id,
-                tool_call_id=function_call_id,
-                tool_name=function_name,
-                canonical_name=tool_registry.canonicalize_tool_name(function_name),
-                parameters=parameters,
-                result=result,
-                duration_ms=(time.time() - tool_started_at) * 1000,
-            )
             tool_result_recorded = True
+            try:
+                await record_in_call_tool_result(
+                    session_store=getattr(self, "_session_store", None),
+                    call_id=self._call_id,
+                    tool_call_id=function_call_id,
+                    tool_name=function_name,
+                    canonical_name=tool_registry.canonicalize_tool_name(function_name),
+                    parameters=parameters,
+                    result=result,
+                    duration_ms=(time.time() - tool_started_at) * 1000,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to persist OpenAI tool result",
+                    call_id=self._call_id,
+                    tool_call_id=function_call_id,
+                    exc_info=True,
+                )
 
             # Wait for response.done before submitting function_call_output (see
             # _await_parent_response_done for the full rationale).
@@ -906,16 +914,24 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             
         except asyncio.CancelledError:
             if not tool_result_recorded:
-                await record_in_call_tool_result(
-                    session_store=getattr(self, "_session_store", None),
-                    call_id=self._call_id,
-                    tool_call_id=function_call_id,
-                    tool_name=function_name,
-                    canonical_name=tool_registry.canonicalize_tool_name(function_name),
-                    parameters=parameters,
-                    result={"status": "cancelled", "message": "Tool execution cancelled"},
-                    duration_ms=(time.time() - tool_started_at) * 1000,
-                )
+                try:
+                    await record_in_call_tool_result(
+                        session_store=getattr(self, "_session_store", None),
+                        call_id=self._call_id,
+                        tool_call_id=function_call_id,
+                        tool_name=function_name,
+                        canonical_name=tool_registry.canonicalize_tool_name(function_name),
+                        parameters=parameters,
+                        result={"status": "cancelled", "message": "Tool execution cancelled"},
+                        duration_ms=(time.time() - tool_started_at) * 1000,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to persist cancelled OpenAI tool result",
+                        call_id=self._call_id,
+                        tool_call_id=function_call_id,
+                        exc_info=True,
+                    )
             raise
         except Exception as e:
             logger.error(
@@ -925,16 +941,24 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 exc_info=True
             )
             if not tool_result_recorded:
-                await record_in_call_tool_result(
-                    session_store=getattr(self, "_session_store", None),
-                    call_id=self._call_id,
-                    tool_call_id=function_call_id,
-                    tool_name=function_name,
-                    canonical_name=tool_registry.canonicalize_tool_name(function_name),
-                    parameters=parameters,
-                    result={"status": "error", "message": str(e)},
-                    duration_ms=(time.time() - tool_started_at) * 1000,
-                )
+                try:
+                    await record_in_call_tool_result(
+                        session_store=getattr(self, "_session_store", None),
+                        call_id=self._call_id,
+                        tool_call_id=function_call_id,
+                        tool_name=function_name,
+                        canonical_name=tool_registry.canonicalize_tool_name(function_name),
+                        parameters=parameters,
+                        result={"status": "error", "message": str(e)},
+                        duration_ms=(time.time() - tool_started_at) * 1000,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to persist failed OpenAI tool result",
+                        call_id=self._call_id,
+                        tool_call_id=function_call_id,
+                        exc_info=True,
+                    )
             # Send error response to OpenAI in correct format
             try:
                 item = event_data.get("item", {})
