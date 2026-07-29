@@ -117,8 +117,9 @@ export const InCallToolGroup = ({ entries }: { entries: InCallToolCall[] }) => (
                 const succeeded = tool.status ? tool.status === 'success' : tool.result === 'success';
                 const status: ToolExecutionStatus = succeeded ? 'ok' : 'error';
                 const hasParams = tool.params && typeof tool.params === 'object' && Object.keys(tool.params).length > 0;
+                const invocationId = tool.tool_call_id || tool.call_id;
                 return (
-                    <div key={`in-${tool.tool_call_id || tool.name}-${i}`} className="bg-muted/30 rounded-lg p-3 text-sm">
+                    <div key={`in-${invocationId || tool.name}-${i}`} className="bg-muted/30 rounded-lg p-3 text-sm">
                         <div className="flex items-center justify-between gap-2 flex-wrap">
                             <div className="flex items-center gap-2 min-w-0">
                                 <Wrench className="w-4 h-4 shrink-0" />
@@ -135,6 +136,11 @@ export const InCallToolGroup = ({ entries }: { entries: InCallToolCall[] }) => (
                         {tool.target_id && (
                             <div className="mt-2 text-xs text-muted-foreground break-all">
                                 Target: <span className="font-mono">{tool.target_id}</span>
+                            </div>
+                        )}
+                        {invocationId && (
+                            <div className="mt-2 text-xs text-muted-foreground break-all">
+                                Invocation: <span className="font-mono">{invocationId}</span>
                             </div>
                         )}
                         {tool.message && <div className="mt-2 text-xs text-muted-foreground break-words">{tool.message}</div>}

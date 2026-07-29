@@ -15762,27 +15762,43 @@ class Engine:
                                                         next_function_call_id = stable_tool_call_id(next_tc.get("id"))
                                                         next_tc["id"] = next_function_call_id
                                                         try:
-                                                            if allowed_tools and tool_registry.canonicalize_tool_name(next_name) not in allowed_tools_canonical:
-                                                                logger.info(
-                                                                    "Skipping disallowed follow-up tool call",
-                                                                    call_id=call_id,
-                                                                    tool=next_name,
-                                                                )
+                                                            next_canonical_name = tool_registry.canonicalize_tool_name(next_name)
+                                                        except Exception:
+                                                            logger.warning(
+                                                                "Failed to canonicalize follow-up tool call; rejecting",
+                                                                call_id=call_id,
+                                                                tool=next_name,
+                                                                exc_info=True,
+                                                            )
+                                                            continue
+
+                                                        if allowed_tools and next_canonical_name not in allowed_tools_canonical:
+                                                            logger.info(
+                                                                "Skipping disallowed follow-up tool call",
+                                                                call_id=call_id,
+                                                                tool=next_name,
+                                                            )
+                                                            try:
                                                                 await record_in_call_tool_result(
                                                                     session_store=self.session_store,
                                                                     call_id=call_id,
                                                                     tool_call_id=next_function_call_id,
                                                                     tool_name=next_name,
-                                                                    canonical_name=tool_registry.canonicalize_tool_name(next_name),
+                                                                    canonical_name=next_canonical_name,
                                                                     parameters=next_args,
                                                                     result={
                                                                         "status": "blocked",
                                                                         "message": f"Tool '{next_name}' not allowed for this call",
                                                                     },
                                                                 )
-                                                                continue
-                                                        except Exception:
-                                                            pass
+                                                            except Exception:
+                                                                logger.debug(
+                                                                    "Failed to record rejected follow-up tool call",
+                                                                    call_id=call_id,
+                                                                    tool=next_name,
+                                                                    exc_info=True,
+                                                                )
+                                                            continue
                                                         next_tool = tool_registry.get(next_name)
                                                         if next_tool:
                                                             logger.info("Executing follow-up tool", tool=next_name, call_id=call_id)

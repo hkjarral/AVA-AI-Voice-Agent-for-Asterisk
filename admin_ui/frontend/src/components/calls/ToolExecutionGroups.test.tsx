@@ -75,6 +75,26 @@ describe('InCallToolGroup', () => {
         expect(screen.getByText('In-call (1)')).toBeInTheDocument();
         expect(screen.getByText('create_event')).toBeInTheDocument();
         expect(screen.getByText('event-42')).toBeInTheDocument();
+        expect(screen.getByText('tool-1')).toBeInTheDocument();
+        expect(screen.queryByText('call-1')).not.toBeInTheDocument();
         expect(screen.getByText('error')).toBeInTheDocument();
+    });
+
+    it('falls back to the call id when no tool call id is available', () => {
+        render(
+            <InCallToolGroup
+                entries={[{
+                    type: 'tool_result',
+                    call_id: 'call-fallback-1',
+                    name: 'hangup_call',
+                    params: {},
+                    result: 'success',
+                    timestamp: '2026-07-29T04:00:00+00:00',
+                    duration_ms: 4,
+                }]}
+            />,
+        );
+
+        expect(screen.getByText('call-fallback-1')).toBeInTheDocument();
     });
 });

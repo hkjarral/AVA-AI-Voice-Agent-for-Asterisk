@@ -123,6 +123,35 @@ class _ToolOnlyThenTextLLM(LLMComponent):
         return LLMResponse(text="Done", tool_calls=[])
 
 
+class _AllowedThenDisallowedToolLLM(LLMComponent):
+    def __init__(self):
+        self.calls = 0
+
+    async def generate(self, call_id, transcript, context, options):
+        self.calls += 1
+        if self.calls == 1:
+            return LLMResponse(
+                text="",
+                tool_calls=[
+                    {
+                        "id": "pipeline-allowed-1",
+                        "name": "transcript_tool",
+                        "parameters": {},
+                    }
+                ],
+            )
+        return LLMResponse(
+            text="",
+            tool_calls=[
+                {
+                    "id": "pipeline-disallowed-1",
+                    "name": "disallowed_tool",
+                    "parameters": {},
+                }
+            ],
+        )
+
+
 class _TranscriptTool(Tool):
     @property
     def definition(self):
@@ -134,6 +163,23 @@ class _TranscriptTool(Tool):
 
     async def execute(self, parameters, context):
         return {"status": "success", "message": "Tool completed"}
+
+
+class _ExecutionProbeTool(Tool):
+    def __init__(self):
+        self.executed = asyncio.Event()
+
+    @property
+    def definition(self):
+        return ToolDefinition(
+            name="disallowed_tool",
+            description="Must remain blocked",
+            category=ToolCategory.BUSINESS,
+        )
+
+    async def execute(self, parameters, context):
+        self.executed.set()
+        return {"status": "success", "message": "Should not execute"}
 
 
 class _CancellationResistantLLM(LLMComponent):
@@ -582,6 +628,102 @@ async def test_pipeline_tool_only_turn_keeps_persisted_history_transcript_only(m
     assert session.tool_calls[0]["tool_call_id"] == "pipeline-tool-1"
 
     await engine._cleanup_call(call_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_mode", ["record", "canonicalize"])
+async def test_disallowed_follow_up_tool_stays_blocked_when_guardrail_bookkeeping_fails(
+    monkeypatch,
+    failure_mode,
+):
+    config_data = {
+        "default_provider": "local",
+        "providers": {"local": {"enabled": True}},
+        "asterisk": {
+            "host": "127.0.0.1",
+            "port": 8088,
+            "username": "u",
+            "password": "p",
+            "app_name": "ai-voice-agent",
+        },
+        "llm": {"initial_greeting": "", "prompt": "You are helpful", "model": "gpt-4o"},
+        "pipelines": {"guarded": {}},
+        "active_pipeline": "guarded",
+        "audio_transport": "audiosocket",
+    }
+    engine = Engine(AppConfig(**config_data))
+    engine.pipeline_orchestrator._started = True
+    stt = _ResultStreamingStubSTT()
+    llm = _AllowedThenDisallowedToolLLM()
+    resolution = _StubResolution(
+        stt_adapter=stt,
+        stt_options={"streaming": True, "chunk_ms": 80},
+        llm_adapter=llm,
+        tts_adapter=_SilentTTS(),
+    )
+    monkeypatch.setattr(
+        engine.pipeline_orchestrator,
+        "get_pipeline",
+        lambda *args, **kwargs: resolution,
+    )
+    monkeypatch.setattr(
+        engine.transport_orchestrator,
+        "get_context_config",
+        lambda *args, **kwargs: SimpleNamespace(
+            prompt=None,
+            greeting=None,
+            tools=["transcript_tool"],
+            in_call_http_tools={},
+            disable_global_in_call_tools=[],
+        ),
+    )
+    engine.ari_client.set_channel_var = AsyncMock(return_value=True)
+
+    from src.core.models import CallSession
+
+    call_id = f"call-follow-up-guard-{failure_mode}"
+    session = CallSession(call_id=call_id, caller_channel_id=call_id)
+    session.pipeline_name = "guarded"
+    session.context_name = "tool-context"
+    session.allowed_tools = ["transcript_tool"]
+    registry = ToolRegistry.isolated()
+    registry.register_instance(_TranscriptTool())
+    rejected_tool = _ExecutionProbeTool()
+    registry.register_instance(rejected_tool)
+    session.tool_runtime_registry = registry
+    await engine.session_store.upsert_call(session)
+
+    failure_seen = asyncio.Event()
+
+    async def record_tool_result(**kwargs):
+        if kwargs.get("result", {}).get("status") == "blocked":
+            failure_seen.set()
+            if failure_mode == "record":
+                raise RuntimeError("audit recording unavailable")
+        return None
+
+    monkeypatch.setattr("src.engine.record_in_call_tool_result", record_tool_result)
+
+    if failure_mode == "canonicalize":
+        canonicalize = registry.canonicalize_tool_name
+
+        def fail_for_rejected_tool(name):
+            if name == "disallowed_tool":
+                failure_seen.set()
+                raise RuntimeError("canonicalization unavailable")
+            return canonicalize(name)
+
+        monkeypatch.setattr(registry, "canonicalize_tool_name", fail_for_rejected_tool)
+
+    await engine._ensure_pipeline_runner(session, forced=True)
+    await asyncio.wait_for(stt.started.wait(), timeout=2)
+    await stt.results.put("run the allowed tool")
+    await asyncio.wait_for(failure_seen.wait(), timeout=2)
+    await asyncio.sleep(0.05)
+
+    executed = rejected_tool.executed.is_set()
+    await engine._cleanup_call(call_id)
+    assert not executed
 
 
 @pytest.mark.asyncio

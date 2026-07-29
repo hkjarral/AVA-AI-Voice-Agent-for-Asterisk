@@ -6,6 +6,7 @@ import pytest
 
 from src.tools.execution_history import (
     build_in_call_tool_record,
+    normalize_tool_terminal_status,
     record_in_call_tool_result,
     stable_tool_call_id,
 )
@@ -55,6 +56,20 @@ def test_failure_statuses_are_normalized(raw_status):
 
     assert record["status"] == "failure"
     assert record["result"] == raw_status
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"status": "pending"},
+        {"status": "partial"},
+        {"message": "No explicit outcome"},
+        "unstructured result",
+        None,
+    ],
+)
+def test_unknown_or_malformed_statuses_fail_closed(result):
+    assert normalize_tool_terminal_status(result) == "failure"
 
 
 def test_delete_uses_parameter_target_for_compensation():

@@ -46,7 +46,13 @@ def stable_tool_call_id(value: Any = None) -> str:
 
 
 def normalize_tool_terminal_status(result: Any) -> str:
-    """Reduce provider/tool-specific outcomes to the reporting contract."""
+    """Reduce provider/tool-specific outcomes to the terminal reporting contract.
+
+    Unknown or malformed outcomes fail closed.  A completed invocation must not
+    be reported as successful unless its result matches an explicit success
+    signal; the persisted contract intentionally remains binary so downstream
+    reducers never have to interpret provider-specific intermediate states.
+    """
     if isinstance(result, dict):
         raw_status = str(result.get("status") or "").strip().lower()
         if raw_status in _FAILURE_STATUSES:
@@ -57,7 +63,7 @@ def normalize_tool_terminal_status(result: Any) -> str:
             return "success" if result["success"] else "failure"
         if result.get("error"):
             return "failure"
-    return "success"
+    return "failure"
 
 
 def _scalar_identifier(value: Any) -> Optional[str]:
