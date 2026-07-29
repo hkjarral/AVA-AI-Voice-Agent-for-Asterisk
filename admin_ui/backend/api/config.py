@@ -1313,7 +1313,7 @@ async def update_env(env_data: Dict[str, Optional[str]]):
         redaction_mode = env_data.get("CALL_HISTORY_TOOL_REDACTION_MODE")
         if redaction_mode not in (None, "__DELETE__"):
             normalized_mode = str(redaction_mode).strip().lower()
-            if normalized_mode not in CALL_HISTORY_TOOL_REDACTION_MODES:
+            if normalized_mode and normalized_mode not in CALL_HISTORY_TOOL_REDACTION_MODES:
                 allowed = ", ".join(sorted(CALL_HISTORY_TOOL_REDACTION_MODES))
                 raise HTTPException(
                     status_code=400,

@@ -85,3 +85,21 @@ def test_env_update_rejects_unknown_policy_before_writing(tmp_path, monkeypatch)
     assert response.status_code == 400
     assert "must be one of" in response.json()["detail"]
     assert env_path.read_text(encoding="utf-8") == "CALL_HISTORY_TOOL_REDACTION_MODE=strict\n"
+
+
+def test_env_update_accepts_blank_policy_as_default_reset(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("CALL_HISTORY_TOOL_REDACTION_MODE=show_routing\n", encoding="utf-8")
+    monkeypatch.setattr(config.settings, "ENV_PATH", str(env_path))
+    monkeypatch.setattr(config, "_running_container_names", lambda: set())
+
+    app = FastAPI()
+    app.include_router(config.router, prefix="/api/config")
+    response = TestClient(app).post(
+        "/api/config/env",
+        json={"CALL_HISTORY_TOOL_REDACTION_MODE": "   "},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["changed_keys"] == ["CALL_HISTORY_TOOL_REDACTION_MODE"]
+    assert env_path.read_text(encoding="utf-8") == 'CALL_HISTORY_TOOL_REDACTION_MODE=""\n'
