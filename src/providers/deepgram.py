@@ -1371,7 +1371,8 @@ class DeepgramProvider(AIProviderInterface):
                 self._receive_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._receive_task
-            tool_tasks = list(self._tool_call_tasks)
+            current_task = asyncio.current_task()
+            tool_tasks = [task for task in self._tool_call_tasks if task is not current_task]
             for task in tool_tasks:
                 if not task.done():
                     task.cancel()

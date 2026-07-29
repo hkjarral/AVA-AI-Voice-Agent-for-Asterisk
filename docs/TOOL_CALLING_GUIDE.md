@@ -96,6 +96,10 @@ append-only reduction contract:
   `create_event` followed by `delete_event` reconcile to zero net creations.
 - `status` is normalized to `success` or `failure`; `result` retains the legacy
   raw status for backward compatibility.
+- `params` is a diagnostic view, not an execution replay payload. Credentials,
+  caller PII/free text, and routing targets are recursively redacted before
+  persistence; the original parameters are used only for execution. The
+  explicit top-level `target_id` remains available for reducer reconciliation.
 - The event records the tool execution fact only. A successful voicemail route
   does not claim that a message was recorded, and a successful transfer does
   not claim that a human answered.

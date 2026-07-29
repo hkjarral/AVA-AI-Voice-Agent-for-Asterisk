@@ -55,6 +55,24 @@ class _BlockingDeepgramAdapter:
         await asyncio.Event().wait()
 
 
+class _SelfStoppingDeepgramAdapter:
+    def __init__(self, provider):
+        self.provider = provider
+        self.result_sent = False
+
+    async def handle_tool_call_event(self, _event, _context):
+        await self.provider.stop_session()
+        return {
+            "function_call_id": "deepgram-self-stop-1",
+            "function_name": "google_calendar",
+            "status": "success",
+            "message": "Stopped synchronously",
+        }
+
+    async def send_tool_result(self, _result, _context):
+        self.result_sent = True
+
+
 class _FailingDeepgramAdapter:
     async def handle_tool_call_event(self, _event, _context):
         raise RuntimeError("adapter exploded")
@@ -226,6 +244,37 @@ async def test_deepgram_stop_cancels_and_records_tracked_tool_before_clearing_ca
     assert session.tool_calls[0]["tool_call_id"] == "deepgram-cancel-1"
     assert session.tool_calls[0]["status"] == "failure"
     assert session.tool_calls[0]["result"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_deepgram_tracked_tool_can_stop_its_own_session_synchronously():
+    store, session = await _session_store("session-deepgram-self-stop")
+    provider = DeepgramProvider({}, LLMConfig(), on_event=None)
+    provider.call_id = session.call_id
+    provider._session_store = store
+    provider.tool_adapter = _SelfStoppingDeepgramAdapter(provider)
+    event = {
+        "type": "FunctionCallRequest",
+        "functions": [
+            {
+                "id": "deepgram-self-stop-1",
+                "name": "google_calendar",
+                "arguments": '{"action":"create_event"}',
+            }
+        ],
+    }
+
+    task = asyncio.create_task(provider._handle_function_call(event))
+    provider._tool_call_tasks.add(task)
+    await asyncio.wait_for(task, timeout=1)
+
+    assert not task.cancelled()
+    assert provider._closed is True
+    assert provider.call_id is None
+    assert provider._tool_call_tasks == set()
+    assert provider.tool_adapter.result_sent is True
+    assert session.tool_calls[0]["tool_call_id"] == "deepgram-self-stop-1"
+    assert session.tool_calls[0]["status"] == "success"
 
 
 @pytest.mark.asyncio

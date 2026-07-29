@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -37,6 +38,116 @@ _TARGET_ID_KEYS = (
     "queue",
     "mailbox",
 )
+_REDACTED_PARAMETER_VALUE = "***REDACTED***"
+_SENSITIVE_PARAMETER_KEYS = {
+    # Credentials and authorization material. This follows the repository-wide
+    # logging and HTTP-diagnostic redaction posture without substring matches
+    # that would turn ordinary keys such as ``bypass`` into false positives.
+    "api_key",
+    "apikey",
+    "api_keys",
+    "token",
+    "access_token",
+    "refresh_token",
+    "auth_token",
+    "bearer",
+    "password",
+    "passwd",
+    "pwd",
+    "pass",
+    "authorization",
+    "auth",
+    "credential",
+    "credentials",
+    "secret",
+    "secrets",
+    "private_key",
+    "client_secret",
+    "cookie",
+    "cookies",
+    "header",
+    "headers",
+    # Caller-supplied PII/free text and telephony routing targets accepted by
+    # the built-in in-call tools.
+    "name",
+    "first_name",
+    "last_name",
+    "full_name",
+    "customer_name",
+    "caller_name",
+    "contact_name",
+    "email",
+    "email_address",
+    "caller_email",
+    "recipient_email",
+    "phone",
+    "phone_number",
+    "mobile",
+    "telephone",
+    "address",
+    "street_address",
+    "ssn",
+    "social_security_number",
+    "dob",
+    "date_of_birth",
+    "account_number",
+    "comment",
+    "comments",
+    "callback_comments",
+    "note",
+    "notes",
+    "summary",
+    "description",
+    "farewell_message",
+    "message",
+    "body",
+    "query",
+    "prompt",
+    "destination",
+    "target",
+    "extension",
+    "device_state_id",
+    "queue",
+    "mailbox",
+}
+_SENSITIVE_PARAMETER_SUFFIXES = {
+    "api_key",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "pwd",
+    "pass",
+    "authorization",
+    "auth",
+    "credential",
+    "credentials",
+    "private_key",
+    "client_secret",
+    "cookie",
+    "name",
+    "email",
+    "phone",
+    "mobile",
+    "telephone",
+    "address",
+    "ssn",
+    "dob",
+    "account_number",
+    "comment",
+    "comments",
+    "note",
+    "notes",
+    "message",
+    "body",
+    "query",
+    "prompt",
+    "destination",
+    "target",
+    "extension",
+    "queue",
+    "mailbox",
+}
 
 
 def stable_tool_call_id(value: Any = None) -> str:
@@ -76,6 +187,39 @@ def _scalar_identifier(value: Any) -> Optional[str]:
     return None
 
 
+def _is_sensitive_parameter_key(key: Any) -> bool:
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower().replace("-", "_")
+    if normalized in _SENSITIVE_PARAMETER_KEYS:
+        return True
+    return any(normalized.endswith(f"_{suffix}") for suffix in _SENSITIVE_PARAMETER_SUFFIXES)
+
+
+def _redact_parameter_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if value == "":
+        return ""
+    return _REDACTED_PARAMETER_VALUE
+
+
+def _sanitize_persisted_parameters(value: Any) -> Any:
+    """Copy tool parameters while removing secrets, PII, and routing targets."""
+    if isinstance(value, dict):
+        return {
+            key: (
+                _redact_parameter_value(item)
+                if _is_sensitive_parameter_key(key)
+                else _sanitize_persisted_parameters(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_persisted_parameters(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_persisted_parameters(item) for item in value)
+    return value
+
+
 def _target_id(parameters: Any, result: Any) -> Optional[str]:
     # A created resource id in the result is authoritative. For compensating
     # operations (for example calendar/delete_event), fall back to the same id
@@ -107,12 +251,13 @@ def build_in_call_tool_record(
     make the append-only stream reducible without mixing telemetry into the
     transcript-only ``conversation_history``.
     """
-    params = parameters if isinstance(parameters, dict) else {}
+    execution_params = parameters if isinstance(parameters, dict) else {}
+    params = _sanitize_persisted_parameters(execution_params)
     result_dict = result if isinstance(result, dict) else {}
     raw_status = str(result_dict.get("status") or "").strip()
     terminal_status = normalize_tool_terminal_status(result)
     name = str(canonical_name or tool_name or "unknown").strip() or "unknown"
-    action = _scalar_identifier(params.get("action"))
+    action = _scalar_identifier(execution_params.get("action"))
     if not action:
         action = _scalar_identifier(result_dict.get("action"))
     if not action:
@@ -129,7 +274,7 @@ def build_in_call_tool_record(
         "name": name,
         "action": action,
         "status": terminal_status,
-        "target_id": _target_id(params, result_dict),
+        "target_id": _target_id(execution_params, result_dict),
         "params": params,
         "result": raw_status or terminal_status,
         "message": str(message or ""),

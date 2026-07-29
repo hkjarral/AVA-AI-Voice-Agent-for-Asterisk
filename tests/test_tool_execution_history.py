@@ -32,7 +32,7 @@ def test_calendar_create_record_has_stable_id_action_and_target():
         "action": "create_event",
         "status": "success",
         "target_id": "event-42",
-        "params": {"action": "create_event", "summary": "Consultation"},
+        "params": {"action": "create_event", "summary": "***REDACTED***"},
         "result": "success",
         "message": "Created",
         "timestamp": record["timestamp"],
@@ -83,6 +83,102 @@ def test_delete_uses_parameter_target_for_compensation():
 
     assert record["action"] == "delete_event"
     assert record["target_id"] == "event-42"
+
+
+def test_persisted_params_redact_pii_secrets_and_nested_values_without_mutating_execution_input():
+    parameters = {
+        "action": "request",
+        "caller_email": "caller@example.com",
+        "comments": "Call me after my medical appointment",
+        "summary": "Consultation with Jane Doe",
+        "metadata": {
+            "authorization": "Bearer secret-token",
+            "attendees": [
+                {
+                    "email": "guest@example.com",
+                    "role": "guest",
+                    "comments": "Use the side entrance",
+                }
+            ],
+        },
+    }
+
+    record = build_in_call_tool_record(
+        call_id="call-private",
+        tool_call_id="tool-private",
+        tool_name="request_transcript",
+        parameters=parameters,
+        result={"status": "success"},
+    )
+
+    assert record["params"] == {
+        "action": "request",
+        "caller_email": "***REDACTED***",
+        "comments": "***REDACTED***",
+        "summary": "***REDACTED***",
+        "metadata": {
+            "authorization": "***REDACTED***",
+            "attendees": [
+                {
+                    "email": "***REDACTED***",
+                    "role": "guest",
+                    "comments": "***REDACTED***",
+                }
+            ],
+        },
+    }
+    assert record["action"] == "request"
+    assert parameters["caller_email"] == "caller@example.com"
+    assert parameters["metadata"]["authorization"] == "Bearer secret-token"
+
+
+def test_parameter_redaction_covers_common_pii_and_credential_shapes_without_suffix_false_positives():
+    parameters = {
+        "customerName": "Jane Doe",
+        "contact_phone": "+1-555-0100",
+        "date-of-birth": "1990-01-01",
+        "account_number": "123456789",
+        "follow_up_notes": "Prefers text messages",
+        "requestBody": "contains caller details",
+        "headers": {"X-API-Key": "secret", "Content-Type": "application/json"},
+        "bypass": True,
+        "compass": "north",
+    }
+
+    record = build_in_call_tool_record(
+        call_id="call-pii",
+        tool_call_id="tool-pii",
+        tool_name="lookup",
+        parameters=parameters,
+        result={"status": "success"},
+    )
+
+    assert record["params"] == {
+        "customerName": "***REDACTED***",
+        "contact_phone": "***REDACTED***",
+        "date-of-birth": "***REDACTED***",
+        "account_number": "***REDACTED***",
+        "follow_up_notes": "***REDACTED***",
+        "requestBody": "***REDACTED***",
+        "headers": "***REDACTED***",
+        "bypass": True,
+        "compass": "north",
+    }
+
+
+@pytest.mark.parametrize("target_key", ["destination", "target", "extension", "queue", "mailbox"])
+def test_transfer_targets_are_not_persisted_verbatim(target_key):
+    record = build_in_call_tool_record(
+        call_id="call-transfer",
+        tool_call_id="tool-transfer",
+        tool_name="transfer_call",
+        parameters={"action": "transfer", target_key: "private-destination"},
+        result={"status": "success"},
+    )
+
+    assert record["params"][target_key] == "***REDACTED***"
+    assert record["target_id"] == "private-destination"
+    assert record["action"] == "transfer"
 
 
 def test_missing_ids_are_unique_per_invocation():
