@@ -2,13 +2,16 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 import yaml
 from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode, SequenceNode, ScalarNode
+import errno
 import os
 import re
 import asyncio
 import glob
 import sqlite3
+import stat
 import tempfile
 import sys
+import threading
 import logging
 import ssl
 import smtplib
@@ -36,6 +39,7 @@ MAX_BACKUPS = 5
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+_LOCAL_CONFIG_WRITE_LOCK = threading.Lock()
 
 
 def _assert_in_use_audio_profiles_unchanged(
@@ -402,23 +406,37 @@ def _read_merged_config_content() -> str:
 
 def _write_local_config(content: str) -> None:
     """
-    Atomically write *content* to the local override config file.
+    Write *content* to the local override config file.
 
     Creates a backup of the existing local file (if any), validates permissions,
-    and performs an atomic temp-file + rename write.
+    and normally performs an atomic temp-file + rename write. Docker cannot
+    replace a path that is itself a bind-mount target (``EBUSY``), so that
+    topology falls back to a validated, fsynced in-place rewrite with automatic
+    rollback to the backup if the rewrite fails.
     """
+    with _LOCAL_CONFIG_WRITE_LOCK:
+        _write_local_config_locked(content)
+
+
+def _write_local_config_locked(content: str) -> None:
+    """Persist local config while the process-wide writer lock is held."""
     import datetime
     dir_path = os.path.dirname(settings.LOCAL_CONFIG_PATH)
     if dir_path:
         os.makedirs(dir_path, exist_ok=True)
 
     # Backup existing local file
+    previous_bytes: Optional[bytes] = None
+    backup_path: Optional[str] = None
     if os.path.exists(settings.LOCAL_CONFIG_PATH):
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_path = f"{settings.LOCAL_CONFIG_PATH}.bak.{timestamp}"
-        with open(settings.LOCAL_CONFIG_PATH, "r") as src:
-            with open(backup_path, "w") as dst:
-                dst.write(src.read())
+        with open(settings.LOCAL_CONFIG_PATH, "rb") as src:
+            previous_bytes = src.read()
+            with open(backup_path, "wb") as dst:
+                dst.write(previous_bytes)
+                dst.flush()
+                os.fsync(dst.fileno())
         _rotate_backups(settings.LOCAL_CONFIG_PATH)
 
     # Preserve permissions from existing local or base file
@@ -428,14 +446,96 @@ def _write_local_config(content: str) -> None:
             original_mode = os.stat(candidate).st_mode
             break
 
-    with tempfile.NamedTemporaryFile("w", dir=dir_path, delete=False, suffix=".tmp") as f:
-        f.write(content)
+    desired_bytes = content.encode("utf-8")
+    with tempfile.NamedTemporaryFile("wb", dir=dir_path, delete=False, suffix=".tmp") as f:
+        f.write(desired_bytes)
+        f.flush()
+        os.fsync(f.fileno())
         temp_path = f.name
 
     if original_mode is not None:
         os.chmod(temp_path, original_mode)
 
-    os.replace(temp_path, settings.LOCAL_CONFIG_PATH)
+    try:
+        os.replace(temp_path, settings.LOCAL_CONFIG_PATH)
+        temp_path = ""
+    except OSError as exc:
+        if exc.errno != errno.EBUSY:
+            raise
+
+        # A file mounted directly into a container is a mount point and cannot
+        # be replaced, even when the mount is writable. The desired content has
+        # already passed schema validation and is staged in the adjacent temp
+        # file. Rewrite the mounted inode, fsync it, and restore the pre-write
+        # snapshot if any part of the fallback fails.
+        try:
+            target_stat = os.stat(settings.LOCAL_CONFIG_PATH)
+        except OSError as stat_exc:
+            raise OSError(
+                errno.EBUSY,
+                "Refusing bind-mount fallback because the local config target "
+                "cannot be inspected",
+                settings.LOCAL_CONFIG_PATH,
+            ) from stat_exc
+        if previous_bytes is None or not stat.S_ISREG(target_stat.st_mode):
+            raise OSError(
+                errno.EBUSY,
+                "Refusing bind-mount fallback without an existing regular "
+                "local config file",
+                settings.LOCAL_CONFIG_PATH,
+            ) from exc
+
+        logger.warning(
+            "Atomic config replace unavailable for bind-mounted file; "
+            "using fsynced in-place rewrite",
+            extra={"path": settings.LOCAL_CONFIG_PATH},
+        )
+        try:
+            with open(settings.LOCAL_CONFIG_PATH, "r+b") as dst:
+                dst.seek(0)
+                dst.write(desired_bytes)
+                dst.truncate()
+                dst.flush()
+                os.fsync(dst.fileno())
+            with open(settings.LOCAL_CONFIG_PATH, "rb") as current:
+                if current.read() != desired_bytes:
+                    raise OSError(
+                        errno.EIO,
+                        "Bind-mounted local config verification failed",
+                    )
+        except Exception as write_exc:
+            try:
+                with open(settings.LOCAL_CONFIG_PATH, "r+b") as dst:
+                    dst.seek(0)
+                    dst.write(previous_bytes)
+                    dst.truncate()
+                    dst.flush()
+                    os.fsync(dst.fileno())
+                with open(settings.LOCAL_CONFIG_PATH, "rb") as restored:
+                    if restored.read() != previous_bytes:
+                        raise OSError(
+                            errno.EIO,
+                            "Bind-mounted local config rollback verification failed",
+                        )
+            except Exception as rollback_exc:
+                recovery_path = backup_path or "unavailable"
+                raise OSError(
+                    errno.EIO,
+                    "Bind-mounted local config write failed and automatic "
+                    f"recovery failed; restore backup {recovery_path}",
+                    settings.LOCAL_CONFIG_PATH,
+                ) from rollback_exc
+            raise write_exc
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                logger.warning(
+                    "Failed to remove staged local config temp file",
+                    extra={"path": temp_path},
+                    exc_info=True,
+                )
 
 
 # Regex to strip ANSI escape codes from logs
