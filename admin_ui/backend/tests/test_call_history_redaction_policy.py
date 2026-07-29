@@ -10,12 +10,17 @@ sys.path.insert(0, str(BACKEND_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from api import calls, config  # noqa: E402
+from src.tools.execution_history import CALL_HISTORY_TOOL_REDACTION_MODES  # noqa: E402
 
 
 def _client() -> TestClient:
     app = FastAPI()
     app.include_router(calls.router, prefix="/api")
     return TestClient(app)
+
+
+def test_config_validation_uses_canonical_redaction_modes():
+    assert config.CALL_HISTORY_TOOL_REDACTION_MODES is CALL_HISTORY_TOOL_REDACTION_MODES
 
 
 def test_policy_endpoint_returns_only_normalized_policy_and_restart_state(tmp_path, monkeypatch):

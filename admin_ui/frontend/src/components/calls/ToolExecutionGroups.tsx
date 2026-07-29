@@ -110,7 +110,7 @@ export const PhaseToolGroup = ({ phase, entries }: { phase: Exclude<ToolPhase, '
 );
 
 export const InCallToolGroup = ({ entries }: { entries: InCallToolCall[] }) => {
-    const recordedModes = Array.from(new Set(entries.map(entry => entry.redaction_mode).filter(Boolean)));
+    const recordedModes = Array.from(new Set(entries.map(entry => entry.redaction_mode ?? 'legacy')));
     const recordedMode = recordedModes.length === 1 ? recordedModes[0] : recordedModes.length > 1 ? 'mixed' : 'legacy';
     const modeLabels: Record<string, string> = {
         strict: 'Strict redaction',

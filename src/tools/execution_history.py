@@ -282,19 +282,14 @@ def _redact_message_echoes(message: Any, sensitive_values: list[str]) -> tuple[s
 
     changed = False
     for candidate in sorted(set(sensitive_values), key=len, reverse=True):
-        if len(candidate) < 3:
-            # Tiny values (for example, a one-digit extension) are replaced
-            # only as standalone tokens so ordinary words and larger numbers
-            # are not corrupted while exact echoes remain protected.
-            rendered, replacements = re.subn(
-                rf"(?<!\w){re.escape(candidate)}(?!\w)",
-                _REDACTED_PARAMETER_VALUE,
-                rendered,
-            )
-            changed = changed or replacements > 0
-        elif candidate in rendered:
-            rendered = rendered.replace(candidate, _REDACTED_PARAMETER_VALUE)
-            changed = True
+        # Replace exact token echoes without corrupting words or larger numbers
+        # that merely contain the sensitive value as a substring.
+        rendered, replacements = re.subn(
+            rf"(?<!\w){re.escape(candidate)}(?!\w)",
+            _REDACTED_PARAMETER_VALUE,
+            rendered,
+        )
+        changed = changed or replacements > 0
     return rendered, changed
 
 

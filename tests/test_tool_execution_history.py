@@ -251,6 +251,38 @@ def test_strict_mode_sanitizes_a_short_routing_value_only_as_a_token():
     assert record["message"] == "Transfer to ***REDACTED***; attempt 12 remains."
 
 
+@pytest.mark.parametrize(
+    ("sensitive_value", "message", "expected"),
+    [
+        (
+            "Sam",
+            "Samantha requested a callback; Sam confirmed.",
+            "Samantha requested a callback; ***REDACTED*** confirmed.",
+        ),
+        (
+            "6000",
+            "Transfer to 6000; reference 16000 remains.",
+            "Transfer to ***REDACTED***; reference 16000 remains.",
+        ),
+    ],
+)
+def test_strict_mode_sanitizes_longer_routing_values_only_as_tokens(
+    sensitive_value,
+    message,
+    expected,
+):
+    record = build_in_call_tool_record(
+        call_id="call-token-route",
+        tool_call_id="tool-token-route",
+        tool_name="blind_transfer",
+        parameters={"destination": sensitive_value},
+        result={"status": "success", "message": message},
+        redaction_mode="strict",
+    )
+
+    assert record["message"] == expected
+
+
 @pytest.mark.parametrize("configured", [None, "", "invalid", " STRICT "])
 def test_redaction_mode_normalization_fails_closed(configured):
     expected = "strict"

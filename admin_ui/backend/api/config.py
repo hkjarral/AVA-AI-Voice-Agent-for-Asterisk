@@ -24,19 +24,21 @@ from typing import Dict, Any, Optional, Union
 from urllib.parse import urlparse
 import settings
 
+PROJECT_SOURCE_ROOT = Path(settings.PROJECT_ROOT)
+if str(PROJECT_SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_SOURCE_ROOT))
+
 try:
     # The production Admin image copies the shared module into /app.
     from config_apply import classify_config_change
 except ModuleNotFoundError:
     # Source checkout/tests: import the same canonical module from root src/.
-    PROJECT_SOURCE_ROOT = Path(__file__).resolve().parents[3]
-    if str(PROJECT_SOURCE_ROOT) not in sys.path:
-        sys.path.insert(0, str(PROJECT_SOURCE_ROOT))
     from src.config_apply import classify_config_change
+
+from src.tools.execution_history import CALL_HISTORY_TOOL_REDACTION_MODES
 
 # A11: Maximum number of backups to keep
 MAX_BACKUPS = 5
-CALL_HISTORY_TOOL_REDACTION_MODES = frozenset({"strict", "show_routing", "off"})
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
