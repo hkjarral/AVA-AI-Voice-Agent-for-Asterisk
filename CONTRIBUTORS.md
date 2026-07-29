@@ -16,6 +16,10 @@ Thanks to all the people who have contributed to the Asterisk AI Voice Agent!
 | <img src="https://github.com/alemstrom.png" width="50" alt="alemstrom"> | **[alemstrom](https://github.com/alemstrom)** | Docs — PBX Setup |
 | <img src="https://github.com/gcsuri.png" width="50" alt="gcsuri"> | **[gcsuri](https://github.com/gcsuri)** | Code — Google Calendar Tool |
 | <img src="https://github.com/octo-patch.png" width="50" alt="octo-patch"> | **[octo-patch](https://github.com/octo-patch)** | Code — MiniMax LLM Provider |
+| <img src="https://github.com/neilruaro-camb.png" width="50" alt="neilruaro-camb"> | **[neilruaro-camb](https://github.com/neilruaro-camb)** | Code — CAMB AI TTS Provider |
+| <img src="https://github.com/aoi-dev-0411.png" width="50" alt="aoi-dev-0411"> | **[aoi-dev-0411](https://github.com/aoi-dev-0411)** | Code — Transcript Search, Provider Health Badges |
+| <img src="https://github.com/exaland.png" width="50" alt="exaland"> | **[exaland](https://github.com/exaland)** | Code — Outbound Recording `.ULAW` Compatibility |
+| <img src="https://github.com/YosefAdPro.png" width="50" alt="YosefAdPro"> | **[YosefAdPro](https://github.com/YosefAdPro)** | Code, Docs, Tests — v7 Agents API/OpenAPI |
 
 <!-- markdownlint-restore -->
 <!-- prettier-ignore-end -->

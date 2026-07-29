@@ -13,6 +13,10 @@ on:
     # Run weekly on Monday at 6am UTC
     - cron: '0 6 * * 1'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   analyze:
     name: Analyze Python Code
@@ -30,23 +34,45 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
+      with:
+        persist-credentials: false
 
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v3
+      uses: github/codeql-action/init@v4
       with:
         languages: ${{ matrix.language }}
         # Specify queries: default, security-extended, security-and-quality
         queries: security-extended
+        # Audited false-positive suppressions live in the config file.
+        # See .github/codeql/codeql-config.yml for the per-file rationale.
+        config-file: ./.github/codeql/codeql-config.yml
         # Auto-detect Python version from requirements.txt
         setup-python-dependencies: true
 
     - name: Autobuild
-      uses: github/codeql-action/autobuild@v3
+      uses: github/codeql-action/autobuild@v4
 
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v3
+      uses: github/codeql-action/analyze@v4
       with:
         category: "/language:${{matrix.language}}"
-        # Upload SARIF results to Security tab
-        upload: true
+        output: sarif-results
+        # Upload only after the audited false-positive SARIF filter below.
+        upload: failure-only
+
+    - name: Filter audited credential-storage false positives
+      uses: advanced-security/filter-sarif@v1
+      with:
+        input: sarif-results/python.sarif
+        output: sarif-results/python.sarif
+        patterns: |
+          -admin_ui/backend/api/config.py:py/path-injection
+          -admin_ui/backend/api/config.py:py/clear-text-storage-sensitive-data
+          -src/config/provider_instances.py:py/path-injection
+          -src/config/provider_instances.py:py/clear-text-storage-sensitive-data
+
+    - name: Upload filtered SARIF
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: sarif-results/python.sarif

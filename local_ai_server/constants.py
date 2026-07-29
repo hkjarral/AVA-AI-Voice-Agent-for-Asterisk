@@ -22,6 +22,11 @@ if _level > logging.DEBUG:
 # Set LOCAL_DEBUG=1 in .env to enable detailed audio flow logging
 DEBUG_AUDIO_FLOW = os.getenv("LOCAL_DEBUG", "0") == "1"
 
+# WebSocket message protocol version. Single source of truth shared by the
+# server (local_ai_server) and the engine client (src/providers/local.py).
+# Bump only on a breaking change to the JSON message contract.
+PROTOCOL_VERSION = 2
+
 SUPPORTED_MODES = {"full", "stt", "llm", "tts"}
 DEFAULT_MODE = "full"
 ULAW_SAMPLE_RATE = 8000

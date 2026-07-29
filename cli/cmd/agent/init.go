@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 
-	"github.com/hkjarral/ava-ai-voice-agent-for-asterisk/cli/internal/wizard"
 	"github.com/spf13/cobra"
 )
 
@@ -28,21 +27,13 @@ Guides you through configuration:
 This can be run multiple times to reconfigure the system.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if initNonInteractive {
-			fmt.Println("⚠️  Non-interactive mode not yet implemented")
-			fmt.Println("For now, run without --non-interactive flag")
-			return nil
+			return fmt.Errorf("--non-interactive is not implemented; refusing to report a false successful setup")
 		}
-
-		// Create and run wizard
-		w, err := wizard.NewWizard()
-		if err != nil {
-			return fmt.Errorf("failed to initialize wizard: %w", err)
+		if initTemplate != "" {
+			return fmt.Errorf("--template is not implemented; use the interactive target selector in `agent setup`")
 		}
-
-		if err := w.Run(); err != nil {
-			return err
-		}
-		return checkCmd.RunE(cmd, args)
+		fmt.Println("Note: `agent init` is a legacy alias; launching `agent setup`.")
+		return setupCmd.RunE(cmd, args)
 	},
 }
 

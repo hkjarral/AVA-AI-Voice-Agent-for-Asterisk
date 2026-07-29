@@ -25,6 +25,7 @@ class TestLiveAgentTransferTool:
     async def test_uses_explicit_live_agent_destination_key(self, tool, tool_context, mock_ari_client):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "live_agent_destination_key": "tier2_live",
             "destinations": {
                 "sales_agent": {"type": "extension", "target": "2765", "description": "Sales"},
@@ -91,6 +92,7 @@ class TestLiveAgentTransferTool:
     async def test_destination_override_takes_precedence_over_explicit_target(self, tool, tool_context, mock_ari_client):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "live_agent_destination_key": "tier2_live",
             "destinations": {
                 "tier2_live": {"type": "extension", "target": "6000", "description": "Tier 2", "live_agent": True},
@@ -176,6 +178,7 @@ class TestLiveAgentTransferTool:
     async def test_falls_back_to_live_agent_key_when_config_not_set(self, tool, tool_context, mock_ari_client):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "destinations": {
                 "live_agent": {"type": "extension", "target": "6001", "description": "Live Agent"},
             },
@@ -195,6 +198,7 @@ class TestLiveAgentTransferTool:
     async def test_fails_when_live_agent_destination_not_configured(self, tool, tool_context):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "destinations": {
                 "sales_agent": {"type": "extension", "target": "2765", "description": "Sales"},
             },
@@ -215,6 +219,7 @@ class TestLiveAgentTransferTool:
     ):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "destinations": {
                 "support_agent": {"type": "extension", "target": "6000", "description": "Support agent"},
                 "live_agent": {"type": "extension", "target": "6000", "description": "Live Agent"},
@@ -245,6 +250,7 @@ class TestLiveAgentTransferTool:
     ):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "destinations": {},
         }
         tool_context.config["tools"]["extensions"] = {
@@ -267,12 +273,12 @@ class TestLiveAgentTransferTool:
         assert call_args["params"]["extension"] == "7007"
 
     @pytest.mark.asyncio
-    async def test_ignores_misconfigured_live_agent_destination_key_and_uses_internal_extension(
+    async def test_explicit_destination_override_does_not_require_live_agent_flag(
         self, tool, tool_context, mock_ari_client
     ):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
-            # Misconfigured: points at a normal destination (not marked live_agent).
+            "defer_until_playback_complete": False,
             "live_agent_destination_key": "support_agent",
             "destinations": {
                 "support_agent": {"type": "extension", "target": "2765", "description": "Support agent"},
@@ -287,10 +293,10 @@ class TestLiveAgentTransferTool:
         result = await tool.execute({}, tool_context)
 
         assert result["status"] == "success"
-        assert result["destination"] == "6000"
+        assert result["destination"] == "2765"
         call_args = mock_ari_client.send_command.call_args.kwargs
         assert call_args["resource"] == f"channels/{tool_context.caller_channel_id}/continue"
-        assert call_args["params"]["extension"] == "6000"
+        assert call_args["params"]["extension"] == "2765"
 
     @pytest.mark.asyncio
     async def test_prefers_internal_live_agents_over_destination_live_agent_flag_when_no_explicit_override(
@@ -298,6 +304,7 @@ class TestLiveAgentTransferTool:
     ):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "destinations": {
                 "tier2_live": {"type": "extension", "target": "6000", "description": "Tier 2", "live_agent": True},
             },
@@ -322,6 +329,7 @@ class TestLiveAgentTransferTool:
     ):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "live_agent_destination_key": "tier2_live",
             "destinations": {
                 "tier2_live": {"type": "extension", "target": "6000", "description": "Tier 2", "live_agent": True},
@@ -342,12 +350,12 @@ class TestLiveAgentTransferTool:
         assert call_args["params"]["extension"] == "6000"
 
     @pytest.mark.asyncio
-    async def test_misconfigured_destination_override_does_not_prevent_destination_fallback_scan(
+    async def test_explicit_destination_override_wins_without_live_agent_flag(
         self, tool, tool_context, mock_ari_client
     ):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
-            # Misconfigured: points to non-live destination.
+            "defer_until_playback_complete": False,
             "live_agent_destination_key": "support_agent",
             "destinations": {
                 "support_agent": {"type": "extension", "target": "2765", "description": "Support agent"},
@@ -360,10 +368,38 @@ class TestLiveAgentTransferTool:
         result = await tool.execute({}, tool_context)
 
         assert result["status"] == "success"
-        assert result["destination"] == "6000"
+        assert result["destination"] == "2765"
         call_args = mock_ari_client.send_command.call_args.kwargs
         assert call_args["resource"] == f"channels/{tool_context.caller_channel_id}/continue"
-        assert call_args["params"]["extension"] == "6000"
+        assert call_args["params"]["extension"] == "2765"
+
+    @pytest.mark.asyncio
+    async def test_explicit_destination_override_supports_ringgroup(
+        self, tool, tool_context, mock_ari_client
+    ):
+        tool_context.config["tools"]["transfer"] = {
+            "enabled": True,
+            "defer_until_playback_complete": False,
+            "live_agent_destination_key": "after_hours_group",
+            "destinations": {
+                "after_hours_group": {
+                    "type": "ringgroup",
+                    "target": "600",
+                    "description": "After-hours ring group",
+                },
+            },
+        }
+        tool_context.config["tools"]["extensions"] = {"internal": {}}
+
+        result = await tool.execute({}, tool_context)
+
+        assert result["status"] == "success"
+        assert result["destination"] == "600"
+        assert result["type"] == "ringgroup"
+        call_args = mock_ari_client.send_command.call_args.kwargs
+        assert call_args["resource"] == f"channels/{tool_context.caller_channel_id}/continue"
+        assert call_args["params"]["context"] == "ext-group"
+        assert call_args["params"]["extension"] == "600"
 
     @pytest.mark.asyncio
     async def test_fails_when_internal_live_agents_are_ambiguous_even_if_destination_live_agent_exists(
@@ -371,6 +407,7 @@ class TestLiveAgentTransferTool:
     ):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "destinations": {
                 "tier2_live": {"type": "extension", "target": "6000", "description": "Tier 2", "live_agent": True},
             },

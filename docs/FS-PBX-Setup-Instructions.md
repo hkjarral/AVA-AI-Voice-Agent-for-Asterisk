@@ -9,7 +9,7 @@ sidebar_position: 1
 
 This guide will help you setup an Asterisk AI application server that has two way communication, though some entries are static, it will shed light on the usability of both FreePBX and FusionPBX.  The setup of this took two days of research, using various tools such as OpenAI, Claude, and Grok.
 
-Further documentation and setup is found by going to: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/
+Further documentation and setup is found by going to: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/
 
 Originally Published at: https://www.fspbx.com/docs/integrations/asterisk-ai/
 
@@ -124,8 +124,8 @@ Get the **Admin UI running in 2 minutes** while on the Debian instance, GIT shou
 
 ```bash
 # Clone repository
-git clone https://github.com/hkjarral/Asterisk-AI-Voice-Agent.git
-cd Asterisk-AI-Voice-Agent
+git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+cd AVA-AI-Voice-Agent-for-Asterisk
 
 # Run preflight with auto-fix (creates .env, generates JWT_SECRET)
 sudo ./preflight.sh --apply-fixes
@@ -146,7 +146,8 @@ Open in your browser:
 - **Local:** `http://localhost:3003`
 - **Remote server:** `http://<server-ip>:3003`
 
-**Default Login:** `admin` / `admin`
+**First login:** retrieve the one-time password with
+`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`, then change it.
 
 Follow the **Setup Wizard** to configure your providers and make a test call.
 
@@ -213,14 +214,14 @@ Under **Admin** click **Config Edit**, a list of files will be visible, the file
 [from-ai-agent]
 exten => s,1,NoOp(AI Agent - DID 5556016126)
  same => n,Set(AI_PROVIDER=local_hybrid)
- same => n,Set(AI_CONTEXT=CompanyA)
+ same => n,Set(AI_AGENT=companya)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
  
 [from-ai-agent-CompanyB]
 exten => s,1,NoOp(AI Agent - DID 5556016043)
  same => n,Set(AI_PROVIDER=local_hybrid)
- same => n,Set(AI_CONTEXT=CompanyB)
+ same => n,Set(AI_AGENT=companyb)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
  
@@ -280,6 +281,6 @@ And click **Submit**
 
 ---
 
-As far as configuration goes, for Asterisk AI, we strongly encourage you review the [documentation](https://github.com/hkjarral/Asterisk-AI-Voice-Agent?tab=readme-ov-file#-documentation), we also encourage checking out their [Discord](https://discord.gg/ysg8fphxUe).  The maintainer is quite active, and if you've caught him at a good time will offer assistance.  
+For configuration, review the [project documentation](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk#-documentation) and the [Discord community](https://discord.gg/ysg8fphxUe).
 
 Be sure to support the work of the maintainer by going [here](https://ko-fi.com/asteriskaivoiceagent).

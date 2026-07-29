@@ -5,7 +5,6 @@ Handles email address validation, DNS domain checks, and speech-to-email parsing
 """
 
 import re
-import dns.resolver
 from typing import Optional, Tuple
 import structlog
 
@@ -106,9 +105,14 @@ class EmailValidator:
         """
         if not email or "@" not in email:
             return False, "Invalid email format"
-        
+
         domain = email.split("@")[1]
-        
+
+        # Lazy import: dnspython is only needed for the MX/A-record lookup. Keeping
+        # it out of module scope lets the admin_ui container (which has no dnspython)
+        # import EmailValidator for format-only validation without ModuleNotFoundError.
+        import dns.resolver
+
         try:
             # Check for MX records
             mx_records = dns.resolver.resolve(domain, "MX")

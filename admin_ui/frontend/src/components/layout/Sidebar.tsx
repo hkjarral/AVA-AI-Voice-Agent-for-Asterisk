@@ -4,7 +4,7 @@ import {
     LayoutDashboard,
     Server,
     Workflow,
-    MessageSquare,
+    Users,
     Wrench,
     Plug,
     Sliders,
@@ -20,6 +20,8 @@ import {
     Code,
     HelpCircle,
     ExternalLink,
+    Coffee,
+    Heart,
     HardDrive,
     ArrowUpCircle,
     Phone,
@@ -28,6 +30,7 @@ import {
     Lock
 } from 'lucide-react';
 import { useAuth } from '../../auth/AuthContext';
+import { KOFI_URL, SPONSORS_URL } from '../../config/donation';
 import ChangePasswordModal from '../auth/ChangePasswordModal';
 import { useState } from 'react';
 
@@ -78,7 +81,7 @@ const Sidebar = () => {
                 </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto py-6 px-3">
+            <nav aria-label="Main navigation" className="flex-1 overflow-y-auto py-6 px-3">
                 <SidebarGroup title="Overview">
                     <SidebarItem to="/" icon={LayoutDashboard} label="Dashboard" end />
                     <SidebarItem to="/history" icon={Phone} label="Call History" />
@@ -87,9 +90,9 @@ const Sidebar = () => {
                 </SidebarGroup>
 
                 <SidebarGroup title="Core Configuration">
+                    <SidebarItem to="/agents" icon={Users} label="Agents" />
                     <SidebarItem to="/providers" icon={Server} label="Providers" />
                     <SidebarItem to="/pipelines" icon={Workflow} label="Pipelines" />
-                    <SidebarItem to="/contexts" icon={MessageSquare} label="Contexts" />
                     <SidebarItem to="/profiles" icon={Sliders} label="Audio Profiles" />
                     <SidebarItem to="/tools" icon={Wrench} label="Tools" />
                     <SidebarItem to="/mcp" icon={Plug} label="MCP" />
@@ -128,8 +131,26 @@ const Sidebar = () => {
                         <ExternalLink className="w-4 h-4" />
                         API Docs
                     </a>
+                    <a
+                        href={KOFI_URL}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        aria-label="Support AVA on Ko-fi"
+                        className="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                    >
+                        <Coffee className="w-4 h-4" aria-hidden="true" /> Support on Ko-fi
+                    </a>
+                    <a
+                        href={SPONSORS_URL}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        aria-label="Sponsor AVA on GitHub"
+                        className="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                    >
+                        <Heart className="w-4 h-4" aria-hidden="true" /> Sponsor
+                    </a>
                 </SidebarGroup>
-            </div>
+            </nav>
 
             <div className="p-4 border-t border-border/50">
                 <div className="flex items-center gap-3 px-2 mb-3">

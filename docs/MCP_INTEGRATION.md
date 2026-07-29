@@ -2,12 +2,12 @@
 **Status**: Shipped (v4.5.2+)  
 **Scope**: `ai_engine` (`src/`) tool calling + provider adapters + config + Admin UI
 
-This document describes how AVA integrates Model Context Protocol (MCP) tools into the existing unified tool calling system. It is written to match the repo’s current architecture (ToolRegistry, per-context tool lists, provider adapters, SessionStore) and to support safe testing on a development server without impacting production baselines.
+This document describes how AVA integrates Model Context Protocol (MCP) tools into the existing unified tool calling system. It is written to match the repo’s current architecture (ToolRegistry, per-Agent tool lists, provider adapters, SessionStore) and to support safe testing on a development server without impacting production baselines.
 
 ## Goals
 
 - Add MCP tools as first-class tools in the existing `ToolRegistry`, so providers can call them the same way they call `transfer`, `hangup_call`, etc.
-- Respect the existing per-call context system: `contexts.<name>.tools` must control which MCP tools are exposed and executable for that call.
+- Respect the selected Agent's per-call tool allowlist: only MCP tools enabled on that Agent may be exposed or executed.
 - Keep tool names provider-safe (OpenAI/Deepgram/Google/ElevenLabs schema constraints) while still routing to `(mcp_server, mcp_tool)` internally.
 - Preserve voice UX: provide a consistent spoken “result message” even when MCP returns structured JSON.
 - Run safely in production-like environments: process lifecycle management for stdio servers, timeouts, metrics, logging, and secure secret handling.
@@ -16,6 +16,12 @@ This document describes how AVA integrates Model Context Protocol (MCP) tools in
 
 - Replacing existing tool calling or provider adapters.
 - Automatically discovering arbitrary MCP servers over the network without explicit config.
+- Pre-call or post-call MCP execution. MCP tools always run **in-call only**: their
+  definitions are hard-coded to the `IN_CALL` phase (`ToolPhase.IN_CALL` default in
+  `src/tools/base.py`; `MCPTool.definition` in `src/tools/mcp_tool.py` does not override
+  it). They are invoked by the provider during the conversation, not as pre-call
+  enrichment or post-call webhooks. Use a native HTTP tool (`pre_call` / `post_call`
+  phase) for those lifecycle stages.
 
 ## Admin UI
 
@@ -30,13 +36,13 @@ AVA already has:
 
 - A unified `Tool` abstraction (`src/tools/base.py`) with provider-agnostic schemas.
 - A global tool registry (`src/tools/registry.py`) that providers use to advertise tools and the engine uses to execute tools.
-- Per-context tool lists (`contexts.<name>.tools` in YAML) which are already used by Google Live to filter the exposed tool schema.
+- Per-Agent tool lists stored in `agents.db`, used to filter exposed schemas for every provider.
 - Provider adapters that translate tool schemas/events (OpenAI Realtime / Deepgram / Google Live / ElevenLabs).
 
 The MCP integration should:
 
 1. Register MCP tools into `ToolRegistry` as wrapper tools (`Tool` subclasses).
-2. Filter *exposed schemas* per call using `contexts.<name>.tools` for all providers (not just Google Live).
+2. Filter *exposed schemas* per call using the selected Agent's tool list for all providers.
 3. Enforce an *execution allowlist* in the engine so a provider can’t call tools that weren’t exposed for that call.
 
 ## Naming & Namespacing (Provider-Safe)
@@ -151,9 +157,11 @@ The deterministic ATIS server uses `met.no` (tafmetar feed) for METAR fetch and 
 - Optional: `defaults.explicit_not_available: true` to speak explicit “not available” lines when runway/frequency/advisories are not configured.
 - The ATIS MCP server re-reads its `--config` file when it changes (no engine restart required for those per-aerodrome tweaks).
 
-### Context scoping
+### Agent scoping
 
-Use existing context tool lists to expose MCP tools only where needed:
+Enable MCP tools only on the Agents that need them through **Admin UI → Agents →
+Tool Access**. The YAML below is one-time migration input only; `contexts:` is
+not a live v7.4 Agent configuration surface:
 
 ```yaml
 contexts:
@@ -167,7 +175,7 @@ contexts:
 
 Rule:
 
-- `contexts.<name>.tools` must list the **exposed tool names** (the provider-safe names).
+- The selected Agent's tool list must contain the **exposed tool names** (the provider-safe names).
 
 ## Template Variables for Prompts
 
@@ -180,7 +188,7 @@ Context prompts and greetings support template variable substitution for call-sp
 | `{caller_name}` | Caller ID name | `"there"` | `CALLERID(name)` from Asterisk |
 | `{caller_number}` | Caller phone number (ANI) | `"unknown"` | `CALLERID(num)` from Asterisk |
 | `{call_id}` | Unique call identifier | (always set) | Internal call ID |
-| `{context_name}` | AI_CONTEXT from dialplan | `""` | `Set(AI_CONTEXT=...)` |
+| `{context_name}` | Resolved Agent slug | `""` | `Set(AI_AGENT=...)` |
 | `{call_direction}` | Call direction | `"inbound"` | `"inbound"` or `"outbound"` |
 | `{campaign_id}` | Outbound campaign ID | `""` | Outbound dialer only |
 | `{lead_id}` | Outbound lead/contact ID | `""` | Outbound dialer only |
@@ -245,7 +253,7 @@ Default values are defined in `src/engine.py` method `_apply_prompt_template_sub
 
 Two layers:
 
-1. **Schema filtering**: only publish tool schemas listed in `contexts.<name>.tools`.
+1. **Schema filtering**: only publish tool schemas enabled on the selected Agent.
 2. **Execution allowlist**: the engine must reject tool calls not in the call’s allowed tool list, even if the provider attempts them.
 
 This is important because the current engine execution path can execute any registered tool if called by name.
@@ -307,21 +315,15 @@ Also add structured logs that include:
 ### Minimal smoke config
 
 - Add a dedicated context (e.g. `demo_mcp`) and list only one MCP tool plus `hangup_call`.
-- Route a dev extension to `Set(AI_CONTEXT=demo_mcp)`.
+- Route a dev extension to `Set(AI_AGENT=demo_mcp)`.
 
-## Implementation Checklist (What the Branch Will Change)
+## Implementation reference
 
-- `src/tools/`:
-  - Add MCP tool wrapper(s) that implement `Tool.execute()` by calling MCP.
-  - Support `speech_field` / `speech_template` and consistent return shape (`status`, `message`, `data`).
-- `src/tools/registry.py`:
-  - Add a way to register dynamically discovered/configured tools (MCP) at startup.
-  - Add a way to generate *filtered* schemas per call/tool list.
-- Provider adapters:
-  - Update OpenAI Realtime and Deepgram schema generation to accept a filtered tool list (like Google Live already does).
-- `src/engine.py`:
-  - Enforce per-call allowlisting in `_execute_provider_tool()`.
-- Config:
-  - Extend `src/config.py` to model `mcp:` config (and validate naming).
-- Docs:
-  - Update `docs/TOOL_CALLING_GUIDE.md` and `docs/README.md` to reference MCP integration.
+MCP integration is shipped. Source-of-truth files:
+
+- `src/tools/` — MCP tool wrappers implement `Tool.execute()` by calling MCP, with `speech_field` / `speech_template` and the standard return shape (`status`, `message`, `data`).
+- `src/tools/registry.py` — registers dynamically discovered/configured MCP tools at startup; generates filtered schemas per call/tool list.
+- `src/providers/` — OpenAI Realtime, Deepgram, and Google Live adapters all accept a filtered tool list at session-start.
+- `src/engine.py` — `_execute_provider_tool()` enforces per-call allowlisting.
+- `src/config.py` — models the `mcp:` config block and validates server/tool naming.
+- `docs/TOOL_CALLING_GUIDE.md` — references MCP integration; see its "MCP-backed tools" section.

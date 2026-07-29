@@ -27,7 +27,13 @@ from ..config import AppConfig, LocalProviderConfig
 _MAX_RECONNECT_ATTEMPTS = 3
 _RECONNECT_DELAY_BASE_SEC = 0.5
 from ..logging_config import get_logger
-from .base import LLMComponent, LLMResponse, STTComponent, TTSComponent
+from .base import (
+    LLMComponent,
+    LLMResponse,
+    STREAMING_STT_FORMAT_ALIASES,
+    STTComponent,
+    TTSComponent,
+)
 
 logger = get_logger(__name__)
 
@@ -45,6 +51,48 @@ def _merge_dicts(base: Dict[str, Any], override: Optional[Dict[str, Any]]) -> Di
     return merged
 
 
+def _tts_output_contract(options: Dict[str, Any]) -> Tuple[str, int]:
+    format_options = options.get("format") if isinstance(options.get("format"), dict) else {}
+    encoding = str(
+        format_options.get("encoding")
+        or options.get("target_encoding")
+        or "mulaw"
+    ).strip().lower()
+    if encoding in {"linear16", "pcm16", "slin16", "slin"}:
+        encoding = "linear16"
+        default_rate = 16000
+    else:
+        encoding = "mulaw"
+        default_rate = 8000
+    try:
+        sample_rate = int(
+            format_options.get("sample_rate")
+            or format_options.get("sample_rate_hz")
+            or options.get("target_sample_rate_hz")
+            or default_rate
+        )
+    except (TypeError, ValueError):
+        sample_rate = default_rate
+    return encoding, sample_rate
+
+
+def _convert_tts_output(
+    data: bytes,
+    source_encoding: str,
+    source_rate: int,
+    target_encoding: str,
+    target_rate: int,
+) -> bytes:
+    """Keep the adapter's declared output truthful if an older server falls back."""
+    source_encoding = "linear16" if source_encoding in {"linear16", "pcm16", "slin16", "slin"} else "mulaw"
+    if source_encoding == target_encoding and source_rate == target_rate:
+        return data
+    pcm = audioop.ulaw2lin(data, 2) if source_encoding == "mulaw" else data
+    if source_rate != target_rate:
+        pcm, _ = resample_audio(pcm, source_rate, target_rate, state=None)
+    return audioop.lin2ulaw(pcm, 2) if target_encoding == "mulaw" else pcm
+
+
 @dataclass
 class _LocalSessionState:
     websocket: ClientConnection
@@ -55,6 +103,9 @@ class _LocalSessionState:
     result_queue: Optional[asyncio.Queue] = None
     receiver_task: Optional[asyncio.Task] = None
     send_lock: Optional[asyncio.Lock] = None
+    stopping: bool = False
+    receiver_restart_count: int = 0
+    last_final_result_ts: float = 0.0
 
 
 class _LocalAdapterBase:
@@ -195,14 +246,20 @@ class _LocalAdapterBase:
         )
         self._sessions[call_id] = session
 
-        await self._send_json(
-            session,
-            {
-                "type": "set_mode",
-                "mode": mode,
-                "call_id": call_id,
-            },
-        )
+        set_mode_payload: Dict[str, Any] = {
+            "type": "set_mode",
+            "mode": mode,
+            "call_id": call_id,
+        }
+        if mode == "stt":
+            for key in ("segment_energy_threshold", "segment_silence_ms"):
+                if merged.get(key) is not None:
+                    set_mode_payload[key] = merged[key]
+        elif mode == "tts":
+            output_encoding, output_rate = _tts_output_contract(merged)
+            set_mode_payload["output_encoding"] = output_encoding
+            set_mode_payload["output_sample_rate_hz"] = output_rate
+        await self._send_json(session, set_mode_payload)
         try:
             logger.info(
                 "Local adapter set_mode sent",
@@ -331,8 +388,8 @@ class _LocalAdapterBase:
                     attempt=attempt,
                     error=str(exc),
                 )
-                # Remove stale session so next attempt reconnects
-                self._sessions.pop(call_id, None)
+                # Keep the stale session indexed until _reconnect_session()
+                # transfers its streaming queue/lock to the new WebSocket.
                 if attempt < max_attempts:
                     delay = _RECONNECT_DELAY_BASE_SEC * (2 ** (attempt - 1))
                     await asyncio.sleep(delay)
@@ -382,9 +439,32 @@ class _LocalAdapterBase:
                 )
                 return existing
             
+            # Preserve streaming state across the new WebSocket. iter_results()
+            # waits on the original queue for the lifetime of the dialog worker,
+            # so replacing it here would silently orphan all post-reconnect STT
+            # finals.
+            result_queue = existing.result_queue if existing else None
+            send_lock = existing.send_lock if existing else None
+            stopping = existing.stopping if existing else False
+            receiver_restart_count = existing.receiver_restart_count if existing else 0
+            last_final_result_ts = existing.last_final_result_ts if existing else 0.0
+
             # Clean up stale session
             if existing:
                 self._sessions.pop(call_id, None)
+                if existing.receiver_task and not existing.receiver_task.done():
+                    existing.receiver_task.cancel()
+                    try:
+                        await existing.receiver_task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        logger.debug(
+                            "Local adapter receiver cleanup failed during reconnect",
+                            component=self.component_key,
+                            call_id=call_id,
+                            exc_info=True,
+                        )
                 try:
                     await existing.websocket.close()
                 except Exception:
@@ -402,6 +482,13 @@ class _LocalAdapterBase:
             session = self._sessions.get(call_id)
             if not session or session.websocket.state.name != "OPEN":
                 raise RuntimeError(f"Failed to reconnect session for call {call_id}")
+
+            if result_queue is not None:
+                session.result_queue = result_queue
+                session.send_lock = send_lock
+                session.stopping = stopping
+                session.receiver_restart_count = receiver_restart_count
+                session.last_final_result_ts = last_final_result_ts
             
             logger.info(
                 "Local adapter session reconnected successfully",
@@ -520,6 +607,8 @@ class _LocalAdapterBase:
 class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
     """# Milestone7: STT adapter backed by the local AI server."""
 
+    supports_streaming = True
+
     def __init__(
         self,
         component_key: str,
@@ -540,23 +629,33 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
         self,
         call_id: str,
         options: Optional[Dict[str, Any]] = None,
+        *,
+        sample_rate_hz: int,
+        fmt: str,
     ) -> None:
+        normalized_fmt = str(fmt or "").strip().lower()
+        if normalized_fmt not in STREAMING_STT_FORMAT_ALIASES:
+            raise ValueError(f"Unsupported Local streaming STT format: {fmt!r}")
+        if int(sample_rate_hz) != 16000:
+            raise ValueError(
+                "Local streaming STT requires the canonical 16000 Hz pipeline bus "
+                f"(received {sample_rate_hz})"
+            )
         runtime_options = options or {}
         session = await self._ensure_session(call_id, runtime_options)
+        session.stopping = False
         if session.send_lock is None:
             session.send_lock = asyncio.Lock()
         if session.result_queue is None:
             maxsize = int(runtime_options.get("stream_queue_maxsize", 16))
             session.result_queue = asyncio.Queue(max(maxsize, 1))
-        if session.receiver_task and not session.receiver_task.done():
-            return
-        session.receiver_task = asyncio.create_task(
-            self._stream_receive_loop(session, runtime_options)
-        )
+        self._ensure_stream_receiver(session, runtime_options, reason="stream_start")
         logger.debug(
             "Local STT streaming started",
             component=self.component_key,
             call_id=call_id,
+            stream_format=normalized_fmt,
+            sample_rate_hz=sample_rate_hz,
         )
 
     async def send_audio(
@@ -591,6 +690,11 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
                 call_id=call_id,
             )
             return  # Skip this audio frame rather than crash the call
+
+        # A transient receive-loop failure must not permanently end the dialog
+        # while the send side continues feeding audio. Restart it on the same
+        # healthy WebSocket before sending the next chunk.
+        self._ensure_stream_receiver(session, session.options, reason="audio_send")
         
         pcm16 = self._to_pcm16_16k(audio, fmt, call_id=call_id)
         if not pcm16:
@@ -628,18 +732,18 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
         
         try:
             async with session.send_lock:
-                # Check connection state before sending
-                if session.websocket.state.name != "OPEN":
-                    logger.debug(
-                        "WebSocket not open, attempting reconnection for STT audio",
-                        component=self.component_key,
-                        call_id=call_id,
-                        ws_state=session.websocket.state.name,
-                    )
-                    # Use retry logic
-                    await self._send_json_with_retry(call_id, payload, session.options)
-                else:
-                    await self._send_json(session, payload)
+                await self._send_json_with_retry(call_id, payload, session.options)
+
+            # Reconnection replaces the session object but deliberately keeps
+            # the queue consumed by iter_results(). Bind a receiver to the new
+            # WebSocket before the next STT result arrives.
+            active_session = self._sessions.get(call_id)
+            if active_session is not None:
+                self._ensure_stream_receiver(
+                    active_session,
+                    active_session.options,
+                    reason="session_reconnect",
+                )
         except (ConnectionClosed, ConnectionClosedError) as exc:
             logger.warning(
                 "STT send_audio connection closed, will retry on next audio",
@@ -647,8 +751,6 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
                 call_id=call_id,
                 error=str(exc),
             )
-            # Remove stale session so next call can reconnect
-            self._sessions.pop(call_id, None)
             return  # Don't crash - skip this frame
         except Exception as exc:
             logger.warning(
@@ -682,6 +784,7 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
         session = self._sessions.get(call_id)
         if not session:
             return
+        session.stopping = True
         if session.receiver_task:
             session.receiver_task.cancel()
             try:
@@ -704,6 +807,32 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
         session.result_queue = None
         session.send_lock = None
 
+    def _ensure_stream_receiver(
+        self,
+        session: _LocalSessionState,
+        options: Dict[str, Any],
+        *,
+        reason: str,
+    ) -> None:
+        """Start or recover the per-call STT result receiver."""
+        if session.stopping or session.result_queue is None:
+            return
+        task = session.receiver_task
+        if task and not task.done():
+            return
+        if task is not None:
+            session.receiver_restart_count += 1
+            logger.warning(
+                "Restarting local STT result receiver after unexpected exit",
+                component=self.component_key,
+                call_id=session.call_id,
+                reason=reason,
+                restart_count=session.receiver_restart_count,
+            )
+        session.receiver_task = asyncio.create_task(
+            self._stream_receive_loop(session, options)
+        )
+
     async def close_call(self, call_id: str) -> None:
         await self.stop_stream(call_id)
         self._resample_states.pop(call_id, None)
@@ -719,6 +848,7 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
             return
         timeout = options.get("streaming_result_timeout_sec")
         timeout_val = float(timeout) if timeout is not None else None
+        exit_reason = "unknown"
         try:
             while True:
                 try:
@@ -738,32 +868,54 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
                     )
                     continue
                 text = (message.get("text") or "")
+                session.last_final_result_ts = time.time()
+                logger.info(
+                    "Local STT final received by adapter",
+                    component=self.component_key,
+                    call_id=session.call_id,
+                    transcript_preview=text[:80],
+                    receiver_restart_count=session.receiver_restart_count,
+                )
                 try:
                     queue.put_nowait(text)
                 except asyncio.QueueFull:
                     await queue.put(text)
         except asyncio.CancelledError:
-            pass
-        except ConnectionClosed:
-            pass
-        except Exception:
-            logger.debug(
-                "Local STT streaming receive loop error",
+            exit_reason = "cancelled"
+        except ConnectionClosed as exc:
+            exit_reason = f"connection_closed:{getattr(exc, 'code', None)}"
+        except Exception as exc:
+            exit_reason = f"error:{type(exc).__name__}"
+            logger.warning(
+                "Local STT streaming receive loop exited unexpectedly",
                 component=self.component_key,
                 call_id=session.call_id,
+                error=str(exc),
                 exc_info=True,
             )
         finally:
-            try:
-                queue.put_nowait(None)
-            except asyncio.QueueFull:
-                pass
+            # Only an intentional stop owns the end-of-stream sentinel. An
+            # unexpected receiver exit is recoverable and must not terminate the
+            # engine's dialog worker while audio sending remains active.
+            if session.stopping:
+                try:
+                    queue.put_nowait(None)
+                except asyncio.QueueFull:
+                    pass
+            else:
+                logger.warning(
+                    "Local STT result receiver stopped without stream shutdown",
+                    component=self.component_key,
+                    call_id=session.call_id,
+                    reason=exit_reason,
+                    restart_on_next_audio=True,
+                )
 
     def _to_pcm16_16k(self, audio: bytes, fmt: str, call_id: str = "") -> bytes:
         if not audio:
             return audio
         fmt = fmt.lower()
-        if fmt in {"pcm16", "pcm16_16k", "pcm16-16k"}:
+        if fmt in STREAMING_STT_FORMAT_ALIASES:
             return audio
         if fmt in {"pcm16_8k", "pcm16-8k"}:
             state = self._resample_states.get(call_id)
@@ -976,9 +1128,119 @@ class LocalLLMAdapter(_LocalAdapterBase, LLMComponent):
             )
             return LLMResponse(text="")
 
+    async def generate_stream(
+        self,
+        call_id: str,
+        transcript: str,
+        context: Dict[str, Any],
+        options: Dict[str, Any],
+    ) -> AsyncIterator[str]:
+        """Stream LLM tokens from the local AI server.
+
+        Sends an ``llm_request`` with ``stream: true`` and yields tokens as
+        they arrive via ``llm_token`` messages.  Falls back to the non-streaming
+        ``generate()`` path if the server doesn't support streaming.
+        """
+        runtime_options = options or {}
+
+        try:
+            session = await self._ensure_session(call_id, runtime_options)
+        except Exception as exc:
+            logger.error(
+                "Failed to establish LLM streaming session",
+                component=self.component_key,
+                call_id=call_id,
+                error=str(exc),
+            )
+            return
+
+        payload = {
+            "type": "llm_request",
+            "call_id": call_id,
+            "mode": "llm",
+            "text": transcript,
+            "context": context.get("messages") or context,
+            "stream": True,
+        }
+
+        try:
+            await self._send_json_with_retry(call_id, payload, runtime_options)
+        except Exception as exc:
+            logger.error(
+                "Failed to send LLM streaming request",
+                component=self.component_key,
+                call_id=call_id,
+                error=str(exc),
+            )
+            return
+
+        session = self._sessions.get(call_id)
+        if not session:
+            return
+
+        merged = self._compose_options(runtime_options)
+        timeout = float(merged.get("llm_response_timeout_sec", merged.get("response_timeout_sec", 30.0)))
+        started_at = time.perf_counter()
+
+        try:
+            while True:
+                try:
+                    kind, message = await self._recv_any(session, timeout)
+                except (ConnectionClosed, ConnectionClosedError):
+                    self._sessions.pop(call_id, None)
+                    return
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "LLM streaming timed out",
+                        component=self.component_key,
+                        call_id=call_id,
+                    )
+                    return
+
+                if kind != "json":
+                    continue
+
+                msg_type = message.get("type", "")
+
+                # Token-level streaming messages
+                if msg_type == "llm_token":
+                    token = message.get("token", "")
+                    if token:
+                        yield token
+                    continue
+
+                # Full response (end of stream or non-streaming fallback)
+                if msg_type == "llm_response":
+                    text = message.get("text", "").strip()
+                    latency_ms = (time.perf_counter() - started_at) * 1000.0
+                    logger.info(
+                        "Local LLM streaming complete",
+                        component=self.component_key,
+                        call_id=call_id,
+                        latency_ms=round(latency_ms, 2),
+                    )
+                    # If this is a non-streaming fallback, yield the full text
+                    if text:
+                        yield text
+                    return
+
+        except Exception as exc:
+            logger.error(
+                "LLM streaming receive failed",
+                component=self.component_key,
+                call_id=call_id,
+                error=str(exc),
+                exc_info=True,
+            )
+
 
 class LocalTTSAdapter(_LocalAdapterBase, TTSComponent):
     """# Milestone7: TTS adapter backed by the local AI server."""
+
+    wideband_output_format = {
+        "encoding": "linear16",
+        "sample_rate": 16000,
+    }
 
     def __init__(
         self,
@@ -1020,6 +1282,7 @@ class LocalTTSAdapter(_LocalAdapterBase, TTSComponent):
             yield  # Unreachable but makes this an async generator
 
         merged = self._compose_options(runtime_options)
+        output_encoding, output_rate = _tts_output_contract(merged)
         logger.debug(
             "Sending TTS request",
             component=self.component_key,
@@ -1031,6 +1294,8 @@ class LocalTTSAdapter(_LocalAdapterBase, TTSComponent):
             "call_id": call_id,
             "mode": "tts",
             "text": text,
+            "output_encoding": output_encoding,
+            "output_sample_rate_hz": output_rate,
         }
 
         # Use retry logic for TTS send
@@ -1060,6 +1325,7 @@ class LocalTTSAdapter(_LocalAdapterBase, TTSComponent):
         timeout = float(merged.get("response_timeout_sec", 8.0))
         started_at = time.perf_counter()
         yielded_audio = False
+        response_meta: Dict[str, Any] = {}
 
         try:
             while True:
@@ -1088,6 +1354,25 @@ class LocalTTSAdapter(_LocalAdapterBase, TTSComponent):
                     msg_type = message.get("type")
                     if msg_type == "tts_response" and message.get("audio_data"):
                         decoded = base64.b64decode(message["audio_data"])
+                        source_encoding = str(message.get("encoding") or "mulaw").strip().lower()
+                        source_rate = int(message.get("sample_rate_hz") or 8000)
+                        if source_encoding != output_encoding or source_rate != output_rate:
+                            logger.warning(
+                                "Local TTS server output did not match requested contract; converting in adapter",
+                                component=self.component_key,
+                                call_id=call_id,
+                                source_encoding=source_encoding,
+                                source_rate=source_rate,
+                                target_encoding=output_encoding,
+                                target_rate=output_rate,
+                            )
+                            decoded = _convert_tts_output(
+                                decoded,
+                                source_encoding,
+                                source_rate,
+                                output_encoding,
+                                output_rate,
+                            )
                         latency_ms = (time.perf_counter() - started_at) * 1000.0
                         logger.info(
                             "Local TTS response (base64) received",
@@ -1100,6 +1385,7 @@ class LocalTTSAdapter(_LocalAdapterBase, TTSComponent):
                         yield decoded
                         break
                     if msg_type == "tts_audio":
+                        response_meta = dict(message)
                         logger.debug(
                             "Local TTS metadata received",
                             component=self.component_key,
@@ -1110,6 +1396,16 @@ class LocalTTSAdapter(_LocalAdapterBase, TTSComponent):
                     continue
 
                 if kind == "binary":
+                    source_encoding = str(response_meta.get("encoding") or "mulaw").strip().lower()
+                    source_rate = int(response_meta.get("sample_rate_hz") or 8000)
+                    if source_encoding != output_encoding or source_rate != output_rate:
+                        message = _convert_tts_output(
+                            message,
+                            source_encoding,
+                            source_rate,
+                            output_encoding,
+                            output_rate,
+                        )
                     latency_ms = (time.perf_counter() - started_at) * 1000.0
                     logger.info(
                         "Local TTS audio chunk received",

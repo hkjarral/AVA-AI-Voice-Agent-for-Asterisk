@@ -11,48 +11,48 @@ import (
 )
 
 var (
-	promptColor   = color.New(color.FgCyan, color.Bold)
-	successColor  = color.New(color.FgGreen)
-	errorColor    = color.New(color.FgRed)
-	warningColor  = color.New(color.FgYellow)
-	infoColor     = color.New(color.FgBlue)
+	promptColor  = color.New(color.FgCyan, color.Bold)
+	successColor = color.New(color.FgGreen)
+	errorColor   = color.New(color.FgRed)
+	warningColor = color.New(color.FgYellow)
+	infoColor    = color.New(color.FgBlue)
 )
 
 // PromptText asks for text input with optional default
 func PromptText(label string, defaultVal string) string {
 	reader := bufio.NewReader(os.Stdin)
-	
+
 	if defaultVal != "" {
 		promptColor.Printf("  %s [%s]: ", label, defaultVal)
 	} else {
 		promptColor.Printf("  %s: ", label)
 	}
-	
+
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
-	
+
 	if input == "" && defaultVal != "" {
 		return defaultVal
 	}
-	
+
 	return input
 }
 
 // PromptPassword asks for password input (hidden)
 func PromptPassword(label string, hasExisting bool) string {
 	reader := bufio.NewReader(os.Stdin)
-	
+
 	if hasExisting {
 		promptColor.Printf("  %s [unchanged if blank]: ", label)
 	} else {
 		promptColor.Printf("  %s: ", label)
 	}
-	
+
 	// Note: For production, use terminal.ReadPassword for true hidden input
 	// For now, using basic readline (visible for testing)
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
-	
+
 	return input
 }
 
@@ -60,49 +60,49 @@ func PromptPassword(label string, hasExisting bool) string {
 func PromptSelect(label string, options []string, defaultIdx int) int {
 	fmt.Println()
 	infoColor.Printf("  %s\n", label)
-	
+
 	for i, opt := range options {
 		fmt.Printf("  %d) %s\n", i+1, opt)
 	}
 	fmt.Println()
-	
+
 	reader := bufio.NewReader(os.Stdin)
 	promptColor.Printf("  Choice [%d]: ", defaultIdx+1)
-	
+
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
-	
+
 	if input == "" {
 		return defaultIdx
 	}
-	
+
 	choice, err := strconv.Atoi(input)
 	if err != nil || choice < 1 || choice > len(options) {
 		warningColor.Printf("  Invalid choice, using default: %d\n", defaultIdx+1)
 		return defaultIdx
 	}
-	
+
 	return choice - 1
 }
 
 // PromptConfirm asks yes/no question
 func PromptConfirm(label string, defaultYes bool) bool {
 	reader := bufio.NewReader(os.Stdin)
-	
+
 	prompt := "[y/N]"
 	if defaultYes {
 		prompt = "[Y/n]"
 	}
-	
+
 	promptColor.Printf("  %s %s: ", label, prompt)
-	
+
 	input, _ := reader.ReadString('\n')
 	input = strings.ToLower(strings.TrimSpace(input))
-	
+
 	if input == "" {
 		return defaultYes
 	}
-	
+
 	return input == "y" || input == "yes"
 }
 

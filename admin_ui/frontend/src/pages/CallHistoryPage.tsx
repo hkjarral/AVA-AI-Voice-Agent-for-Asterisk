@@ -4,40 +4,65 @@ import {
     ChevronLeft, ChevronRight, RefreshCw, X, MessageSquare,
     Wrench, AlertCircle, CheckCircle, ArrowRightLeft, PhoneOff,
     BarChart3, Users, Timer, Activity, TrendingUp, Zap, PieChart,
-    Play, Pause, Volume2, FileAudio
+    Play, Pause, Volume2, FileAudio, Search
 } from 'lucide-react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { FullscreenPanel } from '../components/ui/FullscreenPanel';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
+import {
+    InCallToolGroup,
+    PhaseToolGroup,
+    type InCallToolCall,
+    type PhaseToolCall,
+} from '../components/calls/ToolExecutionGroups';
 
 interface CallRecordSummary {
     id: string;
     call_id: string;
     caller_number: string | null;
     caller_name: string | null;
+    called_number?: string | null;
     start_time: string | null;
     end_time: string | null;
     duration_seconds: number;
     provider_name: string;
     pipeline_name: string | null;
     context_name: string | null;
+    routing_method: string | null;  // 'ai_agent' | 'ai_context' | 'default' | null
+    voice?: string | null;          // Resolved session voice (v7.3.0; null = provider default)
+    voice_source?: string | null;   // 'override' | 'agent' | 'provider-default' | null
     outcome: string;
     error_message: string | null;
     avg_turn_latency_ms: number;
     total_turns: number;
     barge_in_count: number;
+    external_platform?: string | null;
+    external_call_id?: string | null;
+    external_direction?: string | null;
+    external_disposition?: string | null;
 }
 
 interface CallRecordDetail extends CallRecordSummary {
     pipeline_components: Record<string, string>;
     conversation_history: Array<{ role: string; content: string; timestamp?: number | string }>;
     transfer_destination: string | null;
-    tool_calls: Array<{ name: string; params: any; result: string; message?: string; timestamp: string; duration_ms: number }>;
+    tool_calls: InCallToolCall[];
+    pre_call_tool_calls: PhaseToolCall[];
+    post_call_tool_calls: PhaseToolCall[];
     max_turn_latency_ms: number;
     caller_audio_format: string;
     codec_alignment_ok: boolean;
+    external_metadata?: {
+        mapping_id?: string | null;
+        mapping_name?: string | null;
+        finalized?: boolean;
+        requested_disposition?: string | null;
+        disposition_label?: string | null;
+        session?: Record<string, any>;
+        events?: Array<Record<string, any>>;
+    };
 }
 
 interface CallStats {
@@ -114,23 +139,54 @@ const OutcomeIcon = ({ outcome }: { outcome: string }) => {
             return <AlertCircle className="w-4 h-4 text-red-500" />;
         case 'abandoned':
             return <PhoneOff className="w-4 h-4 text-yellow-500" />;
+        case 'no_input_timeout':
+            return <PhoneOff className="w-4 h-4 text-amber-500" />;
         default:
             return <Phone className="w-4 h-4 text-muted-foreground" />;
     }
 };
 
+const outcomeLabel = (outcome: string): string => {
+    if (outcome === 'no_input_timeout') return 'No input timeout';
+    return outcome.replace(/_/g, ' ');
+};
+
+const CALL_DETAILS_FOCUSABLE_SELECTOR =
+    'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+// How a call was routed to its agent (engine writes call_records.routing_method).
+// Older calls predating the column have method === null and render nothing.
+const RoutingBadge = ({ method }: { method: string | null }) => {
+    if (!method) return null;
+    const meta: Record<string, { label: string; cls: string }> = {
+        ai_agent:   { label: 'Agent',   cls: 'bg-blue-500/15 text-blue-500' },
+        ai_context: { label: 'Context', cls: 'bg-purple-500/15 text-purple-500' },
+        default:    { label: 'Default', cls: 'bg-muted text-muted-foreground' },
+    };
+    const m = meta[method] ?? { label: method, cls: 'bg-muted text-muted-foreground' };
+    return (
+        <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${m.cls}`}>{m.label}</span>
+    );
+};
+
 const CallHistoryPage = () => {
     const { confirm } = useConfirmDialog();
     const location = useLocation();
+    const navigate = useNavigate();
     const [calls, setCalls] = useState<CallRecordSummary[]>([]);
     const [stats, setStats] = useState<CallStats | null>(null);
     const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null);
+    // slug -> display_name, so the call's context_name (== agent slug) shows the friendly name.
+    const [agentNames, setAgentNames] = useState<Record<string, string>>({});
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [selectedCallSummary, setSelectedCallSummary] = useState<CallRecordSummary | null>(null);
     const [selectedCall, setSelectedCall] = useState<CallRecordDetail | null>(null);
     const [selectedCallLoading, setSelectedCallLoading] = useState(false);
     const [showStats, setShowStats] = useState(true);
+    const callDetailsDialogRef = useRef<HTMLDivElement>(null);
+    const modalCall = selectedCall ?? selectedCallSummary;
+    const callDetailsOpen = Boolean(modalCall);
 
     // Recording playback
     const [recordingInfo, setRecordingInfo] = useState<RecordingInfo | null>(null);
@@ -160,6 +216,42 @@ const CallHistoryPage = () => {
     });
     const [showFilters, setShowFilters] = useState(false);
 
+    // Transcript search with debounce
+    const [transcriptSearchInput, setTranscriptSearchInput] = useState('');
+    const [transcriptSearch, setTranscriptSearch] = useState('');
+    const transcriptSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const clearTranscriptSearch = useCallback(() => {
+        if (transcriptSearchTimer.current) {
+            clearTimeout(transcriptSearchTimer.current);
+            transcriptSearchTimer.current = null;
+        }
+        setTranscriptSearchInput('');
+        setTranscriptSearch('');
+        setPage(1);
+    }, []);
+
+    const handleTranscriptSearchChange = useCallback((value: string) => {
+        setTranscriptSearchInput(value);
+        if (transcriptSearchTimer.current) clearTimeout(transcriptSearchTimer.current);
+        if (value === '') {
+            transcriptSearchTimer.current = null;
+            setTranscriptSearch('');
+            setPage(1);
+            return;
+        }
+        transcriptSearchTimer.current = setTimeout(() => {
+            setTranscriptSearch(value);
+            setPage(1);
+        }, 300);
+    }, []);
+
+    useEffect(() => {
+        return () => {
+            if (transcriptSearchTimer.current) clearTimeout(transcriptSearchTimer.current);
+        };
+    }, []);
+
     const fetchCalls = useCallback(async () => {
         try {
             setLoading(true);
@@ -174,7 +266,8 @@ const CallHistoryPage = () => {
             Object.entries(filters).forEach(([key, value]) => {
                 if (value) params[key] = value;
             });
-            
+            if (transcriptSearch) params.transcript_search = transcriptSearch;
+
             const res = await axios.get('/api/calls', { params });
             setCalls(res.data.calls);
             setTotal(res.data.total);
@@ -185,7 +278,7 @@ const CallHistoryPage = () => {
         } finally {
             setLoading(false);
         }
-    }, [page, pageSize, filters]);
+    }, [page, pageSize, filters, transcriptSearch]);
 
     const fetchStats = useCallback(async () => {
         try {
@@ -209,11 +302,33 @@ const CallHistoryPage = () => {
         }
     }, []);
 
+    const fetchAgentNames = useCallback(async () => {
+        try {
+            const res = await axios.get('/api/agents');
+            const map: Record<string, string> = {};
+            for (const a of res.data || []) map[a.slug] = a.display_name;
+            setAgentNames(map);
+        } catch (err) {
+            // Non-fatal: rows fall back to the raw context slug if agents can't load.
+            console.error('Failed to fetch agent names:', err);
+        }
+    }, []);
+
     useEffect(() => {
         fetchCalls();
+    }, [fetchCalls]);
+
+    useEffect(() => {
         fetchStats();
+    }, [fetchStats]);
+
+    useEffect(() => {
         fetchFilterOptions();
-    }, [fetchCalls, fetchStats, fetchFilterOptions]);
+    }, [fetchFilterOptions]);
+
+    useEffect(() => {
+        fetchAgentNames();
+    }, [fetchAgentNames]);
 
     const cleanupAudio = useCallback(() => {
         if (audioRef.current) {
@@ -259,6 +374,86 @@ const CallHistoryPage = () => {
         }
     }, [cleanupAudio]);
 
+    const closeCallDetails = useCallback(() => {
+        cleanupAudio();
+        setRecordingInfo(null);
+        setSelectedCall(null);
+        setSelectedCallSummary(null);
+
+        const params = new URLSearchParams(location.search);
+        if (params.has('id')) {
+            params.delete('id');
+            const search = params.toString();
+            navigate(
+                {
+                    pathname: location.pathname,
+                    search: search ? `?${search}` : '',
+                    hash: location.hash,
+                },
+                { replace: true }
+            );
+        }
+    }, [cleanupAudio, location.hash, location.pathname, location.search, navigate]);
+
+    useEffect(() => {
+        if (!callDetailsOpen) return;
+        const dialog = callDetailsDialogRef.current;
+        if (!dialog) return;
+
+        const previouslyFocused = document.activeElement as HTMLElement | null;
+        const previousBodyOverflow = document.body.style.overflow;
+
+        const isTopmostModal = () => {
+            const dialogs = Array.from(
+                document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')
+            );
+            return dialogs[dialogs.length - 1] === dialog;
+        };
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (!isTopmostModal()) return;
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                closeCallDetails();
+                return;
+            }
+            if (event.key !== 'Tab') return;
+
+            const focusable = Array.from(
+                dialog.querySelectorAll<HTMLElement>(CALL_DETAILS_FOCUSABLE_SELECTOR)
+            );
+            if (focusable.length === 0) {
+                event.preventDefault();
+                dialog.focus();
+                return;
+            }
+
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            const active = document.activeElement;
+            if (event.shiftKey) {
+                if (active === first || active === dialog || !dialog.contains(active)) {
+                    event.preventDefault();
+                    last.focus();
+                }
+            } else if (active === last || active === dialog || !dialog.contains(active)) {
+                event.preventDefault();
+                first.focus();
+            }
+        };
+
+        document.addEventListener('keydown', handleKeyDown);
+        document.body.style.overflow = 'hidden';
+        dialog.focus();
+
+        return () => {
+            document.removeEventListener('keydown', handleKeyDown);
+            document.body.style.overflow = previousBodyOverflow;
+            previouslyFocused?.focus?.();
+        };
+    }, [callDetailsOpen, closeCallDetails]);
+
     // Deep-link support: /history?id=<call_record_id>
     useEffect(() => {
         const id = new URLSearchParams(location.search).get('id');
@@ -284,6 +479,9 @@ const CallHistoryPage = () => {
                     provider_name: detail.provider_name,
                     pipeline_name: detail.pipeline_name,
                     context_name: detail.context_name,
+                    routing_method: detail.routing_method,
+                    voice: detail.voice,
+                    voice_source: detail.voice_source,
                     outcome: detail.outcome,
                     error_message: detail.error_message,
                     avg_turn_latency_ms: detail.avg_turn_latency_ms,
@@ -335,10 +533,7 @@ const CallHistoryPage = () => {
             fetchCalls();
             fetchStats();
             if (selectedCall?.id === id || selectedCallSummary?.id === id) {
-                cleanupAudio();
-                setRecordingInfo(null);
-                setSelectedCall(null);
-                setSelectedCallSummary(null);
+                closeCallDetails();
             }
         } catch (err) {
             console.error('Failed to delete:', err);
@@ -382,9 +577,9 @@ const CallHistoryPage = () => {
             return;
         }
 
-        // Fresh play: fetch WAV as blob (auth header required)
+        // Fresh play: fetch browser-playable recording audio as blob (auth header required)
         try {
-            const res = await axios.get(`/api/calls/${recordId}/recording.wav`, { responseType: 'blob' });
+            const res = await axios.get(`/api/calls/${recordId}/recording/audio`, { responseType: 'blob' });
             const url = URL.createObjectURL(res.data);
             audioBlobUrl.current = url;
 
@@ -415,6 +610,7 @@ const CallHistoryPage = () => {
     };
 
     const clearFilters = () => {
+        clearTranscriptSearch();
         setFilters({
             caller_number: '',
             caller_name: '',
@@ -425,18 +621,36 @@ const CallHistoryPage = () => {
             start_date: '',
             end_date: '',
         });
-        setPage(1);
     };
 
-    const hasActiveFilters = Object.values(filters).some(v => v !== '');
-    const modalCall = selectedCall ?? selectedCallSummary;
-
+    const hasActiveFilters = Object.values(filters).some(v => v !== '') || transcriptSearch !== '';
     return (
         <div className="space-y-6">
             {/* Header */}
             <div className="flex items-center justify-between">
                 <h1 className="text-3xl font-bold">Call History</h1>
                 <div className="flex items-center gap-2">
+                    <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                        <input
+                            type="text"
+                            value={transcriptSearchInput}
+                            onChange={(e) => handleTranscriptSearchChange(e.target.value)}
+                            placeholder="Search transcripts..."
+                            aria-label="Search transcripts"
+                            className="pl-9 pr-8 py-2 bg-background border rounded-lg text-sm w-56 focus:outline-none focus:ring-1 focus:ring-ring"
+                        />
+                        {transcriptSearchInput && (
+                            <button
+                                onClick={clearTranscriptSearch}
+                                aria-label="Clear transcript search"
+                                title="Clear transcript search"
+                                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                            >
+                                <X className="w-4 h-4" />
+                            </button>
+                        )}
+                    </div>
                     <button
                         onClick={() => setShowStats(!showStats)}
                         className={`p-2 rounded-lg border transition-colors ${showStats ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
@@ -615,7 +829,7 @@ const CallHistoryPage = () => {
                             </select>
                         </div>
                         <div>
-                            <label className="text-sm text-muted-foreground">Context</label>
+                            <label className="text-sm text-muted-foreground">Agent</label>
                             <select
                                 value={filters.context_name}
                                 onChange={(e) => setFilters({ ...filters, context_name: e.target.value })}
@@ -623,7 +837,7 @@ const CallHistoryPage = () => {
                             >
                                 <option value="">All</option>
                                 {filterOptions?.contexts.map(c => (
-                                    <option key={c} value={c}>{c}</option>
+                                    <option key={c} value={c}>{agentNames[c] || c}</option>
                                 ))}
                             </select>
                         </div>
@@ -636,7 +850,7 @@ const CallHistoryPage = () => {
                             >
                                 <option value="">All</option>
                                 {filterOptions?.outcomes.map(o => (
-                                    <option key={o} value={o}>{o}</option>
+                                    <option key={o} value={o}>{outcomeLabel(o)}</option>
                                 ))}
                             </select>
                         </div>
@@ -702,7 +916,7 @@ const CallHistoryPage = () => {
                                     <th className="text-left px-4 py-3 text-sm font-medium">Time</th>
                                     <th className="text-left px-4 py-3 text-sm font-medium">Duration</th>
                                     <th className="text-left px-4 py-3 text-sm font-medium">Provider / Pipeline</th>
-                                    <th className="text-left px-4 py-3 text-sm font-medium">Context</th>
+                                    <th className="text-left px-4 py-3 text-sm font-medium">Agent</th>
                                     <th className="text-left px-4 py-3 text-sm font-medium">Outcome</th>
                                     <th className="text-left px-4 py-3 text-sm font-medium">Turns</th>
                                     <th className="text-left px-4 py-3 text-sm font-medium">Latency</th>
@@ -712,10 +926,20 @@ const CallHistoryPage = () => {
                             </thead>
                             <tbody className="divide-y divide-border">
                                 {calls.map((call) => (
-	                                    <tr 
+	                                    <tr
 	                                        key={call.id} 
-	                                        className="hover:bg-muted/30 cursor-pointer"
-	                                        onClick={() => openCallDetails(call)}
+	                                        className="hover:bg-muted/30 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+	                                        tabIndex={0}
+	                                        aria-label={`Open call details for ${call.caller_number || call.call_id}`}
+	                                        onClick={(event) => {
+	                                            event.currentTarget.focus();
+	                                            void openCallDetails(call);
+	                                        }}
+	                                        onKeyDown={(event) => {
+	                                            if (event.key !== 'Enter' && event.key !== ' ') return;
+	                                            event.preventDefault();
+	                                            void openCallDetails(call);
+	                                        }}
 	                                    >
                                         <td className="px-4 py-3">
                                             <div className="font-medium">{call.caller_number || 'Unknown'}</div>
@@ -726,11 +950,27 @@ const CallHistoryPage = () => {
                                         <td className="px-4 py-3 text-sm">{formatDate(call.start_time)}</td>
                                         <td className="px-4 py-3 text-sm">{formatDuration(call.duration_seconds)}</td>
                                         <td className="px-4 py-3 text-sm">{call.pipeline_name || call.provider_name}</td>
-                                        <td className="px-4 py-3 text-sm">{call.context_name || '-'}</td>
+                                        <td className="px-4 py-3">
+                                            {call.context_name ? (
+                                                <div className="flex flex-col gap-1">
+                                                    <span className="text-sm font-medium">
+                                                        {agentNames[call.context_name] || call.context_name}
+                                                    </span>
+                                                    <div className="flex items-center gap-2">
+                                                        {agentNames[call.context_name] && (
+                                                            <span className="text-xs text-muted-foreground">{call.context_name}</span>
+                                                        )}
+                                                        <RoutingBadge method={call.routing_method} />
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <span className="text-sm">-</span>
+                                            )}
+                                        </td>
                                         <td className="px-4 py-3">
                                             <div className="flex items-center gap-2">
                                                 <OutcomeIcon outcome={call.outcome} />
-                                                <span className="text-sm capitalize">{call.outcome}</span>
+                                                <span className="text-sm capitalize">{outcomeLabel(call.outcome)}</span>
                                             </div>
                                         </td>
                                         <td className="px-4 py-3 text-sm">{call.total_turns}</td>
@@ -782,11 +1022,18 @@ const CallHistoryPage = () => {
             {/* Call Detail Modal */}
             {modalCall && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-                    <div className="bg-card border rounded-lg w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+                    <div
+                        ref={callDetailsDialogRef}
+                        tabIndex={-1}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="call-details-title"
+                        className="bg-card border rounded-lg w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col focus:outline-none"
+                    >
                         {/* Modal Header */}
                         <div className="flex items-center justify-between p-4 border-b">
                             <div>
-                                <h2 className="text-xl font-bold">Call Details</h2>
+                                <h2 id="call-details-title" className="text-xl font-bold">Call Details</h2>
                                 <p className="text-sm text-muted-foreground">{modalCall.call_id}</p>
                             </div>
                             <div className="flex items-center gap-2">
@@ -805,8 +1052,10 @@ const CallHistoryPage = () => {
                                     <Trash2 className="w-5 h-5" />
                                 </button>
                                 <button
-                                    onClick={() => { cleanupAudio(); setRecordingInfo(null); setSelectedCall(null); setSelectedCallSummary(null); }}
+                                    onClick={closeCallDetails}
                                     className="p-2 hover:bg-muted rounded-lg"
+                                    aria-label="Close call details"
+                                    title="Close call details"
                                 >
                                     <X className="w-5 h-5" />
                                 </button>
@@ -897,7 +1146,7 @@ const CallHistoryPage = () => {
                                     <div className="text-sm text-muted-foreground">Outcome</div>
                                     <div className="flex items-center gap-2">
                                         <OutcomeIcon outcome={modalCall.outcome} />
-                                        <span className="font-medium capitalize">{modalCall.outcome}</span>
+                                        <span className="font-medium capitalize">{outcomeLabel(modalCall.outcome)}</span>
                                     </div>
                                 </div>
                                 <div>
@@ -908,33 +1157,16 @@ const CallHistoryPage = () => {
                                     <div className="text-sm text-muted-foreground">Avg Latency</div>
                                     <div className="font-medium">{(modalCall.avg_turn_latency_ms / 1000).toFixed(2)}s</div>
                                 </div>
+                                {selectedCall?.max_turn_latency_ms != null && (
+                                    <div>
+                                        <div className="text-sm text-muted-foreground">Max Latency</div>
+                                        <div className="font-medium">{(selectedCall.max_turn_latency_ms / 1000).toFixed(2)}s</div>
+                                    </div>
+                                )}
                                 <div>
                                     <div className="text-sm text-muted-foreground">Barge-ins</div>
                                     <div className="font-medium">{modalCall.barge_in_count}</div>
                                 </div>
-                            </div>
-
-                            {/* Tool Calls Summary */}
-                            <div>
-                                <h3 className="font-semibold mb-2">Tool Executions ({selectedCall?.tool_calls.length || 0})</h3>
-                                {!selectedCall ? (
-                                    <p className="text-muted-foreground text-sm">Load the call to view tool details</p>
-                                ) : selectedCall.tool_calls.length === 0 ? (
-                                    <p className="text-muted-foreground text-sm">No tools were called during this call</p>
-                                ) : (
-                                    <div className="flex flex-wrap gap-2">
-                                        {selectedCall.tool_calls.map((tool, i) => (
-                                            <div key={i} className="bg-muted/30 rounded-lg px-3 py-2 text-sm flex items-center gap-2">
-                                                <Wrench className="w-4 h-4" />
-                                                <span className="font-medium">{tool.name}</span>
-                                                <span className={`text-xs ${tool.result === 'success' ? 'text-green-500' : 'text-red-500'}`}>
-                                                    {tool.result}
-                                                </span>
-                                                <span className="text-xs text-muted-foreground">{Math.round(tool.duration_ms)}ms</span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
                             </div>
 
                             {/* Configuration */}
@@ -950,15 +1182,63 @@ const CallHistoryPage = () => {
                                         <span className="font-medium">{modalCall.pipeline_name || '-'}</span>
                                     </div>
                                     <div>
-                                        <span className="text-muted-foreground">Context:</span>{' '}
-                                        <span className="font-medium">{modalCall.context_name || '-'}</span>
+                                        <span className="text-muted-foreground">Agent:</span>{' '}
+                                        <span className="font-medium">
+                                            {modalCall.context_name
+                                                ? (agentNames[modalCall.context_name] || modalCall.context_name)
+                                                : '-'}
+                                        </span>
+                                        {modalCall.context_name && agentNames[modalCall.context_name] && (
+                                            <span className="text-xs text-muted-foreground"> ({modalCall.context_name})</span>
+                                        )}
+                                        {modalCall.routing_method && (
+                                            <span className="ml-2"><RoutingBadge method={modalCall.routing_method} /></span>
+                                        )}
                                     </div>
+                                    {(modalCall.voice || modalCall.voice_source) && (
+                                        <div>
+                                            <span className="text-muted-foreground">Voice:</span>{' '}
+                                            <span className="font-medium">{modalCall.voice || 'provider default'}</span>
+                                            {modalCall.voice_source && (
+                                                <span className="text-xs text-muted-foreground">
+                                                    {' '}({modalCall.voice_source === 'provider-default' ? 'provider default' : `from ${modalCall.voice_source}`})
+                                                </span>
+                                            )}
+                                        </div>
+                                    )}
                                     <div>
                                         <span className="text-muted-foreground">Audio:</span>{' '}
                                         <span className="font-medium">{selectedCall?.caller_audio_format || '-'}</span>
                                     </div>
                                 </div>
                             </div>
+
+                            {selectedCall?.external_platform && (
+                                <div>
+                                    <h3 className="font-semibold mb-2">External dialer</h3>
+                                    <div className="rounded-lg border border-border bg-card p-4">
+                                        <div className="grid gap-3 text-sm md:grid-cols-3 lg:grid-cols-6">
+                                            <div><div className="text-xs text-muted-foreground">Platform</div><div className="font-medium uppercase">{selectedCall.external_platform}</div></div>
+                                            <div><div className="text-xs text-muted-foreground">Call ID</div><div className="break-all font-mono text-xs">{selectedCall.external_call_id || '-'}</div></div>
+                                            <div><div className="text-xs text-muted-foreground">Direction</div><div className="font-medium capitalize">{selectedCall.external_direction || '-'}</div></div>
+                                            <div><div className="text-xs text-muted-foreground">Remote Agent</div><div className="font-mono">{selectedCall.external_metadata?.session?.agent_user || '-'}</div></div>
+                                            <div><div className="text-xs text-muted-foreground">Mapping</div><div className="font-medium">{selectedCall.external_metadata?.mapping_name || selectedCall.external_metadata?.mapping_id || '-'}</div></div>
+                                            <div><div className="text-xs text-muted-foreground">Disposition</div><div className="font-mono">{selectedCall.external_disposition || selectedCall.external_metadata?.requested_disposition || '-'}</div>{!selectedCall.external_disposition && selectedCall.external_metadata?.requested_disposition && <div className="text-[11px] text-amber-500">requested, not confirmed</div>}</div>
+                                        </div>
+                                        <div className="mt-3 text-xs text-muted-foreground">
+                                            Dialer lifecycle: {selectedCall.external_metadata?.finalized ? 'finalized' : 'not confirmed'} · API events: {selectedCall.external_metadata?.events?.length || 0}
+                                        </div>
+                                        {(selectedCall.external_metadata?.events?.length || 0) > 0 && (
+                                            <details className="mt-3 rounded-md border border-border bg-muted/20 p-3">
+                                                <summary className="cursor-pointer text-xs font-medium">VICIdial API evidence</summary>
+                                                <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-all text-xs text-muted-foreground">
+                                                    {JSON.stringify(selectedCall.external_metadata?.events, null, 2)}
+                                                </pre>
+                                            </details>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
 
                             {/* Transcript */}
                             <div>
@@ -999,35 +1279,51 @@ const CallHistoryPage = () => {
                                 )}
                             </div>
 
-                            {/* Tool Call Details */}
-                            {selectedCall && selectedCall.tool_calls.length > 0 && (
-                                <div>
-                                    <h3 className="font-semibold mb-2">Tool Call Details</h3>
-                                    <div className="space-y-2">
-                                        {selectedCall.tool_calls.map((tool, i) => (
-                                            <div key={i} className="bg-muted/30 rounded-lg p-3 text-sm">
-                                                <div className="flex items-center justify-between">
-                                                    <div className="flex items-center gap-2">
-                                                        <Wrench className="w-4 h-4" />
-                                                        <span className="font-medium">{tool.name}</span>
-                                                    </div>
-                                                    <div className="flex items-center gap-2 text-muted-foreground">
-                                                        <span>{Math.round(tool.duration_ms)}ms</span>
-                                                        <span className={tool.result === 'success' ? 'text-green-500' : 'text-red-500'}>
-                                                            {tool.result}
-                                                        </span>
-                                                    </div>
-                                                </div>
-                                                {tool.params && Object.keys(tool.params).length > 0 && (
-                                                    <pre className="mt-2 text-xs bg-background/50 rounded p-2 overflow-x-auto">
-                                                        {JSON.stringify(tool.params, null, 2)}
-                                                    </pre>
-                                                )}
-                                            </div>
-                                        ))}
+                            {/* Tool Executions — unified section grouping all phases */}
+                            {selectedCall && (() => {
+                                const preCall = selectedCall.pre_call_tool_calls || [];
+                                const inCall = selectedCall.tool_calls || [];
+                                const postCall = selectedCall.post_call_tool_calls || [];
+                                const total = preCall.length + inCall.length + postCall.length;
+                                if (total === 0) return null;
+                                const hasPending = postCall.some((t) => t?.status === 'pending') ||
+                                                   preCall.some((t) => t?.status === 'pending');
+                                return (
+                                    <div>
+                                        <div className="flex items-center justify-between mb-2">
+                                            <h3 className="font-semibold">Tool Executions ({total})</h3>
+                                            {hasPending && selectedCall && (
+                                                <button
+                                                    type="button"
+                                                    onClick={async () => {
+                                                        try {
+                                                            const res = await axios.get(`/api/calls/${selectedCall.id}`);
+                                                            setSelectedCall(res.data);
+                                                        } catch (err) {
+                                                            console.error('Failed to refresh call details:', err);
+                                                        }
+                                                    }}
+                                                    className="text-xs px-2 py-1 rounded bg-muted hover:bg-muted/80 text-muted-foreground"
+                                                    title="Refresh — some tools are still running"
+                                                >
+                                                    Refresh
+                                                </button>
+                                            )}
+                                        </div>
+                                        <div className="space-y-4">
+                                            {preCall.length > 0 && (
+                                                <PhaseToolGroup phase="pre_call" entries={preCall} />
+                                            )}
+                                            {inCall.length > 0 && (
+                                                <InCallToolGroup entries={inCall as any} />
+                                            )}
+                                            {postCall.length > 0 && (
+                                                <PhaseToolGroup phase="post_call" entries={postCall} />
+                                            )}
+                                        </div>
                                     </div>
-                                </div>
-                            )}
+                                );
+                            })()}
 
                             {/* Error Message */}
                             {modalCall.error_message && (

@@ -68,15 +68,38 @@ class CallSession:
     
     # Provider and conversation state
     provider_name: str = "local"
+    provider_kind: str = "local"
     pipeline_name: Optional[str] = None
     pipeline_components: Dict[str, str] = field(default_factory=dict)
+    pipeline_resolution_error: Optional[str] = None
+    context_resolution_error: Optional[str] = None
+    provider_failure_action_started: bool = False
     context_name: Optional[str] = None  # AI_CONTEXT from dialplan (for pipeline greeting/prompt resolution)
+    routing_method: Optional[str] = None  # how context was selected: 'ai_agent' | 'ai_context' | 'default' | None
+    # Per-agent post-call email overrides (H5), threaded from ContextConfig at transport
+    # setup. None means "unset" -> dispatch falls back to per-context map / global config.
+    email_recipient: Optional[str] = None
+    email_from: Optional[str] = None
+    email_enabled: Optional[bool] = None  # tri-state: None inherits global enable, False skips
     # Per-call provider config overrides (do NOT mutate global provider templates).
     provider_overrides: Dict[str, Any] = field(default_factory=dict)
     conversation_state: str = "greeting"  # greeting | listening | processing
     status: str = "initializing"
     last_transcript: Optional[str] = None
     last_agent_response: Optional[str] = None
+    # Resolved caller-inactivity policy and runtime details. The policy is
+    # captured per call so a hot reload affects new calls without mutating an
+    # already-running conversation.
+    no_input_policy: Dict[str, Any] = field(default_factory=dict)
+    no_input_state: Dict[str, Any] = field(default_factory=dict)
+    # v7.4 tool runtime captured at call start. These are in-memory references;
+    # active calls retain them when a newer generation is atomically applied.
+    tool_runtime_generation: Any = None
+    tool_runtime_registry: Any = None
+    tool_runtime_config: Dict[str, Any] = field(default_factory=dict)
+    tool_generation_id: Optional[int] = None
+    tool_config_hash: Optional[str] = None
+    tool_policy: Dict[str, Any] = field(default_factory=dict)
     
     # Conversation tracking for email tools
     conversation_history: List[Dict[str, Any]] = field(default_factory=list)
@@ -98,7 +121,7 @@ class CallSession:
     # VAD and audio processing state
     vad_state: Dict[str, Any] = field(default_factory=dict)
     fallback_state: Dict[str, Any] = field(default_factory=dict)
-    enhanced_vad_enabled: bool = False
+    enhanced_vad_enabled: Optional[bool] = None
     enhanced_vad_frames: int = 0
     enhanced_vad_speech_frames: int = 0
     last_provider_audio_ts: float = 0.0
@@ -107,13 +130,18 @@ class CallSession:
     cleanup_after_tts: bool = False
     cleanup_in_progress: bool = False
     cleanup_completed: bool = False
-    call_outcome: str = ""  # caller_hangup | agent_hangup | transferred
+    call_outcome: str = ""  # caller_hangup | agent_hangup | transferred | no_input_timeout
     pending_local_channel_id: Optional[str] = None
     pending_external_media_id: Optional[str] = None
     ssrc: Optional[int] = None
     
     # Background music (AAVA-89)
     music_snoop_channel_id: Optional[str] = None  # Snoop channel for background music playback
+    # Caller-only connection audio (GitHub #527). A tone URI keeps playing until
+    # the first greeting audio is ready, without leaking into the AI media leg.
+    connection_audio_playback_id: Optional[str] = None
+    connection_audio_media_uri: Optional[str] = None
+    connection_audio_started_ts: float = 0.0
     created_at: float = field(default_factory=time.time)
     agent_audio_buffer: bytearray = field(default_factory=bytearray)
     last_agent_audio_ts: float = 0.0
@@ -151,9 +179,13 @@ class CallSession:
     pending_actions: list = field(default_factory=list)  # Queue of pending actions
     current_action: Optional[Dict[str, Any]] = None      # Currently executing action
     transfer_context: Optional[Dict[str, Any]] = None    # Context to pass to transfer target
+    pending_deferred_transfer: Optional[Dict[str, Any]] = None  # Transfer action waiting for TTS/audio completion
     
     # Call history tracking (Milestone 21)
-    tool_calls: List[Dict[str, Any]] = field(default_factory=list)  # [{name, params, result, timestamp, duration_ms}]
+    # Append-only terminal in-call tool-result stream. v7.5.3 adds call_id,
+    # stable tool_call_id, action, normalized status, and target_id while
+    # retaining the original fields for API/UI compatibility.
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     turn_latencies_ms: List[float] = field(default_factory=list)    # Per-turn latency tracking
     barge_in_count: int = 0                                          # Total barge-in attempts
     error_message: Optional[str] = None                              # Error if call failed
@@ -162,12 +194,34 @@ class CallSession:
     # Pre-call tool results (Milestone 24) - CRM lookup data injected into prompts
     pre_call_results: Dict[str, str] = field(default_factory=dict)  # {variable_name: value}
 
+    # Pre-call tool execution metadata for the call history UI.
+    # Same per-entry shape as the post_call_tool_calls JSON column on CallRecord.
+    pre_call_tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+
     # Outbound campaign dialer (Milestone 22)
     is_outbound: bool = False
     outbound_campaign_id: Optional[str] = None
     outbound_lead_id: Optional[str] = None
     outbound_attempt_id: Optional[str] = None
     outbound_custom_vars: Dict[str, Any] = field(default_factory=dict)
+
+    # External dialer ownership (VICIdial Remote Agent integration).
+    # These are call-local snapshots so an operator edit cannot change the
+    # behavior or authorization boundaries of a call already in progress.
+    external_platform: Optional[str] = None
+    external_call_id: Optional[str] = None
+    external_direction: Optional[str] = None
+    external_session: Dict[str, Any] = field(default_factory=dict)
+    external_mapping: Dict[str, Any] = field(default_factory=dict)
+    external_connection: Dict[str, Any] = field(default_factory=dict)
+    external_mapping_revision: Optional[str] = None
+    external_events: List[Dict[str, Any]] = field(default_factory=list)
+    external_requested_disposition: Optional[str] = None
+    external_disposition: Optional[str] = None
+    external_disposition_label: Optional[str] = None
+    external_disposition_payload: Dict[str, Any] = field(default_factory=dict)
+    external_finalizing: bool = False
+    external_finalized: bool = False
 
     def __post_init__(self):
         """Initialize default VAD and fallback state."""

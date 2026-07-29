@@ -37,6 +37,14 @@ if [ -S /var/run/docker.sock ]; then
   ensure_user_in_gid appuser "$sock_gid" dockersock
 fi
 
+# The bind-mounted checkout is commonly owned by root in production while the
+# application runs as UID/GID 1000. Atomic YAML and .env saves need write access
+# to the parent directories so they can create a temporary file and rename it.
+# Repair only the known mutable project paths and preserve their host owners.
+if [ -f /app/services/project_permissions.py ]; then
+  python /app/services/project_permissions.py
+fi
+
 # Ensure the Admin UI runtime user can validate/write to the media directory (used by health checks).
 # Some distros use a non-default Asterisk group GID (e.g., 996), and the directory can be owned by that group.
 if [ -d /mnt/asterisk_media/ai-generated ]; then
@@ -48,11 +56,12 @@ elif [ -d /mnt/asterisk_media ]; then
 fi
 
 # Ensure appuser can write to the secrets directory (Vertex AI credentials, etc.)
-if [ -d /app/project/secrets ]; then
-  chown -R appuser:appuser /app/project/secrets
-elif [ -d /app/project ]; then
-  mkdir -p /app/project/secrets
-  chown -R appuser:appuser /app/project/secrets
+project_root="${PROJECT_ROOT:-/app/project}"
+if [ -d "$project_root/secrets" ]; then
+  chown -R appuser:appuser "$project_root/secrets"
+elif [ -d "$project_root" ]; then
+  mkdir -p "$project_root/secrets"
+  chown -R appuser:appuser "$project_root/secrets"
 fi
 
 exec gosu appuser "$@"

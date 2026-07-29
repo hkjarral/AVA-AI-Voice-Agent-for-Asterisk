@@ -8,7 +8,7 @@ This document describes the WebSocket API exposed by the local AI server (defaul
 - Optional auth: `LOCAL_WS_AUTH_TOKEN` (server-side)
 - Modes: `full`, `stt`, `llm`, `tts` (default `full`)
 - Binary messages (client → server): raw PCM16 mono frames (assumed 16 kHz unless you set `rate` on JSON `audio`)
-- Binary messages (server → client): μ-law 8 kHz audio bytes for TTS playback (used by `full` pipeline)
+- Binary messages (server → client): negotiated TTS audio bytes. Legacy clients receive μ-law 8 kHz; Piper and Kokoro can emit linear PCM 16 kHz when requested per call.
 - JSON messages: control, status, text requests, or base64 audio frames
 
 Source of truth:
@@ -82,7 +82,9 @@ Response:
 {
   "type": "mode_ready",
   "mode": "stt",
-  "call_id": "1234-5678"
+  "call_id": "1234-5678",
+  "segment_energy_threshold": null,
+  "segment_silence_ms": null
 }
 ```
 
@@ -90,6 +92,13 @@ Notes:
 
 - Supported modes: `full`, `stt`, `llm`, `tts`.
 - `call_id` is optional but useful for correlating events.
+- For modular Local STT, `set_mode` may include per-session
+  `segment_energy_threshold` (0–32767) and `segment_silence_ms` (100–5000).
+  Omit either field to inherit the Local AI Server environment/default. These
+  controls apply only to Whisper-family utterance segmentation and let one
+  pipeline be tuned or rolled back without changing every local pipeline.
+- `mode_ready` echoes the effective per-session segmenter fields. `null` means
+  that field was reset and the Local AI Server environment/default applies.
 - If you never call `set_mode`, the default is `full`.
 
 ---
@@ -102,7 +111,9 @@ Notes:
 - `barge_in` → Clears Whisper-family STT suppression window; responds with `barge_in_ack`.
 - `llm_request` → Ask LLM with text; responds with `llm_response`.
 - `llm_tool_request` → Run tool-call parser/repair/structured gateway; responds with `llm_tool_response`.
-- `tts_request` → Synthesize TTS from text; responds with `tts_response` (base64 μ-law).
+- `tool_context` → Set session-scoped tool state (allowed tools, schemas, policy) before `llm_tool_request`. No direct response. **(Added in v6.5.0 for #368.)**
+- `tool_result` → Deliver a tool's execution result back to the local LLM after the engine ran it; triggers a follow-up LLM turn whose final spoken text is delivered via `llm_response` (and audio via the server-side TTS output path active for the current session mode), not another tool call. **(Added in v6.5.0 for #368.)**
+- `tts_request` → Synthesize TTS from text; responds with `tts_response` containing base64 audio and truthful format metadata.
 - `reload_models` → Reload all models; responds with `reload_response`.
 - `reload_llm` → Reload only LLM; responds with `reload_response`.
 - `switch_model` → Switch backend/model paths at runtime; responds with `switch_response`.
@@ -165,6 +176,29 @@ Example events:
 ```
 
 If `request_id` is set, the server emits `tts_audio` metadata before the binary audio. If `request_id` is omitted, you will only receive the binary audio bytes.
+
+### Multi-Chunk Streaming TTS (v2 extension)
+
+When `llm_streaming_tts_overlap` is enabled, the server may emit multiple `tts_audio` + binary pairs per utterance instead of a single blob. This allows the client to begin playback while the LLM is still generating.
+
+Additional fields in the `tts_audio` metadata:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `utterance_id` | string | Groups chunks belonging to the same utterance |
+| `chunk_index` | integer | Zero-based chunk sequence number |
+| `is_final` | boolean | `true` on the last chunk of an utterance |
+
+Example (streaming 2-chunk utterance):
+
+```json
+{ "type": "tts_audio", "call_id": "c1", "mode": "full", "request_id": "r1", "encoding": "mulaw", "sample_rate_hz": 8000, "byte_length": 8000, "utterance_id": "utt-c1-1712345678", "chunk_index": 0, "is_final": false }
+<binary: 8000 bytes μ-law audio>
+{ "type": "tts_audio", "call_id": "c1", "mode": "full", "request_id": "r1", "encoding": "mulaw", "sample_rate_hz": 8000, "byte_length": 6400, "utterance_id": "utt-c1-1712345678", "chunk_index": 1, "is_final": true }
+<binary: 6400 bytes μ-law audio>
+```
+
+Backward compatibility: if `utterance_id`, `chunk_index`, and `is_final` are absent, treat as a single-blob response (v1 behavior). Clients should queue chunks for sequential playback and only signal playback completion after receiving `is_final: true`.
 
 ### Binary audio example (stt-only)
 
@@ -289,6 +323,90 @@ Notes:
 
 ---
 
+## Tool Context (`tool_context`) — v6.5.0+
+
+**Issue [#368](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/368).** Sent client→server before the first `llm_tool_request` of a turn, to declare which tools the call may legally invoke and their JSON schemas. The server stores these on the session and uses them during subsequent `llm_tool_request` processing.
+
+The server does **not** reply to `tool_context` directly — it just updates session state.
+
+Request:
+
+```json
+{
+  "type": "tool_context",
+  "call_id": "1234-5678",
+  "allowed_tools": ["hangup_call", "request_transcript", "microsoft_calendar"],
+  "tools": [
+    { "name": "hangup_call", "parameters": { "type": "object", "properties": { "farewell_message": { "type": "string" } } } }
+  ],
+  "tool_policy": "auto",
+  "protocol_version": 2
+}
+```
+
+Notes:
+
+- `tool_policy` valid values: `"auto"`, `"strict"`, `"compatible"`, `"off"`.
+- Sending `tool_context` more than once per call is allowed and replaces the prior state.
+
+---
+
+## Tool Result (`tool_result`) — v6.5.0+
+
+**Issue [#368](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/368).** Sent client→server after the engine has executed a tool call that the local LLM emitted. The server uses the result to compose a follow-up "tool turn" prompt and re-invokes the LLM, producing the **final spoken answer** (not another tool call). The follow-up final answer is delivered as an `llm_response` with **top-level wire fields** `"mode": "tool_result"`, `"tool_result_final": true`, and `"tool_gateway_done": true` so the engine can recognize it as the post-tool answer; audio for that response is produced via the server-side TTS output path active for the current session mode (no separate `tts_request` is sent by the server).
+
+Two operating shapes:
+
+**Success:**
+
+```json
+{
+  "type": "tool_result",
+  "call_id": "1234-5678",
+  "request_id": "tool-1",
+  "tool_name": "microsoft_calendar",
+  "result": { "events": [ { "summary": "Demo call", "start": "2026-05-12T14:00:00-07:00" } ] }
+}
+```
+
+**Error:**
+
+```json
+{
+  "type": "tool_result",
+  "call_id": "1234-5678",
+  "tool_name": "microsoft_calendar",
+  "result": { "error": "Calendar API unavailable" },
+  "is_error": true
+}
+```
+
+Server's internal "tool turn" prompt is rendered as:
+
+- Success: *"The tool {tool_name} returned this result: {result_json}. Now answer the caller using the actual tool values only. Do not mention JSON, tools, placeholders, or internal fields."*
+- Error: *"The tool {tool_name} failed with this result: {result_json}. Briefly apologize and ask the caller to try again."*
+
+Notes:
+
+- `result` may be any JSON value; objects are preferred. The server will `json.dumps()` it before embedding in the prompt; very large serialized payloads are **truncated** to a fixed character cap (currently 4000 chars) before insertion to keep the follow-up prompt within the model's context budget — clients debugging large tool outputs should not assume the model received the full payload. Falsy values (`0`, `false`, `""`, `[]`, `null`) are preserved and pass through unchanged.
+- The follow-up response is emitted on the wire as an `llm_response` with top-level fields `"mode": "tool_result"`, `"tool_result_final": true`, and `"tool_gateway_done": true`. Clients should match these top-level keys, **not** a nested `extra` object — the server flattens `extra.*` into the payload root before sending. Example:
+
+  ```json
+  {
+    "type": "llm_response",
+    "call_id": "1234-5678",
+    "mode": "tool_result",
+    "tool_result_final": true,
+    "tool_gateway_done": true,
+    "tool_path": "none",
+    "text": "Your appointment is confirmed for Friday at 2 PM."
+  }
+  ```
+
+- Edge cases not yet covered by automated tests (planned v6.6): multiple tool results in flight for the same call_id, reconnect during a pending tool result, and interaction with `farewell_mode=asterisk`.
+
+---
+
 ## TTS-only
 
 Request:
@@ -298,7 +416,9 @@ Request:
   "type": "tts_request",
   "text": "Hello, how can I help you?",
   "call_id": "1234-5678",
-  "request_id": "t1"
+  "request_id": "t1",
+  "output_encoding": "linear16",
+  "output_sample_rate_hz": 16000
 }
 ```
 
@@ -310,12 +430,19 @@ Response:
   "text": "Hello, how can I help you?",
   "call_id": "1234-5678",
   "request_id": "t1",
-  "audio_data": "<base64 mulaw bytes>",
-  "encoding": "mulaw",
-  "sample_rate_hz": 8000,
-  "byte_length": 12446
+  "audio_data": "<base64 PCM16 bytes>",
+  "encoding": "linear16",
+  "sample_rate_hz": 16000,
+  "byte_length": 49784
 }
 ```
+
+The output fields are optional and do not change protocol version 2. Omitting
+them preserves μ-law/8 kHz. Native linear16/16 kHz output is enabled for Piper
+and Kokoro (local or API mode); unsupported backend/format combinations fall
+back to truthful μ-law/8 kHz metadata so upgraded clients can convert safely.
+Kokoro API WAV responses are decoded using their reported sample rate before
+the single conversion to 16 kHz.
 
 ---
 
@@ -368,7 +495,7 @@ Response:
   "stt_backend": "vosk|kroko|sherpa|faster_whisper|whisper_cpp",
   "tts_backend": "piper|kokoro|melotts|silero",
   "models": {
-    "stt": { "loaded": true, "path": "/app/models/stt/...", "display": "vosk-model-en-us-0.22" },
+    "stt": { "loaded": true, "path": "/app/models/stt/...", "display": "Faster-Whisper (tiny.en, en)", "device": "cpu", "compute_type": "int8" },
     "llm": {
       "loaded": true,
       "path": "/app/models/llm/...",
@@ -406,6 +533,8 @@ Response:
   "config": {
     "log_level": "INFO",
     "debug_audio": false,
+    "enable_filler_audio": false,
+    "llm_streaming_tts_overlap": true,
     "mock_models": false,
     "runtime_mode": "full|minimal",
     "tool_gateway_enabled": true,
@@ -415,6 +544,11 @@ Response:
   }
 }
 ```
+
+Notes:
+
+- `models.stt.device` and `models.stt.compute_type` are only emitted for the `faster_whisper` backend (otherwise `null`).
+- `config.enable_filler_audio` and `config.llm_streaming_tts_overlap` reflect runtime-only flags that can be flipped via `switch_model` `runtime_config` without reloading STT/LLM/TTS.
 
 Schema:
 
@@ -426,7 +560,32 @@ Schema:
 
 ## Model Switching
 
-`switch_model` updates server-side model/backend selections and reloads models without restarting the container.
+Global `switch_model` updates server-side model/backend selections and reloads models without restarting the container.
+
+For call instructions, use a session-scoped switch. It updates only the current
+WebSocket's prompt, resets that session's conversation when `call_id` changes,
+does not reload models, and replies with a `switch_response`. AI Engine sends
+this during call setup:
+
+```json
+{
+  "type": "switch_model",
+  "scope": "session",
+  "call_id": "1712345678.42",
+  "request_id": "prompt-sync-1712345678.42",
+  "llm_config": {
+    "system_prompt": "You are the sales agent for Example Company."
+  }
+}
+```
+
+The server echoes `request_id` in `switch_response`; clients must ignore stale
+or mismatched acknowledgements. `dry_run` is intentionally omitted because a
+session-scoped switch always updates that WebSocket's session state even though
+it never reloads global models.
+
+Do not use a global prompt switch for per-call agent instructions. Unscoped
+requests remain available as a temporary compatibility path for older clients.
 
 Request (examples):
 
@@ -464,7 +623,7 @@ Request (examples):
   "llm_config": {
     "context": 2048,
     "max_tokens": 128,
-    "chat_format": "llama-3",
+    "chat_format": "auto",
     "gpu_layers": -1,
     "system_prompt": "You are a helpful voice assistant."
   }
@@ -476,9 +635,19 @@ Request (examples):
   "type": "switch_model",
   "stt_backend": "faster_whisper",
   "stt_config": {
-    "model": "medium",
-    "device": "cuda",
-    "compute_type": "float16"
+    "model": "tiny.en",
+    "device": "cpu",
+    "compute_type": "int8"
+  }
+}
+```
+
+```json
+{
+  "type": "switch_model",
+  "runtime_config": {
+    "enable_filler_audio": false,
+    "llm_streaming_tts_overlap": false
   }
 }
 ```
@@ -521,10 +690,12 @@ Accepted payload shapes:
   - `stt_config`: `model`, `device`, `compute_type`, `faster_whisper_language`, `whisper_cpp_language`, `sherpa_model_type`, `sherpa_vad_model_path`, `tone_model_path`, `tone_decoder_type`, `tone_kenlm_path`, plus Kroko aliases (`url`, `language`, `port`, `embedded`, `model_path`)
   - `tts_config`: `voice`, `mode`, `lang`, `api_base_url`, `api_key`, `api_model`, `device`, `speed`, `model_path`, `silero_speaker`, `silero_language`, `silero_model_id`, `silero_model_path`
   - `llm_config`: `model_path`, `threads`, `context`, `batch`, `max_tokens`, `temperature`, `top_p`, `repeat_penalty`, `gpu_layers`, `system_prompt`, `use_mlock`, `chat_format`
+  - `runtime_config`: `enable_filler_audio`, `llm_streaming_tts_overlap`
 
 Notes:
 
 - `chat_format` is hot-reloadable through `llm_config.chat_format`.
+- Runtime-only changes do not reload STT/LLM/TTS models; enabling filler audio pre-synthesizes filler phrases with the active TTS backend.
 - Unsupported keys are ignored; valid applied keys are returned in `changed`.
 
 ---
@@ -741,6 +912,12 @@ Engine-side (see `config/ai-agent.*.yaml` and `.env.example`):
 - `providers.local*.auth_token` (default `${LOCAL_WS_AUTH_TOKEN:-}`)
 - Timeouts: `${LOCAL_WS_CONNECT_TIMEOUT}`, `${LOCAL_WS_RESPONSE_TIMEOUT}`
 - Chunk size (ms): `${LOCAL_WS_CHUNK_MS}`
+
+Client connection behavior:
+
+- Treat the WebSocket handshake as the availability check. A raw TCP port probe is not sufficient to prove protocol readiness and should not gate the real `websockets.connect()` attempt.
+- Use `LOCAL_WS_CONNECT_TIMEOUT` for the WebSocket open/auth path. Avoid separate sub-second preflight timeouts; they can falsely mark a healthy local server unavailable on loaded hosts.
+- A refused connection means the server is not listening and the provider may become inactive immediately. A timeout should be handled as a retryable connect failure according to the engine/provider retry policy.
 
 Dependencies:
 

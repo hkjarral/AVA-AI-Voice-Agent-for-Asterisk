@@ -42,7 +42,11 @@ try:
 except ImportError:
     speechsdk = None
 
-from ..audio import convert_pcm16le_to_target_format as _to_target_format, resample_audio
+from ..audio import (
+    convert_pcm16le_to_target_format as _to_target_format,
+    resample_audio,
+    resolve_output_resampler_policy,
+)
 from ..config import AppConfig, AzureSTTProviderConfig, AzureTTSProviderConfig, validate_azure_region
 from ..logging_config import get_logger
 from .base import STTComponent, TTSComponent
@@ -510,7 +514,7 @@ class AzureSTTFastAdapter(STTComponent):
 
     def _compose_options(self, runtime_options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         runtime_options = runtime_options or {}
-        return {
+        options = {
             "api_key": runtime_options.get(
                 "api_key",
                 self._pipeline_defaults.get("api_key", self._provider_defaults.api_key),
@@ -538,6 +542,7 @@ class AzureSTTFastAdapter(STTComponent):
                 )
             ),
         }
+        return options
 
 
 # ---------------------------------------------------------------------------
@@ -550,6 +555,8 @@ class AzureSTTRealtimeAdapter(STTComponent):
     Endpoint: wss://{region}.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1
     Uses the official Azure Speech SDK for robust streaming and low latency.
     """
+
+    supports_streaming = True
 
     def __init__(
         self,
@@ -611,8 +618,9 @@ class AzureSTTRealtimeAdapter(STTComponent):
         self,
         call_id: str,
         options: Dict[str, Any],
-        sample_rate_hz: int = 8000,
-        fmt: str = "pcm16",
+        *,
+        sample_rate_hz: int,
+        fmt: str,
     ) -> None:
         """Initialize the Azure Speech Recognizer stream for this call."""
         if not speechsdk:
@@ -645,18 +653,13 @@ class AzureSTTRealtimeAdapter(STTComponent):
         speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, initial_timeout_ms)
 
         # 2. Setup Push Stream
-        # SDK expects 1 channel, 16-bit, native sample rate.
-        # The engine normalises pipeline audio to 16 kHz PCM upstream, so we
-        # expect sample_rate_hz to already be 16000.  Log a warning if that
-        # assumption is violated instead of silently mutating the value.
-        st_fmt = options.get("stream_format", "pcm16_16k")
-        if st_fmt == "pcm16_16k" and sample_rate_hz != 16000:
-            logger.warning(
-                "Azure STT Realtime: stream_format is pcm16_16k but received sample_rate_hz=%d; "
-                "audio quality may be degraded if bytes are not actually 16 kHz",
-                sample_rate_hz,
-                call_id=call_id,
-            )
+        # Azure PushAudioInputStream consumes raw PCM and cannot infer its
+        # format. The engine supplies the authoritative modular STT bus format.
+        normalized_fmt = str(fmt or "").strip().lower()
+        if normalized_fmt not in {"pcm16", "pcm16_16k", "pcm16-16k", "linear16"}:
+            raise ValueError(f"Unsupported Azure streaming STT format: {fmt!r}")
+        if int(sample_rate_hz) <= 0:
+            raise ValueError("Azure streaming STT sample_rate_hz must be positive")
 
         stream_format = speechsdk.audio.AudioStreamFormat(samples_per_second=sample_rate_hz, bits_per_sample=16, channels=1)
         push_stream = speechsdk.audio.PushAudioInputStream(stream_format=stream_format)
@@ -693,8 +696,11 @@ class AzureSTTRealtimeAdapter(STTComponent):
         recognizer.canceled.connect(handle_canceled)
         recognizer.session_stopped.connect(handle_session_stopped)
         
-        # Start async recognition — .get() blocks until started and surfaces errors
-        recognizer.start_continuous_recognition_async().get()
+        # Start async recognition. The SDK's .get() blocks until the recognizer has
+        # started (a network round-trip), so run it off the event loop — otherwise it
+        # stalls every concurrent call, not just this one (HIGH-8a). Mirrors the
+        # asyncio.to_thread used in stop_stream.
+        await asyncio.to_thread(recognizer.start_continuous_recognition_async().get)
 
         self._active_sessions[call_id] = {
             "recognizer": recognizer,
@@ -704,7 +710,13 @@ class AzureSTTRealtimeAdapter(STTComponent):
             "sample_rate": sample_rate_hz
         }
         
-        logger.info("Azure STT SDK Stream started", call_id=call_id)
+        logger.info(
+            "Azure STT SDK Stream started",
+            call_id=call_id,
+            stream_format=normalized_fmt,
+            sample_rate_hz=sample_rate_hz,
+            channels=1,
+        )
 
     async def send_audio(self, call_id: str, audio_bytes: bytes, fmt: str = "pcm16") -> None:
         """Push a chunk of PCM audio to the Azure SDK stream."""
@@ -793,7 +805,7 @@ class AzureSTTRealtimeAdapter(STTComponent):
 
     def _compose_options(self, runtime_options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         runtime_options = runtime_options or {}
-        return {
+        options = {
             "api_key": runtime_options.get(
                 "api_key",
                 self._pipeline_defaults.get("api_key", self._provider_defaults.api_key),
@@ -831,6 +843,7 @@ class AzureSTTRealtimeAdapter(STTComponent):
                 )
             ),
         }
+        return options
 
 
 # ---------------------------------------------------------------------------
@@ -845,6 +858,12 @@ class AzureTTSAdapter(TTSComponent):
     Input:    SSML XML body
     Output:   Audio bytes in the format specified by X-Microsoft-OutputFormat header
     """
+
+    wideband_output_format = {
+        "encoding": "linear16",
+        "sample_rate": 16000,
+        "options": {"output_format": "raw-16khz-16bit-mono-pcm"},
+    }
 
     def __init__(
         self,
@@ -989,6 +1008,7 @@ class AzureTTSAdapter(TTSComponent):
                 WAV_HEADER_SIZE = 44
                 header_buf = bytearray()
                 leftover_byte: bytes = b""
+                output_resample_state = None
 
                 first_chunk = True
                 async for raw_chunk in resp.content.iter_chunked(4096):
@@ -1040,7 +1060,13 @@ class AzureTTSAdapter(TTSComponent):
                         else:
                             source_rate = 8000
                         if source_rate != target_rate:
-                            audio_bytes, _ = resample_audio(audio_bytes, source_rate, target_rate)
+                            audio_bytes, output_resample_state = resample_audio(
+                                audio_bytes,
+                                source_rate,
+                                target_rate,
+                                state=output_resample_state,
+                                mode=merged["output_resampler"],
+                            )
                         converted = _to_target_format(audio_bytes, target_encoding)
 
                     for chunk in _chunk_audio(converted, target_encoding, target_rate, chunk_ms):
@@ -1066,7 +1092,12 @@ class AzureTTSAdapter(TTSComponent):
         elif native_encoding in ("pcm16", "pcm"):
             # Resample if needed, then convert to target encoding
             if source_rate != target_rate:
-                audio_bytes, _ = resample_audio(audio_bytes, source_rate, target_rate)
+                audio_bytes, _ = resample_audio(
+                    audio_bytes,
+                    source_rate,
+                    target_rate,
+                    mode=merged["output_resampler"],
+                )
             converted = _to_target_format(audio_bytes, target_encoding)
         else:
             # Unknown encoding — pass through as-is
@@ -1094,7 +1125,7 @@ class AzureTTSAdapter(TTSComponent):
 
     def _compose_options(self, runtime_options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         runtime_options = runtime_options or {}
-        return {
+        options = {
             "api_key": runtime_options.get(
                 "api_key",
                 self._pipeline_defaults.get("api_key", self._provider_defaults.api_key),
@@ -1137,6 +1168,12 @@ class AzureTTSAdapter(TTSComponent):
                     self._pipeline_defaults.get("target_sample_rate_hz", self._provider_defaults.target_sample_rate_hz),
                 )
             ),
+            "output_resampler": runtime_options.get(
+                "output_resampler",
+                self._pipeline_defaults.get(
+                    "output_resampler", self._provider_defaults.output_resampler
+                ),
+            ),
             "chunk_size_ms": int(
                 runtime_options.get(
                     "chunk_size_ms",
@@ -1168,6 +1205,10 @@ class AzureTTSAdapter(TTSComponent):
                 ) or None
             ),
         }
+        options["output_resampler"] = resolve_output_resampler_policy(
+            provider_mode=options.get("output_resampler")
+        )[0]
+        return options
 
 
 __all__ = [

@@ -42,6 +42,30 @@ class TestConfigLoading:
         assert isinstance(config, AppConfig)
         assert config.default_provider == "openai_realtime"
         assert hasattr(config, 'pipelines')
+
+    def test_load_config_retains_raw_contexts_for_migration_hash(
+        self, tmp_path, monkeypatch
+    ):
+        source = Path("config/ai-agent.golden-openai.yaml").read_text()
+        original_prompt = (
+            "You are a concise voice assistant. Respond clearly and keep answers "
+            "under 20 words unless more detail is requested."
+        )
+        config_path = tmp_path / "ai-agent.yaml"
+        config_path.write_text(
+            source.replace(original_prompt, "${LEGACY_AGENT_PROMPT}"),
+            encoding="utf-8",
+        )
+        (tmp_path / "contexts").mkdir()
+        monkeypatch.setenv("LEGACY_AGENT_PROMPT", original_prompt)
+
+        config = load_config(str(config_path))
+
+        assert config.contexts["default"]["prompt"] == original_prompt
+        assert (
+            config._legacy_contexts_for_hash["default"]["prompt"]
+            == "${LEGACY_AGENT_PROMPT}"
+        )
     
     def test_load_golden_deepgram_config(self):
         """Should successfully load golden Deepgram config."""

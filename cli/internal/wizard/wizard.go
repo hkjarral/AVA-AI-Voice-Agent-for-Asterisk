@@ -2,13 +2,14 @@ package wizard
 
 import (
 	"fmt"
+	"strings"
 )
 
 // Wizard orchestrates the interactive configuration
 type Wizard struct {
-	config      *Config
-	hasChanges  bool
-	totalSteps  int
+	config     *Config
+	hasChanges bool
+	totalSteps int
 }
 
 // NewWizard creates a new wizard instance
@@ -17,7 +18,7 @@ func NewWizard() (*Wizard, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &Wizard{
 		config:     cfg,
 		hasChanges: false,
@@ -32,7 +33,7 @@ func (w *Wizard) Run() error {
 	fmt.Println("🚀 Asterisk AI Voice Agent - Setup Wizard")
 	fmt.Println("══════════════════════════════════════════")
 	fmt.Println()
-	
+
 	PrintInfo("Reading current configuration...")
 	PrintSuccess(fmt.Sprintf("Loaded %s", w.config.EnvPath))
 	if w.config.ActivePipeline != "" {
@@ -40,128 +41,117 @@ func (w *Wizard) Run() error {
 	} else if w.config.DefaultProvider != "" {
 		PrintSuccess(fmt.Sprintf("Loaded %s (provider: %s)", w.config.YAMLPath, w.config.DefaultProvider))
 	}
-	
+
 	// Step 1: Mode selection
 	if err := w.stepModeSelection(); err != nil {
 		return err
 	}
-	
+
 	// Step 2: Asterisk configuration
 	if err := w.stepAsteriskConfig(); err != nil {
 		return err
 	}
-	
+
 	// Step 3: Audio transport
 	if err := w.stepAudioTransport(); err != nil {
 		return err
 	}
-	
+
 	// Step 4: Pipeline/Provider selection
 	if err := w.stepPipelineSelection(); err != nil {
 		return err
 	}
-	
+
 	// Step 5: API keys
 	if err := w.stepAPIKeys(); err != nil {
 		return err
 	}
-	
+
 	// Step 6: Review and apply
 	if err := w.stepReviewAndApply(); err != nil {
 		return err
 	}
-	
+
 	return nil
 }
 
 // stepModeSelection handles Step 1: Mode Selection
 func (w *Wizard) stepModeSelection() error {
 	PrintStep(1, w.totalSteps, "Mode Selection")
-	
+
 	currentMode := "Unknown"
 	if w.config.ActivePipeline != "" {
 		currentMode = fmt.Sprintf("Pipeline mode (%s)", w.config.ActivePipeline)
 	} else if w.config.DefaultProvider != "" {
 		currentMode = fmt.Sprintf("Monolithic mode (%s)", w.config.DefaultProvider)
 	}
-	
+
 	PrintInfo("Current: " + currentMode)
 	fmt.Println()
-	
-	options := []string{
-		"Keep current configuration",
-		"Pipeline: cloud_openai (Deepgram STT → OpenAI LLM/TTS)",
-		"Pipeline: local_only (Local STT/LLM/TTS)",
-		"Pipeline: hybrid_deepgram_openai",
-		"Monolithic: OpenAI Realtime",
-		"Monolithic: Deepgram Voice Agent",
+
+	options := []string{"Keep current configuration"}
+	targets := []string{"keep:"}
+	for _, name := range w.config.AvailablePipelines {
+		options = append(options, "Pipeline: "+name)
+		targets = append(targets, "pipeline:"+name)
 	}
-	
+	for _, name := range w.config.AvailableProviders {
+		options = append(options, "Full agent: "+name)
+		targets = append(targets, "provider:"+name)
+	}
+
 	choice := PromptSelect("Select mode:", options, 0)
-	
-	// Apply selection
-	switch choice {
-	case 0:
-		// Keep current
+
+	if choice <= 0 || choice >= len(targets) {
 		PrintInfo("Keeping current configuration")
-	case 1:
-		w.config.ActivePipeline = "cloud_openai"
-		w.config.DefaultProvider = ""
-		w.hasChanges = true
-	case 2:
-		w.config.ActivePipeline = "local_only"
-		w.config.DefaultProvider = ""
-		w.hasChanges = true
-	case 3:
-		w.config.ActivePipeline = "hybrid_deepgram_openai"
-		w.config.DefaultProvider = ""
-		w.hasChanges = true
-	case 4:
-		w.config.ActivePipeline = ""
-		w.config.DefaultProvider = "openai_realtime"
-		w.hasChanges = true
-	case 5:
-		w.config.ActivePipeline = ""
-		w.config.DefaultProvider = "deepgram"
-		w.hasChanges = true
+		return nil
 	}
-	
+	kind, name, _ := strings.Cut(targets[choice], ":")
+	if kind == "pipeline" {
+		w.config.ActivePipeline = name
+		w.config.DefaultProvider = name
+	} else {
+		w.config.ActivePipeline = ""
+		w.config.DefaultProvider = name
+	}
+	w.hasChanges = true
+
 	return nil
 }
 
 // stepAsteriskConfig handles Step 2: Asterisk Configuration
 func (w *Wizard) stepAsteriskConfig() error {
 	PrintStep(2, w.totalSteps, "Asterisk Configuration")
-	
+
 	if w.config.AsteriskHost != "" {
-		PrintInfo(fmt.Sprintf("Current: %s:8088 (user: %s)", 
+		PrintInfo(fmt.Sprintf("Current: %s:8088 (user: %s)",
 			w.config.AsteriskHost, w.config.AsteriskUsername))
 	}
 	fmt.Println()
-	
+
 	// Prompts
 	newHost := PromptText("Asterisk Host", w.config.AsteriskHost)
 	if newHost != w.config.AsteriskHost {
 		w.config.AsteriskHost = newHost
 		w.hasChanges = true
 	}
-	
+
 	newUser := PromptText("ARI Username", w.config.AsteriskUsername)
 	if newUser != w.config.AsteriskUsername {
 		w.config.AsteriskUsername = newUser
 		w.hasChanges = true
 	}
-	
+
 	newPass := PromptPassword("ARI Password", w.config.AsteriskPassword != "")
 	if newPass != "" && newPass != w.config.AsteriskPassword {
 		w.config.AsteriskPassword = newPass
 		w.hasChanges = true
 	}
-	
+
 	// Test connectivity
 	fmt.Println()
 	PrintInfo("Testing ARI connection...")
-	if err := TestARIConnectivity(w.config.AsteriskHost, 
+	if err := TestARIConnectivity(w.config.AsteriskHost,
 		w.config.AsteriskUsername, w.config.AsteriskPassword); err != nil {
 		PrintWarning(fmt.Sprintf("ARI test failed: %v", err))
 		if !PromptConfirm("Continue anyway?", false) {
@@ -170,14 +160,14 @@ func (w *Wizard) stepAsteriskConfig() error {
 	} else {
 		PrintSuccess(fmt.Sprintf("ARI accessible at %s:8088", w.config.AsteriskHost))
 	}
-	
+
 	return nil
 }
 
 // stepAudioTransport handles Step 3: Audio Transport
 func (w *Wizard) stepAudioTransport() error {
 	PrintStep(3, w.totalSteps, "Audio Transport")
-	
+
 	if w.config.AudioTransport != "" {
 		PrintInfo(fmt.Sprintf("Current: %s", w.config.AudioTransport))
 		if w.config.AudioTransport == "audiosocket" && w.config.AudioSocketPort != "" {
@@ -185,29 +175,29 @@ func (w *Wizard) stepAudioTransport() error {
 		}
 	}
 	fmt.Println()
-	
+
 	options := []string{
-		"AudioSocket (recommended)",
-		"ExternalMedia (RTP/WebRTC)",
+		"AudioSocket (TCP media)",
+		"ExternalMedia (RTP; current default for new installs)",
 	}
-	
+
 	defaultIdx := 0
 	if w.config.AudioTransport == "externalmedia" {
 		defaultIdx = 1
 	}
-	
+
 	choice := PromptSelect("Select transport:", options, defaultIdx)
-	
+
 	newTransport := "audiosocket"
 	if choice == 1 {
 		newTransport = "externalmedia"
 	}
-	
+
 	if newTransport != w.config.AudioTransport {
 		w.config.AudioTransport = newTransport
 		w.hasChanges = true
 	}
-	
+
 	// AudioSocket specific
 	if newTransport == "audiosocket" {
 		fmt.Println()
@@ -219,7 +209,7 @@ func (w *Wizard) stepAudioTransport() error {
 			w.config.AudioSocketPort = newPort
 			w.hasChanges = true
 		}
-		
+
 		// Test port
 		fmt.Println()
 		PrintInfo(fmt.Sprintf("Testing AudioSocket port %s...", newPort))
@@ -230,97 +220,103 @@ func (w *Wizard) stepAudioTransport() error {
 			PrintSuccess(fmt.Sprintf("Port %s is listening", newPort))
 		}
 	}
-	
+
 	return nil
 }
 
 // stepPipelineSelection handles Step 4: Pipeline/Provider Selection
 func (w *Wizard) stepPipelineSelection() error {
 	PrintStep(4, w.totalSteps, "Pipeline Configuration")
-	
+
 	if w.config.ActivePipeline != "" {
 		PrintInfo(fmt.Sprintf("Selected pipeline: %s", w.config.ActivePipeline))
 	} else if w.config.DefaultProvider != "" {
 		PrintInfo(fmt.Sprintf("Selected provider: %s", w.config.DefaultProvider))
 	}
-	
+
 	// Configuration already selected in Step 1
 	// This step just confirms and shows what it means
-	
+
 	return nil
+}
+
+// keySpec describes how to display and optionally validate a credential.
+// Label is the full human label (e.g. "OpenAI API Key", "ElevenLabs Agent ID") —
+// not every required credential is an API key, so the label is spelled out in full.
+type keySpec struct {
+	Label    string
+	Validate func(string) error // nil means store without network validation
+}
+
+// keySpecs maps env-var names to their display/validation specs.
+var keySpecs = map[string]keySpec{
+	"OPENAI_API_KEY":      {Label: "OpenAI API Key", Validate: TestOpenAIKey},
+	"DEEPGRAM_API_KEY":    {Label: "Deepgram API Key", Validate: TestDeepgramKey},
+	"ANTHROPIC_API_KEY":   {Label: "Anthropic API Key", Validate: TestAnthropicKey},
+	"ELEVENLABS_API_KEY":  {Label: "ElevenLabs API Key", Validate: nil},
+	"ELEVENLABS_AGENT_ID": {Label: "ElevenLabs Agent ID", Validate: nil},
+	"TELNYX_API_KEY":      {Label: "Telnyx API Key", Validate: nil},
+	"GROQ_API_KEY":        {Label: "Groq API Key", Validate: nil},
+	"GOOGLE_API_KEY":      {Label: "Google API Key", Validate: nil},
+	"XAI_API_KEY":         {Label: "xAI (Grok) API Key", Validate: nil},
+	"CAMB_API_KEY":        {Label: "Camb.ai API Key", Validate: nil},
 }
 
 // stepAPIKeys handles Step 5: API Keys & Validation
 func (w *Wizard) stepAPIKeys() error {
 	PrintStep(5, w.totalSteps, "API Keys & Validation")
-	
-	// Determine which keys are needed based on pipeline/provider
-	needsOpenAI := w.config.ActivePipeline == "cloud_openai" || 
-		w.config.ActivePipeline == "hybrid_deepgram_openai" ||
-		w.config.DefaultProvider == "openai_realtime"
-	
-	needsDeepgram := w.config.ActivePipeline == "cloud_openai" ||
-		w.config.ActivePipeline == "hybrid_deepgram_openai" ||
-		w.config.DefaultProvider == "deepgram"
-	
-	// OpenAI
-	if needsOpenAI {
+
+	required := w.config.RequiredEnvKeys()
+	if len(required) == 0 {
 		fmt.Println()
-		PrintInfo(fmt.Sprintf("OpenAI API Key: %s", GetMaskedKey(w.config.OpenAIKey)))
-		newKey := PromptText("OpenAI API Key (leave blank to keep)", "")
-		if newKey != "" {
-			PrintInfo("Testing OpenAI API key...")
-			if err := TestOpenAIKey(newKey); err != nil {
-				PrintError(fmt.Sprintf("OpenAI test failed: %v", err))
+		PrintInfo("No cloud API keys required for this pipeline.")
+		return nil
+	}
+
+	for _, envVar := range required {
+		spec, known := keySpecs[envVar]
+		if !known {
+			spec = keySpec{Label: envVar, Validate: nil}
+		}
+
+		fmt.Println()
+		PrintInfo(fmt.Sprintf("%s: %s", spec.Label, GetMaskedKey(w.config.GetKey(envVar))))
+		newKey := PromptText(spec.Label+" (leave blank to keep)", "")
+		if newKey == "" {
+			continue
+		}
+
+		if spec.Validate != nil {
+			PrintInfo(fmt.Sprintf("Testing %s...", spec.Label))
+			if err := spec.Validate(newKey); err != nil {
+				PrintError(fmt.Sprintf("%s test failed: %v", spec.Label, err))
 				if PromptConfirm("Retry?", true) {
-					return w.stepAPIKeys() // Retry this step
+					return w.stepAPIKeys()
 				}
-				if !PromptConfirm("Continue with invalid key?", false) {
-					return fmt.Errorf("valid OpenAI key required")
+				if !PromptConfirm("Continue with invalid value?", false) {
+					return fmt.Errorf("valid %s required", spec.Label)
 				}
 			} else {
-				PrintSuccess("OpenAI API key valid")
-				w.config.OpenAIKey = newKey
-				w.hasChanges = true
+				PrintSuccess(fmt.Sprintf("%s valid", spec.Label))
 			}
 		}
+
+		w.config.SetKey(envVar, newKey)
+		w.hasChanges = true
 	}
-	
-	// Deepgram
-	if needsDeepgram {
-		fmt.Println()
-		PrintInfo(fmt.Sprintf("Deepgram API Key: %s", GetMaskedKey(w.config.DeepgramKey)))
-		newKey := PromptText("Deepgram API Key (leave blank to keep)", "")
-		if newKey != "" {
-			PrintInfo("Testing Deepgram API key...")
-			if err := TestDeepgramKey(newKey); err != nil {
-				PrintError(fmt.Sprintf("Deepgram test failed: %v", err))
-				if PromptConfirm("Retry?", true) {
-					return w.stepAPIKeys() // Retry
-				}
-				if !PromptConfirm("Continue with invalid key?", false) {
-					return fmt.Errorf("valid Deepgram key required")
-				}
-			} else {
-				PrintSuccess("Deepgram API key valid")
-				w.config.DeepgramKey = newKey
-				w.hasChanges = true
-			}
-		}
-	}
-	
+
 	return nil
 }
 
 // stepReviewAndApply handles Step 6: Review & Apply Changes
 func (w *Wizard) stepReviewAndApply() error {
 	PrintStep(6, w.totalSteps, "Review & Apply Changes")
-	
+
 	if !w.hasChanges {
 		PrintInfo("No changes detected")
 		return nil
 	}
-	
+
 	// Show changes
 	fmt.Println()
 	PrintInfo("Configuration changes:")
@@ -332,13 +328,13 @@ func (w *Wizard) stepReviewAndApply() error {
 		fmt.Printf("  • Provider: %s\n", w.config.DefaultProvider)
 	}
 	fmt.Println()
-	
+
 	// Confirm
 	if !PromptConfirm("Apply changes?", true) {
 		PrintInfo("Changes cancelled")
 		return nil
 	}
-	
+
 	// Save .env
 	fmt.Println()
 	PrintInfo("Saving .env...")
@@ -346,7 +342,7 @@ func (w *Wizard) stepReviewAndApply() error {
 		return fmt.Errorf("failed to save .env: %w", err)
 	}
 	PrintSuccess("Updated .env")
-	
+
 	// Save YAML if pipeline changed
 	if w.config.ActivePipeline != "" || w.config.DefaultProvider != "" {
 		PrintInfo("Updating config/ai-agent.yaml...")
@@ -357,7 +353,7 @@ func (w *Wizard) stepReviewAndApply() error {
 			PrintSuccess("Updated config/ai-agent.yaml")
 		}
 	}
-	
+
 	// Rebuild containers
 	fmt.Println()
 	if PromptConfirm("Rebuild ai_engine container?", true) {
@@ -375,7 +371,7 @@ func (w *Wizard) stepReviewAndApply() error {
 			}
 		}
 	}
-	
+
 	// Next steps
 	fmt.Println()
 	fmt.Println("═══════════════════════════════════════════")
@@ -387,6 +383,6 @@ func (w *Wizard) stepReviewAndApply() error {
 	fmt.Println("  • Make a test call")
 	fmt.Println("  • agent rca        (analyze the most recent call)")
 	fmt.Println()
-	
+
 	return nil
 }

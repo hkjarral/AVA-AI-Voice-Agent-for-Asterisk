@@ -3,12 +3,13 @@ import Editor from '@monaco-editor/react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '../../hooks/useConfirmDialog';
+import { getCachedConfig, loadConfigYaml } from '../../utils/configCache';
 import { Save, AlertCircle, Download, Upload } from 'lucide-react';
 
 const RawYamlPage = () => {
     const { confirm } = useConfirmDialog();
-    const [yamlContent, setYamlContent] = useState('');
-    const [loading, setLoading] = useState(true);
+    const [yamlContent, setYamlContent] = useState(() => getCachedConfig()?.content ?? '');
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [yamlError, setYamlError] = useState<{
@@ -18,27 +19,24 @@ const RawYamlPage = () => {
         column?: number;
         problem?: string;
         snippet?: string;
-    } | null>(null);
+    } | null>(() => getCachedConfig()?.yamlError ?? null);
     const [dirty, setDirty] = useState(false);
+    const [exportIncludeSecrets, setExportIncludeSecrets] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
         fetchConfig();
     }, []);
 
-    const fetchConfig = async () => {
+    const fetchConfig = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            setYamlContent(res.data.content);
+            const r = await loadConfigYaml(force);
+            setYamlContent(r.content);
             setDirty(false);
-            // Check if there's a YAML parsing error (content still loaded for editing)
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
-                setError(null);
-            } else {
-                setYamlError(null);
-                setError(null);
-            }
+            // yamlError is non-null when the document has a parse error (content
+            // still loaded for editing).
+            setYamlError(r.yamlError);
+            setError(null);
         } catch (err) {
             console.error('Failed to load config', err);
             setError('Failed to load configuration');
@@ -137,13 +135,26 @@ const RawYamlPage = () => {
                         <Upload className="w-4 h-4 mr-2" />
                         Import
                     </button>
+                    <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none h-9">
+                        <input
+                            type="checkbox"
+                            checked={exportIncludeSecrets}
+                            onChange={e => setExportIncludeSecrets(e.target.checked)}
+                            className="accent-primary"
+                        />
+                        Include secrets (.env)
+                        {exportIncludeSecrets && (
+                            <span className="text-amber-600 dark:text-amber-400 font-medium ml-1">— export will contain API keys</span>
+                        )}
+                    </label>
                     <button
                         onClick={async () => {
                             try {
-                                const response = await axios.get('/api/config/export', { responseType: 'blob' });
-                                const url = window.URL.createObjectURL(new Blob([response.data]));
+                                const exportUrl = exportIncludeSecrets ? '/api/config/export?include_secrets=true' : '/api/config/export';
+                                const response = await axios.get(exportUrl, { responseType: 'blob' });
+                                const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
                                 const link = document.createElement('a');
-                                link.href = url;
+                                link.href = blobUrl;
                                 const date = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
                                 link.setAttribute('download', `config-backup-${date}.zip`);
                                 document.body.appendChild(link);

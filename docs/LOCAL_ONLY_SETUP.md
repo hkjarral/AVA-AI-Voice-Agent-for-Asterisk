@@ -138,7 +138,7 @@ KOKORO_VOICE=af_heart
 
 # LLM — GPU-accelerated inference
 LOCAL_LLM_MODEL_PATH=/app/models/llm/phi-3-mini-4k-instruct.Q4_K_M.gguf
-LOCAL_LLM_GPU_LAYERS=-1          # -1 = offload ALL layers to GPU
+LOCAL_LLM_GPU_LAYERS=-1          # -1 = AVA auto-selects a conservative layer count
 LOCAL_LLM_CONTEXT=4096           # larger context with GPU headroom
 LOCAL_LLM_MAX_TOKENS=150
 
@@ -149,6 +149,16 @@ LOCAL_WS_URL=ws://127.0.0.1:8765
 ### 3. Build with GPU Compose Overlay
 
 The GPU compose file (`docker-compose.gpu.yml`) builds a CUDA-enabled `local_ai_server` image using `Dockerfile.gpu`:
+
+> AVA's supported GPU image is NVIDIA CUDA-only. AMD/ROCm and Apple Metal are
+> not currently implemented by the Docker deployment path; those hosts must use
+> CPU mode unless they maintain a custom inference server.
+
+The default llama.cpp build remains portable across supported NVIDIA GPUs. If a
+source build fails or you deliberately want to target one GPU generation, set
+`LLAMA_CUDA_ARCHITECTURES` before building (for example `70` for Tesla
+V100/V100S). This is a build-time CMake value, not the number of LLM layers, and
+changing it requires rebuilding `local_ai_server`.
 
 ```bash
 docker compose -p asterisk-ai-voice-agent \
@@ -189,7 +199,7 @@ This is common for production: a small VPS runs Asterisk/ai_engine, and a beefy 
 
 ```bash
 git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
-cd Asterisk-AI-Voice-Agent
+cd AVA-AI-Voice-Agent-for-Asterisk
 
 # --local-server skips Asterisk/Admin UI checks (not needed on GPU-only box)
 sudo ./preflight.sh --apply-fixes --local-server
@@ -226,7 +236,7 @@ docker compose -p asterisk-ai-voice-agent \
 
 ```bash
 git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
-cd Asterisk-AI-Voice-Agent
+cd AVA-AI-Voice-Agent-for-Asterisk
 sudo ./preflight.sh --apply-fixes
 ```
 
@@ -439,9 +449,9 @@ This applies to **all topologies**. The key settings:
 default_provider: local
 active_pipeline: local_only
 
-# IMPORTANT: Use externalmedia for pipelines (not audiosocket)
-# AudioSocket + Pipelines has a known Asterisk bridge routing conflict.
-# See docs/Transport-Mode-Compatibility.md
+# Both transports are supported for pipelines. ExternalMedia + file playback is
+# the most extensively validated local-only baseline; AudioSocket + file
+# playback is supported as documented in Transport-Mode-Compatibility.md.
 audio_transport: externalmedia
 
 providers:
@@ -505,7 +515,7 @@ contexts:
       Keep responses under 2 sentences when possible.
 ```
 
-> **Transport note:** Pipelines use file-based playback, which requires ExternalMedia RTP transport. AudioSocket + Pipelines causes an Asterisk bridge conflict (greeting only, then silence). See [Transport Compatibility](Transport-Mode-Compatibility.md).
+> **Transport note:** ExternalMedia RTP + file playback remains the most extensively validated local-only pipeline path. AudioSocket + pipeline file playback is also supported; use the release-specific validation matrix in [Transport Compatibility](Transport-Mode-Compatibility.md) when choosing a production baseline.
 
 ### Important: Do NOT include cloud model names
 
@@ -540,10 +550,11 @@ Models are **not bundled** in Docker images. Download them via:
 ### Supported STT Models
 
 **Faster Whisper** (recommended with GPU — CUDA accelerated):
-- `tiny`, `base`, `small`, `medium`, `large-v3`
+- `tiny.en`, `tiny`, `base`, `small`, `medium`, `large-v3`
 - Set `LOCAL_STT_BACKEND=faster_whisper` and `LOCAL_STT_MODEL_PATH=base`
 - GPU builds include Faster Whisper by default (`docker-compose.gpu.yml`)
 - CPU builds: set `INCLUDE_FASTER_WHISPER=true` before building
+- `tiny.en` is the fastest CPU demo option. Pair it with `FASTER_WHISPER_DEVICE=cpu` and `FASTER_WHISPER_COMPUTE_TYPE=int8` (or pick those in the Models page Device/Compute selectors). See [ENVIRONMENT_VARIABLES.md](ENVIRONMENT_VARIABLES.md#local-ai-server-local-pipelines) for the full matrix. Faster-Whisper downloads model weights on first load into `models/stt/faster_whisper_cache`; apply the model once after deployment to pre-warm that cache before a live demo.
 
 **Vosk** (CPU-friendly, offline, good accuracy):
 - `vosk-model-en-us-0.22` (English, recommended)
@@ -592,10 +603,13 @@ Models are **not bundled** in Docker images. Download them via:
 
 ### Supported LLM Models (GGUF)
 
-- `phi-3-mini-4k-instruct.Q4_K_M.gguf` (recommended — good quality/speed balance)
-- `tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf` (fastest on CPU, lower quality)
-- `phi-3-mini-128k-instruct.Q4_K_M.gguf` (larger context)
+- `qwen2.5-1.5b-instruct-q4_k_m.gguf` (**recommended for CPU** — 940MB, ~15-30 tok/s, reliable tool calling)
+- `phi-3-mini-4k-instruct.Q4_K_M.gguf` (good quality but slow on CPU ~0.8 tok/s — better with GPU)
+- `tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf` (smallest, fastest on CPU, lower quality)
+- `phi-3-mini-128k-instruct.Q4_K_M.gguf` (larger context, GPU recommended)
 - Any llama.cpp compatible GGUF model
+
+> **CPU Performance Note:** Qwen 2.5-1.5B delivers ~7-9s per voice response with streaming overlap enabled (vs 19-24s with Phi-3). The Setup Wizard auto-recommends this model for CPU-only deployments. Enable `streaming.pipeline_streaming_overlap: true` and `streaming.pipeline_filler_enabled: true` in `ai-agent.yaml` for best perceived latency.
 
 ### Supported TTS Models
 
@@ -674,11 +688,12 @@ If you see "Pipeline LLM validation FAILED" but calls still work:
 
 ### Only Greeting Heard, Then Silence
 
-Most likely **wrong transport**. Pipelines require ExternalMedia RTP:
+First verify the configured transport and playback combination against the current [Transport Compatibility](Transport-Mode-Compatibility.md) matrix. ExternalMedia RTP + file playback is the conservative local-only baseline:
 
 ```yaml
 # In config/ai-agent.yaml
-audio_transport: externalmedia    # NOT audiosocket for pipelines
+audio_transport: externalmedia    # conservative local-only baseline
+downstream_mode: file
 ```
 
 See [Transport Compatibility](Transport-Mode-Compatibility.md) for the full matrix.

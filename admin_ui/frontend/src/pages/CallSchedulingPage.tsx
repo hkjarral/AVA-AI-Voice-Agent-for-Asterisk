@@ -24,6 +24,16 @@ import {
 import { Modal } from '../components/ui/Modal';
 import { FormLabel } from '../components/ui/FormComponents';
 import { toast } from 'sonner';
+import { describeApiError } from '../utils/apiErrors';
+import { copyTextToClipboard } from '../utils/clipboard';
+import { buildCampaignEditPayload } from '../utils/outboundCampaign';
+import {
+    InCallToolGroup,
+    PhaseToolGroup,
+    type InCallToolCall,
+    type PhaseToolCall,
+} from '../components/calls/ToolExecutionGroups';
+import { VicidialRemoteAgentsTab } from '../components/outbound/VicidialRemoteAgentsTab';
 
 type CampaignStatus = 'draft' | 'running' | 'paused' | 'stopped' | 'archived' | 'completed';
 type LeadImportIssueRow = { row_number: number; phone_number: string; error_reason?: string; warning_reason?: string };
@@ -41,6 +51,7 @@ type LeadImportResult = {
 type OutboundMeta = {
     server_timezone: string;
     iana_timezones: string[];
+    agents?: Array<{ slug: string; display_name: string; is_default?: boolean }>;
     server_now_iso?: string;
     default_amd_options?: Record<string, any>;
 };
@@ -69,6 +80,7 @@ interface OutboundCampaign {
     max_concurrent: number;
     min_interval_seconds_between_calls: number;
     default_context: string;
+    agent_routing_method?: 'ai_agent' | 'ai_context';
     voicemail_drop_enabled?: number | boolean;
     voicemail_drop_media_uri?: string | null;
     consent_enabled?: number | boolean;
@@ -108,7 +120,10 @@ const DEFAULT_AMD_OPTIONS = {
     initial_silence_ms: 2000,
     greeting_ms: 2000,
     after_greeting_silence_ms: 1000,
-    total_analysis_time_ms: 5000
+    total_analysis_time_ms: 5000,
+    minimum_word_length_ms: 100,
+    between_words_silence_ms: 50,
+    maximum_number_of_words: 10
 };
 
 const DEFAULT_CONSENT_MEDIA_URI = 'sound:ai-generated/aava-consent-default';
@@ -127,7 +142,7 @@ const buildDialplanSnippet = (opts: {
         '[aava-outbound-amd]',
         'exten => s,1,NoOp(AAVA Outbound AMD hop)',
         ' same => n,NoOp(Attempt=${AAVA_ATTEMPT_ID} Campaign=${AAVA_CAMPAIGN_ID} Lead=${AAVA_LEAD_ID})',
-        ' same => n,ExecIf($["${AAVA_AMD_OPTS}" = ""]?Set(AAVA_AMD_OPTS=2000,2000,1000,5000))',
+        ' same => n,ExecIf($["${AAVA_AMD_OPTS}" = ""]?Set(AAVA_AMD_OPTS=2000,2000,1000,5000,100,50,10))',
         ' same => n,AMD(${AAVA_AMD_OPTS})',
         ' same => n,NoOp(AMDSTATUS=${AMDSTATUS} AMDCAUSE=${AMDCAUSE})',
         ' ; Guardrails to reduce false MACHINE on silent humans',
@@ -203,34 +218,6 @@ const _commentOutLine = (line: string): string => {
     return `; ${line}`;
 };
 
-const copyTextToClipboard = async (text: string): Promise<boolean> => {
-    try {
-        if (window.isSecureContext && navigator?.clipboard?.writeText) {
-            await navigator.clipboard.writeText(text);
-            return true;
-        }
-    } catch {
-        // ignore and try fallback
-    }
-    try {
-        const el = document.createElement('textarea');
-        el.value = text;
-        el.setAttribute('readonly', 'true');
-        el.style.position = 'fixed';
-        el.style.left = '-9999px';
-        el.style.top = '0';
-        document.body.appendChild(el);
-        el.focus();
-        el.select();
-        el.setSelectionRange(0, el.value.length);
-        const ok = document.execCommand('copy');
-        document.body.removeChild(el);
-        return ok;
-    } catch {
-        return false;
-    }
-};
-
 const withinDailyWindow = (nowHHMM: string, startHHMM: string, endHHMM: string): boolean => {
     if (!nowHHMM || !startHHMM || !endHHMM) return true;
     const crossesMidnight = endHHMM < startHHMM;
@@ -262,7 +249,7 @@ const amdTooltipForKey = (key: string): string => {
         case 'greeting_ms':
             return 'Max length of the greeting/intro phrase (ms).';
         case 'after_greeting_silence_ms':
-            return 'Silence required after greeting to decide MACHINE (ms).';
+            return 'Silence after a short greeting that is sufficient to classify the answer as HUMAN (ms).';
         case 'total_analysis_time_ms':
             return 'Max total time AMD will spend analyzing audio (ms).';
         case 'minimum_word_length_ms':
@@ -270,7 +257,7 @@ const amdTooltipForKey = (key: string): string => {
         case 'between_words_silence_ms':
             return 'Silence between words (ms).';
         case 'maximum_number_of_words':
-            return 'Maximum number of detected “words” before classifying.';
+            return 'Detected words before classifying as MACHINE; the human-first default is 10 to reduce false voicemail drops.';
         case 'silence_threshold':
             return 'Silence threshold (signal level) used by AMD; lower is more sensitive.';
         case 'maximum_word_length_ms':
@@ -289,6 +276,7 @@ const formatSeconds = (secs: number): string => {
 
 const CallSchedulingPage = () => {
     const { confirm } = useConfirmDialog();
+    const [schedulingMode, setSchedulingMode] = useState<'campaigns' | 'vicidial'>('campaigns');
     const [meta, setMeta] = useState<OutboundMeta | null>(null);
     const [serverOffsetMs, setServerOffsetMs] = useState(0);
     const [clockTick, setClockTick] = useState(0);
@@ -325,6 +313,14 @@ const CallSchedulingPage = () => {
     const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
     const [pendingVoicemailFile, setPendingVoicemailFile] = useState<File | null>(null);
     const [pendingConsentFile, setPendingConsentFile] = useState<File | null>(null);
+    const [manualLeadForm, setManualLeadForm] = useState({
+        name: '',
+        phone_number: '',
+        agent: '',
+        timezone: '',
+        caller_id: '',
+        custom_vars: '{}'
+    });
 
     const [recycleLeadRow, setRecycleLeadRow] = useState<LeadRow | null>(null);
     const [recycleMode, setRecycleMode] = useState<'redial' | 'reset'>('redial');
@@ -345,6 +341,10 @@ const CallSchedulingPage = () => {
         if (raw && typeof raw === 'object') return { ...DEFAULT_AMD_OPTIONS, ...raw };
         return { ...DEFAULT_AMD_OPTIONS };
     }, [meta?.default_amd_options]);
+    const defaultAgentSlug = useMemo(
+        () => meta?.agents?.find(agent => agent.is_default)?.slug || meta?.agents?.[0]?.slug || 'default',
+        [meta?.agents]
+    );
     const isTimezoneValid = (tz: string) => {
         const t = (tz || '').trim();
         if (!t) return false;
@@ -398,7 +398,7 @@ const CallSchedulingPage = () => {
         daily_window_end_local: '17:00',
         max_concurrent: 1,
         min_interval_seconds_between_calls: 5,
-        default_context: 'default',
+        default_context: defaultAgentSlug,
         voicemail_drop_enabled: true,
         voicemail_drop_media_uri: DEFAULT_VOICEMAIL_MEDIA_URI,
         consent_enabled: false,
@@ -603,6 +603,14 @@ const CallSchedulingPage = () => {
         setPendingVoicemailFile(null);
         setPendingConsentFile(null);
         setLastLeadImport(null);
+        setManualLeadForm({
+            name: '',
+            phone_number: '',
+            agent: defaultAgentSlug,
+            timezone: serverTz || 'UTC',
+            caller_id: '',
+            custom_vars: '{}'
+        });
         setCreateForm({
             name: '',
             timezone: serverTz || 'UTC',
@@ -610,7 +618,7 @@ const CallSchedulingPage = () => {
             daily_window_end_local: '17:00',
             max_concurrent: 1,
             min_interval_seconds_between_calls: 5,
-            default_context: 'default',
+            default_context: defaultAgentSlug,
             voicemail_drop_enabled: true,
             voicemail_drop_media_uri: DEFAULT_VOICEMAIL_MEDIA_URI,
             consent_enabled: false,
@@ -626,6 +634,14 @@ const CallSchedulingPage = () => {
         setCampaignModalMode('edit');
         setCampaignModalStep('settings');
         setDialplanNeedsReview(false);
+        setManualLeadForm({
+            name: '',
+            phone_number: '',
+            agent: selectedCampaign.default_context || defaultAgentSlug,
+            timezone: selectedCampaign.timezone || serverTz || 'UTC',
+            caller_id: '',
+            custom_vars: '{}'
+        });
         setEditForm({
             name: selectedCampaign.name || '',
             timezone: selectedCampaign.timezone || 'UTC',
@@ -633,7 +649,7 @@ const CallSchedulingPage = () => {
             daily_window_end_local: selectedCampaign.daily_window_end_local || '17:00',
             max_concurrent: selectedCampaign.max_concurrent || 1,
             min_interval_seconds_between_calls: selectedCampaign.min_interval_seconds_between_calls || 5,
-            default_context: selectedCampaign.default_context || 'default',
+            default_context: selectedCampaign.default_context || defaultAgentSlug,
             voicemail_drop_enabled: Boolean((selectedCampaign as any).voicemail_drop_enabled ?? true),
             voicemail_drop_media_uri: (selectedCampaign.voicemail_drop_media_uri || '').trim(),
             consent_enabled: Boolean((selectedCampaign as any).consent_enabled ?? false),
@@ -696,7 +712,7 @@ const CallSchedulingPage = () => {
                 daily_window_end_local: '17:00',
                 max_concurrent: 1,
                 min_interval_seconds_between_calls: 5,
-                default_context: 'default',
+                default_context: defaultAgentSlug,
                 voicemail_drop_enabled: true,
                 voicemail_drop_media_uri: DEFAULT_VOICEMAIL_MEDIA_URI,
                 consent_enabled: false,
@@ -712,7 +728,8 @@ const CallSchedulingPage = () => {
     const saveEdit = async () => {
         if (!selectedCampaign) return;
         try {
-            await axios.patch(`/api/outbound/campaigns/${selectedCampaign.id}`, editForm);
+            const payload = buildCampaignEditPayload(editForm, selectedCampaign.default_context);
+            await axios.patch(`/api/outbound/campaigns/${selectedCampaign.id}`, payload);
             await refreshCampaigns();
             await refreshCampaignDetails(selectedCampaign.id);
             setNotice({ type: 'success', message: 'Campaign updated' });
@@ -784,6 +801,58 @@ const CallSchedulingPage = () => {
             });
         } catch (e: any) {
             setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to import leads' });
+        }
+    };
+
+    const addManualLead = async () => {
+        if (!selectedCampaign) return;
+        try {
+            let customVars: Record<string, unknown> = {};
+            const rawCustomVars = (manualLeadForm.custom_vars || '').trim();
+            if (rawCustomVars) {
+                customVars = JSON.parse(rawCustomVars);
+                if (!customVars || Array.isArray(customVars) || typeof customVars !== 'object') {
+                    throw new Error('Custom variables must be a JSON object');
+                }
+            }
+            const res = await axios.post(
+                `/api/outbound/campaigns/${selectedCampaign.id}/leads`,
+                {
+                    name: manualLeadForm.name.trim() || null,
+                    phone_number: manualLeadForm.phone_number.trim(),
+                    agent: manualLeadForm.agent || selectedCampaign.default_context,
+                    timezone: manualLeadForm.timezone || selectedCampaign.timezone,
+                    caller_id: manualLeadForm.caller_id.trim() || null,
+                    custom_vars: customVars
+                }
+            );
+            const data = res.data as LeadImportResult;
+            setLastLeadImport(data);
+            await refreshCampaignDetails(selectedCampaign.id);
+            if ((data.accepted || 0) > 0) {
+                setManualLeadForm(prev => ({
+                    ...prev,
+                    name: '',
+                    phone_number: '',
+                    caller_id: '',
+                    custom_vars: '{}'
+                }));
+                const warning = data.warnings?.[0]?.warning_reason;
+                setNotice({
+                    type: warning ? 'info' : 'success',
+                    message: warning ? `Lead added with warning: ${warning}` : 'Lead added'
+                });
+            } else if ((data.duplicates || 0) > 0) {
+                setNotice({ type: 'info', message: 'That phone number already exists in this campaign' });
+            } else {
+                setNotice({ type: 'error', message: data.errors?.[0]?.error_reason || 'Lead was not added' });
+            }
+        } catch (e: unknown) {
+            const error = describeApiError(e);
+            setNotice({
+                type: 'error',
+                message: error.detail || error.message || 'Failed to add lead'
+            });
         }
     };
 
@@ -1005,6 +1074,29 @@ const CallSchedulingPage = () => {
         return `${m}m ${r}s`;
     };
 
+    const schedulingTabs = (
+        <div className="inline-flex rounded-lg border border-border bg-muted/20 p-1" role="tablist" aria-label="Call scheduling mode">
+            <button
+                type="button"
+                role="tab"
+                aria-selected={schedulingMode === 'campaigns'}
+                onClick={() => setSchedulingMode('campaigns')}
+                className={`rounded-md px-4 py-2 text-sm transition-colors ${schedulingMode === 'campaigns' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+                AAVA Campaigns
+            </button>
+            <button
+                type="button"
+                role="tab"
+                aria-selected={schedulingMode === 'vicidial'}
+                onClick={() => setSchedulingMode('vicidial')}
+                className={`rounded-md px-4 py-2 text-sm transition-colors ${schedulingMode === 'vicidial' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+                VICIdial Remote Agents
+            </button>
+        </div>
+    );
+
     if (loading) {
         return (
             <div className="p-6">
@@ -1012,6 +1104,22 @@ const CallSchedulingPage = () => {
                     <RefreshCw className="w-4 h-4 animate-spin" />
                     Loading call scheduling…
                 </div>
+            </div>
+        );
+    }
+
+    if (schedulingMode === 'vicidial') {
+        return (
+            <div className="p-6 space-y-6">
+                <div>
+                    <h1 className="text-3xl font-bold flex items-center gap-2">
+                        <CalendarClock className="w-7 h-7" />
+                        Call Scheduling
+                    </h1>
+                    <p className="text-sm text-muted-foreground">AAVA campaigns and external dialer integrations.</p>
+                </div>
+                {schedulingTabs}
+                <VicidialRemoteAgentsTab />
             </div>
         );
     }
@@ -1070,6 +1178,8 @@ const CallSchedulingPage = () => {
                     </div>
                 </div>
             </div>
+
+            {schedulingTabs}
 
             {lastLeadImport && ((lastLeadImport.rejected || 0) > 0 || (lastLeadImport.warnings?.length || 0) > 0) && (
                 <div className="rounded-lg border border-border bg-card p-3 text-sm">
@@ -1207,7 +1317,7 @@ const CallSchedulingPage = () => {
                                         <span className="text-xs px-2 py-0.5 rounded border">{selectedCampaign.status}</span>
                                     </div>
                                     <div className="text-sm text-muted-foreground mt-1">
-                                        Default context: <span className="font-mono">{selectedCampaign.default_context}</span> · Max concurrent:{' '}
+                                        Default Agent: <span className="font-mono">{selectedCampaign.default_context}</span> · Max concurrent:{' '}
                                         {selectedCampaign.max_concurrent} · Min interval: {selectedCampaign.min_interval_seconds_between_calls}s
                                     </div>
                                     <div className="text-xs text-muted-foreground mt-1">
@@ -1401,7 +1511,7 @@ const CallSchedulingPage = () => {
                                     <th className="py-2 px-3">Name</th>
                                     <th className="py-2 px-3">Number</th>
                                     <th className="py-2 px-3">State</th>
-                                    <th className="py-2 px-3">Context</th>
+                                    <th className="py-2 px-3">Agent</th>
                                     <th className="py-2 px-3">Provider</th>
                                     <th className="py-2 px-3">Time</th>
                                     <th className="py-2 px-3">Duration</th>
@@ -1416,7 +1526,7 @@ const CallSchedulingPage = () => {
                             </thead>
                             <tbody>
                                 {leads.map(l => {
-                                    const effectiveContext = (l.last_context || l.context_override || selectedCampaign?.default_context || 'default') as string;
+                                    const effectiveAgent = (l.last_context || l.context_override || selectedCampaign?.default_context || 'default') as string;
                                     const provider = (l.last_provider || '-') as string;
                                     const amd = l.last_amd_status ? `${l.last_amd_status}${l.last_amd_cause ? `/${l.last_amd_cause}` : ''}` : '-';
                                     const outcome = l.last_outcome_attempt || l.last_outcome || '-';
@@ -1428,7 +1538,7 @@ const CallSchedulingPage = () => {
                                             <td className="py-2 px-3">{l.name || '-'}</td>
                                             <td className="py-2 px-3 font-mono">{l.phone_number}</td>
                                             <td className="py-2 px-3">{l.state}</td>
-                                            <td className="py-2 px-3 font-mono">{effectiveContext}</td>
+                                            <td className="py-2 px-3 font-mono">{effectiveAgent}</td>
                                             <td className="py-2 px-3 font-mono">{provider}</td>
                                             <td className="py-2 px-3">{renderLeadTime(l.last_started_at_utc || l.last_attempt_at_utc)}</td>
                                             <td className="py-2 px-3">{renderDuration(l.last_duration_seconds ?? null)}</td>
@@ -1489,7 +1599,7 @@ const CallSchedulingPage = () => {
                                 {leads.length === 0 && (
                                     <tr>
                                         <td colSpan={14} className="py-10 text-center text-sm text-muted-foreground">
-                                            No leads yet. Use the campaign modal to import a CSV.
+                                            No leads yet. Use the campaign modal to import a CSV/Excel file or add a lead manually.
                                         </td>
                                     </tr>
                                 )}
@@ -1733,8 +1843,9 @@ const CallSchedulingPage = () => {
                                             />
                                         </div>
                                         <div className="md:col-span-2">
-                                            <FormLabel tooltip="Default AI context for leads that don’t provide a context override.">Default Context</FormLabel>
+                                            <FormLabel tooltip="Default active Agent slug for leads that do not provide an agent override.">Default Agent</FormLabel>
                                             <input
+                                                list="outbound-agent-options"
                                                 value={campaignModalMode === 'create' ? createForm.default_context : editForm.default_context}
                                                 onChange={e =>
                                                     campaignModalMode === 'create'
@@ -1743,6 +1854,11 @@ const CallSchedulingPage = () => {
                                                 }
                                                 className="mt-1 w-full px-3 py-2 rounded-lg border bg-background font-mono"
                                             />
+                                            <datalist id="outbound-agent-options">
+                                                {(meta?.agents || []).map(agent => (
+                                                    <option key={agent.slug} value={agent.slug}>{agent.display_name || agent.slug}</option>
+                                                ))}
+                                            </datalist>
                                         </div>
                                     </div>
 
@@ -1842,18 +1958,20 @@ const CallSchedulingPage = () => {
                                 <div className="space-y-4">
                                     <div className="border rounded-lg p-3 space-y-2">
                                         <FormLabel
-                                            tooltip="Import leads for this campaign. Columns: name, phone_number (required), context, timezone, caller_id, custom_vars (JSON)."
+                                            tooltip="Import CSV or Excel (.xlsx) leads. The first worksheet is used. Columns: name, phone_number (required), agent, timezone, caller_id, custom_vars (JSON)."
                                             className="mb-0"
                                         >
-                                            Leads (CSV)
+                                            Import leads
                                         </FormLabel>
                                         <div className="text-xs text-muted-foreground">
-                                            Import leads from CSV. Default behavior is <span className="font-mono">skip_existing</span>.
-                                            {campaignModalMode === 'create' ? ' Choose a CSV now; it will import after Create.' : ''}
+                                            Import a CSV or Excel <span className="font-mono">.xlsx</span> file. Excel imports use the first worksheet.
+                                            Default behavior is <span className="font-mono">skip_existing</span>.
+                                            {campaignModalMode === 'create' ? ' Choose a file now; it will import after Create.' : ''}
                                         </div>
                                         <div className="text-xs text-muted-foreground">
-                                            Note: If a CSV row is missing/blank (or invalid) for <span className="font-mono">context</span> or{' '}
-                                            <span className="font-mono">timezone</span>, the campaign defaults will be used and a warning will be shown.
+                                            Note: Use the active <span className="font-mono">agent</span> slug from the Agents page. If agent or{' '}
+                                            <span className="font-mono">timezone</span> is missing/invalid, campaign defaults are used with a warning. The legacy{' '}
+                                            <span className="font-mono">context</span> header remains accepted for compatibility.
                                         </div>
                                         <div className="flex items-center gap-2 flex-wrap">
                                             <button
@@ -1862,14 +1980,18 @@ const CallSchedulingPage = () => {
                                             >
                                                 <FileDown className="w-4 h-4" /> Sample CSV
                                             </button>
-                                            <input type="file" accept=".csv,text/csv" onChange={e => setPendingImportFile(e.target.files?.[0] || null)} />
+                                            <input
+                                                type="file"
+                                                accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                                onChange={e => setPendingImportFile(e.target.files?.[0] || null)}
+                                            />
                                             <button
                                                 className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm disabled:opacity-50"
                                                 disabled={!pendingImportFile || (campaignModalMode === 'edit' && !selectedCampaign)}
                                                 onClick={async () => {
                                                     if (!pendingImportFile) return;
                                                     if (campaignModalMode === 'create') {
-                                                        setNotice({ type: 'info', message: 'CSV selected. It will import after campaign creation.' });
+                                                        setNotice({ type: 'info', message: 'Lead file selected. It will import after campaign creation.' });
                                                         return;
                                                     }
                                                     if (!selectedCampaign) return;
@@ -1877,7 +1999,7 @@ const CallSchedulingPage = () => {
                                                     setPendingImportFile(null);
                                                 }}
                                             >
-                                                <Upload className="w-4 h-4" /> Import CSV (skip existing)
+                                                <Upload className="w-4 h-4" /> Import file (skip existing)
                                             </button>
                                         </div>
                                         {campaignModalMode === 'create' && pendingImportFile && (
@@ -1887,6 +2009,99 @@ const CallSchedulingPage = () => {
                                         )}
                                         {campaignModalMode === 'edit' && !selectedCampaign && (
                                             <div className="text-xs text-muted-foreground">Select a campaign to import leads.</div>
+                                        )}
+                                    </div>
+
+                                    <div className="border rounded-lg p-3 space-y-3">
+                                        <FormLabel
+                                            tooltip="Add one lead without preparing a spreadsheet. Phone number is required; Agent and timezone default to the campaign."
+                                            className="mb-0"
+                                        >
+                                            Add one lead manually
+                                        </FormLabel>
+                                        {campaignModalMode === 'create' ? (
+                                            <div className="text-xs text-muted-foreground">
+                                                Create the campaign first, then open Edit → Leads to add individual leads.
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                    <div>
+                                                        <FormLabel>Name (optional)</FormLabel>
+                                                        <input
+                                                            value={manualLeadForm.name}
+                                                            onChange={e => setManualLeadForm(p => ({ ...p, name: e.target.value }))}
+                                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background text-foreground"
+                                                            placeholder="Alice Example"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <FormLabel>Phone number</FormLabel>
+                                                        <input
+                                                            value={manualLeadForm.phone_number}
+                                                            onChange={e => setManualLeadForm(p => ({ ...p, phone_number: e.target.value }))}
+                                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background text-foreground"
+                                                            placeholder="+15551234567 or 2765"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <FormLabel>Agent</FormLabel>
+                                                        <select
+                                                            value={manualLeadForm.agent || selectedCampaign?.default_context || defaultAgentSlug}
+                                                            onChange={e => setManualLeadForm(p => ({ ...p, agent: e.target.value }))}
+                                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background text-foreground"
+                                                        >
+                                                            {(meta?.agents || []).map(agent => (
+                                                                <option key={agent.slug} value={agent.slug}>
+                                                                    {agent.display_name} ({agent.slug})
+                                                                </option>
+                                                            ))}
+                                                            {!(meta?.agents || []).length && (
+                                                                <option value={selectedCampaign?.default_context || 'default'}>
+                                                                    {selectedCampaign?.default_context || 'default'}
+                                                                </option>
+                                                            )}
+                                                        </select>
+                                                    </div>
+                                                    <div>
+                                                        <FormLabel>Timezone</FormLabel>
+                                                        <input
+                                                            value={manualLeadForm.timezone}
+                                                            onChange={e => setManualLeadForm(p => ({ ...p, timezone: e.target.value }))}
+                                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background text-foreground"
+                                                            placeholder="America/Phoenix"
+                                                            list="aava-iana-timezones"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <FormLabel>Caller ID override (optional)</FormLabel>
+                                                        <input
+                                                            value={manualLeadForm.caller_id}
+                                                            onChange={e => setManualLeadForm(p => ({ ...p, caller_id: e.target.value }))}
+                                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background text-foreground"
+                                                            placeholder="6789"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <FormLabel>Custom variables (JSON)</FormLabel>
+                                                        <textarea
+                                                            value={manualLeadForm.custom_vars}
+                                                            onChange={e => setManualLeadForm(p => ({ ...p, custom_vars: e.target.value }))}
+                                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background text-foreground font-mono text-sm"
+                                                            rows={2}
+                                                            placeholder='{"account_id":"A-1002"}'
+                                                        />
+                                                    </div>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm disabled:opacity-50"
+                                                    disabled={!manualLeadForm.phone_number.trim() || !selectedCampaign}
+                                                    onClick={addManualLead}
+                                                >
+                                                    <Plus className="w-4 h-4" /> Add lead
+                                                </button>
+                                            </>
                                         )}
                                     </div>
                                 </div>
@@ -1986,7 +2201,7 @@ const CallSchedulingPage = () => {
                                                     ? 'bg-emerald-600 text-white border-emerald-700 hover:bg-emerald-600'
                                                     : 'hover:bg-muted'
                                                     }`}
-                                                disabled={!modalConsentEnabled || !Boolean(String((campaignModalMode === 'create' ? (createForm as any).consent_media_uri : (editForm as any).consent_media_uri) || '').trim())}
+                                                disabled={!modalConsentEnabled || !String((campaignModalMode === 'create' ? (createForm as any).consent_media_uri : (editForm as any).consent_media_uri) || '').trim()}
                                                 onClick={() => {
                                                     const uri = String((campaignModalMode === 'create' ? (createForm as any).consent_media_uri : (editForm as any).consent_media_uri) || '').trim();
                                                     if (uri) previewRecordingByUri(uri);
@@ -2105,7 +2320,7 @@ const CallSchedulingPage = () => {
                                                     ? 'bg-emerald-600 text-white border-emerald-700 hover:bg-emerald-600'
                                                     : 'hover:bg-muted'
                                                     }`}
-                                                disabled={!modalVoicemailEnabled || !Boolean(String((campaignModalMode === 'create' ? (createForm as any).voicemail_drop_media_uri : (editForm as any).voicemail_drop_media_uri) || '').trim())}
+                                                disabled={!modalVoicemailEnabled || !String((campaignModalMode === 'create' ? (createForm as any).voicemail_drop_media_uri : (editForm as any).voicemail_drop_media_uri) || '').trim()}
                                                 onClick={() => {
                                                     const uri = String((campaignModalMode === 'create' ? (createForm as any).voicemail_drop_media_uri : (editForm as any).voicemail_drop_media_uri) || '').trim();
                                                     if (uri) previewRecordingByUri(uri);
@@ -2345,6 +2560,23 @@ const CallSchedulingPage = () => {
                                         )}
                                     </div>
                                 </div>
+                                {(() => {
+                                    const preCall = (callHistoryRecord.pre_call_tool_calls || []) as PhaseToolCall[];
+                                    const inCall = (callHistoryRecord.tool_calls || []) as InCallToolCall[];
+                                    const postCall = (callHistoryRecord.post_call_tool_calls || []) as PhaseToolCall[];
+                                    const total = preCall.length + inCall.length + postCall.length;
+                                    if (total === 0) return null;
+                                    return (
+                                        <div>
+                                            <div className="font-medium text-sm mb-2">Tool Executions ({total})</div>
+                                            <div className="space-y-4">
+                                                {preCall.length > 0 && <PhaseToolGroup phase="pre_call" entries={preCall} />}
+                                                {inCall.length > 0 && <InCallToolGroup entries={inCall} />}
+                                                {postCall.length > 0 && <PhaseToolGroup phase="post_call" entries={postCall} />}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
                             </div>
                         ) : (
                             <div className="text-sm text-muted-foreground">No record loaded.</div>

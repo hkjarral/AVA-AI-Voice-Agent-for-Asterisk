@@ -66,16 +66,13 @@ as the canonical specs for community-requested features.
 
 1. **Onboard** using:
    - `docs/DEVELOPER_ONBOARDING.md`
-   - An AI-powered IDE (e.g., Windsurf via the referral link in that doc)
-   - AVA as your project manager persona (`AVA.mdc`)
-2. **(Optional) Enable Linear MCP**:
-   - Configure `linear-mcp-server` with your API key.
-3. **Choose a feature**:
-   - Ask AVA which AAVA issues are good starting points (e.g., queue transfer, new providers, calendar tool).
-4. **Implement and test**:
-   - Follow AVA’s playbook and the architecture/dev rules.
-5. **Update Linear (if MCP is available)**:
-   - Move the issue to “In Progress” or “In Review”.
-   - Link your PR and include call IDs / RCA summaries.
+   - An AI-powered IDE or coding assistant
+   - `AVA.mdc` loaded as your assistant's project context
+2. **Choose a feature**:
+   - Check [GitHub Issues](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues) (`good first issue`, `help wanted`) and `docs/ROADMAP.md`, or ask your assistant which open issues are good starting points.
+3. **Implement and test**:
+   - Follow the playbooks in `AVA.mdc` and the architecture/dev rules.
+4. **Open your PR**:
+   - Link the GitHub issue and include call IDs / RCA summaries as testing evidence.
 
-This keeps the repo docs and Linear issues in sync, while letting AVA coordinate work across all tools and IDEs.
+This keeps the repo docs and GitHub issues in sync, while letting your assistant coordinate work across all tools and IDEs.

@@ -9,17 +9,20 @@ import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput, FormSwitch } from '../../components/ui/FormComponents';
 import { sanitizeConfigForSave } from '../../utils/configSanitizers';
+import { getCachedConfig, loadConfigYaml } from '../../utils/configCache';
+import { useRestartRequired } from '../../hooks/useRestartRequired';
 
 const VAD_UTTERANCE_EXPERT_STORAGE_KEY = 'aava.ui.vad.utteranceExpert';
 
 const VADPage = () => {
     const { confirm } = useConfirmDialog();
-    const [config, setConfig] = useState<any>({});
-    const [loading, setLoading] = useState(true);
-    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
+    const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
+    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [saving, setSaving] = useState(false);
-    const [pendingRestart, setPendingRestart] = useState(false);
+    const { restartRequired, refetch } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
+    const [applyMethod, setApplyMethod] = useState<string>('restart');
     const [showUtteranceExpert, setShowUtteranceExpert] = useState<boolean>(() => {
         try {
             const v = localStorage.getItem(VAD_UTTERANCE_EXPERT_STORAGE_KEY);
@@ -40,20 +43,17 @@ const VADPage = () => {
     }, [showUtteranceExpert]);
 
     useEffect(() => {
+        // Cache-first: seed from the shared cache (no flash on revisit). The write
+        // interceptor invalidates the cache on every save, so a background
+        // revalidate is unnecessary and could clobber in-progress form edits.
         fetchConfig();
     }, []);
 
-    const fetchConfig = async () => {
+    const fetchConfig = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
-                setConfig({});
-            } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
-                setYamlError(null);
-            }
+            const r = await loadConfigYaml(force);
+            setConfig(r.config);
+            setYamlError(r.yamlError);
         } catch (err) {
             console.error('Failed to load config', err);
             setYamlError(null);
@@ -66,9 +66,15 @@ const VADPage = () => {
         setSaving(true);
         try {
             const sanitized = sanitizeConfigForSave(config);
-            await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
-            setPendingRestart(true);
-            toast.success('VAD configuration saved');
+            const response = await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
+            const method = response.data?.recommended_apply_method || 'restart';
+            setApplyMethod(method);
+            await refetch();
+            if (method === 'hot_reload') {
+                toast.success('VAD configuration saved. Changes can be applied via hot-reload.');
+            } else {
+                toast.success('VAD configuration saved. Restart AI Engine to apply changes.');
+            }
         } catch (err) {
             console.error('Failed to save config', err);
             toast.error('Failed to save configuration');
@@ -77,10 +83,30 @@ const VADPage = () => {
         }
     };
 
-    const handleReloadAIEngine = async (force: boolean = false) => {
+    const handleApplyAIEngine = async (force: boolean = false) => {
         setRestartingEngine(true);
         try {
-            // Use restart to ensure all changes are picked up
+            // Prefer hot-reload (no dropped calls) when the backend says it suffices (MED-R1).
+            if (applyMethod === 'hot_reload') {
+                const response = await axios.post('/api/system/containers/ai_engine/reload');
+
+                if (response.data?.restart_required) {
+                    setApplyMethod('restart');
+                    await refetch();
+                    toast.warning('Hot reload applied partially', { description: response.data.message || 'Restart AI Engine to fully apply changes' });
+                    return;
+                }
+
+                if (response.data?.status === 'success') {
+                    await refetch();
+                    toast.success('AI Engine hot reloaded! Changes are now active.');
+                    return;
+                }
+
+                toast.info(`Hot reload response: ${response.data?.message || 'unknown status'}`);
+                return;
+            }
+
             const response = await axios.post(`/api/system/containers/ai_engine/restart?force=${force}`);
 
             if (response.data.status === 'warning') {
@@ -92,7 +118,7 @@ const VADPage = () => {
                 });
                 if (confirmForce) {
                     setRestartingEngine(false);
-                    return handleReloadAIEngine(true);
+                    return handleApplyAIEngine(true);
                 }
                 return;
             }
@@ -103,11 +129,12 @@ const VADPage = () => {
             }
 
             if (response.data.status === 'success') {
-                setPendingRestart(false);
+                await refetch();
                 toast.success('AI Engine restarted! Changes are now active.');
             }
         } catch (error: any) {
-            toast.error('Failed to restart AI Engine', { description: error.response?.data?.detail || error.message });
+            const actionLabel = applyMethod === 'hot_reload' ? 'hot reload' : 'restart';
+            toast.error(`Failed to ${actionLabel} AI Engine`, { description: error.response?.data?.detail || error.message });
         } finally {
             setRestartingEngine(false);
         }
@@ -120,6 +147,16 @@ const VADPage = () => {
                 ...config.vad,
                 [field]: value
             }
+        });
+    };
+
+    const updateNoInputConfig = (field: string, value: any) => {
+        setConfig({
+            ...config,
+            no_input: {
+                ...config.no_input,
+                [field]: value,
+            },
         });
     };
 
@@ -145,31 +182,38 @@ const VADPage = () => {
     );
 
     const vadConfig = config.vad || {};
+    const noInputConfig = config.no_input || {};
+    const effectiveVadMode =
+        vadConfig.vad_mode ?? (vadConfig.use_provider_vad ? 'provider' : 'auto');
+
+    const bannerMessage = applyMethod === 'hot_reload'
+        ? 'Changes saved. Apply Changes to hot reload AI Engine without dropping active calls.'
+        : 'Changes to VAD configurations require an AI Engine restart to take effect.';
 
     return (
         <div className="space-y-6">
-            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
-                <div className="flex items-center">
-                    <AlertCircle className="w-5 h-5 mr-2" />
-                    Changes to VAD configurations require an AI Engine restart to take effect.
+            {restartRequired && (
+                <div className="bg-orange-500/15 border-orange-500/30 border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
+                    <div className="flex items-center">
+                        <AlertCircle className="w-5 h-5 mr-2" />
+                        {bannerMessage}
+                    </div>
+                    <button
+                        onClick={() => handleApplyAIEngine(false)}
+                        disabled={restartingEngine}
+                        className="flex items-center text-xs px-3 py-1.5 rounded transition-colors bg-orange-500 text-white hover:bg-orange-600 font-medium disabled:opacity-50"
+                    >
+                        {restartingEngine ? (
+                            <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                        ) : (
+                            <RefreshCw className="w-3 h-3 mr-1.5" />
+                        )}
+                        {restartingEngine
+                            ? (applyMethod === 'hot_reload' ? 'Applying...' : 'Restarting...')
+                            : (applyMethod === 'hot_reload' ? 'Apply Changes' : 'Restart AI Engine')}
+                    </button>
                 </div>
-                <button
-                    onClick={() => handleReloadAIEngine(false)}
-                    disabled={restartingEngine}
-                    className={`flex items-center text-xs px-3 py-1.5 rounded transition-colors ${
-                        pendingRestart 
-                            ? 'bg-orange-500 text-white hover:bg-orange-600 font-medium' 
-                            : 'bg-yellow-500/20 hover:bg-yellow-500/30'
-                    } disabled:opacity-50`}
-                >
-                    {restartingEngine ? (
-                        <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                    ) : (
-                        <RefreshCw className="w-3 h-3 mr-1.5" />
-                    )}
-                    {restartingEngine ? 'Restarting...' : 'Reload AI Engine'}
-                </button>
-            </div>
+            )}
 
             <div className="flex justify-between items-center">
                 <div>
@@ -199,13 +243,25 @@ const VADPage = () => {
                                 checked={vadConfig.enhanced_enabled ?? false}
                                 onChange={(e) => updateVADConfig('enhanced_enabled', e.target.checked)}
                             />
-                            <FormSwitch
-                                label="Use Provider VAD"
-                                description="Prefer provider-managed turn detection when supported; engine VAD is used only for local fallback heuristics."
-                                tooltip="When enabled, the engine avoids making primary turn/endpointing decisions and relies on provider-side detection where available. Engine VAD may still be used for safe local fallbacks."
-                                checked={vadConfig.use_provider_vad ?? false}
-                                onChange={(e) => updateVADConfig('use_provider_vad', e.target.checked)}
-                            />
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium leading-none">VAD Mode</label>
+                                <select
+                                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                    value={effectiveVadMode}
+                                    onChange={(e) => updateVADConfig('vad_mode', e.target.value)}
+                                >
+                                    <option value="auto">Auto (per-provider)</option>
+                                    <option value="local">Always Local VAD</option>
+                                    <option value="provider">Always Provider VAD</option>
+                                </select>
+                                <p className="text-xs text-muted-foreground">
+                                    {effectiveVadMode === 'local'
+                                        ? 'Local Enhanced + WebRTC VAD active for all providers.'
+                                        : effectiveVadMode === 'provider'
+                                        ? 'Provider-managed turn detection for all providers (legacy behavior).'
+                                        : 'Automatically decides per-provider: providers with native VAD + barge-in (e.g. OpenAI Realtime) use provider VAD; others (e.g. Google Live) use local VAD.'}
+                                </p>
+                            </div>
                         </div>
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -249,6 +305,77 @@ const VADPage = () => {
                                 tooltip="How quickly the adaptive threshold reacts to background noise (0.0–1.0). Higher reacts faster but can over-adjust on short noise bursts."
                             />
                         </div>
+                    </div>
+                </ConfigCard>
+            </ConfigSection>
+
+            <ConfigSection
+                title="Caller Inactivity"
+                description="Check that a silent inbound caller is still present, then end abandoned calls cleanly."
+            >
+                <ConfigCard>
+                    <div className="space-y-6">
+                        <FormSwitch
+                            label="Enable No-Input Watchdog"
+                            description="Protect inbound calls by default after 30 seconds without caller activity."
+                            tooltip="The clock pauses while the agent is greeting, speaking, processing a turn, or transferring. Caller audio and provider speech events reset it. Outbound calls remain disabled unless the individual agent opts in."
+                            checked={noInputConfig.enabled ?? true}
+                            onChange={(e) => updateNoInputConfig('enabled', e.target.checked)}
+                        />
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            <FormInput
+                                label="Initial Silence (seconds)"
+                                type="number"
+                                min="1"
+                                max="3600"
+                                value={noInputConfig.initial_timeout_sec ?? 30}
+                                onChange={(e) => updateNoInputConfig('initial_timeout_sec', parseFloat(e.target.value))}
+                                tooltip="How long to wait after the agent becomes idle before asking whether the caller is still there."
+                                disabled={!(noInputConfig.enabled ?? true)}
+                            />
+                            <FormInput
+                                label="Reply Grace Period (seconds)"
+                                type="number"
+                                min="1"
+                                max="3600"
+                                value={noInputConfig.grace_timeout_sec ?? 15}
+                                onChange={(e) => updateNoInputConfig('grace_timeout_sec', parseFloat(e.target.value))}
+                                tooltip="How long the caller has to respond after each check-in."
+                                disabled={!(noInputConfig.enabled ?? true)}
+                            />
+                            <FormInput
+                                label="Check-In Attempts"
+                                type="number"
+                                min="0"
+                                max="10"
+                                value={noInputConfig.max_check_ins ?? 1}
+                                onChange={(e) => updateNoInputConfig('max_check_ins', parseInt(e.target.value))}
+                                tooltip="Number of check-in prompts before the final message and hangup. Set to 0 to skip directly to the final message."
+                                disabled={!(noInputConfig.enabled ?? true)}
+                            />
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <FormInput
+                                label="Check-In Message"
+                                value={noInputConfig.check_in_message ?? 'Are you still there?'}
+                                onChange={(e) => updateNoInputConfig('check_in_message', e.target.value)}
+                                tooltip="Spoken by the active provider or pipeline using this agent's configured voice."
+                                disabled={!(noInputConfig.enabled ?? true)}
+                            />
+                            <FormInput
+                                label="Final Message"
+                                value={noInputConfig.final_message ?? "I still can't hear you, so I'll end the call now. Goodbye."}
+                                onChange={(e) => updateNoInputConfig('final_message', e.target.value)}
+                                tooltip="Spoken in the configured agent voice immediately before the engine hangs up. Leave empty for no final announcement."
+                                disabled={!(noInputConfig.enabled ?? true)}
+                            />
+                        </div>
+
+                        <p className="text-xs text-muted-foreground">
+                            Outbound calls do not inherit this behavior automatically. Enable it explicitly in the outbound agent's settings.
+                        </p>
                     </div>
                 </ConfigCard>
             </ConfigSection>

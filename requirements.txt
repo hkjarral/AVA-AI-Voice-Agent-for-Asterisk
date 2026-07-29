@@ -1,12 +1,12 @@
 # Core ARI and WebSocket dependencies
 ari==0.1.3
-websockets==15.0.1
-aiohttp==3.13.3
+websockets==16.1.1
+aiohttp==3.14.3
 
 # Configuration and logging
-pydantic>=2.7.0
-pydantic_settings==2.12.0
-structlog==25.5.0
+pydantic>=2.13.4
+pydantic_settings==2.14.2
+structlog==26.1.0
 prometheus-client==0.24.1
 PyYAML==6.0.3
 
@@ -20,17 +20,21 @@ tenacity==8.2.3
 webrtcvad==2.0.10
 
 # Email tools dependencies
-resend>=2.0.0
+resend>=2.32.2
 jinja2==3.1.6
 dnspython==2.8.0
 
 # OpenAI for summary generation
-openai>=1.0.0
+openai>=2.44.0
 
 # Google Auth for Vertex AI Live API OAuth2/ADC support (AAVA-191)
 # Only required when use_vertex_ai: true in provider config
-google-auth>=2.0.0
+google-auth>=2.56.2
 
 # Google Calendar API client for business calendar tool
-google-api-python-client>=2.0.0
+google-api-python-client>=2.198.0
+
+# Microsoft Calendar API client for business calendar tool
+msal>=1.37.0
+portalocker>=3.2.0
 azure-cognitiveservices-speech>=1.41.0

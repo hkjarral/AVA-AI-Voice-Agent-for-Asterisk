@@ -23,7 +23,11 @@ from urllib.parse import urlparse
 import aiohttp
 import websockets
 
-from ..audio import convert_pcm16le_to_target_format, resample_audio
+from ..audio import (
+    convert_pcm16le_to_target_format,
+    resample_audio,
+    resolve_output_resampler_policy,
+)
 from ..config import AppConfig, OpenAIProviderConfig
 from ..logging_config import get_logger
 from .base import LLMComponent, STTComponent, TTSComponent, LLMResponse
@@ -381,6 +385,9 @@ def _pcm16le_to_wav(audio_pcm16: bytes, sample_rate_hz: int) -> bytes:
 class OpenAILLMAdapter(LLMComponent):
     """# Milestone7: OpenAI LLM adapter supporting Chat Completions and Realtime."""
 
+    supports_streaming = True
+    _pending_tool_calls_by_call: dict  # call_id -> list of tool calls
+
     def __init__(
         self,
         component_key: str,
@@ -397,6 +404,7 @@ class OpenAILLMAdapter(LLMComponent):
         self._session_factory = session_factory
         self._session: Optional[aiohttp.ClientSession] = None
         self._default_timeout = float(self._pipeline_defaults.get("response_timeout_sec", provider_config.response_timeout_sec))
+        self._pending_tool_calls_by_call: dict = {}
 
     async def start(self) -> None:
         logger.debug(
@@ -455,9 +463,10 @@ class OpenAILLMAdapter(LLMComponent):
         # Do not gate tools by provider-level flags; contexts are the source of truth for tool availability.
         tools_list = merged.get("tools")
         tool_schemas = []
+        call_tool_registry = self.tool_registry_or(tool_registry)
         if tools_list and isinstance(tools_list, list):
             for tool_name in tools_list:
-                tool = tool_registry.get(tool_name)
+                tool = call_tool_registry.get(tool_name)
                 if tool:
                     try:
                         from src.tools.base import ToolPhase
@@ -639,6 +648,133 @@ class OpenAILLMAdapter(LLMComponent):
             await websocket.close()
         return ""
 
+    async def generate_stream(
+        self,
+        call_id: str,
+        transcript: str,
+        context: Dict[str, Any],
+        options: Dict[str, Any],
+    ) -> AsyncIterator[str]:
+        """Stream tokens from OpenAI Chat Completions API.
+
+        Tool calls detected in the stream are accumulated per-call in
+        ``self._pending_tool_calls_by_call[call_id]`` so the engine can
+        retrieve them after streaming completes (thread-safe for concurrent calls).
+
+        Falls back to non-streaming generate() for realtime transport mode.
+        """
+        self._pending_tool_calls_by_call[call_id] = []
+        merged = self._compose_options(options)
+        if not merged["api_key"]:
+            raise RuntimeError("OpenAI LLM requires an API key")
+
+        # Realtime transport doesn't support Chat Completions streaming
+        if bool(merged.get("use_realtime")):
+            result = await self.generate(call_id, transcript, context, options)
+            text = result.text if isinstance(result, LLMResponse) else str(result)
+            if text:
+                yield text
+            return
+
+        await self._ensure_session()
+        assert self._session
+        payload = self._build_chat_payload(transcript, context, merged)
+        payload["stream"] = True
+
+        # Include tools in streaming request so the LLM can return tool calls
+        tools_list = merged.get("tools")
+        tool_schemas = []
+        call_tool_registry = self.tool_registry_or(tool_registry)
+        if tools_list and isinstance(tools_list, list):
+            for tool_name in tools_list:
+                tool = call_tool_registry.get(tool_name)
+                if tool:
+                    tool_schemas.append(tool.definition.to_openai_schema())
+        if tool_schemas:
+            payload["tools"] = tool_schemas
+            payload["tool_choice"] = "auto"
+
+        headers = _make_http_headers(merged)
+        url = merged["chat_base_url"].rstrip("/") + "/chat/completions"
+
+        # Accumulate tool call deltas across chunks
+        _tool_call_accum: dict = {}  # index -> {id, name, arguments}
+
+        try:
+            async with self._session.post(url, json=payload, headers=headers, timeout=merged["timeout_sec"]) as response:
+                if response.status >= 400:
+                    body = await response.text()
+                    logger.error("OpenAI streaming failed", call_id=call_id, status=response.status, body_preview=body[:128])
+                    return
+
+                async for line in response.content:
+                    line_str = line.decode("utf-8", errors="replace").strip()
+                    if not line_str or not line_str.startswith("data: "):
+                        continue
+                    data_str = line_str[6:]
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                        choices = chunk.get("choices", [])
+                        if choices:
+                            delta = choices[0].get("delta", {})
+                            content = delta.get("content")
+                            if content:
+                                yield content
+
+                            # Accumulate tool call deltas
+                            for tc_delta in delta.get("tool_calls", []):
+                                idx = tc_delta.get("index", 0)
+                                if idx not in _tool_call_accum:
+                                    _tool_call_accum[idx] = {
+                                        "id": tc_delta.get("id", ""),
+                                        "name": "",
+                                        "arguments": "",
+                                        "type": tc_delta.get("type", "function"),
+                                    }
+                                entry = _tool_call_accum[idx]
+                                if tc_delta.get("id"):
+                                    entry["id"] = tc_delta["id"]
+                                func = tc_delta.get("function", {})
+                                if func.get("name"):
+                                    entry["name"] = func["name"]
+                                if func.get("arguments"):
+                                    entry["arguments"] += func["arguments"]
+                    except json.JSONDecodeError:
+                        continue
+
+            # Parse accumulated tool calls
+            if _tool_call_accum:
+                for idx in sorted(_tool_call_accum):
+                    entry = _tool_call_accum[idx]
+                    try:
+                        params = json.loads(entry["arguments"]) if entry["arguments"] else {}
+                    except json.JSONDecodeError:
+                        params = {}
+                    self._pending_tool_calls_by_call[call_id].append({
+                        "id": entry["id"],
+                        "name": entry["name"],
+                        "parameters": params,
+                        "type": entry.get("type", "function"),
+                    })
+                logger.info(
+                    "OpenAI streaming detected tool calls",
+                    call_id=call_id,
+                    tool_count=len(self._pending_tool_calls_by_call[call_id]),
+                    tools=[tc["name"] for tc in self._pending_tool_calls_by_call[call_id]],
+                )
+
+        except asyncio.TimeoutError as e:
+            logger.warning(
+                "OpenAI streaming timed out; falling back to serial path",
+                call_id=call_id,
+                timeout_sec=merged["timeout_sec"],
+                error=str(e),
+            )
+        except aiohttp.ClientError as e:
+            logger.error("OpenAI streaming connection error", call_id=call_id, error=str(e))
+
     async def _ensure_session(self) -> None:
         if self._session and not self._session.closed:
             return
@@ -766,6 +902,12 @@ class OpenAILLMAdapter(LLMComponent):
 
 class OpenAITTSAdapter(TTSComponent):
     """# Milestone7: OpenAI TTS adapter calling the audio.speech REST API."""
+
+    wideband_output_format = {
+        "encoding": "linear16",
+        "sample_rate": 16000,
+        "options": {"response_format": "pcm"},
+    }
 
     def __init__(
         self,
@@ -944,6 +1086,7 @@ class OpenAITTSAdapter(TTSComponent):
             source_rate,
             merged["target_format"]["encoding"],
             merged["target_format"]["sample_rate"],
+            merged["output_resampler"],
         )
 
         logger.info(
@@ -1019,7 +1162,16 @@ class OpenAITTSAdapter(TTSComponent):
             ),
             "source_format": merged_source,
             "target_format": merged_target,
+            "output_resampler": runtime_options.get(
+                "output_resampler",
+                self._pipeline_defaults.get(
+                    "output_resampler", self._provider_defaults.output_resampler
+                ),
+            ),
         }
+        merged["output_resampler"] = resolve_output_resampler_policy(
+            provider_mode=merged.get("output_resampler")
+        )[0]
         return merged
 
     @staticmethod
@@ -1072,11 +1224,17 @@ class OpenAITTSAdapter(TTSComponent):
         source_rate: int,
         target_encoding: str,
         target_rate: int,
+        output_resampler: str = "linear",
     ) -> bytes:
         if not pcm_bytes:
             return b""
         if int(source_rate) != int(target_rate):
-            pcm_bytes, _ = resample_audio(pcm_bytes, int(source_rate), int(target_rate))
+            pcm_bytes, _ = resample_audio(
+                pcm_bytes,
+                int(source_rate),
+                int(target_rate),
+                mode=output_resampler,
+            )
         return convert_pcm16le_to_target_format(pcm_bytes, target_encoding)
 
 

@@ -3,6 +3,7 @@ import base64
 import json
 import wave
 from io import BytesIO
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -10,6 +11,7 @@ from src.audio.resampler import convert_pcm16le_to_target_format
 from src.config import AppConfig, OpenAIProviderConfig
 from src.pipelines.openai import OpenAISTTAdapter, OpenAILLMAdapter, OpenAITTSAdapter
 from src.pipelines.orchestrator import PipelineOrchestrator
+from src.tools.base import ToolPhase
 
 
 def _build_app_config() -> AppConfig:
@@ -21,7 +23,7 @@ def _build_app_config() -> AppConfig:
             "realtime_base_url": "wss://api.openai.com/v1/realtime",
             "chat_base_url": "https://api.openai.com/v1",
             "tts_base_url": "https://api.openai.com/v1/audio/speech",
-            "realtime_model": "gpt-4o-realtime-preview-2024-12-17",
+            "realtime_model": "gpt-realtime",
             "chat_model": "gpt-4o-mini",
             "tts_model": "gpt-4o-mini-tts",
             "voice": "alloy",
@@ -110,6 +112,30 @@ class _FakeSession:
         self.closed = True
 
 
+class _TimeoutStream:
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise asyncio.TimeoutError("simulated first-token timeout")
+
+
+class _FakeStreamingResponse(_FakeResponse):
+    def __init__(self, content, status: int = 200):
+        super().__init__(b"", status=status)
+        self.content = content
+
+
+class _FakeStreamingSession(_FakeSession):
+    def __init__(self, content, status: int = 200):
+        super().__init__(b"", status=status)
+        self._content = content
+
+    def post(self, url, json=None, data=None, headers=None, timeout=None):
+        self.requests.append({"url": url, "json": json, "data": data, "headers": headers, "timeout": timeout})
+        return _FakeStreamingResponse(self._content, status=self._status)
+
+
 @pytest.mark.asyncio
 async def test_openai_stt_adapter_transcribes(monkeypatch):
     app_config = _build_app_config()
@@ -158,6 +184,71 @@ async def test_openai_llm_adapter_chat_completion(monkeypatch):
     request = fake_session.requests[0]
     assert request["json"]["model"] == "gpt-4o-mini"
     assert request["json"]["messages"][-1] == {"role": "user", "content": "hello"}
+
+
+@pytest.mark.asyncio
+async def test_openai_llm_uses_captured_registry_for_tool_schemas(monkeypatch):
+    app_config = _build_app_config()
+    provider_config = OpenAIProviderConfig(**app_config.providers["openai"])
+    body = json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode("utf-8")
+    fake_session = _FakeSession(body)
+    adapter = OpenAILLMAdapter(
+        "openai_llm",
+        app_config,
+        provider_config,
+        {"use_realtime": False},
+        session_factory=lambda: fake_session,
+    )
+    definition = MagicMock()
+    definition.phase = ToolPhase.IN_CALL
+    definition.to_openai_schema.return_value = {
+        "type": "function",
+        "function": {
+            "name": "captured_tool",
+            "description": "Captured generation tool",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    captured_tool = MagicMock(definition=definition)
+    captured_registry = MagicMock()
+    captured_registry.get.return_value = captured_tool
+    live_registry = MagicMock()
+    live_registry.get.return_value = None
+    adapter.bind_tool_registry(captured_registry)
+    monkeypatch.setattr("src.pipelines.openai.tool_registry", live_registry)
+
+    await adapter.start()
+    await adapter.generate(
+        "call-1", "hello", {}, {"tools": ["captured_tool"]}
+    )
+
+    assert fake_session.requests[0]["json"]["tools"] == [
+        definition.to_openai_schema.return_value
+    ]
+    captured_registry.get.assert_called_once_with("captured_tool")
+    live_registry.get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_openai_llm_stream_timeout_returns_empty_for_serial_fallback():
+    app_config = _build_app_config()
+    provider_config = OpenAIProviderConfig(**app_config.providers["openai"])
+    fake_session = _FakeStreamingSession(_TimeoutStream())
+    adapter = OpenAILLMAdapter(
+        "openai_llm",
+        app_config,
+        provider_config,
+        {"use_realtime": False, "timeout_sec": 1.5},
+        session_factory=lambda: fake_session,
+    )
+
+    await adapter.start()
+    chunks = [chunk async for chunk in adapter.generate_stream("call-1", "hello", {"system_prompt": "You are helpful."}, {})]
+
+    assert chunks == []
+    assert fake_session.requests[0]["json"]["stream"] is True
+    assert fake_session.requests[0]["timeout"] == 1.5
+    assert adapter._pending_tool_calls_by_call["call-1"] == []
 
 
 @pytest.mark.asyncio

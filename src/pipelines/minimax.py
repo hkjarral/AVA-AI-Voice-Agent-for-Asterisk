@@ -1,15 +1,15 @@
 """
 MiniMax LLM pipeline adapter (OpenAI-compatible Chat Completions).
 
-MiniMax provides OpenAI-compatible endpoints for its M2.7 family of models.
-This adapter uses the OpenAI Chat Completions format with MiniMax-specific
-constraints (e.g. temperature must be in (0.0, 1.0], response_format unsupported).
+MiniMax provides OpenAI-compatible endpoints for its M3 / M2.7 family of
+models. This adapter uses the OpenAI Chat Completions format with
+MiniMax-specific constraints (e.g. temperature must be in (0.0, 1.0],
+response_format unsupported).
 
 Supported models:
-  - MiniMax-M2.7            (default, latest flagship with enhanced reasoning)
+  - MiniMax-M3              (default, latest flagship)
+  - MiniMax-M2.7            (previous flagship, retained for compatibility)
   - MiniMax-M2.7-highspeed  (high-speed version for low-latency scenarios)
-  - MiniMax-M2.5            (previous generation, 204K context)
-  - MiniMax-M2.5-highspeed  (previous generation, faster)
 
 API docs: https://platform.minimax.io/docs/api-reference/text-openai-api
 """
@@ -303,9 +303,10 @@ class MiniMaxLLMAdapter(LLMComponent):
         # Build tool schemas if tools are requested.
         tools_list = merged.get("tools")
         tool_schemas = []
+        call_tool_registry = self.tool_registry_or(tool_registry)
         if tools_list and isinstance(tools_list, list):
             for tool_name in tools_list:
-                tool = tool_registry.get(tool_name)
+                tool = call_tool_registry.get(tool_name)
                 if tool:
                     try:
                         from ..tools.base import ToolPhase

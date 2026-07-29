@@ -64,6 +64,7 @@ func (r *Runner) Run() (*Report, error) {
 	// In-container probes (python-only; no curl).
 	rep.Items = append(rep.Items, r.checkInContainerPaths())
 	rep.Items = append(rep.Items, r.checkCallHistorySQLite())
+	rep.Items = append(rep.Items, r.checkAgentsDB())
 
 	cfg, cfgItem := r.readEffectiveConfig()
 	rep.Items = append(rep.Items, cfgItem)
@@ -579,6 +580,58 @@ print(json.dumps(res))
 		Status:  StatusPass,
 		Message: "writable (SQLite test passed)",
 		Details: "canonical_path=/app/data/call_history.db",
+	}
+}
+
+func (r *Runner) checkAgentsDB() Item {
+	script := `
+import json, os, sqlite3
+p = "/app/data/operator/agents.db"
+res = {"present": False, "active": 0, "default": None, "error": None}
+if os.path.exists(p):
+    res["present"] = True
+    try:
+        c = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=2.0)
+        res["active"] = c.execute("SELECT COUNT(*) FROM agents WHERE is_active=1").fetchone()[0]
+        row = c.execute("SELECT slug FROM agents WHERE is_default=1 AND is_active=1").fetchone()
+        res["default"] = row[0] if row else None
+        c.close()
+    except Exception as e:
+        res["error"] = str(e)
+print(json.dumps(res))
+`
+	out, err := r.dockerExecPython(script)
+	if err != nil {
+		return Item{Name: "Agents DB", Status: StatusWarn, Message: "could not query agents store", Details: err.Error()}
+	}
+	var res struct {
+		Present bool    `json:"present"`
+		Active  int     `json:"active"`
+		Default *string `json:"default"`
+		Error   *string `json:"error"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(out), &res); err != nil {
+		return Item{Name: "Agents DB", Status: StatusWarn, Message: "invalid probe output", Details: string(out)}
+	}
+	if !res.Present {
+		return Item{Name: "Agents DB", Status: StatusPass, Message: "not present (YAML/headless mode)", Details: "path=/app/data/operator/agents.db"}
+	}
+	if res.Error != nil {
+		return Item{Name: "Agents DB", Status: StatusWarn, Message: "present but unreadable", Details: *res.Error}
+	}
+	if res.Default != nil && *res.Default != "" {
+		return Item{
+			Name:    "Agents DB",
+			Status:  StatusPass,
+			Message: fmt.Sprintf("%d active agent(s), default=%s", res.Active, *res.Default),
+			Details: "path=/app/data/operator/agents.db",
+		}
+	}
+	return Item{
+		Name:        "Agents DB",
+		Status:      StatusWarn,
+		Message:     fmt.Sprintf("present, %d active agent(s), but no active default agent", res.Active),
+		Remediation: "Set a default agent in the Admin UI Agents tab.",
 	}
 }
 

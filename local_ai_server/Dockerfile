@@ -1,6 +1,6 @@
 # --- Stage 1: Builder (Dependencies) ---
 # Note: Using trixie (Debian 13) for glibc compatibility with Kroko binary
-FROM python:3.11-slim-trixie as builder
+FROM python:3.11-slim-trixie AS builder
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Build Args - Conditionally include backends (AAVA-112)
@@ -53,12 +53,19 @@ RUN if [ "$INCLUDE_VOSK" = "true" ]; then \
 
 RUN if [ "$INCLUDE_SHERPA" = "true" ]; then \
         echo "📦 Installing Sherpa-ONNX STT..." && \
-        pip install --no-cache-dir sherpa-onnx==1.12.19; \
+        SHERPA_REQUIREMENT="$(grep -m 1 '^sherpa-onnx==' requirements.txt || true)"; \
+        if [ -z "$SHERPA_REQUIREMENT" ]; then \
+            echo "❌ INCLUDE_SHERPA=true but requirements.txt has no sherpa-onnx entry" >&2; \
+            exit 1; \
+        fi; \
+        pip install --no-cache-dir "$SHERPA_REQUIREMENT"; \
     fi
 
 RUN if [ "$INCLUDE_FASTER_WHISPER" = "true" ]; then \
         echo "📦 Installing Faster-Whisper STT..." && \
-        pip install --no-cache-dir faster-whisper==1.0.3; \
+        FASTER_WHISPER_REQUIREMENT="$(grep -m 1 '^faster-whisper==' requirements.txt || true)"; \
+        if [ -z "$FASTER_WHISPER_REQUIREMENT" ]; then echo "❌ Missing faster-whisper pin" >&2; exit 1; fi; \
+        pip install --no-cache-dir "$FASTER_WHISPER_REQUIREMENT"; \
     fi
 
 RUN if [ "$INCLUDE_WHISPER_CPP" = "true" ]; then \
@@ -78,7 +85,16 @@ RUN if [ "$INCLUDE_PIPER" = "true" ]; then \
 
 RUN if [ "$INCLUDE_KOKORO" = "true" ]; then \
         echo "📦 Installing Kokoro TTS..." && \
-        pip install --no-cache-dir "kokoro>=0.9.2"; \
+        KOKORO_REQUIREMENT="$(grep -m 1 '^kokoro==' requirements.txt || true)"; \
+        TORCH_REQUIREMENT="$(grep -m 1 '^torch==' requirements.txt || true)"; \
+        TRANSFORMERS_REQUIREMENT="$(grep -m 1 '^transformers==' requirements.txt || true)"; \
+        HF_HUB_REQUIREMENT="$(grep -m 1 '^huggingface-hub==' requirements.txt || true)"; \
+        if [ -z "$KOKORO_REQUIREMENT" ]; then echo "❌ Missing kokoro pin" >&2; exit 1; fi; \
+        if [ -z "$TORCH_REQUIREMENT" ]; then echo "❌ Missing torch pin" >&2; exit 1; fi; \
+        if [ -z "$TRANSFORMERS_REQUIREMENT" ] || [ -z "$HF_HUB_REQUIREMENT" ]; then echo "❌ Missing transformers/huggingface-hub pins" >&2; exit 1; fi; \
+        pip install --no-cache-dir "$TORCH_REQUIREMENT" --index-url https://download.pytorch.org/whl/cpu && \
+        pip install --no-cache-dir "$TRANSFORMERS_REQUIREMENT" "$HF_HUB_REQUIREMENT" && \
+        pip install --no-cache-dir "$KOKORO_REQUIREMENT"; \
     fi
 
 RUN if [ "$INCLUDE_MELOTTS" = "true" ]; then \
@@ -89,8 +105,11 @@ RUN if [ "$INCLUDE_MELOTTS" = "true" ]; then \
         python -c "from pathlib import Path; p=Path('/tmp/MeloTTS/setup.py'); s=p.read_text(); s=s.replace(\"from pip.req import parse_requirements\\n\", \"\"); s=s.replace(\"install_reqs = parse_requirements('requirements.txt')\\nreqs = [str(ir.req) for ir in install_reqs]\\n\", \"with open(os.path.join(cwd, 'requirements.txt'), encoding='utf-8') as _f:\\n    reqs = [ln.strip() for ln in _f if ln.strip() and not ln.startswith('#')]\\n\"); p.write_text(s); req=[]; ex=('torch','torchaudio','gradio'); [req.append(ln.strip()) for ln in Path('/tmp/MeloTTS/requirements.txt').read_text().splitlines() if ln.strip() and not ln.strip().startswith('#') and not ln.strip().lower().startswith(ex)]; Path('/tmp/MeloTTS/requirements.filtered.txt').write_text('\\n'.join(req)+'\\n'); print(f'MeloTTS filtered requirements prepared: {len(req)} packages')" && \
         pip install --no-cache-dir -r requirements.filtered.txt && \
         pip install --no-cache-dir "setuptools<81" && \
-        if ! python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torch') else 1)"; then pip install --no-cache-dir torch; fi && \
-        if ! python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torchaudio') else 1)"; then pip install --no-cache-dir torchaudio; fi && \
+        TORCH_REQUIREMENT="$(grep -m 1 '^torch==' /usr/src/app/requirements.txt || true)" && \
+        TORCHAUDIO_REQUIREMENT="$(grep -m 1 '^torchaudio==' /usr/src/app/requirements.txt || true)" && \
+        if [ -z "$TORCH_REQUIREMENT" ] || [ -z "$TORCHAUDIO_REQUIREMENT" ]; then echo "❌ Missing torch/torchaudio pins" >&2; exit 1; fi && \
+        if ! python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torch') else 1)"; then pip install --no-cache-dir "$TORCH_REQUIREMENT" --index-url https://download.pytorch.org/whl/cpu; fi && \
+        if ! python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torchaudio') else 1)"; then pip install --no-cache-dir "$TORCHAUDIO_REQUIREMENT" --index-url https://download.pytorch.org/whl/cpu; fi && \
         pip install --no-cache-dir --no-build-isolation --no-deps . && \
         cd / && rm -rf /tmp/MeloTTS && \
         python -m unidic download || true && \
@@ -105,8 +124,10 @@ RUN mkdir -p /opt/silero-cache
 
 RUN if [ "$INCLUDE_SILERO" = "true" ]; then \
         echo "📦 Installing Silero TTS dependencies..." && \
+        TORCH_REQUIREMENT="$(grep -m 1 '^torch==' requirements.txt || true)"; \
+        if [ -z "$TORCH_REQUIREMENT" ]; then echo "❌ Missing torch pin" >&2; exit 1; fi; \
         if ! python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torch') else 1)"; then \
-            pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu; \
+            pip install --no-cache-dir "$TORCH_REQUIREMENT" --index-url https://download.pytorch.org/whl/cpu; \
         fi && \
         pip install --no-cache-dir omegaconf && \
         echo "📦 Pre-caching Silero Russian model (best effort)..." && \
@@ -116,8 +137,23 @@ RUN if [ "$INCLUDE_SILERO" = "true" ]; then \
 
 RUN if [ "$INCLUDE_LLAMA" = "true" ]; then \
         echo "📦 Installing llama-cpp-python LLM..." && \
-        pip install --no-cache-dir llama-cpp-python==0.3.16; \
+        LLAMA_CPP_REQUIREMENT="$(grep -m 1 '^llama-cpp-python==' requirements.txt || true)"; \
+        if [ -z "$LLAMA_CPP_REQUIREMENT" ]; then \
+            echo "❌ INCLUDE_LLAMA=true but requirements.txt has no llama-cpp-python entry" >&2; \
+            exit 1; \
+        fi; \
+        CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF" \
+        pip install --no-cache-dir "$LLAMA_CPP_REQUIREMENT"; \
     fi
+
+# MeloTTS declares Gradio for its standalone web demo; AVA does not ship that UI.
+# Fail for every other broken or incompatible dependency.
+RUN CHECK_OUTPUT="$(pip check 2>&1 || true)"; \
+    UNEXPECTED="$(printf '%s\n' "$CHECK_OUTPUT" | \
+        grep -v -e '^No broken requirements found\.$' \
+                -e '^melotts .* requires gradio, which is not installed\.$' || true)"; \
+    if [ -n "$UNEXPECTED" ]; then printf '%s\n' "$UNEXPECTED" >&2; exit 1; fi; \
+    echo "No unexpected broken requirements found."
 
 # Pre-install spacy model for Kokoro TTS (only if Kokoro included)
 RUN if [ "$INCLUDE_KOKORO" = "true" ]; then \

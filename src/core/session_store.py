@@ -68,11 +68,30 @@ class SessionStore:
         """Get session by canonical call_id."""
         async with self._lock:
             return self._sessions_by_call_id.get(call_id)
+
+    async def append_tool_call_if_active(self, call_id: str, record: dict) -> bool:
+        """Append history only while the call is registered, under one lock."""
+        async with self._lock:
+            session = self._sessions_by_call_id.get(call_id)
+            if session is None:
+                return False
+            if session.tool_calls is None:
+                session.tool_calls = []
+            session.tool_calls.append(record)
+            return True
     
     async def get_by_channel_id(self, channel_id: str) -> Optional[CallSession]:
         """Get session by any channel_id (caller, local, external_media)."""
         async with self._lock:
             return self._sessions_by_channel_id.get(channel_id)
+
+    async def has_active_sessions_for_provider(self, provider_key: str) -> bool:
+        """Return whether any active call is currently using provider_key."""
+        async with self._lock:
+            for session in self._sessions_by_call_id.values():
+                if getattr(session, "provider_name", None) == provider_key:
+                    return True
+            return False
     
     async def remove_call(self, call_id: str) -> Optional[CallSession]:
         """Remove a call session and all its channel mappings."""
@@ -235,14 +254,23 @@ class SessionStore:
         async with self._lock:
             return list(self._sessions_by_call_id.values())
 
-    async def count_active_outbound_calls(self, campaign_id: Optional[str] = None) -> int:
-        """Count active outbound calls (optionally scoped to a campaign)."""
+    async def count_active_outbound_calls(
+        self,
+        campaign_id: Optional[str] = None,
+        *,
+        excluding_attempt_ids: Optional[Set[str]] = None,
+    ) -> int:
+        """Count active outbound calls, optionally excluding attempts counted elsewhere."""
+        excluded = {str(value) for value in (excluding_attempt_ids or set()) if str(value)}
         async with self._lock:
             count = 0
             for session in self._sessions_by_call_id.values():
                 if not getattr(session, "is_outbound", False):
                     continue
                 if campaign_id and getattr(session, "outbound_campaign_id", None) != campaign_id:
+                    continue
+                attempt_id = str(getattr(session, "outbound_attempt_id", None) or "").strip()
+                if attempt_id and attempt_id in excluded:
                     continue
                 count += 1
             return count

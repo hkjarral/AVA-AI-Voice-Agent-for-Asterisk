@@ -1,6 +1,6 @@
 # Transport & Playback Mode Compatibility Guide
 
-**Last Updated**: January 7, 2026  
+**Last Updated**: July 11, 2026
 **Issue**: Linear AAVA-28, AAVA-85
 
 ## Overview
@@ -10,6 +10,16 @@ This document defines the **validated and supported** combinations of audio tran
 For **v5.1.4+**: both **AudioSocket** and **ExternalMedia RTP** are validated options for pipeline deployments and full-agent deployments. Choose based on what fits your Asterisk environment and network constraints (TCP `8090` for AudioSocket vs UDP `18080` for ExternalMedia RTP), and confirm the combination you’re running matches the matrix below.
 
 Note: AudioSocket is currently validated with `audiosocket.format: slin`.
+Release-specific evidence, including the exact call IDs/revisions and
+combinations that still require final-candidate replay, is tracked in
+[`docs/baselines/golden/v7.3.2-validation-matrix.md`](baselines/golden/v7.3.2-validation-matrix.md).
+
+The July 2026 stabilization sweep produced accepted AudioSocket and
+ExternalMedia calls for Google Live, OpenAI Realtime, Deepgram Voice Agent,
+ElevenLabs Agent, Grok, Local full agent, `local_hybrid`,
+`hybrid_elevenlabs`, and `telnyx_hybrid`. Support remains configuration- and
+version-sensitive: consult the release matrix before treating a historical
+validation claim as evidence for a new candidate.
 
 ---
 

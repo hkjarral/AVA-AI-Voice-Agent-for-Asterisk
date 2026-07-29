@@ -159,6 +159,7 @@ class ElevenLabsToolAdapter:
                     session_store=context.get("session_store"),
                     ari_client=context.get("ari_client"),
                     config=context.get("config"),
+                    tool_registry=self.registry,
                     provider_name="elevenlabs",
                     user_input=context.get("user_input"),
                 )

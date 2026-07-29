@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { FormInput, FormLabel, FormSwitch, FormSelect } from '../ui/FormComponents';
 import { ensureModularKey, isFullAgentProvider, isRegisteredProvider, capabilityFromKey } from '../../utils/providerNaming';
+import { getSttStreamingMode } from '../../utils/sttAudioContract';
 import { CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 
 interface LocalAIStatus {
@@ -37,7 +38,9 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
         () => config?.options?.llm?.tools_enabled !== undefined || Boolean(config?.options?.llm?.realtime_model) || config?.options?.llm?.aggregation_min_words !== undefined || config?.options?.llm?.aggregation_min_chars !== undefined
     );
     const [showSttExpert, setShowSttExpert] = useState<boolean>(
-        () => Array.isArray(config?.options?.stt?.timestamp_granularities) && config.options.stt.timestamp_granularities.length > 0
+        () => (Array.isArray(config?.options?.stt?.timestamp_granularities) && config.options.stt.timestamp_granularities.length > 0)
+            || config?.options?.stt?.segment_energy_threshold !== undefined
+            || config?.options?.stt?.segment_silence_ms !== undefined
     );
     const [showTtsExpert, setShowTtsExpert] = useState<boolean>(
         () => config?.options?.tts?.response_format !== undefined || config?.options?.tts?.max_input_chars !== undefined
@@ -76,10 +79,12 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
         if ((Array.isArray(config?.options?.stt?.timestamp_granularities) && config.options.stt.timestamp_granularities.length > 0)
             || config?.options?.stt?.vad_silence_ms !== undefined
             || config?.options?.stt?.variant !== undefined
-            || config?.options?.stt?.vad_silence_timeout_ms !== undefined) {
+            || config?.options?.stt?.vad_silence_timeout_ms !== undefined
+            || config?.options?.stt?.segment_energy_threshold !== undefined
+            || config?.options?.stt?.segment_silence_ms !== undefined) {
             setShowSttExpert(true);
         }
-    }, [config?.options?.stt?.timestamp_granularities, config?.options?.stt?.vad_silence_ms, config?.options?.stt?.variant, config?.options?.stt?.vad_silence_timeout_ms]);
+    }, [config?.options?.stt?.timestamp_granularities, config?.options?.stt?.vad_silence_ms, config?.options?.stt?.variant, config?.options?.stt?.vad_silence_timeout_ms, config?.options?.stt?.segment_energy_threshold, config?.options?.stt?.segment_silence_ms]);
 
     useEffect(() => {
         if (config?.options?.tts?.response_format !== undefined || config?.options?.tts?.max_input_chars !== undefined) {
@@ -141,7 +146,7 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
         const base = Object.entries(providers || {})
             .filter(([providerKey, p]: [string, any]) => {
                 // Exclude Full Agents from modular slots
-                if (isFullAgentProvider(p)) return false;
+                if (isFullAgentProvider(p, providerKey)) return false;
 
                 // Exclude unregistered providers (no engine adapter)
                 if (!isRegisteredOrInferred(providerKey, p)) return false;
@@ -219,6 +224,7 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
     const ttsKey = String(localConfig.tts || '').toLowerCase();
 
     const isOpenAIStt = sttKey.includes('openai');
+    const isLocalStt = sttKey.includes('local');
     const isOpenAILlm = llmKey.includes('openai');
     const isOpenAITts = ttsKey.includes('openai');
     const isGroqStt = sttKey.includes('groq');
@@ -226,6 +232,9 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
     const isOllamaLlm = llmKey.includes('ollama');
     const isAzureStt = sttKey.includes('azure');
     const isAzureTts = ttsKey.includes('azure');
+    const sttStreamingMode = getSttStreamingMode(sttKey, providers || {});
+    const sttStreamingEnabled = sttStreamingMode === 'required'
+        || (sttStreamingMode === 'optional' && (localConfig.options?.stt?.streaming ?? true));
 
     const timestampGranularities = Array.isArray(localConfig.options?.stt?.timestamp_granularities)
         ? localConfig.options?.stt?.timestamp_granularities
@@ -240,6 +249,11 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                 : '';
 
     const guardrailModeValue = String(localConfig.options?.llm?.hangup_call_guardrail_mode || '');
+    const streamingOverlapValue = localConfig.options?.tts?.streaming_overlap === true
+        ? 'true'
+        : localConfig.options?.tts?.streaming_overlap === false
+            ? 'false'
+            : '';
     const guardrailMarkersValue = localConfig.options?.llm?.hangup_call_guardrail_markers?.end_call;
     const guardrailMarkersText = renderMarkerList(guardrailMarkersValue);
     const [guardrailMarkersDraft, setGuardrailMarkersDraft] = useState<string>(guardrailMarkersText);
@@ -301,14 +315,26 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                 </div>
 
                 <div className="space-y-3">
-                    <FormSwitch
-                        id="pipeline-stt-streaming"
-                        label="Streaming STT"
-                        checked={localConfig.options?.stt?.streaming ?? true}
-                        onChange={(e) => updateSTTOptions({ streaming: e.target.checked })}
-                        description="Recommended. Enables low-latency, two-way conversation."
-                        tooltip="When enabled, supported STT adapters stream audio continuously. When disabled, STT runs in buffered chunk mode."
-                    />
+                    {sttStreamingMode === 'buffered' ? (
+                        <div className="rounded-lg border border-border bg-card/50 p-3 text-sm">
+                            <div className="font-medium">Buffered STT</div>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                                This adapter receives complete PCM16 audio buffers with the sample rate supplied by the engine.
+                            </p>
+                        </div>
+                    ) : (
+                        <FormSwitch
+                            id="pipeline-stt-streaming"
+                            label="Streaming STT"
+                            checked={sttStreamingEnabled}
+                            disabled={sttStreamingMode === 'required'}
+                            onChange={(e) => updateSTTOptions({ streaming: e.target.checked })}
+                            description={sttStreamingMode === 'required'
+                                ? 'Required by this STT adapter.'
+                                : 'Recommended. Enables low-latency, two-way conversation.'}
+                            tooltip="Streaming adapters receive the engine-managed PCM16 mono 16 kHz audio bus."
+                        />
+                    )}
 
                     <div className="flex items-center justify-between">
                         <button
@@ -319,7 +345,9 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                             {showAdvancedSTT ? 'Hide Advanced' : 'Show Advanced'}
                         </button>
                         <div className="text-xs text-muted-foreground">
-                            Defaults: chunk_ms=160, stream_format=pcm16_16k
+                            {sttStreamingEnabled
+                                ? 'Engine input: PCM16-LE · mono · 16 kHz'
+                                : 'Buffered input: engine-described PCM16'}
                         </div>
                     </div>
 
@@ -330,14 +358,21 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                                 type="number"
                                 value={localConfig.options?.stt?.chunk_ms ?? 160}
                                 onChange={(e) => updateSTTOptions({ chunk_ms: parseInt(e.target.value || '160', 10) })}
-                                tooltip="How often we flush accumulated audio frames to the STT streaming sender. 160ms is a good default."
+                                tooltip={sttStreamingEnabled
+                                    ? 'How often accumulated frames are sent to streaming STT. Flux recommends 80ms; other adapters default to 160ms.'
+                                    : 'How much audio is buffered before a transcription request.'}
                             />
-                            <FormInput
-                                label="stream_format"
-                                value={localConfig.options?.stt?.stream_format ?? 'pcm16_16k'}
-                                onChange={(e) => updateSTTOptions({ stream_format: e.target.value })}
-                                tooltip="Input audio format for streaming STT. For Local STT this should usually be pcm16_16k."
-                            />
+                            {sttStreamingEnabled && (
+                                <div className="space-y-2">
+                                    <FormLabel>Streaming audio format</FormLabel>
+                                    <div className="rounded-md border border-input bg-muted/40 px-3 py-2 text-sm font-mono">
+                                        pcm16_16k · linear16 · mono
+                                    </div>
+                                    <p className="text-xs text-muted-foreground">
+                                        Managed by the engine so provider metadata always matches the audio bytes.
+                                    </p>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
@@ -425,8 +460,8 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                                     label="OpenAI Realtime Model"
                                     value={localConfig.options?.llm?.realtime_model || ''}
                                     onChange={(e) => updateRoleOptions('llm', { realtime_model: e.target.value })}
-                                    placeholder="gpt-4o-realtime-preview-2024-12-17"
-                                    tooltip="Adapter-level realtime model override for OpenAI pipeline LLM."
+                                    placeholder="gpt-realtime"
+                                    tooltip="Adapter-level realtime model override for OpenAI pipeline LLM. Current GA aliases: gpt-realtime (default), gpt-realtime-1.5, gpt-realtime-2, gpt-realtime-mini. Legacy gpt-4o-realtime-preview-* values were removed by OpenAI on 2026-05-07."
                                     disabled={!showLlmExpert}
                                 />
                             )}
@@ -555,7 +590,7 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                     </div>
                 )}
 
-                {(isOpenAIStt || isGroqStt || isAzureStt) && (
+                {(isOpenAIStt || isGroqStt || isAzureStt || isLocalStt) && (
                     <div className="space-y-3 border border-amber-300/40 rounded-lg p-4 bg-amber-500/5">
                         <FormSwitch
                             label="STT Expert Settings"
@@ -613,7 +648,72 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                                     />
                                 </>
                             )}
+                            {isLocalStt && (
+                                <>
+                                    <FormInput
+                                        label="Local STT Energy Threshold"
+                                        type="number"
+                                        value={localConfig.options?.stt?.segment_energy_threshold ?? ''}
+                                        onChange={(e) => {
+                                            const value = e.target.value;
+                                            updateRoleOptions('stt', {
+                                                segment_energy_threshold: value === '' ? undefined : parseInt(value, 10),
+                                            });
+                                        }}
+                                        placeholder="1200 (server default)"
+                                        tooltip="Per-pipeline Whisper speech threshold (0–32767). Lower values retain quieter phonemes but can admit noise."
+                                        min={0}
+                                        max={32767}
+                                        disabled={!showSttExpert}
+                                    />
+                                    <FormInput
+                                        label="Local STT End Silence (ms)"
+                                        type="number"
+                                        value={localConfig.options?.stt?.segment_silence_ms ?? ''}
+                                        onChange={(e) => {
+                                            const value = e.target.value;
+                                            updateRoleOptions('stt', {
+                                                segment_silence_ms: value === '' ? undefined : parseInt(value, 10),
+                                            });
+                                        }}
+                                        placeholder="500 (server default)"
+                                        tooltip="Per-pipeline Whisper end-of-utterance silence (100–5000 ms). Longer values reduce phrase fragmentation but add turn latency."
+                                        min={100}
+                                        max={5000}
+                                        disabled={!showSttExpert}
+                                    />
+                                </>
+                            )}
                         </div>
+                    </div>
+                )}
+
+                {localConfig.tts && (
+                    <div className="space-y-3 border border-border rounded-lg p-4">
+                        <h4 className="font-semibold">TTS Playback Policy</h4>
+                        <FormSelect
+                            label="Streaming Overlap"
+                            value={streamingOverlapValue}
+                            onChange={(e) => {
+                                const value = String(e.target.value || '');
+                                if (!value) {
+                                    const next = { ...(localConfig.options?.tts || {}) };
+                                    delete next.streaming_overlap;
+                                    setRoleOptions('tts', next);
+                                    return;
+                                }
+                                updateRoleOptions('tts', { streaming_overlap: value === 'true' });
+                            }}
+                            tooltip="Inherit uses the global pipeline setting. Disable per pipeline to synthesize the complete response before playback; this can avoid sentence-boundary starvation at the cost of higher first-audio latency."
+                            options={[
+                                { value: '', label: 'Inherit global (default)' },
+                                { value: 'true', label: 'Enabled (lower latency)' },
+                                { value: 'false', label: 'Disabled (complete response)' },
+                            ]}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                            This override affects only this pipeline. Leave it inherited unless diagnosing playback gaps.
+                        </p>
                     </div>
                 )}
 

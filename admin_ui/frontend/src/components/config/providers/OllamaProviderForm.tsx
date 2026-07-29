@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import { Loader2, CheckCircle2, XCircle, Server, Cpu, Wrench } from 'lucide-react';
+import HelpTooltip from '../../ui/HelpTooltip';
 
 interface OllamaModel {
   name: string;
@@ -73,9 +74,27 @@ const OllamaProviderForm: React.FC<OllamaProviderFormProps> = ({ config, onChang
 
       {/* Base URL */}
       <div>
-        <label className="block text-sm font-medium mb-2">
-          Ollama Server URL <span className="text-red-500">*</span>
-        </label>
+        <div className="flex items-center gap-1.5 mb-2">
+          <label className="block text-sm font-medium">
+            Ollama Server URL <span className="text-red-500">*</span>
+          </label>
+          <HelpTooltip
+            content={
+              <>
+                <strong>Ollama Server URL</strong> — base URL of your Ollama server. AAVA talks to its
+                OpenAI-compatible endpoint at <code>/v1/chat/completions</code>.
+                <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                  <li>Local: <code>http://localhost:11434</code></li>
+                  <li>From Docker: use the host IP (e.g. <code>http://192.168.1.100:11434</code>), not <code>localhost</code></li>
+                </ul>
+                Start the server bound to all interfaces with{' '}
+                <code>OLLAMA_HOST=0.0.0.0 ollama serve</code>.
+              </>
+            }
+            link="https://ollama.com/library"
+            linkText="Ollama model library"
+          />
+        </div>
         <input
           type="text"
           value={config.base_url || 'http://localhost:11434'}
@@ -118,9 +137,27 @@ const OllamaProviderForm: React.FC<OllamaProviderFormProps> = ({ config, onChang
 
       {/* Model Selection */}
       <div>
-        <label className="block text-sm font-medium mb-2">
-          Model <span className="text-red-500">*</span>
-        </label>
+        <div className="flex items-center gap-1.5 mb-2">
+          <label className="block text-sm font-medium">
+            Model <span className="text-red-500">*</span>
+          </label>
+          <HelpTooltip
+            content={
+              <>
+                <strong>Model</strong> — the Ollama model tag to use. The model must be pulled on the server first:
+                <pre className="bg-muted px-2 py-1 rounded text-xs mt-1">ollama pull llama3.2</pre>
+                <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                  <li><code>llama3.2</code> — default, supports tool calling</li>
+                  <li><code>llama3.1</code>, <code>qwen2.5</code>, <code>mistral-nemo</code> — also tool-capable</li>
+                  <li><code>gemma2</code>, <code>codellama</code> — chat-only, no tool calls</li>
+                </ul>
+                GPU strongly recommended for models &gt; 7B parameters.
+              </>
+            }
+            link="https://ollama.com/library"
+            linkText="Ollama model library"
+          />
+        </div>
         <div className="flex gap-2">
           <input
             type="text"
@@ -157,7 +194,20 @@ const OllamaProviderForm: React.FC<OllamaProviderFormProps> = ({ config, onChang
       {/* Available Models List (if fetched) */}
       {availableModels.length > 0 && (
         <div>
-          <label className="block text-sm font-medium mb-2">Available Models</label>
+          <div className="flex items-center gap-1.5 mb-2">
+            <label className="block text-sm font-medium">Available Models</label>
+            <HelpTooltip
+              content={
+                <>
+                  <strong>Available Models</strong> — list of models already pulled on the Ollama server.
+                  Click one to select it. The wrench icon means the model advertises tool-calling
+                  support (needed for hangup, transfer, send_email, etc.).
+                </>
+              }
+              link="https://ollama.com/library"
+              linkText="Ollama model library"
+            />
+          </div>
           <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
             {availableModels.map((model) => (
               <button
@@ -187,7 +237,20 @@ const OllamaProviderForm: React.FC<OllamaProviderFormProps> = ({ config, onChang
 
       {/* Temperature */}
       <div>
-        <label className="block text-sm font-medium mb-2">Temperature</label>
+        <div className="flex items-center gap-1.5 mb-2">
+          <label className="block text-sm font-medium">Temperature</label>
+          <HelpTooltip
+            content={
+              <>
+                <strong>Temperature</strong> — sampling randomness, 0.0–2.0. Lower (0.2–0.5) for
+                deterministic transactional flows; higher (0.7–1.0) for natural conversational tone.
+                Default <code>0.7</code> works well for most voice agents.
+              </>
+            }
+            link="https://ollama.com/library"
+            linkText="Ollama model library"
+          />
+        </div>
         <input
           type="number"
           step="0.1"
@@ -204,7 +267,20 @@ const OllamaProviderForm: React.FC<OllamaProviderFormProps> = ({ config, onChang
 
       {/* Max Tokens */}
       <div>
-        <label className="block text-sm font-medium mb-2">Max Tokens</label>
+        <div className="flex items-center gap-1.5 mb-2">
+          <label className="block text-sm font-medium">Max Tokens</label>
+          <HelpTooltip
+            content={
+              <>
+                <strong>Max Tokens</strong> — caps response length per turn. For voice, keep low
+                (<code>100</code>–<code>200</code>) so replies stay short and the model returns
+                quickly. Raise only if you see truncated answers.
+              </>
+            }
+            link="https://ollama.com/library"
+            linkText="Ollama model library"
+          />
+        </div>
         <input
           type="number"
           min="50"
@@ -220,7 +296,21 @@ const OllamaProviderForm: React.FC<OllamaProviderFormProps> = ({ config, onChang
 
       {/* Timeout */}
       <div>
-        <label className="block text-sm font-medium mb-2">Timeout (seconds)</label>
+        <div className="flex items-center gap-1.5 mb-2">
+          <label className="block text-sm font-medium">Timeout (seconds)</label>
+          <HelpTooltip
+            content={
+              <>
+                <strong>Timeout</strong> — how long to wait for a completion before aborting.
+                Local models — especially larger ones on CPU — can be slow on first inference
+                while the model loads into memory. Default <code>60</code>s; raise to
+                <code>120</code>+ for 70B-class models without a GPU.
+              </>
+            }
+            link="https://ollama.com/library"
+            linkText="Ollama model library"
+          />
+        </div>
         <input
           type="number"
           min="10"

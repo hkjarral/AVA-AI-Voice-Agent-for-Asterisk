@@ -212,6 +212,53 @@ class TestInCallHTTPTool:
         assert result["status"] == "success"
         assert result["data"]["available"] is True
         assert result["data"]["next_slot"] == "2026-01-30 10:00"
+
+    @pytest.mark.asyncio
+    async def test_get_never_sends_legacy_hidden_body(self, tool_config, execution_context):
+        tool_config.method = "GET"
+        tool = InCallHTTPTool(tool_config)
+        response = AsyncMock(status=200, headers={})
+        response.charset = "utf-8"
+        response.content = self._make_content([b'{"data":{"available":true}}'])
+        request_cm = AsyncMock()
+        request_cm.__aenter__ = AsyncMock(return_value=response)
+        request_cm.__aexit__ = AsyncMock(return_value=None)
+        session = AsyncMock()
+        session.request = MagicMock(return_value=request_cm)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=session_cm):
+            await tool.execute({"date": "2026-01-30"}, execution_context)
+
+        kwargs = session.request.call_args.kwargs
+        assert kwargs["method"] == "GET"
+        assert "json" not in kwargs
+        assert "data" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_delete_preserves_configured_body(self, tool_config, execution_context):
+        tool_config.method = "DELETE"
+        tool = InCallHTTPTool(tool_config)
+        response = AsyncMock(status=200, headers={})
+        response.charset = "utf-8"
+        response.content = self._make_content([b'{"data":{"available":true}}'])
+        request_cm = AsyncMock()
+        request_cm.__aenter__ = AsyncMock(return_value=response)
+        request_cm.__aexit__ = AsyncMock(return_value=None)
+        session = AsyncMock()
+        session.request = MagicMock(return_value=request_cm)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=session_cm):
+            await tool.execute({"date": "2026-01-30"}, execution_context)
+
+        kwargs = session.request.call_args.kwargs
+        assert kwargs["method"] == "DELETE"
+        assert kwargs["json"] == {"caller": "+1234567890", "date": "2026-01-30"}
     
     @pytest.mark.asyncio
     async def test_return_raw_json(self, execution_context):
@@ -248,6 +295,35 @@ class TestInCallHTTPTool:
         
         assert result["status"] == "success"
         assert result["data"] == response_data
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status", "body"),
+        [
+            (201, b'{"data":{"available":true}}'),
+            (204, b""),
+        ],
+    )
+    async def test_all_2xx_statuses_are_successful(
+        self, tool_config, execution_context, status, body
+    ):
+        tool = InCallHTTPTool(tool_config)
+        response = AsyncMock(status=status, headers={})
+        response.charset = "utf-8"
+        response.content = self._make_content([body] if body else [])
+        request_cm = AsyncMock()
+        request_cm.__aenter__ = AsyncMock(return_value=response)
+        request_cm.__aexit__ = AsyncMock(return_value=None)
+        session = AsyncMock()
+        session.request = MagicMock(return_value=request_cm)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=session_cm):
+            result = await tool.execute({"date": "2026-01-30"}, execution_context)
+
+        assert result["status"] == "success"
     
     @pytest.mark.asyncio
     async def test_non_200_returns_failed(self, tool_config, execution_context):

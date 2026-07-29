@@ -16,21 +16,58 @@ from api.local_ai import (  # noqa: E402
 
 
 def test_ws_payload_faster_whisper_uses_stt_config_model() -> None:
-    req = SwitchModelRequest(model_type="stt", backend="faster_whisper", model_path="base")
+    req = SwitchModelRequest(
+        model_type="stt",
+        backend="faster_whisper",
+        model_path="tiny.en",
+        faster_whisper_language="en",
+        faster_whisper_device="cpu",
+        faster_whisper_compute_type="int8",
+    )
     assert _build_local_ai_ws_switch_payload(req) == {
         "type": "switch_model",
         "stt_backend": "faster_whisper",
-        "stt_config": {"model": "base"},
+        "stt_config": {"model": "tiny.en", "device": "cpu", "compute_type": "int8"},
+        "faster_whisper_language": "en",
     }
 
 
 def test_env_and_yaml_updates_faster_whisper_persists_model_id() -> None:
-    req = SwitchModelRequest(model_type="stt", backend="faster_whisper", model_path="base")
+    req = SwitchModelRequest(
+        model_type="stt",
+        backend="faster_whisper",
+        model_path="tiny.en",
+        faster_whisper_language="en",
+        faster_whisper_device="cpu",
+        faster_whisper_compute_type="int8",
+    )
     env_updates, yaml_updates = _build_local_ai_env_and_yaml_updates(req)
     assert env_updates["LOCAL_STT_BACKEND"] == "faster_whisper"
-    assert env_updates["FASTER_WHISPER_MODEL"] == "base"
+    assert env_updates["FASTER_WHISPER_MODEL"] == "tiny.en"
+    assert env_updates["FASTER_WHISPER_DEVICE"] == "cpu"
+    assert env_updates["FASTER_WHISPER_COMPUTE_TYPE"] == "int8"
+    assert env_updates["FASTER_WHISPER_LANGUAGE"] == "en"
     assert yaml_updates["stt_backend"] == "faster_whisper"
-    assert yaml_updates["stt_model"] == "base"
+    assert yaml_updates["stt_model"] == "tiny.en"
+    assert yaml_updates["faster_whisper_language"] == "en"
+
+
+def test_env_updates_llm_runtime_cpu_demo_toggles() -> None:
+    req = SwitchModelRequest(
+        model_type="llm",
+        model_path="/app/models/llm/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        llm_context=2048,
+        llm_max_tokens=32,
+        enable_filler_audio=False,
+        llm_streaming_tts_overlap=False,
+    )
+    env_updates, yaml_updates = _build_local_ai_env_and_yaml_updates(req)
+    assert env_updates["LOCAL_LLM_MODEL_PATH"] == "/app/models/llm/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+    assert env_updates["LOCAL_LLM_CONTEXT"] == "2048"
+    assert env_updates["LOCAL_LLM_MAX_TOKENS"] == "32"
+    assert env_updates["LOCAL_ENABLE_FILLER_AUDIO"] == "false"
+    assert env_updates["LOCAL_LLM_STREAMING_TTS_OVERLAP"] == "false"
+    assert yaml_updates == {}
 
 
 def test_ws_payload_whisper_cpp_uses_stt_model_path() -> None:

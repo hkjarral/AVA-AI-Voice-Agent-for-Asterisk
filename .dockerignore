@@ -68,6 +68,9 @@ dev-debug.log
 # Environment files (SECURITY: Never include in image)
 .env
 .env.*
+.agent/
+data/
+secrets/
 .venv
 venv/
 ENV/
@@ -118,6 +121,8 @@ dist/
 
 # Package managers
 node_modules/
+**/node_modules/
+admin_ui/frontend/node_modules/
 pip-wheel-metadata/
 
 # Taskmaster-AI

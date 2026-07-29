@@ -2,16 +2,196 @@
 set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-/app/project}"
+while [ "${PROJECT_ROOT}" != "/" ] && [ "${PROJECT_ROOT%/}" != "${PROJECT_ROOT}" ]; do
+  PROJECT_ROOT="${PROJECT_ROOT%/}"
+done
 JOB_ID="${AAVA_UPDATE_JOB_ID:-}"
 MODE="${AAVA_UPDATE_MODE:-run}" # run|plan|rollback
 INCLUDE_UI="${AAVA_UPDATE_INCLUDE_UI:-false}" # true|false
 REMOTE="${AAVA_UPDATE_REMOTE:-origin}"
 REF="${AAVA_UPDATE_REF:-main}"
 CHECKOUT="${AAVA_UPDATE_CHECKOUT:-false}" # true|false
+LOCAL_CHANGES="${AAVA_UPDATE_LOCAL_CHANGES:-ask}" # ask|retain|overwrite|abort
 ROLLBACK_FROM_JOB="${AAVA_UPDATE_ROLLBACK_FROM_JOB:-}"
+FORCE_ACTIVE_CALLS="${AAVA_UPDATE_FORCE_ACTIVE_CALLS:-false}" # true|false
 UPDATE_CLI_HOST="${AAVA_UPDATE_UPDATE_CLI_HOST:-true}" # true|false
 CLI_INSTALL_PATH="${AAVA_UPDATE_CLI_INSTALL_PATH:-}" # optional absolute host path
+BUILD_CLI_FROM_SOURCE="${AAVA_UPDATE_BUILD_CLI_FROM_SOURCE:-false}" # true|false
 KEEP_JOB_LOGS="${AAVA_UPDATE_KEEP_JOB_LOGS:-10}" # keep last N job logs
+
+drop_to_project_owner() {
+  if [ "$(id -u)" -ne 0 ] || [ ! -d "${PROJECT_ROOT}" ]; then
+    return 0
+  fi
+
+  # Refuse this before the root-owned-checkout return. Non-root-owned checkouts
+  # fail closed below instead of performing updater-state writes as root.
+  if [ -L "${PROJECT_ROOT}/.agent" ]; then
+    echo "ERR: refusing to repair symlinked updater state: ${PROJECT_ROOT}/.agent" >&2
+    return 2
+  fi
+
+  local project_uid project_gid git_dir git_common_dir
+  local git_metadata_root git_metadata_path git_metadata_uid
+  local agent_metadata_path agent_metadata_uid
+  local tracked_list tracked_relative tracked_path tracked_parent tracked_uid
+  local socket_gid user_name user_home primary_group socket_group parent_dir
+  local -a git_metadata_roots=()
+  project_uid="$(stat -c '%u' "${PROJECT_ROOT}")"
+  project_gid="$(stat -c '%g' "${PROJECT_ROOT}")"
+  if [ "${project_uid}" = "0" ]; then
+    return 0
+  fi
+
+  # Do not repair checkout-owned updater state with root privileges. The project
+  # owner can replace .agent while this container is running, so a point-in-time
+  # symlink check cannot make later privileged mkdir/chown operations safe. An
+  # absent directory will be created after the project-owner re-exec; unsafe or
+  # legacy mixed-owned state must use the documented host-CLI recovery.
+  if [ -e "${PROJECT_ROOT}/.agent" ]; then
+    if [ ! -d "${PROJECT_ROOT}/.agent" ]; then
+      echo "ERR: refusing non-directory updater state: ${PROJECT_ROOT}/.agent; use host CLI recovery" >&2
+      return 2
+    fi
+    if ! agent_metadata_path="$(find "${PROJECT_ROOT}/.agent" ! -uid "${project_uid}" -print -quit)"; then
+      echo "ERR: cannot inspect updater state ownership; use host CLI recovery" >&2
+      return 2
+    fi
+    if [ -n "${agent_metadata_path}" ]; then
+      agent_metadata_uid="$(stat -c '%u' "${agent_metadata_path}" 2>/dev/null || true)"
+      echo "ERR: checkout owner UID ${project_uid} differs from updater state owner UID ${agent_metadata_uid:-unknown} at ${agent_metadata_path}; use host CLI recovery" >&2
+      return 2
+    fi
+  fi
+
+  # The checkout root and individual Git metadata entries can have different
+  # owners after an older root-run update or a bounded Admin UI permission
+  # repair. Checking only the .git directory misses files such as FETCH_HEAD,
+  # which `git fetch` must overwrite. Fail closed into host-CLI recovery instead
+  # of running project-controlled updater state operations as root.
+  if [ -e "${PROJECT_ROOT}/.git" ]; then
+    if ! git_dir="$(
+      git -c safe.directory="${PROJECT_ROOT}" -C "${PROJECT_ROOT}" \
+        rev-parse --absolute-git-dir 2>/dev/null
+    )" || [ -z "${git_dir}" ]; then
+      echo "ERR: cannot resolve the checkout Git directory; use host CLI recovery" >&2
+      return 2
+    fi
+    if ! git_common_dir="$(
+      git -c safe.directory="${PROJECT_ROOT}" -C "${PROJECT_ROOT}" \
+        rev-parse --path-format=absolute --git-common-dir 2>/dev/null
+    )" || [ -z "${git_common_dir}" ]; then
+      echo "ERR: cannot resolve the checkout common Git directory; use host CLI recovery" >&2
+      return 2
+    fi
+    git_metadata_roots=("${git_dir}")
+    if [ "${git_common_dir}" != "${git_dir}" ]; then
+      git_metadata_roots+=("${git_common_dir}")
+    fi
+
+    for git_metadata_root in "${git_metadata_roots[@]}"; do
+      if ! git_metadata_path="$(find "${git_metadata_root}" ! -uid "${project_uid}" -print -quit)"; then
+        echo "ERR: cannot inspect Git metadata ownership at ${git_metadata_root}; use host CLI recovery" >&2
+        return 2
+      fi
+      if [ -n "${git_metadata_path}" ]; then
+        git_metadata_uid="$(stat -c '%u' "${git_metadata_path}" 2>/dev/null || true)"
+        echo "ERR: checkout owner UID ${project_uid} differs from Git metadata owner UID ${git_metadata_uid:-unknown} at ${git_metadata_path}; use host CLI recovery" >&2
+        return 2
+      fi
+    done
+  fi
+
+  # Legacy root-run deployments can leave tracked source files or their parent
+  # directories owned by another UID even after .git is repaired. Detect only
+  # Git-tracked paths here; untracked runtime/operator data is intentionally out
+  # of scope and must never be recursively chowned by the updater container.
+  if ! tracked_list="$(mktemp)"; then
+    echo "ERR: cannot create tracked ownership scan; use host CLI recovery" >&2
+    return 2
+  fi
+  if ! git -c safe.directory="${PROJECT_ROOT}" -C "${PROJECT_ROOT}" \
+    ls-files -z >"${tracked_list}"; then
+    rm -f -- "${tracked_list}"
+    echo "ERR: cannot enumerate tracked checkout paths; use host CLI recovery" >&2
+    return 2
+  fi
+  while IFS= read -r -d '' tracked_relative; do
+    tracked_path="${PROJECT_ROOT}/${tracked_relative}"
+    tracked_parent="${tracked_path%/*}"
+    while [ "${tracked_parent}" != "${PROJECT_ROOT}" ]; do
+      if [ -L "${tracked_parent}" ]; then
+        rm -f -- "${tracked_list}"
+        echo "ERR: tracked parent ${tracked_parent} is a symlink; inspect the checkout before retrying" >&2
+        return 2
+      fi
+      if [ -e "${tracked_parent}" ]; then
+        tracked_uid="$(stat -c '%u' "${tracked_parent}" 2>/dev/null || true)"
+        if [ "${tracked_uid}" != "${project_uid}" ]; then
+          rm -f -- "${tracked_list}"
+          echo "ERR: checkout owner UID ${project_uid} differs from tracked parent owner UID ${tracked_uid:-unknown} at ${tracked_parent}; use host CLI recovery" >&2
+          return 2
+        fi
+      fi
+      tracked_parent="${tracked_parent%/*}"
+    done
+    if [ -e "${tracked_path}" ] || [ -L "${tracked_path}" ]; then
+      tracked_uid="$(stat -c '%u' "${tracked_path}" 2>/dev/null || true)"
+      if [ "${tracked_uid}" != "${project_uid}" ]; then
+        rm -f -- "${tracked_list}"
+        echo "ERR: checkout owner UID ${project_uid} differs from tracked path owner UID ${tracked_uid:-unknown} at ${tracked_path}; use host CLI recovery" >&2
+        return 2
+      fi
+    fi
+  done <"${tracked_list}"
+  rm -f -- "${tracked_list}"
+
+  primary_group="$(getent group "${project_gid}" 2>/dev/null | cut -d: -f1 | head -n 1 || true)"
+  if [ -z "${primary_group}" ]; then
+    primary_group="aava-project-${project_gid}"
+    groupadd -g "${project_gid}" "${primary_group}"
+  fi
+
+  user_name="$(getent passwd "${project_uid}" 2>/dev/null | cut -d: -f1 | head -n 1 || true)"
+  if [ -z "${user_name}" ]; then
+    user_name="aava-updater-${project_uid}"
+    useradd --no-create-home -u "${project_uid}" -g "${project_gid}" -s /bin/bash "${user_name}"
+  fi
+  user_home="$(mktemp -d /tmp/aava-updater-home.XXXXXXXXXX)"
+  chown "${project_uid}:${project_gid}" "${user_home}"
+  chmod 0700 "${user_home}"
+
+  if [ -S /var/run/docker.sock ]; then
+    socket_gid="$(stat -c '%g' /var/run/docker.sock)"
+    if [ "${socket_gid}" != "${project_gid}" ]; then
+      socket_group="$(getent group "${socket_gid}" 2>/dev/null | cut -d: -f1 | head -n 1 || true)"
+      if [ -z "${socket_group}" ]; then
+        socket_group="aava-docker-${socket_gid}"
+        groupadd -g "${socket_gid}" "${socket_group}"
+      fi
+      usermod -aG "${socket_group}" "${user_name}"
+    fi
+  fi
+
+  # Docker creates the bind target at the host's absolute path. Image-owned
+  # ancestors such as /root may not be traversable by the project UID even when
+  # the mounted checkout itself is. Grant execute-only traversal inside this
+  # short-lived updater container before dropping privileges.
+  parent_dir="$(dirname "${PROJECT_ROOT}")"
+  while [ "${parent_dir}" != "/" ]; do
+    if ! gosu "${user_name}" test -x "${parent_dir}"; then
+      chmod a+x "${parent_dir}" || {
+        echo "ERR: cannot make updater mount parent traversable: ${parent_dir}; use host CLI recovery" >&2
+        return 2
+      }
+    fi
+    parent_dir="$(dirname "${parent_dir}")"
+  done
+
+  exec gosu "${user_name}" /usr/bin/env HOME="${user_home}" "$0" "$@"
+}
+
+drop_to_project_owner "$@"
 
 UPDATES_DIR="${PROJECT_ROOT}/.agent/updates"
 JOBS_DIR="${UPDATES_DIR}/jobs"
@@ -46,6 +226,101 @@ prune_job_logs() {
   done
 }
 
+acquire_update_lock() {
+  exec 200>"${UPDATES_DIR}/update.lock"
+  if ! flock -n 200; then
+    echo "ERR: another agent update or rollback is already running" >&2
+    return 2
+  fi
+  printf 'pid=%s started_at=%s\n' "$$" "$(now_iso)" >&200
+}
+
+is_truthy() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+query_ai_engine_active_calls() {
+  # -i is required because the probe script is supplied on stdin. Without it,
+  # python receives an empty program and exits successfully with no count.
+  docker exec -i ai_engine python3 - <<'PY'
+import json
+import os
+import sys
+import urllib.request
+
+
+def add_port(candidates, raw):
+    try:
+        port = int(str(raw).strip())
+    except Exception:
+        return
+    if 1 <= port <= 65535 and port not in candidates:
+        candidates.append(port)
+
+
+ports = []
+add_port(ports, os.getenv("HEALTH_BIND_PORT", ""))
+try:
+    import yaml
+    for path in ("/app/config/ai-agent.local.yaml", "/app/config/ai-agent.yaml"):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                cfg = yaml.safe_load(fh) or {}
+            add_port(ports, (cfg.get("health") or {}).get("port"))
+        except Exception:
+            pass
+except Exception:
+    pass
+add_port(ports, 15000)
+
+last_error = ""
+for port in ports:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/sessions/stats", timeout=3) as resp:
+            payload = json.load(resp)
+        print(int(payload.get("active_calls", payload.get("active_sessions", 0)) or 0))
+        sys.exit(0)
+    except Exception as exc:
+        last_error = str(exc)
+
+print(f"ERROR:{last_error}")
+sys.exit(2)
+PY
+}
+
+guard_rollback_active_calls() {
+  if is_truthy "${FORCE_ACTIVE_CALLS}"; then
+    echo "==> Active-call guard bypassed by override" >&2
+    return 0
+  fi
+
+  local output rc
+  set +e
+  output="$(query_ai_engine_active_calls 2>&1)"
+  rc=$?
+  set -e
+
+  if [ "${rc}" -ne 0 ]; then
+    echo "WARN: unable to check active calls before rollback service changes: ${output}" >&2
+    return 0
+  fi
+
+  local active_calls
+  active_calls="$(printf '%s\n' "${output}" | tail -n 1 | tr -d '[:space:]')"
+  if ! [[ "${active_calls}" =~ ^[0-9]+$ ]]; then
+    echo "WARN: unable to parse active-call count before rollback service changes: ${output}" >&2
+    return 0
+  fi
+
+  if [ "${active_calls}" -gt 0 ]; then
+    echo "ERR: refusing to rollback while ${active_calls} active call(s) are in progress; retry after calls complete or enable the active-call override" >&2
+    return 1
+  fi
+}
+
 install_agent_if_needed() {
   # Prefer the baked-in agent binary from the updater image (built from the repo's cli/).
   if [ -x "${BUILTIN_AGENT}" ]; then
@@ -70,32 +345,42 @@ sync_agent_cli() {
   # so operators (and future UI jobs) can rely on a recent binary without SSHing to reinstall.
   mkdir -p "${BIN_DIR}"
 
-  # Prefer building from the updated repo using Docker + golang image (no host Go required).
-  # Best-effort: if this fails, fall back to copying the bundled agent binary from this image.
   echo "==> Updating agent CLI (project-local)..." >&2
 
-  ver="$(git -c safe.directory="${PROJECT_ROOT}" describe --tags --always --dirty 2>/dev/null || echo "dev")"
-  bt="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  if [ -x "${BUILTIN_AGENT}" ]; then
+    cp -f "${BUILTIN_AGENT}" "${AGENT_BIN}" || true
+    chmod +x "${AGENT_BIN}" || true
+  fi
 
-  set +e
-  docker run --rm \
-    -v "${PROJECT_ROOT}:/src" \
-    -w /src/cli \
-    -e AAVA_CLI_VERSION="${ver}" \
-    -e AAVA_BUILD_TIME="${bt}" \
-    golang:1.22-bookworm \
-    bash -c "go mod download && CGO_ENABLED=0 go build -buildvcs=false -ldflags \"-X main.version='\$AAVA_CLI_VERSION' -X main.buildTime='\$AAVA_BUILD_TIME'\" -o /src/.agent/bin/agent ./cmd/agent"
-  rc=$?
-  set -e
+  if [ "${BUILD_CLI_FROM_SOURCE}" = "true" ]; then
+    # Optional heavy path: build from updated source using Docker + golang image.
+    ver="$(git -c safe.directory="${PROJECT_ROOT}" describe --tags --always --dirty 2>/dev/null || echo "dev")"
+    bt="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-  if [ "${rc}" -ne 0 ]; then
-    echo "WARN: failed to build agent CLI from updated source; falling back to bundled agent binary" >&2
-    if [ -x "${BUILTIN_AGENT}" ]; then
-      cp -f "${BUILTIN_AGENT}" "${AGENT_BIN}" || true
-      chmod +x "${AGENT_BIN}" || true
+    set +e
+    docker run --rm \
+      --user "$(id -u):$(id -g)" \
+      -v "${PROJECT_ROOT}:/src" \
+      -w /src/cli \
+      -e HOME=/tmp \
+      -e GOCACHE=/tmp/go-build \
+      -e GOMODCACHE=/tmp/go-mod \
+      -e AAVA_CLI_VERSION="${ver}" \
+      -e AAVA_BUILD_TIME="${bt}" \
+      golang:1.22-bookworm \
+      bash -c "go mod download && CGO_ENABLED=0 go build -buildvcs=false -ldflags \"-X main.version='\$AAVA_CLI_VERSION' -X main.buildTime='\$AAVA_BUILD_TIME'\" -o /src/.agent/bin/agent ./cmd/agent"
+    rc=$?
+    set -e
+
+    if [ "${rc}" -ne 0 ]; then
+      echo "WARN: failed to build agent CLI from updated source; keeping bundled agent binary" >&2
+      if [ -x "${BUILTIN_AGENT}" ]; then
+        cp -f "${BUILTIN_AGENT}" "${AGENT_BIN}" || true
+        chmod +x "${AGENT_BIN}" || true
+      fi
+    else
+      chmod +x "${AGENT_BIN}" 2>/dev/null || true
     fi
-  else
-    chmod +x "${AGENT_BIN}" 2>/dev/null || true
   fi
 
   if [ "${UPDATE_CLI_HOST}" != "true" ]; then
@@ -206,7 +491,8 @@ write_job_state() {
       finished_at: $finished_at,
       include_ui: ($include_ui == "true"),
       exit_code: (if $exit_code == "" then null else ($exit_code|tonumber) end),
-      log_path: (if $log_path == "" then null else $log_path end)
+      log_path: (if $log_path == "" then null else $log_path end),
+      heartbeat_at: (now | todate)
     }')"
 
   if [ -f "${state_file}" ]; then
@@ -222,9 +508,9 @@ run_plan() {
   install_agent_if_needed
 
   if [ -x "${BUILTIN_AGENT}" ]; then
-    exec "${BUILTIN_AGENT}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}"
+    exec "${BUILTIN_AGENT}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" --local-changes="${LOCAL_CHANGES}"
   fi
-  exec "${AGENT_BIN}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}"
+  exec "${AGENT_BIN}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" --local-changes="${LOCAL_CHANGES}"
 }
 
 run_update() {
@@ -252,9 +538,9 @@ run_update() {
   # Capture a plan snapshot for history/summary (best-effort).
   plan_json=""
   if [ -x "${BUILTIN_AGENT}" ]; then
-    plan_json="$("${BUILTIN_AGENT}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" 2>/dev/null || true)"
+    plan_json="$("${BUILTIN_AGENT}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" --local-changes="${LOCAL_CHANGES}" 2>/dev/null || true)"
   else
-    plan_json="$("${AGENT_BIN}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" 2>/dev/null || true)"
+    plan_json="$("${AGENT_BIN}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" --local-changes="${LOCAL_CHANGES}" 2>/dev/null || true)"
   fi
 
   # Merge metadata into job state so the UI can show an actionable summary even if logs are pruned.
@@ -262,7 +548,9 @@ run_update() {
     --arg type "update" \
     --arg ref "${REF}" \
     --arg remote "${REMOTE}" \
+    --arg repo_root "${PROJECT_ROOT}" \
     --arg checkout "${CHECKOUT}" \
+    --arg local_changes "${LOCAL_CHANGES}" \
     --arg backup_dir_rel "${BACKUP_DIR_REL}" \
     --arg pre_update_branch "${pre_update_branch}" \
     --arg pre_update_sha "${pre_sha}" \
@@ -270,9 +558,11 @@ run_update() {
     --arg plan_raw "${plan_json}" \
     '{
       type: $type,
+      repo_root: $repo_root,
       ref: $ref,
       remote: $remote,
       checkout: ($checkout == "true"),
+      local_changes: $local_changes,
       backup_dir_rel: $backup_dir_rel,
       pre_update_branch: $pre_update_branch,
       pre_update_sha: (if ($pre_update_sha|length) == 0 then null else $pre_update_sha end),
@@ -293,9 +583,9 @@ run_update() {
 
   set +e
   if [ -x "${BUILTIN_AGENT}" ]; then
-    "${BUILTIN_AGENT}" update -v --self-update=false --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --backup-id="${JOB_ID}" --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
+    "${BUILTIN_AGENT}" update -v --self-update=false --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --backup-id="${JOB_ID}" --include-ui="${INCLUDE_UI}" --local-changes="${LOCAL_CHANGES}" 2>&1 | tee "${JOB_LOG_PATH}"
   else
-    "${AGENT_BIN}" update -v --self-update=false --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --backup-id="${JOB_ID}" --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
+    "${AGENT_BIN}" update -v --self-update=false --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --backup-id="${JOB_ID}" --include-ui="${INCLUDE_UI}" --local-changes="${LOCAL_CHANGES}" 2>&1 | tee "${JOB_LOG_PATH}"
   fi
   code="${PIPESTATUS[0]}"
   set -e
@@ -308,7 +598,36 @@ run_update() {
     sync_agent_cli || true
     write_job_state "success" "${code}"
   else
-    write_job_state "failed" "${code}"
+    failure_status="failed"
+    failure_stage="update"
+    failure_reason="update command failed"
+    if grep -q "Check: FAIL" "${JOB_LOG_PATH}" 2>/dev/null; then
+      failure_status="validation_failed"
+      failure_stage="post_update_check"
+      failure_reason="post-update agent check failed"
+    elif grep -qi "cannot fast-forward" "${JOB_LOG_PATH}" 2>/dev/null; then
+      failure_stage="diverged_branch"
+      failure_reason="local branch diverged from target"
+    elif grep -qi "stash pop failed" "${JOB_LOG_PATH}" 2>/dev/null; then
+      failure_stage="stash_conflict"
+      failure_reason="local changes require manual stash conflict resolution"
+    elif grep -qi "local-change policy\\|local changes.*--local-changes\\|re-run with --local-changes" "${JOB_LOG_PATH}" 2>/dev/null; then
+      failure_stage="local_changes_decision_required"
+      failure_reason="update stopped because local code changes need an explicit retain, overwrite, or abort decision"
+    elif grep -qi "failed to parse.*ai-agent.*yaml\\|parse existing config/ai-agent.local.yaml" "${JOB_LOG_PATH}" 2>/dev/null; then
+      failure_stage="config_parse_error"
+      failure_reason="configuration YAML could not be parsed during migration"
+    elif grep -qi "docker compose .*failed\\|failed to restart" "${JOB_LOG_PATH}" 2>/dev/null; then
+      failure_stage="docker_failure"
+      failure_reason="docker compose operation failed"
+    fi
+    failure_patch="$(jq -n \
+      --arg failed_stage "${failure_stage}" \
+      --arg failure_reason "${failure_reason}" \
+      '{failed_stage: $failed_stage, failure_reason: $failure_reason}')"
+    jq -s '.[0] * .[1]' "${JOBS_DIR}/${JOB_ID}.json" <(echo "${failure_patch}") > "${JOBS_DIR}/${JOB_ID}.json.tmp" \
+      && mv "${JOBS_DIR}/${JOB_ID}.json.tmp" "${JOBS_DIR}/${JOB_ID}.json" 2>/dev/null || true
+    write_job_state "${failure_status}" "${code}"
   fi
 
   prune_job_logs || true
@@ -330,6 +649,14 @@ run_rollback() {
 
   JOB_LOG_PATH="${JOBS_DIR}/${JOB_ID}.log"
   export JOB_LOG_PATH
+
+  if ! acquire_update_lock 2> >(tee -a "${JOB_LOG_PATH}" >&2); then
+    JOB_FINISHED_AT="$(now_iso)"
+    export JOB_FINISHED_AT
+    write_job_state "failed" "2"
+    prune_job_logs || true
+    exit 2
+  fi
 
   src_state="${JOBS_DIR}/${ROLLBACK_FROM_JOB}.json"
   if [ ! -f "${src_state}" ]; then
@@ -403,13 +730,56 @@ run_rollback() {
     echo "==> Restoring code to: ${pre_branch}" >&2
     echo "==> Restoring operator config from: ${backup_rel}" >&2
 
-    # Best-effort: preserve any current local changes before switching branches.
-    if [ -n "$(git -c safe.directory="${PROJECT_ROOT}" status --porcelain 2>/dev/null || true)" ]; then
-      echo "==> Working tree is dirty; stashing changes (best-effort)" >&2
-      git -c safe.directory="${PROJECT_ROOT}" stash push -u -m "aava rollback ${JOB_ID}" >/dev/null 2>&1 || true
+    mapfile -t rebuild_services < <(jq -r '.services_rebuild[]?' <<<"${plan_patch}" 2>/dev/null || true)
+    mapfile -t restart_services < <(jq -r '.services_restart[]?' <<<"${plan_patch}" 2>/dev/null || true)
+    compose_changed="$(jq -r '.compose_changed // false' <<<"${plan_patch}" 2>/dev/null || echo false)"
+
+    if [ "${#rebuild_services[@]}" -eq 0 ] && [ "${#restart_services[@]}" -eq 0 ]; then
+      extra=""
+      if [ "${include_ui_effective}" = "true" ]; then
+        extra=" + admin_ui"
+      fi
+      echo "==> No service impact found in source plan; defaulting rollback targets to ai_engine + local_ai_server${extra}" >&2
+      rebuild_services=("ai_engine" "local_ai_server")
+      if [ "${include_ui_effective}" = "true" ]; then
+        rebuild_services+=("admin_ui")
+      fi
     fi
 
-    git -c safe.directory="${PROJECT_ROOT}" checkout "${pre_branch}"
+    rollback_touches_ai_engine=false
+    if [ "${compose_changed}" = "true" ]; then
+      rollback_touches_ai_engine=true
+    fi
+    for svc in "${rebuild_services[@]}" "${restart_services[@]}"; do
+      if [ "${svc}" = "ai_engine" ]; then
+        rollback_touches_ai_engine=true
+        break
+      fi
+    done
+    if [ "${rollback_touches_ai_engine}" = "true" ]; then
+      guard_rollback_active_calls
+    fi
+
+    # Best-effort: preserve any current local changes before switching branches.
+    if [ -n "$(git -c safe.directory="${PROJECT_ROOT}" status --porcelain --untracked-files=no 2>/dev/null || true)" ]; then
+      echo "==> Working tree is dirty; stashing changes (best-effort)" >&2
+      git -c safe.directory="${PROJECT_ROOT}" stash push -m "aava rollback ${JOB_ID}" >/dev/null 2>&1 || true
+    fi
+
+    checkout_error="$(mktemp)"
+    if ! git -c safe.directory="${PROJECT_ROOT}" checkout "${pre_branch}" 2>"${checkout_error}"; then
+      if grep -qi "untracked working tree files would be overwritten" "${checkout_error}"; then
+        echo "==> Untracked paths conflict with rollback target; preserving them in a dedicated stash" >&2
+        git -c safe.directory="${PROJECT_ROOT}" stash push -u \
+          -m "aava rollback ${JOB_ID} untracked checkout conflicts" >/dev/null
+        git -c safe.directory="${PROJECT_ROOT}" checkout "${pre_branch}"
+      else
+        cat "${checkout_error}" >&2
+        rm -f "${checkout_error}"
+        exit 1
+      fi
+    fi
+    rm -f "${checkout_error}"
 
     if [ -f "${PROJECT_ROOT}/${backup_rel}/.env" ]; then
       cp -f "${PROJECT_ROOT}/${backup_rel}/.env" "${PROJECT_ROOT}/.env"
@@ -435,36 +805,77 @@ run_rollback() {
       mv "${tmp_contexts}" "${PROJECT_ROOT}/config/contexts"
     fi
 
-    mapfile -t rebuild_services < <(jq -r '.services_rebuild[]?' <<<"${plan_patch}" 2>/dev/null || true)
-    mapfile -t restart_services < <(jq -r '.services_restart[]?' <<<"${plan_patch}" 2>/dev/null || true)
-    compose_changed="$(jq -r '.compose_changed // false' <<<"${plan_patch}" 2>/dev/null || echo false)"
-
-    if [ "${#rebuild_services[@]}" -eq 0 ] && [ "${#restart_services[@]}" -eq 0 ]; then
-      extra=""
-      if [ "${include_ui_effective}" = "true" ]; then
-        extra=" + admin_ui"
-      fi
-      echo "==> No service impact found in source plan; defaulting rollback targets to ai_engine + local_ai_server${extra}" >&2
-      rebuild_services=("ai_engine" "local_ai_server")
-      if [ "${include_ui_effective}" = "true" ]; then
-        rebuild_services+=("admin_ui")
-      fi
-    fi
-
     if [ "${compose_changed}" = "true" ]; then
-      targets=("ai_engine" "local_ai_server")
-      if [ "${include_ui_effective}" = "true" ]; then
-        targets+=("admin_ui")
+      # Scope --no-build to services that are already running to avoid "no such image" failures
+      # for services the operator never built (e.g. local_ai_server on non-Local-AI deployments).
+      mapfile -t running_svcs < <(docker compose ps --services --status running 2>/dev/null \
+        || docker compose ps --services 2>/dev/null \
+        || true)
+      targets=("${running_svcs[@]}")
+      # Add rebuild/restart targets only if they are already running.
+      for svc in "${rebuild_services[@]}" "${restart_services[@]}"; do
+        [[ -z "${svc}" ]] && continue
+        for r in "${running_svcs[@]}"; do
+          if [ "${svc}" = "${r}" ]; then
+            targets+=("${svc}")
+            break
+          fi
+        done
+      done
+      if [ "${include_ui_effective}" != "true" ]; then
+        mapfile -t targets < <(printf '%s\n' "${targets[@]}" | awk 'NF && $0 != "admin_ui" && !seen[$0]++')
+      else
+        mapfile -t targets < <(printf '%s\n' "${targets[@]}" | awk 'NF && !seen[$0]++')
       fi
-      targets+=("${rebuild_services[@]}" "${restart_services[@]}")
-      # De-dup targets
-      mapfile -t targets < <(printf '%s\n' "${targets[@]}" | awk 'NF && !seen[$0]++')
       echo "==> Compose changed; reconciling services (no-build): ${targets[*]:-none}" >&2
       if [ "${#targets[@]}" -gt 0 ]; then
         docker compose up -d --remove-orphans --no-build "${targets[@]}"
       else
-        docker compose up -d --remove-orphans --no-build
+        # Stack is fully stopped. Reconcile the whole project but skip services
+        # whose images were never built (prevents "no such image" failures for
+        # e.g. local_ai_server on non-Local-AI deployments).
+        mapfile -t all_svcs < <(docker compose config --services 2>/dev/null || true)
+        local safe_targets=()
+        for svc in "${all_svcs[@]}"; do
+          [[ -z "${svc}" ]] && continue
+          local img
+          img="$(docker compose images --format json 2>/dev/null | grep -o "\"${svc}\"" || true)"
+          if [ -n "$img" ] || docker image inspect "asterisk-ai-voice-agent-${svc}:latest" &>/dev/null 2>&1; then
+            safe_targets+=("${svc}")
+          fi
+        done
+        if [ "${#safe_targets[@]}" -gt 0 ]; then
+          echo "==> Reconciling stopped services with built images: ${safe_targets[*]}" >&2
+          docker compose up -d --remove-orphans --no-build "${safe_targets[@]}"
+        fi
       fi
+    fi
+
+    # Preserve partial installs: do not force-start/rebuild services the operator was not running.
+    mapfile -t running_svcs_now < <(docker compose ps --services --status running 2>/dev/null \
+      || docker compose ps --services 2>/dev/null \
+      || true)
+    if [ "${#running_svcs_now[@]}" -gt 0 ]; then
+      mapfile -t rebuild_services < <(
+        for svc in "${rebuild_services[@]}"; do
+          for r in "${running_svcs_now[@]}"; do
+            if [ "${svc}" = "${r}" ]; then
+              printf '%s\n' "${svc}"
+              break
+            fi
+          done
+        done
+      )
+      mapfile -t restart_services < <(
+        for svc in "${restart_services[@]}"; do
+          for r in "${running_svcs_now[@]}"; do
+            if [ "${svc}" = "${r}" ]; then
+              printf '%s\n' "${svc}"
+              break
+            fi
+          done
+        done
+      )
     fi
 
     if [ "${#rebuild_services[@]}" -gt 0 ]; then

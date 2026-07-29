@@ -9,6 +9,8 @@ const VADConfig: React.FC<VADConfigProps> = ({ config, onChange }) => {
     const handleChange = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
     };
+    const effectiveVadMode =
+        config.vad_mode ?? (config.use_provider_vad ? 'provider' : 'auto');
 
     return (
         <div className="space-y-6">
@@ -26,15 +28,25 @@ const VADConfig: React.FC<VADConfigProps> = ({ config, onChange }) => {
                         <label htmlFor="enhanced_enabled" className="text-sm font-medium">Enhanced VAD</label>
                     </div>
 
-                    <div className="flex items-center space-x-2">
-                        <input
-                            type="checkbox"
-                            id="use_provider_vad"
-                            className="rounded border-input"
-                            checked={config.use_provider_vad ?? false}
-                            onChange={(e) => handleChange('use_provider_vad', e.target.checked)}
-                        />
-                        <label htmlFor="use_provider_vad" className="text-sm font-medium">Use Provider VAD</label>
+                    <div className="space-y-2">
+                        <label htmlFor="vad_mode" className="text-sm font-medium">VAD Mode</label>
+                        <select
+                            id="vad_mode"
+                            className="w-full p-2 rounded border border-input bg-background"
+                            value={effectiveVadMode}
+                            onChange={(e) => handleChange('vad_mode', e.target.value)}
+                        >
+                            <option value="auto">Auto (per-provider)</option>
+                            <option value="local">Always Local VAD</option>
+                            <option value="provider">Always Provider VAD</option>
+                        </select>
+                        <p className="text-xs text-muted-foreground">
+                            {effectiveVadMode === 'local'
+                                ? 'Local Enhanced + WebRTC VAD active for all providers.'
+                                : effectiveVadMode === 'provider'
+                                ? 'Provider-managed turn detection for all providers (legacy behavior).'
+                                : 'Automatically decides per-provider: providers with native VAD + barge-in use provider VAD; others use local VAD.'}
+                        </p>
                     </div>
 
                     <div className="space-y-2">

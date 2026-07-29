@@ -48,6 +48,9 @@ services:
         - INCLUDE_MELOTTS=${INCLUDE_MELOTTS:-false}
         - INCLUDE_SILERO=${INCLUDE_SILERO:-false}
         - INCLUDE_LLAMA=${INCLUDE_LLAMA:-true}
+        # Optional semicolon-separated CMake CUDA architecture list (for
+        # example, 70 for Tesla V100). Unset preserves the portable build.
+        - LLAMA_CUDA_ARCHITECTURES=${LLAMA_CUDA_ARCHITECTURES:-}
         - INCLUDE_KROKO_EMBEDDED=${INCLUDE_KROKO_EMBEDDED:-false}
         # When INCLUDE_KROKO_EMBEDDED=true, you must also set KROKO_SERVER_SHA256 in .env
         - KROKO_SERVER_SHA256=${KROKO_SERVER_SHA256:-}

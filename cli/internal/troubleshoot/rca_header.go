@@ -24,10 +24,10 @@ type RCAHeader struct {
 	TransportProfileSampleRate int    `json:"tp_sample_rate,omitempty"`
 	TransportProfileSource     string `json:"tp_source,omitempty"`
 
-	AudioSocketFormat  string `json:"audiosocket_format,omitempty"`
-	AudioSocketHost    string `json:"audiosocket_host,omitempty"`
-	AudioSocketPort    int    `json:"audiosocket_port,omitempty"`
-	ExternalMediaCodec string `json:"external_media_codec,omitempty"`
+	AudioSocketFormat          string `json:"audiosocket_format,omitempty"`
+	AudioSocketHost            string `json:"audiosocket_host,omitempty"`
+	AudioSocketPort            int    `json:"audiosocket_port,omitempty"`
+	ExternalMediaCodec         string `json:"external_media_codec,omitempty"`
 	ExternalMediaRTPHost       string `json:"external_media_rtp_host,omitempty"`
 	ExternalMediaRTPPort       int    `json:"external_media_rtp_port,omitempty"`
 	ExternalMediaAdvertiseHost string `json:"external_media_advertise_host,omitempty"`

@@ -5,6 +5,9 @@ import HelpTooltip from '../../ui/HelpTooltip';
 import { FormInput, FormSelect, FormLabel, FormSwitch } from '../../ui/FormComponents';
 import { Capability, ensureModularKey, isRegisteredProvider, getUnregisteredReason, REGISTERED_PROVIDER_TYPES } from '../../../utils/providerNaming';
 import { GOOGLE_LIVE_MODEL_OPTIONS } from '../../../utils/googleLiveModels';
+import { MODULAR_SUBTYPES, inferSubtype } from '../../../config/modularProviderSubtypes';
+import type { ProviderSubtype, Capability as SubtypeCapability } from '../../../config/modularProviderSubtypes';
+import ModularSubtypeForm from './ModularSubtypeForm';
 
 interface GenericProviderFormProps {
     config: any;
@@ -28,13 +31,13 @@ const GOOGLE_LIVE_SUGGESTED_MODELS = GOOGLE_LIVE_MODEL_OPTIONS.map((modelOption)
 
 const PROVIDER_OPTIONS: Record<string, Record<string, string[]>> = {
     deepgram: {
-        model: ['nova-2', 'nova-2-general', 'nova-2-meeting', 'enhanced', 'base'],
-        stt_model: ['nova-2', 'nova-2-general', 'nova-2-meeting', 'enhanced', 'base'],
+        model: ['nova-3', 'nova-2', 'nova-2-general', 'nova-2-meeting', 'enhanced', 'base', 'flux-general-en', 'flux-general-multi'],
+        stt_model: ['nova-3', 'nova-2', 'nova-2-general', 'nova-2-meeting', 'enhanced', 'base', 'flux-general-en', 'flux-general-multi'],
         tts_model: ['aura-asteria-en', 'aura-luna-en', 'aura-orion-en', 'aura-arcas-en', 'aura-perseus-en', 'aura-angus-en', 'aura-orpheus-en', 'aura-helios-en', 'aura-zeus-en'],
     },
     openai: {
-        model: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
-        llm_model: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
+        model: ['gpt-4o', 'gpt-4o-mini'],
+        llm_model: ['gpt-4o', 'gpt-4o-mini'],
         // STT models per OpenAI Speech-to-Text guide.
         stt_model: [
             'whisper-1',
@@ -56,23 +59,42 @@ const PROVIDER_OPTIONS: Record<string, Record<string, string[]>> = {
         voice: ['autumn', 'diana', 'hannah', 'austin', 'daniel', 'troy', 'fahad', 'sultan', 'lulwa', 'noura'],
     },
     openai_realtime: {
-        model: ['gpt-4o-realtime-preview', 'gpt-4o-realtime-preview-2024-10-01'],
-        voice: ['alloy', 'echo', 'shimmer', 'ash', 'ballad', 'coral', 'sage', 'verse'],
+        // Current GA Realtime models (verified against OpenAI's official docs on
+        // 2026-05-25). Preview models (gpt-4o-realtime-preview-*) were removed
+        // on 2026-05-07 and the Beta Realtime API was sunset on 2026-05-12.
+        model: ['gpt-realtime', 'gpt-realtime-1.5', 'gpt-realtime-2', 'gpt-realtime-mini'],
+        // 10-voice Realtime API catalog. cedar + marin added 2026-05-14.
+        voice: ['alloy', 'ash', 'ballad', 'cedar', 'coral', 'echo', 'marin', 'sage', 'shimmer', 'verse'],
     },
     google_live: {
         model: GOOGLE_LIVE_SUGGESTED_MODELS,
         llm_model: GOOGLE_LIVE_SUGGESTED_MODELS,
-        tts_voice_name: ['Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede', 'Leda', 'Orus', 'Zephyr'],
+        tts_voice_name: [
+            'Achernar', 'Achird', 'Algenib', 'Algieba', 'Alnilam', 'Aoede', 'Autonoe',
+            'Callirrhoe', 'Charon', 'Despina', 'Enceladus', 'Erinome', 'Fenrir', 'Gacrux',
+            'Iapetus', 'Kore', 'Laomedeia', 'Leda', 'Orus', 'Puck', 'Pulcherrima',
+            'Rasalgethi', 'Sadachbia', 'Sadaltager', 'Schedar', 'Sulafat', 'Umbriel',
+            'Vindemiatrix', 'Zephyr', 'Zubenelgenubi',
+        ],
     },
     minimax: {
-        chat_model: ['MiniMax-M2.7', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed'],
-        model: ['MiniMax-M2.7', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed'],
+        chat_model: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'],
+        model: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'],
     },
 };
 
 const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onChange, isNew }) => {
     const [customFields, setCustomFields] = useState<{ key: string; value: string }[]>([]);
     const [nameLocked, setNameLocked] = useState<boolean>(false);
+    const [selectedSubtype, setSelectedSubtype] = useState<ProviderSubtype | undefined>(undefined);
+
+    // On mount or when config changes, try to infer the subtype from existing config
+    useEffect(() => {
+        if (!selectedSubtype) {
+            const inferred = inferSubtype(config);
+            if (inferred) setSelectedSubtype(inferred);
+        }
+    }, [config.type, config.capabilities]);
 
     // Initialize custom fields from config on mount
     useEffect(() => {
@@ -138,7 +160,7 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
     };
 
     const handleTypeChange = (type: string) => {
-        let updates: any = { type };
+        const updates: any = { type };
         let newFields = [...customFields];
 
         if (type === 'full') {
@@ -176,6 +198,33 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
         // Lock name once a capability is chosen (still allow programmatic suffix swap)
         setNameLocked(true);
         updateConfig(updates);
+    };
+
+    const handleSubtypeChange = (subtypeId: string) => {
+        const cap = (config.capabilities || [])[0] as SubtypeCapability | undefined;
+        if (!cap) return;
+        const subtypes = MODULAR_SUBTYPES[cap] || [];
+        const subtype = subtypes.find(s => s.id === subtypeId);
+        if (!subtype) {
+            setSelectedSubtype(undefined);
+            return;
+        }
+        setSelectedSubtype(subtype);
+        // Set the YAML type and apply defaults
+        const defaults: Record<string, any> = { type: subtype.yamlType };
+        subtype.fields.forEach(f => {
+            if (f.default !== undefined && (config[f.key] === undefined || config[f.key] === '')) {
+                defaults[f.key] = f.default;
+            }
+        });
+        updateConfig(defaults);
+    };
+
+    const handleSubtypeFieldChange = (key: string, value: any) => {
+        // Directly merge into config without going through getBaseConfig()
+        // which strips subtype-specific keys like chat_base_url, chat_model, etc.
+        const updated = { ...config, [key]: value };
+        onChange(updated);
     };
 
     const handleFieldChange = (index: number, field: 'key' | 'value', value: string) => {
@@ -372,54 +421,67 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
                 )}
             </div>
 
-            {/* Connection Details */}
-            <div className="space-y-4 border-b border-border pb-6">
-                <h4 className="font-semibold flex items-center gap-2">
-                    Connection Settings
-                </h4>
+            {/* Modular Provider Subtype Selection + Fields */}
+            {config.type !== 'full' && (config.capabilities || []).length === 1 && (() => {
+                const cap = (config.capabilities || [])[0] as SubtypeCapability;
+                const subtypes = MODULAR_SUBTYPES[cap] || [];
+                return (
+                    <div className="space-y-4 border-b border-border pb-6">
+                        <h4 className="font-semibold flex items-center gap-2">
+                            Provider Configuration
+                            <HelpTooltip content="Select the type of provider to see its specific settings." />
+                        </h4>
 
-                {(config.type || 'modular') === 'full' ? (
-                    <div className="space-y-3">
-                        <FormInput
-                            label="Base URL / WebSocket URL"
-                            value={config.base_url || ''}
-                            onChange={(e) => updateConfig({ base_url: e.target.value })}
-                            placeholder="wss://api.provider.com/v1/realtime"
-                            tooltip="Required for full agents. Used for combined STT/LLM/TTS APIs."
+                        <FormSelect
+                            label={`${cap.toUpperCase()} Provider Type`}
+                            options={[
+                                { value: '', label: 'Select provider type...' },
+                                ...subtypes.map(s => ({ value: s.id, label: s.label })),
+                            ]}
+                            value={selectedSubtype?.id || ''}
+                            onChange={(e) => handleSubtypeChange(e.target.value)}
+                            tooltip="Choose which type of provider this is. This determines the available settings and correct YAML field names."
                         />
-                    </div>
-                ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {(config.capabilities || []).includes('stt') && (
-                            <FormInput
-                                label="STT Base URL"
-                                value={config.base_url_stt || ''}
-                                onChange={(e) => updateConfig({ base_url_stt: e.target.value })}
-                                placeholder="https://api.provider.com/stt"
+
+                        {selectedSubtype && (
+                            <ModularSubtypeForm
+                                subtype={selectedSubtype}
+                                config={config}
+                                onChange={handleSubtypeFieldChange}
                             />
                         )}
-                        {(config.capabilities || []).includes('tts') && (
-                            <FormInput
-                                label="TTS Base URL"
-                                value={config.base_url_tts || ''}
-                                onChange={(e) => updateConfig({ base_url_tts: e.target.value })}
-                                placeholder="https://api.provider.com/tts"
-                            />
-                        )}
-                        {(config.capabilities || []).includes('llm') && (
-                            <FormInput
-                                label="LLM Base URL"
-                                value={config.base_url_llm || ''}
-                                onChange={(e) => updateConfig({ base_url_llm: e.target.value })}
-                                placeholder="https://api.provider.com/v1"
-                            />
-                        )}
-                        {(config.capabilities || []).length === 0 && (
-                            <p className="text-sm text-muted-foreground">Select a capability to configure base URLs.</p>
+
+                        {!selectedSubtype && subtypes.length > 0 && (
+                            <p className="text-sm text-muted-foreground italic">
+                                Select a provider type above to configure connection settings.
+                            </p>
                         )}
                     </div>
-                )}
-            </div>
+                );
+            })()}
+
+            {/* Connection Details — only for Full Agents (modular providers use subtype form above) */}
+            {(config.type === 'full' || (config.type !== 'full' && (config.capabilities || []).length !== 1)) && (
+                <div className="space-y-4 border-b border-border pb-6">
+                    <h4 className="font-semibold flex items-center gap-2">
+                        Connection Settings
+                    </h4>
+
+                    {(config.type || 'modular') === 'full' ? (
+                        <div className="space-y-3">
+                            <FormInput
+                                label="Base URL / WebSocket URL"
+                                value={config.base_url || ''}
+                                onChange={(e) => updateConfig({ base_url: e.target.value })}
+                                placeholder="wss://api.provider.com/v1/realtime"
+                                tooltip="Required for full agents. Used for combined STT/LLM/TTS APIs."
+                            />
+                        </div>
+                    ) : (
+                        <p className="text-sm text-muted-foreground">Select a capability to configure connection settings.</p>
+                    )}
+                </div>
+            )}
 
             {/* Dynamic Configuration */}
             <div className="space-y-4">

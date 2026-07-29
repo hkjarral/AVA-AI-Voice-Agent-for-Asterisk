@@ -22,6 +22,7 @@ import logging
 import os
 import sqlite3
 import threading
+import unicodedata
 import uuid
 import re
 from dataclasses import dataclass
@@ -52,6 +53,22 @@ def _as_int(value: Any, default: int) -> int:
 
 def _as_str(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def _normalize_agent_routing_method(value: Any, default: str = "ai_agent") -> str:
+    method = _as_str(value).strip().lower()
+    if method in {"ai_agent", "ai_context"}:
+        return method
+    return default
+
+
+def _is_safe_legacy_agent_selector(value: str) -> bool:
+    """Allow historical display-name selectors while rejecting control characters."""
+    return (
+        bool(value)
+        and len(value) <= 200
+        and not any(unicodedata.category(char) == "Cc" for char in value)
+    )
 
 
 def _safe_json_loads(raw: str) -> Dict[str, Any]:
@@ -169,6 +186,7 @@ class OutboundStore:
             max_concurrent INTEGER NOT NULL DEFAULT 1,
             min_interval_seconds_between_calls INTEGER NOT NULL DEFAULT 5,
             default_context TEXT NOT NULL DEFAULT 'default',
+            agent_routing_method TEXT NOT NULL DEFAULT 'ai_agent',
             voicemail_drop_enabled INTEGER NOT NULL DEFAULT 1,
             voicemail_drop_mode TEXT NOT NULL DEFAULT 'upload', -- upload|tts
             voicemail_drop_text TEXT,
@@ -190,6 +208,7 @@ class OutboundStore:
             phone_number TEXT NOT NULL,
             lead_timezone TEXT,
             context_override TEXT,
+            agent_routing_method TEXT NOT NULL DEFAULT 'ai_agent',
             caller_id_override TEXT,
             custom_vars_json TEXT NOT NULL DEFAULT '{}',
             state TEXT NOT NULL DEFAULT 'pending', -- pending|leased|dialing|amd_pending|in_progress|completed|failed|canceled
@@ -229,7 +248,9 @@ class OutboundStore:
     ]
 
     def __init__(self, db_path: Optional[str] = None):
-        self._db_path = db_path or os.getenv("CALL_HISTORY_DB_PATH", "data/call_history.db")
+        # Absolute default so the outbound tables land in the same file as call history
+        # regardless of CWD (matches CallHistoryStore's default) — see MED-C1.
+        self._db_path = db_path or os.getenv("CALL_HISTORY_DB_PATH", "/app/data/call_history.db")
         self._enabled = str(os.getenv("CALL_HISTORY_ENABLED", "true")).strip().lower() not in ("0", "false", "no")
         self._lock = threading.Lock()
         self._initialized = False
@@ -281,11 +302,22 @@ class OutboundStore:
                 cur.execute("ALTER TABLE outbound_campaigns ADD COLUMN consent_media_uri TEXT")
             if "consent_timeout_seconds" not in ccols:
                 cur.execute("ALTER TABLE outbound_campaigns ADD COLUMN consent_timeout_seconds INTEGER NOT NULL DEFAULT 5")
+            if "agent_routing_method" not in ccols:
+                # Rows that predate AI_AGENT were authored as AI_CONTEXT selectors.
+                cur.execute(
+                    "ALTER TABLE outbound_campaigns ADD COLUMN agent_routing_method "
+                    "TEXT NOT NULL DEFAULT 'ai_context'"
+                )
 
             # outbound_leads
             lcols = _cols("outbound_leads")
             if "name" not in lcols:
                 cur.execute("ALTER TABLE outbound_leads ADD COLUMN name TEXT")
+            if "agent_routing_method" not in lcols:
+                cur.execute(
+                    "ALTER TABLE outbound_leads ADD COLUMN agent_routing_method "
+                    "TEXT NOT NULL DEFAULT 'ai_context'"
+                )
 
             # outbound_attempts
             acols = _cols("outbound_attempts")
@@ -334,6 +366,9 @@ class OutboundStore:
             max_concurrent = max(1, min(5, _as_int(payload.get("max_concurrent"), 1)))
             min_interval = max(0, _as_int(payload.get("min_interval_seconds_between_calls"), 5))
             default_context = _as_str(payload.get("default_context")).strip() or "default"
+            agent_routing_method = _normalize_agent_routing_method(
+                payload.get("agent_routing_method"), "ai_agent"
+            )
             vm_enabled = 1 if bool(payload.get("voicemail_drop_enabled", True)) else 0
             vm_mode = _as_str(payload.get("voicemail_drop_mode")).strip() or "upload"
             vm_text = _as_str(payload.get("voicemail_drop_text")).strip() or None
@@ -352,7 +387,7 @@ class OutboundStore:
                             id, name, status, timezone, run_start_at_utc, run_end_at_utc,
                             daily_window_start_local, daily_window_end_local,
                             max_concurrent, min_interval_seconds_between_calls,
-                            default_context,
+                            default_context, agent_routing_method,
                             voicemail_drop_enabled, voicemail_drop_mode, voicemail_drop_text,
                             voicemail_drop_media_uri,
                             consent_enabled, consent_media_uri, consent_timeout_seconds,
@@ -362,7 +397,7 @@ class OutboundStore:
                             ?, ?, ?, ?, ?, ?,
                             ?, ?,
                             ?, ?,
-                            ?,
+                            ?, ?,
                             ?, ?, ?,
                             ?,
                             ?, ?, ?,
@@ -382,6 +417,7 @@ class OutboundStore:
                             max_concurrent,
                             min_interval,
                             default_context,
+                            agent_routing_method,
                             vm_enabled,
                             vm_mode,
                             vm_text,
@@ -469,6 +505,7 @@ class OutboundStore:
                 "max_concurrent",
                 "min_interval_seconds_between_calls",
                 "default_context",
+                "agent_routing_method",
                 "voicemail_drop_enabled",
                 "voicemail_drop_mode",
                 "voicemail_drop_text",
@@ -489,6 +526,11 @@ class OutboundStore:
             if "timezone" in updates:
                 updates["timezone"] = _validate_iana_timezone_name(_as_str(updates.get("timezone")).strip() or "UTC")
 
+            if "agent_routing_method" in updates:
+                updates["agent_routing_method"] = _normalize_agent_routing_method(
+                    updates.get("agent_routing_method"), "ai_agent"
+                )
+
             if "max_concurrent" in updates:
                 updates["max_concurrent"] = max(1, min(5, _as_int(updates.get("max_concurrent"), 1)))
             if "min_interval_seconds_between_calls" in updates:
@@ -502,17 +544,27 @@ class OutboundStore:
             if "consent_timeout_seconds" in updates:
                 updates["consent_timeout_seconds"] = max(1, min(30, _as_int(updates.get("consent_timeout_seconds"), 5)))
 
-            updates["updated_at_utc"] = now
-
-            if not updates:
-                return self.get_campaign_sync(campaign_id)
-
-            set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
-            values = list(updates.values()) + [campaign_id]
-
             with self._lock:
                 conn = self._get_connection()
                 try:
+                    if (
+                        "default_context" in updates
+                        and "agent_routing_method" not in updates
+                    ):
+                        current = conn.execute(
+                            "SELECT default_context FROM outbound_campaigns WHERE id=?",
+                            (campaign_id,),
+                        ).fetchone()
+                        if current is None:
+                            raise KeyError("campaign not found")
+                        if _as_str(updates["default_context"]).strip() != _as_str(
+                            current["default_context"]
+                        ).strip():
+                            updates["agent_routing_method"] = "ai_agent"
+
+                    updates["updated_at_utc"] = now
+                    set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+                    values = list(updates.values()) + [campaign_id]
                     cur = conn.execute(
                         f"UPDATE outbound_campaigns SET {set_clause} WHERE id = ?",
                         values,
@@ -854,6 +906,7 @@ class OutboundStore:
         *,
         skip_existing: bool = True,
         max_error_rows: int = 20,
+        known_agents: Optional[List[str]] = None,
         known_contexts: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
@@ -863,7 +916,8 @@ class OutboundStore:
           - name (optional; stored on lead and used for caller_name in outbound greeting)
           - phone_number (required)
           - custom_vars (optional JSON)
-          - context (optional)
+          - agent (optional; preferred Agent slug)
+          - context (deprecated compatibility alias for agent)
           - timezone (optional)
           - caller_id (optional; stored but MVP uses extension identity)
         """
@@ -902,7 +956,8 @@ class OutboundStore:
                 raise ValueError("CSV must include 'phone_number' column")
 
             custom_vars_key = normalized_to_raw.get("custom_vars")
-            context_key = normalized_to_raw.get("context")
+            agent_key = normalized_to_raw.get("agent") or normalized_to_raw.get("agent_slug")
+            legacy_context_key = normalized_to_raw.get("context")
             tz_key = normalized_to_raw.get("timezone")
             caller_id_key = normalized_to_raw.get("caller_id")
             name_key = normalized_to_raw.get("name")
@@ -912,7 +967,8 @@ class OutboundStore:
                 try:
                     # Campaign defaults (applied when CSV field is missing/blank/invalid)
                     camp = conn.execute(
-                        "SELECT timezone, default_context FROM outbound_campaigns WHERE id=?",
+                        "SELECT timezone, default_context, agent_routing_method "
+                        "FROM outbound_campaigns WHERE id=?",
                         (campaign_id,),
                     ).fetchone()
                     if not camp:
@@ -920,6 +976,9 @@ class OutboundStore:
 
                     campaign_timezone_raw = _as_str(camp["timezone"]).strip()
                     campaign_default_context_raw = _as_str(camp["default_context"]).strip()
+                    campaign_routing_method = _normalize_agent_routing_method(
+                        camp["agent_routing_method"], "ai_context"
+                    )
 
                     try:
                         campaign_timezone = _validate_iana_timezone_name(campaign_timezone_raw or "UTC")
@@ -927,15 +986,34 @@ class OutboundStore:
                         campaign_timezone = "UTC"
 
                     campaign_default_context = campaign_default_context_raw or "default"
-                    if not re.match(r"^[a-zA-Z0-9_.-]{1,64}$", campaign_default_context):
+                    default_selector_valid = (
+                        bool(
+                            re.match(
+                                r"^[a-zA-Z0-9_.-]{1,64}$",
+                                campaign_default_context,
+                            )
+                        )
+                        if campaign_routing_method == "ai_agent"
+                        else _is_safe_legacy_agent_selector(campaign_default_context)
+                    )
+                    if not default_selector_valid:
                         campaign_default_context = "default"
 
-                    known_ctx: Optional[set[str]] = None
-                    if known_contexts:
-                        try:
-                            known_ctx = {str(x).strip() for x in known_contexts if str(x).strip()}
-                        except Exception:
-                            known_ctx = None
+                    known_agent_slugs: Optional[set[str]] = None
+                    known_legacy_contexts: Optional[set[str]] = None
+                    if known_agents is not None:
+                        known_agent_slugs = {
+                            str(x).strip() for x in known_agents if str(x).strip()
+                        }
+                    legacy_validation_values = (
+                        known_contexts if known_contexts is not None else known_agents
+                    )
+                    if legacy_validation_values is not None:
+                        known_legacy_contexts = {
+                            str(x).strip()
+                            for x in legacy_validation_values
+                            if str(x).strip()
+                        }
 
                     for idx, row in enumerate(reader, start=2):  # header is row 1
                         raw_phone = _as_str((row or {}).get(phone_key)).strip()
@@ -961,38 +1039,79 @@ class OutboundStore:
                         else:
                             custom_vars = {}
 
-                        # Context:
+                        # Agent (stored in the legacy context_override column for DB/API compatibility):
                         # - Missing/blank => campaign default_context
                         # - Invalid/unknown => warn + overwrite to campaign default_context
-                        context_raw = _as_str((row or {}).get(context_key)).strip() if context_key else ""
+                        agent_raw = _as_str((row or {}).get(agent_key)).strip() if agent_key else ""
+                        legacy_context_raw = (
+                            _as_str((row or {}).get(legacy_context_key)).strip()
+                            if legacy_context_key
+                            else ""
+                        )
+                        context_raw = agent_raw or legacy_context_raw
                         context_candidate = context_raw.strip()
+                        context_routing_method = campaign_routing_method
                         if not context_candidate:
                             context_override = campaign_default_context
                         else:
-                            if not re.match(r"^[a-zA-Z0-9_.-]{1,64}$", context_candidate):
+                            candidate_valid = (
+                                bool(
+                                    re.match(
+                                        r"^[a-zA-Z0-9_.-]{1,64}$",
+                                        context_candidate,
+                                    )
+                                )
+                                if agent_raw
+                                else _is_safe_legacy_agent_selector(context_candidate)
+                            )
+                            if not candidate_valid:
                                 warning_total += 1
                                 if len(warnings) < max_error_rows:
                                     warnings.append(
                                         ImportWarningRow(
                                             idx,
                                             phone,
-                                            f"Invalid context '{context_candidate}' (overwritten with campaign default '{campaign_default_context}')",
+                                            f"Invalid Agent selector '{context_candidate}' (overwritten with campaign default '{campaign_default_context}')",
                                         )
                                     )
                                 context_override = campaign_default_context
-                            elif known_ctx is not None and context_candidate not in known_ctx:
+                            elif (
+                                agent_raw
+                                and known_agent_slugs is not None
+                                and context_candidate not in known_agent_slugs
+                            ):
                                 warning_total += 1
                                 if len(warnings) < max_error_rows:
                                     warnings.append(
                                         ImportWarningRow(
                                             idx,
                                             phone,
-                                            f"Unknown context '{context_candidate}' (overwritten with campaign default '{campaign_default_context}')",
+                                            f"Unknown Agent slug '{context_candidate}' "
+                                            f"(overwritten with campaign default "
+                                            f"'{campaign_default_context}')",
+                                        )
+                                    )
+                                context_override = campaign_default_context
+                            elif (
+                                not agent_raw
+                                and known_legacy_contexts is not None
+                                and context_candidate not in known_legacy_contexts
+                            ):
+                                warning_total += 1
+                                if len(warnings) < max_error_rows:
+                                    warnings.append(
+                                        ImportWarningRow(
+                                            idx,
+                                            phone,
+                                            f"Unknown legacy Agent selector "
+                                            f"'{context_candidate}' (overwritten with "
+                                            f"campaign default '{campaign_default_context}')",
                                         )
                                     )
                                 context_override = campaign_default_context
                             else:
                                 context_override = context_candidate
+                                context_routing_method = "ai_agent" if agent_raw else "ai_context"
 
                         # Timezone:
                         # - Missing/blank => campaign timezone
@@ -1027,10 +1146,11 @@ class OutboundStore:
                                 """
                                 INSERT INTO outbound_leads (
                                     id, campaign_id, name, phone_number,
-                                    lead_timezone, context_override, caller_id_override,
+                                    lead_timezone, context_override, agent_routing_method,
+                                    caller_id_override,
                                     custom_vars_json, state,
                                     attempt_count, created_at_utc, updated_at_utc
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
                                 """,
                                 (
                                     lead_id,
@@ -1039,6 +1159,7 @@ class OutboundStore:
                                     phone,
                                     tz_override,
                                     context_override,
+                                    context_routing_method,
                                     caller_id_override,
                                     json.dumps(custom_vars or {}),
                                     now,
@@ -1057,6 +1178,7 @@ class OutboundStore:
                                 SET name = COALESCE(?, name),
                                     lead_timezone = COALESCE(?, lead_timezone),
                                     context_override = COALESCE(?, context_override),
+                                    agent_routing_method = ?,
                                     caller_id_override = COALESCE(?, caller_id_override),
                                     custom_vars_json = ?,
                                     updated_at_utc = ?
@@ -1066,6 +1188,7 @@ class OutboundStore:
                                     lead_name,
                                     tz_override,
                                     context_override,
+                                    context_routing_method,
                                     caller_id_override,
                                     json.dumps(custom_vars or {}),
                                     now,

@@ -9,7 +9,7 @@ Tests cancel transfer functionality including:
 """
 
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from src.tools.telephony.cancel_transfer import CancelTransferTool
 
 
@@ -94,6 +94,74 @@ class TestCancelTransferTool:
         # Get updated session
         updated_session = mock_session_store.upsert_call.call_args[0][0]
         assert updated_session.current_action is None
+
+    @pytest.mark.asyncio
+    async def test_cancel_pending_deferred_transfer(
+        self, cancel_tool, tool_context, sample_call_session, mock_session_store, mock_ari_client
+    ):
+        """Test canceling a deferred transfer before playback drain commits it."""
+        sample_call_session.current_action = None
+        sample_call_session.pending_deferred_transfer = {
+            "id": "deferred-transfer",
+            "kind": "transfer",
+            "source_tool": "blind_transfer",
+            "commit_tool": "blind_transfer",
+            "transfer_type": "extension",
+            "target": "6000",
+            "description": "Support agent",
+        }
+
+        result = await cancel_tool.execute(
+            parameters={},
+            context=tool_context
+        )
+
+        assert result["status"] == "success"
+        mock_ari_client.hangup_channel.assert_not_called()
+        updated_session = mock_session_store.upsert_call.call_args[0][0]
+        assert updated_session.current_action is None
+        assert updated_session.pending_deferred_transfer is None
+
+    @pytest.mark.asyncio
+    async def test_cancel_pending_predial_deferred_transfer_hangs_up_leg(
+        self, cancel_tool, tool_context, sample_call_session, mock_session_store, mock_ari_client
+    ):
+        """Test canceling a deferred predial transfer before it bridges to the caller."""
+        sample_call_session.current_action = {
+            "type": "predial_transfer",
+            "answered": True,
+            "bridged": False,
+            "predial_channel_id": "SIP/6000-00000004",
+        }
+        sample_call_session.pending_deferred_transfer = {
+            "id": "predial-deferred-transfer",
+            "kind": "transfer",
+            "source_tool": "blind_transfer",
+            "commit_tool": "blind_transfer",
+            "transfer_type": "extension",
+            "target": "6000",
+            "description": "Support agent",
+            "payload": {
+                "predial": {
+                    "enabled": True,
+                    "channel_id": "SIP/6000-00000004",
+                }
+            },
+        }
+        engine = Mock()
+        mock_ari_client.engine = engine
+
+        result = await cancel_tool.execute(
+            parameters={},
+            context=tool_context
+        )
+
+        assert result["status"] == "success"
+        engine._unregister_predial_transfer_channel.assert_called_once_with("SIP/6000-00000004")
+        mock_ari_client.hangup_channel.assert_awaited_once_with("SIP/6000-00000004")
+        updated_session = mock_session_store.upsert_call.call_args[0][0]
+        assert updated_session.current_action is None
+        assert updated_session.pending_deferred_transfer is None
     
     @pytest.mark.asyncio
     async def test_cancel_stops_hold_music(

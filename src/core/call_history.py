@@ -18,6 +18,8 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_EXTERNAL_ACTIVITY_MAX_ROWS = 5000
+
 
 @dataclass
 class CallRecord:
@@ -28,6 +30,7 @@ class CallRecord:
     call_id: str = ""
     caller_number: Optional[str] = None
     caller_name: Optional[str] = None
+    called_number: Optional[str] = None
     
     # Timing
     start_time: Optional[datetime] = None
@@ -39,18 +42,35 @@ class CallRecord:
     pipeline_name: Optional[str] = None
     pipeline_components: Dict[str, str] = field(default_factory=dict)
     context_name: Optional[str] = None
-    
+    routing_method: Optional[str] = None  # 'ai_agent' | 'ai_context' | 'default' | None
+    voice: Optional[str] = None  # Resolved session voice (None = provider default decided)
+    voice_source: Optional[str] = None  # 'override' | 'agent' | 'provider-default' | None
+
     # Conversation
     conversation_history: List[Dict[str, Any]] = field(default_factory=list)
     
     # Outcome
-    outcome: str = "completed"  # completed | transferred | error | abandoned
+    outcome: str = "completed"  # completed | transferred | error | abandoned | no_input_timeout
     transfer_destination: Optional[str] = None
     error_message: Optional[str] = None
+
+    # External dialer lifecycle (additive; null for ordinary AAVA calls).
+    external_platform: Optional[str] = None
+    external_call_id: Optional[str] = None
+    external_direction: Optional[str] = None
+    external_disposition: Optional[str] = None
+    external_metadata: Dict[str, Any] = field(default_factory=dict)
     
     # Tool executions (debugging)
+    # tool_calls = append-only terminal in-call tool results. Entries retain
+    # legacy fields and include stable tool_call_id/status/target_id metadata.
+    # pre_call_tool_calls = pre-call enrichment tool execution metadata (lookup tools).
+    # post_call_tool_calls = post-call webhook/notification execution metadata (fire-and-forget).
+    # All three share the same per-entry shape (see ToolCallEntry typedef in admin_ui frontend).
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
-    
+    pre_call_tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    post_call_tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+
     # Latency metrics (debugging)
     avg_turn_latency_ms: float = 0.0
     max_turn_latency_ms: float = 0.0
@@ -85,25 +105,41 @@ class CallRecord:
                     data[key] = None
         
         # Parse JSON strings for complex fields
-        for key in ['pipeline_components', 'conversation_history', 'tool_calls']:
+        _list_fields = ['conversation_history', 'tool_calls', 'pre_call_tool_calls', 'post_call_tool_calls']
+        for key in ['pipeline_components', 'external_metadata', *_list_fields]:
             if data.get(key) and isinstance(data[key], str):
                 try:
                     data[key] = json.loads(data[key])
                 except json.JSONDecodeError:
-                    data[key] = [] if key in ['conversation_history', 'tool_calls'] else {}
+                    data[key] = [] if key in _list_fields else {}
+            elif data.get(key) is None:
+                # NULL columns on pre-migration rows must retain their declared
+                # collection type instead of overriding dataclass defaults with None.
+                data[key] = [] if key in _list_fields else {}
         
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
 class CallHistoryStore:
     """SQLite-based call history storage."""
-    
+
+    @staticmethod
+    def _escape_like(value: str) -> str:
+        """Escape special characters for use in a SQL LIKE pattern with ESCAPE '\\'."""
+        return (
+            value
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+
     _CREATE_TABLE_SQL = """
     CREATE TABLE IF NOT EXISTS call_records (
         id TEXT PRIMARY KEY,
         call_id TEXT NOT NULL,
         caller_number TEXT,
         caller_name TEXT,
+        called_number TEXT,
         start_time TEXT NOT NULL,
         end_time TEXT NOT NULL,
         duration_seconds REAL,
@@ -111,11 +147,21 @@ class CallHistoryStore:
         pipeline_name TEXT,
         pipeline_components TEXT,
         context_name TEXT,
+        routing_method TEXT,
+        voice TEXT,
+        voice_source TEXT,
         conversation_history TEXT,
         outcome TEXT,
         transfer_destination TEXT,
         error_message TEXT,
+        external_platform TEXT,
+        external_call_id TEXT,
+        external_direction TEXT,
+        external_disposition TEXT,
+        external_metadata TEXT,
         tool_calls TEXT,
+        pre_call_tool_calls TEXT,
+        post_call_tool_calls TEXT,
         avg_turn_latency_ms REAL,
         max_turn_latency_ms REAL,
         total_turns INTEGER,
@@ -128,6 +174,7 @@ class CallHistoryStore:
     
     _CREATE_INDEXES_SQL = [
         "CREATE INDEX IF NOT EXISTS idx_call_records_start_time ON call_records(start_time)",
+        "CREATE INDEX IF NOT EXISTS idx_call_records_external_platform_start ON call_records(external_platform COLLATE NOCASE, start_time)",
         "CREATE INDEX IF NOT EXISTS idx_call_records_caller_number ON call_records(caller_number)",
         "CREATE INDEX IF NOT EXISTS idx_call_records_outcome ON call_records(outcome)",
         "CREATE INDEX IF NOT EXISTS idx_call_records_provider ON call_records(provider_name)",
@@ -167,6 +214,7 @@ class CallHistoryStore:
                 try:
                     cursor = conn.cursor()
                     cursor.execute(self._CREATE_TABLE_SQL)
+                    self._ensure_schema_sync(conn)
                     for idx_sql in self._CREATE_INDEXES_SQL:
                         cursor.execute(idx_sql)
                     conn.commit()
@@ -177,6 +225,40 @@ class CallHistoryStore:
         except Exception as e:
             logger.error(f"Failed to initialize call history database: {e}", exc_info=True)
             self._enabled = False
+
+    def _ensure_schema_sync(self, conn: sqlite3.Connection) -> None:
+        """
+        Best-effort additive migrations for existing installs.
+
+        SQLite has limited ALTER TABLE support; we only add nullable columns when
+        missing — never drop or rename. Failures are logged and never block startup.
+        """
+        try:
+            cur = conn.cursor()
+            existing = {str(r[1]) for r in cur.execute("PRAGMA table_info(call_records)").fetchall()}
+            if "pre_call_tool_calls" not in existing:
+                cur.execute("ALTER TABLE call_records ADD COLUMN pre_call_tool_calls TEXT")
+            if "post_call_tool_calls" not in existing:
+                cur.execute("ALTER TABLE call_records ADD COLUMN post_call_tool_calls TEXT")
+            if "routing_method" not in existing:
+                cur.execute("ALTER TABLE call_records ADD COLUMN routing_method TEXT")
+            if "voice" not in existing:
+                cur.execute("ALTER TABLE call_records ADD COLUMN voice TEXT")
+            if "voice_source" not in existing:
+                cur.execute("ALTER TABLE call_records ADD COLUMN voice_source TEXT")
+            additive_columns = {
+                "called_number": "TEXT",
+                "external_platform": "TEXT",
+                "external_call_id": "TEXT",
+                "external_direction": "TEXT",
+                "external_disposition": "TEXT",
+                "external_metadata": "TEXT",
+            }
+            for name, sql_type in additive_columns.items():
+                if name not in existing:
+                    cur.execute(f"ALTER TABLE call_records ADD COLUMN {name} {sql_type}")
+        except Exception:
+            logger.debug("call_records schema migration failed (non-fatal)", exc_info=True)
     
     def _get_connection(self) -> sqlite3.Connection:
         """Get a database connection with WAL mode and busy timeout for multi-process safety."""
@@ -216,30 +298,47 @@ class CallHistoryStore:
                     
                     cursor.execute("""
                         INSERT OR REPLACE INTO call_records (
-                            id, call_id, caller_number, caller_name,
+                            id, call_id, caller_number, caller_name, called_number,
                             start_time, end_time, duration_seconds,
                             provider_name, pipeline_name, pipeline_components, context_name,
+                            routing_method, voice, voice_source,
                             conversation_history, outcome, transfer_destination, error_message,
-                            tool_calls, avg_turn_latency_ms, max_turn_latency_ms, total_turns,
+                            external_platform, external_call_id, external_direction,
+                            external_disposition, external_metadata,
+                            tool_calls, pre_call_tool_calls, post_call_tool_calls,
+                            avg_turn_latency_ms, max_turn_latency_ms, total_turns,
                             caller_audio_format, codec_alignment_ok, barge_in_count, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         record.id,
                         record.call_id,
                         record.caller_number,
                         record.caller_name,
+                        record.called_number,
                         record.start_time.isoformat() if record.start_time else None,
                         record.end_time.isoformat() if record.end_time else None,
                         record.duration_seconds,
-                        record.provider_name,
+                        # LOW-CH3: normalize provider casing at write so stored values
+                        # match the case-insensitive filter / provider-health buckets.
+                        (record.provider_name or "unknown").lower(),
                         record.pipeline_name,
                         json.dumps(record.pipeline_components),
                         record.context_name,
+                        record.routing_method,
+                        record.voice,
+                        record.voice_source,
                         json.dumps(record.conversation_history),
                         record.outcome,
                         record.transfer_destination,
                         record.error_message,
+                        record.external_platform,
+                        record.external_call_id,
+                        record.external_direction,
+                        record.external_disposition,
+                        json.dumps(record.external_metadata),
                         json.dumps(record.tool_calls),
+                        json.dumps(record.pre_call_tool_calls),
+                        json.dumps(record.post_call_tool_calls),
                         record.avg_turn_latency_ms,
                         record.max_turn_latency_ms,
                         record.total_turns,
@@ -259,6 +358,140 @@ class CallHistoryStore:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _save_sync)
     
+    # ---------------------------------------------------------------
+    # Phase-tool execution metadata (pre-call / post-call)
+    #
+    # Pre-call tools run synchronously before the AI greets, so their entries
+    # could in principle be inlined into the initial save(). We still expose
+    # the same append/update API as post-call to keep the engine code symmetric.
+    #
+    # Post-call tools are fire-and-forget; the call_records row is written
+    # *before* tools complete, then each tool calls append_phase_tool() to
+    # add a `pending` placeholder and update_phase_tool() to record its result.
+    # Read-modify-write is serialized by self._lock + SQLite WAL so concurrent
+    # tools for the same call don't clobber each other.
+    # ---------------------------------------------------------------
+
+    _PHASE_COLUMN = {"pre_call": "pre_call_tool_calls", "post_call": "post_call_tool_calls"}
+
+    async def append_phase_tool(self, call_id: str, phase: str, record: Dict[str, Any]) -> bool:
+        """
+        Append a tool-execution entry to either pre_call_tool_calls or post_call_tool_calls.
+
+        Used at scheduling time to write a `pending` placeholder. If the call_records
+        row is missing (race with persist), returns False — the engine should ensure
+        persist runs first.
+        """
+        column = self._PHASE_COLUMN.get(phase)
+        if not self._enabled or column is None:
+            return False
+
+        def _sync():
+            with self._lock:
+                conn = self._get_connection()
+                try:
+                    cur = conn.cursor()
+                    cur.execute(f"SELECT {column} FROM call_records WHERE call_id = ?", (call_id,))
+                    row = cur.fetchone()
+                    if row is None:
+                        return False
+                    existing_raw = row[0] if not isinstance(row, sqlite3.Row) else row[column]
+                    try:
+                        entries = json.loads(existing_raw) if existing_raw else []
+                    except (TypeError, json.JSONDecodeError):
+                        entries = []
+                    if not isinstance(entries, list):
+                        entries = []
+                    entries.append(record)
+                    cur.execute(
+                        f"UPDATE call_records SET {column} = ? WHERE call_id = ?",
+                        (json.dumps(entries), call_id),
+                    )
+                    conn.commit()
+                    return True
+                except Exception as exc:
+                    logger.error(
+                        "append_phase_tool failed",
+                        extra={"call_id": call_id, "phase": phase, "error": str(exc)},
+                    )
+                    return False
+                finally:
+                    conn.close()
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _sync)
+
+    async def update_phase_tool(
+        self,
+        call_id: str,
+        phase: str,
+        tool_name: str,
+        started_at: Optional[str],
+        updates: Dict[str, Any],
+    ) -> bool:
+        """
+        Merge ``updates`` into an existing entry in ``<phase>_tool_calls`` matched by
+        (``name`` == ``tool_name``, ``started_at`` == ``started_at``). If ``started_at``
+        is None, matches by name and updates the most recent entry. If no entry matches,
+        appends a new one (keeps the API forgiving for callers that skipped the pending
+        placeholder).
+        """
+        column = self._PHASE_COLUMN.get(phase)
+        if not self._enabled or column is None:
+            return False
+
+        def _sync():
+            with self._lock:
+                conn = self._get_connection()
+                try:
+                    cur = conn.cursor()
+                    cur.execute(f"SELECT {column} FROM call_records WHERE call_id = ?", (call_id,))
+                    row = cur.fetchone()
+                    if row is None:
+                        return False
+                    existing_raw = row[0] if not isinstance(row, sqlite3.Row) else row[column]
+                    try:
+                        entries = json.loads(existing_raw) if existing_raw else []
+                    except (TypeError, json.JSONDecodeError):
+                        entries = []
+                    if not isinstance(entries, list):
+                        entries = []
+
+                    target_idx = None
+                    for i, entry in enumerate(entries):
+                        if not isinstance(entry, dict):
+                            continue
+                        if entry.get("name") != tool_name:
+                            continue
+                        if started_at is None or entry.get("started_at") == started_at:
+                            target_idx = i  # keep iterating to land on most recent match
+                    if target_idx is None:
+                        merged = {"name": tool_name}
+                        if started_at is not None:
+                            merged["started_at"] = started_at
+                        merged.update(updates)
+                        entries.append(merged)
+                    else:
+                        entries[target_idx] = {**entries[target_idx], **updates}
+
+                    cur.execute(
+                        f"UPDATE call_records SET {column} = ? WHERE call_id = ?",
+                        (json.dumps(entries), call_id),
+                    )
+                    conn.commit()
+                    return True
+                except Exception as exc:
+                    logger.error(
+                        "update_phase_tool failed",
+                        extra={"call_id": call_id, "phase": phase, "tool": tool_name, "error": str(exc)},
+                    )
+                    return False
+                finally:
+                    conn.close()
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _sync)
+
     async def get(self, record_id: str) -> Optional[CallRecord]:
         """
         Get a call record by ID.
@@ -316,6 +549,82 @@ class CallHistoryStore:
         
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _get_sync)
+
+    async def update_external_lifecycle(
+        self,
+        call_id: str,
+        *,
+        external_disposition: Optional[str],
+        external_metadata: Dict[str, Any],
+    ) -> bool:
+        """Merge a late external-dialer result into an existing history row.
+
+        Durable external-dialer retries can finish after normal call cleanup has
+        already saved Call History. Keep the original call record intact while
+        appending retry events and replacing only lifecycle summary fields. A
+        missing row is a successful no-op (history may be disabled, expired, or
+        not yet written); database failures return ``False`` so the durable
+        action remains retryable.
+        """
+        if not self._enabled:
+            return True
+
+        def _update_sync():
+            with self._lock:
+                conn = self._get_connection()
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "SELECT external_metadata FROM call_records WHERE call_id = ?",
+                        (call_id,),
+                    )
+                    row = cursor.fetchone()
+                    if row is None:
+                        return True
+
+                    try:
+                        current = json.loads(row["external_metadata"] or "{}")
+                    except (TypeError, json.JSONDecodeError):
+                        current = {}
+                    if not isinstance(current, dict):
+                        current = {}
+
+                    updates = dict(external_metadata or {})
+                    previous_events = current.get("events")
+                    retry_events = updates.pop("events", None)
+                    current.update(updates)
+                    if isinstance(retry_events, list):
+                        current["events"] = [
+                            *(previous_events if isinstance(previous_events, list) else []),
+                            *retry_events,
+                        ]
+
+                    cursor.execute(
+                        """
+                        UPDATE call_records
+                        SET external_disposition = ?, external_metadata = ?
+                        WHERE call_id = ?
+                        """,
+                        (
+                            external_disposition,
+                            json.dumps(current),
+                            call_id,
+                        ),
+                    )
+                    conn.commit()
+                    return True
+                except Exception as exc:
+                    logger.error(
+                        "Failed to update external lifecycle for call %s: %s",
+                        call_id,
+                        exc,
+                    )
+                    return False
+                finally:
+                    conn.close()
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _update_sync)
     
     async def list(
         self,
@@ -332,6 +641,7 @@ class CallHistoryStore:
         has_tool_calls: Optional[bool] = None,
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
+        transcript_search: Optional[str] = None,
         order_by: str = "start_time",
         order_dir: str = "DESC",
         include_details: bool = True,
@@ -384,8 +694,10 @@ class CallHistoryStore:
                         conditions.append("caller_name LIKE ?")
                         params.append(f"%{caller_name}%")
                     if provider_name:
-                        conditions.append("provider_name = ?")
-                        params.append(provider_name)
+                        # LOW-CH3: case-insensitive match so mixed-case legacy rows
+                        # bucket together with normalized writes.
+                        conditions.append("LOWER(provider_name) = ?")
+                        params.append(provider_name.lower())
                     if pipeline_name:
                         conditions.append("pipeline_name = ?")
                         params.append(pipeline_name)
@@ -406,7 +718,11 @@ class CallHistoryStore:
                     if max_duration is not None:
                         conditions.append("duration_seconds <= ?")
                         params.append(max_duration)
-                    
+                    if transcript_search:
+                        escaped = self._escape_like(transcript_search)
+                        conditions.append("LOWER(conversation_history) LIKE LOWER(?) ESCAPE '\\'")
+                        params.append(f"%{escaped}%")
+
                     # Validate order_by to prevent SQL injection
                     valid_columns = [
                         'start_time', 'end_time', 'duration_seconds', 
@@ -426,6 +742,7 @@ class CallHistoryStore:
                             "call_id",
                             "caller_number",
                             "caller_name",
+                            "called_number",
                             "start_time",
                             "end_time",
                             "duration_seconds",
@@ -433,9 +750,14 @@ class CallHistoryStore:
                             "pipeline_name",
                             "pipeline_components",
                             "context_name",
+                            "routing_method",
                             "outcome",
                             "transfer_destination",
                             "error_message",
+                            "external_platform",
+                            "external_call_id",
+                            "external_direction",
+                            "external_disposition",
                             "avg_turn_latency_ms",
                             "max_turn_latency_ms",
                             "total_turns",
@@ -462,6 +784,75 @@ class CallHistoryStore:
         
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _list_sync)
+
+    async def list_external_activity(
+        self,
+        platform: str,
+        start_date: datetime,
+        end_date: Optional[datetime] = None,
+        max_rows: int = DEFAULT_EXTERNAL_ACTIVITY_MAX_ROWS,
+        mapping_id: Optional[str] = None,
+    ) -> List[CallRecord]:
+        """Return lightweight external-dialer records for bounded activity summaries.
+
+        The query intentionally includes ``external_metadata`` (mapping and
+        VICIdial lifecycle state) while excluding transcripts, tool payloads,
+        and latency detail. Callers must provide a start date so this cannot
+        accidentally become an unbounded history export.
+        """
+        if not self._enabled:
+            return []
+
+        normalized_platform = str(platform or "").strip().lower()
+        if not normalized_platform:
+            return []
+        normalized_mapping_id = str(mapping_id or "").strip()
+        bounded_max_rows = max(1, min(int(max_rows), 50000))
+
+        def _list_sync():
+            with self._lock:
+                conn = self._get_connection()
+                try:
+                    conditions = [
+                        "external_platform = ? COLLATE NOCASE",
+                        "start_time >= ?",
+                    ]
+                    params: List[Any] = [normalized_platform, start_date.isoformat()]
+                    if end_date:
+                        conditions.append("start_time <= ?")
+                        params.append(end_date.isoformat())
+                    if normalized_mapping_id:
+                        # Filter before LIMIT so activity from other mappings
+                        # cannot crowd the requested mapping out of the bounded
+                        # result set.
+                        conditions.append(
+                            "json_extract(external_metadata, '$.mapping_id') = ?"
+                        )
+                        params.append(normalized_mapping_id)
+
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        f"""
+                        SELECT
+                            id, call_id, caller_number, called_number,
+                            start_time, end_time, duration_seconds,
+                            context_name, outcome, error_message,
+                            external_platform, external_call_id,
+                            external_direction, external_disposition,
+                            external_metadata
+                        FROM call_records
+                        WHERE {' AND '.join(conditions)}
+                        ORDER BY start_time DESC
+                        LIMIT ?
+                        """,
+                        [*params, bounded_max_rows],
+                    )
+                    return [CallRecord.from_dict(dict(row)) for row in cursor.fetchall()]
+                finally:
+                    conn.close()
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _list_sync)
     
     async def count(
         self,
@@ -476,6 +867,7 @@ class CallHistoryStore:
         has_tool_calls: Optional[bool] = None,
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
+        transcript_search: Optional[str] = None,
     ) -> int:
         """Count records matching filters."""
         if not self._enabled:
@@ -501,8 +893,10 @@ class CallHistoryStore:
                         conditions.append("caller_name LIKE ?")
                         params.append(f"%{caller_name}%")
                     if provider_name:
-                        conditions.append("provider_name = ?")
-                        params.append(provider_name)
+                        # LOW-CH3: case-insensitive match so mixed-case legacy rows
+                        # bucket together with normalized writes.
+                        conditions.append("LOWER(provider_name) = ?")
+                        params.append(provider_name.lower())
                     if pipeline_name:
                         conditions.append("pipeline_name = ?")
                         params.append(pipeline_name)
@@ -523,7 +917,11 @@ class CallHistoryStore:
                     if max_duration is not None:
                         conditions.append("duration_seconds <= ?")
                         params.append(max_duration)
-                    
+                    if transcript_search:
+                        escaped = self._escape_like(transcript_search)
+                        conditions.append("LOWER(conversation_history) LIKE LOWER(?) ESCAPE '\\'")
+                        params.append(f"%{escaped}%")
+
                     where_clause = " AND ".join(conditions) if conditions else "1=1"
                     query = f"SELECT COUNT(*) FROM call_records WHERE {where_clause}"
                     
@@ -732,7 +1130,9 @@ class CallHistoryStore:
         if not self._enabled or self._retention_days <= 0:
             return 0
         
-        cutoff = datetime.now() - timedelta(days=self._retention_days)
+        # UTC-aware to match stored start_time (ISO with +00:00); a naive local
+        # cutoff would string-compare incorrectly against the stored values (LOW-CH4).
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self._retention_days)
         deleted = await self.delete_before(cutoff)
         if deleted > 0:
             logger.info(f"Cleaned up {deleted} old call history records (retention: {self._retention_days} days)")

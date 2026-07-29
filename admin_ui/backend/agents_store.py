@@ -1,0 +1,263 @@
+"""Agents store — source of truth for agent (context) configuration.
+Write path lives here (admin_ui). The engine reads this DB via src/core/agent_store.py.
+Spec: archived/AVAOperatorVersion.md §3 + 2026-05-23-v1-implementation-spec.md §5."""
+import json, os, re, sqlite3, uuid
+from datetime import datetime, timezone
+
+DB_DEFAULT = "/app/data/operator/agents.db"
+_SLUG_RE = re.compile(r"[^a-z0-9_]+")
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    extension TEXT,
+    role_label TEXT,
+    provider TEXT NOT NULL,
+    voice TEXT,
+    greeting TEXT,
+    prompt TEXT NOT NULL,
+    tools_json TEXT,
+    tool_configs_json TEXT,             -- v7.4: structured per-agent tool-scope policies
+    mcp_json TEXT,                    -- NOTE: not read at runtime — MCP is configured globally, not per-agent (audit LOW-T2). Stored/round-tripped only.
+    audio_profile TEXT,
+    extra_json TEXT,                 -- D3: pipeline, background_music, phase tools, disable flags, anything else
+    is_operator_managed INTEGER NOT NULL DEFAULT 1,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    source_file TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    notes TEXT,
+    email_recipient TEXT,
+    email_from TEXT,
+    email_enabled INTEGER             -- tri-state: NULL=inherit, 0=off, 1=on
+);
+CREATE INDEX IF NOT EXISTS idx_agents_slug ON agents(slug);
+CREATE INDEX IF NOT EXISTS idx_agents_mgmt ON agents(is_operator_managed);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_default ON agents(is_default) WHERE is_default = 1;
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL,
+    contexts_hash TEXT
+);
+"""
+
+def slugify(name: str) -> str:
+    s = _SLUG_RE.sub("_", name.strip().lower().replace("-", "_")).strip("_")[:64]
+    return re.sub(r"_+", "_", s)
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+class AgentsStore:
+    COLUMNS = ["id","slug","display_name","extension","role_label","provider","voice",
+               "greeting","prompt","tools_json","tool_configs_json","mcp_json","audio_profile","extra_json",
+               "is_operator_managed","is_active","is_default","source_file",
+               "created_at","updated_at","notes",
+               "email_recipient","email_from","email_enabled"]
+
+    def __init__(self, db_path: str = None):
+        # Honor AGENTS_DB_PATH so a relocated DB is written/read consistently with
+        # the engine reader; falls back to the historical default when unset.
+        db_path = db_path or os.getenv("AGENTS_DB_PATH", DB_DEFAULT)
+        parent = os.path.dirname(db_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        self.conn = sqlite3.connect(db_path)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=5000")
+        self.conn.execute("PRAGMA synchronous=NORMAL")
+        self.conn.executescript(SCHEMA)
+        self._ensure_schema_sync()
+        try: os.chmod(db_path, 0o600)
+        except OSError: pass
+
+    def _ensure_schema_sync(self):
+        """Best-effort additive migrations for existing installs.
+
+        SQLite has limited ALTER TABLE support; we only add nullable columns
+        when missing — never drop or rename. Safe on populated production DBs.
+        """
+        try:
+            existing = {str(r[1]) for r in
+                        self.conn.execute("PRAGMA table_info(agents)").fetchall()}
+            with self.conn:
+                if "email_recipient" not in existing:
+                    self.conn.execute("ALTER TABLE agents ADD COLUMN email_recipient TEXT")
+                if "email_from" not in existing:
+                    self.conn.execute("ALTER TABLE agents ADD COLUMN email_from TEXT")
+                if "email_enabled" not in existing:
+                    self.conn.execute("ALTER TABLE agents ADD COLUMN email_enabled INTEGER")
+                if "tool_configs_json" not in existing:
+                    self.conn.execute("ALTER TABLE agents ADD COLUMN tool_configs_json TEXT")
+        except sqlite3.Error:
+            pass
+
+    def upgrade_legacy_resource_policies(self) -> int:
+        """Idempotently promote legacy calendar selections into tool_configs_json.
+
+        Early v7.4 development databases stored Context ``tool_overrides`` in
+        extra_json while the Agent runtime only read transfer policies. Keep the
+        original extra payload intact, but make Google/Microsoft bindings visible
+        and enforceable as first-class Agent policies.
+        """
+        changed = 0
+        try:
+            rows = self.conn.execute(
+                "SELECT id, tool_configs_json, extra_json FROM agents"
+            ).fetchall()
+            with self.conn:
+                for row in rows:
+                    current = json.loads(row["tool_configs_json"]) if row["tool_configs_json"] else {}
+                    extra = json.loads(row["extra_json"]) if row["extra_json"] else {}
+                    overrides = extra.get("tool_overrides") if isinstance(extra, dict) else None
+                    if not isinstance(current, dict) or not isinstance(overrides, dict):
+                        continue
+                    merged = dict(current)
+                    google = overrides.get("google_calendar") or {}
+                    selected = google.get("selected_calendars") if isinstance(google, dict) else None
+                    if "google_calendar" not in merged and isinstance(selected, list):
+                        keys = list(dict.fromkeys(str(key).strip() for key in selected if str(key).strip()))
+                        merged["google_calendar"] = {
+                            "calendar_policy": "selected" if keys else "none",
+                            "calendar_keys": keys,
+                        }
+                    microsoft = overrides.get("microsoft_calendar") or {}
+                    selected = microsoft.get("selected_accounts") if isinstance(microsoft, dict) else None
+                    if "microsoft_calendar" not in merged and isinstance(selected, list):
+                        keys = list(dict.fromkeys(str(key).strip() for key in selected if str(key).strip()))
+                        merged["microsoft_calendar"] = {
+                            "account_policy": "selected" if keys else "none",
+                            "account_keys": keys,
+                        }
+                    if merged != current:
+                        self.conn.execute(
+                            "UPDATE agents SET tool_configs_json=? WHERE id=?",
+                            (json.dumps(merged, sort_keys=True), row["id"]),
+                        )
+                        changed += 1
+        except (sqlite3.Error, json.JSONDecodeError, TypeError):
+            # Preserve the established best-effort schema-upgrade behavior. The
+            # API/runtime validators will surface malformed rows explicitly.
+            pass
+        return changed
+
+    def close(self):
+        """Close the underlying sqlite connection. Safe to call more than once."""
+        try:
+            self.conn.close()
+        except sqlite3.Error:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+    # -- reads -------------------------------------------------------------
+    def get_by_slug(self, slug):  # -> dict | None
+        r = self.conn.execute("SELECT * FROM agents WHERE slug=?", (slug,)).fetchone()
+        return dict(r) if r else None
+
+    def list_all(self):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM agents ORDER BY is_active DESC, created_at")]
+
+    def get_default(self):
+        r = self.conn.execute(
+            "SELECT * FROM agents WHERE is_default=1 AND is_active=1").fetchone()
+        return dict(r) if r else None
+
+    def count_active(self, operator_managed_only: bool = False) -> int:
+        q = "SELECT COUNT(*) FROM agents WHERE is_active=1"
+        if operator_managed_only:
+            q += " AND is_operator_managed=1"
+        return self.conn.execute(q).fetchone()[0]
+
+    def has_schema_migration(self, version: int) -> bool:
+        """Return whether a durable one-time migration marker exists."""
+        return self.conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=?", (version,)
+        ).fetchone() is not None
+
+    # -- writes ------------------------------------------------------------
+    def create(self, *, display_name, provider=None, prompt, slug=None, extension=None,
+               role_label=None, voice=None, greeting=None, tools_json=None,
+               tool_configs_json=None, mcp_json=None, audio_profile=None, extra_json=None,
+               is_operator_managed=1, source_file=None, notes=None,
+               email_recipient=None, email_from=None, email_enabled=None) -> dict:
+        slug = slug or slugify(display_name)
+        if not slug or not _SLUG_RE.sub("", slug) == slug:
+            raise ValueError(f"invalid slug: {slug!r}")
+        if self.get_by_slug(slug):
+            raise ValueError(f"slug exists: {slug}")
+        now = _now()
+        provider = provider or ""
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO agents (id,slug,display_name,extension,role_label,provider,
+                   voice,greeting,prompt,tools_json,tool_configs_json,mcp_json,audio_profile,extra_json,
+                   is_operator_managed,is_active,is_default,source_file,created_at,updated_at,notes,
+                   email_recipient,email_from,email_enabled)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), slug, display_name, extension, role_label, provider,
+                 voice, greeting, prompt, tools_json, tool_configs_json, mcp_json, audio_profile, extra_json,
+                 is_operator_managed, source_file, now, now, notes,
+                 email_recipient, email_from, email_enabled))
+        self._ensure_default_invariant()
+        return self.get_by_slug(slug)
+
+    def update(self, slug, **fields) -> dict:
+        allowed = set(self.COLUMNS) - {"id","slug","created_at","is_default"}
+        sets, vals = [], []
+        for k, v in fields.items():
+            if k not in allowed: raise ValueError(f"field not updatable: {k}")
+            sets.append(f"{k}=?"); vals.append(v)
+        sets.append("updated_at=?"); vals.append(_now()); vals.append(slug)
+        with self.conn:
+            self.conn.execute(f"UPDATE agents SET {', '.join(sets)} WHERE slug=?", vals)
+        self._ensure_default_invariant()
+        return self.get_by_slug(slug)
+
+    def set_default(self, slug):
+        # Validate target first — only clear the existing default when we know the new
+        # target exists and is active, so an invalid request never leaves zero defaults.
+        r = self.conn.execute(
+            "SELECT slug FROM agents WHERE slug=? AND is_active=1", (slug,)).fetchone()
+        if r is None:
+            return  # invalid / inactive target — leave current default untouched
+        with self.conn:
+            self.conn.execute("UPDATE agents SET is_default=0 WHERE is_default=1")
+            self.conn.execute(
+                "UPDATE agents SET is_default=1 WHERE slug=?", (slug,))
+        self._ensure_default_invariant()
+
+    def set_active(self, slug, active: bool):
+        with self.conn:
+            self.conn.execute("UPDATE agents SET is_active=?, is_default=CASE WHEN ?=0 THEN 0 ELSE is_default END, updated_at=? WHERE slug=?",
+                              (int(active), int(active), _now(), slug))
+        return self._ensure_default_invariant()
+
+    def delete(self, slug):
+        with self.conn:
+            self.conn.execute("DELETE FROM agents WHERE slug=?", (slug,))
+        return self._ensure_default_invariant()
+
+    def _ensure_default_invariant(self):
+        """Exactly-one-default among active agents (spec §8.1).
+        Returns the promoted slug if a promotion happened (A4 surfaces it in UI), else None."""
+        if self.get_default() is not None:
+            return None
+        r = self.conn.execute(
+            "SELECT slug FROM agents WHERE is_active=1 ORDER BY created_at LIMIT 1").fetchone()
+        if r is None:
+            return None   # no active agents — UI shows empty state; engine uses fallback prompt
+        with self.conn:
+            self.conn.execute("UPDATE agents SET is_default=0 WHERE is_default=1")
+            self.conn.execute("UPDATE agents SET is_default=1 WHERE slug=?", (r[0],))
+        return r[0]

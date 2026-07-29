@@ -75,6 +75,10 @@ class TestGenericHTTPLookupTool:
                 for part in self._parts:
                     yield part
 
+            async def read(self, _size=-1):
+                data = b"".join(self._parts)
+                return data if _size < 0 else data[:_size]
+
         return _Content(chunks)
     
     @pytest.fixture
@@ -180,6 +184,162 @@ class TestGenericHTTPLookupTool:
         
         assert result["customer_name"] == "John"
         assert result["customer_email"] == "john@example.com"
+
+        diagnostics = tool.get_last_result(call_id=precall_context.call_id)
+        assert diagnostics["status"] == "ok"
+        assert diagnostics["http_status"] == 200
+        assert diagnostics["output_variables"] == {
+            "customer_name": "***",
+            "customer_email": "***",
+        }
+        assert '"firstName":"***"' in diagnostics["response_summary"]
+        assert '"email":"***"' in diagnostics["response_summary"]
+        assert tool.get_last_result(call_id=precall_context.call_id) is None
+
+    @pytest.mark.asyncio
+    async def test_empty_204_response_is_a_successful_empty_lookup(
+        self, lookup_config, precall_context
+    ):
+        tool = GenericHTTPLookupTool(lookup_config)
+        response = AsyncMock(status=204, headers={})
+        response.content = self._make_content([])
+        response.charset = "utf-8"
+        request_cm = AsyncMock()
+        request_cm.__aenter__ = AsyncMock(return_value=response)
+        request_cm.__aexit__ = AsyncMock(return_value=None)
+        session = AsyncMock()
+        session.request = MagicMock(return_value=request_cm)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=session_cm):
+            result = await tool.execute(precall_context)
+
+        assert result == {"customer_name": "", "customer_email": ""}
+        diagnostics = tool.get_last_result(precall_context.call_id)
+        assert diagnostics["status"] == "ok"
+        assert diagnostics["http_status"] == 204
+
+    @pytest.mark.asyncio
+    async def test_get_never_sends_legacy_hidden_body(self, lookup_config, precall_context):
+        lookup_config.body_template = '{"phone":"{caller_number}"}'
+        tool = GenericHTTPLookupTool(lookup_config)
+        response = AsyncMock(status=200, headers={})
+        response.content = self._make_content([b'{"firstName":"John"}'])
+        response.charset = "utf-8"
+        request_cm = AsyncMock()
+        request_cm.__aenter__ = AsyncMock(return_value=response)
+        request_cm.__aexit__ = AsyncMock(return_value=None)
+        session = AsyncMock()
+        session.request = MagicMock(return_value=request_cm)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=session_cm):
+            await tool.execute(precall_context)
+
+        assert session.request.call_args.kwargs["method"] == "GET"
+        assert session.request.call_args.kwargs["data"] is None
+
+    @pytest.mark.asyncio
+    async def test_delete_preserves_configured_body(self, lookup_config, precall_context):
+        lookup_config.method = "DELETE"
+        lookup_config.body_template = '{"phone":"{caller_number}"}'
+        tool = GenericHTTPLookupTool(lookup_config)
+        response = AsyncMock(status=200, headers={})
+        response.content = self._make_content([b'{"firstName":"John"}'])
+        response.charset = "utf-8"
+        request_cm = AsyncMock()
+        request_cm.__aenter__ = AsyncMock(return_value=response)
+        request_cm.__aexit__ = AsyncMock(return_value=None)
+        session = AsyncMock()
+        session.request = MagicMock(return_value=request_cm)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=session_cm):
+            await tool.execute(precall_context)
+
+        assert session.request.call_args.kwargs["method"] == "DELETE"
+        assert session.request.call_args.kwargs["data"] == '{"phone":"+1234567890"}'
+
+    def test_persisted_diagnostics_redact_json_and_plain_text_secrets(self, lookup_config):
+        tool = GenericHTTPLookupTool(lookup_config)
+        for call_id, body in (
+            (
+                "json-error",
+                '{"error":"denied","access_token":"secret-json",'
+                '"message":"Authorization: Bearer nested-secret"}',
+            ),
+            ("text-error", 'denied api_key=secret-text Authorization: Bearer secret-bearer'),
+            ("json-string-error", '"token=secret-json-string"'),
+        ):
+            tool._record_result(
+                call_id=call_id,
+                status="error",
+                started_at="2026-07-19T00:00:00+00:00",
+                started_monotonic=0.0,
+                http_status=401,
+                body_text=body,
+                error_message="HTTP 401",
+                output_variables={
+                    "carrier": "Verizon Wireless",
+                    "customer_email": "private@example.com",
+                    "api_key": "secret-output",
+                },
+            )
+
+        json_result = tool.get_last_result("json-error")
+        json_summary = json_result["response_summary"]
+        text_summary = tool.get_last_result("text-error")["response_summary"]
+        json_string_summary = tool.get_last_result("json-string-error")["response_summary"]
+        assert "secret-json" not in json_summary
+        assert "nested-secret" not in json_summary
+        assert '"access_token":"***"' in json_summary
+        assert json_result["output_variables"] == {
+            "carrier": "Verizon Wireless",
+            "customer_email": "***",
+            "api_key": "***",
+        }
+        assert "secret-text" not in text_summary
+        assert "secret-bearer" not in text_summary
+        assert "api_key=***" in text_summary
+        assert "Bearer ***" in text_summary
+        assert "secret-json-string" not in json_string_summary
+        assert json_string_summary == "token=***"
+
+    @pytest.mark.asyncio
+    async def test_request_exception_diagnostics_redact_resolved_url_secrets(
+        self, lookup_config, precall_context
+    ):
+        lookup_config.url = "https://[invalid]?token=resolved-secret"
+        tool = GenericHTTPLookupTool(lookup_config)
+        session = AsyncMock()
+        session.request = MagicMock(
+            side_effect=aiohttp.InvalidURL(lookup_config.url)
+        )
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=session_cm):
+            await tool.execute(precall_context)
+
+        diagnostics = tool.get_last_result(precall_context.call_id)
+        assert diagnostics["status"] == "error"
+        assert "resolved-secret" not in diagnostics["error_message"]
+        assert "token=***" in diagnostics["error_message"]
+
+    def test_diagnostics_are_call_keyed(self, lookup_config):
+        tool = GenericHTTPLookupTool(lookup_config)
+        tool._last_results["call-a"] = {"status": "ok"}
+        tool._last_results["call-b"] = {"status": "error"}
+
+        assert tool.get_last_result("call-a") == {"status": "ok"}
+        assert tool.get_last_result("call-b") == {"status": "error"}
 
     @pytest.mark.asyncio
     async def test_missing_content_length_enforces_max_size(self, lookup_config, precall_context):

@@ -2,6 +2,11 @@ name: Release Images (GHCR)
 
 on:
   workflow_dispatch:
+    inputs:
+      release_ref:
+        description: "Existing release tag to publish (for example v7.5.1)"
+        required: true
+        type: string
   push:
     tags:
       - "v*.*.*"
@@ -16,13 +21,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_ref || github.ref }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -30,10 +38,17 @@ jobs:
 
       - name: Compute tags
         id: meta
+        env:
+          RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.release_ref || github.ref_name }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${RELEASE_REF}"
           OWNER="${GITHUB_REPOSITORY_OWNER,,}"
           VERSION="${TAG#v}"
+
+          if [[ ! "${TAG}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: ${TAG}" >&2
+            exit 1
+          fi
 
           # Only publish :latest for clean GA semver tags (no "-rc", "-beta", etc.).
           PUBLISH_LATEST=false
@@ -42,6 +57,7 @@ jobs:
           fi
 
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "owner=${OWNER}" >> "$GITHUB_OUTPUT"
           echo "publish_latest=${PUBLISH_LATEST}" >> "$GITHUB_OUTPUT"
 
@@ -82,7 +98,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push ai-engine
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
@@ -92,7 +108,7 @@ jobs:
       # Publish a “core” local-ai-server profile (no optional heavy backends).
       # Models are NOT bundled; users mount/download models separately.
       - name: Build and push local-ai-server (core)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./local_ai_server
           file: ./local_ai_server/Dockerfile
@@ -107,17 +123,19 @@ jobs:
           tags: ${{ steps.meta.outputs.local_ai_server_tags }}
 
       - name: Build and push admin-ui
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
-          context: ./admin_ui
+          context: .
           file: ./admin_ui/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.admin_ui_tags }}
 
       - name: Build and push updater
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./updater/Dockerfile
           push: true
+          build-args: |
+            AAVA_CLI_VERSION=${{ steps.meta.outputs.version }}
           tags: ${{ steps.meta.outputs.updater_tags }}

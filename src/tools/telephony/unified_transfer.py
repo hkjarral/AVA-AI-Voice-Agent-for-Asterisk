@@ -10,6 +10,12 @@ import structlog
 
 from ..base import Tool, ToolDefinition, ToolParameter, ToolCategory
 from ..context import ToolExecutionContext
+from .deferred_transfer import (
+    build_deferred_transfer_action,
+    build_deferred_transfer_result,
+    store_pending_deferred_transfer,
+    transfer_deferral_enabled,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -56,6 +62,249 @@ class UnifiedTransferTool(Tool):
     @staticmethod
     def _normalize_text(value: str) -> str:
         return " ".join(str(value or "").strip().lower().replace("_", " ").replace("-", " ").split())
+
+    @staticmethod
+    def _resolve_dialplan_context(
+        transfer_type: str,
+        dest_config: Dict[str, Any],
+        transfer_config: Dict[str, Any],
+    ) -> str:
+        configured = ""
+        if isinstance(dest_config, dict):
+            configured = str(dest_config.get("dialplan_context") or dest_config.get("context") or "").strip()
+        if configured:
+            return configured
+
+        if transfer_type == "extension":
+            return str((transfer_config or {}).get("extension_context") or "from-internal").strip() or "from-internal"
+        if transfer_type == "queue":
+            return str((transfer_config or {}).get("queue_context") or "ext-queues").strip() or "ext-queues"
+        if transfer_type == "ringgroup":
+            return str((transfer_config or {}).get("ringgroup_context") or "ext-group").strip() or "ext-group"
+        return "from-internal"
+
+    async def _defer_or_commit_transfer(
+        self,
+        *,
+        context: ToolExecutionContext,
+        source_tool: str,
+        transfer_type: str,
+        target: str,
+        description: str,
+        dialplan_context: str,
+        destination_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if transfer_deferral_enabled(context):
+            try:
+                session = await context.get_session()
+                pending = getattr(session, "pending_deferred_transfer", None)
+                if isinstance(pending, dict) and pending.get("kind") == "transfer":
+                    same_pending_transfer = (
+                        str(pending.get("transfer_type") or "").strip() == str(transfer_type or "").strip()
+                        and str(pending.get("target") or "").strip() == str(target or "").strip()
+                        and str(pending.get("dialplan_context") or "").strip() == str(dialplan_context or "").strip()
+                    )
+                    if not same_pending_transfer:
+                        logger.warning(
+                            "Conflicting deferred transfer request while another transfer is pending",
+                            call_id=context.call_id,
+                            existing_action_id=pending.get("id"),
+                            existing_target=pending.get("target"),
+                            existing_transfer_type=pending.get("transfer_type"),
+                            requested_target=target,
+                            requested_transfer_type=transfer_type,
+                        )
+                        return {
+                            "status": "failed",
+                            "message": "A transfer is already pending. Please wait for it to complete.",
+                        }
+                    logger.info(
+                        "Suppressing duplicate deferred transfer request",
+                        call_id=context.call_id,
+                        existing_action_id=pending.get("id"),
+                        existing_target=pending.get("target"),
+                        requested_target=target,
+                    )
+                    return build_deferred_transfer_result(
+                        action=pending,
+                        message=f"Transferring you to {pending.get('description') or description} now.",
+                        extra={
+                            "destination": pending.get("target") or target,
+                            "type": pending.get("transfer_type") or transfer_type,
+                            "duplicate_suppressed": True,
+                        },
+                    )
+            except Exception:
+                logger.debug("Failed to check duplicate deferred transfer", call_id=context.call_id, exc_info=True)
+
+        action = build_deferred_transfer_action(
+            source_tool=source_tool,
+            commit_tool="blind_transfer",
+            transfer_type=transfer_type,
+            target=target,
+            description=description,
+            dialplan_context=dialplan_context,
+            destination_key=destination_key,
+        )
+
+        if transfer_deferral_enabled(context):
+            await self._maybe_start_predial_transfer(context, action)
+            await store_pending_deferred_transfer(context, action)
+            return build_deferred_transfer_result(
+                action=action,
+                message=f"Transferring you to {description} now.",
+                extra={
+                    "destination": target,
+                    "type": transfer_type,
+                },
+            )
+
+        return await self.commit_deferred_action(action, context)
+
+    def _deferred_strategy(self, context: ToolExecutionContext) -> str:
+        transfer_config = context.get_config_value("tools.transfer") or {}
+        if not isinstance(transfer_config, dict):
+            return "drain_then_dial"
+        strategy = str(transfer_config.get("deferred_strategy") or "drain_then_dial").strip().lower()
+        if strategy in {"predial", "pre_dial", "pre-dial", "predial_then_bridge"}:
+            return "predial_then_bridge"
+        return "drain_then_dial"
+
+    def _predial_endpoint_for_action(self, action: Dict[str, Any]) -> str:
+        target = str(action.get("target") or "").strip()
+        dialplan_context = str(action.get("dialplan_context") or "").strip()
+        if not target or not dialplan_context:
+            return ""
+        return f"Local/{target}@{dialplan_context}"
+
+    def _caller_id_for_predial(self, context: ToolExecutionContext) -> str:
+        number = str(context.caller_number or "").strip()
+        name = str(context.caller_name or "").strip()
+        if name and number:
+            safe_name = name.replace('"', "").replace("<", "").replace(">", "").strip()
+            return f'"{safe_name}" <{number}>'
+        return number or name or ""
+
+    async def _maybe_start_predial_transfer(
+        self,
+        context: ToolExecutionContext,
+        action: Dict[str, Any],
+    ) -> None:
+        if self._deferred_strategy(context) != "predial_then_bridge":
+            return
+
+        endpoint = self._predial_endpoint_for_action(action)
+        if not endpoint:
+            logger.warning("Predial transfer skipped - endpoint unavailable", call_id=context.call_id, action=action)
+            return
+
+        app = str(context.get_config_value("asterisk.app_name", "asterisk-ai-voice-agent") or "asterisk-ai-voice-agent")
+        transfer_config = context.get_config_value("tools.transfer") or {}
+        try:
+            dial_timeout_sec = int((transfer_config if isinstance(transfer_config, dict) else {}).get("predial_timeout_seconds", 30) or 30)
+        except (TypeError, ValueError):
+            dial_timeout_sec = 30
+
+        destination_key = str(action.get("destination_key") or action.get("target") or "").strip()
+        try:
+            session = await context.get_session()
+            session.current_action = {
+                "type": "predial_transfer",
+                "deferred_action_id": action.get("id"),
+                "destination_key": destination_key,
+                "target": action.get("target"),
+                "target_name": action.get("description"),
+                "transfer_type": action.get("transfer_type"),
+                "dialplan_context": action.get("dialplan_context"),
+                "endpoint": endpoint,
+                "answered": False,
+                "ready_to_bridge": False,
+                "bridged": False,
+            }
+            await context.session_store.upsert_call(session)
+        except Exception:
+            logger.debug("Failed to persist predial transfer action state", call_id=context.call_id, exc_info=True)
+
+        try:
+            result = await context.ari_client.send_command(
+                method="POST",
+                resource="channels",
+                params={
+                    "endpoint": endpoint,
+                    "app": app,
+                    "appArgs": f"predial-transfer,{context.call_id},{destination_key}",
+                    "callerId": self._caller_id_for_predial(context),
+                    "timeout": dial_timeout_sec,
+                    "channelVars": {
+                        "AGENT_ACTION": "predial_transfer",
+                        "AGENT_CALL_ID": context.call_id,
+                        "AGENT_TARGET": str(action.get("target") or ""),
+                        "AAVA_TRANSFER_DESTINATION_KEY": destination_key,
+                    },
+                },
+            )
+        except Exception:
+            logger.warning("Predial transfer originate failed", call_id=context.call_id, endpoint=endpoint, exc_info=True)
+            return
+
+        if not isinstance(result, dict) or not result.get("id"):
+            logger.warning("Predial transfer originate returned no channel", call_id=context.call_id, endpoint=endpoint, response=result)
+            return
+
+        predial_channel_id = str(result["id"])
+        action["payload"] = {
+            **(action.get("payload") if isinstance(action.get("payload"), dict) else {}),
+            "predial": {
+                "enabled": True,
+                "endpoint": endpoint,
+                "channel_id": predial_channel_id,
+                "destination_key": destination_key,
+            },
+        }
+        try:
+            session = await context.get_session()
+            if isinstance(session.current_action, dict) and session.current_action.get("type") == "predial_transfer":
+                session.current_action["predial_channel_id"] = predial_channel_id
+                await context.session_store.upsert_call(session)
+            engine = getattr(context.ari_client, "engine", None)
+            if engine and hasattr(engine, "register_predial_transfer_channel"):
+                engine.register_predial_transfer_channel(context.call_id, predial_channel_id)
+        except Exception:
+            logger.debug("Failed to register predial transfer channel", call_id=context.call_id, predial_channel_id=predial_channel_id, exc_info=True)
+
+        logger.info(
+            "Predial transfer leg originated",
+            call_id=context.call_id,
+            endpoint=endpoint,
+            predial_channel_id=predial_channel_id,
+            destination_key=destination_key,
+        )
+
+    async def prepare_or_execute_extension_transfer(
+        self,
+        context: ToolExecutionContext,
+        extension: str,
+        description: str,
+        *,
+        source_tool: str = "blind_transfer",
+        destination_key: Optional[str] = None,
+        dest_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        transfer_config = context.get_config_value("tools.transfer") or {}
+        dialplan_context = self._resolve_dialplan_context(
+            "extension",
+            dest_config or {},
+            transfer_config if isinstance(transfer_config, dict) else {},
+        )
+        return await self._defer_or_commit_transfer(
+            context=context,
+            source_tool=source_tool,
+            transfer_type="extension",
+            target=extension,
+            description=description,
+            dialplan_context=dialplan_context,
+            destination_key=destination_key,
+        )
 
     def _resolve_destination_key(self, destination: Any, destinations: Dict[str, Any]) -> Tuple[Optional[str], str]:
         raw = str(destination or "").strip()
@@ -230,26 +479,106 @@ class UnifiedTransferTool(Tool):
             type=transfer_type,
             target=target
         )
+
+        if transfer_type in {'vicidial_extension', 'vicidial_ingroup'}:
+            from .vicidial import execute_vicidial_transfer
+
+            return await execute_vicidial_transfer(
+                context=context,
+                destination={
+                    **dest_config,
+                    "type": transfer_type,
+                    "description": description,
+                },
+            )
         
+        dialplan_context = self._resolve_dialplan_context(
+            str(transfer_type or ""),
+            dest_config if isinstance(dest_config, dict) else {},
+            config if isinstance(config, dict) else {},
+        )
+
         # Route based on transfer type
         if transfer_type == 'extension':
-            return await self._transfer_to_extension(context, target, description)
+            return await self._defer_or_commit_transfer(
+                context=context,
+                source_tool="blind_transfer",
+                transfer_type="extension",
+                target=target,
+                description=description,
+                dialplan_context=dialplan_context,
+                destination_key=str(destination),
+            )
         elif transfer_type == 'queue':
-            return await self._transfer_to_queue(context, target, description)
+            return await self._defer_or_commit_transfer(
+                context=context,
+                source_tool="blind_transfer",
+                transfer_type="queue",
+                target=target,
+                description=description,
+                dialplan_context=dialplan_context,
+                destination_key=str(destination),
+            )
         elif transfer_type == 'ringgroup':
-            return await self._transfer_to_ringgroup(context, target, description)
+            return await self._defer_or_commit_transfer(
+                context=context,
+                source_tool="blind_transfer",
+                transfer_type="ringgroup",
+                target=target,
+                description=description,
+                dialplan_context=dialplan_context,
+                destination_key=str(destination),
+            )
         else:
             logger.error("Invalid transfer type", type=transfer_type)
             return {
                 "status": "failed",
                 "message": f"Invalid transfer type: {transfer_type}"
             }
+
+    async def commit_deferred_action(
+        self,
+        action: Dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> Dict[str, Any]:
+        transfer_type = str(action.get("transfer_type") or "").strip()
+        target = str(action.get("target") or "").strip()
+        description = str(action.get("description") or target or "").strip()
+        dialplan_context = str(action.get("dialplan_context") or "").strip()
+        payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        predial = payload.get("predial") if isinstance(payload.get("predial"), dict) else None
+
+        if predial and predial.get("enabled"):
+            engine = getattr(context.ari_client, "engine", None)
+            if engine and hasattr(engine, "finalize_predial_transfer"):
+                result = await engine.finalize_predial_transfer(context, action)
+                if result and result.get("status") == "success":
+                    return result
+                logger.warning(
+                    "Predial transfer finalize failed; falling back to dialplan transfer",
+                    call_id=context.call_id,
+                    result=result,
+                )
+
+        if transfer_type == "extension":
+            return await self._transfer_to_extension(context, target, description, dialplan_context=dialplan_context)
+        if transfer_type == "queue":
+            return await self._transfer_to_queue(context, target, description, dialplan_context=dialplan_context)
+        if transfer_type == "ringgroup":
+            return await self._transfer_to_ringgroup(context, target, description, dialplan_context=dialplan_context)
+
+        return {
+            "status": "failed",
+            "message": f"Invalid deferred transfer type: {transfer_type}",
+        }
     
     async def _transfer_to_extension(
         self,
         context: ToolExecutionContext,
         extension: str,
-        description: str
+        description: str,
+        *,
+        dialplan_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Transfer to a direct extension using ARI redirect.
@@ -268,42 +597,27 @@ class UnifiedTransferTool(Tool):
         
         # Get dialplan context for extension transfers (default: from-internal for FreePBX)
         config = context.get_config_value("tools.transfer") or {}
-        dialplan_context = config.get("extension_context", "from-internal")
+        dialplan_context = (
+            str(dialplan_context or "").strip()
+            or self._resolve_dialplan_context("extension", {}, config if isinstance(config, dict) else {})
+        )
         
-        # Set transfer_active flag BEFORE continue() - this prevents cleanup
-        # from hanging up the caller when StasisEnd fires
-        await context.update_session(
-            transfer_active=True,
+        return await self._continue_to_dialplan(
+            context=context,
+            target=str(extension or "").strip(),
+            description=description,
+            transfer_type="extension",
+            dialplan_context=dialplan_context,
             transfer_state="transferring",
-            transfer_target=description
         )
-        
-        # Use ARI continue to transfer via dialplan (like queue/ringgroup transfers)
-        # This properly leaves Stasis and lets Asterisk dialplan handle the call
-        await context.ari_client.send_command(
-            method="POST",
-            resource=f"channels/{context.caller_channel_id}/continue",
-            params={
-                "context": dialplan_context,
-                "extension": extension,
-                "priority": 1
-            }
-        )
-        
-        logger.info("✅ Extension transfer initiated", 
-                   call_id=context.call_id, extension=extension, context=dialplan_context)
-        return {
-            "status": "success",
-            "message": f"Transferring you to {description} now.",
-            "destination": extension,
-            "type": "extension"
-        }
     
     async def _transfer_to_queue(
         self,
         context: ToolExecutionContext,
         queue: str,
-        description: str
+        description: str,
+        *,
+        dialplan_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Transfer to a queue using ARI continue to FreePBX ext-queues context.
@@ -319,41 +633,29 @@ class UnifiedTransferTool(Tool):
         """
         logger.info("Queue transfer", call_id=context.call_id,
                    queue=queue, description=description)
+
+        config = context.get_config_value("tools.transfer") or {}
+        dialplan_context = (
+            str(dialplan_context or "").strip()
+            or self._resolve_dialplan_context("queue", {}, config if isinstance(config, dict) else {})
+        )
         
-        # Set transfer_active flag BEFORE continue() - this prevents cleanup
-        # from hanging up the caller when StasisEnd fires
-        await context.update_session(
-            transfer_active=True,
+        return await self._continue_to_dialplan(
+            context=context,
+            target=str(queue or "").strip(),
+            description=description,
+            transfer_type="queue",
+            dialplan_context=dialplan_context,
             transfer_state="in_queue",
-            transfer_target=description
         )
-        
-        # Execute transfer to FreePBX ext-queues context
-        await context.ari_client.send_command(
-            method="POST",
-            resource=f"channels/{context.caller_channel_id}/continue",
-            params={
-                "context": "ext-queues",
-                "extension": queue,
-                "priority": 1
-            }
-        )
-        
-        logger.info("✅ Queue transfer initiated", call_id=context.call_id, 
-                   queue=queue)
-        
-        return {
-            "status": "success",
-            "message": f"Transferring you to {description} now.",
-            "destination": queue,
-            "type": "queue"
-        }
     
     async def _transfer_to_ringgroup(
         self,
         context: ToolExecutionContext,
         ringgroup: str,
-        description: str
+        description: str,
+        *,
+        dialplan_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Transfer to a ring group using ARI continue to FreePBX ext-group context.
@@ -369,32 +671,170 @@ class UnifiedTransferTool(Tool):
         """
         logger.info("Ring group transfer", call_id=context.call_id,
                    ringgroup=ringgroup, description=description)
+
+        config = context.get_config_value("tools.transfer") or {}
+        dialplan_context = (
+            str(dialplan_context or "").strip()
+            or self._resolve_dialplan_context("ringgroup", {}, config if isinstance(config, dict) else {})
+        )
         
-        # Set transfer_active flag BEFORE continue() - this prevents cleanup
-        # from hanging up the caller when StasisEnd fires
+        return await self._continue_to_dialplan(
+            context=context,
+            target=str(ringgroup or "").strip(),
+            description=description,
+            transfer_type="ringgroup",
+            dialplan_context=dialplan_context,
+            transfer_state="in_ringgroup",
+        )
+
+    async def _continue_to_dialplan(
+        self,
+        *,
+        context: ToolExecutionContext,
+        target: str,
+        description: str,
+        transfer_type: str,
+        dialplan_context: str,
+        transfer_state: str,
+    ) -> Dict[str, Any]:
+        """Validate and hand caller ownership to a concrete dialplan target."""
+        priority = 1
+        target_exists: Optional[bool] = None
+        validator = getattr(context.ari_client, "dialplan_target_exists", None)
+        if callable(validator):
+            try:
+                target_exists = await validator(
+                    context.caller_channel_id,
+                    context=dialplan_context,
+                    extension=target,
+                    priority=priority,
+                )
+            except Exception:
+                logger.warning(
+                    "Dialplan target validation unavailable",
+                    call_id=context.call_id,
+                    transfer_type=transfer_type,
+                    target=target,
+                    context=dialplan_context,
+                    exc_info=True,
+                )
+
+        if target_exists is False:
+            logger.error(
+                "Transfer dialplan target does not exist",
+                call_id=context.call_id,
+                transfer_type=transfer_type,
+                target=target,
+                context=dialplan_context,
+                priority=priority,
+            )
+            return {
+                "status": "failed",
+                "message": f"Transfer destination {description} is not available.",
+                "destination": target,
+                "type": transfer_type,
+            }
+
+        if target_exists is not True:
+            logger.warning(
+                "Dialplan target could not be pre-validated; attempting guarded transfer",
+                call_id=context.call_id,
+                transfer_type=transfer_type,
+                target=target,
+                context=dialplan_context,
+                priority=priority,
+            )
+
+        session = await context.get_session()
+        previous_transfer_state = {
+            "transfer_active": bool(getattr(session, "transfer_active", False)),
+            "transfer_state": getattr(session, "transfer_state", None),
+            "transfer_target": getattr(session, "transfer_target", None),
+        }
+
+        # StasisEnd can race the HTTP response. Claim transfer ownership before
+        # continue so normal cleanup cannot hang up a successfully handed-off leg.
         await context.update_session(
             transfer_active=True,
-            transfer_state="in_ringgroup",
-            transfer_target=description
+            transfer_state=transfer_state,
+            transfer_target=description,
         )
-        
-        # Execute transfer to FreePBX ext-group context
-        await context.ari_client.send_command(
-            method="POST",
-            resource=f"channels/{context.caller_channel_id}/continue",
-            params={
-                "context": "ext-group",
-                "extension": ringgroup,
-                "priority": 1
+
+        try:
+            handed_off = await context.ari_client.continue_in_dialplan(
+                context.caller_channel_id,
+                context=dialplan_context,
+                extension=target,
+                priority=priority,
+            )
+        except Exception:
+            handed_off = None
+            logger.warning(
+                "Transfer dialplan handoff raised",
+                call_id=context.call_id,
+                transfer_type=transfer_type,
+                target=target,
+                context=dialplan_context,
+                exc_info=True,
+            )
+
+        handoff_indeterminate = handed_off is not True and handed_off is not False
+
+        if handed_off is True:
+            logger.info(
+                "Dialplan transfer initiated",
+                call_id=context.call_id,
+                transfer_type=transfer_type,
+                target=target,
+                context=dialplan_context,
+            )
+            return {
+                "status": "success",
+                "message": f"Transferring you to {description} now.",
+                "destination": target,
+                "type": transfer_type,
             }
+
+        # Only an explicit rejection proves the channel remained under AAVA
+        # ownership. An indeterminate response may have followed an accepted
+        # handoff, so retain the transfer guard and avoid destructive cleanup.
+        restore_ownership = handed_off is False
+        if restore_ownership:
+            try:
+                await context.update_session(**previous_transfer_state)
+            except Exception:
+                logger.error(
+                    "Failed to restore transfer ownership after unconfirmed handoff",
+                    call_id=context.call_id,
+                    transfer_type=transfer_type,
+                    target=target,
+                    context=dialplan_context,
+                    exc_info=True,
+                )
+        else:
+            logger.warning(
+                "Transfer handoff outcome indeterminate; retaining transfer ownership",
+                call_id=context.call_id,
+                transfer_type=transfer_type,
+                target=target,
+                context=dialplan_context,
+            )
+
+        logger.error(
+            "Transfer dialplan handoff was not confirmed",
+            call_id=context.call_id,
+            transfer_type=transfer_type,
+            target=target,
+            context=dialplan_context,
+            handoff_indeterminate=handoff_indeterminate,
+            ownership_restored=restore_ownership,
         )
-        
-        logger.info("✅ Ring group transfer initiated", call_id=context.call_id,
-                   ringgroup=ringgroup)
-        
-        return {
-            "status": "success",
-            "message": f"Transferring you to {description} now.",
-            "destination": ringgroup,
-            "type": "ringgroup"
+        result = {
+            "status": "failed",
+            "message": f"Unable to transfer to {description}.",
+            "destination": target,
+            "type": transfer_type,
         }
+        if handoff_indeterminate:
+            result["handoff_indeterminate"] = True
+        return result

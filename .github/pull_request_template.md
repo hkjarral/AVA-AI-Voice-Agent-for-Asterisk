@@ -4,8 +4,7 @@ Describe the changes in this PR. What problem does it solve or what feature does
 
 ## Related Issue(s)
 
-- Linear / AAVA issue(s): <!-- e.g. AAVA-63, AAVA-64 -->
-- GitHub issue(s): <!-- optional -->
+- GitHub issue(s): <!-- e.g. #123; write "closes #123" to auto-close on merge -->
 
 ## Implementation Notes
 
@@ -14,7 +13,7 @@ Describe the changes in this PR. What problem does it solve or what feature does
 - High-level design decisions:
   - 
 
-If you used AVA (project manager persona defined in `AVA.mdc`) to plan this work, summarize the agreed plan briefly.
+If you used an AI coding assistant primed with `AVA.mdc` (the project's AI-assistant context file) to plan this work, summarize the agreed plan briefly.
 
 ## Testing
 
@@ -35,6 +34,17 @@ For telephony changes, include:
 - Brief call behavior summary (any issues, notable findings):
   - 
 
+## Review Checkpoints
+
+- [ ] Draft opened after a coherent vertical slice was ready to review
+- [ ] Review fixes were pushed as a cohesive batch
+- [ ] Final head is frozen, the PR is ready, and the final CI gate has passed
+- [ ] `@coderabbitai full review` completed on the frozen head
+- [ ] Optional `codex-review` label/manual workflow completed on the frozen head, if requested
+- [ ] All actionable conversations are resolved
+
+See the [pull-request workflow](../docs/contributing/PULL_REQUEST_WORKFLOW.md) for the expected review and CI sequence.
+
 ## Documentation
 
 Which docs were updated (if any)?
@@ -44,5 +54,6 @@ Which docs were updated (if any)?
 - [ ] `docs/TOOL_CALLING_GUIDE.md`
 - [ ] Provider/tool-specific docs
 - [ ] `docs/DEVELOPER_ONBOARDING.md` / other onboarding content
+- [ ] `CHANGELOG.md`
 
 If no docs were needed, explain why.

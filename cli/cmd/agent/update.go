@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -18,7 +19,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/hkjarral/ava-ai-voice-agent-for-asterisk/cli/internal/check"
@@ -34,11 +34,21 @@ const (
 	rebuildAll  rebuildMode = "all"
 )
 
+type localChangesPolicy string
+
+const (
+	localChangesAsk       localChangesPolicy = "ask"
+	localChangesRetain    localChangesPolicy = "retain"
+	localChangesOverwrite localChangesPolicy = "overwrite"
+	localChangesAbort     localChangesPolicy = "abort"
+)
+
 var (
 	updateRemote         string
 	updateRef            string
 	updateNoStash        bool
 	updateStashUntracked bool
+	updateLocalChanges   string
 	updateRebuild        string
 	updateForceRecreate  bool
 	updateSkipCheck      bool
@@ -72,6 +82,7 @@ var updateCmd = &cobra.Command{
 
 This command:
   - Backs up operator config (.env, config/ai-agent.local.yaml, config/users.json, config/contexts/)
+  - Takes consistent SQLite snapshots of agents.db and call_history.db when present
   - Also snapshots config/ai-agent.yaml for recovery/migration if it was edited locally
   - Safely fast-forwards to origin/main (no forced merges by default)
   - Preserves local tracked changes using git stash (optional)
@@ -93,6 +104,7 @@ func init() {
 	updateCmd.Flags().StringVar(&updateRef, "ref", "main", "git ref to update to (branch like main, or tag like v6.2.0)")
 	updateCmd.Flags().BoolVar(&updateNoStash, "no-stash", false, "abort if repo has local changes instead of stashing")
 	updateCmd.Flags().BoolVar(&updateStashUntracked, "stash-untracked", false, "include untracked files when stashing (does not include ignored files)")
+	updateCmd.Flags().StringVar(&updateLocalChanges, "local-changes", string(localChangesAsk), "how to handle tracked local changes: ask|retain|overwrite|abort")
 	updateCmd.Flags().StringVar(&updateRebuild, "rebuild", string(rebuildAuto), "rebuild mode: auto|none|all")
 	updateCmd.Flags().BoolVar(&updateForceRecreate, "force-recreate", false, "force recreate containers during docker compose up")
 	updateCmd.Flags().BoolVar(&updateSkipCheck, "skip-check", false, "skip running agent check after update")
@@ -138,7 +150,9 @@ type updatePlanReport struct {
 	Dirty            bool              `json:"dirty"`
 	NoStash          bool              `json:"no_stash"`
 	StashUntracked   bool              `json:"stash_untracked"`
+	LocalChanges     string            `json:"local_changes"`
 	WouldStash       bool              `json:"would_stash"`
+	WouldOverwrite   bool              `json:"would_overwrite"`
 	WouldAbort       bool              `json:"would_abort"`
 	RebuildMode      string            `json:"rebuild_mode"`
 	ComposeChanged   bool              `json:"compose_changed"`
@@ -148,6 +162,9 @@ type updatePlanReport struct {
 	ChangedFileCount int               `json:"changed_file_count"`
 	ChangedFiles     []string          `json:"changed_files,omitempty"`
 	FilesTruncated   bool              `json:"changed_files_truncated,omitempty"`
+	LocalFileCount   int               `json:"local_file_count"`
+	LocalFiles       []string          `json:"local_files,omitempty"`
+	LocalFilesTrunc  bool              `json:"local_files_truncated,omitempty"`
 	Warnings         []string          `json:"warnings,omitempty"`
 }
 
@@ -188,24 +205,15 @@ func runUpdate() (retErr error) {
 		return runUpdatePlan(ctx)
 	}
 
-	printUpdateStep("Creating backups")
-	if err := createUpdateBackups(ctx); err != nil {
-		return err
-	}
-
-	printUpdateStep("Checking working tree")
-	dirty, err := gitIsDirty(updateStashUntracked)
+	releaseLock, err := acquireUpdateLock(ctx.repoRoot)
 	if err != nil {
 		return err
 	}
-	if dirty {
-		if updateNoStash {
-			return errors.New("working tree has local changes; re-run without --no-stash or commit your changes first")
-		}
-		printUpdateInfo("Working tree is dirty; stashing changes")
-		if err := gitStash(ctx, updateStashUntracked); err != nil {
-			return err
-		}
+	defer releaseLock()
+
+	printUpdateStep("Creating backups")
+	if err := createUpdateBackups(ctx); err != nil {
+		return err
 	}
 
 	tagRef, isTag := normalizeSemverTagRef(updateRef)
@@ -236,35 +244,32 @@ func runUpdate() (retErr error) {
 	ctx.newSHA = targetSHA
 
 	currentBranch, _ := gitCurrentBranch()
+	branchMismatch := false
+	checkoutExistingBranch := false
+	branchHead := ctx.oldSHA
 	if isTag && (strings.TrimSpace(currentBranch) == "" || strings.TrimSpace(currentBranch) == "HEAD") {
 		return fmt.Errorf("cannot update to tag %q from a detached HEAD; checkout a branch (e.g., `git checkout main`) and re-run", updateRef)
 	}
 	if !isTag {
-		branchMismatch := strings.TrimSpace(currentBranch) == "" || strings.TrimSpace(currentBranch) == "HEAD" || strings.TrimSpace(currentBranch) != strings.TrimSpace(updateRef)
+		branchMismatch = strings.TrimSpace(currentBranch) == "" || strings.TrimSpace(currentBranch) == "HEAD" || strings.TrimSpace(currentBranch) != strings.TrimSpace(updateRef)
 		if branchMismatch {
 			if !updateCheckout {
 				return fmt.Errorf("target ref %q differs from current branch %q; re-run with --checkout to allow switching branches", updateRef, currentBranch)
 			}
-			printUpdateStep(fmt.Sprintf("Checking out %s", updateRef))
 			exists, existsErr := gitLocalBranchExists(updateRef)
 			if existsErr != nil {
 				return existsErr
 			}
 			if exists {
-				if err := gitCheckout(updateRef); err != nil {
+				checkoutExistingBranch = true
+				branchHead, err = gitRevParse(updateRef)
+				if err != nil {
 					return err
 				}
 			} else {
-				if err := gitCheckoutTrack(updateRef, targetRemoteRef); err != nil {
-					return err
-				}
+				branchHead = targetSHA
 			}
 		}
-	}
-
-	branchHead, err := gitRevParse("HEAD")
-	if err != nil {
-		return err
 	}
 
 	updateAvailable, relErr := gitIsAncestor(branchHead, targetSHA)
@@ -281,14 +286,6 @@ func runUpdate() (retErr error) {
 		printUpdateInfo("Already up to date on %s (%s)", updateRef, shortSHA(branchHead))
 		finalSHA = branchHead
 	} else if updateAvailable {
-		printUpdateStep("Fast-forwarding code")
-		mergeRef := targetRemoteRef
-		if isTag {
-			mergeRef = updateRef
-		}
-		if err := gitMergeFastForward(mergeRef); err != nil {
-			return err
-		}
 		finalSHA = targetSHA
 	} else if remoteIsAncestor {
 		printUpdateInfo("Local branch is ahead of %s; skipping fast-forward update", targetLabel)
@@ -298,14 +295,86 @@ func runUpdate() (retErr error) {
 	}
 	ctx.newSHA = finalSHA
 
+	if strings.TrimSpace(ctx.oldSHA) != strings.TrimSpace(ctx.newSHA) {
+		ctx.changedFiles, err = gitDiffNames(ctx.oldSHA, ctx.newSHA)
+		if err != nil {
+			return err
+		}
+		decideDockerActions(ctx)
+		applyServiceFilters(ctx)
+		if err := preflightDockerChangeGuard(ctx); err != nil {
+			return err
+		}
+	}
+
+	printUpdateStep("Checking working tree")
+	localFiles, err := gitDirtyFiles(updateStashUntracked)
+	if err != nil {
+		return err
+	}
+	dirty := len(localFiles) > 0
+	localPolicy, err := resolveLocalChangesPolicy(dirty, localFiles)
+	if err != nil {
+		return err
+	}
+	if dirty {
+		switch localPolicy {
+		case localChangesAbort:
+			return errors.New("working tree has local changes; update aborted by local-change policy")
+		case localChangesOverwrite:
+			printUpdateInfo("Working tree is dirty; discarding local code changes after backing up operator config")
+			if err := gitDiscardLocalChanges(updateStashUntracked); err != nil {
+				return err
+			}
+		case localChangesRetain:
+			printUpdateInfo("Working tree is dirty; stashing local changes for restore after update")
+			if err := gitStash(ctx, updateStashUntracked); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("invalid local-change policy %q", localPolicy)
+		}
+	}
+
+	restoreOperatorConfigAfterMerge := dirty && localPolicy == localChangesOverwrite
+
+	if branchMismatch {
+		printUpdateStep(fmt.Sprintf("Checking out %s", updateRef))
+		if checkoutExistingBranch {
+			if err := gitCheckout(updateRef); err != nil {
+				return err
+			}
+		} else {
+			if err := gitCheckoutTrack(updateRef, targetRemoteRef); err != nil {
+				return err
+			}
+		}
+	}
+	if strings.TrimSpace(branchHead) != strings.TrimSpace(targetSHA) && updateAvailable {
+		printUpdateStep("Fast-forwarding code")
+		mergeRef := targetRemoteRef
+		if isTag {
+			mergeRef = updateRef
+		}
+		if err := gitMergeFastForward(mergeRef); err != nil {
+			return err
+		}
+	}
+
+	if restoreOperatorConfigAfterMerge {
+		printUpdateStep("Restoring operator config")
+		if err := restoreOperatorConfigFromBackup(ctx); err != nil {
+			return err
+		}
+	}
+
 	if ctx.stashed {
 		printUpdateStep("Restoring stashed changes")
 		if err := gitStashPop(ctx); err != nil {
-			printUpdateInfo("⚠ Stash pop conflict detected; recovering from backup")
+			printUpdateInfo("WARN: stash pop failed; preserving local code changes in git stash and recovering operator config from update backup: %v", err)
 			if recoverErr := recoverFromStashConflict(ctx); recoverErr != nil {
-				return fmt.Errorf("stash pop failed and recovery also failed: %w (original: %v)", recoverErr, err)
+				return fmt.Errorf("stash pop failed and automatic recovery failed; local changes are preserved in git stash and require manual resolution: %w", recoverErr)
 			}
-			printUpdateInfo("Operator config restored from backup — update will continue")
 		}
 	}
 
@@ -314,15 +383,6 @@ func runUpdate() (retErr error) {
 	// are inherited by default.
 	if err := migrateBaseConfigEditsToLocal(); err != nil {
 		return err
-	}
-
-	if strings.TrimSpace(ctx.oldSHA) != strings.TrimSpace(ctx.newSHA) {
-		ctx.changedFiles, err = gitDiffNames(ctx.oldSHA, ctx.newSHA)
-		if err != nil {
-			return err
-		}
-		decideDockerActions(ctx)
-		applyServiceFilters(ctx)
 	}
 
 	printUpdateStep("Applying Docker changes")
@@ -337,7 +397,7 @@ func runUpdate() (retErr error) {
 	}
 
 	printUpdateStep("Running agent check")
-	report, status, warnCount, failCount, err := runPostUpdateCheck()
+	report, status, warnCount, failCount, err := runPostUpdateCheckWithRetry(60*time.Second, 5*time.Second)
 	printPostUpdateCheck(report, warnCount, failCount)
 	printUpdateSummary(ctx, status, warnCount, failCount)
 	if err != nil {
@@ -349,10 +409,44 @@ func runUpdate() (retErr error) {
 	return nil
 }
 
+func acquireUpdateLock(repoRoot string) (func(), error) {
+	lockDir := filepath.Join(repoRoot, ".agent", "updates")
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create update lock directory: %w", err)
+	}
+	lockPath := filepath.Join(lockDir, "update.lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open update lock: %w", err)
+	}
+	if err := lockUpdateFile(f); err != nil {
+		_ = f.Close()
+		return nil, errors.New("another agent update or rollback is already running")
+	}
+	_ = f.Truncate(0)
+	_, _ = f.Seek(0, 0)
+	_, _ = f.WriteString(fmt.Sprintf("pid=%d started_at=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339)))
+	return func() {
+		unlockUpdateFile(f)
+		_ = f.Close()
+	}, nil
+}
+
 func runUpdatePlan(ctx *updateContext) error {
-	dirty, err := gitIsDirty(updateStashUntracked)
+	localFiles, err := gitDirtyFiles(updateStashUntracked)
 	if err != nil {
 		return err
+	}
+	dirty := len(localFiles) > 0
+	localPolicy, err := requestedLocalChangesPolicy()
+	if err != nil {
+		return err
+	}
+	if updateNoStash {
+		if localPolicy != localChangesAsk && localPolicy != localChangesAbort {
+			return errors.New("--no-stash cannot be combined with --local-changes=retain or --local-changes=overwrite")
+		}
+		localPolicy = localChangesAbort
 	}
 
 	currentBranch, _ := gitCurrentBranch()
@@ -400,8 +494,9 @@ func runUpdatePlan(ctx *updateContext) error {
 		ctx.changedFiles = nil
 	}
 
-	wouldStash := dirty && !updateNoStash
-	wouldAbort := dirty && updateNoStash
+	wouldStash := dirty && localPolicy == localChangesRetain
+	wouldOverwrite := dirty && localPolicy == localChangesOverwrite
+	wouldAbort := dirty && localPolicy == localChangesAbort
 
 	relation := "equal"
 	if codeChanged {
@@ -422,6 +517,12 @@ func runUpdatePlan(ctx *updateContext) error {
 		files = files[:limit]
 		truncated = true
 	}
+	localPreview := localFiles
+	localTruncated := false
+	if len(localPreview) > limit {
+		localPreview = localPreview[:limit]
+		localTruncated = true
+	}
 
 	rep := &updatePlanReport{
 		RepoRoot:         ctx.repoRoot,
@@ -439,7 +540,9 @@ func runUpdatePlan(ctx *updateContext) error {
 		Dirty:            dirty,
 		NoStash:          updateNoStash,
 		StashUntracked:   updateStashUntracked,
+		LocalChanges:     string(localPolicy),
 		WouldStash:       wouldStash,
+		WouldOverwrite:   wouldOverwrite,
 		WouldAbort:       wouldAbort,
 		RebuildMode:      strings.ToLower(strings.TrimSpace(updateRebuild)),
 		ComposeChanged:   ctx.composeChanged,
@@ -449,6 +552,9 @@ func runUpdatePlan(ctx *updateContext) error {
 		ChangedFileCount: len(ctx.changedFiles),
 		ChangedFiles:     files,
 		FilesTruncated:   truncated,
+		LocalFileCount:   len(localFiles),
+		LocalFiles:       localPreview,
+		LocalFilesTrunc:  localTruncated,
 	}
 	if len(ctx.skippedServices) > 0 {
 		rep.SkippedServices = ctx.skippedServices
@@ -556,7 +662,7 @@ func maybeSelfUpdateAndReexec() {
 	// Re-exec into the updated binary so the rest of `agent update` runs the newest logic.
 	env := append(os.Environ(), "AAVA_AGENT_SKIP_SELF_UPDATE=1")
 	args := append([]string{exePath}, os.Args[1:]...)
-	_ = syscall.Exec(exePath, args, env)
+	execReplace(exePath, args, env)
 }
 
 func releaseBinaryName(goos string, goarch string) (string, bool) {
@@ -828,6 +934,105 @@ func createUpdateBackups(ctx *updateContext) error {
 			return err
 		}
 	}
+	for _, rel := range []string{
+		filepath.Join("data", "operator", "agents.db"),
+		filepath.Join("data", "call_history.db"),
+	} {
+		if err := backupSQLiteIfExists(rel, backupDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// backupSQLiteIfExists uses SQLite's online backup API inside ai_engine. A raw
+// file copy can miss committed pages that are still in the WAL and is not a
+// safe pre-migration backup while calls are active.
+//
+// When the ai_engine container is not running (a common recovery context for
+// running an update), the online-backup path is unavailable. In that case we
+// fall back to a host-side file copy of the .db plus its -wal/-shm sidecars,
+// which is safe precisely because a stopped engine means there are no concurrent
+// writers. Aborting the whole update just because the engine is down would defeat
+// the purpose, so we never fail here on a stopped container.
+func backupSQLiteIfExists(relPath, backupRoot string) error {
+	if _, err := os.Stat(relPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to stat %s: %w", relPath, err)
+	}
+
+	if !aiEngineRunning() {
+		printUpdateInfo("ai_engine not running; copying %s (and WAL/SHM) from host", relPath)
+		return backupSQLiteHostCopy(relPath, backupRoot)
+	}
+
+	tmpName := fmt.Sprintf(".agent-sqlite-backup-%d-%s", os.Getpid(), filepath.Base(relPath))
+	hostTmp := filepath.Join("data", tmpName)
+	containerSrc := "/app/" + filepath.ToSlash(relPath)
+	containerTmp := "/app/data/" + tmpName
+	const script = `
+import sqlite3, sys
+src = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True, timeout=30)
+dst = sqlite3.connect(sys.argv[2])
+with dst:
+    src.backup(dst)
+dst.close(); src.close()
+`
+	cmd := exec.Command("docker", "exec", "ai_engine", "python3", "-c", script, containerSrc, containerTmp)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		// The container looked up as running but the exec failed (e.g. it became
+		// unhealthy mid-update). Fall back to a host copy rather than aborting.
+		printUpdateInfo("online SQLite backup failed for %s (%s); falling back to host copy", relPath, strings.TrimSpace(string(out)))
+		return backupSQLiteHostCopy(relPath, backupRoot)
+	}
+	defer os.Remove(hostTmp)
+	dst := filepath.Join(backupRoot, relPath)
+	if err := copyFile(hostTmp, dst); err != nil {
+		return err
+	}
+	printUpdateInfo("SQLite snapshot: %s", relPath)
+	return nil
+}
+
+// aiEngineRunning reports whether the ai_engine container is currently running.
+// A non-running or unreachable container (docker absent, daemon down) returns
+// false so callers fall back to a host-side copy.
+func aiEngineRunning() bool {
+	out, err := runCmd("docker", "ps", "--filter", "name=^ai_engine$", "--filter", "status=running", "--format", "{{.Names}}")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "ai_engine" {
+			return true
+		}
+	}
+	return false
+}
+
+// backupSQLiteHostCopy copies a SQLite DB and any -wal/-shm sidecars directly
+// from the host filesystem. Only valid when no process is writing the DB (i.e.
+// the engine is stopped); missing sidecars are skipped.
+func backupSQLiteHostCopy(relPath, backupRoot string) error {
+	dst := filepath.Join(backupRoot, relPath)
+	if err := copyFile(relPath, dst); err != nil {
+		return err
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		sidecar := relPath + suffix
+		if _, err := os.Stat(sidecar); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("failed to stat %s: %w", sidecar, err)
+		}
+		if err := copyFile(sidecar, filepath.Join(backupRoot, sidecar)); err != nil {
+			return err
+		}
+	}
+	printUpdateInfo("SQLite host copy: %s", relPath)
 	return nil
 }
 
@@ -969,6 +1174,14 @@ func gitRevParse(ref string) (string, error) {
 }
 
 func gitIsDirty(includeUntracked bool) (bool, error) {
+	files, err := gitDirtyFiles(includeUntracked)
+	if err != nil {
+		return false, err
+	}
+	return len(files) > 0, nil
+}
+
+func gitDirtyFiles(includeUntracked bool) ([]string, error) {
 	args := []string{"status", "--porcelain"}
 	// Default behavior: ignore untracked files so operator backup artifacts (e.g., *.bak, .preflight-ok)
 	// don't force a stash attempt on every update run. Use --stash-untracked to include them.
@@ -979,9 +1192,105 @@ func gitIsDirty(includeUntracked bool) (bool, error) {
 	}
 	out, err := runGitCmd(args...)
 	if err != nil {
-		return false, fmt.Errorf("git status failed: %w", err)
+		return nil, fmt.Errorf("git status failed: %w", err)
 	}
-	return strings.TrimSpace(out) != "", nil
+	lines := []string{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if len(line) > 3 {
+			lines = append(lines, strings.TrimSpace(line[3:]))
+		} else {
+			lines = append(lines, line)
+		}
+	}
+	sort.Strings(lines)
+	return lines, nil
+}
+
+func requestedLocalChangesPolicy() (localChangesPolicy, error) {
+	p := strings.ToLower(strings.TrimSpace(updateLocalChanges))
+	if p == "" {
+		p = string(localChangesAsk)
+	}
+	switch localChangesPolicy(p) {
+	case localChangesAsk, localChangesRetain, localChangesOverwrite, localChangesAbort:
+		return localChangesPolicy(p), nil
+	default:
+		return "", fmt.Errorf("invalid --local-changes value %q (expected ask, retain, overwrite, or abort)", updateLocalChanges)
+	}
+}
+
+func stdinIsTerminal() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
+}
+
+func resolveLocalChangesPolicy(dirty bool, localFiles []string) (localChangesPolicy, error) {
+	policy, err := requestedLocalChangesPolicy()
+	if err != nil {
+		return "", err
+	}
+	if updateNoStash {
+		if policy != localChangesAsk && policy != localChangesAbort {
+			return "", errors.New("--no-stash cannot be combined with --local-changes=retain or --local-changes=overwrite")
+		}
+		return localChangesAbort, nil
+	}
+	if !dirty || policy != localChangesAsk {
+		return policy, nil
+	}
+	if !stdinIsTerminal() {
+		return "", errors.New("working tree has local changes; re-run with --local-changes=retain, --local-changes=overwrite, or --local-changes=abort")
+	}
+
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "Local tracked changes were found before updating:")
+	limit := 20
+	for i, f := range localFiles {
+		if i >= limit {
+			fmt.Fprintf(os.Stderr, "  ... and %d more\n", len(localFiles)-limit)
+			break
+		}
+		fmt.Fprintf(os.Stderr, "  %s\n", f)
+	}
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "Choose how to handle these changes:")
+	fmt.Fprintln(os.Stderr, "  r) retain    stash and reapply them after the update (may conflict)")
+	fmt.Fprintln(os.Stderr, "  o) overwrite discard tracked local code edits; restore operator config from backup")
+	fmt.Fprintln(os.Stderr, "  a) abort     stop before changing the checkout")
+	fmt.Fprint(os.Stderr, "Selection [a]: ")
+
+	reader := bufio.NewReader(os.Stdin)
+	answer, _ := reader.ReadString('\n')
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	switch answer {
+	case "r", "retain":
+		return localChangesRetain, nil
+	case "o", "overwrite":
+		return localChangesOverwrite, nil
+	case "", "a", "abort":
+		return localChangesAbort, nil
+	default:
+		return "", fmt.Errorf("unrecognized local-change selection %q", answer)
+	}
+}
+
+func gitDiscardLocalChanges(includeUntracked bool) error {
+	if _, err := runGitCmd("reset", "--hard", "HEAD"); err != nil {
+		return fmt.Errorf("git reset --hard HEAD failed while discarding tracked local changes: %w", err)
+	}
+	if includeUntracked {
+		if _, err := runGitCmd("clean", "-fd"); err != nil {
+			return fmt.Errorf("git clean -fd failed while discarding untracked local changes: %w", err)
+		}
+	}
+	return nil
 }
 
 func gitStash(ctx *updateContext, includeUntracked bool) error {
@@ -1022,22 +1331,23 @@ func gitStashPop(ctx *updateContext) error {
 }
 
 // recoverFromStashConflict handles a failed git stash pop by resetting the conflicted
-// working tree, dropping the failed stash, and restoring operator-owned config files
-// from the pre-update backup so the update can continue.
+// working tree and restoring operator-owned config files from the pre-update backup.
+// The failed stash entry is intentionally kept so local code edits are not lost.
 func recoverFromStashConflict(ctx *updateContext) error {
 	// 1. Reset the conflicted working tree to the (already merged) HEAD.
-	if _, err := runGitCmd("checkout", "--", "."); err != nil {
-		return fmt.Errorf("git checkout -- . failed: %w", err)
+	if err := gitDiscardLocalChanges(updateStashUntracked); err != nil {
+		return err
 	}
 
-	// 2. Drop the stash entry that caused the conflict.
-	//    After a failed `stash pop`, the stash entry is preserved at stash@{0}.
-	if _, err := runGitCmd("stash", "drop"); err != nil {
-		// Non-fatal: the stash may have been consumed on some git versions.
-		printUpdateInfo("Note: could not drop stash (may already be consumed): %v", err)
+	// 2. Restore operator config from the backup created earlier in this run.
+	if err := restoreOperatorConfigFromBackup(ctx); err != nil {
+		return err
 	}
+	printUpdateInfo("Local code changes remain in git stash; inspect with `git stash list`")
+	return nil
+}
 
-	// 3. Restore operator config from the backup created earlier in this run.
+func restoreOperatorConfigFromBackup(ctx *updateContext) error {
 	if ctx.backupDir == "" {
 		return errors.New("no backup directory available for recovery")
 	}
@@ -1383,6 +1693,35 @@ func decideDockerActions(ctx *updateContext) {
 	}
 }
 
+func updateMayTouchAIEngine(ctx *updateContext) bool {
+	return ctx.composeChanged || ctx.servicesToRebuild["ai_engine"] || ctx.servicesToRestart["ai_engine"]
+}
+
+func updateHasDockerChanges(ctx *updateContext) bool {
+	return len(ctx.servicesToRebuild) > 0 || len(ctx.servicesToRestart) > 0 || ctx.composeChanged
+}
+
+func preflightDockerChangeGuard(ctx *updateContext) error {
+	if !updateHasDockerChanges(ctx) {
+		return nil
+	}
+	if _, err := runCmd("docker", "compose", "version"); err != nil {
+		return fmt.Errorf("docker compose is required before updating checkout because Docker changes are planned: %w", err)
+	}
+	if !updateMayTouchAIEngine(ctx) || envBool("AAVA_UPDATE_FORCE_ACTIVE_CALLS") {
+		return nil
+	}
+
+	activeCalls, reachable, err := queryActiveCalls()
+	if err == nil && reachable && activeCalls > 0 {
+		return fmt.Errorf("refusing to update checkout while %d active call(s) are in progress; retry after calls complete or set AAVA_UPDATE_FORCE_ACTIVE_CALLS=true", activeCalls)
+	}
+	if err != nil {
+		printUpdateInfo("WARN: unable to check active calls before updating checkout: %v", err)
+	}
+	return nil
+}
+
 func applyDockerActions(ctx *updateContext) error {
 	if len(ctx.servicesToRebuild) == 0 && len(ctx.servicesToRestart) == 0 && !ctx.composeChanged {
 		return nil
@@ -1397,17 +1736,55 @@ func applyDockerActions(ctx *updateContext) error {
 	// fail if their images aren't present. Instead, scope to services that are already running
 	// plus any services we explicitly intend to rebuild/restart.
 	runningServices := map[string]bool{}
+	runningServicesKnown := false
 	out, err := runCmd("docker", "compose", "ps", "--services", "--status", "running")
 	if err != nil {
 		// Fallback for older compose versions (or environments where --status isn't supported).
 		out, err = runCmd("docker", "compose", "ps", "--services")
 	}
 	if err == nil {
+		runningServicesKnown = true
 		for _, line := range strings.Split(out, "\n") {
 			svc := strings.TrimSpace(line)
 			if svc != "" {
 				runningServices[svc] = true
 			}
+		}
+	}
+
+	rebuildServices := sortedKeys(ctx.servicesToRebuild)
+	restartServices := sortedKeys(ctx.servicesToRestart)
+
+	// Avoid starting services that aren't already running unless explicitly targeted by rebuild/restart.
+	if !updateIncludeUI {
+		// If admin_ui is excluded, drop it even if a caller accidentally marked it.
+		rebuildServices = filterSlice(rebuildServices, func(s string) bool { return s != "admin_ui" })
+		restartServices = filterSlice(restartServices, func(s string) bool { return s != "admin_ui" })
+	}
+
+	// Don't rebuild services that the operator never started — auto-detection of changed files in
+	// e.g. local_ai_server/ should not force-start that service on deployments that don't use it.
+	if runningServicesKnown {
+		rebuildServices = filterSlice(rebuildServices, func(svc string) bool {
+			return runningServices[svc]
+		})
+	}
+
+	// If a service isn't running, and we aren't rebuilding it, prefer to skip a plain restart
+	// attempt (restart would fail anyway).
+	if runningServicesKnown && len(restartServices) > 0 {
+		restartServices = filterSlice(restartServices, func(svc string) bool {
+			return runningServices[svc]
+		})
+	}
+
+	if runningServices["ai_engine"] && (ctx.composeChanged || containsString(rebuildServices, "ai_engine") || containsString(restartServices, "ai_engine")) && !envBool("AAVA_UPDATE_FORCE_ACTIVE_CALLS") {
+		activeCalls, reachable, err := queryActiveCalls()
+		if err == nil && reachable && activeCalls > 0 {
+			printUpdateInfo("WARN: %d active call(s) started after update checkout; continuing to keep code and containers aligned", activeCalls)
+		}
+		if err != nil {
+			printUpdateInfo("WARN: unable to check active calls before ai_engine restart: %v", err)
 		}
 	}
 
@@ -1423,11 +1800,19 @@ func applyDockerActions(ctx *updateContext) error {
 		for svc := range runningServices {
 			targets[svc] = true
 		}
+		// Only include rebuild/restart targets that are already running in the --no-build step.
+		// Services not yet running will be started by the explicit --build step below, so including
+		// them here would cause a "no such image" failure for services the operator never built
+		// (e.g., local_ai_server on deployments that don't use Local AI).
 		for svc := range ctx.servicesToRebuild {
-			targets[svc] = true
+			if runningServices[svc] {
+				targets[svc] = true
+			}
 		}
 		for svc := range ctx.servicesToRestart {
-			targets[svc] = true
+			if runningServices[svc] {
+				targets[svc] = true
+			}
 		}
 
 		// If admin_ui updates are excluded, ensure we never recreate/restart it as part of the
@@ -1443,24 +1828,6 @@ func applyDockerActions(ctx *updateContext) error {
 				return fmt.Errorf("docker compose up (remove-orphans) failed: %w", err)
 			}
 		}
-	}
-
-	rebuildServices := sortedKeys(ctx.servicesToRebuild)
-	restartServices := sortedKeys(ctx.servicesToRestart)
-
-	// Avoid starting services that aren't already running unless explicitly targeted by rebuild/restart.
-	if !updateIncludeUI {
-		// If admin_ui is excluded, drop it even if a caller accidentally marked it.
-		rebuildServices = filterSlice(rebuildServices, func(s string) bool { return s != "admin_ui" })
-		restartServices = filterSlice(restartServices, func(s string) bool { return s != "admin_ui" })
-	}
-
-	// If a service isn't running, and we aren't rebuilding it, prefer to skip a plain restart
-	// attempt (restart would fail anyway). We'll still allow the rebuild path to start it.
-	if len(restartServices) > 0 {
-		restartServices = filterSlice(restartServices, func(svc string) bool {
-			return runningServices[svc]
-		})
 	}
 
 	if len(rebuildServices) > 0 {
@@ -1484,6 +1851,136 @@ func applyDockerActions(ctx *updateContext) error {
 	}
 
 	return nil
+}
+
+func containsString(items []string, needle string) bool {
+	for _, item := range items {
+		if item == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func envBool(name string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+func configuredHealthPort() int {
+	const defaultPort = 15000
+	if port, ok := parseHealthPort(os.Getenv("HEALTH_BIND_PORT")); ok {
+		return port
+	}
+	if raw, ok := dotenvValue(".env", "HEALTH_BIND_PORT"); ok {
+		if port, ok := parseHealthPort(raw); ok {
+			return port
+		}
+	}
+
+	cfg := map[string]any{}
+	if base, err := configmerge.ReadYAMLFile(filepath.Join("config", "ai-agent.yaml")); err == nil {
+		cfg = base
+	}
+	if local, err := configmerge.ReadYAMLFile(filepath.Join("config", "ai-agent.local.yaml")); err == nil {
+		cfg = configmerge.DeepMerge(cfg, local)
+	}
+	if health, ok := cfg["health"].(map[string]any); ok {
+		if port, ok := parseHealthPortValue(health["port"]); ok {
+			return port
+		}
+	}
+	return defaultPort
+}
+
+func parseHealthPortValue(raw any) (int, bool) {
+	switch v := raw.(type) {
+	case int:
+		return parseHealthPort(strconv.Itoa(v))
+	case int64:
+		return parseHealthPort(strconv.FormatInt(v, 10))
+	case float64:
+		if v == float64(int(v)) {
+			return parseHealthPort(strconv.Itoa(int(v)))
+		}
+	case string:
+		return parseHealthPort(v)
+	}
+	return 0, false
+}
+
+func parseHealthPort(raw string) (int, bool) {
+	p, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || p < 1 || p > 65535 {
+		return 0, false
+	}
+	return p, true
+}
+
+func dotenvValue(path, key string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) != key {
+			continue
+		}
+		value := strings.TrimSpace(parts[1])
+		if len(value) >= 2 {
+			if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
+				value = value[1 : len(value)-1]
+			}
+		}
+		return value, true
+	}
+	return "", false
+}
+
+func queryActiveCalls() (int, bool, error) {
+	port := configuredHealthPort()
+	script := fmt.Sprintf(`
+import json, urllib.request
+try:
+    with urllib.request.urlopen("http://127.0.0.1:%d/sessions/stats", timeout=3) as resp:
+        print(resp.read().decode("utf-8"))
+except Exception as e:
+    print(json.dumps({"_probe_error": str(e)}))
+`, port)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "exec", "ai_engine", "python3", "-c", script)
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return 0, false, fmt.Errorf("docker exec ai_engine sessions/stats timed out after 8s")
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("docker exec ai_engine sessions/stats failed: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(out), &payload); err != nil {
+		return 0, true, err
+	}
+	if probeErr, ok := payload["_probe_error"].(string); ok && strings.TrimSpace(probeErr) != "" {
+		return 0, false, errors.New(probeErr)
+	}
+	for _, key := range []string{"active_calls", "active_sessions"} {
+		if raw, ok := payload[key]; ok {
+			switch v := raw.(type) {
+			case float64:
+				return int(v), true, nil
+			case int:
+				return v, true, nil
+			}
+		}
+	}
+	return 0, true, nil
 }
 
 func filterSlice(in []string, keep func(string) bool) []string {
@@ -1514,6 +2011,51 @@ func runPostUpdateCheck() (report *check.Report, status string, warnCount int, f
 		return report, "WARN", warnCount, 0, nil
 	}
 	return report, "PASS", 0, 0, nil
+}
+
+func reportHasTransientStartupWarning(report *check.Report) bool {
+	if report == nil {
+		return false
+	}
+	for _, item := range report.Items {
+		if item.Name == "ARI" && item.Status == check.StatusWarn && item.Message == "reachable but app not registered" {
+			return true
+		}
+	}
+	return false
+}
+
+func runPostUpdateCheckWithRetry(timeout time.Duration, interval time.Duration) (report *check.Report, status string, warnCount int, failCount int, err error) {
+	deadline := time.Now().Add(timeout)
+	var lastReport *check.Report
+	var lastStatus string
+	var lastWarn int
+	var lastFail int
+	var lastErr error
+	attempt := 0
+
+	for {
+		attempt++
+		report, status, warnCount, failCount, err = runPostUpdateCheck()
+		transientStartupWarning := attempt == 1 && err == nil && failCount == 0 && reportHasTransientStartupWarning(report)
+		if err == nil && failCount == 0 && !transientStartupWarning {
+			if attempt > 1 {
+				printUpdateInfo("agent check passed after retry %d", attempt-1)
+			}
+			return report, status, warnCount, failCount, err
+		}
+
+		lastReport, lastStatus, lastWarn, lastFail, lastErr = report, status, warnCount, failCount, err
+		if time.Now().Add(interval).After(deadline) {
+			return lastReport, lastStatus, lastWarn, lastFail, lastErr
+		}
+		if transientStartupWarning {
+			printUpdateInfo("ARI is reachable but the app is not registered yet; retrying once after services settle")
+		} else if attempt == 1 {
+			printUpdateInfo("agent check failed; retrying for up to %s while services settle", timeout.String())
+		}
+		time.Sleep(interval)
+	}
 }
 
 func printUpdateFailureRecovery(ctx *updateContext, err error) {

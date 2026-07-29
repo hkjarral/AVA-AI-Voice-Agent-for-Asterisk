@@ -34,6 +34,35 @@ def _parse_int(raw: Optional[str], default: int = 0) -> int:
         return default
 
 
+def llama_chat_format_override(raw: Optional[str]) -> Optional[str]:
+    """Return the explicit llama.cpp chat handler, if one was requested.
+
+    ``auto`` keeps AVA on its structured chat-completion path while allowing
+    llama.cpp to select the chat template embedded in the GGUF metadata.  An
+    empty value retains AVA's legacy raw-completion behavior for compatibility.
+    """
+    value = (raw or "").strip()
+    if value.lower() == "auto":
+        return None
+    return value or None
+
+
+def _env_with_legacy_alias(primary: str, legacy: str, default: str) -> str:
+    """Read a documented environment key while preserving an older alias.
+
+    The documented key always wins when both are present.  Keeping this helper
+    side-effect free makes configuration parsing deterministic and easy to test;
+    startup diagnostics can report legacy-key usage separately.
+    """
+    primary_value = os.getenv(primary)
+    if primary_value is not None:
+        return primary_value
+    legacy_value = os.getenv(legacy)
+    if legacy_value is not None:
+        return legacy_value
+    return default
+
+
 @dataclass(frozen=True)
 class LocalAIConfig:
     runtime_mode: str = "full"
@@ -72,7 +101,10 @@ class LocalAIConfig:
     kroko_embedded: bool = False
     kroko_port: int = 6006
 
-    llm_model_path: str = "/app/models/llm/phi-3-mini-4k-instruct.Q4_K_M.gguf"
+    # Default model: Qwen 2.5-1.5B Instruct (best CPU voice model).
+    # Phi-3-mini (3.8B) is too slow on CPU (~0.8 tok/s). Qwen 2.5-1.5B
+    # achieves ~15-30 tok/s with good tool calling and chatml format.
+    llm_model_path: str = "/app/models/llm/qwen2.5-1.5b-instruct-q4_k_m.gguf"
     llm_threads: int = 4
     # NOTE: 768 is intentionally small for latency, but it is often too small for
     # realistic system prompts (e.g. demo contexts). We keep the dataclass default
@@ -87,8 +119,10 @@ class LocalAIConfig:
     llm_system_prompt: str = (
         "You are a helpful AI voice assistant. Respond naturally and conversationally to the caller."
     )
+    # Stop tokens for ChatML format (Qwen 2.5, Phi-3, Hermes, etc.)
+    # Also includes Phi-specific tokens for backward compatibility.
     llm_stop_tokens: List[str] = field(
-        default_factory=lambda: ["<|user|>", "<|assistant|>", "<|end|>"]
+        default_factory=lambda: ["<|im_end|>", "<|endoftext|>", "<|user|>", "<|assistant|>", "<|end|>"]
     )
     llm_use_mlock: bool = False
     llm_infer_timeout_sec: float = 20.0
@@ -97,7 +131,9 @@ class LocalAIConfig:
         "You are a voice assistant on a phone call. "
         "Keep responses short and conversational. "
         "Do not use markdown, bullet points, numbered lists, or any visual formatting. "
-        "Speak naturally as if talking to someone on the phone."
+        "Speak naturally as if talking to someone on the phone. "
+        "Treat each call as a new session. Do not claim to remember previous calls "
+        "unless their details are explicitly included in the current prompt."
     )
     tool_gateway_enabled: bool = True
 
@@ -121,6 +157,45 @@ class LocalAIConfig:
     silero_model_id: str = "v3_1_ru"
     silero_sample_rate: int = 8000
     silero_model_path: str = "/app/models/tts/silero"
+
+    # Matcha-TTS (via sherpa-onnx) — fast, high-quality CPU TTS
+    matcha_model_path: str = "/app/models/tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx"
+    matcha_vocoder_path: str = "/app/models/tts/matcha-icefall-en_US-ljspeech/hifigan_v2.onnx"
+    matcha_speed: float = 1.0
+    matcha_sid: int = 0
+
+    # ── Latency optimization settings ──
+
+    # Silero 8kHz direct µ-law: skip resampling when native rate matches telephony.
+    # WARNING: Silero TTS community models use CC-NC-BY licensing.
+    # Verify compatibility with your deployment's commercial terms before enabling.
+    silero_direct_mulaw: bool = True
+
+    # Filler audio: emit a fast eSpeak NG phrase before LLM inference.
+    enable_filler_audio: bool = False
+    filler_phrases: List[str] = field(default_factory=lambda: [
+        "One moment please.",
+        "Let me check on that.",
+        "Sure thing.",
+        "Just a moment.",
+    ])
+    filler_voice: str = "en"
+    filler_speed: int = 160
+
+    # LLM streaming → TTS overlap: stream LLM tokens sentence-by-sentence to TTS.
+    llm_streaming_tts_overlap: bool = True
+
+    # TTS phrase cache: cache TTS output for repeated short phrases.
+    tts_phrase_cache_enabled: bool = False
+    tts_phrase_cache_max_text_len: int = 200
+
+    # Speculative LLM on stable partial transcripts.
+    speculative_llm_enabled: bool = False
+    speculative_llm_max_tokens: int = 32
+    speculative_llm_stability_ms: int = 300
+
+    # Comfort noise: send low-level noise frames instead of silence during gaps.
+    comfort_noise_enabled: bool = False
 
     stt_idle_ms: int = 5000
     # Telephony-friendly utterance segmentation for batch STT backends (Whisper family).
@@ -243,7 +318,9 @@ class LocalAIConfig:
                 "You are a voice assistant on a phone call. "
                 "Keep responses short and conversational. "
                 "Do not use markdown, bullet points, numbered lists, or any visual formatting. "
-                "Speak naturally as if talking to someone on the phone.",
+                "Speak naturally as if talking to someone on the phone. "
+                "Treat each call as a new session. Do not claim to remember previous calls "
+                "unless their details are explicitly included in the current prompt.",
             ),
             tool_gateway_enabled=_parse_bool(os.getenv("LOCAL_TOOL_GATEWAY_ENABLED", "1"), default=True),
             tts_backend=(os.getenv("LOCAL_TTS_BACKEND", "piper") or "piper").strip().lower(),
@@ -265,6 +342,34 @@ class LocalAIConfig:
             silero_model_id=os.getenv("SILERO_MODEL_ID", "v3_1_ru"),
             silero_sample_rate=_parse_int(os.getenv("SILERO_SAMPLE_RATE"), 8000),
             silero_model_path=os.getenv("SILERO_MODEL_PATH", "/app/models/tts/silero"),
+            matcha_model_path=os.getenv("MATCHA_MODEL_PATH", "/app/models/tts/matcha/model.onnx"),
+            matcha_vocoder_path=os.getenv("MATCHA_VOCODER_PATH", "/app/models/tts/matcha/vocos.onnx"),
+            matcha_speed=float(os.getenv("MATCHA_SPEED", "1.0")),
+            matcha_sid=int(os.getenv("MATCHA_SID", "0")),
+            silero_direct_mulaw=_parse_bool(os.getenv("SILERO_DIRECT_MULAW", "1"), default=True),
+            enable_filler_audio=_parse_bool(os.getenv("LOCAL_ENABLE_FILLER_AUDIO", "0")),
+            filler_phrases=[
+                p.strip()
+                for p in (
+                    os.getenv("LOCAL_FILLER_PHRASES", "One moment please.,Let me check on that.,Sure thing.,Just a moment.") or ""
+                ).split(",")
+                if p.strip()
+            ] or ["One moment please.", "Let me check on that.", "Sure thing.", "Just a moment."],
+            filler_voice=os.getenv("LOCAL_FILLER_VOICE", "en"),
+            filler_speed=_parse_int(os.getenv("LOCAL_FILLER_SPEED"), 160),
+            llm_streaming_tts_overlap=_parse_bool(os.getenv("LOCAL_LLM_STREAMING_TTS_OVERLAP", "1"), default=True),
+            tts_phrase_cache_enabled=_parse_bool(
+                _env_with_legacy_alias(
+                    "LOCAL_TTS_PHRASE_CACHE_ENABLED",
+                    "LOCAL_TTS_PHRASE_CACHE",
+                    "0",
+                )
+            ),
+            tts_phrase_cache_max_text_len=_parse_int(os.getenv("LOCAL_TTS_PHRASE_CACHE_MAX_LEN"), 200),
+            speculative_llm_enabled=_parse_bool(os.getenv("LOCAL_SPECULATIVE_LLM", "0")),
+            speculative_llm_max_tokens=_parse_int(os.getenv("LOCAL_SPECULATIVE_LLM_MAX_TOKENS"), 32),
+            speculative_llm_stability_ms=_parse_int(os.getenv("LOCAL_SPECULATIVE_LLM_STABILITY_MS"), 300),
+            comfort_noise_enabled=_parse_bool(os.getenv("LOCAL_COMFORT_NOISE", "0")),
             stt_idle_ms=int(stt_idle_ms_raw),
             stt_segment_energy_threshold=int(os.getenv("LOCAL_STT_SEGMENT_ENERGY_THRESHOLD", "1200")),
             stt_segment_preroll_ms=int(os.getenv("LOCAL_STT_SEGMENT_PREROLL_MS", "200")),

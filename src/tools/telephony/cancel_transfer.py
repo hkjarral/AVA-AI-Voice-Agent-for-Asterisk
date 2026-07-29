@@ -59,21 +59,47 @@ class CancelTransferTool(Tool):
                     "message": "Session not found"
                 }
             
-            # Check if there's an active transfer
-            if not session.current_action or session.current_action.get('type') not in {'transfer', 'attended_transfer'}:
+            pending_deferred = getattr(session, "pending_deferred_transfer", None)
+            if not isinstance(pending_deferred, dict) or pending_deferred.get("kind") != "transfer":
+                pending_deferred = None
+
+            current_action = session.current_action if isinstance(session.current_action, dict) else None
+            active_action = (
+                current_action
+                if current_action and current_action.get("type") in {"transfer", "attended_transfer", "predial_transfer"}
+                else None
+            )
+
+            # Check if there's an active or deferred transfer.
+            if not active_action and not pending_deferred:
                 return {
                     "status": "no_transfer",
                     "message": "There's no transfer in progress to cancel."
                 }
             
-            action = session.current_action
-            channel_id = action.get('channel_id') or action.get('agent_channel_id')
+            action = active_action or pending_deferred or {}
+            predial_payload = (
+                (pending_deferred.get("payload") or {}).get("predial")
+                if isinstance(pending_deferred, dict) and isinstance(pending_deferred.get("payload"), dict)
+                else None
+            )
+            channel_id = (
+                action.get('channel_id')
+                or action.get('agent_channel_id')
+                or action.get("predial_channel_id")
+                or (predial_payload or {}).get("channel_id")
+            )
             engine = getattr(context.ari_client, "engine", None)
             
             # Check if transfer was answered
             # (If we're here and it was answered, the engine would have already
             # cleared current_action, so this check is safety)
-            if action.get('answered', False):
+            if action.get('answered', False) and action.get("type") != "predial_transfer":
+                return {
+                    "status": "error",
+                    "message": "The transfer has already been connected. I cannot cancel it now."
+                }
+            if action.get("type") == "predial_transfer" and action.get("bridged"):
                 return {
                     "status": "error",
                     "message": "The transfer has already been connected. I cannot cancel it now."
@@ -86,6 +112,8 @@ class CancelTransferTool(Tool):
                     # BEFORE hanging up so the agent leg teardown doesn't trigger full call cleanup.
                     if action.get("type") == "attended_transfer" and engine and hasattr(engine, "_unregister_attended_transfer_agent_channel"):
                         engine._unregister_attended_transfer_agent_channel(channel_id)
+                    if (action.get("type") == "predial_transfer" or predial_payload) and engine and hasattr(engine, "_unregister_predial_transfer_channel"):
+                        engine._unregister_predial_transfer_channel(channel_id)
                 except Exception:
                     pass
                 try:
@@ -106,6 +134,7 @@ class CancelTransferTool(Tool):
             
             # Clear the action from session
             session.current_action = None
+            session.pending_deferred_transfer = None
             session.transfer_context = None
             try:
                 session.audio_capture_enabled = True

@@ -42,6 +42,33 @@ class ToolRegistry:
             cls._instance._initialized = False
             cls._instance._in_call_http_init_cache: Set[str] = set()
         return cls._instance
+
+    @classmethod
+    def isolated(cls) -> "ToolRegistry":
+        """Create a non-singleton registry for an immutable runtime generation."""
+        instance = object.__new__(cls)
+        instance._tools = {}
+        instance._initialized = False
+        instance._in_call_http_init_cache = set()
+        return instance
+
+    def replace_with(self, other: "ToolRegistry") -> None:
+        """Atomically publish another registry's completed tool map.
+
+        Existing calls retain their isolated registry object; the process-global
+        registry is only the discovery/catalog default for calls not yet started.
+        """
+        self._tools = dict(other._tools)
+        self._initialized = bool(other._initialized)
+        self._in_call_http_init_cache = set(other._in_call_http_init_cache)
+
+    def clone(self) -> "ToolRegistry":
+        """Create a call-local shallow clone; tool instances are configuration-immutable."""
+        cloned = self.isolated()
+        cloned._tools = dict(self._tools)
+        cloned._initialized = self._initialized
+        cloned._in_call_http_init_cache = set(self._in_call_http_init_cache)
+        return cloned
     
     def register(self, tool_class: Type[Tool]) -> None:
         """
@@ -410,7 +437,11 @@ class ToolRegistry:
                 "- When the user says goodbye, farewell, or wants to end the call, use hangup_call tool. Set farewell_message to the exact goodbye sentence you intend to say, then speak that exact sentence as your final response."
             )
         if "request_transcript" in available_tool_names:
-            important_rules.append("- When the user asks to email the transcript, use request_transcript tool")
+            important_rules.append(
+                "- Use request_transcript action=request only after a confirmed email address. "
+                "If the user withdraws consent or says not to send it, immediately use "
+                "request_transcript action=cancel before ending the call."
+            )
         if "live_agent_transfer" in available_tool_names:
             important_rules.append("- When the user asks for a human/live agent and live_agent_transfer is available, use live_agent_transfer")
         if "blind_transfer" in available_tool_names:
@@ -462,7 +493,11 @@ If the system prompt mentions other tools, they are NOT available. Do not call t
                 "- When the user says goodbye, farewell, or wants to end the call, use hangup_call tool. Set farewell_message to the exact goodbye sentence you intend to say, then speak that exact sentence as your final response."
             )
         if "request_transcript" in available_tool_names:
-            important_rules.append("- When the user asks to email the transcript, use request_transcript tool")
+            important_rules.append(
+                "- Use request_transcript action=request only after a confirmed email address. "
+                "If the user withdraws consent or says not to send it, immediately use "
+                "request_transcript action=cancel before ending the call."
+            )
         if "live_agent_transfer" in available_tool_names:
             important_rules.append("- When the user asks for a human/live agent and live_agent_transfer is available, use live_agent_transfer")
         if "blind_transfer" in available_tool_names:
@@ -557,6 +592,12 @@ Tool Definitions:
             self.register(HangupCallTool)
         except ImportError as e:
             logger.warning(f"Could not import HangupCallTool: {e}")
+
+        try:
+            from src.tools.telephony.vicidial import SetCallDispositionTool
+            self.register(SetCallDispositionTool)
+        except ImportError as e:
+            logger.warning(f"Could not import SetCallDispositionTool: {e}")
         
         try:
             from src.tools.telephony.voicemail import VoicemailTool
@@ -594,6 +635,12 @@ Tool Definitions:
             self.register(GCalendarTool)
         except ImportError as e:
             logger.warning(f"Could not import GCalendarTool: {e}")
+
+        try:
+            from src.tools.business.microsoft_calendar import MicrosoftCalendarTool
+            self.register(MicrosoftCalendarTool)
+        except ImportError as e:
+            logger.warning(f"Could not import MicrosoftCalendarTool: {e}")
         
         # Future tools will be registered here:
         # from src.tools.telephony.voicemail import SendToVoicemailTool

@@ -3,6 +3,7 @@ import base64
 import json
 import hashlib
 import re
+from collections import deque
 from uuid import uuid4
 from typing import Callable, Optional, List, Dict, Any
 import websockets
@@ -16,8 +17,14 @@ from ..config import LocalProviderConfig
 from ..audio.resampler import resample_audio
 from .base import AIProviderInterface, ProviderCapabilities, ProviderCapabilitiesMixin
 from ..tools.parser import parse_response_with_tools, validate_tool_call, has_tool_intent_markers
+from ..tools.execution_history import stable_tool_call_id
 
 logger = get_logger(__name__)
+
+# WebSocket message protocol version sent on tool-gateway messages. Must stay in
+# sync with local_ai_server/constants.py PROTOCOL_VERSION (the canonical source);
+# the local-ai-server validates this at message time and warns on mismatch.
+PROTOCOL_VERSION = 2
 
 class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
     """
@@ -25,6 +32,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
     """
     def __init__(self, config: LocalProviderConfig, on_event: Callable[[Dict[str, Any]], None]):
         super().__init__(on_event)
+        self.set_provider_identity(provider_key="local", provider_kind="local")
         self.config = config
         self.websocket: Optional[ClientConnection] = None
         # Use effective_ws_url which prefers base_url over ws_url
@@ -40,6 +48,10 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         self.input_mode: str = 'mulaw8k'  # or 'pcm16_8k' or 'pcm16_16k'
         self._pending_tts_responses: Dict[str, asyncio.Future] = {}  # Track pending TTS responses
         self._tts_audio_meta_by_call: Dict[str, Dict[str, Any]] = {}
+        # WebSocket ordering guarantees each tts_audio JSON header arrives
+        # before its binary payload. Keep that header with the next frame so a
+        # late payload from an old call cannot be attributed to a newer call.
+        self._pending_tts_audio_meta = deque()
         self._agent_audio_done_tasks: Dict[str, asyncio.Task] = {}
         # Initial greeting text provided by engine/config (optional)
         self._initial_greeting: Optional[str] = None
@@ -54,6 +66,12 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         self._was_connected: bool = False
         # Background reconnect task (runs when previously connected server disconnects)
         self._background_reconnect_task: Optional[asyncio.Task] = None
+        # Single-flight guard for _reconnect() — prevents the audio-path
+        # background reconnect from racing the _send_loop's direct on-close
+        # _reconnect() call (both would otherwise overwrite self.websocket /
+        # listener / sender tasks).
+        self._reconnect_lock: asyncio.Lock = asyncio.Lock()
+        self._warned_audio_drop_disconnected: bool = False
         # Runtime backend reported by local_ai_server in stt_result payloads.
         self._runtime_stt_backend: Optional[str] = None
         # Runtime status snapshot (from local_ai_server status_response)
@@ -62,6 +80,12 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         self._status_lock: asyncio.Lock = asyncio.Lock()
         # Track last applied system prompt to avoid spamming switch_model.
         self._last_system_prompt_digest: Optional[str] = None
+        # Pending switch_model confirmation. The digest is recorded only after
+        # the server acks with a successful switch_response (MED-R4 fail-closed).
+        self._pending_switch_future: Optional[asyncio.Future] = None
+        self._pending_switch_request_id: Optional[str] = None
+        self._pending_switch_call_id: Optional[str] = None
+        self._switch_lock: asyncio.Lock = asyncio.Lock()
         # Per-call tool allowlist (from context.tools). Used to drop hallucinated tool calls.
         self._allowed_tools: set[str] = set()
         self._allowed_tool_schemas: List[Dict[str, Any]] = []
@@ -118,7 +142,12 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             value = ""
         self._initial_greeting = value or None
 
-    async def notify_barge_in(self, call_id: Optional[str]) -> None:
+    async def notify_barge_in(
+        self,
+        call_id: Optional[str],
+        *,
+        rollback_assistant: bool = False,
+    ) -> None:
         """Notify local_ai_server that engine barge-in occurred for this call.
 
         This allows the server to clear Whisper-family STT suppression timers
@@ -142,8 +171,10 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 json.dumps(
                     {
                         "type": "barge_in",
+                        "protocol_version": PROTOCOL_VERSION,
                         "call_id": target_call_id,
                         "request_id": request_id,
+                        "rollback_assistant": bool(rollback_assistant),
                     }
                 )
             )
@@ -257,6 +288,13 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             await self.websocket.send(json.dumps(payload))
             result = await asyncio.wait_for(fut, timeout=max(0.5, float(timeout_sec)))
             return str(result or "")
+        except asyncio.CancelledError:
+            # close() cancels the shared response future to release this waiter.
+            # Preserve cancellation when the caller cancelled this task itself.
+            if asyncio.current_task() and asyncio.current_task().cancelling():
+                raise
+            logger.debug("LLM repair request cancelled during provider close", call_id=call_id)
+            return None
         except Exception:
             logger.debug("LLM repair request failed", call_id=call_id, exc_info=True)
             return None
@@ -264,12 +302,16 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             self._pending_llm_responses.pop(request_id, None)
 
     @staticmethod
-    def _build_allowed_tool_schemas(tool_names: List[str]) -> List[Dict[str, Any]]:
+    def _build_allowed_tool_schemas(
+        tool_names: List[str], tool_registry: Any = None
+    ) -> List[Dict[str, Any]]:
         names = [str(name or "").strip() for name in (tool_names or []) if str(name or "").strip()]
         if not names:
             return []
         try:
-            from src.tools.registry import tool_registry
+            if tool_registry is None:
+                from src.tools.registry import tool_registry as global_tool_registry
+                tool_registry = global_tool_registry
             schemas = tool_registry.to_openai_realtime_schema_filtered(names)
             result: List[Dict[str, Any]] = []
             for schema in schemas:
@@ -464,6 +506,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         tool_path: str,
         parse_failures: int = 0,
         repair_attempts: int = 0,
+        emit_transcript: bool = True,
     ) -> None:
         response_text = self._sanitize_local_tool_chatter(
             ((clean_text if clean_text is not None else llm_text) or "").strip()
@@ -512,6 +555,14 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                     )
                 normalized_tool_calls = kept_tool_calls or None
 
+        # Local models do not consistently supply provider-native call ids.
+        # Assign the fallback once at the provider boundary so the same id is
+        # retained if execution/result delivery is retried, while genuinely
+        # separate invocations receive distinct ids.
+        if normalized_tool_calls:
+            for tool_call in normalized_tool_calls:
+                tool_call["id"] = stable_tool_call_id(tool_call.get("id"))
+
         hangup_farewell = self._extract_hangup_farewell(normalized_tool_calls)
         if hangup_farewell:
             response_text = hangup_farewell
@@ -526,7 +577,22 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 safe = ""
             response_text = safe.strip() or "Goodbye."
 
-        if response_text and self.on_event:
+        # Emit spoken text only when every remaining tool call is `hangup_call`.
+        # The earlier `not any(... == "hangup_call")` guard left
+        # `should_emit_text=True` for mixed batches like
+        # `["hangup_call", "transfer"]`, so the provider would speak the
+        # farewell *before* dispatching the transfer — wrong order, and the
+        # caller hears "have a great day" right before being patched through.
+        # Per CodeRabbit review of PR #384 comment 3214130574: suppress text
+        # whenever any non-hangup tool remains in the batch.
+        should_emit_text = bool(response_text)
+        if normalized_tool_calls and any(
+            str(tool_call.get("name") or "").strip() != "hangup_call"
+            for tool_call in normalized_tool_calls
+        ):
+            should_emit_text = False
+
+        if emit_transcript and should_emit_text and self.on_event:
             await self.on_event(
                 {
                     "type": "agent_transcript",
@@ -640,7 +706,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         payload = {
             "type": "llm_tool_request",
             "mode": "llm",
-            "protocol_version": 2,
+            "protocol_version": PROTOCOL_VERSION,
             "request_id": request_id,
             "call_id": call_id or self._active_call_id,
             "text": llm_text,
@@ -689,16 +755,23 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
 
     async def _handle_llm_tool_response(self, data: Dict[str, Any]) -> bool:
         request_id = str(data.get("request_id") or "").strip()
-        if not request_id:
-            return False
         pending = self._pending_llm_tool_responses.pop(request_id, None)
-        if not pending:
+        if not pending and request_id:
             logger.debug("Dropping stale llm_tool_response", request_id=request_id)
             return False
-        self._cancel_gateway_timeout(request_id)
+        if request_id:
+            self._cancel_gateway_timeout(request_id)
 
-        call_id = data.get("call_id") or pending.get("call_id") or self._active_call_id
-        llm_text = str(pending.get("llm_text") or "")
+        # After a successful `request_id` correlation, the local pending
+        # entry is the authoritative source for `call_id`. Preferring
+        # `data["call_id"]` first allowed a stale or echoed `call_id` from
+        # the server side to reroute the result to the wrong call. Use the
+        # pending entry's call_id first, then fall back to `data` (for
+        # responses that arrive without a known pending entry, e.g. server-
+        # initiated nudges), then `self._active_call_id` as last resort.
+        # Per CodeRabbit review of PR #384 comment 3214130576.
+        call_id = (pending or {}).get("call_id") or data.get("call_id") or self._active_call_id
+        llm_text = str((pending or {}).get("llm_text") or data.get("text") or "")
         clean_text = str(data.get("text") or "").strip()
         if not clean_text:
             parsed_clean, _ = parse_response_with_tools(llm_text)
@@ -720,18 +793,134 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         )
         return True
 
+    async def send_tool_result(
+        self,
+        function_call_id: str,
+        result: Any,
+        is_error: bool = False,
+        call_id: Optional[str] = None,
+        tool_name: Optional[str] = None,
+    ) -> bool:
+        """Send an executed local tool result back to local_ai_server for the final LLM turn.
+
+        Returns ``True`` if the payload was handed off to the WebSocket layer,
+        ``False`` if the connection was unavailable or the send raised. The
+        engine uses this signal to decide whether to retry/fail-over rather
+        than silently stalling the post-tool turn. Per CodeRabbit review of
+        PR #384 comment 3214158829.
+
+        ``result`` may be any JSON value (object, list, string, int, ``False``,
+        ``0``, empty list, ``None``). Pre-fix this method coerced falsy values
+        to ``{}`` via ``result or {}``, which silently changed valid outputs
+        like ``0``, ``False``, ``""``, ``[]``, or ``None`` into an empty
+        object — and the local LLM then composed its follow-up using a
+        misleading payload. Per CodeRabbit review of PR #384 comment
+        3214117421.
+
+        ``call_id`` is the originating call_id captured at tool dispatch
+        time. Pass it explicitly so the tool result is correlated to the
+        right session even when ``self._active_call_id`` has rolled over to
+        a newer call by the time a slow tool returns. Pre-fix this method
+        read ``self._active_call_id`` at result-send time, which could
+        misroute the post-tool answer across calls. Falls back to
+        ``self._active_call_id`` only if no explicit call_id is supplied
+        (back-compat for callers that haven't been updated yet). Per
+        CodeRabbit review of PR #384 comment 3214139216.
+        """
+        if not self.websocket or self.websocket.state.name != "OPEN":
+            logger.warning(
+                "Cannot send local tool result: WebSocket not open",
+                call_id=call_id or self._active_call_id,
+                function_call_id=function_call_id,
+            )
+            return False
+        function_call_id = str(function_call_id or "").strip()
+        effective_tool_name = str(tool_name or "").strip()
+        if not effective_tool_name:
+            # Backward compatibility for older callers that embedded the tool
+            # name in the legacy local-{tool_name} correlation id.
+            effective_tool_name = function_call_id
+            if effective_tool_name.startswith("local-"):
+                effective_tool_name = effective_tool_name[len("local-"):]
+        # Originating call_id wins; provider-global fallback only as last resort.
+        effective_call_id = call_id or self._active_call_id
+        payload = {
+            "type": "tool_result",
+            "protocol_version": PROTOCOL_VERSION,
+            "request_id": f"tool-result-{uuid4().hex}",
+            "call_id": effective_call_id,
+            "function_call_id": function_call_id,
+            "tool_name": effective_tool_name,
+            "result": result,  # preserve falsy values; do NOT coerce to {}
+            "is_error": bool(is_error),
+            "tool_policy": self._effective_tool_policy,
+            **self._tts_output_preferences(),
+        }
+        try:
+            await self.websocket.send(json.dumps(payload, default=str))
+            logger.debug(
+                "Sent local tool result to Local AI Server",
+                call_id=effective_call_id,
+                function_call_id=function_call_id,
+                tool_name=effective_tool_name,
+                is_error=bool(is_error),
+            )
+            return True
+        except Exception:
+            logger.error(
+                "Failed to send local tool result to Local AI Server",
+                call_id=effective_call_id,
+                function_call_id=function_call_id,
+                exc_info=True,
+            )
+            return False
+
     @property
     def supported_codecs(self) -> List[str]:
         return ["ulaw"]
+
+    def _tts_output_preferences(self) -> Dict[str, Any]:
+        config = getattr(self, "config", None)
+        target_encoding = str(
+            getattr(config, "target_encoding", "mulaw") or "mulaw"
+        ).strip().lower()
+        signed_linear = target_encoding in {"linear16", "pcm16", "slin16", "slin"}
+        default_rate = 16000 if target_encoding in {"linear16", "pcm16", "slin16"} else 8000
+        try:
+            sample_rate = int(
+                getattr(config, "target_sample_rate_hz", default_rate)
+                or default_rate
+            )
+        except (TypeError, ValueError):
+            sample_rate = default_rate
+
+        # The Local AI Server's native output contracts are μ-law/8 kHz and
+        # linear PCM/16 kHz.  AudioSocket's legacy ``slin`` carrier is PCM at
+        # 8 kHz, but requesting ``linear16@8000`` from the server is invalid;
+        # retain the legacy μ-law response and let the engine perform the
+        # established μ-law -> slin wire conversion.
+        if signed_linear and sample_rate == 16000:
+            encoding = "linear16"
+        else:
+            encoding = "mulaw"
+            sample_rate = 8000
+        return {
+            "output_encoding": encoding,
+            "output_sample_rate_hz": sample_rate,
+        }
 
     def get_capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
             input_encodings=["pcm16"],
             input_sample_rates_hz=[16000],
-            output_encodings=["ulaw"],
-            output_sample_rates_hz=[8000],
+            output_encodings=["ulaw", "linear16"],
+            output_sample_rates_hz=[8000, 16000],
             is_full_agent=True,
             requires_continuous_audio=True,
+            wideband_input_encoding="pcm16",
+            wideband_input_sample_rate_hz=16000,
+            wideband_output_encoding="linear16",
+            wideband_output_sample_rate_hz=16000,
         )
 
     def is_ready(self) -> bool:
@@ -761,6 +950,10 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             if self._pending_status_future and not self._pending_status_future.done():
                 try:
                     return await asyncio.wait_for(self._pending_status_future, timeout=timeout_sec)
+                except asyncio.CancelledError:
+                    if asyncio.current_task() and asyncio.current_task().cancelling():
+                        raise
+                    return None
                 except Exception:
                     return None
 
@@ -772,6 +965,10 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 data = await asyncio.wait_for(fut, timeout=timeout_sec)
                 if isinstance(data, dict):
                     return data
+                return None
+            except asyncio.CancelledError:
+                if asyncio.current_task() and asyncio.current_task().cancelling():
+                    raise
                 return None
             except Exception:
                 return None
@@ -812,32 +1009,50 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         if data.get("type") != "auth_response" or data.get("status") != "ok":
             raise RuntimeError(f"Auth rejected: {data}")
 
-    async def _reconnect(self):
-        # HYBRID APPROACH: Quick port check first
-        # If port is closed, server is not running at all - skip immediately
-        # If port is open, server is starting/running - use retry logic
-        
-        port_open = await self._is_port_open(timeout=0.5)
-        
-        if not port_open:
-            # Port closed = server container not running = not set up
-            logger.info(
-                "⏭️ Local AI Server port not open - skipping connection",
-                host=self._server_host,
-                port=self._server_port,
-                note="Start local-ai-server container if you want to use local STT/TTS/LLM"
+    async def _close_failed_reconnect_socket(self):
+        """Close + clear self.websocket after a failed reconnect attempt.
+
+        Prevents socket leaks and stale "looks connected but no listener"
+        state when _connect_ws() succeeded but a follow-up step
+        (auth, task creation) raised. CodeRabbit critical on PR #396.
+        """
+        ws = self.websocket
+        if ws is None:
+            return
+        self.websocket = None
+        try:
+            state = getattr(ws, "state", None)
+            state_name = getattr(state, "name", "") or ""
+            if state_name == "OPEN":
+                await ws.close()
+        except Exception:
+            logger.debug(
+                "Failed closing reconnect socket after partial init",
+                exc_info=True,
             )
-            self._server_unavailable = True
-            return False
-        
-        # Port is open - server is running, proceed with retry logic for warmup
+
+    async def _reconnect(self):
+        # Single-flight: serialize concurrent reconnect attempts so the
+        # background task and _send_loop's direct on-close call don't race
+        # on self.websocket / listener / sender lifecycle.
+        async with self._reconnect_lock:
+            return await self._reconnect_locked()
+
+    async def _reconnect_locked(self):
+        # If another reconnect already brought us back online, skip.
+        if self.is_connected():
+            return True
+
+        # Use the WebSocket handshake as the source of truth. A separate raw TCP
+        # preflight can time out under load and incorrectly mark the server down.
         logger.info(
-            "🔄 Local AI Server port is open, connecting...",
+            "🔄 Connecting to Local AI Server...",
             host=self._server_host,
-            port=self._server_port
+            port=self._server_port,
+            connect_timeout_sec=self.connect_timeout,
         )
         self._server_unavailable = False
-        
+
         # Exponential backoff up to 30s, total ~3 minutes to cover LLM warmup (~111s)
         backoff_schedule = [2, 5, 10, 20, 30, 30, 30, 30]  # Total: ~157s
         total_elapsed = 0
@@ -859,6 +1074,10 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                     )
                 
                 self.websocket = await self._connect_ws()
+                # Session prompt state and binary-frame headers belong to the
+                # old WebSocket. A replacement socket must always re-sync.
+                self._last_system_prompt_digest = None
+                self._pending_tts_audio_meta.clear()
                 self._was_connected = True  # Mark that we successfully connected
                 logger.info("✅ Connected to Local AI Server", elapsed=f"{total_elapsed}s")
 
@@ -881,31 +1100,65 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 return True
                 
             except (ConnectionRefusedError, OSError) as e:
-                # Port was open but connection failed - server might be restarting
-                # Re-check if port is still open before retrying
-                if not await self._is_port_open(timeout=0.3):
-                    logger.info(
-                        "⏭️ Local AI Server port closed during retry - stopping",
-                        note="Server may have stopped"
-                    )
-                    self._server_unavailable = True
-                    return False
-                
-                # Port still open, continue retrying
+                # Close any half-initialized socket from this attempt
+                # before retrying. If _connect_ws() succeeded but a
+                # later step failed (auth, task creation), self.websocket
+                # would otherwise point at a live but un-driven socket;
+                # is_connected()/initialize() would report healthy
+                # while no listener/sender is running, and we'd leak
+                # one socket per failed attempt (CodeRabbit critical on
+                # PR #396).
+                await self._close_failed_reconnect_socket()
+
+                # ConnectionRefused (incl. OSError errno 61 macOS / 111 Linux
+                # / 10061 Windows) is the normal symptom while the
+                # local-ai-server container is warming up — models can take
+                # ~2 minutes to load. Run the full backoff schedule
+                # (~157s) before giving up so calls placed during warmup
+                # don't fail fast. After all retries are exhausted we
+                # mark the server unavailable so subsequent calls don't
+                # spin reconnect attempts forever.
+                #
+                # Previously this branch returned False on the first
+                # ConnectionRefused, which made `initialize()` fail
+                # instantly during warmup and aborted calls that would
+                # have recovered by attempt 2-3 (Codex P1 on PR #396).
+                refused_errno = getattr(e, "errno", None)
+                is_refused = isinstance(e, ConnectionRefusedError) or refused_errno in {61, 111, 10061}
+
                 if attempt < len(backoff_schedule):
-                    logger.debug(
-                        f"Connection attempt {attempt} failed (likely warmup)",
+                    log_fn = logger.debug if is_refused else logger.debug
+                    log_fn(
+                        f"Connection attempt {attempt} failed (will retry)",
                         error=type(e).__name__,
-                        next_retry=f"{delay}s"
+                        refused=is_refused,
+                        next_retry=f"{delay}s",
                     )
                 else:
+                    if is_refused:
+                        logger.info(
+                            "⏭️ Local AI Server refused connection after all retries - provider will be inactive",
+                            host=self._server_host,
+                            port=self._server_port,
+                            attempts=len(backoff_schedule),
+                            total_elapsed=f"{total_elapsed}s",
+                            error=str(e),
+                            note="Start local-ai-server container if you want to use local STT/TTS/LLM",
+                        )
+                        self._server_unavailable = True
+                        return False
                     logger.warning(
                         "Connection failed after all retries",
                         attempts=len(backoff_schedule),
                         total_elapsed=f"{total_elapsed}s",
-                        error=str(e)
+                        error=str(e),
                     )
             except Exception as e:
+                # Same cleanup as the OSError branch — if auth or task
+                # creation raised after _connect_ws() succeeded, the
+                # socket needs explicit close + clear (CodeRabbit
+                # critical on PR #396).
+                await self._close_failed_reconnect_socket()
                 logger.warning(
                     f"Reconnect attempt {attempt} failed",
                     error=f"{type(e).__name__}: {str(e)}",
@@ -919,54 +1172,107 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         return False
 
     async def _background_reconnect_loop(self):
-        """Background task that periodically tries to reconnect for up to 12 minutes.
-        
+        """Background task that periodically tries to reconnect mid-call.
+
         Only runs when we were previously connected and got disconnected (e.g., server restart).
         Does not block anything - runs independently in the background.
+
+        MED-R3: while this retries, inbound caller audio is dropped (the caller
+        hears silence). Bound the total retry window with
+        ``mid_call_reconnect_timeout_sec`` so the caller is not left deaf for
+        minutes. On exceed, signal the engine (ProviderDisconnected) so it plays
+        a short apology and hangs up instead of leaving dead air.
         """
-        max_duration = 12 * 60  # 12 minutes
-        check_interval = 30  # Check every 30 seconds
+        max_duration = max(1, int(getattr(self.config, "mid_call_reconnect_timeout_sec", 20) or 20))
+        # Probe frequently enough to honor short bounds, but never spin tighter
+        # than ~1s. Cap so the bound is respected even when it's smaller than the
+        # legacy 30s cadence.
+        check_interval = min(30, max(1, max_duration))
         start_time = asyncio.get_event_loop().time()
-        
+
         logger.info(
             "🔄 Starting background reconnect (server was previously connected)",
-            max_duration="12 minutes",
-            check_interval="30s"
+            max_duration=f"{max_duration}s",
+            check_interval=f"{check_interval}s"
         )
-        
+
         while True:
             elapsed = asyncio.get_event_loop().time() - start_time
             if elapsed >= max_duration:
                 logger.warning(
-                    "⏹️ Background reconnect timed out after 12 minutes",
-                    note="Local AI Server did not come back online"
+                    "⏹️ Background reconnect gave up — mid-call reconnect window exceeded",
+                    timeout_sec=max_duration,
+                    note="Local AI Server did not come back online; signaling engine to hang up"
                 )
+                await self._signal_mid_call_reconnect_giveup()
                 break
-            
-            # Wait before checking
-            await asyncio.sleep(check_interval)
-            
-            # Check if port is open
-            if await self._is_port_open(timeout=1.0):
-                logger.info("🔄 Local AI Server port detected, attempting reconnect...")
-                success = await self._reconnect()
-                if success:
-                    logger.info("✅ Background reconnect successful")
-                    self._was_connected = True
-                    # Restart listener task
-                    if not self._listener_task or self._listener_task.done():
-                        self._listener_task = asyncio.create_task(self._receive_loop())
-                    break
-                else:
-                    logger.debug("Reconnect attempt failed, will retry...")
+
+            # Wait before checking, but not past the bound.
+            await asyncio.sleep(min(check_interval, max(0, max_duration - elapsed)))
+
+            # Codex P2: make the configured bound a HARD ceiling on the whole
+            # effort. _reconnect() carries its own backoff schedule (~157s);
+            # without this wrapper a single slow inner attempt would leave the
+            # caller deaf well past max_duration and delay the give-up signal.
+            # Cap each attempt to the remaining budget (with a small floor so a
+            # near-instant reconnect still gets a chance) and give up as soon as
+            # an attempt can't complete in time.
+            remaining = max_duration - (asyncio.get_event_loop().time() - start_time)
+            attempt_timeout = max(0.5, remaining)
+
+            logger.info("🔄 Attempting Local AI Server background reconnect...")
+            try:
+                success = await asyncio.wait_for(self._reconnect(), timeout=attempt_timeout)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "⏹️ Background reconnect gave up — reconnect attempt exceeded remaining window",
+                    timeout_sec=max_duration,
+                    note="Local AI Server did not come back online; signaling engine to hang up"
+                )
+                await self._signal_mid_call_reconnect_giveup()
+                break
+            if success:
+                logger.info("✅ Background reconnect successful")
+                self._was_connected = True
+                # Restart listener task
+                if not self._listener_task or self._listener_task.done():
+                    self._listener_task = asyncio.create_task(self._receive_loop())
+                break
             else:
                 remaining = int(max_duration - elapsed)
                 logger.debug(
-                    f"Local AI Server port still closed, will check again in {check_interval}s",
+                    f"Local AI Server reconnect failed, will check again in {check_interval}s",
                     remaining=f"{remaining}s"
                 )
-        
+
         self._background_reconnect_task = None
+
+    async def _signal_mid_call_reconnect_giveup(self):
+        """MED-R3: tell the engine the provider is gone so it can apologize + hang up.
+
+        Reuses the existing ProviderDisconnected channel the engine already handles
+        for mid-call provider death (plays fallback media, then hangs up the
+        channel). Best-effort: only fires when a call is active and a callback is set.
+        """
+        call_id = self._active_call_id
+        if not self.on_event or not call_id:
+            return
+        try:
+            await self.on_event(
+                {
+                    "type": "ProviderDisconnected",
+                    "call_id": call_id,
+                    "provider": "local",
+                    "code": None,
+                    "reason": "mid_call_reconnect_timeout",
+                }
+            )
+        except Exception:
+            logger.debug(
+                "Failed to emit ProviderDisconnected after reconnect give-up",
+                call_id=call_id,
+                exc_info=True,
+            )
 
     def _start_background_reconnect(self):
         """Start background reconnect task if not already running."""
@@ -1011,7 +1317,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
     async def start_session(self, call_id: str, context: Optional[Dict[str, Any]] = None):
         try:
             # Check if already connected
-            if self.websocket and self.websocket.state.name == "OPEN":
+            if self.is_connected():
                 logger.debug("WebSocket already connected, reusing connection", call_id=call_id)
                 if self._active_call_id and self._active_call_id != call_id:
                     self._tts_audio_meta_by_call.pop(self._active_call_id, None)
@@ -1032,6 +1338,8 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             
             # If not connected, initialize first
             await self.initialize()
+            if not self.is_connected():
+                raise RuntimeError("Local AI Server WebSocket is not connected after initialization")
             if self._active_call_id and self._active_call_id != call_id:
                 self._tts_audio_meta_by_call.pop(self._active_call_id, None)
                 self._last_user_transcript_by_call.pop(self._active_call_id, None)
@@ -1072,6 +1380,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         # Apply system prompt from context (if provided).
         prompt = ""
         allowed_tools: list[str] = []
+        call_tool_registry = getattr(self, "_call_tool_registry", None)
         try:
             if isinstance(context, dict):
                 prompt = str(context.get("prompt") or context.get("instructions") or "").strip()
@@ -1082,7 +1391,9 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             prompt = ""
         try:
             self._allowed_tools = set(allowed_tools or [])
-            self._allowed_tool_schemas = self._build_allowed_tool_schemas(allowed_tools)
+            self._allowed_tool_schemas = self._build_allowed_tool_schemas(
+                allowed_tools, call_tool_registry
+            )
         except Exception:
             self._allowed_tools = set()
             self._allowed_tool_schemas = []
@@ -1107,12 +1418,13 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                         allowed_tools=sorted(self._allowed_tools),
                     )
                 elif allowed_tools and "## Available Tools" not in prompt and self._effective_tool_policy != "off":
-                    from src.tools.registry import tool_registry
+                    if call_tool_registry is None:
+                        from src.tools.registry import tool_registry as call_tool_registry
 
                     if self._effective_tool_policy == "strict":
-                        tool_prompt = tool_registry.to_local_llm_prompt_filtered(allowed_tools)
+                        tool_prompt = call_tool_registry.to_local_llm_prompt_filtered(allowed_tools)
                     else:
-                        tool_prompt = tool_registry.to_local_llm_prompt_filtered_compact(allowed_tools)
+                        tool_prompt = call_tool_registry.to_local_llm_prompt_filtered_compact(allowed_tools)
                     if tool_prompt:
                         prompt = f"{prompt}\n\n{tool_prompt}".strip()
                 elif allowed_tools and self._effective_tool_policy == "off":
@@ -1130,39 +1442,214 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 allowed_tools=sorted(self._allowed_tools),
                 capability=(self._tool_capability or {}).get("level"),
             )
-            await self._apply_system_prompt(prompt, call_id=call_id)
+            # Fail-closed: same cross-call leakage class as tool_context. On
+            # a reused WebSocket, a missed prompt sync leaves the previous
+            # call's instructions live on the server. Per CodeRabbit review
+            # of PR #384 comment 3214166440.
+            prompt_ok = await self._apply_system_prompt(prompt, call_id=call_id)
+            if not prompt_ok:
+                raise RuntimeError(
+                    f"Failed to synchronize system prompt with Local AI Server (call_id={call_id})"
+                )
+        else:
+            # Empty is an authoritative per-call value. Send it so a reused
+            # WebSocket cannot retain the previous call's instructions.
+            prompt_ok = await self._apply_system_prompt("", call_id=call_id)
+            if not prompt_ok:
+                raise RuntimeError(
+                    f"Failed to clear Local AI Server system prompt (call_id={call_id})"
+                )
+        # Fail-closed: tool_context state is per-WebSocket and we reuse the
+        # connection across calls. If the sync fails, the server can keep the
+        # previous call's allowlist/policy/schemas, leaking ACL state across
+        # calls. Abort this call setup instead of proceeding with stale state.
+        # Per CodeRabbit review of PR #384 review 4258719822 (outside-diff).
+        ok = await self._send_tool_context(call_id=call_id)
+        if not ok:
+            raise RuntimeError(
+                f"Failed to synchronize tool_context with Local AI Server (call_id={call_id})"
+            )
 
-    async def _apply_system_prompt(self, prompt: str, *, call_id: str) -> None:
+    async def _apply_system_prompt(self, prompt: str, *, call_id: str) -> bool:
+        """Send system prompt to local_ai_server. Returns True on success.
+
+        Only an unchanged digest for this exact call ID is a no-op success.
+        The call ID is included in the digest, so every new call sends the
+        prompt, including an empty prompt, and waits for confirmation. This
+        prevents a reused WebSocket from retaining another call's instructions.
+        WebSocket-not-open and send-exception return False so the caller can
+        fail closed. Per CodeRabbit review of PR #384 comment 3214166440.
+        """
         prompt = (prompt or "").strip()
-        if not prompt or not self.websocket or self.websocket.state.name != "OPEN":
-            return
-        digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        if not self.websocket or self.websocket.state.name != "OPEN":
+            logger.warning(
+                "Cannot send local system prompt: WebSocket not open",
+                call_id=call_id,
+                chars=len(prompt),
+            )
+            return False
+        # Include call_id so a reused WebSocket always starts a fresh server-side
+        # transcript even when consecutive agents share identical instructions.
+        digest = hashlib.sha256(f"{call_id}\0{prompt}".encode("utf-8")).hexdigest()
         if digest == self._last_system_prompt_digest:
-            return
+            return True  # already in sync from a prior successful send
+        request_id = f"prompt-sync-{uuid4().hex}"
         payload = {
             "type": "switch_model",
-            "dry_run": True,  # system prompt does not require reload_models()
+            "scope": "session",
+            "call_id": call_id,
+            "request_id": request_id,
+            "protocol_version": PROTOCOL_VERSION,
             "llm_config": {
                 "system_prompt": prompt,
             },
         }
-        try:
-            await self.websocket.send(json.dumps(payload))
+        # Fail-closed: the WebSocket is reused across calls, so we must confirm
+        # the server actually applied the prompt before recording its digest.
+        # If we recorded it on send alone and the server-side apply failed, the
+        # matching-digest short-circuit would skip the re-send on the next call,
+        # leaving the PREVIOUS call's prompt live (cross-call leak). Wait for the
+        # switch_response and update the digest ONLY on confirmed success; on
+        # failure or timeout leave the digest untouched so the next send retries.
+        # Per MED-R4.
+        timeout_sec = max(0.5, min(float(self.response_timeout or 0.0), 5.0))
+        async with self._switch_lock:
+            loop = asyncio.get_running_loop()
+            fut: asyncio.Future = loop.create_future()
+            self._pending_switch_future = fut
+            self._pending_switch_request_id = request_id
+            self._pending_switch_call_id = call_id
+            try:
+                await self.websocket.send(json.dumps(payload))
+                response = await asyncio.wait_for(fut, timeout=timeout_sec)
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Timed out waiting for Local AI Server switch_response; not recording prompt digest",
+                    call_id=call_id,
+                    chars=len(prompt),
+                    timeout_sec=timeout_sec,
+                )
+                return False
+            except asyncio.CancelledError:
+                if asyncio.current_task() and asyncio.current_task().cancelling():
+                    raise
+                logger.debug(
+                    "System prompt synchronization cancelled during provider close",
+                    call_id=call_id,
+                )
+                return False
+            except Exception:
+                logger.error(
+                    "Failed applying Local AI Server system prompt",
+                    call_id=call_id,
+                    chars=len(prompt),
+                    exc_info=True,
+                )
+                return False
+            finally:
+                if self._pending_switch_future is fut:
+                    self._pending_switch_future = None
+                    self._pending_switch_request_id = None
+                    self._pending_switch_call_id = None
+
+        status = str((response or {}).get("status") or "").lower()
+        # "success" and "no_change" both mean the server's prompt now matches
+        # what we sent; "error" (or anything else) means it did not apply.
+        if status in ("success", "no_change"):
             self._last_system_prompt_digest = digest
-            logger.info("Applied Local AI Server system prompt (dry_run)", call_id=call_id, chars=len(prompt))
+            logger.info(
+                "Applied Local AI Server session system prompt",
+                call_id=call_id,
+                chars=len(prompt),
+                status=status,
+            )
+            return True
+        logger.error(
+            "Local AI Server rejected system prompt switch; not recording digest",
+            call_id=call_id,
+            chars=len(prompt),
+            status=status or "unknown",
+            message=(response or {}).get("message"),
+        )
+        return False
+
+    async def _send_tool_context(self, *, call_id: str) -> bool:
+        """Send tool_context to local_ai_server. Returns True on success.
+
+        Caller must treat False as fatal: the server caches per-session
+        ACL/policy/schemas and a missed sync leaks state across calls. Per
+        CodeRabbit review of PR #384 review 4258719822 (outside-diff).
+        """
+        if not self.websocket or self.websocket.state.name != "OPEN":
+            logger.warning(
+                "Cannot send local tool_context: WebSocket not open",
+                call_id=call_id,
+                allowed_tools=sorted(self._allowed_tools),
+                policy=self._effective_tool_policy,
+            )
+            return False
+        payload = {
+            "type": "tool_context",
+            "protocol_version": PROTOCOL_VERSION,
+            "call_id": call_id,
+            "allowed_tools": sorted(self._allowed_tools),
+            "tools": list(self._allowed_tool_schemas or []),
+            "tool_policy": self._effective_tool_policy,
+        }
+        try:
+            await self.websocket.send(json.dumps(payload, default=str))
+            logger.debug(
+                "Sent local tool context to Local AI Server",
+                call_id=call_id,
+                allowed_tools=sorted(self._allowed_tools),
+                policy=self._effective_tool_policy,
+            )
+            return True
         except Exception:
-            logger.debug("Failed applying Local AI Server system prompt", call_id=call_id, exc_info=True)
+            logger.error(
+                "Failed sending local tool context",
+                call_id=call_id,
+                allowed_tools=sorted(self._allowed_tools),
+                policy=self._effective_tool_policy,
+                exc_info=True,
+            )
+            return False
 
     async def send_audio(self, audio_chunk: bytes, sample_rate: int = 0, encoding: str = ""):
         """Send audio chunk to Local AI Server for STT processing."""
         try:
+            if not self.is_connected():
+                if not self._warned_audio_drop_disconnected:
+                    logger.warning(
+                        "Dropping Local AI audio chunk because WebSocket is unavailable; background reconnect requested",
+                        bytes=len(audio_chunk),
+                        input_mode=self.input_mode,
+                    )
+                    self._warned_audio_drop_disconnected = True
+                # Only kick a background reconnect if we were previously
+                # connected; otherwise we'd spin the port-check at frame rate
+                # for a server that was never reachable in this session.
+                if self._was_connected:
+                    self._start_background_reconnect()
+                return
+
+            self._warned_audio_drop_disconnected = False
+
             logger.info("🎵 PROVIDER INPUT - Sending to Local AI Server",
                          bytes=len(audio_chunk),
                          queue_size=self._send_queue.qsize(),
                          input_mode=self.input_mode)
             
             # Enqueue for sender loop; drop if queue is full to avoid backpressure explosions
-            await self._send_queue.put(audio_chunk)
+            try:
+                self._send_queue.put_nowait(audio_chunk)
+            except asyncio.QueueFull:
+                logger.warning(
+                    "Local AI Server send queue full; dropping audio chunk",
+                    bytes=len(audio_chunk),
+                    queue_size=self._send_queue.qsize(),
+                    input_mode=self.input_mode,
+                )
             
         except Exception as e:
             logger.error("Failed to enqueue audio for Local AI Server", 
@@ -1211,7 +1698,8 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                     "rate": 16000,
                     "format": "pcm16le",
                     "call_id": self._active_call_id,
-                    "mode": self._mode  # "stt" for hybrid, "full" for all-local
+                    "mode": self._mode,  # "stt" for hybrid, "full" for all-local
+                    **self._tts_output_preferences(),
                 })
                 try:
                     await self.websocket.send(msg)
@@ -1319,7 +1807,15 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
 
         self._agent_audio_done_tasks[call_id] = asyncio.create_task(_emit_done())
 
-    async def _emit_agent_audio(self, call_id: str, audio_bytes: bytes, *, encoding: str, sample_rate: Optional[int]) -> None:
+    async def _emit_agent_audio(
+        self,
+        call_id: str,
+        audio_bytes: bytes,
+        *,
+        encoding: str,
+        sample_rate: Optional[int],
+        source_mode: Optional[str] = None,
+    ) -> None:
         if not audio_bytes or not self.on_event:
             return
 
@@ -1332,6 +1828,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             "call_id": call_id,
             "encoding": normalized_encoding,
             "sample_rate": effective_rate,
+            "source_mode": source_mode,
         })
 
         # Hold TTS gating until the audio should be fully played out.
@@ -1342,12 +1839,14 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         # mode: 'mulaw8k' or 'pcm16_8k'
         self.input_mode = mode
 
-    async def play_initial_greeting(self, call_id: str):
-        """Play an initial greeting message to the caller."""
+    async def play_initial_greeting(self, call_id: str) -> bool:
+        """Queue an initial greeting and report whether audio was requested."""
         try:
             # Ensure websocket connection exists
-            if not self.websocket or self.websocket.state.name != "OPEN":
+            if not self.is_connected():
                 await self.initialize()
+            if not self.is_connected():
+                raise RuntimeError("Local AI Server WebSocket is not connected for greeting playback")
 
             # Ensure the receive loop will attribute AgentAudio to this call
             self._active_call_id = call_id
@@ -1356,7 +1855,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             greeting_text = self._initial_greeting or ""
             if not greeting_text.strip():
                 logger.info("No initial greeting configured; skipping greeting playback", call_id=call_id)
-                return
+                return False
 
             # Send a TTS request that the local AI server understands; it will
             # reply with metadata (tts_audio) and then a binary payload, which
@@ -1365,6 +1864,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 "type": "tts_request",
                 "call_id": call_id,
                 "text": greeting_text,
+                **self._tts_output_preferences(),
             }
 
             await self.websocket.send(json.dumps(tts_message))
@@ -1378,8 +1878,10 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                     "text": greeting_text,
                 })
                 logger.debug("Recorded greeting in conversation history", call_id=call_id)
+            return True
         except Exception as e:
             logger.error("Failed to send greeting message", call_id=call_id, error=str(e), exc_info=True)
+            raise
 
     async def stop_session(self):
         # DON'T cancel the listener task - keep it running to receive AgentAudio events
@@ -1390,6 +1892,41 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         #     await self.websocket.close()
         #     logger.info("Disconnected from Local AI Server.")
         
+        # The WebSocket is intentionally persistent, so closing the call does not
+        # trigger the server's connection_closed cancellation path. Explicitly
+        # reuse the barge-in control message to cancel any shielded LLM/TTS work
+        # that outlived the caller (for example a post-hangup tool-result turn).
+        # Older Local AI Servers already understand this message, which keeps the
+        # engine/server rolling-upgrade fallback intact.
+        target_call_id = str(self._active_call_id or "").strip()
+        if (
+            target_call_id
+            and self.websocket
+            and self.websocket.state.name == "OPEN"
+        ):
+            try:
+                await self.websocket.send(
+                    json.dumps(
+                        {
+                            "type": "barge_in",
+                            "protocol_version": PROTOCOL_VERSION,
+                            "call_id": target_call_id,
+                            "request_id": f"stop-{uuid4().hex}",
+                            "reason": "stop_session",
+                        }
+                    )
+                )
+                logger.debug(
+                    "Sent Local AI response cancellation on stop_session",
+                    call_id=target_call_id,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to cancel Local AI response on stop_session",
+                    call_id=target_call_id,
+                    exc_info=True,
+                )
+
         # Safety guard: drain send queue and discard pending frames
         queue_size = self._send_queue.qsize()
         if queue_size > 0:
@@ -1418,6 +1955,74 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         # The call_id will be cleared when the TTS playback is complete
         # self._active_call_id = None
         logger.info("Provider session stopped, WebSocket connection and listener maintained. Call ID preserved for TTS processing.")
+
+    async def close(self) -> None:
+        """Permanently release a call-owned provider's WebSocket and tasks.
+
+        ``stop_session`` intentionally keeps a reusable provider connected.
+        Engine provider factories now create one LocalProvider per call, so the
+        discarded call-owned instance must use this terminal close path.
+        """
+        await self.stop_session()
+        self._was_connected = False
+
+        tasks = [
+            self._listener_task,
+            self._sender_task,
+            self._background_reconnect_task,
+            *self._agent_audio_done_tasks.values(),
+            *self._llm_tool_timeout_tasks.values(),
+            *self._barge_in_ack_tasks.values(),
+        ]
+        current = asyncio.current_task()
+        pending_tasks = [
+            task
+            for task in tasks
+            if task is not None and task is not current and not task.done()
+        ]
+        for task in pending_tasks:
+            task.cancel()
+
+        ws = self.websocket
+        self.websocket = None
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                logger.debug("Failed closing Local AI WebSocket", exc_info=True)
+
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+        futures = [
+            self._pending_status_future,
+            self._pending_switch_future,
+            *self._pending_tts_responses.values(),
+            *self._pending_llm_responses.values(),
+        ]
+        for future in futures:
+            if future is not None and not future.done():
+                future.cancel()
+
+        self._listener_task = None
+        self._sender_task = None
+        self._background_reconnect_task = None
+        self._pending_status_future = None
+        self._pending_switch_future = None
+        self._pending_switch_request_id = None
+        self._pending_switch_call_id = None
+        self._pending_tts_responses.clear()
+        self._pending_llm_responses.clear()
+        self._pending_llm_tool_responses.clear()
+        self._pending_barge_in_acks.clear()
+        self._agent_audio_done_tasks.clear()
+        self._llm_tool_timeout_tasks.clear()
+        self._barge_in_ack_tasks.clear()
+        self._tts_audio_meta_by_call.clear()
+        self._pending_tts_audio_meta.clear()
+        self._active_call_id = None
+        self._last_system_prompt_digest = None
+        logger.info("Local AI provider connection closed permanently")
 
     async def clear_active_call_id(self):
         """Clear the active call ID after TTS playback is complete."""
@@ -1459,13 +2064,24 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             async for message in self.websocket:
                 # Handle binary messages (raw audio)
                 if isinstance(message, bytes):
-                    # Safety guard: drop AgentAudio if no active call
-                    if self._active_call_id is None:
-                        logger.debug("Dropping AgentAudio - no active call", message_size=len(message))
+                    if not self._pending_tts_audio_meta:
+                        logger.warning(
+                            "Dropping Local AgentAudio without a preceding tts_audio header",
+                            active_call_id=self._active_call_id,
+                            message_size=len(message),
+                        )
                         continue
-
-                    call_id = self._active_call_id
-                    meta = self._tts_audio_meta_by_call.get(call_id, {})
+                    meta = self._pending_tts_audio_meta.popleft()
+                    call_id = str(meta.get("call_id") or "")
+                    if not call_id or call_id != self._active_call_id:
+                        logger.warning(
+                            "Dropping stale Local AgentAudio",
+                            frame_call_id=call_id or None,
+                            active_call_id=self._active_call_id,
+                            request_id=meta.get("request_id"),
+                            message_size=len(message),
+                        )
+                        continue
                     encoding = self._normalize_audio_encoding(meta.get("encoding"))
                     sample_rate = self._coerce_sample_rate(meta.get("sample_rate") or meta.get("sample_rate_hz"))
                     await self._emit_agent_audio(
@@ -1473,6 +2089,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                         message,
                         encoding=encoding,
                         sample_rate=sample_rate,
+                        source_mode=meta.get("mode"),
                     )
                 # Handle JSON messages (TTS responses, etc.)
                 elif isinstance(message, str):
@@ -1487,14 +2104,54 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                             if fut and not fut.done():
                                 fut.set_result(data)
                             continue
+                        if data.get("type") == "switch_response":
+                            # Confirmation for a pending _apply_system_prompt
+                            # switch_model. Resolve the waiter so the digest is
+                            # recorded only on confirmed success (MED-R4).
+                            fut = self._pending_switch_future
+                            response_request_id = str(data.get("request_id") or "")
+                            response_call_id = str(data.get("call_id") or "")
+                            request_matches = (
+                                response_request_id == self._pending_switch_request_id
+                                or (
+                                    not response_request_id
+                                    and response_call_id == self._pending_switch_call_id
+                                )
+                            )
+                            if (
+                                fut
+                                and not fut.done()
+                                and request_matches
+                                and response_call_id == self._pending_switch_call_id
+                            ):
+                                if not response_request_id:
+                                    logger.info(
+                                        "Accepted legacy Local AI switch_response correlated by call_id",
+                                        call_id=response_call_id,
+                                    )
+                                fut.set_result(data)
+                            else:
+                                logger.warning(
+                                    "Dropping stale or uncorrelated Local AI switch_response",
+                                    response_request_id=response_request_id or None,
+                                    response_call_id=response_call_id or None,
+                                    pending_request_id=self._pending_switch_request_id,
+                                    pending_call_id=self._pending_switch_call_id,
+                                )
+                            continue
                         if data.get("type") == "tts_audio":
                             meta_call_id = data.get("call_id") or self._active_call_id
                             if meta_call_id:
-                                self._tts_audio_meta_by_call[meta_call_id] = {
+                                meta = {
+                                    "call_id": str(meta_call_id),
                                     "encoding": self._normalize_audio_encoding(data.get("encoding")),
                                     "sample_rate": self._coerce_sample_rate(data.get("sample_rate_hz") or data.get("sample_rate")),
                                     "byte_length": data.get("byte_length"),
+                                    "mode": data.get("mode"),
+                                    "request_id": data.get("request_id"),
                                 }
+                                self._tts_audio_meta_by_call[str(meta_call_id)] = meta
+                                self._pending_tts_audio_meta.append(meta)
                             continue
                         # Handle TTS responses
                         if data.get("type") == "tts_response":
@@ -1610,6 +2267,50 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                             llm_text = data.get("text", "")
                             call_id = data.get("call_id") or self._active_call_id
 
+                            # Honor tool-gateway completion markers at both
+                            # the top level AND nested under `extra` —
+                            # docs/local-ai-server/PROTOCOL.md describes the
+                            # post-tool final answer as carrying
+                            # `extra.tool_result_final = true`, while the
+                            # legacy in-band path emits the same markers at
+                            # the top level. Pre-fix this branch only
+                            # checked the top level, so a documented
+                            # `extra.*` payload would fall through into
+                            # `_dispatch_llm_tool_gateway_request()` and get
+                            # reparsed as another tool turn instead of being
+                            # emitted as the final answer. Per CodeRabbit
+                            # review of PR #384 comment 3214117422.
+                            _extra = data.get("extra") if isinstance(data.get("extra"), dict) else {}
+                            if (
+                                data.get("tool_gateway_done")
+                                or data.get("tool_result_final")
+                                or _extra.get("tool_gateway_done")
+                                or _extra.get("tool_result_final")
+                            ):
+                                terminal_farewell = str(
+                                    data.get("tool_path")
+                                    or _extra.get("tool_path")
+                                    or ""
+                                ) == "terminal_farewell"
+                                await self._emit_local_llm_result(
+                                    call_id=call_id,
+                                    llm_text=llm_text,
+                                    clean_text=llm_text,
+                                    tool_calls=None,
+                                    tool_path=str(
+                                        data.get("tool_path")
+                                        or _extra.get("tool_path")
+                                        or "none"
+                                    ),
+                                    # The original hangup tool response already
+                                    # recorded this exact farewell. The terminal
+                                    # tool-result response exists to synthesize
+                                    # audio, not to append a duplicate history
+                                    # turn.
+                                    emit_transcript=not terminal_farewell,
+                                )
+                                continue
+
                             # Structured tool gateway is enabled only for full local provider mode.
                             if self._is_structured_tool_gateway_active():
                                 dispatched = await self._dispatch_llm_tool_gateway_request(
@@ -1658,10 +2359,34 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         except Exception:
             logger.error("Error receiving events from Local AI Server", exc_info=True)
 
-    async def speak(self, text: str):
-        # This provider works by streaming STT->LLM->TTS on the server side.
-        # Direct speech injection is not the primary mode of operation.
-        logger.warning("Direct 'speak' method not implemented for this provider. Use the streaming pipeline.")
+    async def speak_text(self, text: str) -> bool:
+        """Request direct TTS using the local agent's configured voice."""
+        if not text or not self.websocket or self.websocket.state.name != "OPEN":
+            return False
+        try:
+            await self.websocket.send(
+                json.dumps(
+                    {
+                        "type": "tts_request",
+                        "text": text,
+                        "call_id": self._active_call_id or "announcement",
+                        **self._tts_output_preferences(),
+                    }
+                )
+            )
+            logger.info(
+                "Sent direct speech request to Local AI Server",
+                call_id=self._active_call_id,
+                text_preview=text[:80],
+            )
+            return True
+        except Exception:
+            logger.warning("Failed to send direct speech request to Local AI Server", exc_info=True)
+            return False
+
+    async def speak(self, text: str) -> bool:
+        """Backward-compatible alias for the legacy provider API."""
+        return await self.speak_text(text)
     
     async def text_to_speech(self, text: str) -> Optional[bytes]:
         """Generate TTS audio for the given text."""
@@ -1674,7 +2399,8 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             tts_message = {
                 "type": "tts_request",
                 "text": text,
-                "call_id": self._active_call_id or "greeting"
+                "call_id": self._active_call_id or "greeting",
+                **self._tts_output_preferences(),
             }
             
             await self.websocket.send(json.dumps(tts_message))
@@ -1699,6 +2425,11 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                     
             except asyncio.TimeoutError:
                 logger.error("TTS request timed out")
+                return None
+            except asyncio.CancelledError:
+                if asyncio.current_task() and asyncio.current_task().cancelling():
+                    raise
+                logger.debug("TTS request cancelled during provider close")
                 return None
             finally:
                 # Clean up the pending response

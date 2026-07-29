@@ -1,8 +1,28 @@
 """
 ElevenLabs Provider Configuration
 """
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass, field, fields
 from typing import List, Optional, Dict, Any
+
+logger = logging.getLogger(__name__)
+
+
+def _warn_unknown_keys(cls, data: Dict[str, Any]) -> None:
+    """Log a warning for any config keys not recognized by the dataclass.
+
+    The hand-rolled from_dict loaders below pull keys explicitly and silently
+    drop anything else, which hides typos/misconfig. Surface them (audit LOW-P10).
+    "voice_settings" is handled separately (popped before this runs) so is allowed.
+    """
+    known = {f.name for f in fields(cls)} | {"voice_settings"}
+    unknown = set(data) - known
+    if unknown:
+        logger.warning(
+            "%s: ignoring unknown config key(s): %s",
+            cls.__name__,
+            ", ".join(sorted(unknown)),
+        )
 
 
 @dataclass
@@ -20,6 +40,12 @@ class ElevenLabsAgentConfig:
     # Authentication
     api_key: str = ""
     agent_id: str = ""  # Pre-created agent ID from ElevenLabs dashboard
+    api_key_file: str = ""
+    api_key_env: str = ""
+    agent_id_file: str = ""
+    agent_id_env: str = ""
+    display_name: str = ""
+    customer: str = ""
     
     # Provider type
     type: str = "full"
@@ -37,6 +63,7 @@ class ElevenLabsAgentConfig:
     # Audio output configuration (from ElevenLabs)
     output_encoding: str = "pcm16"
     output_sample_rate_hz: int = 16000  # ElevenLabs output
+    output_resampler: str = "inherit"
     
     # Target format for telephony output
     target_encoding: str = "ulaw"
@@ -63,10 +90,17 @@ class ElevenLabsAgentConfig:
         """Create config from dictionary (YAML)."""
         voice_settings_data = data.pop("voice_settings", {})
         voice_settings = ElevenLabsVoiceSettings(**voice_settings_data) if voice_settings_data else ElevenLabsVoiceSettings()
-        
+        _warn_unknown_keys(cls, data)
+
         return cls(
             api_key=data.get("api_key", ""),
             agent_id=data.get("agent_id", ""),
+            api_key_file=data.get("api_key_file", ""),
+            api_key_env=data.get("api_key_env", ""),
+            agent_id_file=data.get("agent_id_file", ""),
+            agent_id_env=data.get("agent_id_env", ""),
+            display_name=data.get("display_name", ""),
+            customer=data.get("customer", ""),
             type=data.get("type", "full"),
             enabled=data.get("enabled", True),
             capabilities=data.get("capabilities", ["stt", "llm", "tts"]),
@@ -76,6 +110,7 @@ class ElevenLabsAgentConfig:
             provider_input_sample_rate_hz=data.get("provider_input_sample_rate_hz", 16000),
             output_encoding=data.get("output_encoding", "pcm16"),
             output_sample_rate_hz=data.get("output_sample_rate_hz", 16000),
+            output_resampler=data.get("output_resampler", "inherit"),
             target_encoding=data.get("target_encoding", "ulaw"),
             target_sample_rate_hz=data.get("target_sample_rate_hz", 8000),
             voice_id=data.get("voice_id", "21m00Tcm4TlvDq8ikWAM"),
@@ -117,7 +152,8 @@ class ElevenLabsTTSConfig:
         """Create config from dictionary (YAML)."""
         voice_settings_data = data.pop("voice_settings", {})
         voice_settings = ElevenLabsVoiceSettings(**voice_settings_data) if voice_settings_data else ElevenLabsVoiceSettings()
-        
+        _warn_unknown_keys(cls, data)
+
         return cls(
             api_key=data.get("api_key", ""),
             type=data.get("type", "tts"),

@@ -12,8 +12,8 @@ If you used the Admin UI Setup Wizard, you may not need to follow this guide end
 - `INSTALLATION.md`
 - `Transport-Mode-Compatibility.md`
 
-For how provider/context selection works (including `AI_CONTEXT` / `AI_PROVIDER`), see:
-- `Configuration-Reference.md` → "Call Selection & Precedence (Provider / Pipeline / Context)"
+For how provider/Agent selection works (including `AI_AGENT` / `AI_PROVIDER`), see:
+- `Configuration-Reference.md` → "Call Selection & Precedence (Provider / Pipeline / Agent)"
 
 ## Quick Start
 
@@ -38,6 +38,16 @@ For how provider/context selection works (including `AI_CONTEXT` / `AI_PROVIDER`
 3. This allows secure signed URL connections
 
 Without authentication, the agent cannot be accessed via API.
+
+### AVA Caller-Inactivity Compatibility (v7.3.1)
+
+AVA owns caller-silence check-ins and terminal hangup. Configure the hosted ElevenLabs agent so its own silence policy does not compete:
+
+1. In **Advanced → Conversation flow**, set **Turn timeout / Take turn after silence** to **30 seconds** (the provider maximum).
+2. Disable provider silence hangup (`silence_end_call_timeout: -1`) so AVA remains the single hangup owner.
+3. In **Advanced → Client events**, keep the existing audio/transcript events and enable **`agent_response_complete`**.
+
+`agent_response_complete` gives AVA the authoritative end of each hosted response so queued caller-facing audio can drain before watchdog or tool hangup. v7.3.1 includes a conservative audio-idle fallback for agents where the event is unavailable, but enabling the event is the recommended production setup. See ElevenLabs' [client events](https://elevenlabs.io/docs/eleven-agents/customization/events/client-events) and [conversation flow](https://elevenlabs.io/docs/eleven-agents/customization/conversation-flow) documentation.
 
 ### 3. Get Credentials
 
@@ -104,17 +114,17 @@ Add to `/etc/asterisk/extensions_custom.conf`:
 ```ini
 [from-ai-agent-elevenlabs]
 exten => s,1,NoOp(AI Voice Agent - ElevenLabs)
-exten => s,n,Set(AI_CONTEXT=demo_elevenlabs)
+exten => s,n,Set(AI_AGENT=demo_elevenlabs)
 exten => s,n,Set(AI_PROVIDER=elevenlabs_agent)
 exten => s,n,Stasis(asterisk-ai-voice-agent)
 exten => s,n,Hangup()
 ```
 
-**Recommended**: Set `AI_CONTEXT` and `AI_PROVIDER` when you want an explicit per-extension override:
-- `AI_CONTEXT` selects the context (profile, tools)
+**Recommended**: Set `AI_AGENT` and `AI_PROVIDER` when you want an explicit per-extension override:
+- `AI_AGENT` selects the Agent (profile, tools)
 - `AI_PROVIDER=elevenlabs_agent` forces this provider for the call
 
-If you omit these, the engine will select a context/provider using the precedence rules in `docs/Configuration-Reference.md`.
+If you omit these, the engine selects the default Agent/provider using the precedence rules in `docs/Configuration-Reference.md`.
 
 ### 7. Reload Asterisk
 
@@ -138,6 +148,8 @@ Route a test call to the custom destination and verify:
 - ✅ AI responds with high-quality voice
 - ✅ Duplex communication works (can interrupt AI)
 - ✅ Tools execute if configured (hangup, transfer, etc.)
+- ✅ With no caller speech, AVA—not ElevenLabs—performs the first check-in after approximately 30 seconds
+- ✅ The final inactivity warning and normal `hangup_call` farewell finish completely before disconnect
 
 ## Tool Configuration
 
@@ -334,9 +346,11 @@ ElevenLabs uses **Client Tools** - tools defined in the dashboard but executed b
 }
 ```
 
-## Context Configuration
+## Agent Configuration
 
-Define your context in `config/ai-agent.yaml`:
+Define this behavior in **Admin UI → Agents**. The legacy-shaped example below is
+provided only for preparing one-time migration input; `contexts:` YAML is not a live
+v7.4 Agent configuration surface:
 
 ```yaml
 contexts:
@@ -375,7 +389,7 @@ You **MUST** enable these toggles in ElevenLabs Dashboard → Agent → **Securi
 | **First message** | `greeting` | Context greeting overrides dashboard first message |
 | **System prompt** | `prompt` | Context prompt overrides dashboard system prompt |
 
-> **Without enabling these toggles**, the dashboard values will be used and your context settings will be ignored.
+> **Without enabling these toggles**, the ElevenLabs dashboard values are used and the Agent's greeting/prompt overrides are ignored.
 
 ### Available Dynamic Variables
 
@@ -388,15 +402,8 @@ The following variables are automatically passed and can be used in your greetin
 
 ### Usage Example
 
-```yaml
-contexts:
-  personalized_support:
-    provider: elevenlabs_agent
-    greeting: "Hi {caller_name}, thank you for calling! How can I help?"
-    prompt: |
-      You are speaking with {caller_name} (phone: {caller_id}).
-      Personalize responses using their name.
-```
+In **Admin UI → Agents**, set provider `elevenlabs_agent`, then place the dynamic
+variables directly in the Agent greeting and prompt fields.
 
 ### How It Works
 
@@ -413,12 +420,13 @@ With overrides enabled, ElevenLabs now works like other full providers in this p
 
 | Component | Deepgram/OpenAI Realtime | ElevenLabs |
 |-----------|--------------------------|------------|
-| **Greeting** | Context YAML → API | Context YAML → Override |
-| **System Prompt** | Context YAML → API | Context YAML → Override |
-| **Tools** | Context YAML → API | **Dashboard only** |
+| **Greeting** | Agent snapshot → API | Agent snapshot → Override |
+| **System Prompt** | Agent snapshot → API | Agent snapshot → Override |
+| **Tools** | Agent allowlist → API | **Dashboard only** |
 | **Voice/Model** | API or Dashboard | Dashboard only |
 
-This means you can use the same context configuration across providers - just switch the `provider:` field and your greeting/prompt will work consistently.
+This means you can reuse the same Agent behavior across providers: switch the Agent's
+provider and the greeting/prompt remain consistent.
 
 ### System Prompt Best Practice
 
@@ -483,18 +491,20 @@ When the caller indicates they're done (goodbye, thanks, that's all, etc.):
 
 ### Issue: "AI Doesn't Hang Up"
 
-**Cause**: `hangup_call` tool not configured in ElevenLabs dashboard
+**Cause**: `hangup_call` is missing, or the hosted response-completion/silence settings conflict with AVA.
 
 **Fix**:
 1. Add `hangup_call` tool schema to agent's Tools tab
 2. Update agent's system prompt to use the tool when user says goodbye
 3. Example prompt addition: "When the user says goodbye or indicates they want to end the call, use the hangup_call tool."
+4. Enable the `agent_response_complete` client event
+5. Set hosted turn timeout to 30 seconds and `silence_end_call_timeout` to `-1`
 
 ### Issue: "Second Call Fails"
 
-**Cause**: Provider state not reset between calls (fixed in v4.4.1)
+**Cause**: Provider state not reset between calls.
 
-**Fix**: Update to latest version - this was fixed in commit e123a45.
+**Fix**: Update to the latest AAVA release.
 
 ## Production Considerations
 
@@ -581,14 +591,9 @@ pipelines:
 
 The recommended audio profile for ElevenLabs TTS pipelines is **`telephony_ulaw_8k`**:
 
-```yaml
-contexts:
-  demo_hybrid:
-    pipeline: local_hybrid
-    profile: telephony_ulaw_8k    # Required for ElevenLabs TTS
-    greeting: "Hi, I'm Ava. How can I help you today?"
-    prompt: "You are a helpful AI assistant."
-```
+In the Agent editor, select pipeline `local_hybrid`, audio profile
+`telephony_ulaw_8k`, and the required greeting/prompt. The profile is required for
+ElevenLabs TTS in this pipeline.
 
 ### Transport Compatibility
 

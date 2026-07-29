@@ -318,53 +318,90 @@ annotations:
 
 ## Metric Reference
 
-### Call Quality Metrics
+> **Source-of-truth note:** the tables below were verified against the metric definitions in `src/engine.py`, `src/core/streaming_playback_manager.py`, `src/core/vad_manager.py`, `src/core/conversation_coordinator.py`, and `src/providers/*.py` as of 2026-04-27. If you hit `/metrics` and see a name not listed here, file a docs bug.
+
+### Call lifecycle & latency
+
+| Metric | Type | Description | Defined in |
+|--------|------|-------------|------------|
+| `ai_agent_call_duration_seconds` | Histogram | End-to-end call duration | `src/engine.py` |
+| `ai_agent_turn_response_seconds` | Histogram | Time from user speech end to agent response start | `src/engine.py` |
+| `ai_agent_stt_to_tts_seconds` | Histogram | STT-finalize → TTS-first-byte (pipeline-mode) | `src/engine.py` |
+| `ai_agent_barge_in_reaction_seconds` | Histogram | Time to react to user interruption | `src/engine.py` |
+| `ai_agent_barge_in_events_total` | Counter | Total barge-in events | `src/core/conversation_coordinator.py` |
+| `ai_agent_conversation_state` | Gauge | Current state (encoded; see source for enum) | `src/core/conversation_coordinator.py` |
+| `ai_agent_tts_gating_active` | Gauge | 1 when TTS-output is gating microphone capture | `src/core/conversation_coordinator.py` |
+| `ai_agent_audio_capture_enabled` | Gauge | 1 when inbound capture is unmuted | `src/core/conversation_coordinator.py` |
+
+### Streaming health (downstream audio path)
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `ai_agent_turn_response_seconds` | Histogram | Time from user speech end to agent response start |
-| `ai_agent_stt_latency_seconds` | Histogram | Speech-to-text processing time |
-| `ai_agent_llm_latency_seconds` | Histogram | LLM inference time |
-| `ai_agent_tts_latency_seconds` | Histogram | Text-to-speech synthesis time |
-| `ai_agent_barge_in_reaction_seconds` | Histogram | Time to react to user interruption |
-| `ai_agent_stream_underflow_events_total` | Counter | Audio underflow events |
-| `ai_agent_call_quality_score` | Gauge | Composite quality score (0-100) |
+| `ai_agent_streaming_active` | Gauge | Calls with streaming playback active (operator's "concurrent calls" proxy) |
+| `ai_agent_stream_started_total` | Counter | Streaming segments started (label: `playback_type`) |
+| `ai_agent_stream_first_frame_seconds` | Histogram | Stream-start → first outbound frame (label: `playback_type`) |
+| `ai_agent_stream_segment_duration_seconds` | Histogram | Streaming segment duration (label: `playback_type`) |
+| `ai_agent_stream_end_reason_total` | Counter | Stream end reasons (label: `reason`) |
+| `ai_agent_stream_underflow_events_total` | Counter | 20ms-filler underflow events |
+| `ai_agent_stream_filler_bytes_total` | Counter | Filler bytes injected on underflow |
+| `ai_agent_stream_frames_sent_total` | Counter | Frames (20ms) actually sent |
+| `ai_agent_stream_tx_bytes_total` | Counter | Outbound audio bytes sent to caller |
+| `ai_agent_stream_rx_bytes_total` | Counter | Inbound audio bytes received |
+| `ai_agent_streaming_bytes_total` | Counter | Bytes queued to streaming playback (pre-conversion) |
+| `ai_agent_streaming_fallbacks_total` | Counter | Times streaming fell back to file playback |
+| `ai_agent_streaming_jitter_buffer_depth` | Gauge | Max jitter buffer depth across active streams |
+| `ai_agent_streaming_last_chunk_age_seconds` | Gauge | Max seconds since last streaming chunk |
+| `ai_agent_streaming_keepalives_sent_total` | Counter | Keepalive ticks sent while streaming |
+| `ai_agent_streaming_keepalive_timeouts_total` | Counter | Keepalive-detected streaming timeouts |
+| `ai_agent_stream_endian_corrections_total` | Counter | Auto-corrected PCM16 byte-order issues (label: `mode`) |
 
-### System Health Metrics
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `ai_agent_active_calls` | Gauge | Current concurrent calls |
-| `ai_agent_calls_started_total` | Counter | Total calls initiated |
-| `ai_agent_calls_completed_total` | Counter | Total calls completed successfully |
-| `ai_agent_calls_failed_total` | Counter | Total call failures |
-| `ai_agent_audiosocket_connections` | Gauge | Active AudioSocket connections |
-| `ai_agent_memory_usage_bytes` | Gauge | Memory consumption |
-| `ai_agent_cpu_usage_percent` | Gauge | CPU utilization |
-
-### Audio Quality Metrics
+### Audio & VAD quality
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `ai_agent_audio_rms_level` | Gauge | RMS audio level |
-| `ai_agent_audio_dc_offset` | Gauge | DC offset in audio signal |
-| `ai_agent_audio_bytes_total` | Counter | Audio bytes transmitted |
-| `ai_agent_codec_mismatch_total` | Counter | Codec format mismatches |
-| `ai_agent_sample_rate_hz` | Gauge | Current sample rate |
+| `ai_agent_audio_rms` | Gauge | RMS audio level |
+| `ai_agent_audio_dc_offset` | Gauge | DC offset in inbound audio |
+| `ai_agent_codec_alignment` | Gauge | Codec/sample-rate alignment indicator (1 = aligned) |
+| `ai_agent_vad_frames_total` | Counter | VAD frames processed |
+| `ai_agent_vad_confidence` | Histogram | Per-frame VAD confidence |
+| `ai_agent_vad_adaptive_threshold` | Gauge | Current adaptive VAD threshold |
 
-### Provider-Specific Metrics
+### Config snapshot gauges
 
-**Deepgram**:
+These echo the running config values so dashboards can correlate behavior with settings without a separate config feed:
+
 | Metric | Type | Description |
 |--------|------|-------------|
-| `ai_agent_deepgram_ack_latency_seconds` | Histogram | Time to first audio ACK |
-| `ai_agent_deepgram_think_duration_seconds` | Histogram | Think stage processing time |
+| `ai_agent_config_barge_in_ms` | Gauge | Configured `barge_in.min_ms` |
+| `ai_agent_config_barge_in_threshold` | Gauge | Configured `barge_in.energy_threshold` |
+| `ai_agent_config_streaming_ms` | Gauge | Configured streaming start/jitter window |
+| `ai_agent_config_turn_detection_ms` | Gauge | Configured turn-detection silence window |
+| `ai_agent_config_turn_detection_threshold` | Gauge | Configured turn-detection threshold |
 
-**OpenAI Realtime**:
+### Provider-specific
+
+**Google Live** (`src/providers/google_live.py`):
 | Metric | Type | Description |
 |--------|------|-------------|
-| `ai_agent_openai_rate_alignment_ratio` | Gauge | Measured/expected rate ratio |
-| `ai_agent_openai_vad_toggle_total` | Counter | Server VAD state changes |
+| `ai_agent_google_live_active_sessions` | Gauge | Active Google Live WebSocket sessions |
+| `ai_agent_google_live_audio_bytes_sent` | Counter | Audio bytes sent to Gemini Live |
+| `ai_agent_google_live_audio_bytes_received` | Counter | Audio bytes received from Gemini Live |
+
+**Deepgram** (`src/providers/deepgram.py`):
+| Metric | Type | Description |
+|--------|------|-------------|
+| `ai_agent_deepgram_input_sample_rate_hz` | Gauge | Input sample rate negotiated with Deepgram |
+| `ai_agent_deepgram_output_sample_rate_hz` | Gauge | Output sample rate from Deepgram |
+| `ai_agent_deepgram_settings_ack_latency_ms` | Gauge | Settings-ack latency (ms) |
+
+**OpenAI Realtime** (`src/providers/openai_realtime.py`):
+| Metric | Type | Description |
+|--------|------|-------------|
+| `ai_agent_openai_assumed_output_rate` | Gauge | Output rate the engine assumes |
+| `ai_agent_openai_provider_output_rate` | Gauge | Output rate provider declared |
+| `ai_agent_openai_measured_output_rate` | Gauge | Output rate measured at runtime |
+
+> **Removed from earlier docs (don't exist in code):** `ai_agent_calls_started_total`, `ai_agent_calls_completed_total`, `ai_agent_calls_failed_total`, `ai_agent_audiosocket_connections`, `ai_agent_memory_usage_bytes`, `ai_agent_cpu_usage_percent`, `ai_agent_call_quality_score`, `ai_agent_stt_latency_seconds`, `ai_agent_llm_latency_seconds`, `ai_agent_tts_latency_seconds`, `ai_agent_audio_bytes_total`, `ai_agent_codec_mismatch_total`, `ai_agent_sample_rate_hz`, `ai_agent_deepgram_ack_latency_seconds`, `ai_agent_deepgram_think_duration_seconds`, `ai_agent_openai_rate_alignment_ratio`, `ai_agent_openai_vad_toggle_total`. Use the documented alternatives above (e.g., for "calls started" use `ai_agent_stream_started_total`; for memory/CPU use the standard `process_*` and `python_*` metrics that `prometheus_client` exposes by default).
 
 ---
 
@@ -377,31 +414,32 @@ annotations:
 avg by (provider) (rate(ai_agent_turn_response_seconds_sum[5m]) / rate(ai_agent_turn_response_seconds_count[5m]))
 ```
 
-**Calls per minute**:
+**Streaming segments per minute** (closest signal to "calls per minute"):
 ```promql
-rate(ai_agent_calls_started_total[1m]) * 60
+rate(ai_agent_stream_started_total[1m]) * 60
 ```
 
-**Error rate percentage**:
+**Stream end-reason mix** (use to detect failure modes):
 ```promql
-(rate(ai_agent_calls_failed_total[5m]) / rate(ai_agent_calls_started_total[5m])) * 100
+sum by (reason) (rate(ai_agent_stream_end_reason_total[5m]))
 ```
 
 ### Capacity Planning
 
-**Peak concurrent calls (last 24h)**:
+**Peak concurrent active streams (last 24h)**:
 ```promql
-max_over_time(ai_agent_active_calls[24h])
+max_over_time(ai_agent_streaming_active[24h])
 ```
 
 **Average call duration**:
 ```promql
-avg(ai_agent_call_duration_seconds)
+sum(rate(ai_agent_call_duration_seconds_sum[5m])) / sum(rate(ai_agent_call_duration_seconds_count[5m]))
 ```
 
-**CPU usage during calls**:
+**Process CPU & memory** (from `prometheus_client`'s default exports — no custom metric needed):
 ```promql
-ai_agent_cpu_usage_percent{active_calls > 0}
+rate(process_cpu_seconds_total[5m])
+process_resident_memory_bytes
 ```
 
 ### Troubleshooting
@@ -411,14 +449,14 @@ ai_agent_cpu_usage_percent{active_calls > 0}
 count(ai_agent_turn_response_seconds_bucket{le="3"} == 0)
 ```
 
-**Underflows per call (last hour)**:
+**Underflows per stream segment (last hour)**:
 ```promql
-sum(increase(ai_agent_stream_underflow_events_total[1h])) / sum(increase(ai_agent_calls_completed_total[1h]))
+sum(increase(ai_agent_stream_underflow_events_total[1h])) / sum(increase(ai_agent_stream_started_total[1h]))
 ```
 
-**Provider errors by type**:
+**Streaming-fallback rate (provider audio gaps causing fallback to file playback)**:
 ```promql
-sum by (provider, error_type) (rate(ai_agent_provider_errors_total[5m]))
+rate(ai_agent_streaming_fallbacks_total[5m])
 ```
 
 ---

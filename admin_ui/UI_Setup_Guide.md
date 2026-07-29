@@ -55,10 +55,11 @@ http://localhost:3003
 
 **Login Credentials**:
 - Username: `admin`
-- Password: `admin`
+- Password: the one-time password printed to the admin_ui logs on first start
+  (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`) —
+  `admin`/`admin` no longer works.
 
-⚠️ **Important**: Change this password immediately after login!  
-Go to: User Menu (top right) → Change Password
+⚠️ **Important**: You'll be required to set a new password at first login.
 
 ### 3. Complete Setup (First Time Only)
 
@@ -193,7 +194,9 @@ Open your browser to:
 http://localhost:3003
 ```
 
-Login with `admin` / `admin` and change the password.
+Log in with the one-time password printed to the admin_ui logs on first start
+(`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`); you'll be
+required to set a new password at first login. `admin`/`admin` no longer works.
 
 ---
 
@@ -202,14 +205,18 @@ Login with `admin` / `admin` and change the password.
 ### Default Credentials
 
 **Username**: `admin`  
-**Password**: `admin`
+**Password**: a one-time password generated on first run (printed to the admin_ui logs):
+```
+docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password
+```
 
-These credentials are created automatically on first run. The user data is stored in:
+The `admin` account is created automatically on first run with this one-time
+password — `admin`/`admin` no longer works. The user data is stored in:
 ```
 config/users.json
 ```
 
-**⚠️ CRITICAL**: Change the default password immediately after first login!
+**⚠️ CRITICAL**: You are required to set a new password at first login.
 
 ### JWT Secret (Optional)
 
@@ -251,7 +258,8 @@ kill $(cat admin_ui.pid) && nohup python main.py > admin_ui.log 2>&1 &
 
 **If you forget your password**:
 ```bash
-# Delete the users file (resets to admin/admin)
+# Delete the users file. On next start a new one-time password is generated and
+# printed to the admin_ui logs (retrieve with: docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password).
 rm config/users.json
 
 # Restart admin-ui
@@ -357,10 +365,17 @@ If you've been using `install.sh` and the Agent CLI, the Admin UI works alongsid
 
 ### Migration Steps
 
-1. **Backup your configuration** (recommended):
+1. **Follow the supported upgrade and backup procedure**:
+
+   Read the [Installation and Upgrade Guide](../docs/INSTALLATION.md#upgrade-to-v740-existing-checkout),
+   especially when upgrading from v7.3.0–v7.3.3 or when the updater reports
+   `Failed to compute update plan`. At minimum, preserve:
+
    ```bash
-   cp config/ai-agent.yaml config/ai-agent.yaml.backup
-   cp .env .env.backup
+   cp config/ai-agent.yaml ../ai-agent.yaml.backup
+   cp .env ../aava.env.backup
+   cp data/operator/agents.db ../agents.db.backup 2>/dev/null || true
+   cp data/call_history.db ../call_history.db.backup 2>/dev/null || true
    ```
 
 2. **Start the Admin UI**:
@@ -374,7 +389,8 @@ If you've been using `install.sh` and the Agent CLI, the Admin UI works alongsid
 
 4. **Verify configuration**:
    - Check Providers page matches your setup
-   - Check Contexts page
+   - Check the Agents page and verify the default Agent
+   - Review transfer, Google Calendar, Microsoft Calendar, and voicemail access per Agent
    - Review any warnings
 
 ### CLI Tools Still Work
@@ -423,20 +439,20 @@ The main dashboard shows:
 - Configure pipeline-specific options
 - Enable tool calling
 
-**Contexts**:
+**Agents**:
 - Define AI personalities
 - Set greetings and prompts
-- Override providers per context
+- Select a provider or pipeline per Agent
 - Configure audio profiles
-- Enable background music (see below)
+- Enable background music and Agent-scoped tool access
 
 #### Background Music Configuration
 
 Enable ambient music during AI conversations. Music plays to the caller while they talk with the AI agent.
 
 **How to Enable**:
-1. Go to **Configuration → Contexts**
-2. Edit a context (or create new)
+1. Go to **Configuration → Agents**
+2. Edit an Agent (or create one)
 3. Scroll to **Background Music** section
 4. Toggle **Enable Background Music**
 5. Enter MOH class name (default: `default`)
@@ -461,13 +477,8 @@ Enable ambient music during AI conversations. Music plays to the caller while th
 - Music is heard by the AI (affects VAD) - low volume helps accuracy
 - Test with a real call before production use
 
-**YAML Configuration** (manual):
-```yaml
-contexts:
-  my_context:
-    greeting: "Hello!"
-    background_music: "ambient"  # MOH class name
-```
+The Agent editor stores background music with the Agent in `agents.db`. Legacy
+`contexts:` YAML is migration input only in v7.4 and must not be used for live edits.
 
 **Audio Profiles**:
 - Edit encoding settings
@@ -753,7 +764,7 @@ cp config/users.json config/users.json.$(date +%Y%m%d)
 
 ### After Setup
 
-1. ✅ **Change default password** (admin/admin → your password)
+1. ✅ **Set your admin password** (forced at first login; one-time password comes from the admin_ui logs)
 2. ✅ **Complete setup wizard** (if new installation)
 3. ✅ **Test a phone call** to verify configuration
 4. ✅ **Explore the dashboard** and familiarize yourself with the UI
@@ -806,7 +817,7 @@ docker compose up -d --build admin_ui
 ### Emergency Recovery
 
 ```bash
-# Reset to admin/admin
+# Reset: regenerates a one-time password on next start (see admin_ui logs)
 rm config/users.json && docker compose restart admin_ui
 
 # Restore configuration

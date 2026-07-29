@@ -7,7 +7,10 @@ import { YamlErrorBanner, YamlErrorInfo } from '../../components/ui/YamlErrorBan
 import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput } from '../../components/ui/FormComponents';
+import HelpTooltip from '../../components/ui/HelpTooltip';
 import { sanitizeConfigForSave } from '../../utils/configSanitizers';
+import { localAIStatusFromLiveSnapshot } from '../../utils/liveStatus';
+import { useRestartRequired } from '../../hooks/useRestartRequired';
 
 const CHAT_FORMAT_OPTIONS = [
     { value: '', label: '(Legacy Phi-style — no chat template)' },
@@ -24,10 +27,11 @@ const LLMPage = () => {
     const [loading, setLoading] = useState(true);
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
     const [saving, setSaving] = useState(false);
-    const [pendingRestart, setPendingRestart] = useState(false);
+    const { restartRequired, refetch } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
     const [localCapability, setLocalCapability] = useState<any>(null);
     const [localConnected, setLocalConnected] = useState(false);
+    const [localAIState, setLocalAIState] = useState('unknown');
 
     useEffect(() => {
         fetchConfig();
@@ -35,8 +39,9 @@ const LLMPage = () => {
 
     const fetchConfig = async () => {
         try {
-            const [yamlRes, healthRes, envRes] = await Promise.allSettled([
+            const [yamlRes, liveStatusRes, healthRes, envRes] = await Promise.allSettled([
                 axios.get('/api/config/yaml'),
+                axios.get('/api/system/live-status'),
                 axios.get('/api/system/health'),
                 axios.get('/api/config/env'),
             ]);
@@ -59,18 +64,28 @@ const LLMPage = () => {
                 setEnv(envRes.value.data || {});
             }
 
-            if (healthRes.status === 'fulfilled') {
+            const liveLocalAI = liveStatusRes.status === 'fulfilled'
+                ? localAIStatusFromLiveSnapshot(liveStatusRes.value.data)
+                : null;
+            if (liveLocalAI?.connected) {
+                setLocalConnected(true);
+                setLocalAIState(liveLocalAI.state);
+                setLocalCapability(liveLocalAI.details?.models?.llm?.tool_capability || null);
+            } else if (healthRes.status === 'fulfilled') {
                 const localDetails = healthRes.value.data?.local_ai_server?.details || {};
                 setLocalConnected(healthRes.value.data?.local_ai_server?.status === 'connected');
+                setLocalAIState(healthRes.value.data?.local_ai_server?.status || 'unknown');
                 setLocalCapability(localDetails?.models?.llm?.tool_capability || null);
             } else {
                 setLocalConnected(false);
+                setLocalAIState(liveLocalAI?.state || 'unknown');
                 setLocalCapability(null);
             }
         } catch (err) {
             console.error('Failed to load config', err);
             setYamlError(null);
             setLocalConnected(false);
+            setLocalAIState('unknown');
             setLocalCapability(null);
         } finally {
             setLoading(false);
@@ -93,7 +108,7 @@ const LLMPage = () => {
             const yamlOk = yamlSave.status === 'fulfilled';
             const envOk = envSave.status === 'fulfilled';
             if (yamlOk || envOk) {
-                setPendingRestart(true);
+                await refetch();
             }
             if (!yamlOk || !envOk) {
                 const yamlState = yamlOk ? 'ok' : 'failed';
@@ -138,7 +153,7 @@ const LLMPage = () => {
             }
 
             if (response.data.status === 'success') {
-                setPendingRestart(false);
+                await refetch();
                 toast.success('AI Engine restarted! Changes are now active.');
             }
         } catch (error: any) {
@@ -196,28 +211,26 @@ const LLMPage = () => {
 
     return (
         <div className="space-y-6">
-            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
-                <div className="flex items-center">
-                    <AlertCircle className="w-5 h-5 mr-2" />
-                    LLM configuration changes require an AI Engine restart to take effect.
+            {restartRequired && (
+                <div className="bg-orange-500/15 border-orange-500/30 border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
+                    <div className="flex items-center">
+                        <AlertCircle className="w-5 h-5 mr-2" />
+                        LLM configuration changes require an AI Engine restart to take effect.
+                    </div>
+                    <button
+                        onClick={() => handleReloadAIEngine(false)}
+                        disabled={restartingEngine}
+                        className="flex items-center text-xs px-3 py-1.5 rounded transition-colors bg-orange-500 text-white hover:bg-orange-600 font-medium disabled:opacity-50"
+                    >
+                        {restartingEngine ? (
+                            <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                        ) : (
+                            <RefreshCw className="w-3 h-3 mr-1.5" />
+                        )}
+                        {restartingEngine ? 'Restarting...' : 'Restart AI Engine'}
+                    </button>
                 </div>
-                <button
-                    onClick={() => handleReloadAIEngine(false)}
-                    disabled={restartingEngine}
-                    className={`flex items-center text-xs px-3 py-1.5 rounded transition-colors ${
-                        pendingRestart 
-                            ? 'bg-orange-500 text-white hover:bg-orange-600 font-medium' 
-                            : 'bg-yellow-500/20 hover:bg-yellow-500/30'
-                    } disabled:opacity-50`}
-                >
-                    {restartingEngine ? (
-                        <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                    ) : (
-                        <RefreshCw className="w-3 h-3 mr-1.5" />
-                    )}
-                    {restartingEngine ? 'Restarting...' : 'Restart AI Engine'}
-                </button>
-            </div>
+            )}
 
             <div className="flex justify-between items-center">
                 <div>
@@ -247,9 +260,22 @@ const LLMPage = () => {
                             tooltip="The first message spoken by the AI when the call starts."
                         />
                         <div className="space-y-2">
-                            <label className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
-                                System Prompt
-                            </label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+                                    System Prompt
+                                </label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>System Prompt</strong> — core instructions defining the AI's persona, role, and behavior. Sent as the <code>system</code> message at the start of every conversation.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li>Overridden by a context's <code>prompt</code> when one is matched.</li>
+                                                <li>Keep it focused; long prompts eat into the LLM context window.</li>
+                                            </ul>
+                                        </>
+                                    }
+                                />
+                            </div>
                             <textarea
                                 className="flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                                 value={llmConfig.prompt || ''}
@@ -268,7 +294,21 @@ const LLMPage = () => {
                 <ConfigCard>
                     <div className="space-y-6">
                         <div className="space-y-2">
-                            <label className="text-sm font-medium leading-none">Chat Format</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium leading-none">Chat Format</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>Chat Format</strong> — the prompt template <code>llama-cpp-python</code> uses for <code>create_chat_completion()</code>. Each model family expects a specific format (special tokens, role markers).
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li>Auto-set when you pick a model on the Models page.</li>
+                                                <li>Wrong format = garbled / looping output.</li>
+                                                <li>Leave empty for legacy raw Phi-style prompting.</li>
+                                            </ul>
+                                        </>
+                                    }
+                                />
+                            </div>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background text-sm"
                                 value={env['LOCAL_LLM_CHAT_FORMAT'] || ''}
@@ -284,7 +324,21 @@ const LLMPage = () => {
                             </p>
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium leading-none">Voice Preamble</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium leading-none">Voice Preamble</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>Voice Preamble</strong> — meta-instructions prepended to the system prompt so the local LLM produces voice-friendly output.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li>No markdown / bullets / headings (TTS would read them literally).</li>
+                                                <li>Encourages short, conversational replies.</li>
+                                                <li>Applied on every call for the local provider.</li>
+                                            </ul>
+                                        </>
+                                    }
+                                />
+                            </div>
                             <textarea
                                 className="flex min-h-[100px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                                 value={env['LOCAL_LLM_VOICE_PREAMBLE'] || ''}
@@ -305,7 +359,22 @@ const LLMPage = () => {
                     <div className="space-y-4">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div className="space-y-2">
-                                <label className="text-sm font-medium">Tool Policy Override</label>
+                                <div className="flex items-center gap-1.5">
+                                    <label className="text-sm font-medium">Tool Policy Override</label>
+                                    <HelpTooltip
+                                        content={
+                                            <>
+                                                <strong>Tool Policy Override</strong> — how aggressively the full-local provider attempts tool calls.
+                                                <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                    <li><code>auto</code> — pick based on model capability probe (recommended).</li>
+                                                    <li><code>strict</code> — only structured tool-decision path.</li>
+                                                    <li><code>compatible</code> — structured + parser/repair fallback for weaker models.</li>
+                                                    <li><code>off</code> — disable model tool execution entirely.</li>
+                                                </ul>
+                                            </>
+                                        }
+                                    />
+                                </div>
                                 <select
                                     className="w-full p-2 rounded border border-input bg-background"
                                     value={configuredToolPolicy || 'auto'}
@@ -327,7 +396,20 @@ const LLMPage = () => {
                                 </div>
                             </div>
                             <div className="space-y-2">
-                                <label className="text-sm font-medium">Structured Tool Gateway</label>
+                                <div className="flex items-center gap-1.5">
+                                    <label className="text-sm font-medium">Structured Tool Gateway</label>
+                                    <HelpTooltip
+                                        content={
+                                            <>
+                                                <strong>Structured Tool Gateway</strong> — runs a dedicated full-local tool-decision pass separate from spoken-response parsing.
+                                                <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                    <li>Helps weaker LLMs reliably emit tool calls without polluting the spoken reply.</li>
+                                                    <li>STT-only and TTS-only modular pipelines are unaffected.</li>
+                                                </ul>
+                                            </>
+                                        }
+                                    />
+                                </div>
                                 <label className="flex items-center gap-2 p-2 rounded border border-input bg-background">
                                     <input
                                         type="checkbox"
@@ -348,8 +430,8 @@ const LLMPage = () => {
                         <div className="rounded-md border border-border bg-muted/20 p-3 text-xs space-y-1">
                             <div className="flex items-center justify-between gap-2">
                                 <span className="text-muted-foreground">Local AI Server</span>
-                                <span className={`font-mono ${localConnected ? 'text-green-600' : 'text-yellow-600'}`}>
-                                    {localConnected ? 'connected' : 'not-connected'}
+                                <span className={`font-mono ${localConnected && localAIState !== 'degraded' ? 'text-green-600' : 'text-yellow-600'}`}>
+                                    {localConnected ? (localAIState === 'degraded' ? 'degraded' : 'connected') : 'not-connected'}
                                 </span>
                             </div>
                             <div className="flex items-center justify-between gap-2">

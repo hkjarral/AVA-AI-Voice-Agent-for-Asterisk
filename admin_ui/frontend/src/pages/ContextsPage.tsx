@@ -1,21 +1,26 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
+import { Link } from 'react-router-dom';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import yaml from 'js-yaml';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
-import { Plus, Settings, Trash2, MessageSquare, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
+import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
+import { Plus, Settings, Trash2, Copy, MessageSquare, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 import { YamlErrorBanner } from '../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
 import ContextForm from '../components/config/ContextForm';
 import { usePendingChanges } from '../hooks/usePendingChanges';
+import { useRestartRequired } from '../hooks/useRestartRequired';
+
+const READ_ONLY = true;
 
 const ContextsPage = () => {
     const { confirm } = useConfirmDialog();
-    const [config, setConfig] = useState<any>({});
-    const [loading, setLoading] = useState(true);
+    const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [error, setError] = useState<string | null>(null);
     const [yamlError, setYamlError] = useState<{
         type?: string;
@@ -24,35 +29,33 @@ const ContextsPage = () => {
         column?: number;
         problem?: string;
         snippet?: string;
-    } | null>(null);
+    } | null>(() => getCachedConfig()?.yamlError ?? null);
     const [availableTools, setAvailableTools] = useState<string[]>([]);
     const [toolEnabledMap, setToolEnabledMap] = useState<Record<string, boolean>>({});
     const [toolCatalogByName, setToolCatalogByName] = useState<Record<string, any>>({});
     const [editingContext, setEditingContext] = useState<string | null>(null);
     const [contextForm, setContextForm] = useState<any>({});
     const [isNewContext, setIsNewContext] = useState(false);
-    const { pendingRestart: pendingApply, applyMethod, setPendingChanges, clearPendingChanges } = usePendingChanges();
+    // applyMethod (hot_reload vs restart) still drives the Apply button label,
+    // confirm dialog, and apply endpoint selection. Banner VISIBILITY is now
+    // server-driven via useRestartRequired so it can't go stale.
+    const { applyMethod, setPendingChanges, clearPendingChanges } = usePendingChanges();
+    const { restartRequired, refetch } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
 
     useEffect(() => {
         fetchConfig();
     }, []);
 
-    const fetchConfig = async () => {
+    const fetchConfig = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            // Check if there's a YAML error in the response (content still provided for Raw YAML editing)
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
-                setConfig({});
-                setError(null);
-            } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
-                await fetchMcpTools(parsed || {});
+            const r = await loadConfigYaml(force);
+            setConfig(r.config);
+            setYamlError(r.yamlError);
+            setError(null);
+            if (!r.yamlError) {
+                await fetchMcpTools(r.config);
                 await fetchToolCatalog();
-                setError(null);
-                setYamlError(null);
             }
         } catch (err) {
             console.error('Failed to load config', err);
@@ -177,6 +180,7 @@ const ContextsPage = () => {
             setConfig(sanitized);
             const method = (res.data?.recommended_apply_method || 'restart') as 'hot_reload' | 'restart';
             setPendingChanges(method);
+            await refetch();
         } catch (err) {
             console.error('Failed to save config', err);
             toast.error('Failed to save configuration');
@@ -184,6 +188,7 @@ const ContextsPage = () => {
     };
 
     const handleApplyChanges = async (force: boolean = false) => {
+        if (READ_ONLY) return;
         setRestartingEngine(true);
         try {
             const endpoint = applyMethod === 'hot_reload'
@@ -207,8 +212,9 @@ const ContextsPage = () => {
 
             if (status === 'degraded') {
                 clearPendingChanges();
+                await refetch();
                 toast.warning('AI Engine restarted but may not be fully healthy', { description: response.data.output || 'Please verify manually' });
-                fetchConfig();
+                fetchConfig(true);
                 return;
             }
 
@@ -216,17 +222,19 @@ const ContextsPage = () => {
                 // Hot reload succeeded but indicated some changes require a restart (e.g. providers added/removed,
                 // MCP reload deferred due to active calls).
                 setPendingChanges('restart');
+                await refetch();
                 toast.warning(response.data.message || 'Hot reload applied partially; restart AI Engine to fully apply changes.');
                 return;
             }
 
             if (status === 'success') {
                 clearPendingChanges();
+                await refetch();
                 toast.success(applyMethod === 'hot_reload'
                     ? 'AI Engine hot reloaded! Changes apply to new calls.'
                     : 'AI Engine restarted! Changes are now active.');
                 // Refresh config/tool availability after apply (best-effort)
-                fetchConfig();
+                fetchConfig(true);
                 return;
             }
 
@@ -234,8 +242,9 @@ const ContextsPage = () => {
             // completed so the UI doesn't get stuck showing "Apply Changes" forever.
             if (response.status === 200) {
                 clearPendingChanges();
+                await refetch();
                 toast.success('AI Engine updated. Please verify with a test call and logs.');
-                fetchConfig();
+                fetchConfig(true);
                 return;
             }
         } catch (error: any) {
@@ -253,6 +262,7 @@ const ContextsPage = () => {
     };
 
     const handleAddContext = () => {
+        if (READ_ONLY) return;
         const transferToolName = availableTools.includes('blind_transfer')
             ? 'blind_transfer'
             : (availableTools.includes('transfer') ? 'transfer' : '');
@@ -275,7 +285,21 @@ const ContextsPage = () => {
         setIsNewContext(true);
     };
 
+    const handleCloneContext = (name: string) => {
+        const sourceData = config.contexts?.[name] || {};
+        let cloneName = `${name}_copy`;
+        let suffix = 2;
+        while (config.contexts?.[cloneName]) {
+            cloneName = `${name}_copy_${suffix}`;
+            suffix++;
+        }
+        setEditingContext('new_context');
+        setContextForm({ ...sourceData, name: cloneName });
+        setIsNewContext(true);
+    };
+
     const handleDeleteContext = async (name: string) => {
+        if (READ_ONLY) return;
         const confirmed = await confirm({
             title: 'Delete Context?',
             description: `Are you sure you want to delete context "${name}"?`,
@@ -289,6 +313,7 @@ const ContextsPage = () => {
     };
 
     const handleSaveContext = async () => {
+        if (READ_ONLY) return;
         if (!contextForm.name) return;
 
         // Validation: Check provider
@@ -370,7 +395,19 @@ const ContextsPage = () => {
 
     return (
         <div className="space-y-6">
-            {pendingApply && (
+            {/* Deprecation banner */}
+            <div className="bg-orange-500/15 border border-orange-500/30 text-yellow-700 dark:text-yellow-400 p-4 rounded-md flex items-center gap-2">
+                <AlertCircle className="w-5 h-5 flex-shrink-0" />
+                <span>
+                    Contexts are now managed in the{' '}
+                    <Link to="/agents" className="underline font-medium">
+                        Agents
+                    </Link>{' '}
+                    tab. This page is read-only and will be removed in a future release.
+                </span>
+            </div>
+
+            {restartRequired && (
                 <div className="bg-orange-500/15 border border-orange-500/30 text-yellow-700 dark:text-yellow-400 p-4 rounded-md flex items-center justify-between">
                     <div className="flex items-center">
                         <AlertCircle className="w-5 h-5 mr-2" />
@@ -426,13 +463,15 @@ const ContextsPage = () => {
                         Define AI personalities and behaviors for different use cases.
                     </p>
                 </div>
-                <button
-                    onClick={handleAddContext}
-                    className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
-                >
-                    <Plus className="w-4 h-4 mr-2" />
-                    Add Context
-                </button>
+                {!READ_ONLY && (
+                    <button
+                        onClick={handleAddContext}
+                        className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
+                    >
+                        <Plus className="w-4 h-4 mr-2" />
+                        Add Context
+                    </button>
+                )}
             </div>
 
             <ConfigSection title="Defined Contexts" description="Manage conversation contexts and their settings.">
@@ -463,20 +502,30 @@ const ContextsPage = () => {
                                         </div>
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <button
-                                        onClick={() => handleEditContext(name)}
-                                        className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
-                                    >
-                                        <Settings className="w-4 h-4" />
-                                    </button>
-                                    <button
-                                        onClick={() => handleDeleteContext(name)}
-                                        className="p-2 hover:bg-destructive/10 rounded-md text-destructive"
-                                    >
-                                        <Trash2 className="w-4 h-4" />
-                                    </button>
-                                </div>
+                                {!READ_ONLY && (
+                                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <button
+                                            onClick={() => handleCloneContext(name)}
+                                            className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
+                                            aria-label={`Clone context ${name}`}
+                                            title="Clone context"
+                                        >
+                                            <Copy className="w-4 h-4" />
+                                        </button>
+                                        <button
+                                            onClick={() => handleEditContext(name)}
+                                            className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
+                                        >
+                                            <Settings className="w-4 h-4" />
+                                        </button>
+                                        <button
+                                            onClick={() => handleDeleteContext(name)}
+                                            className="p-2 hover:bg-destructive/10 rounded-md text-destructive"
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                )}
                             </div>
 
                             <div className="space-y-3 text-sm">
@@ -552,6 +601,7 @@ const ContextsPage = () => {
                     availableProfiles={availableProfiles}
                     defaultProfileName={defaultProfileName}
                     httpTools={{ ...config.tools, ...config.in_call_tools }}
+                    toolsRoot={config.tools || {}}
                     onChange={setContextForm}
                     isNew={isNewContext}
                 />

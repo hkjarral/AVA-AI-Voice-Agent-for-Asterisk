@@ -49,7 +49,7 @@ Asterisk-AI-Voice-Agent/
 
 ```bash
 # Python tests (from repo root)
-pip install -r requirements.txt -r requirements-test.txt
+pip install -r requirements.txt -r requirements-dev.txt
 pytest tests/ -v
 
 # Run a specific test file

@@ -6,13 +6,15 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-6.4.0-blue.svg)
+![Version](https://img.shields.io/badge/version-7.5.3-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
 ![Asterisk](https://img.shields.io/badge/asterisk-18+-orange.svg)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/hkjarral/Asterisk-AI-Voice-Agent)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk)
 [![Discord](https://dcbadge.limes.pink/api/server/ysg8fphxUe?style=plastic)](https://discord.gg/ysg8fphxUe)
+<br>
+<a href="https://www.producthunt.com/products/ava-ai-voice-agent-for-asterisk?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-ava-ai-voice-agent-for-asterisk" target="_blank" rel="noopener noreferrer"><img alt="AVA - AI Voice Agent for Asterisk - Open-source AI voice agent for any phone system | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1120145&amp;theme=light&amp;t=1775845744279"></a>
 
 The most powerful, flexible open-source AI voice agent for Asterisk/FreePBX. Featuring a **modular pipeline architecture** that lets you mix and match STT, LLM, and TTS providers, plus **6 production-ready golden baselines** validated for enterprise deployment.
 
@@ -25,7 +27,7 @@ The most powerful, flexible open-source AI voice agent for Asterisk/FreePBX. Fea
 ## 📖 Table of Contents
 
 - [🚀 Quick Start](#-quick-start)
-- [🎉 What's New](#-whats-new-in-v640)
+- [🎉 What's New](#-whats-new)
 - [🌟 Why Asterisk AI Voice Agent?](#-why-asterisk-ai-voice-agent)
 - [✨ Features](#-features)
 - [🎥 Demo](#-demo)
@@ -53,8 +55,8 @@ For a complete **first successful call** walkthrough (dialplan + transport selec
 
 ```bash
 # Clone repository
-git clone https://github.com/hkjarral/Asterisk-AI-Voice-Agent.git
-cd Asterisk-AI-Voice-Agent
+git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+cd AVA-AI-Voice-Agent-for-Asterisk
 
 # Run preflight with auto-fix (creates .env, generates JWT_SECRET)
 sudo ./preflight.sh --apply-fixes
@@ -75,11 +77,15 @@ Open in your browser:
 - **Local:** `http://localhost:3003`
 - **Remote server:** `http://<server-ip>:3003`
 
-**Default Login:** `admin` / `admin`
+**First login:** On first start, a one-time admin password is printed to the container logs. Retrieve it with:
+```bash
+docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password
+```
+You must change it at first login. Restrict port 3003 via firewall, VPN, or reverse proxy for production use.
 
 Follow the **Setup Wizard** to configure your providers and make a test call.
 
-> ⚠️ **Security:** The Admin UI is accessible on the network. **Change the default password immediately** and restrict port 3003 via firewall, VPN, or reverse proxy for production use.
+> ⚠️ **Security:** The Admin UI is accessible on the network. Restrict port 3003 via firewall, VPN, or reverse proxy for production use.
 
 ### 4. Verify Installation
 
@@ -91,7 +97,7 @@ docker compose -p asterisk-ai-voice-agent up -d --build ai_engine
 
 # Check ai_engine health
 curl http://localhost:15000/health
-# Expected: {"status":"healthy"}
+# Expected: {"status":"healthy"} ("degraded" is also possible if a subsystem is unhealthy)
 
 # View logs for any errors
 docker compose -p asterisk-ai-voice-agent logs ai_engine | tail -20
@@ -116,7 +122,7 @@ For users who prefer the command line or need headless setup.
 agent setup
 ```
 
-> Note: Legacy commands `agent init`, `agent doctor`, and `agent troubleshoot` remain available as hidden aliases in CLI v6.4.0.
+> Note: Legacy commands `agent init`, `agent quickstart`, `agent doctor`, `agent troubleshoot`, and `agent demo` remain as hidden compatibility aliases. New workflows should use the visible commands documented in [`docs/CLI_TOOLS_GUIDE.md`](docs/CLI_TOOLS_GUIDE.md).
 
 ### Option B: Manual Setup
 ```bash
@@ -133,17 +139,16 @@ Add this to your FreePBX (`extensions_custom.conf`):
 ```asterisk
 [from-ai-agent]
 exten => s,1,NoOp(Asterisk AI Voice Agent)
- ; Optional per-call overrides:
- ; - AI_PROVIDER selects a provider/pipeline (otherwise uses default_provider from ai-agent.yaml)
- ; - AI_CONTEXT selects a context/persona (otherwise uses default context)
- same => n,Set(AI_PROVIDER=google_live)
- same => n,Set(AI_CONTEXT=sales-agent)
+ ; AI_AGENT selects an operator-managed agent by slug.
+ same => n,Set(AI_AGENT=sales-agent)
+ ; Optional: override that agent's configured provider/pipeline for this call.
+ ; same => n,Set(AI_PROVIDER=google_live)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```
 Notes:
-- `AI_PROVIDER` is optional. If unset, the engine follows normal precedence (context provider → default_provider).
-- `AI_CONTEXT` is optional. Use it to change greeting/persona without changing your default provider/pipeline.
+- Use `AI_AGENT` to select an operator-managed agent. Its configured target is authoritative unless `AI_PROVIDER` is intentionally set as a per-call override.
+- Generate a current snippet with `agent dialplan --agent <slug>`.
 - See `docs/FreePBX-Integration-Guide.md` for channel variable precedence and examples.
 
 ### Test Your Agent
@@ -159,39 +164,427 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 
 ---
 
-## 🎉 What's New in v6.4.0
+## 🎉 What's New
 
 <details open>
-<summary><b>Latest Updates</b></summary>
+<summary><b>v7.5.3 — One-click audio recovery and safer transfers</b></summary>
 
-### 📞 Attended Transfer Streaming & Screening (v6.4.0)
-- **Three screening modes**: `basic_tts` (caller ID announcement), `ai_briefing` (experimental AI conversation summary), `caller_recording` (records caller stating name/reason)
-- **Streaming delivery**: ExternalMedia RTP helper eliminates shared storage dependency for transfer announcements
-- **Provider-agnostic tool guidance**: Dynamically exposes configured transfer targets to LLM providers, preventing hallucinated extensions
-- **Live Agents UI**: Redesigned compact layout with auto-polling for agent availability
+v7.5.3 focuses on getting an installation back to a known-good configuration
+without undoing the operator's unrelated work.
 
-### 🗣️ Russian Speech Backends (v6.4.0)
-- **Sherpa Offline STT**: VAD-gated offline transducer mode with Silero VAD, configurable thresholds, preroll padding, and debug diagnostics. Set `SHERPA_MODEL_TYPE=offline` to enable.
-- **T-one STT**: Native Russian telephony ASR using streaming CTC pipeline with beam search/greedy decoding. Requires `--build-arg INCLUDE_TONE=true`.
-- **Silero TTS**: Multi-language TTS (ru, en, de, es, fr, ua) with native 8kHz telephony output and multiple speakers. Requires `--build-arg INCLUDE_SILERO=true`.
+- **Restore audio defaults in context** — Providers, Audio Profiles, and
+  modular Pipelines each expose their own restore action in the Admin UI.
+  Provider restores keep credentials, models, voices, prompts, enabled state,
+  and provider identity; profile restores keep Agent assignments; pipeline
+  restores keep STT/LLM/TTS provider selections and non-audio options.
+- **Backend-owned baselines** — restore values come from the same canonical
+  registry used by validation, including the supported OpenAI Realtime GA
+  `linear16`/24 kHz contract. Environment-owned overrides remain visible and
+  are never silently rewritten.
+- **Explicit apply guidance** — each restore reports whether no action, a hot
+  reload, or an AI Engine restart is needed before new calls use the baseline.
+- **Fail-closed dialplan transfers** — extension, queue, and ring-group
+  transfers validate known-missing targets, require a confirmed ARI handoff,
+  and preserve ownership safely when Asterisk's response is indeterminate.
+  FreePBX queues use the standard `ext-queues` context by default ([#577](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/577)).
+- **Query what the agent actually did** — completed in-call tools now expose a
+  stable `tool_call_id`, normalized success/failure status, action, and
+  reconcilable `target_id` in Call History and its API without mixing telemetry
+  into the transcript ([#587](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/587)).
 
-### 🎧 Admin UI (v6.4.0)
-- **Fullscreen panels**: Maximize/minimize toggle for System Topology, Call Statistics, and Call History with Escape key support
-- **Conversation timestamps**: Per-message timestamps in Call Log UI with LLM payload sanitization
-- **HTTP tool wildcards**: JSONPath `[*]` array extraction now works correctly in output variables
+These recovery actions are intentionally narrow: they do not provide a global
+factory reset and do not change secrets or Agent routing.
 
-### Previously in v6.3.2
-- Microsoft Azure Speech Service STT & TTS pipeline adapters
-- MiniMax LLM M2.7 via OpenAI-compatible API
-- Call Recording Playback in Admin UI
-- Azure SSRF prevention, PII logging discipline
+See the [v7.5.3 changelog](CHANGELOG.md#753---2026-07-28) for implementation and
+compatibility details.
 
-For full release notes, see [CHANGELOG.md](CHANGELOG.md).
+</details>
+
+<details>
+<summary><b>v7.5.2 — Opt-in HD Voice over 16 kHz AudioSocket</b></summary>
+
+v7.5.2 adds a call-scoped wideband path without changing existing Agent
+profiles or the established 8 kHz compatibility defaults.
+
+- **Native 16 kHz AudioSocket** — assign `wideband_pcm_16k` to an Agent to use
+  Asterisk `slin16` and rate-specific AudioSocket framing in both directions.
+- **Provider and pipeline alignment** — Grok, Google Live, Deepgram, OpenAI,
+  ElevenLabs, Local Hybrid, and Full Local retain truthful per-call media
+  contracts, including retries, tool continuations, interruption, and cleanup.
+- **Fail-closed compatibility** — wideband requires Asterisk 20.17+, 21.12+,
+  22.7+, or 23.1+ and a genuinely wideband endpoint or SIP trunk path such as
+  G.722. ExternalMedia RTP and PSTN/G.711 calls remain on an 8 kHz profile.
+- **Simple rollback** — switch the Agent back to `telephony_ulaw_8k` or
+  `telephony_enhanced_8k`; no global transport or provider-default change is
+  required.
+
+See the [v7.5.2 changelog](CHANGELOG.md#752---2026-07-25),
+[v7.5.2 migration notes](docs/MIGRATION.md#v751-to-v752),
+and [v7.5.2 validation matrix](docs/baselines/golden/v7.5.2-validation-matrix.md).
+
+</details>
+
+<details>
+<summary><b>v7.5.1 — Safer Admin apply and complete call history</b></summary>
+
+The v7.5.1 hotfix focuses on recovery and observability without changing audio
+profiles, provider transport, or fresh-install defaults.
+
+- **Recoverable Apply Changes** — the Admin UI prepares its updater runner
+  before touching a live service and restores the previous image and container
+  environment if a Compose replacement fails or does not become healthy.
+- **Complete realtime transcripts** — OpenAI and Grok keep assistant transcript
+  state separate from interleaved caller-final events, preventing clipped
+  prefixes in Call History and post-call consumers.
+- **Apply instead of unnecessary restart** — tool-only edits advertise and use
+  hot reload for new calls. Provider, environment, and process-level changes
+  remain on the restart/recreate path.
+
+No database migration or audio-profile reassignment is required. Existing
+stored transcripts are not rewritten.
+
+See the [v7.5.1 changelog](CHANGELOG.md#751---2026-07-23) and
+[v7.5.1 migration notes](docs/MIGRATION.md#v750-to-v751).
+
+</details>
+
+<details>
+<summary><b>v7.5.0 — Enhanced telephony audio and VICIdial integration 🎧</b></summary>
+
+**v7.5.0 improves narrowband call audio without changing the established
+8 kHz Asterisk wire contract, and adds a production-oriented VICIdial Remote
+Agent integration.**
+
+- **Opt-in enhanced telephony audio** — assign `telephony_enhanced_8k` to an
+  Agent to use stateful band-limited downsampling for cleaner G.711 playback.
+  Existing profiles keep their compatibility behavior, and switching back to
+  `telephony_ulaw_8k` is the immediate rollback.
+- **Consistent provider and pipeline policy** — hosted providers and modular TTS
+  pipelines inherit the Agent's Audio Profile by default, expose narrow
+  troubleshooting overrides, and validate incompatible encoding, rate,
+  resampler, overlap, and segmentation combinations before apply.
+- **Safer interruption and teardown** — resampler state is isolated per call and
+  reset across responses, interruptions, and cleanup; replaced streams cannot
+  be removed by stale cleanup; and late pipeline output is blocked after call
+  teardown takes ownership.
+- **VICIdial Remote Agents** — VICIdial remains authoritative for campaigns,
+  customer channels, reporting, dispositions, DNC, callbacks, and transfers,
+  while AAVA supplies the mapped AI Agent with fail-closed ownership checks and
+  sanitized lifecycle evidence.
+- **More recoverable upgrades** — the host recovery script handles mixed Git
+  ownership, stale updater images, `/root` traversal constraints, and tracked
+  local edits while preserving bounded backups and exact release targeting.
+
+See the [v7.5.0 changelog](CHANGELOG.md#750---2026-07-22),
+[Audio Profiles](docs/Configuration-Reference.md#audio-profile-selection), and
+[VICIdial Remote Agent setup](docs/Vicidial-Setup.md) for details.
+
+</details>
+
+<details>
+<summary><b>v7.4.1 — Reliable, simpler outbound calling 📞</b></summary>
+
+**Outbound campaigns are easier to prepare, safer to schedule, and much easier
+to troubleshoot from the Admin UI.**
+
+- **Simpler lead intake** — import validated CSV or Excel `.xlsx` files, or add
+  individual leads manually. Samples and new campaigns use the canonical
+  `AI_AGENT`/`agent` routing model while legacy `AI_CONTEXT`/`context` inputs
+  remain compatible.
+- **Safer campaign scheduling** — scheduled calls consistently receive the lead's
+  called number, malformed timezone or calling-window settings fail closed,
+  campaign concurrency is counted correctly, and stale attempts recover through
+  one validated timeout policy.
+- **More reliable human handling** — human-first AMD defaults reduce false
+  voicemail classification, and terminal farewell/hangup handling prevents new
+  caller input from reviving a call that is already ending.
+- **Better HTTP-tool workflows** — pre-call, in-call, and post-call HTTP tools
+  enforce method/body compatibility; pre-call output variables remain available
+  for enriched greetings; and bounded, sanitized tool responses and diagnostics
+  are visible in Call History and Scheduling.
+- **Safer upgrades** — updater recovery now handles older Git installations,
+  Docker Compose access after privilege drops, and mixed-ownership checkouts more
+  predictably without sacrificing local tracked changes.
+
+See the [Outbound Calling guide](docs/OUTBOUND_CALLING.md) and
+[v7.4.1 changelog](CHANGELOG.md#741---2026-07-18) for details.
+
+</details>
+
+<details>
+<summary><b>v7.4.0 — Agent-scoped tools and Agent-only routing 🧰</b></summary>
+
+**Each Agent can now receive only the transfer destinations, calendars, and
+voicemail mailboxes it should be allowed to use.**
+
+- **Per-Agent resource access** — configure the global inventory on **Tools**, then
+  choose **Inherit**, **Selected**, or **None** under **Agents → Edit Agent → Tools**
+  for the transfer family, Google Calendar, Microsoft Calendar, and voicemail.
+- **One enforced call snapshot** — provider schemas, prompt guidance, execution,
+  deferred transfers, and audit metadata all use the same effective resource set.
+  Empty or stale selections fail closed, and a globally disabled tool always wins.
+- **Restart-free tool updates** — **Tools → Save & Apply** validates and publishes a
+  new tool generation for new calls. Active calls keep the generation they started
+  with; a failed build leaves the previous generation running.
+- **Contexts retired** — runtime persona routing now reads Agents from `agents.db`.
+  Legacy YAML Contexts are imported atomically on upgrade, and `AI_CONTEXT` remains
+  a deprecated compatibility alias while dialplans move to `AI_AGENT`.
+- **Cleaner first run** — empty installations start with Receptionist, Sales, and
+  Support instead of a collection of demonstration Contexts.
+- **Call History compatibility** — tool names remain `google_calendar`,
+  `microsoft_calendar`, and `leave_voicemail`, so existing filters and reports keep
+  working.
+
+Before upgrading—especially from v7.3.0–v7.3.3—read the
+[current upgrade procedure](docs/INSTALLATION.md#upgrade-to-v753-existing-checkout)
+and [Contexts → Agents migration guide](docs/OPERATOR_MIGRATION.md).
+
+</details>
+
+<details>
+<summary><b>v7.3.5 — Caller connection ringback 📞</b></summary>
+
+**Callers no longer wait through silent provider or pipeline startup.**
+
+- **Per-agent ringback control** — enable **Play ringback while connecting** in
+  the Agents UI; `tone:ring` is supplied as the default repeating Asterisk tone.
+- **One implementation for every call path** — full-agent providers and modular
+  pipelines share the same caller-only lifecycle, without sending setup audio to
+  the AI provider.
+- **Clean audio handoff** — ringback stops on the first provider or pipeline
+  greeting audio and is also cleared on no-greeting readiness, startup failure,
+  disconnect, or call cleanup.
+- **Safe and opt-in** — existing agents remain unchanged until the setting is
+  enabled. YAML/API users may configure an Asterisk-local `tone:`, `sound:`, or
+  `recording:` media URI.
+
+See [Connection Audio / Ringback](docs/Configuration-Reference.md#connection-audio--ringback)
+and the [v7.3.5 changelog](CHANGELOG.md#735---2026-07-15).
+
+</details>
+
+<details>
+<summary><b>v7.3.3 — Local AI stabilization 🧠</b></summary>
+
+v7.3.3 is a Local-AI-only stabilization release. It adds no providers and keeps
+the cloud-provider call paths unchanged.
+
+- **Calls are isolated by session** — agent prompts and conversation state no
+  longer mutate shared Local AI Server configuration or leak across reused
+  WebSocket connections. AI Engine and Local AI Server should be upgraded
+  together; the legacy unscoped switch remains temporarily compatible.
+- **Barge-in abandons interrupted output** — late LLM/TTS work is quarantined,
+  the interrupted exchange is removed from weak-model history, and the
+  replacement turn stays focused on what the caller just said.
+- **Farewells finish exactly once** — Local `hangup_call` speaks the selected
+  Kokoro/Piper/etc. farewell without a second LLM rewrite, drains partial
+  AudioSocket or RTP tails, records `agent_hangup`, and then disconnects.
+- **CPU/GPU deployment is safer** — dependency pins, CUDA/cuDNN validation,
+  optional llama.cpp architecture targeting, and idempotent preflight checks
+  reduce first-build and rerun failures.
+- **Community GPU evidence** — Tesla V100S testing passed Faster-Whisper CUDA
+  float16, Llama 3.1 8B Q4_K_M, Kokoro, AudioSocket, ExternalMedia, barge-in,
+  terminal hangup, concurrent session isolation, and restart recovery.
+
+See the [Local AI community test matrix](docs/COMMUNITY_TEST_MATRIX.md) and the
+[Unreleased changelog](CHANGELOG.md#unreleased) for the complete scope.
+
+</details>
+
+<details>
+<summary><b>v7.3.2 — stabilization release 🛡️</b></summary>
+
+v7.3.2 is a stabilization-only patch release built from the supervised
+AudioSocket and ExternalMedia validation cycle.
+
+- **No new providers** — scope is limited to reliability, deployment safety,
+  documentation, and contributor-facing CI.
+- **Grok ExternalMedia repaired** — clean barge-in, cancelled-output quarantine,
+  named-instance runtime inheritance, complete replacement turns, and exact
+  inactivity announcements through xAI `force_message`.
+- **AudioSocket and modular pipelines hardened** — terminal playback, pipeline
+  producer ownership, talk-detect echo, and inactivity-grace regressions are
+  covered by focused tests and supervised calls.
+- **Updater and provider-failure recovery hardened** — safer ownership,
+  rollback/stash handling, readiness validation, and an opt-in dialplan redirect.
+- **PR quality gates expanded** — Admin backend/frontend checks and CLI
+  cross-compilation now run before merge.
+
+Release evidence and remaining gates are tracked in the
+[v7.3.2 validation matrix](docs/baselines/golden/v7.3.2-validation-matrix.md).
+
+</details>
+
+<details>
+<summary><b>v7.3.1 — Silence watchdog & safe call endings ☎️</b></summary>
+
+**AVA now protects silent calls and finishes every terminal message before disconnecting.**
+
+- **30-second inbound inactivity protection by default** — AVA asks “Are you still there?”, waits 15 seconds for a reply, then speaks a configurable final warning and ends the call. Outbound agents remain opt-in.
+- **The agent keeps its configured voice** — check-ins and final warnings are synthesized by the active Google Live, OpenAI Realtime, Grok, Deepgram, ElevenLabs, local full-agent, or pipeline voice.
+- **Transport-safe hangup** — watchdog and `hangup_call` farewells drain AudioSocket or ExternalMedia/RTP streaming buffers and ARI file playback before ARI disconnects the caller. Fixed sleeps no longer clip long final sentences.
+- **Deepgram and ElevenLabs lifecycle fixes** — Deepgram control frames no longer split greetings, and ElevenLabs response-completion plus hosted-silence handling keeps AVA's watchdog authoritative.
+- **Global and per-agent controls** — configure defaults under **Advanced Settings → Voice Activity Detection → Caller Inactivity**, then optionally override them per agent. Call History labels watchdog endings as **No input timeout**.
+
+See [Caller inactivity configuration](docs/Configuration-Reference.md#caller-inactivity-no_input), [ElevenLabs setup](docs/Provider-ElevenLabs-Setup.md#ava-caller-inactivity-compatibility-v731), and the full [v7.3.1 changelog](CHANGELOG.md#731---2026-07-09).
+
+</details>
+
+<details>
+<summary><b>v7.3.0 — Per-agent voices 🎙️</b></summary>
+
+**Voice now belongs to agents.** Configure one provider, create multiple agents that share it — each with its own voice.
+
+- **Provider-aware voice picker** in the Agent form: a dropdown of OpenAI's 10 GA voices, suggestions + custom clone IDs for Grok, Google Live's 30 prebuilt voices, Deepgram's Aura models — the control adapts to the agent's selected AI Engine.
+- **Safe by default** — the provider-level voice becomes the *default voice*; agents without one behave exactly as before. Unrecognized values (OpenAI/Google/Deepgram catalogs are validated) log a warning and fall back — a bad voice value never fails a call.
+- **Observable** — every call logs the resolved voice and its source, and Call History shows "Voice: marin (from agent)" per call.
+- Agent voice changes apply instantly — no engine restart.
+
+Thanks @foytech for seeding this feature (#497). Full guide: [docs/VOICE_SELECTION.md](docs/VOICE_SELECTION.md).
+
+</details>
+
+<details>
+<summary><b>v7.2.0 — Live-status dashboard 📡</b></summary>
+
+Real-time system status for the Admin UI — pushed, not polled.
+
+- **Live-status hub** — a single `/api/live-status` snapshot endpoint plus an SSE stream (`/api/live-status/stream`) aggregates AI Engine health, Local AI connectivity, active sessions, audio directories, platform checks, and Asterisk ARI into one normalized status feed.
+- **Push-first** — `ai_engine` and `local_ai_server` push their own readiness to the Admin UI (`POST /api/live-status/publish`, authenticated with `LIVE_STATUS_PUSH_TOKEN`), so the dashboard converges in sub-second time after a restart instead of waiting on staggered polls. Legacy `/api/system/*` probes remain as fallback/enrichment.
+- **Configurable** — `LIVE_STATUS_POLL_INTERVAL_SECONDS` (default 30 s, min 2 s) and `LIVE_STATUS_INITIAL_PROBE_TIMEOUT_SECONDS` (default 2 s), read live from `.env`.
+
+Full notes in [CHANGELOG.md](CHANGELOG.md).
+
+</details>
+
+<details>
+<summary><b>v7.1.1 — Dashboard reliability & Admin UI polish 🛠️</b></summary>
+
+A focused quality release across the Admin UI — no call-path changes.
+
+- **Dashboard reliability** — the Asterisk status pill no longer flaps on a transient ARI blip: it reads the engine's authoritative, reconnect-supervised ARI state and applies hysteresis. The system endpoints the Dashboard polls every 5s no longer block the admin event loop, the heaviest is TTL-cached, polling backs off on errors, failed polls surface in the error banner, and a single bad poll no longer flashes cards to "Loading…".
+- **No more "Loading configuration…" flash** — ~11 config pages now seed from a shared stale-while-revalidate cache of the config document, so revisiting a settings page is instant.
+- **Accessibility (WCAG AA)** — form labels programmatically associated with inputs, a focus-trapping modal, a navigation landmark + "skip to content" link, accessible names on icon-only buttons, non-colour status cues on the topology, a visible dark-mode toggle on-state, and light-mode contrast fixes. Debug `console.log`s (including one that leaked the auth token to the browser console) were removed.
+- **Prompt editor** — configured tool names are colour-coded by their in-call status (enabled / global / not-enabled) as you type.
+- **Fix (#436)** — a canonical `google_live: { type: full }` provider can be edited and saved again.
+
+Full notes in [CHANGELOG.md](CHANGELOG.md).
+
+</details>
+
+<details>
+<summary><b>v7.0.0 — the Agents release 🎯</b></summary>
+
+The biggest release yet: **manage your AI agents from the Admin UI, not a config file.**
+
+- **🤖 Agents tab** — create, edit, and manage agents in the UI. Start from a template (receptionist, after-hours, appointment booker, and more), set the prompt and provider, and copy a ready-to-paste dialplan snippet.
+- **📊 Multi-agent dashboard** — live KPIs (active agents, active calls, calls routed, transfers), per-agent stats, and routing breakdowns at a glance.
+- **☎️ New `AI_AGENT` dialplan variable** — route a call to an agent by name. Your existing `AI_CONTEXT` dialplans keep working unchanged.
+- **🔄 Automatic migration** — your existing contexts move into a local agents database on first start. Back up `agents.db` before later major-version upgrades; see the operator migration guide for rollback boundaries.
+- **🔒 Security hardening** — no more `admin`/`admin`: a one-time admin password is generated and must be changed at first login. Config exports no longer bundle your `.env` by default.
+
+⚠️ Major release — please read the [Upgrade Notes](CHANGELOG.md) before upgrading from 6.x.
+
+</details>
+
+<details>
+<summary><b>v6.5.4 (2026-05-25) — OpenAI Realtime GA cleanup across every code path</b></summary>
+
+Follow-up to the v6.5.3 hotfix. v6.5.3 only flipped `config/ai-agent.yaml`; v6.5.4 brings the rest of the codebase in line:
+
+- **Pydantic defaults** in `src/config.py` now default to `api_version: ga` + `model: gpt-realtime` (so fresh wizard installs are correct).
+- **Admin UI "Add Provider" template** for OpenAI Realtime no longer seeds the sunset preview model.
+- **Model dropdown** removes the 5 sunset preview options and adds 3 new GA models — `gpt-realtime-1.5` (best audio-in/audio-out quality), `gpt-realtime-2` (reasoning voice model, GPT-5-class), and `gpt-realtime-mini` (cost-optimized) — alongside the existing `gpt-realtime`.
+- **Legacy preview values in operator YAML** now render in a "Custom (legacy — will not connect)" optgroup with a yellow warning banner above the form so the broken state is visible without silently swapping the operator's config.
+- **Engine** emits a one-shot warning when `api_version: beta` is detected in config (exactly once per provider lifetime, not per reconnect attempt).
+- **Docs**: full rewrite of `docs/Provider-OpenAI-Setup.md` model section + fix to `docs/TROUBLESHOOTING_GUIDE.md`.
+
+</details>
+
+<details>
+<summary><b>v6.5.3 hotfix (2026-05-25) — OpenAI Realtime restored</b></summary>
+
+OpenAI sunset the Realtime **Beta** API on 2026-05-12 and removed the `gpt-4o-realtime-preview-2024-12-17` model on 2026-05-07. Shipped `config/ai-agent.yaml` still pinned `api_version: beta` + that preview model, so every operator using OpenAI Realtime hit `error.code: beta_api_shape_disabled` and the WebSocket closed immediately. **Two-line config flip — no code change required**. The provider's GA wire-protocol path has shipped since v6.0.0; v6.5.3 just makes it the default everyone gets:
+
+- `api_version: ga` (was `beta`)
+- `model: gpt-realtime` (was `gpt-4o-realtime-preview-2024-12-17`)
+
+If you have an `ai-agent.local.yaml` that explicitly pins `api_version: beta`, remove the override or change it to `ga`. Refs: [OpenAI deprecations](https://developers.openai.com/api/docs/deprecations), [gpt-realtime](https://platform.openai.com/docs/models/gpt-realtime).
+
+</details>
+
+<details>
+<summary><b>v6.5.2 (2026-05-24) — xAI Grok + multi-instance full-agent providers</b></summary>
+
+### 🆕 xAI Grok Voice Agent realtime provider (NEW, v6.5.2)
+- Fifth full-agent realtime provider — structurally parallel to OpenAI Realtime and Google Live, built on a multi-instance foundation from day one
+- μ-law @ 8 kHz caller input with no input resampling; observed xAI output is PCM16 @ 24 kHz and AAVA converts it to the configured Asterisk transport format
+- Five named voices (`eve`, `ara`, `rex`, `sal`, `leo`) plus custom voice ID free-text for cloned voices
+- Custom function-tools identical to OpenAI Realtime; xAI-native tools (`web_search`, `x_search`, `file_search`, `mcp`) accepted via YAML `extra_tools` escape hatch
+- Conservative long-session warning at 28 minutes for compatibility with older xAI limits; xAI's current Voice Agent model page lists a 120-minute maximum session
+- Setup guide: [docs/Provider-Grok-Setup.md](docs/Provider-Grok-Setup.md)
+
+### 🏢 Multi-instance full-agent providers (NEW, v6.5.2)
+- Run multiple instances of the same full-agent provider type with isolated credentials (e.g. `acme_google_live` + `globex_google_live` both using `type: google_live`)
+- Per-instance credential files at `/app/project/secrets/providers/<provider_key>/{api-key,agent-id,vertex-json}` — the new per-provider Vertex upload path does NOT mutate `.env`
+- Route via `AI_PROVIDER`, an Agent's provider selection plus `AI_AGENT`, or DID-based dispatch with Asterisk `Gosub`
+- Setup guide: [docs/Multi-Instance-Full-Agent-Providers.md](docs/Multi-Instance-Full-Agent-Providers.md)
+- **Breaking for multi-instance setups:** short aliases `AI_PROVIDER=openai`, `AI_PROVIDER=google`, `provider: deepgram_agent` now fail validation — use exact provider instance keys instead. Single-instance setups using the canonical block names are unaffected.
+
+### 🎛 Admin UI polish (v6.5.2)
+- Uniform per-instance credentials paste-style uploader across all full-agent provider forms (Grok, OpenAI Realtime, Deepgram, Google Live, ElevenLabs Agent)
+- EnvPage adds a new "Per-Instance Provider Credentials" status section so operators can audit credential file presence without SSH
+- Dashboard System Topology rebuilt: tri-state per-component health with 2-strike debounce (transient probe blips no longer flip dots red), responsive provider grid, multi-instance sub-rows grouped by provider type, Asterisk + AI Engine cards stretched to match Providers height
+- Backend probe timeouts bumped (ai_engine 1.5s → 5s; local_ai_server 2.5s → 5s) to stop legitimate localhost probes timing out under load
+- ~260 inline help tooltips backfilled across provider forms, Setup Wizard, and System pages — new `HelpTooltip` is viewport-aware (flips placement to keep popovers visible in scrolled modals)
+
+### 📞 Call recordings (v6.5.2)
+- Browser playback for compact `.ulaw` recordings (Asterisk's 8 kHz μ-law output, ~10× smaller than PCM WAV) via server-side `audioop.ulaw2lin` WAV wrapping — no transcode dependency
+- Uppercase `.WAV`, compressed WAV, and `.gsm` recordings transcode via `sox`; `AAVA_RECORDING_TRANSCODE_TIMEOUT_SEC` env var (default 120s) governs the timeout
+
+### Previously in v6.5.1
+- 💻 CPU-demo profile end-to-end — Faster-Whisper `tiny.en` + Piper + Qwen 0.5B wired through the Admin UI; runtime Device/Compute selectors with CPU/`float16` gating; Filler Audio and LLM/TTS Overlap runtime toggles
+- 🛡️ Local provider hot-path hardening — `send_audio()` no longer blocks on per-frame reconnect; `asyncio.Lock` serializes `_reconnect()` against `_send_loop`'s on-`ConnectionClosed` path
+- 🎨 Faster-Whisper verify path tolerates the runtime CUDA→CPU fallback so working CPU/int8 configurations no longer get rolled back as "verification failed"
+
+### Previously in v6.5.0
+- 🔧 Local LLM tool-gated response (#368) — new WS protocol message types `tool_context` / `tool_result` v2; per-WebSocket fail-closed sync prevents cross-call ACL/policy/prompt leakage on reused connections
+- ☁️ Gemini 3.1 Flash Live verified compatible (no engine changes); Vertex AI mode is the production answer for #351 barge-in
+- 🎤 Deepgram Flux v2 + nova-3 default flip; Admin UI surfaces "Flux Turn-Detection Tuning" panel for flux-* models
+- 🩺 Admin UI HTTP-tool-test guard now reads `.env` first so Environment-page edits to `AAVA_HTTP_TOOL_TEST_*` take effect without a container restart (#370)
+
+For older releases, expand **Previous Versions** below. Full release notes in [CHANGELOG.md](CHANGELOG.md).
 
 </details>
 
 <details>
 <summary><b>Previous Versions</b></summary>
+
+#### v6.4.2 - Microsoft Calendar V1 + Google Calendar overhaul
+- 🗓️ Microsoft Calendar — Outlook / Microsoft 365 integration via device-code OAuth, Graph free/busy, legacy per-context account binding, Tools UI Connect/Verify/Disconnect (migrated to per-Agent resource access in v7.4)
+- 📅 Google Calendar — multi-account / legacy per-context binding (#338), JSON upload + auto-discover, Domain-Wide Delegation, native free/busy mode (migrated to per-Agent resource access in v7.4)
+- 🎯 Reschedule reliability — server-side `event_id` resolution + 400/404 fallback eliminates LLM-id-hallucination duplicate bookings
+- 🔧 Date/time prompt placeholders (`{today}`, `{current_date}`, etc.) so models stop reasoning with stale years
+- OpenAI Realtime duplicate-events fix (per-`response_id` async-event gating); per-context `tool_overrides` now actually take effect on OpenAI Realtime / Deepgram / Google Live; Google Live 30-voice catalog (#349)
+
+#### v6.4.1 - CPU Latency Optimization
+- ⚡ Streaming LLM→TTS overlap — sentence-boundary token streaming, sub-2s perceived latency on pipelines
+- Pipeline filler audio (instant "One moment please" acknowledgment) configurable via Admin UI
+- Qwen 2.5-1.5B Instruct recommended for CPU; ~15-30 tok/s vs Phi-3's ~0.8 tok/s
+- Direct PCM→µ-law conversion in all 5 TTS backends (10-50ms saved per response)
+- Preflight hardening — Buildx detection, RAM/disk/network checks, GPU install gated behind `--apply-fixes`
+
+#### v6.4.0 - Attended Transfer & Russian Speech
+- 📞 Attended transfer with three screening modes: `basic_tts`, `ai_briefing`, `caller_recording`
+- ExternalMedia RTP streaming delivery; provider-agnostic transfer-target tool guidance
+- 🗣️ Russian speech backends: Sherpa Offline STT (VAD-gated), T-one STT, Silero TTS (multi-language)
+- 🎧 Admin UI: fullscreen dashboard panels, per-message conversation timestamps, JSONPath `[*]` HTTP-tool wildcards
+
+#### v6.3.2 - Azure Speech & MiniMax LLM
+- Microsoft Azure Speech Service STT & TTS pipeline adapters (REST batch, WebSocket streaming, SSML)
+- MiniMax LLM M2.7 via OpenAI-compatible API with tool-calling
+- Call Recording Playback in Admin UI Call Details modal
+- Azure SSRF prevention, PII logging discipline, input validation hardening
 
 #### v6.3.1 - Local AI Server & Guardrails
 - Backend enable/rebuild flow, model lifecycle UX, GPU ergonomics, CPU-first onboarding
@@ -200,7 +593,7 @@ For full release notes, see [CHANGELOG.md](CHANGELOG.md).
 
 #### v6.1.1 - Operator Config & Live Agent Transfer
 - Operator config overrides (`ai-agent.local.yaml`), live agent transfer tool
-- ViciDial compatibility, Asterisk config discovery in Admin UI
+- Experimental ViciDial community-tested configuration notes, Asterisk config discovery in Admin UI
 - OpenAI Realtime GA API, Email system overhaul, NAT/GPU support
 
 #### v5.3.1 - Phase Tools & Stability
@@ -256,7 +649,7 @@ For full release notes, see [CHANGELOG.md](CHANGELOG.md).
 
 ## ✨ Features
 
-### 6 Golden Baseline Configurations
+### 7 Golden Baseline Configurations
 
 1. **OpenAI Realtime** (Recommended for Quick Start)
    - Modern cloud AI with natural conversations (<2s response).
@@ -264,7 +657,7 @@ For full release notes, see [CHANGELOG.md](CHANGELOG.md).
    - *Best for: Enterprise deployments, quick setup.*
 
 2. **Deepgram Voice Agent** (Enterprise Cloud)
-   - Advanced Think stage for complex reasoning (<3s response).
+   - Advanced Deepgram-managed Think stage for complex reasoning (<3s response); requires only a Deepgram API key.
    - Config: `config/ai-agent.golden-deepgram.yaml`
    - *Best for: Deepgram ecosystem, advanced features.*
 
@@ -289,12 +682,17 @@ For full release notes, see [CHANGELOG.md](CHANGELOG.md).
    - Config: `config/ai-agent.golden-telnyx.yaml`
    - *Best for: Model flexibility, cost optimization, multi-provider access.*
 
+7. **xAI Grok Voice Agent** (Realtime Voice)
+   - xAI realtime voice with five named voices (`eve`/`ara`/`rex`/`sal`/`leo`) or a custom cloned voice; μ-law @ 8 kHz caller input and observed PCM16 @ 24 kHz output converted for Asterisk.
+   - Config: `config/ai-agent.golden-grok.yaml`
+   - *Best for: xAI ecosystem, telephony-native low-latency audio.*
+
 ### Additional LLM Providers
 
 - **MiniMax LLM** (High-Performance Cost-Effective)
-   - Local STT/TTS + MiniMax M2.7 LLM with enhanced reasoning and coding.
+   - Local STT/TTS + MiniMax M3 LLM with enhanced reasoning and coding.
    - OpenAI-compatible API with tool-calling support.
-   - Models: `MiniMax-M2.7` (default, latest flagship), `MiniMax-M2.7-highspeed` (low-latency), `MiniMax-M2.5`, `MiniMax-M2.5-highspeed`.
+   - Models: `MiniMax-M3` (default, latest flagship), `MiniMax-M2.7` (previous flagship), `MiniMax-M2.7-highspeed` (low-latency).
    - Activate: set `MINIMAX_API_KEY` in `.env`, then configure `providers.minimax_llm` in `config/ai-agent.yaml` (see the `minimax_llm` section with `enabled: true`).
    - *Best for: Long-context conversations, cost-effective high-performance LLM.*
 
@@ -354,6 +752,7 @@ pipelines:
 - **Agent CLI Tools**: `setup`, `check`, `rca`, `update`, `version` commands (legacy aliases: `init`, `doctor`, `troubleshoot`).
 - **Modular Pipeline System**: Independent STT, LLM, and TTS provider selection.
 - **Dual Transport Support**: AudioSocket (default in `config/ai-agent.yaml`) and ExternalMedia RTP (both supported — see the transport matrix).
+- **Per-Agent Audio Profiles**: Stable and enhanced 8 kHz telephony profiles, plus opt-in 16 kHz AudioSocket with provider-native PCM conversion on supported Asterisk versions and G.722/wideband endpoint or trunk legs. ExternalMedia RTP remains on the supported 8 kHz profiles; G.711/PSTN Agents remain on an 8 kHz profile.
 - **Streaming-First Downstream**: Streaming playback when possible, with automatic fallback to file playback for robustness.
 - **High-Performance Architecture**: Separate `ai_engine` and `local_ai_server` containers.
 - **Observability**: Built-in **Call History** for per-call debugging + optional `/metrics` scraping.
@@ -368,7 +767,7 @@ Modern web interface for configuration and system management.
 ```bash
 docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
 # Access at: http://localhost:3003
-# Login: admin / admin (change immediately!)
+# Retrieve one-time password: docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password
 ```
 
 **Key Features:**
@@ -388,8 +787,16 @@ docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_u
 
 Experience our production-ready configurations with a single phone call:
 
-**Dial: (925) 736-6718**
+- **Standard Voice:** (925) 736-6718
+- **HD Voice:** (909) 788-2282
 
+The HD Voice demo line uses a G.722-capable SIP trunk and Agents assigned the
+opt-in `wideband_pcm_16k` Audio Profile. Wideband audio is available when the
+caller's carrier and device negotiate a G.722 path; other calls fall back to
+standard telephony audio. The clearer sound comes from both pieces: the trunk
+must preserve G.722 and AAVA must keep the call on its 16 kHz AudioSocket path.
+
+- **Press 4** → xAI Grok Realtime (NEW in v6.5.2)
 - **Press 5** → Google Live API (Multimodal AI with Gemini 2.0)
 - **Press 6** → Deepgram Voice Agent (Enterprise cloud with Think stage)
 - **Press 7** → OpenAI Realtime API (Modern cloud AI, most natural)
@@ -421,6 +828,22 @@ Agent: "I'll connect you to our sales team right away."
 - **Cancel Transfer**: "Actually, cancel that" (during ring).
 - **Hangup Call**: Ends call gracefully with farewell.
 - **Voicemail**: Routes to voicemail box.
+
+### Agent-scoped resource access (v7.4+)
+
+The **Tools** page owns global configuration and inventory. The **Agents** page
+controls which inventory entries each Agent can use:
+
+| Resource family | Per-Agent choices |
+|---|---|
+| Transfers | Inherit all destinations, select destination keys, or deny all |
+| Google Calendar | Inherit all calendars, select calendar keys, or deny all |
+| Microsoft Calendar | Inherit all accounts, select account keys, or deny all |
+| Voicemail | Inherit the default mailbox, select one mailbox, or deny all |
+
+Global disablement is authoritative. Selected policies with no valid keys fail
+closed. See [Agents](docs/AGENTS.md#per-agent-tool-access-and-reloads) for the
+runtime model and [Tool Calling](docs/TOOL_CALLING_GUIDE.md) for operator setup.
 
 ### Email Integration
 
@@ -458,15 +881,9 @@ in_call_tools:
     enabled: true
     is_global: false
 
-contexts:
-  default:
-    pre_call_tools:
-      - pre_call_lookup
-    tools:
-      - intent_router
-      - hangup_call
-    post_call_tools:
-      - post_call_webhook
+# Assign phase tools in Admin UI → Agents → Edit Agent → Tools.
+# Agent assignments are stored in data/operator/agents.db, not in live
+# YAML Context blocks. The global definitions above remain in YAML.
 ```
 
 ---
@@ -477,17 +894,20 @@ Production-ready CLI for operations and setup.
 
 **Installation:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/hkjarral/Asterisk-AI-Voice-Agent/main/scripts/install-cli.sh | bash
+curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh | bash
 ```
 
 **Commands:**
 ```bash
 agent setup               # Interactive setup wizard (recommended)
+agent setup --list-targets # List configured providers and pipelines without changes
 agent check               # Standard diagnostics report (share this output when asking for help)
 agent check --local       # Verify local AI server (STT, LLM, TTS) on this host
 agent check --remote <ip> # Verify local AI server on a remote GPU machine
 agent update              # Pull latest code + rebuild/restart as needed
-agent rca --call <call_id> # Post-call RCA (use Call History to find call_id)
+agent rca --call <call_id> --no-llm # Deterministic post-call RCA
+agent config validate     # Validate provider, pipeline, transport, and audio configuration
+agent dialplan --agent default # Generate an AI_AGENT dialplan snippet
 agent version             # Version information
 ```
 
@@ -509,7 +929,10 @@ ASTERISK_ARI_PASSWORD=your-password
 ```
 
 ### Optional: Metrics (Bring Your Own Prometheus)
-The engine exposes Prometheus-format metrics at `http://<engine-host>:15000/metrics`.
+The engine exposes Prometheus-format metrics on its health/metrics HTTP endpoint at
+`/metrics` (port `15000`). This endpoint binds to `127.0.0.1` by default, so it is only
+reachable from the engine host — scrape it locally, or set the health endpoint `host` to
+`0.0.0.0` (and firewall it) to expose it to an external Prometheus.
 Per-call debugging is handled via **Admin UI → Call History**.
 
 ---
@@ -587,6 +1010,13 @@ The `preflight.sh` script handles initial setup:
 - **[Local Profiles](docs/LOCAL_PROFILES.md)**
 - **[Monitoring Guide](docs/MONITORING_GUIDE.md)**
 
+### Integrations & Early-Stage Features
+- **[Outbound Calling](docs/OUTBOUND_CALLING.md)** — `Alpha` — scheduled campaigns, voicemail drop, consent gate
+- **[FreeSWITCH (FS-PBX) Setup](docs/FS-PBX-Setup-Instructions.md)** — `Community` — community-maintained guide
+- **[VICIdial Remote Agent Setup](docs/Vicidial-Setup.md)** — `Alpha` — VICIdial-owned calling with AAVA as a Remote Agent
+
+`Alpha` = usable but still hardening. `Community` = contributed and community-validated, not maintainer-tested on every release. Features without a label are stable.
+
 ### Development & Community
 - **[Roadmap](docs/ROADMAP.md)** - What's next, planned milestones, and how to get involved
 - **[Developer Documentation](docs/contributing/README.md)**
@@ -598,39 +1028,35 @@ The `preflight.sh` script handles initial setup:
 
 ## 🤝 Contributing
 
-**You don't need to know how to code.** Our AI assistant AVA writes the code for you — just describe what you want to build.
-
-<!-- TODO: Add YouTube video link once recorded -->
-<!-- **Watch the 5-minute walkthrough:** [YouTube Video](https://youtube.com/...) -->
+**You don't need to be a developer to contribute.** File feature ideas, report bugs
+with logs attached, improve documentation, or share your dialplan recipes — these are
+as valuable as code. If you do want to write code, see the Contributing Guide below.
 
 ### 🚀 Get Started in 3 Steps
 
 ```bash
-git clone -b develop https://github.com/hkjarral/Asterisk-AI-Voice-Agent.git
-cd Asterisk-AI-Voice-Agent
-./scripts/setup-contributor.sh
+git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+cd AVA-AI-Voice-Agent-for-Asterisk
 ```
 
-Then open in [Windsurf](https://codeium.com/windsurf) and type: **"I want to contribute"**
+Then load **[AVA.mdc](AVA.mdc)** into your AI coding assistant (Claude, Cursor, Windsurf, Codex, Copilot, …) — it carries the project map, engineering guardrails, and contribution workflow — and tell it what you want to build or fix.
 
 ### 📖 Guides
 
 | Guide | For |
 |-------|-----|
-| **[Operator Contributor Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md)** | First-time contributors (no GitHub experience needed) |
 | **[Contributing Guide](CONTRIBUTING.md)** | Full contribution guidelines and workflow |
-| **[Coding Guidelines](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/CODING_GUIDELINES.md)** | Code standards for all contributions |
-| **[Roadmap](docs/ROADMAP.md)** | What to work on next (13+ beginner-friendly tasks) |
+| **[Developer Quickstart](docs/contributing/quickstart.md)** | Dev environment setup in ~15 minutes |
+| **[Code Style](docs/contributing/code-style.md)** | Code standards for all contributions |
+| **[Roadmap](docs/ROADMAP.md)** | What to work on next |
 
 ### 🔧 Build Something New
 
-| Area | Guide | Template |
+| Area | Guide | Reference |
 |------|-------|----------|
-| Full Agent Provider | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/adding-full-agent-provider.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/providers/template_full_agent.py) |
-| Pipeline Adapter (STT/LLM/TTS) | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/adding-pipeline-adapter.md) | [Templates](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/tree/develop/examples/pipelines/) |
-| Pre-Call Hook | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/pre-call-hooks-development.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/hooks/template_pre_call_hook.py) |
-| In-Call Hook | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/in-call-hooks-development.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/hooks/template_in_call_hook.py) |
-| Post-Call Hook | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/post-call-hooks-development.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/hooks/template_post_call_hook.py) |
+| Full-Agent Provider | [Provider Development](docs/contributing/provider-development.md) | [Implementation deep-dives](docs/contributing/references/) |
+| Pipeline Adapter (STT/LLM/TTS) | [Pipeline Development](docs/contributing/pipeline-development.md) | [Example pipelines](examples/pipelines/) |
+| Tools & Call Hooks (pre/in/post-call) | [Tool Development](docs/contributing/tool-development.md) | [Tool Calling Guide](docs/TOOL_CALLING_GUIDE.md) |
 
 ### 👩‍💻 For Developers
 - [Developer Onboarding](docs/DEVELOPER_ONBOARDING.md) - Project overview and first tasks
@@ -651,18 +1077,24 @@ Then open in [Windsurf](https://codeium.com/windsurf) and type: **"I want to con
 <td align="center"><a href="https://github.com/alemstrom"><img src="https://github.com/alemstrom.png" width="60" alt="alemstrom"><br><sub><b>alemstrom</b></sub></a><br>Docs — PBX Setup</td>
 <td align="center"><a href="https://github.com/gcsuri"><img src="https://github.com/gcsuri.png" width="60" alt="gcsuri"><br><sub><b>gcsuri</b></sub></a><br>Code — Google Calendar</td>
 <td align="center"><a href="https://github.com/octo-patch"><img src="https://github.com/octo-patch.png" width="60" alt="octo-patch"><br><sub><b>octo-patch</b></sub></a><br>MiniMax LLM Provider</td>
+<td align="center"><a href="https://github.com/neilruaro-camb"><img src="https://github.com/neilruaro-camb.png" width="60" alt="neilruaro-camb"><br><sub><b>neilruaro-camb</b></sub></a><br>CAMB AI TTS Provider</td>
+<td align="center"><a href="https://github.com/aoi-dev-0411"><img src="https://github.com/aoi-dev-0411.png" width="60" alt="aoi-dev-0411"><br><sub><b>aoi-dev-0411</b></sub></a><br>Transcript Search, Health Badges</td>
+</tr>
+<tr>
+<td align="center"><a href="https://github.com/exaland"><img src="https://github.com/exaland.png" width="60" alt="exaland"><br><sub><b>exaland</b></sub></a><br>Outbound .ULAW Compatibility</td>
+<td align="center"><a href="https://github.com/YosefAdPro"><img src="https://github.com/YosefAdPro.png" width="60" alt="YosefAdPro"><br><sub><b>YosefAdPro</b></sub></a><br>Agents API/OpenAPI</td>
 </tr>
 </table>
 
-See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full list and [Recognition Program](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/RECOGNITION.md) for how we recognize contributions.
+See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full list — contributions are recognized there, in release notes, and on Discord.
 
 ---
 
 ## 💬 Community
 
 - **[Discord Server](https://discord.gg/ysg8fphxUe)** - Support and discussions
-- [GitHub Issues](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/issues) - Bug reports
-- [GitHub Discussions](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/discussions) - General chat
+- [GitHub Issues](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues) - Bug reports
+- [GitHub Discussions](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/discussions) - General chat
 
 ---
 
@@ -674,7 +1106,10 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## 💖 Support This Project
 
-Asterisk AI Voice Agent is **free and open source**. If it's saving you money, consider supporting development:
+Asterisk AI Voice Agent is **free, open source, and independently maintained**. If AVA is
+handling real calls for you, a **$5 contribution** helps pay for PBX and provider compatibility
+testing, release infrastructure, and fixes. Organizations that rely on AVA can sponsor its
+continued maintenance through GitHub Sponsors.
 
 <p align="center">
   <a href="https://github.com/sponsors/hkjarral">
@@ -689,12 +1124,12 @@ Asterisk AI Voice Agent is **free and open source**. If it's saving you money, c
 </p>
 
 Your support funds:
-- 🐛 Faster bug fixes and issue responses  
-- ✨ New provider integrations and features  
-- 📚 Better documentation and tutorials
+- 🧪 PBX, provider, upgrade, and regression testing
+- 🐛 Bug fixes, issue investigation, and release infrastructure
+- ✨ Provider integrations, operator features, and documentation
 
 If you find this project useful, please also give it a ⭐️!
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=hkjarral/Asterisk-AI-Voice-Agent&type=date&legend=top-left)](https://www.star-history.com/#hkjarral/Asterisk-AI-Voice-Agent&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/svg?repos=hkjarral/AVA-AI-Voice-Agent-for-Asterisk&type=date&legend=top-left)](https://www.star-history.com/#hkjarral/AVA-AI-Voice-Agent-for-Asterisk&type=date&legend=top-left)

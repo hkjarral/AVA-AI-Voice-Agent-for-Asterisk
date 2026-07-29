@@ -27,6 +27,14 @@ except ImportError:
     websockets = None
 
 
+STREAMING_STT_FORMAT_ALIASES: frozenset[str] = frozenset({
+    "pcm16",
+    "pcm16_16k",
+    "pcm16-16k",
+    "linear16",
+})
+
+
 @dataclass
 class LLMResponse:
     """Standard response from an LLM, containing text and/or tool calls."""
@@ -270,6 +278,11 @@ class Component(ABC):
 class STTComponent(Component):
     """Speech-to-text component."""
 
+    # Streaming adapters opt in explicitly. The engine must not infer support
+    # from incidental method names because buffered-only adapters share this
+    # base class.
+    supports_streaming: bool = False
+
     @abstractmethod
     async def transcribe(
         self,
@@ -284,6 +297,20 @@ class STTComponent(Component):
 class LLMComponent(Component):
     """Language model component."""
 
+    # Override to True in adapters that implement real token-level streaming
+    # via generate_stream(). The engine checks this to decide whether to use
+    # the streaming overlap pipeline or the serial path.
+    supports_streaming: bool = False
+
+    def bind_tool_registry(self, registry: Any) -> None:
+        """Bind the immutable tool registry captured for this pipeline call."""
+        self._call_tool_registry = registry
+
+    def tool_registry_or(self, fallback: Any) -> Any:
+        """Return the per-call registry, or a compatibility fallback if unbound."""
+        registry = getattr(self, "_call_tool_registry", None)
+        return registry if registry is not None else fallback
+
     @abstractmethod
     async def generate(
         self,
@@ -294,9 +321,34 @@ class LLMComponent(Component):
     ) -> Union[str, LLMResponse]:
         """Generate a response given transcript + context."""
 
+    async def generate_stream(
+        self,
+        call_id: str,
+        transcript: str,
+        context: Dict[str, Any],
+        options: Dict[str, Any],
+    ) -> AsyncIterator[str]:
+        """Stream tokens one-by-one from the LLM.
+
+        Default implementation yields the full response at once (no streaming).
+        Override in adapters that support token-level streaming for lower latency.
+        """
+        result = await self.generate(call_id, transcript, context, options)
+        text = result.text if isinstance(result, LLMResponse) else result
+        yield text
+
 
 class TTSComponent(Component):
     """Text-to-speech component."""
+
+    # Adapters set this only when they can return native linear PCM suitable for
+    # a 16 kHz AudioSocket call.  The engine uses the declaration to opt a
+    # pipeline into wideband on a per-call basis; legacy 8 kHz options remain
+    # untouched for adapters without an explicit declaration.
+    # ``options`` may carry adapter-specific provider-request overrides (for
+    # example Google/Azure source encoding and rate) in addition to the common
+    # downstream ``encoding`` and ``sample_rate`` fields.
+    wideband_output_format: Optional[Dict[str, Any]] = None
 
     @abstractmethod
     async def synthesize(

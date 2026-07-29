@@ -22,11 +22,12 @@ import base64
 import contextlib
 import json
 import math
+import os
 import time
 import struct
 import audioop
 import re
-from typing import Any, Dict, Optional, List, Tuple
+from typing import AbstractSet, Any, Dict, Optional, List, Tuple
 from collections import deque
 
 import websockets
@@ -44,10 +45,12 @@ from structlog import get_logger
 from prometheus_client import Gauge, Counter
 
 from .base import AIProviderInterface, ProviderCapabilities
+from ..utils.voice_catalog import known_voice_map
 from ..audio import (
     convert_pcm16le_to_target_format,
     mulaw_to_pcm16le,
     resample_audio,
+    resolve_output_resampler_policy,
 )
 from ..config import GoogleProviderConfig
 from src.tools.telephony.hangup_policy import normalize_hangup_policy
@@ -55,6 +58,7 @@ from src.tools.telephony.hangup_policy import normalize_hangup_policy
 # Tool calling support
 from src.tools.registry import tool_registry
 from src.tools.adapters.google import GoogleToolAdapter
+from src.tools.execution_history import record_in_call_tool_result
 
 logger = get_logger(__name__)
 
@@ -89,6 +93,41 @@ _GEMINI_INPUT_RATE = 16000  # Gemini requires 16kHz input
 _GEMINI_OUTPUT_RATE = 24000  # Gemini outputs 24kHz audio
 _COMMIT_INTERVAL_SEC = 0.02  # 20ms chunks (320 bytes at 16kHz)
 _KEEPALIVE_INTERVAL_SEC = 15.0
+
+# VAD sensitivity values accepted by the Google Live API.
+# Any other value (e.g. *_MEDIUM) causes a WebSocket close 1007 at setup.
+VALID_EOS_SENSITIVITY = {"END_SENSITIVITY_HIGH", "END_SENSITIVITY_LOW", "END_SENSITIVITY_UNSPECIFIED"}
+VALID_SOS_SENSITIVITY = {"START_SENSITIVITY_HIGH", "START_SENSITIVITY_LOW", "START_SENSITIVITY_UNSPECIFIED"}
+
+
+def coerce_vad_sensitivity(value: Optional[str], valid: AbstractSet[str], default: str) -> str:
+    """Return value if it is an API-accepted sensitivity, else the safe default.
+    Google Live rejects unknown values (e.g. *_MEDIUM) with WS close 1007."""
+    return value if value in valid else default
+
+
+def resolve_google_voice(session_voice: Optional[str], configured: Optional[str]) -> str:
+    """Resolve the prebuilt voice name for a session.
+
+    Per-agent voice override wins over the configured ``tts_voice_name``;
+    "Aoede" is the shipped fallback. Overrides are validated (case-insensitive,
+    canonicalized) against the known prebuilt-voice catalog — Google rejects
+    unknown names at session setup, so a stale free-text value from the
+    pre-7.3.0 display-only agent field falls back to the configured voice
+    instead of failing the call.
+    """
+    if isinstance(session_voice, str) and session_voice.strip():
+        canonical = known_voice_map("google_live").get(session_voice.strip().lower())
+        if canonical:
+            return canonical
+        logger.warning(
+            "Agent voice is not a known Google Live prebuilt voice; using configured voice",
+            requested_voice=session_voice.strip(),
+        )
+    if isinstance(configured, str) and configured.strip():
+        return configured.strip()
+    return "Aoede"
+
 
 # Metrics
 _GOOGLE_LIVE_SESSIONS = Gauge(
@@ -133,6 +172,7 @@ class GoogleLiveProvider(AIProviderInterface):
         hangup_policy: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(on_event)
+        self.set_provider_identity(provider_key="google_live", provider_kind="google_live")
         self.config = config
         self._hangup_policy = normalize_hangup_policy(hangup_policy or {})
         # Google Live only: allow disabling marker-based hangup heuristics to isolate provider disconnects.
@@ -191,6 +231,26 @@ class GoogleLiveProvider(AIProviderInterface):
         
         # Golden Baseline: Simple input buffer for 20ms chunking
         self._input_buffer = bytearray()
+        self._output_resample_state: Optional[tuple] = None
+        self._output_resampler_environment_variable = "AAVA_GOOGLE_OUTPUT_RESAMPLER"
+        configured_output_resampler, output_resampler_source = (
+            resolve_output_resampler_policy(
+                profile_mode="linear",
+                provider_mode=getattr(config, "output_resampler", "inherit"),
+                environment_mode=os.getenv(
+                    self._output_resampler_environment_variable
+                ),
+            )
+        )
+        if output_resampler_source.endswith("invalid-fallback"):
+            logger.warning(
+                "Invalid Google output resampler; using compatibility default",
+                source=output_resampler_source,
+                fallback="linear",
+            )
+        self._output_resampler_mode = configured_output_resampler
+        self._output_resampler_source = output_resampler_source
+        self._output_resampler_logged = False
         
         # Metrics tracking
         self._session_start_time: Optional[float] = None
@@ -317,7 +377,7 @@ class GoogleLiveProvider(AIProviderInterface):
             {
                 "type": "ProviderDisconnected",
                 "call_id": self._call_id,
-                "provider": "google_live",
+                "provider": self.provider_event_name(),
                 "code": code,
                 "reason": reason,
             }
@@ -371,6 +431,8 @@ class GoogleLiveProvider(AIProviderInterface):
         self._last_input_transcription_fragment = ""
         self._output_transcription_buffer = ""
         self._last_output_transcription_fragment = ""
+        self._output_resample_state = None
+        self._output_resampler_logged = False
         self._model_text_buffer = ""
 
     @staticmethod
@@ -650,10 +712,10 @@ class GoogleLiveProvider(AIProviderInterface):
         """Return capabilities of Google Live provider for transport orchestration."""
         return ProviderCapabilities(
             # Audio format capabilities
-            input_encodings=["ulaw", "pcm16"],  # μ-law or PCM16
-            input_sample_rates_hz=[8000, 16000],  # Telephony or wideband
-            output_encodings=["ulaw", "pcm16"],  # Output resampled to telephony
-            output_sample_rates_hz=[8000, 16000, 24000],  # Gemini native is 24kHz
+            input_encodings=["pcm16"],
+            input_sample_rates_hz=[16000],  # Gemini's native input boundary
+            output_encodings=["pcm16"],
+            output_sample_rates_hz=[24000],  # Gemini Live output is fixed at 24 kHz
             preferred_chunk_ms=20,  # 20ms chunks for smooth streaming
             can_negotiate=True,  # Can adapt to different formats
             # Provider type and audio processing capabilities
@@ -661,6 +723,10 @@ class GoogleLiveProvider(AIProviderInterface):
             has_native_vad=True,  # Gemini Live has built-in Voice Activity Detection
             has_native_barge_in=True,  # Handles interruptions automatically
             requires_continuous_audio=True,  # Needs continuous audio stream for VAD
+            wideband_input_encoding="pcm16",
+            wideband_input_sample_rate_hz=16000,
+            wideband_output_encoding="pcm16",
+            wideband_output_sample_rate_hz=24000,
         )
     
     @property
@@ -745,12 +811,20 @@ class GoogleLiveProvider(AIProviderInterface):
                     "Set GOOGLE_CLOUD_PROJECT in .env or vertex_project in ai-agent.yaml."
                 )
 
-            # Obtain OAuth2 bearer token via ADC (Application Default Credentials).
-            # Runs in executor to avoid blocking the event loop.
+            # Obtain OAuth2 bearer token via provider-scoped service account file
+            # when configured, otherwise fall back to legacy ADC.
             def _get_vertex_token() -> str:
-                credentials, _ = google.auth.default(
-                    scopes=["https://www.googleapis.com/auth/cloud-platform"]
-                )
+                scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+                credentials_path = (getattr(self.config, "credentials_path", None) or "").strip()
+                if credentials_path:
+                    from google.oauth2 import service_account
+
+                    credentials = service_account.Credentials.from_service_account_file(
+                        credentials_path,
+                        scopes=scopes,
+                    )
+                else:
+                    credentials, _ = google.auth.default(scopes=scopes)
                 auth_req = google.auth.transport.requests.Request()
                 credentials.refresh(auth_req)
                 return credentials.token
@@ -927,7 +1001,9 @@ class GoogleLiveProvider(AIProviderInterface):
             "speechConfig": {
                 "voiceConfig": {
                     "prebuiltVoiceConfig": {
-                        "voiceName": self.config.tts_voice_name or "Aoede"
+                        "voiceName": resolve_google_voice(
+                            (context or {}).get("voice"), self.config.tts_voice_name
+                        )
                     }
                 }
             },
@@ -1020,16 +1096,16 @@ class GoogleLiveProvider(AIProviderInterface):
         # Higher startOfSpeechSensitivity = catches shorter utterances
         # Lower silenceDurationMs = faster response after user stops talking
         # Configurable via YAML: providers.google_live.vad_*
-        _VALID_EOS = {"END_SENSITIVITY_HIGH", "END_SENSITIVITY_LOW", "END_SENSITIVITY_UNSPECIFIED"}
-        _VALID_SOS = {"START_SENSITIVITY_HIGH", "START_SENSITIVITY_LOW", "START_SENSITIVITY_UNSPECIFIED"}
-        vad_eos = getattr(self.config, "vad_end_of_speech_sensitivity", "END_SENSITIVITY_HIGH")
-        vad_sos = getattr(self.config, "vad_start_of_speech_sensitivity", "START_SENSITIVITY_HIGH")
+        raw_eos = getattr(self.config, "vad_end_of_speech_sensitivity", "END_SENSITIVITY_HIGH")
+        raw_sos = getattr(self.config, "vad_start_of_speech_sensitivity", "START_SENSITIVITY_HIGH")
+        vad_eos = coerce_vad_sensitivity(raw_eos, VALID_EOS_SENSITIVITY, "END_SENSITIVITY_HIGH")
+        vad_sos = coerce_vad_sensitivity(raw_sos, VALID_SOS_SENSITIVITY, "START_SENSITIVITY_HIGH")
         vad_prefix_ms = int(getattr(self.config, "vad_prefix_padding_ms", 20))
         vad_silence_ms = int(getattr(self.config, "vad_silence_duration_ms", 500))
-        if vad_eos not in _VALID_EOS:
-            logger.warning("Invalid vad_end_of_speech_sensitivity value, API may reject", call_id=self._call_id, value=vad_eos, valid=list(_VALID_EOS))
-        if vad_sos not in _VALID_SOS:
-            logger.warning("Invalid vad_start_of_speech_sensitivity value, API may reject", call_id=self._call_id, value=vad_sos, valid=list(_VALID_SOS))
+        if vad_eos != raw_eos:
+            logger.warning("Coerced invalid vad_end_of_speech_sensitivity to END_SENSITIVITY_HIGH", call_id=self._call_id, value=raw_eos, valid=list(VALID_EOS_SENSITIVITY))
+        if vad_sos != raw_sos:
+            logger.warning("Coerced invalid vad_start_of_speech_sensitivity to START_SENSITIVITY_HIGH", call_id=self._call_id, value=raw_sos, valid=list(VALID_SOS_SENSITIVITY))
         logger.info("Google Live VAD config", call_id=self._call_id, eos=vad_eos, sos=vad_sos, prefix_ms=vad_prefix_ms, silence_ms=vad_silence_ms)
         setup_msg["setup"]["realtimeInputConfig"] = {
             "automaticActivityDetection": {
@@ -1061,8 +1137,8 @@ class GoogleLiveProvider(AIProviderInterface):
             tools_count=len(tools),
         )
 
-    async def _send_message(self, message: Dict[str, Any]) -> None:
-        """Send a message to Google Live API."""
+    async def _send_message(self, message: Dict[str, Any]) -> bool:
+        """Send a message to Google Live API and report confirmed websocket acceptance."""
         summary = self._summarize_outbound(message)
         try:
             summary_with_ts = dict(summary)
@@ -1083,12 +1159,13 @@ class GoogleLiveProvider(AIProviderInterface):
                     message_keys=summary.get("keys"),
                 )
                 self._ws_unavailable_logged = True
-            return
+            return False
 
         async with self._send_lock:
             try:
                 await self.websocket.send(json.dumps(message))
                 self._ws_unavailable_logged = False
+                return True
             except Exception as e:
                 if isinstance(e, (ConnectionClosedError, ConnectionClosedOK)):
                     close_reason = getattr(e, "reason", None)
@@ -1103,7 +1180,7 @@ class GoogleLiveProvider(AIProviderInterface):
                         )
                         self._ws_send_close_logged = True
                     self._mark_ws_disconnected()
-                    return
+                    return False
                 logger.error(
                     "Failed to send message to Google Live",
                     call_id=self._call_id,
@@ -1113,6 +1190,7 @@ class GoogleLiveProvider(AIProviderInterface):
                 # Prevent log storms when the socket is already closed.
                 if not self._ws_is_open():
                     self._mark_ws_disconnected()
+                return False
 
     def _safe_jsonable(self, obj: Any, *, depth: int = 0, max_depth: int = 4, max_items: int = 30) -> Any:
         if depth >= max_depth:
@@ -1205,6 +1283,42 @@ class GoogleLiveProvider(AIProviderInterface):
             "✅ Greeting request sent to Gemini (Golden Baseline pattern)",
             call_id=self._call_id,
         )
+
+    async def speak_text(self, text: str) -> bool:
+        """Ask Gemini Live to speak an engine announcement in the session voice."""
+        if not text or not self._call_id or not self._ws_is_open():
+            return False
+        message = {
+            "clientContent": {
+                "turns": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": (
+                                    "System event: speak exactly the sentence between <message> tags. "
+                                    "Do not add, remove, or paraphrase words and do not call tools. "
+                                    f"<message>{text}</message>"
+                                )
+                            }
+                        ],
+                    }
+                ],
+                "turnComplete": True,
+            }
+        }
+        try:
+            if not await self._send_message(message):
+                return False
+            logger.info(
+                "Sent no-input announcement request to Google Live",
+                call_id=self._call_id,
+                text_preview=text[:80],
+            )
+            return True
+        except Exception:
+            logger.warning("Failed to send no-input announcement to Google Live", call_id=self._call_id, exc_info=True)
+            return False
 
     async def send_audio(self, audio_chunk: bytes, sample_rate: int = 8000, encoding: str = "ulaw") -> None:
         """
@@ -1475,13 +1589,17 @@ class GoogleLiveProvider(AIProviderInterface):
             )
             if self._in_audio_burst:
                 self._in_audio_burst = False
+            # The next provider audio belongs to a new response. Never carry
+            # FIR history across the discarded response boundary.
+            self._output_resample_state = None
+            self._output_resampler_logged = False
             try:
                 if self.on_event:
                     await self.on_event(
                         {
                             "type": "ProviderBargeIn",
                             "call_id": self._call_id,
-                            "provider": "google_live",
+                            "provider": self.provider_event_name(),
                             "event": "interrupted",
                         }
                     )
@@ -1497,6 +1615,17 @@ class GoogleLiveProvider(AIProviderInterface):
         if input_transcription:
             text = input_transcription.get("text", "")
             if text:
+                try:
+                    if self.on_event:
+                        await self.on_event(
+                            {
+                                "type": "CallerSpeechStarted",
+                                "call_id": self._call_id,
+                                "provider": self.provider_event_name(),
+                            }
+                        )
+                except Exception:
+                    logger.debug("Failed to emit caller speech activity", call_id=self._call_id, exc_info=True)
                 # If we armed a heuristic cleanup_after_tts fallback (no toolCall), cancel it when the
                 # user continues speaking. This prevents premature hangups during transcript/email
                 # capture where the model may say "thank you for calling" before the user is done.
@@ -1818,7 +1947,7 @@ class GoogleLiveProvider(AIProviderInterface):
                         logger.warning(
                             "Google Live output PCM rate differs from configured output_sample_rate_hz; using provider rate",
                             call_id=self._call_id,
-                            provider="google_live",
+                            provider=self.provider_event_name(),
                             configured_output_sample_rate_hz=configured_output_rate,
                             provider_reported_output_sample_rate_hz=provider_reported_output_rate,
                             used_output_sample_rate_hz=provider_output_rate,
@@ -1827,7 +1956,7 @@ class GoogleLiveProvider(AIProviderInterface):
                         logger.info(
                             "Google Live output PCM rate",
                             call_id=self._call_id,
-                            provider="google_live",
+                            provider=self.provider_event_name(),
                             configured_output_sample_rate_hz=configured_output_rate,
                             provider_reported_output_sample_rate_hz=(provider_reported_output_rate or None),
                             used_output_sample_rate_hz=provider_output_rate,
@@ -1836,11 +1965,29 @@ class GoogleLiveProvider(AIProviderInterface):
                 logger.debug("Failed to emit Google Live output PCM rate log", call_id=self._call_id, exc_info=True)
             
             if provider_output_rate != target_rate:
-                pcm16_target, _ = resample_audio(
+                pcm16_target, self._output_resample_state = resample_audio(
                     pcm16_provider,
                     source_rate=provider_output_rate,
                     target_rate=target_rate,
+                    state=self._output_resample_state,
+                    mode=self._output_resampler_mode,
                 )
+                if not self._output_resampler_logged:
+                    alias_safe = bool(
+                        self._output_resampler_mode == "bandlimited"
+                        and provider_output_rate > target_rate
+                        and provider_output_rate % target_rate == 0
+                    )
+                    logger.info(
+                        "Google output resampler selected",
+                        call_id=self._call_id,
+                        configured_mode=self._output_resampler_mode,
+                        active_mode=("bandlimited" if alias_safe else "linear"),
+                        source_rate_hz=provider_output_rate,
+                        target_rate_hz=target_rate,
+                        alias_safe=alias_safe,
+                    )
+                    self._output_resampler_logged = True
             else:
                 pcm16_target = pcm16_provider
 
@@ -1880,10 +2027,10 @@ class GoogleLiveProvider(AIProviderInterface):
         had_audio = self._in_audio_burst
         turn_was_assistant = self._turn_has_assistant_output
         self._turn_has_assistant_output = False
-        
+
         # Note: Transcription is now saved in _handle_server_content when turnComplete=true
         # No need to flush here - it's already been handled
-        
+
         if self._in_audio_burst:
             self._in_audio_burst = False
             if self.on_event:
@@ -1898,6 +2045,10 @@ class GoogleLiveProvider(AIProviderInterface):
             # Prevent the watchdog from emitting duplicate HangupReady events.
             if self._hangup_fallback_armed:
                 self._hangup_fallback_emitted = True
+
+        if had_audio:
+            self._output_resample_state = None
+            self._output_resampler_logged = False
 
         # Mark greeting as complete after first turn
         if not self._greeting_completed:
@@ -1961,6 +2112,11 @@ class GoogleLiveProvider(AIProviderInterface):
     async def _handle_tool_call(self, data: Dict[str, Any]) -> None:
         """Handle toolCall message."""
         tool_call = data.get("toolCall", {})
+        func_name = None
+        func_args: Dict[str, Any] = {}
+        call_id = None
+        tool_started_at = time.time()
+        tool_result_recorded = False
         
         if not self._tool_adapter:
             logger.warning(
@@ -1977,6 +2133,8 @@ class GoogleLiveProvider(AIProviderInterface):
                 func_name = func_call.get("name")
                 func_args = func_call.get("args", {})
                 call_id = func_call.get("id")
+                tool_started_at = time.time()
+                tool_result_recorded = False
 
                 # Guard: skip duplicate hangup_call if already pending
                 if func_name == "hangup_call" and self._hangup_after_response:
@@ -1999,16 +2157,21 @@ class GoogleLiveProvider(AIProviderInterface):
                     call_id=self._call_id,
                     caller_channel_id=getattr(self, '_caller_channel_id', None),
                     bridge_id=getattr(self, '_bridge_id', None),
+                    caller_number=getattr(self, '_caller_number', None),
+                    caller_name=getattr(self, '_caller_name', None),
+                    called_number=getattr(self, '_called_number', None),
+                    context_name=getattr(self, '_context_name', None),
                     session_store=getattr(self, '_session_store', None),
                     ari_client=getattr(self, '_ari_client', None),
                     config=getattr(self, '_full_config', None),
-                    provider_name="google_live",
+                    tool_registry=self._tool_adapter.registry,
+                    provider_name=self.provider_event_name(),
                 )
 
                 block_result = await tool_context.get_tool_block_response(func_name)
                 if block_result:
                     result = block_result
-                elif not self._allowed_tools or not tool_registry.is_tool_allowed(func_name, self._allowed_tools):
+                elif not self._allowed_tools or not self._tool_adapter.registry.is_tool_allowed(func_name, self._allowed_tools):
                     result = {
                         "status": "error",
                         "message": f"Tool '{func_name}' not allowed for this call",
@@ -2019,6 +2182,18 @@ class GoogleLiveProvider(AIProviderInterface):
                         func_args,
                         tool_context,
                     )
+
+                await record_in_call_tool_result(
+                    session_store=getattr(self, "_session_store", None),
+                    call_id=self._call_id,
+                    tool_call_id=call_id,
+                    tool_name=func_name,
+                    canonical_name=tool_registry.canonicalize_tool_name(func_name),
+                    parameters=func_args,
+                    result=result,
+                    duration_ms=(time.time() - tool_started_at) * 1000,
+                )
+                tool_result_recorded = True
 
                 # Check for hangup intent (like OpenAI Realtime pattern)
                 if func_name == "hangup_call" and result:
@@ -2093,29 +2268,19 @@ class GoogleLiveProvider(AIProviderInterface):
                         farewell_preview=farewell[:60],
                     )
                 
-                # Log tool call to session for call history (Milestone 21)
-                try:
-                    session_store = getattr(self, '_session_store', None)
-                    if session_store and self._call_id:
-                        from datetime import datetime
-                        session = await session_store.get_by_call_id(self._call_id)
-                        if session:
-                            tool_record = {
-                                "name": func_name,
-                                "params": func_args,
-                                "result": result.get("status", "unknown") if isinstance(result, dict) else "success",
-                                "message": result.get("message", "") if isinstance(result, dict) else str(result),
-                                "timestamp": datetime.now().isoformat(),
-                                "duration_ms": 0,  # TODO: track actual duration
-                            }
-                            if not hasattr(session, 'tool_calls') or session.tool_calls is None:
-                                session.tool_calls = []
-                            session.tool_calls.append(tool_record)
-                            await session_store.upsert_call(session)
-                            logger.debug("Tool call logged to session", call_id=self._call_id, tool=func_name)
-                except Exception as e:
-                    logger.debug(f"Failed to log tool call to session: {e}", call_id=self._call_id)
-
+        except asyncio.CancelledError:
+            if func_name and not tool_result_recorded:
+                await record_in_call_tool_result(
+                    session_store=getattr(self, "_session_store", None),
+                    call_id=self._call_id,
+                    tool_call_id=call_id,
+                    tool_name=func_name,
+                    canonical_name=tool_registry.canonicalize_tool_name(func_name),
+                    parameters=func_args,
+                    result={"status": "cancelled", "message": "Tool execution cancelled"},
+                    duration_ms=(time.time() - tool_started_at) * 1000,
+                )
+            raise
         except Exception as e:
             logger.error(
                 "Error handling Google Live tool call",
@@ -2123,6 +2288,17 @@ class GoogleLiveProvider(AIProviderInterface):
                 error=str(e),
                 exc_info=True,
             )
+            if func_name and not tool_result_recorded:
+                await record_in_call_tool_result(
+                    session_store=getattr(self, "_session_store", None),
+                    call_id=self._call_id,
+                    tool_call_id=call_id,
+                    tool_name=func_name,
+                    canonical_name=tool_registry.canonicalize_tool_name(func_name),
+                    parameters=func_args,
+                    result={"status": "error", "message": str(e)},
+                    duration_ms=(time.time() - tool_started_at) * 1000,
+                )
 
     async def _handle_tool_call_cancellation(self, data: Dict[str, Any]) -> None:
         """Handle toolCallCancellation message (server canceled one or more pending tool calls)."""
@@ -2395,6 +2571,8 @@ class GoogleLiveProvider(AIProviderInterface):
             self._call_id = None
             self._session_id = None
             self._input_buffer.clear()
+            self._output_resample_state = None
+            self._output_resampler_logged = False
             self._hangup_after_response = False
             self._hangup_fallback_armed = False
             self._hangup_fallback_emitted = False

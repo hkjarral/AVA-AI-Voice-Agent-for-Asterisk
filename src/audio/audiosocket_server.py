@@ -17,6 +17,12 @@ from typing import Awaitable, Callable, Dict, Optional
 from prometheus_client import Counter, Gauge
 
 from src.logging_config import get_logger
+from src.audio.audiosocket_protocol import (
+    AUDIO_TYPE_TO_FORMAT,
+    AudioSocketAudioFrame,
+    audio_message_type,
+    normalize_slin_format,
+)
 
 logger = get_logger(__name__)
 
@@ -24,7 +30,7 @@ logger = get_logger(__name__)
 TYPE_TERMINATE = 0x00
 TYPE_UUID = 0x01
 TYPE_DTMF = 0x03
-TYPE_AUDIO = 0x10
+TYPE_AUDIO = 0x10  # signed-linear 8 kHz; 0x11-0x18 carry higher rates
 TYPE_ERROR = 0xFF
 
 # Metrics
@@ -51,7 +57,7 @@ class AudioSocketServer:
         port: int,
         *,
         on_uuid: Callable[[str, str], Awaitable[bool]],
-        on_audio: Callable[[str, bytes], Awaitable[None]],
+        on_audio: Callable[[str, AudioSocketAudioFrame], Awaitable[None]],
         on_disconnect: Optional[Callable[[str], Awaitable[None]]] = None,
         on_dtmf: Optional[Callable[[str, str], Awaitable[None]]] = None,
     ) -> None:
@@ -154,6 +160,7 @@ class AudioSocketServer:
                 self._connection_tasks.pop(conn_id, None)
                 self._writers.pop(conn_id, None)
                 self._conn_to_uuid.pop(conn_id, None)
+                self._first_audio_logged.pop(conn_id, None)
                 with contextlib.suppress(ValueError):
                     _AUDIO_CONN_ACTIVE.dec()
 
@@ -206,8 +213,9 @@ class AudioSocketServer:
                     continue
 
                 # Post-handshake frames
-                if msg_type == TYPE_AUDIO:
+                if msg_type in AUDIO_TYPE_TO_FORMAT:
                     if payload:
+                        encoding, sample_rate = AUDIO_TYPE_TO_FORMAT[msg_type]
                         _AUDIO_BYTES_RX.inc(len(payload))
                         # One-time first inbound audio frame log for this connection
                         if not self._first_audio_logged.get(conn_id):
@@ -216,8 +224,19 @@ class AudioSocketServer:
                                 "AudioSocket inbound first audio",
                                 conn_id=conn_id,
                                 bytes=len(payload),
+                                message_type=f"0x{msg_type:02x}",
+                                encoding=encoding,
+                                sample_rate=sample_rate,
                             )
-                        await self._on_audio(conn_id, payload)
+                        await self._on_audio(
+                            conn_id,
+                            AudioSocketAudioFrame(
+                                payload=payload,
+                                message_type=msg_type,
+                                encoding=encoding,
+                                sample_rate=sample_rate,
+                            ),
+                        )
                 elif msg_type == TYPE_DTMF:
                     if self._on_dtmf and payload:
                         try:
@@ -252,15 +271,42 @@ class AudioSocketServer:
             if self._on_disconnect:
                 await self._on_disconnect(conn_id)
 
-    async def send_audio(self, conn_id: str, audio_payload: bytes) -> bool:
-        """Send a PCM16 8k audio frame to the AudioSocket peer."""
+    async def send_audio(
+        self,
+        conn_id: str,
+        audio_payload: bytes,
+        *,
+        encoding: str = "slin",
+        sample_rate: int = 8000,
+    ) -> bool:
+        """Send a signed-linear frame using the rate-specific AudioSocket type."""
+        try:
+            canonical_encoding, canonical_rate = normalize_slin_format(encoding, sample_rate)
+            message_type = audio_message_type(canonical_encoding, canonical_rate)
+        except (TypeError, ValueError) as exc:
+            logger.error(
+                "Refusing unsupported AudioSocket output format",
+                conn_id=conn_id,
+                encoding=encoding,
+                sample_rate=sample_rate,
+                error=str(exc),
+            )
+            return False
+        if len(audio_payload) > 0xFFFF:
+            logger.error(
+                "Refusing oversized AudioSocket audio frame",
+                conn_id=conn_id,
+                bytes=len(audio_payload),
+                max_bytes=0xFFFF,
+            )
+            return False
         async with self._lock:
             writer = self._writers.get(conn_id)
         if not writer:
             logger.debug("Attempted to send audio on closed connection", conn_id=conn_id)
             return False
 
-        frame = bytes([TYPE_AUDIO]) + len(audio_payload).to_bytes(2, "big") + audio_payload
+        frame = bytes([message_type]) + len(audio_payload).to_bytes(2, "big") + audio_payload
         try:
             writer.write(frame)
             await writer.drain()

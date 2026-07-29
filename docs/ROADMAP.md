@@ -18,18 +18,140 @@ Active and upcoming work. Pick something up and [get involved](#how-to-contribut
 
 Outbound dialer shipped as Alpha in v5.0.0 — core scheduling, AMD, voicemail drop, consent gate, and Admin UI are working. Current focus: DNC, retry automation, outcome classification, and resilience hardening (see Phases 6-8 in spec).
 
+### v7.5.2 — Opt-in AudioSocket HD Voice (Shipped July 2026)
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **16 kHz AudioSocket profile** | `wideband_pcm_16k` provides call-scoped `slin16` framing without changing existing 8 kHz defaults. | ✅ Shipped |
+| **Wideband provider and pipeline alignment** | Full-agent providers and modular pipelines preserve negotiated format/rate through playback, interruption, retries, tool continuations, and cleanup. | ✅ Shipped |
+| **Local wideband protocol** | Piper and Kokoro can emit truthful PCM16/16 kHz metadata while legacy and unsupported backends retain μ-law/8 kHz compatibility. | ✅ Shipped |
+| **G.722 public demo path** | The HD Voice demo trunk and release matrix validate the wideband path while retaining the standard demo number for compatibility calls. | ✅ Shipped |
+
+### v7.5.1 — Apply Safety and Transcript Integrity (Shipped July 2026)
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **Recoverable Admin apply** | Environment-driven Compose replacement prepares rollback state first and restores the previous service when replacement fails or remains unhealthy. | ✅ Shipped |
+| **Complete realtime transcripts** | OpenAI Realtime and Grok assistant replies remain scoped by response/item when caller-final events interleave. | ✅ Shipped |
+| **Accurate Apply vs Restart** | Tool-only changes hot reload into immutable new-call generations while provider, environment, and process changes continue to require restart. | ✅ Shipped |
+
+### v7.5.0 — Enhanced Telephony Audio and VICIdial Remote Agents (Shipped July 2026)
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **Enhanced 8 kHz telephony profile** | Opt-in `telephony_enhanced_8k` profile adds stateful band-limited downsampling while preserving the established 8 kHz Asterisk wire contract. | ✅ Shipped |
+| **Provider and pipeline audio policy** | Hosted providers and modular TTS pipelines inherit the per-call Audio Profile, with explicit compatibility overrides and validated encoding/rate combinations. | ✅ Shipped |
+| **Interruption and teardown hardening** | Resampler, playback, barge-in, farewell, and cleanup state is isolated across calls and response boundaries. | ✅ Shipped |
+| **VICIdial Remote Agents** | VICIdial remains authoritative for campaigns and terminal state while AAVA supplies mapped AI conversations through fail-closed Remote Agent lifecycle controls. | ✅ Shipped (Alpha) |
+| **Upgrade recovery** | The pinned host recovery script handles mixed ownership, stale updater images, tracked edits, and older Admin UI planner failures with bounded preservation. | ✅ Shipped |
+
+### v7.4.0 — Agents and Agent-Scoped Tools
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **Agent-scoped resources** | Per-Agent access to transfer destinations, Google calendars, Microsoft accounts/calendars, and voicemail destinations while Tools retains the global inventory. | ✅ Implemented |
+| **Restart-free tool reload** | Validated immutable generations apply built-in and managed HTTP tool changes to new calls while active calls retain their captured generation. | ✅ Implemented |
+| **Contexts retired** | Atomic one-time import into `agents.db`, Agent-only runtime routing, one-time UI notice, and deprecated `AI_CONTEXT` dialplan compatibility. | ✅ Implemented |
+| **Simpler first run** | Receptionist, Sales, and Support replace the larger demo Context set on genuinely empty systems; existing Agent stores are untouched. | ✅ Implemented |
+| **Upgrade recovery** | Explicit retain/overwrite/abort updater policy and documented v7.3.0–v7.3.3 bootstrap recovery path. | ✅ Implemented |
+
+### v7.3.2 — Stabilization Release (Shipped July 2026)
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **Call-path stabilization** | AudioSocket and ExternalMedia lifecycle fixes across full-agent providers and modular pipelines, including Grok interruption and caller inactivity. | ✅ Shipped |
+| **Updater and rollback hardening** | Checkout ownership, active-call probes, dirty-worktree handling, source-built CLI versioning, and post-update validation retry. | ✅ Shipped |
+| **Provider-failure recovery** | Opt-in, validated-target dialplan redirect with idempotent cleanup and announce/hangup fallback. | ✅ Shipped (opt-in) |
+| **Contributor/release gates** | Admin backend/frontend PR checks, five-target CLI cross-compile, archived evidence index, and revision-pinned validation matrix. | ✅ Implemented |
+
+No provider additions were included. See the
+[v7.3.2 validation matrix](baselines/golden/v7.3.2-validation-matrix.md) for
+revision-pinned evidence and explicitly recorded follow-up validation debt.
+
+### v7.3.1 — Caller Inactivity Watchdog (Shipped July 2026)
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **Provider-independent caller inactivity (#506)** | Inbound calls now get a 30-second silence check-in and a 15-second reply grace period by default; outbound agents opt in. Check-ins use the active agent voice across full-agent providers and modular pipelines. | ✅ Shipped |
+| **Transport-safe terminal speech** | Watchdog and tool farewells drain provider, AudioSocket, ExternalMedia/RTP, and ARI playback state before one idempotent hangup owner disconnects the call. | ✅ Shipped |
+| **Deepgram and ElevenLabs lifecycle hardening** | Deepgram response boundaries/tool ordering and ElevenLabs completion/silence ownership now converge on the same engine lifecycle. | ✅ Shipped |
+
 ### Completed Milestones (Recent)
 
 | Milestone | Version | Details |
 |-----------|---------|---------|
+| Microsoft Calendar V1 | ✅ v6.4.2 | Outlook / Microsoft 365 calendar integration via device-code OAuth, Graph free/busy, legacy per-Context binding (migrated to per-Agent access in v7.4), Tools UI Connect/Verify/Disconnect |
+| Google Calendar — major overhaul | ✅ v6.4.2 | Multi-account / legacy per-Context binding (#338; migrated to per-Agent access in v7.4), JSON upload + auto-discover, Domain-Wide Delegation support, Tools UI Verify, native free/busy mode |
+| Reschedule reliability | ✅ v6.4.2 | Server-side `event_id` resolution + 400/404 fallback eliminates LLM-id-hallucination duplicate bookings; validated across Google Live, Deepgram, OpenAI Realtime, ElevenLabs |
+| Date/time prompt placeholders | ✅ v6.4.2 | `{today}`, `{current_date}`, `{current_weekday}`, `{current_time}`, `{current_datetime_iso}` injected per-call so models stop reasoning with stale years |
+| Google Live 30-voice catalog | ✅ v6.4.2 | Voice picker expanded from 8 hardcoded voices to full 30-voice catalog with Google's official tone descriptors (#349) |
+| CPU Latency Optimization | ✅ v6.4.1 | Streaming LLM→TTS overlap, pipeline filler audio, Qwen 2.5-1.5B CPU LLM, preflight hardening |
+| Matcha-TTS Backend | ✅ v6.4.1 | Matcha-TTS with audioop conversion, model catalog, vocoder auto-detection |
+| Modular Provider Subtypes | ✅ v6.4.1 | UI for adding custom LLM/STT/TTS providers as pipeline components |
 | Azure Speech STT/TTS Adapters | ✅ v6.3.2 | `src/pipelines/azure.py` — Fast REST, Realtime WebSocket, SSML TTS |
 | MiniMax LLM Adapter | ✅ v6.3.2 | M2.7 models via OpenAI-compatible API with tool-calling |
 | Call Recording Playback | ✅ v6.3.2 | Play back Asterisk recordings in Call Details modal |
-| Attended Transfer Streaming & Screening | ✅ v6.4.0 | Three screening modes, RTP streaming delivery, provider-agnostic tool guidance |
+| Attended Transfer Streaming & Screening | ✅ v6.4.0 | Three screening modes (basic_tts, ai_briefing, caller_recording), RTP streaming delivery, provider-agnostic tool guidance |
 | Russian Speech Backends | ✅ v6.4.0 | Sherpa offline STT (VAD-gated), T-one STT (Russian CTC), Silero TTS (multi-language) |
 | HTTP Tool Wildcard Extraction | ✅ v6.4.0 | JSONPath `[*]` array extraction in output variables |
 | Conversation Timestamps | ✅ v6.4.0 | Per-message timestamps in conversation history + Call Log UI |
 | Fullscreen UI Panels | ✅ v6.4.0 | Maximize/minimize toggle for dashboard panels |
+
+### v6.5.0 — Local LLM Tool-Gated Response, Deepgram Flux, Gemini 3.1 (Shipped May 2026)
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **Local LLM tool_context / tool_result protocol (#368)** | New v2 WebSocket message types so the local LLM waits for tool execution and resumes with the result injected into context. Cross-call ACL leakage guarded; both `tool_context` and system-prompt sync fail-closed. | ✅ Shipped |
+| **Deepgram Flux v2 + nova-3 default** | `flux-general-en` / `flux-general-multi` correctly emit `version: "v2"` plus `eot_threshold` / `eager_eot_threshold` / `keyterms`. Pydantic enforces ranges. Admin UI surfaces a "Flux Turn-Detection Tuning" panel when a `flux-*` model is selected. Default listen model flipped to `nova-3` to align YAML with pre-v6.5.0 hardcoded runtime behavior. | ✅ Shipped |
+| **Gemini 3.1 Flash Live verified compatible (#350, #356)** | Multi-part `serverContent` envelopes handled correctly by the existing parser; pinned by 9 unit tests. No engine changes required. | ✅ Shipped |
+| **#351 Google Live barge-in** | Resolved as a documentation issue — production answer is `use_vertex_ai: true`. Architectural silence-gating refactor deferred to v6.6 (the experiment in `1763a441` was reverted in `cead273a` because the AudioSocket forwarding path needs a broader audio-path overhaul). | ✅ Documented |
+| **#370 HTTP-tool-test `.env`-first guard** | Admin UI Environment-page edits to `AAVA_HTTP_TOOL_TEST_*` take effect without an `ai_engine` restart. | ✅ Shipped |
+
+### v6.5.4 — OpenAI Realtime GA cleanup across code/UI/docs (Shipped May 2026)
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **GA defaults across all code paths** | Follow-up to v6.5.3 hotfix. Pydantic defaults (`src/config.py`), Admin UI provider template (`ProvidersPage.tsx`), wizard backend, golden config, and example YAML all flipped to `api_version: ga` + `model: gpt-realtime`. Provider form (`OpenAIRealtimeProviderForm.tsx`) refactored to lift catalogs to module-scope constants and expose 3 new GA models (`gpt-realtime-1.5`, `gpt-realtime-2`, `gpt-realtime-mini`) verified against OpenAI's official model pages. | ✅ Shipped |
+| **Diagnostic legacy-value handling** | Operators with sunset preview models pinned in their `ai-agent.local.yaml` now see a yellow warning banner above the form + their value rendered in a "Custom (legacy — will not connect)" optgroup. No auto-rewrite (too invasive); just makes broken state visible. | ✅ Shipped |
+| **One-shot beta deprecation warning** | New `_warn_if_beta_deprecated()` helper in `src/providers/openai_realtime.py`, called from both `start_session` and the reconnect path, gated by `_beta_warned` to fire exactly once per provider lifetime when `api_version: beta` is configured. | ✅ Shipped |
+| **Provider-OpenAI-Setup.md rewrite** | Model section rewritten with all four current GA options, use-case guidance, and the org-access caveat (Realtime API is a separate provisioning flag — even valid keys can return `model_not_found`). | ✅ Shipped |
+
+### v6.5.3 — OpenAI Realtime GA migration hotfix (Shipped May 2026)
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **OpenAI Realtime GA defaults** | Flipped shipped `config/ai-agent.yaml` from `api_version: beta` + `gpt-4o-realtime-preview-2024-12-17` to `api_version: ga` + `gpt-realtime`. Required because OpenAI sunset the Realtime Beta API on 2026-05-12 and removed the preview model on 2026-05-07; v6.5.2 and earlier deployments hit `beta_api_shape_disabled` on the first session.update. No code change — the provider's GA wire-protocol path has shipped since v6.0.0. Setup: [docs/MIGRATION.md](MIGRATION.md). | ✅ Shipped |
+
+### v6.5.2 — xAI Grok provider, multi-instance full-agent providers, Admin UI polish (Shipped May 2026)
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **xAI Grok Voice Agent realtime provider (PR #394)** | Fifth full-agent realtime provider, structurally parallel to OpenAI Realtime and Google Live. μ-law @ 8 kHz caller input, observed PCM16 @ 24 kHz output converted for Asterisk, five named voices + custom voice ID, custom function-tools identical to OpenAI Realtime, and a YAML escape hatch for xAI-native tools (`web_search`, `x_search`, `file_search`, `mcp`). AAVA retains a conservative 28-minute warning from the provider's earlier session limit; xAI's current model page lists a 120-minute maximum. Multi-instance from day one. Setup: [Provider-Grok-Setup.md](Provider-Grok-Setup.md). | ✅ Shipped |
+| **Multi-instance full-agent providers** | Multiple instances of the same full-agent provider type with isolated credentials (e.g. `acme_google_live` + `globex_google_live`). Provider instance keys are immutable call-routing identities; YAML `type` selects the kind. Per-instance credentials at `/app/project/secrets/providers/<provider_key>/`. Routing via `AI_PROVIDER`, an Agent provider selection with `AI_AGENT`, or DID-based dispatch. Setup: [docs/Multi-Instance-Full-Agent-Providers.md](Multi-Instance-Full-Agent-Providers.md). | ✅ Shipped |
+| **Uniform per-instance credentials UX (PR #395)** | Shared `ProviderCredentialsCard` paste-style uploader wired into Grok, OpenAI Realtime, Deepgram, Google Live, and ElevenLabs Agent forms. EnvPage adds a "Per-Instance Provider Credentials" status section so operators can audit credentials without SSH. | ✅ Shipped |
+| **Dashboard System Topology overhaul** | Tri-state per-component health (`null` / `true` / `false`) with 2-strike debounce so transient probe blips don't flip dots red. Backend probe timeouts bumped (ai_engine 1.5 s → 5 s; local_ai_server 2.5 s → 5 s). Layout rebuilt as explicit CSS grid with responsive provider grid, Models 3-col grid, and Asterisk + AI Engine cards stretched to match Providers height. Provider cards grouped by type. | ✅ Shipped |
+| **HelpTooltip backfill (~260 tooltips)** | Inline help across provider forms, Setup Wizard, LLM/MCP/Profiles/Models pages. New `HelpTooltip` is viewport-aware: measures the trigger via `getBoundingClientRect` and flips placement to keep the popover visible inside scrolled modals. | ✅ Shipped |
+| **`.ulaw` call recording playback** | Call Details modal plays compact `.ulaw` recordings via server-side `audioop.ulaw2lin` WAV wrapping. `.WAV` uppercase, compressed WAV, and `.gsm` recordings transcode via `sox` with `AAVA_RECORDING_TRANSCODE_TIMEOUT_SEC` (default 120 s). | ✅ Shipped |
+
+### v6.5.1 — CPU-demo profile + local provider hardening (Shipped May 2026)
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **CPU-demo profile end-to-end (PR #386)** | Faster-Whisper `tiny.en` + Piper + Qwen 0.5B wired through the Admin UI. New Device (`cpu`/`cuda`/`auto`) and Compute (`int8`/`float16`/`float32`) selectors with client-side gating that disables `float16` on CPU. New env vars `FASTER_WHISPER_DEVICE`, `FASTER_WHISPER_COMPUTE_TYPE` persisted by the admin layer. | ✅ Shipped |
+| **Runtime toggles without model reload** | New WS protocol field `runtime_config` for `enable_filler_audio` and `llm_streaming_tts_overlap`. Filler-audio enable pre-synthesizes phrases via the active TTS; disable clears the cache. Control plane skips no-op values; admin layer accepts `no_change` so a toggle flip with the value already at the requested state no longer triggers a container recreate. | ✅ Shipped |
+| **Local provider audio hot-path hardening** | `send_audio()` no longer awaits `_reconnect()` per audio frame on disconnect (was blocking the producer for ~157s of backoff); drops the chunk and kicks `_start_background_reconnect()` instead, gated on prior-connection state. `asyncio.Lock` around `_reconnect()` for single-flight against `_send_loop`'s direct on-`ConnectionClosed` path. STT fragment suppression in full/llm modes narrowed to filler only so common confirmations like `"ok"`, names, numbers reach the LLM. | ✅ Shipped |
+| **Faster-Whisper verify-path tolerance** | Admin verify path no longer rolls back working CPU/int8 fallback configurations as "verification failed" when `local_ai_server` resets device/compute on CUDA model init failure. Frontend CUDA gate also reads pending dropdown selection so picking CUDA on a CPU-only host is caught client-side. | ✅ Shipped |
+
+### v6.6.0 — Deferred from v6.5 + Local AI Performance & Polish
+
+| Feature | Description | Key Files | Effort |
+|---------|-------------|-----------|--------|
+| **#351 silence-gating refactor (vad_mode-aware)** | The reverted experiment surfaced AudioSocket-path coupling that needs a broader audio-path overhaul + integration tests before silence-gating can honor `vad_mode`. | `src/providers/google_live.py`, AudioSocket forwarding path | High |
+| **Local LLM Token Streaming (WebSocket)** | Server emits `llm_token` messages for pipeline `local_llm` adapter. Currently `_handle_llm_request()` in `local_ai_server/server.py` ignores `stream: true` and returns one `llm_response`. Wiring `process_llm_chat_streaming()` into the WS handler + setting `supports_streaming = True` on `LocalLLMAdapter` would give pipeline-mode users the same sentence-by-sentence overlap that full-mode already has. | `local_ai_server/server.py:5498` (WS handler), `src/pipelines/local.py:979` (adapter) | Medium (3-4h) |
+| **Concurrent LLM+TTS Producer/Consumer** | In `_process_full_pipeline_streaming()` (`server.py:5067`), `await self.process_tts()` blocks the token loop ~200-800ms per sentence. Refactor into two `asyncio.create_task` — producer consumes tokens and pushes sentences to a queue, consumer synthesizes and emits. Needs backpressure and `_llm_lock` coordination. Marginal gain on CPU but significant with faster LLMs (GPU/remote). | `local_ai_server/server.py:5067-5187` | Medium (3-4h) |
+| **Speculative LLM on Stable Partials** | Start LLM inference speculatively when STT partial transcript is stable >300ms with 5+ words. If final matches → use cached result (saves 300-1500ms). If not → discard and run fresh. Config-stubbed (`speculative_llm_enabled` etc. in `local_ai_server/config.py:154-157`). Requires `_llm_lock` coordination and session state for speculative results. Only benefits streaming STT backends (Vosk, Sherpa, Kroko) — not Whisper. | `local_ai_server/config.py:154`, `local_ai_server/server.py` (new), `local_ai_server/session.py` (new fields) | High (6-8h) |
+| **Comfort Noise Injection** | Replace digital silence with low-level telephony comfort noise (~-40dB) during processing gaps (between STT final and first TTS audio). Pre-generate 1 second of µ-law noise at startup, inject into `StreamingPlaybackManager` when buffer is empty. Config-stubbed (`comfort_noise_enabled` in `local_ai_server/config.py:166`). Cosmetic improvement — filler audio already addresses the biggest UX gap. | `src/core/streaming_playback_manager.py`, `local_ai_server/config.py:166` | Low (2h) |
+| **Local-LLM `tool_result` edge-case test suite** | Multiple tool results in flight for one call, reconnect during pending tool result, interaction with `farewell_mode=asterisk`. Protocol surface is now documented; tests are the next-cycle add. | `tests/test_local_ai_server_protocol_schema.py` (extend) | Medium |
 
 ### Planned Milestones
 
@@ -44,7 +166,7 @@ Outbound dialer shipped as Alpha in v5.0.0 — core scheduling, AMD, voicemail d
 
 ### Good First Issues (Beginner-Friendly)
 
-Great for first-time contributors. **AVA helps you with all of these** — just open Windsurf and describe what you want to do. See the [Operator Contributor Guide](contributing/OPERATOR_CONTRIBUTOR_GUIDE.md) to get started.
+Great for first-time contributors. **AVA helps you with all of these** — just open Windsurf and describe what you want to do. Browse the live list of open beginner-friendly issues on GitHub: [`good first issue` issues](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22).
 
 #### No-Code Tasks (Just Writing/Sharing)
 
@@ -56,16 +178,16 @@ Great for first-time contributors. **AVA helps you with all of these** — just 
 | Report and document edge cases in call flows | Testing + writing | You make real calls every day |
 | Translate a setup guide to your language | Any language | Help non-English speakers |
 
-#### AI-Assisted Code Tasks (AVA Writes the Code)
+#### AI-Assisted Code Tasks (AVA Helps You Write the Code)
 
 | Task | Contribution Area | Why YOU Can Do This |
 |------|-------------------|---------------------|
-| Add a new STT/TTS/LLM pipeline adapter | [Modular Providers](contributing/adding-pipeline-adapter.md) | You know which providers work best — AVA writes the adapter |
-| Add a pre-call CRM lookup hook | [Pre-Call Hooks](contributing/pre-call-hooks-development.md) | You have a CRM — AVA integrates it |
-| Add a post-call webhook (Slack, Discord, n8n) | [Post-Call Hooks](contributing/post-call-hooks-development.md) | You use these tools daily — AVA connects them |
-| Add an in-call appointment checker | [In-Call Hooks](contributing/in-call-hooks-development.md) | You book appointments by phone — AVA builds it |
-| Test coverage for `src/tools/telephony/` | Python, pytest | You understand voicemail — AVA writes the tests |
-| Improve error messages in `agent doctor` | Go CLI | You've seen the confusing errors — AVA fixes them |
+| Add a new STT/TTS/LLM pipeline adapter | [open issues: pipeline adapter](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues?q=is%3Aopen+is%3Aissue+pipeline+adapter) — see also `docs/contributing/pipeline-development.md` | You know which providers work best — AVA helps you write the adapter |
+| Add a pre-call CRM lookup hook | [open issues: pre-call hooks](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues?q=is%3Aopen+is%3Aissue+pre-call) — see also `docs/contributing/tool-development.md` | You have a CRM — AVA integrates it |
+| Add a post-call webhook (Slack, Discord, n8n) | [open issues: post-call hooks](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues?q=is%3Aopen+is%3Aissue+post-call) — see also `docs/TOOL_CALLING_GUIDE.md` (HTTP tools) | You use these tools daily — AVA connects them |
+| Add an in-call appointment checker | [open issues: in-call hooks](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues?q=is%3Aopen+is%3Aissue+in-call) — see also `docs/Google-calendar-tool.md` | You book appointments by phone — AVA builds it |
+| Test coverage for `src/tools/telephony/` | Python, pytest | You understand voicemail — AVA helps you write the tests |
+| Improve error messages in `agent check` | Go CLI | You've seen the confusing errors — AVA fixes them |
 | Admin UI accessibility audit (Lighthouse/axe) | React, CSS | Run the audit, AVA fixes what it finds |
 | JSON Schema for `ai-agent.yaml` | JSON Schema, YAML | Define what's valid in the config you use daily |
 
@@ -110,4 +232,4 @@ Longer-term goals that will shape the project's direction:
 
 ---
 
-**Last Updated**: March 2026 | **Current Version**: v6.4.0
+**Last Updated**: July 2026 | **Latest Stable**: v7.5.3 | **Next**: Unreleased

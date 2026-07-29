@@ -6,8 +6,33 @@ import { Save, Eye, EyeOff, RefreshCw, AlertTriangle, AlertCircle, CheckCircle, 
 import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput, FormLabel, FormSelect, FormSwitch } from '../../components/ui/FormComponents';
+import { Link } from 'react-router-dom';
+import {
+    getOutboundPbxTypeOptions,
+    normalizeOutboundPbxType,
+} from '../../utils/outboundPbx';
 
 import { useAuth } from '../../auth/AuthContext';
+
+const PROVIDER_CREDENTIAL_TYPES: Record<string, string[]> = {
+    openai_realtime: ['api-key'],
+    deepgram: ['api-key'],
+    google_live: ['api-key', 'vertex-json'],
+    elevenlabs_agent: ['api-key', 'agent-id'],
+    grok: ['api-key'],
+};
+const MODULAR_PROVIDER_KEY_RE = /_(stt|llm|tts|vad)$/;
+
+interface PerInstanceCredentialRow {
+    providerKey: string;
+    kind: string;
+    credentialType: string;
+    state: 'file_uploaded' | 'env_var_ref' | 'not_configured' | 'inline_value';
+    path?: string;
+    envVar?: string;
+    inlineValue?: string;
+    uploadedAt?: number;
+}
 
 type EnvTab = 'ai-engine' | 'local-ai' | 'system';
 
@@ -38,6 +63,7 @@ const SecretInput = ({
         <button
             type="button"
             onClick={onToggleSecret}
+            aria-label={showSecret ? 'Hide value' : 'Show value'}
             className="absolute right-3 top-[38px] text-muted-foreground hover:text-foreground"
         >
             {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -64,6 +90,8 @@ const EnvPage = () => {
     const [smtpTestTo, setSmtpTestTo] = useState('');
     const [smtpTesting, setSmtpTesting] = useState(false);
     const [smtpTestResult, setSmtpTestResult] = useState<{success: boolean; message?: string; error?: string} | null>(null);
+    const [perInstanceRows, setPerInstanceRows] = useState<PerInstanceCredentialRow[]>([]);
+    const [perInstanceLoading, setPerInstanceLoading] = useState(false);
 
     const [error, setError] = useState<string | null>(null);
 
@@ -121,8 +149,114 @@ const EnvPage = () => {
     useEffect(() => {
         if (!authLoading && token) {
             fetchEnv();
+            fetchPerInstanceCredentials();
         }
     }, [authLoading, token]);
+
+    /**
+     * Manual refresh hook used by the toolbar "Refresh" button and the
+     * error-state Retry button. Re-fetches BOTH the env-var values and the
+     * per-instance provider credential status so the audit section reflects
+     * provider/credential edits without remounting the page.
+     */
+    const refreshAll = () => {
+        fetchEnv();
+        fetchPerInstanceCredentials();
+    };
+
+    /**
+     * Enumerate all full-agent provider instances and probe each for credential status.
+     * Read-only audit — actual uploads happen on the Providers page.
+     */
+    const fetchPerInstanceCredentials = async () => {
+        setPerInstanceLoading(true);
+        try {
+            const yamlRes = await axios.get('/api/config/yaml');
+            // The /yaml endpoint returns {content: "<yaml string>"} or the parsed object.
+            let providers: Record<string, any> = {};
+            const raw = yamlRes.data?.content || yamlRes.data;
+            if (typeof raw === 'string') {
+                // Avoid pulling in js-yaml just for this — let the backend's /api/config
+                // endpoint give us a structured view if /yaml returned a string.
+                const cfgRes = await axios.get('/api/config');
+                providers = cfgRes.data?.providers || {};
+            } else {
+                providers = raw?.providers || {};
+            }
+
+            // For each provider entry, probe the credentials endpoint. The backend
+            // returns the authoritative provider kind (it knows about legacy
+            // `type: full` entries, custom keys like `acme_voice`, and applies
+            // the same full-agent inference the engine uses) plus the list of
+            // credentials valid for that kind. Use that response — don't gate
+            // on a frontend whitelist of canonical keys, which would silently
+            // omit custom-keyed full-agent providers.
+            const entries = (Object.entries(providers) as Array<[string, any]>)
+                .filter(([key]) => !MODULAR_PROVIDER_KEY_RE.test(key));
+            const tasks = entries.map(async ([key, cfg]) => {
+                let credStatus: any = {};
+                let kind: string | null = null;
+                try {
+                    const res = await axios.get(`/api/config/providers/${encodeURIComponent(key)}/credentials`);
+                    credStatus = res.data?.credentials || {};
+                    kind = (res.data?.type || null) as string | null;
+                } catch {
+                    // 400/404 here means the backend doesn't recognise this entry as a
+                    // full-agent provider (modular providers, unknown kinds, in-flight
+                    // creations). Skip it — modular providers don't have per-instance
+                    // credential files in this design.
+                    return [];
+                }
+
+                if (!kind) return [];
+
+                // If the backend reports a kind we don't know about locally, fall back
+                // to api-key as the only credential to render (covers future provider
+                // kinds added server-side without a frontend update).
+                const credTypes = PROVIDER_CREDENTIAL_TYPES[kind] ?? ['api-key'];
+                const rows: PerInstanceCredentialRow[] = [];
+
+                for (const credentialType of credTypes) {
+                    const status = credStatus[credentialType] || {};
+                    // Match the YAML field associated with this credential.
+                    const inlineField =
+                        credentialType === 'api-key' ? 'api_key' :
+                        credentialType === 'agent-id' ? 'agent_id' :
+                        credentialType === 'vertex-json' ? 'credentials_path' : null;
+                    const inlineValue = inlineField ? (cfg?.[inlineField] || '') : '';
+                    const isEnvRef = typeof inlineValue === 'string' && inlineValue.trim().startsWith('${');
+
+                    let state: PerInstanceCredentialRow['state'];
+                    if (status.uploaded) state = 'file_uploaded';
+                    else if (isEnvRef) state = 'env_var_ref';
+                    else if (inlineValue && typeof inlineValue === 'string' && inlineValue.trim()) state = 'inline_value';
+                    else state = 'not_configured';
+
+                    rows.push({
+                        providerKey: key,
+                        kind,
+                        credentialType,
+                        state,
+                        path: status.path,
+                        envVar: isEnvRef
+                            ? inlineValue.trim().replace(/^\$\{/, '').replace(/\}$/, '').split(':-')[0]
+                            : undefined,
+                        inlineValue: !isEnvRef && state === 'inline_value' ? '(inline value)' : undefined,
+                        uploadedAt: status.uploaded_at,
+                    });
+                }
+                return rows;
+            });
+
+            const all = (await Promise.all(tasks)).flat();
+            setPerInstanceRows(all);
+        } catch {
+            // Best-effort; leave the section empty.
+            setPerInstanceRows([]);
+        } finally {
+            setPerInstanceLoading(false);
+        }
+    };
 
     const fetchEnv = async () => {
         setLoading(true);
@@ -169,6 +303,9 @@ const EnvPage = () => {
         setSaving(true);
         try {
             const envToSave = { ...env };
+            envToSave['AAVA_OUTBOUND_PBX_TYPE'] = normalizeOutboundPbxType(
+                envToSave['AAVA_OUTBOUND_PBX_TYPE']
+            );
             // If file logging is enabled, ensure LOG_FILE_PATH is persisted (UI shows a recommended default).
             const logToFile = (envToSave['LOG_TO_FILE'] || '').toLowerCase();
             const logEnabled = logToFile === '1' || logToFile === 'true' || logToFile === 'on' || logToFile === 'yes';
@@ -284,7 +421,22 @@ const EnvPage = () => {
             setApplyPlan([]);
             toast.success('Changes applied');
         } catch (error: any) {
-            toast.error('Failed to apply changes', { description: error.response?.data?.detail || error.message });
+            const detail = error.response?.data?.detail;
+            if (detail && typeof detail === 'object') {
+                const recovered = detail.recovery_status === 'recovered' || (
+                    detail.recovery_status === 'not_needed' && detail.service_available
+                );
+                const description = recovered
+                    ? `${detail.message || 'Changes were not applied.'} The previous service is running; you can correct the setting and retry.`
+                    : `${detail.message || 'Changes were not applied.'} Automatic recovery did not complete; check the container status before retrying.`;
+                if (recovered) {
+                    toast.warning('Changes not applied; service remains available', { description });
+                } else {
+                    toast.error('Failed to apply changes', { description });
+                }
+            } else {
+                toast.error('Failed to apply changes', { description: detail || error.message });
+            }
         } finally {
             setRestartingEngine(false);
         }
@@ -370,7 +522,7 @@ const EnvPage = () => {
             <h3 className="text-lg font-semibold">Error Loading Configuration</h3>
             <p className="mt-2">{error}</p>
             <button
-                onClick={fetchEnv}
+                onClick={refreshAll}
                 className="mt-4 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
             >
                 Retry
@@ -398,7 +550,7 @@ const EnvPage = () => {
         'AUDIOSOCKET_ADVERTISE_HOST', 'EXTERNAL_MEDIA_ADVERTISE_HOST',
         // AI Engine - API Keys
         'OPENAI_API_KEY', 'GROQ_API_KEY', 'DEEPGRAM_API_KEY', 'GOOGLE_API_KEY', 'TELNYX_API_KEY', 'RESEND_API_KEY',
-        'ELEVENLABS_API_KEY', 'ELEVENLABS_AGENT_ID', 'GOOGLE_APPLICATION_CREDENTIALS',
+        'ELEVENLABS_API_KEY', 'ELEVENLABS_AGENT_ID', 'XAI_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS',
         'GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION',
         // Email (SMTP)
         'SMTP_HOST', 'SMTP_PORT', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'SMTP_TLS_MODE', 'SMTP_TLS_VERIFY',
@@ -436,6 +588,7 @@ const EnvPage = () => {
         // System - Outbound Campaign
         'AAVA_OUTBOUND_EXTENSION_IDENTITY', 'AAVA_OUTBOUND_AMD_CONTEXT', 'AAVA_MEDIA_DIR', 'AAVA_VM_UPLOAD_MAX_BYTES',
         'AAVA_OUTBOUND_PBX_TYPE', 'AAVA_OUTBOUND_DIAL_CONTEXT', 'AAVA_OUTBOUND_DIAL_PREFIX', 'AAVA_OUTBOUND_CHANNEL_TECH',
+        'VICIDIAL_API_USER', 'VICIDIAL_API_PASS',
         // System - Docker Build Settings (build-time ARGs, require rebuild)
         'INCLUDE_VOSK', 'INCLUDE_SHERPA', 'INCLUDE_FASTER_WHISPER',
         'INCLUDE_PIPER', 'INCLUDE_KOKORO', 'INCLUDE_MELOTTS', 'INCLUDE_LLAMA', 'INCLUDE_KROKO_EMBEDDED',
@@ -475,7 +628,7 @@ const EnvPage = () => {
     return (
         <div className="space-y-6">
             {/* Global Restart Banner */}
-            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
+            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
                 <div className="flex items-center">
                     <AlertCircle className="w-5 h-5 mr-2" />
                     {pendingRestart && applyPlan.length > 0
@@ -527,7 +680,7 @@ const EnvPage = () => {
                         Setup Wizard
                     </button>
                     <button
-                        onClick={fetchEnv}
+                        onClick={refreshAll}
                         className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"
                     >
                         <RefreshCw className="w-4 h-4 mr-2" />
@@ -712,6 +865,7 @@ const EnvPage = () => {
                             placeholder="agent_..."
                             tooltip="Required for ElevenLabs Conversational AI mode."
                         />
+                        {renderSecretInput('xAI API Key', 'XAI_API_KEY', 'xai-...')}
                         {renderSecretInput('Resend API Key', 'RESEND_API_KEY', 're_...')}
                         <FormInput
                             label="Google Service Account"
@@ -736,6 +890,73 @@ const EnvPage = () => {
                         />
                     </div>
                     </ConfigCard>
+                    </ConfigSection>
+
+                    {/* Per-Instance Provider Credentials (multi-tenant audit) */}
+                    <ConfigSection
+                        title="Per-Instance Provider Credentials"
+                        description="Status of credential files for each configured full-agent provider instance. Upload and edit on the Providers page."
+                    >
+                        <ConfigCard>
+                            {perInstanceLoading ? (
+                                <div className="flex items-center gap-2 text-sm text-muted-foreground p-2">
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                    Loading provider credentials…
+                                </div>
+                            ) : perInstanceRows.length === 0 ? (
+                                <p className="text-sm text-muted-foreground p-2">
+                                    No full-agent providers configured yet. Visit{' '}
+                                    <Link to="/providers" className="text-primary hover:underline">Providers</Link>{' '}
+                                    to add one.
+                                </p>
+                            ) : (
+                                <div className="space-y-2">
+                                    {perInstanceRows.map((row) => {
+                                        const stateLabel = {
+                                            file_uploaded: { text: 'File uploaded', color: 'text-green-700 dark:text-green-400', icon: <CheckCircle className="w-3.5 h-3.5" /> },
+                                            env_var_ref: { text: `env var ${row.envVar}`, color: 'text-blue-700 dark:text-blue-400', icon: <CheckCircle className="w-3.5 h-3.5" /> },
+                                            inline_value: { text: 'inline value set', color: 'text-yellow-700 dark:text-yellow-400', icon: <AlertCircle className="w-3.5 h-3.5" /> },
+                                            not_configured: { text: 'not configured', color: 'text-red-700 dark:text-red-400', icon: <XCircle className="w-3.5 h-3.5" /> },
+                                        }[row.state];
+                                        return (
+                                            <div
+                                                key={`${row.providerKey}.${row.credentialType}`}
+                                                className="flex items-center gap-3 p-3 border border-input rounded-md hover:bg-muted/30 transition-colors"
+                                            >
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="flex items-center gap-2 flex-wrap">
+                                                        <span className="font-mono text-sm font-medium">{row.providerKey}</span>
+                                                        <span className="text-xs text-muted-foreground">({row.kind})</span>
+                                                        <span className="text-xs text-muted-foreground">·</span>
+                                                        <span className="text-xs">{row.credentialType}</span>
+                                                    </div>
+                                                    <div className={`flex items-center gap-1 text-xs mt-1 ${stateLabel.color}`}>
+                                                        {stateLabel.icon}
+                                                        <span>{stateLabel.text}</span>
+                                                        {row.path && row.state === 'file_uploaded' && (
+                                                            <span className="text-muted-foreground font-mono truncate ml-2" title={row.path}>
+                                                                — {row.path}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                                <Link
+                                                    to="/providers"
+                                                    className="text-xs text-primary hover:underline whitespace-nowrap"
+                                                    title="Open the Providers page to edit this provider"
+                                                >
+                                                    Edit →
+                                                </Link>
+                                            </div>
+                                        );
+                                    })}
+                                    <p className="text-xs text-muted-foreground pt-2">
+                                        Files at <code>/app/project/secrets/providers/&lt;key&gt;/api-key</code> override
+                                        the env vars above. The Providers page is the source of truth for per-instance edits.
+                                    </p>
+                                </div>
+                            )}
+                        </ConfigCard>
                     </ConfigSection>
 
                     {/* Email Delivery (SMTP) */}
@@ -1397,6 +1618,7 @@ const EnvPage = () => {
                                     value={env['FASTER_WHISPER_MODEL'] || 'base'}
                                     onChange={(e) => updateEnv('FASTER_WHISPER_MODEL', e.target.value)}
                                     options={[
+                                        { value: 'tiny.en', label: 'Tiny English (CPU demo)' },
                                         { value: 'tiny', label: 'Tiny (Fastest)' },
                                         { value: 'base', label: 'Base' },
                                         { value: 'small', label: 'Small' },
@@ -1906,26 +2128,26 @@ const EnvPage = () => {
                                 />
                                 <FormSelect
                                     label="PBX Type"
-                                    value={env['AAVA_OUTBOUND_PBX_TYPE'] || 'freepbx'}
+                                    value={normalizeOutboundPbxType(
+                                        env['AAVA_OUTBOUND_PBX_TYPE']
+                                    )}
                                     onChange={(e) => updateEnv('AAVA_OUTBOUND_PBX_TYPE', e.target.value)}
-                                    options={[
-                                        { value: 'freepbx', label: 'FreePBX' },
-                                        { value: 'vicidial', label: 'ViciDial' },
-                                        { value: 'generic', label: 'Generic Asterisk' },
-                                    ]}
-                                    tooltip="Controls FreePBX-specific channel vars (AMPUSER/FROMEXTEN). ViciDial and generic skip them."
+                                    options={getOutboundPbxTypeOptions(
+                                        env['AAVA_OUTBOUND_PBX_TYPE']
+                                    )}
+                                    tooltip="Controls PBX-specific channel variables for AAVA Campaigns. New VICIdial integrations use Call Scheduling → VICIdial Remote Agents; the legacy direct-origination value is shown only when already configured."
                                 />
                                 <FormInput
                                     label="Dial Context"
                                     value={env['AAVA_OUTBOUND_DIAL_CONTEXT'] || 'from-internal'}
                                     onChange={(e) => updateEnv('AAVA_OUTBOUND_DIAL_CONTEXT', e.target.value)}
-                                    tooltip="Asterisk dialplan context for Local/ origination. FreePBX: from-internal, ViciDial: default."
+                                    tooltip="Asterisk dialplan context for AAVA Campaign Local/ origination. FreePBX commonly uses from-internal."
                                 />
                                 <FormInput
                                     label="Dial Prefix"
                                     value={env['AAVA_OUTBOUND_DIAL_PREFIX'] || ''}
                                     onChange={(e) => updateEnv('AAVA_OUTBOUND_DIAL_PREFIX', e.target.value)}
-                                    tooltip="Prefix prepended to phone number for carrier routing. ViciDial example: 911."
+                                    tooltip="Prefix prepended to the phone number for AAVA Campaign carrier routing."
                                 />
                                 <FormSelect
                                     label="Channel Tech"
@@ -1937,8 +2159,15 @@ const EnvPage = () => {
                                         { value: 'sip', label: 'SIP only (chan_sip)' },
                                         { value: 'local_only', label: 'Local only (no probing)' },
                                     ]}
-                                    tooltip="Channel technology for internal extension probing. ViciDial uses SIP (chan_sip)."
+                                    tooltip="Channel technology used for AAVA Campaign internal extension probing."
                                 />
+                                <FormInput
+                                    label="VICIdial API Username"
+                                    value={env['VICIDIAL_API_USER'] || ''}
+                                    onChange={(e) => updateEnv('VICIDIAL_API_USER', e.target.value)}
+                                    tooltip="Dedicated least-privilege API user used by the VICIdial Remote Agent integration."
+                                />
+                                {renderSecretInput('VICIdial API Password', 'VICIDIAL_API_PASS', 'Dedicated API password')}
                                 <FormInput
                                     label="Media Directory"
                                     value={env['AAVA_MEDIA_DIR'] || '/mnt/asterisk_media/ai-generated'}

@@ -43,6 +43,7 @@ OS_FAMILY="unknown"
 ARCH=""
 ASTERISK_DIR=""
 ASTERISK_FOUND=false
+ASTERISK_BIN=""
 COMPOSE_CMD=""
 
 # Docs and platform config (best-effort; script still works without them)
@@ -1001,19 +1002,20 @@ docker compose "$@"' > /usr/local/bin/docker-compose
         log_info "  Docs: $COMPOSE_AAVA_DOCS_URL"
     fi
     
-    # Check buildx version (required >= 0.17 for compose build)
+    # Check buildx (required for compose build)
+    local BUILDX_INSTALL_CMD="mkdir -p /usr/local/lib/docker/cli-plugins && curl -L https://github.com/docker/buildx/releases/download/v0.17.1/buildx-v0.17.1.linux-amd64 -o /usr/local/lib/docker/cli-plugins/docker-buildx && chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx"
     if docker buildx version &>/dev/null 2>&1; then
-        BUILDX_VER=$(docker buildx version 2>/dev/null | grep -oP 'v?\K[0-9]+\.[0-9]+' | head -1)
+        BUILDX_VER=$(docker buildx version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
         BUILDX_MAJOR=$(echo "$BUILDX_VER" | cut -d. -f1)
         BUILDX_MINOR=$(echo "$BUILDX_VER" | cut -d. -f2)
 
         # Validate that version components are numeric before comparison
         if [[ "$BUILDX_MAJOR" =~ ^[0-9]+$ ]] && [[ "$BUILDX_MINOR" =~ ^[0-9]+$ ]]; then
             if [ "$BUILDX_MAJOR" -eq 0 ] && [ "$BUILDX_MINOR" -lt 17 ]; then
-                log_warn "Docker Buildx $BUILDX_VER - requires 0.17+ for compose build"
-                log_info "  Fix: mkdir -p /usr/local/lib/docker/cli-plugins && curl -L https://github.com/docker/buildx/releases/download/v0.17.1/buildx-v0.17.1.linux-amd64 -o /usr/local/lib/docker/cli-plugins/docker-buildx && chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx"
+                log_fail "Docker Buildx $BUILDX_VER too old - requires 0.17+ for compose build"
+                log_info "  Fix: $BUILDX_INSTALL_CMD"
                 log_info "  Docs: $COMPOSE_AAVA_DOCS_URL"
-                FIX_CMDS+=("mkdir -p /usr/local/lib/docker/cli-plugins && curl -L https://github.com/docker/buildx/releases/download/v0.17.1/buildx-v0.17.1.linux-amd64 -o /usr/local/lib/docker/cli-plugins/docker-buildx && chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx")
+                FIX_CMDS+=("$BUILDX_INSTALL_CMD")
             else
                 log_ok "Docker Buildx: $BUILDX_VER"
             fi
@@ -1022,6 +1024,11 @@ docker compose "$@"' > /usr/local/bin/docker-compose
             log_warn "Docker Buildx version non-standard: $BUILDX_VER"
             log_info "  Skipping version check - ensure you have Buildx 0.17+ features"
         fi
+    else
+        log_fail "Docker Buildx not installed (required for docker compose build)"
+        log_info "  Fix: $BUILDX_INSTALL_CMD"
+        log_info "  Or install via package manager: apt install docker-buildx-plugin (Debian/Ubuntu)"
+        FIX_CMDS+=("$BUILDX_INSTALL_CMD")
     fi
 }
 
@@ -1627,6 +1634,37 @@ _json_escape() {
     printf '%s' "$s"
 }
 
+resolve_asterisk_binary() {
+    if [ -n "$ASTERISK_BIN" ] && [ -x "$ASTERISK_BIN" ]; then
+        return 0
+    fi
+    ASTERISK_BIN="$(command -v asterisk 2>/dev/null || true)"
+    if [ -z "$ASTERISK_BIN" ]; then
+        local candidate
+        for candidate in /usr/sbin/asterisk /usr/local/sbin/asterisk; do
+            if [ -x "$candidate" ]; then
+                ASTERISK_BIN="$candidate"
+                break
+            fi
+        done
+    fi
+    [ -n "$ASTERISK_BIN" ]
+}
+
+asterisk_config_grep() {
+    local options="$1"
+    local pattern="$2"
+    local file="$3"
+    [ -f "$file" ] || return 1
+    if [ -r "$file" ]; then
+        grep "$options" -- "$pattern" "$file" 2>/dev/null
+    elif command -v sudo &>/dev/null && sudo -n test -r "$file" 2>/dev/null; then
+        sudo -n grep "$options" -- "$pattern" "$file" 2>/dev/null
+    else
+        return 1
+    fi
+}
+
 check_asterisk() {
     ASTERISK_DIR=""
     ASTERISK_FOUND=false
@@ -1648,8 +1686,8 @@ check_asterisk() {
     done
     
     # Check if Asterisk binary exists
-    if command -v asterisk &>/dev/null; then
-        ASTERISK_VERSION=$(asterisk -V 2>/dev/null | head -1 || echo "unknown")
+    if resolve_asterisk_binary; then
+        ASTERISK_VERSION=$("$ASTERISK_BIN" -V 2>/dev/null | head -1 || echo "unknown")
         log_ok "Asterisk binary: $ASTERISK_VERSION"
     else
         log_info "Asterisk binary not found in PATH (may be containerized)"
@@ -1702,7 +1740,7 @@ check_asterisk() {
 # ============================================================================
 check_asterisk_uid_gid() {
     # Skip if Asterisk not found on host
-    if ! command -v asterisk &>/dev/null && [ ! -f /etc/asterisk/asterisk.conf ]; then
+    if ! resolve_asterisk_binary && [ ! -f /etc/asterisk/asterisk.conf ]; then
         log_info "Asterisk not on host - skipping UID/GID detection"
         return 0
     fi
@@ -1735,7 +1773,19 @@ check_asterisk_uid_gid() {
     # project lives under /root (0700), so Asterisk sees "file does not exist" for ai-generated sounds.
     local use_bind_mount=false
     if [ -d "/var/lib/asterisk/sounds" ] && id asterisk &>/dev/null; then
-        if ! sudo -u asterisk test -x "$MEDIA_DIR" 2>/dev/null; then
+        # MEDIA_DIR may not exist on a fresh install. Probe the closest existing
+        # ancestor so a missing leaf is not mistaken for an untraversable path.
+        local media_traversal_probe="$MEDIA_DIR"
+        while [ ! -e "$media_traversal_probe" ] && [ "$media_traversal_probe" != "/" ]; do
+            media_traversal_probe="$(dirname "$media_traversal_probe")"
+        done
+        # Once a bind mount is active or persisted, keep using that mode. A
+        # previous fix may have made the source path traversable, but switching
+        # back to symlink mode would try to rename the active mountpoint.
+        if mountpoint -q "$ASTERISK_SOUNDS_LINK" 2>/dev/null || \
+                fstab_mountpoint_has_bind_option "$ASTERISK_SOUNDS_LINK"; then
+            use_bind_mount=true
+        elif ! sudo -u asterisk test -x "$media_traversal_probe" 2>/dev/null; then
             use_bind_mount=true
             log_warn "Asterisk user cannot access media directory path; file playback via symlink may fail"
             log_info "  media_dir=$MEDIA_DIR"
@@ -2021,7 +2071,7 @@ check_asterisk_config() {
     local ari_enabled_detail="not found"
     # FreePBX splits config via #include; check both main and included files
     for f in "$ASTERISK_DIR/ari.conf" "$ASTERISK_DIR/ari_general_additional.conf" "$ASTERISK_DIR/ari_general_custom.conf"; do
-        if [ -f "$f" ] && grep -qiE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*yes' "$f" 2>/dev/null; then
+        if asterisk_config_grep -qiE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*yes' "$f"; then
             ari_enabled_ok=true
             ari_enabled_detail="enabled=yes in $(basename "$f")"
             break
@@ -2041,7 +2091,7 @@ check_asterisk_config() {
     [ -z "$ARI_USERNAME" ] && ARI_USERNAME="$(grep -E '^ASTERISK_ARI_USERNAME=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '\r\n"'"'" || true)"
     [ -z "$ARI_USERNAME" ] && ARI_USERNAME="AIAgent"
     for f in "$ASTERISK_DIR/ari.conf" "$ASTERISK_DIR/ari_additional.conf" "$ASTERISK_DIR/ari_additional_custom.conf"; do
-        if [ -f "$f" ] && grep -qE "^\[$ARI_USERNAME\]" "$f" 2>/dev/null; then
+        if asterisk_config_grep -qE "^\[$ARI_USERNAME\]" "$f"; then
             ari_user_ok=true
             ari_user_detail="[$ARI_USERNAME] found in $(basename "$f")"
             break
@@ -2058,7 +2108,7 @@ check_asterisk_config() {
     local http_enabled_ok=false
     local http_enabled_detail="not found"
     for f in "$ASTERISK_DIR/http.conf" "$ASTERISK_DIR/http_additional.conf" "$ASTERISK_DIR/http_custom.conf"; do
-        if [ -f "$f" ] && grep -qiE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*yes' "$f" 2>/dev/null; then
+        if asterisk_config_grep -qiE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*yes' "$f"; then
             http_enabled_ok=true
             http_enabled_detail="enabled=yes in $(basename "$f")"
             break
@@ -2074,17 +2124,33 @@ check_asterisk_config() {
     # --- Dialplan context check ---
     local dialplan_ok=false
     local dialplan_detail="not found"
-    if [ -f "$ASTERISK_DIR/extensions_custom.conf" ]; then
-        if grep -qiE "Stasis\($APP_NAME\)" "$ASTERISK_DIR/extensions_custom.conf" 2>/dev/null; then
-            dialplan_ok=true
-            dialplan_detail="Stasis($APP_NAME) in extensions_custom.conf"
-        fi
+    local dialplan_files=()
+    if [ "$FREEPBX_DETECTED" = true ]; then
+        dialplan_files+=("$ASTERISK_DIR/extensions_custom.conf")
     fi
+    dialplan_files+=("$ASTERISK_DIR/extensions.conf")
+    if [ "$FREEPBX_DETECTED" != true ]; then
+        # Some generic Asterisk installs deliberately include a separate custom file.
+        dialplan_files+=("$ASTERISK_DIR/extensions_custom.conf")
+    fi
+    local dialplan_file
+    for dialplan_file in "${dialplan_files[@]}"; do
+        if asterisk_config_grep -qiE "Stasis\($APP_NAME\)" "$dialplan_file"; then
+            dialplan_ok=true
+            dialplan_detail="Stasis($APP_NAME) in $(basename "$dialplan_file")"
+            break
+        fi
+    done
     if [ "$dialplan_ok" = true ]; then
         log_ok "Dialplan context: $dialplan_detail"
     else
-        log_warn "No Stasis($APP_NAME) context found in extensions_custom.conf"
-        log_info "  Fix: add a context with 'Stasis($APP_NAME)' to extensions_custom.conf"
+        if [ "$FREEPBX_DETECTED" = true ]; then
+            log_warn "No Stasis($APP_NAME) route found in extensions_custom.conf or extensions.conf"
+            log_info "  Fix: add a context with 'Stasis($APP_NAME)' to extensions_custom.conf"
+        else
+            log_warn "No Stasis($APP_NAME) route found in extensions.conf or extensions_custom.conf"
+            log_info "  Fix: add a dialplan route with 'Stasis($APP_NAME)' to extensions.conf"
+        fi
     fi
 
     # --- Module checks (requires asterisk binary) ---
@@ -2093,7 +2159,7 @@ check_asterisk_config() {
     local mod_res_stasis_ok=false mod_res_stasis_detail="binary not available"
     local mod_chan_pjsip_ok=false mod_chan_pjsip_detail="binary not available"
 
-    if command -v asterisk &>/dev/null; then
+    if resolve_asterisk_binary; then
         _check_ast_module "app_audiosocket" && mod_audiosocket_ok=true && mod_audiosocket_detail="Running"
         [ "$mod_audiosocket_ok" = false ] && mod_audiosocket_detail="Not loaded"
 
@@ -2145,7 +2211,8 @@ JSONEOF
 _check_ast_module() {
     local mod_name="$1"
     local output
-    output=$(asterisk -rx "module show like $mod_name" 2>/dev/null || true)
+    resolve_asterisk_binary || return 1
+    output=$("$ASTERISK_BIN" -rx "module show like $mod_name" 2>/dev/null || true)
     echo "$output" | grep -qiE "$mod_name.*Running"
 }
 
@@ -2218,122 +2285,127 @@ check_gpu() {
     if ! command -v nvidia-container-cli &>/dev/null; then
         log_warn "nvidia-container-toolkit not installed"
         log_info "  GPU detected but Docker cannot use it without the toolkit"
-        log_info "  Attempting automatic installation..."
-        
-        # Auto-install based on OS
-        local toolkit_installed=false
-        case "$OS_FAMILY" in
-            debian)
-                # Add NVIDIA GPG key (skip if already exists)
-                if [ ! -f /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg ]; then
-                    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
-                        gpg --batch --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg 2>/dev/null || true
-                fi
-                # Add repo
-                curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
-                    sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > \
-                    /etc/apt/sources.list.d/nvidia-container-toolkit.list 2>/dev/null || true
-                # Install
-                if apt-get update -qq && apt-get install -y nvidia-container-toolkit; then
-                    toolkit_installed=true
-                fi
-                ;;
-            rhel)
-                # Add repo
-                curl -s -L https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | \
-                    tee /etc/yum.repos.d/nvidia-container-toolkit.repo > /dev/null 2>&1 || true
-                # Install
-                if yum install -y nvidia-container-toolkit; then
-                    toolkit_installed=true
-                fi
-                ;;
-        esac
-        
-        if [ "$toolkit_installed" = true ]; then
-            log_ok "nvidia-container-toolkit installed successfully"
-            # Configure Docker runtime
-            log_info "  Configuring Docker to use nvidia runtime..."
-            if nvidia-ctk runtime configure --runtime=docker 2>/dev/null; then
-                log_ok "Docker nvidia runtime configured"
-                # Restart Docker to apply changes
-                if systemctl restart docker 2>/dev/null; then
-                    log_ok "Docker restarted with nvidia runtime"
-                else
-                    log_warn "Could not restart Docker - please restart manually: sudo systemctl restart docker"
-                fi
-            else
-                log_warn "Could not configure nvidia runtime - please run: sudo nvidia-ctk runtime configure --runtime=docker"
-            fi
-        else
-            log_warn "Automatic installation failed. Install manually:"
+
+        if [ "$APPLY_FIXES" = true ]; then
+            log_info "  Attempting automatic installation..."
+            # Auto-install based on OS
+            local toolkit_installed=false
             case "$OS_FAMILY" in
                 debian)
-                    log_info "    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
-                    log_info "    curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \\"
-                    log_info "      sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \\"
-                    log_info "      sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list"
-                    log_info "    sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
-                    log_info "    sudo nvidia-ctk runtime configure --runtime=docker"
-                    log_info "    sudo systemctl restart docker"
+                    if [ ! -f /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg ]; then
+                        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
+                            gpg --batch --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg 2>/dev/null || true
+                    fi
+                    curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+                        sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > \
+                        /etc/apt/sources.list.d/nvidia-container-toolkit.list 2>/dev/null || true
+                    if apt-get update -qq && apt-get install -y nvidia-container-toolkit; then
+                        toolkit_installed=true
+                    fi
                     ;;
                 rhel)
-                    log_info "    curl -s -L https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | \\"
-                    log_info "      sudo tee /etc/yum.repos.d/nvidia-container-toolkit.repo"
-                    log_info "    sudo yum install -y nvidia-container-toolkit"
-                    log_info "    sudo nvidia-ctk runtime configure --runtime=docker"
-                    log_info "    sudo systemctl restart docker"
+                    curl -s -L https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | \
+                        tee /etc/yum.repos.d/nvidia-container-toolkit.repo > /dev/null 2>&1 || true
+                    if yum install -y nvidia-container-toolkit; then
+                        toolkit_installed=true
+                    fi
                     ;;
             esac
+
+            if [ "$toolkit_installed" = true ]; then
+                log_ok "nvidia-container-toolkit installed successfully"
+                log_info "  Configuring Docker to use nvidia runtime..."
+                if nvidia-ctk runtime configure --runtime=docker 2>/dev/null; then
+                    log_ok "Docker nvidia runtime configured"
+                    if is_systemd_available && systemctl restart docker 2>/dev/null; then
+                        log_ok "Docker restarted with nvidia runtime"
+                    else
+                        log_warn "Could not restart Docker - please restart manually: sudo systemctl restart docker"
+                    fi
+                else
+                    log_warn "Could not configure nvidia runtime - please run: sudo nvidia-ctk runtime configure --runtime=docker"
+                fi
+            else
+                log_warn "Automatic installation failed. Install manually:"
+                case "$OS_FAMILY" in
+                    debian)
+                        log_info "    sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
+                        log_info "    sudo nvidia-ctk runtime configure --runtime=docker"
+                        log_info "    sudo systemctl restart docker"
+                        ;;
+                    rhel)
+                        log_info "    sudo yum install -y nvidia-container-toolkit"
+                        log_info "    sudo nvidia-ctk runtime configure --runtime=docker"
+                        log_info "    sudo systemctl restart docker"
+                        ;;
+                esac
+                log_info "  Docs: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
+                update_env_gpu "true" "false"  # Host GPU exists; passthrough is not verified
+                return 0
+            fi
+        else
+            log_info "  Run with --apply-fixes to install automatically, or install manually:"
+            log_info "    Debian/Ubuntu: sudo apt-get install -y nvidia-container-toolkit"
+            log_info "    RHEL/Rocky:    sudo yum install -y nvidia-container-toolkit"
             log_info "  Docs: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
-            update_env_gpu "true"  # GPU exists, just toolkit missing
+            update_env_gpu "true" "false"  # Host GPU exists; passthrough is not verified
             return 0
         fi
     fi
-    
-    log_ok "nvidia-container-toolkit installed"
-    
-    # Step 4: Test Docker GPU passthrough
-    log_info "Testing Docker GPU passthrough..."
-    local cuda_test_images=(
-        "nvidia/cuda:12.0.0-base-ubi8"
-        "nvidia/cuda:12.0-base"
-        "nvidia/cuda:12.4.1-base-ubuntu22.04"
-    )
-    local passthrough_test_ok=false
-    local working_cuda_test_image=""
-    local cuda_test_image
-    for cuda_test_image in "${cuda_test_images[@]}"; do
-        if docker run --rm --gpus all "$cuda_test_image" nvidia-smi &>/dev/null 2>&1; then
-            passthrough_test_ok=true
-            working_cuda_test_image="$cuda_test_image"
-            break
-        fi
-    done
 
-    if [ "$passthrough_test_ok" = true ]; then
-        log_ok "Docker GPU passthrough working"
-        log_info "  Verified with image: $working_cuda_test_image"
-        update_env_gpu "true"
-        
-        # Inform user - GPU detection works via .env, no workflow change needed
-        log_info ""
-        log_info "  GPU will be detected by Setup Wizard automatically (via GPU_AVAILABLE in .env)"
-        log_info ""
-        log_info "  To use GPU for LLM inference (optional, faster responses):"
-        log_info "    1. Set LOCAL_LLM_GPU_LAYERS=-1 in .env"
-        log_info "    2. Start local_ai_server with GPU override:"
-        log_info "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent -f docker-compose.yml -f docker-compose.gpu.yml up -d --build local_ai_server"
+    log_ok "nvidia-container-toolkit installed"
+
+    # Step 4: Test Docker GPU passthrough (skip if already verified on previous run)
+    local gpu_marker="$SCRIPT_DIR/.gpu-passthrough-ok"
+    if [ -f "$gpu_marker" ] && [ "$(find "$gpu_marker" -mmin -60 2>/dev/null)" ]; then
+        log_ok "Docker GPU passthrough: verified (cached)"
+        # The marker caches only the expensive container probe. Environment
+        # seeding must still run (for example after .env is regenerated).
+        update_env_gpu "true" "true"
     else
-        log_warn "Docker GPU passthrough test failed"
-        log_info "  GPU detected and toolkit installed, but Docker cannot access GPU"
-        log_info "  Try: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
-        update_env_gpu "true"  # GPU exists, passthrough just needs config
+        log_info "Testing Docker GPU passthrough (may pull ~200MB image)..."
+        local cuda_test_images=(
+            "nvidia/cuda:12.0.0-base-ubi8"
+            "nvidia/cuda:12.0-base"
+            "nvidia/cuda:12.4.1-base-ubuntu22.04"
+        )
+        local passthrough_test_ok=false
+        local working_cuda_test_image=""
+        local cuda_test_image
+        for cuda_test_image in "${cuda_test_images[@]}"; do
+            if docker run --rm --gpus all "$cuda_test_image" nvidia-smi &>/dev/null 2>&1; then
+                passthrough_test_ok=true
+                working_cuda_test_image="$cuda_test_image"
+                break
+            fi
+        done
+
+        if [ "$passthrough_test_ok" = true ]; then
+            log_ok "Docker GPU passthrough working"
+            log_info "  Verified with image: $working_cuda_test_image"
+            update_env_gpu "true" "true"
+            touch "$gpu_marker" 2>/dev/null || true
+
+            log_info ""
+            log_info "  GPU will be detected by Setup Wizard automatically (via GPU_AVAILABLE in .env)"
+            log_info ""
+            log_info "  To use GPU for LLM inference (optional, faster responses):"
+            log_info "    1. Set LOCAL_LLM_GPU_LAYERS=-1 in .env"
+            log_info "    2. Start local_ai_server with GPU override:"
+            log_info "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent -f docker-compose.yml -f docker-compose.gpu.yml up -d --build local_ai_server"
+        else
+            log_warn "Docker GPU passthrough test failed"
+            log_info "  GPU detected and toolkit installed, but Docker cannot access GPU"
+            log_info "  Try: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
+            update_env_gpu "true" "false"  # Host GPU exists; passthrough failed
+        fi
     fi
 }
 
 # Helper: Update GPU_AVAILABLE in .env
 update_env_gpu() {
     local gpu_value="$1"
+    local passthrough_verified="${2:-false}"
     
     [ ! -f "$SCRIPT_DIR/.env" ] && return 0
     
@@ -2341,19 +2413,15 @@ update_env_gpu() {
     local current_value
     current_value="$(grep -E '^GPU_AVAILABLE=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')"
     
-    if [ "$current_value" = "$gpu_value" ]; then
-        return 0  # Already correct
-    fi
-    
-    # Update or add GPU_AVAILABLE
-    if grep -qE '^#?GPU_AVAILABLE=' "$SCRIPT_DIR/.env" 2>/dev/null; then
-        # Update existing line
-        sed -i.bak "s/^#*GPU_AVAILABLE=.*/GPU_AVAILABLE=$gpu_value/" "$SCRIPT_DIR/.env" 2>/dev/null || \
-            sed -i '' "s/^#*GPU_AVAILABLE=.*/GPU_AVAILABLE=$gpu_value/" "$SCRIPT_DIR/.env"
-        rm -f "$SCRIPT_DIR/.env.bak" 2>/dev/null
-    else
-        # Add new line in GPU section (after LOCAL_LLM_GPU_LAYERS or at end)
-        if grep -q "LOCAL_LLM_GPU_LAYERS" "$SCRIPT_DIR/.env" 2>/dev/null; then
+    if [ "$current_value" != "$gpu_value" ]; then
+        # Update or add GPU_AVAILABLE
+        if grep -qE '^#?GPU_AVAILABLE=' "$SCRIPT_DIR/.env" 2>/dev/null; then
+            # Update existing line
+            sed -i.bak "s/^#*GPU_AVAILABLE=.*/GPU_AVAILABLE=$gpu_value/" "$SCRIPT_DIR/.env" 2>/dev/null || \
+                sed -i '' "s/^#*GPU_AVAILABLE=.*/GPU_AVAILABLE=$gpu_value/" "$SCRIPT_DIR/.env"
+            rm -f "$SCRIPT_DIR/.env.bak" 2>/dev/null
+        elif grep -q "LOCAL_LLM_GPU_LAYERS" "$SCRIPT_DIR/.env" 2>/dev/null; then
+            # Add new line in GPU section (after LOCAL_LLM_GPU_LAYERS or at end)
             sed -i.bak "/LOCAL_LLM_GPU_LAYERS/a\\
 GPU_AVAILABLE=$gpu_value" "$SCRIPT_DIR/.env" 2>/dev/null || \
                 sed -i '' "/LOCAL_LLM_GPU_LAYERS/a\\
@@ -2371,7 +2439,12 @@ GPU_AVAILABLE=$gpu_value" "$SCRIPT_DIR/.env"
         # Check for GPU layers footgun: GPU detected but layers=0 means CPU-only LLM inference.
         local current_layers
         current_layers="$(grep -E '^LOCAL_LLM_GPU_LAYERS=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')"
-        if [ "$current_layers" = "0" ]; then
+        if [ -z "$current_layers" ] && [ "$APPLY_FIXES" = true ] && [ "$passthrough_verified" = true ]; then
+            echo "LOCAL_LLM_GPU_LAYERS=-1" >> "$SCRIPT_DIR/.env"
+            log_ok "Set LOCAL_LLM_GPU_LAYERS=-1 for automatic GPU offloading"
+        elif [ -z "$current_layers" ] && [ "$APPLY_FIXES" = true ]; then
+            log_warn "Docker GPU passthrough is not verified; leaving LOCAL_LLM_GPU_LAYERS unset"
+        elif [ "$current_layers" = "0" ]; then
             log_warn "LOCAL_LLM_GPU_LAYERS=0 in .env — LLM will run on CPU despite GPU being available"
             log_info "  Suggestion: Set LOCAL_LLM_GPU_LAYERS=-1 in .env for automatic GPU offloading"
         fi
@@ -2381,44 +2454,135 @@ GPU_AVAILABLE=$gpu_value" "$SCRIPT_DIR/.env"
 # ============================================================================
 # Port Check
 # ============================================================================
-check_ports() {
-    PORT=3003
+_check_port() {
+    local port="$1"
+    local label="$2"
+    local expected_container="${3:-}"
+    local in_use=false
     if command -v ss &>/dev/null; then
-        if ss -tln | grep -q ":$PORT "; then
-            log_warn "Port $PORT already in use (Admin UI port)"
-        else
-            log_ok "Port $PORT available"
+        if ss -tln | grep -q ":$port "; then
+            in_use=true
         fi
     elif command -v netstat &>/dev/null; then
-        if netstat -tln | grep -q ":$PORT "; then
-            log_warn "Port $PORT already in use (Admin UI port)"
-        else
-            log_ok "Port $PORT available"
+        if netstat -tln | grep -q ":$port "; then
+            in_use=true
         fi
+    else
+        log_warn "Cannot check port $port - neither ss nor netstat found"
+        return
+    fi
+
+    if [ "$in_use" = false ]; then
+        log_ok "Port $port available ($label)"
+    elif [ -n "$expected_container" ] && \
+            docker inspect -f '{{.State.Running}}' "$expected_container" 2>/dev/null | grep -qx true; then
+        log_warn "Port $port is in use and $expected_container is running, but listener ownership was not verified"
+    else
+        log_warn "Port $port already in use ($label)"
     fi
 }
 
+check_ports() {
+    _check_port 3003  "Admin UI"       "admin_ui"
+    _check_port 8090  "AudioSocket"    "ai_engine"
+    _check_port 15000 "Health/Metrics" "ai_engine"
+    _check_port 18080 "ExternalMedia RTP"
+}
+
 check_ports_local_server() {
-    # Local AI Server is WS-only. Default port is 8765 (LOCAL_WS_PORT).
     local port="8765"
     if [ -f "$SCRIPT_DIR/.env" ]; then
-        # Use grep instead of source to avoid executing arbitrary code from .env
         local env_port
         env_port="$(grep -E '^LOCAL_WS_PORT=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')"
         [ -n "$env_port" ] && port="$env_port"
     fi
-    if command -v ss &>/dev/null; then
-        if ss -tln | grep -q ":$port "; then
-            log_warn "Port $port already in use (Local AI Server WS port)"
+    _check_port "$port" "Local AI Server WS" "local_ai_server"
+}
+
+# ============================================================================
+# System Resources (RAM, Disk)
+# ============================================================================
+check_system_resources() {
+    # RAM check: 4 GB fail / 8 GB warn
+    local ram_kb ram_gb
+    if [ -f /proc/meminfo ]; then
+        ram_kb="$(grep MemTotal /proc/meminfo | awk '{print $2}')"
+        ram_gb=$(( ram_kb / 1024 / 1024 ))
+        if [ "$ram_gb" -lt 4 ]; then
+            log_fail "System RAM: ${ram_gb} GB (minimum 4 GB required for any LLM)"
+        elif [ "$ram_gb" -lt 8 ]; then
+            log_warn "System RAM: ${ram_gb} GB (8 GB recommended for CPU LLM inference)"
+            log_info "  Cloud-only providers (no local LLM) will work fine with ${ram_gb} GB"
         else
-            log_ok "Port $port available"
+            log_ok "System RAM: ${ram_gb} GB"
         fi
-    elif command -v netstat &>/dev/null; then
-        if netstat -tln | grep -q ":$port "; then
-            log_warn "Port $port already in use (Local AI Server WS port)"
+    else
+        log_info "Cannot check RAM (/proc/meminfo not found)"
+    fi
+
+    # Disk space check: 10 GB threshold on the models mount point
+    local models_dir="$SCRIPT_DIR/models"
+    local check_dir="$models_dir"
+    [ ! -d "$check_dir" ] && check_dir="$SCRIPT_DIR"
+    if command -v df &>/dev/null; then
+        local avail_gb
+        avail_gb="$(df -BG "$check_dir" 2>/dev/null | awk 'NR==2 {gsub(/G/,""); print $4}')"
+        if [ -n "$avail_gb" ] && [[ "$avail_gb" =~ ^[0-9]+$ ]]; then
+            if [ "$avail_gb" -lt 10 ]; then
+                log_warn "Disk space: ${avail_gb} GB free on $(df "$check_dir" 2>/dev/null | awk 'NR==2 {print $6}') (10 GB recommended for model downloads)"
+                log_info "  LLM models range from 700 MB to 9 GB depending on selection"
+            else
+                log_ok "Disk space: ${avail_gb} GB free"
+            fi
+        fi
+    fi
+}
+
+# ============================================================================
+# Network Connectivity (HuggingFace)
+# ============================================================================
+check_network() {
+    if command -v curl &>/dev/null; then
+        if curl -sf --connect-timeout 5 --max-time 10 https://huggingface.co >/dev/null 2>&1; then
+            log_ok "Network: huggingface.co reachable (model downloads)"
         else
-            log_ok "Port $port available"
+            log_warn "Cannot reach huggingface.co - model downloads may fail"
+            log_info "  Check network connectivity, proxy settings, or firewall rules"
+            log_info "  Models can also be downloaded manually and placed in models/ directory"
         fi
+    elif command -v wget &>/dev/null; then
+        if wget -q --spider --timeout=5 https://huggingface.co 2>/dev/null; then
+            log_ok "Network: huggingface.co reachable (model downloads)"
+        else
+            log_warn "Cannot reach huggingface.co - model downloads may fail"
+        fi
+    else
+        log_info "Cannot check network connectivity (neither curl nor wget found)"
+    fi
+}
+
+# ============================================================================
+# HOST_PROJECT_ROOT validation
+# ============================================================================
+check_host_project_root() {
+    [ ! -f "$SCRIPT_DIR/.env" ] && return 0
+
+    local current_root
+    current_root="$(grep -E '^HOST_PROJECT_ROOT=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]\"')"
+
+    if [ -z "$current_root" ]; then
+        # Not set — seed it with the actual project directory
+        echo "" >> "$SCRIPT_DIR/.env"
+        echo "HOST_PROJECT_ROOT=$SCRIPT_DIR" >> "$SCRIPT_DIR/.env"
+        log_ok "Set HOST_PROJECT_ROOT=$SCRIPT_DIR in .env"
+        log_info "  Required for Admin UI container management (docker compose bind mount)"
+    elif [ "$current_root" != "$SCRIPT_DIR" ]; then
+        log_warn "HOST_PROJECT_ROOT=$current_root does not match actual project dir: $SCRIPT_DIR"
+        log_info "  Admin UI container operations may fail with incorrect bind mounts"
+        log_info "  Fix: Update HOST_PROJECT_ROOT in .env to: $SCRIPT_DIR"
+        FIX_CMDS+=("sed -i 's|^HOST_PROJECT_ROOT=.*|HOST_PROJECT_ROOT=${SCRIPT_DIR}|' '${SCRIPT_DIR}/.env'")
+    else
+        log_ok "HOST_PROJECT_ROOT matches project directory"
     fi
 }
 
@@ -2454,7 +2618,12 @@ apply_fixes() {
         FAILURES=()
         FIX_CMDS=()
         
-        # Re-run the checks silently first, then show summary
+        # Re-run the full applicable check set silently, then show summary. A
+        # partial recheck can otherwise print "All checks passed" while
+        # unresolved Asterisk, GPU, network, or port warnings still exist.
+        detect_os >/dev/null 2>&1
+        check_system_resources >/dev/null 2>&1
+        check_ipv6 >/dev/null 2>&1
         check_docker >/dev/null 2>&1
         check_compose >/dev/null 2>&1
         check_directories >/dev/null 2>&1
@@ -2463,7 +2632,19 @@ apply_fixes() {
         check_secrets_permissions >/dev/null 2>&1
         check_selinux >/dev/null 2>&1
         check_env >/dev/null 2>&1
-        check_docker_gid >/dev/null 2>&1
+        check_host_project_root >/dev/null 2>&1
+        check_network >/dev/null 2>&1
+        if [ "$LOCAL_SERVER_ONLY" = true ]; then
+            check_gpu >/dev/null 2>&1
+            check_ports_local_server >/dev/null 2>&1
+        else
+            check_docker_gid >/dev/null 2>&1
+            check_asterisk >/dev/null 2>&1
+            check_asterisk_uid_gid >/dev/null 2>&1
+            check_asterisk_config >/dev/null 2>&1
+            check_gpu >/dev/null 2>&1
+            check_ports >/dev/null 2>&1
+        fi
     fi
 }
 
@@ -2523,7 +2704,7 @@ print_summary() {
         echo "║  Admin UI binds to 0.0.0.0:3003 by default (accessible on network).       ║"
         echo "║                                                                           ║"
         echo "║  REQUIRED ACTIONS:                                                        ║"
-        echo "║    1. Change default password (admin/admin) on first login                ║"
+        echo "║    1. Use the one-time password and change it on first login             ║"
         echo "║    2. Restrict port 3003 via firewall, VPN, or reverse proxy              ║"
         echo "╚═══════════════════════════════════════════════════════════════════════════╝"
         echo ""
@@ -2584,7 +2765,7 @@ print_summary() {
         echo "║  Admin UI binds to 0.0.0.0:3003 by default (accessible on network).       ║"
         echo "║                                                                           ║"
         echo "║  REQUIRED ACTIONS:                                                        ║"
-        echo "║    1. Change default password (admin/admin) on first login                ║"
+        echo "║    1. Use the one-time password and change it on first login             ║"
         echo "║    2. Restrict port 3003 via firewall, VPN, or reverse proxy              ║"
         echo "╚═══════════════════════════════════════════════════════════════════════════╝"
         echo ""
@@ -2631,6 +2812,7 @@ main() {
     echo ""
     
     detect_os
+    check_system_resources
     check_ipv6
     check_docker
     check_compose
@@ -2640,6 +2822,8 @@ main() {
     check_secrets_permissions  # AAVA-191: Vertex AI credentials directory
     check_selinux
     check_env
+    check_host_project_root
+    check_network
 
     if [ "$LOCAL_SERVER_ONLY" = true ]; then
         # Local AI Server onboarding path: skip Asterisk/Admin UI checks.

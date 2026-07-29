@@ -6,6 +6,14 @@
   <link rel="icon" type="image/png" href="/favicon.png" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Asterisk AI Agent Admin</title>
+  <script>
+    // Apply saved theme before first paint to prevent flash
+    (function() {
+      var t = localStorage.getItem('ava-theme') || 'system';
+      var dark = t === 'dark' || (t === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      if (dark) document.documentElement.classList.add('dark');
+    })();
+  </script>
 </head>
 
 <body>

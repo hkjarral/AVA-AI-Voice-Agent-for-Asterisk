@@ -10,6 +10,7 @@ import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
 import { FormInput, FormLabel } from '../components/ui/FormComponents';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
+import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
 
 type MCPStatus = {
     enabled: boolean;
@@ -55,9 +56,9 @@ const _parseArgLine = (raw: string): string[] => {
 
 const MCPPage = () => {
     const { confirm } = useConfirmDialog();
-    const [config, setConfig] = useState<any>({});
-    const [loading, setLoading] = useState(true);
-    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
+    const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
+    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [saving, setSaving] = useState(false);
     const [reloadingEngine, setReloadingEngine] = useState(false);
     const [status, setStatus] = useState<MCPStatus | null>(null);
@@ -71,18 +72,11 @@ const MCPPage = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    const fetchAll = async () => {
-        setLoading(true);
+    const fetchAll = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
-                setConfig({});
-            } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
-                setYamlError(null);
-            }
+            const r = await loadConfigYaml(force);
+            setConfig(r.config);
+            setYamlError(r.yamlError);
         } catch (err) {
             console.error('Failed to load config', err);
             setYamlError(null);
@@ -345,7 +339,7 @@ const MCPPage = () => {
                 </div>
             </div>
 
-            <div className="bg-yellow-500/10 border border-yellow-500/20 text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
+            <div className="bg-yellow-500/10 border border-yellow-500/20 text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
                 <div className="flex items-center">
                     <AlertCircle className="w-5 h-5 mr-2" />
                     AI Engine reload applies MCP config changes when there are no active calls. “Test” runs in the AI Engine container context.
@@ -366,7 +360,7 @@ const MCPPage = () => {
                                 checked={!!mcpConfig.enabled}
                                 onChange={(e) => updateMcp({ enabled: e.target.checked })}
                             />
-                            <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                            <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-background after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
                         </label>
                     </div>
                 </ConfigCard>
@@ -486,7 +480,7 @@ const MCPPage = () => {
                                     checked={!!serverForm.enabled}
                                     onChange={(e) => setServerForm({ ...serverForm, enabled: e.target.checked })}
                                 />
-                                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-background after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
                             </label>
                         </div>
 
@@ -520,6 +514,7 @@ const MCPPage = () => {
                             value={serverForm.cwd || ''}
                             onChange={(e) => setServerForm({ ...serverForm, cwd: e.target.value })}
                             placeholder="/app/mcp_servers/weather"
+                            tooltip="Working directory for the spawned MCP process. Leave blank to inherit the AI Engine's CWD."
                         />
 
                         <div className="space-y-3">
@@ -532,18 +527,21 @@ const MCPPage = () => {
                                     value={String(serverForm.defaults.timeout_ms)}
                                     onChange={(e) => setServerForm({ ...serverForm, defaults: { ...serverForm.defaults, timeout_ms: Number(e.target.value || 0) } })}
                                     placeholder="10000"
+                                    tooltip="Hard upper bound for a single tool call before it's cancelled and an error is returned to the LLM."
                                 />
                                 <FormInput
                                     label="Slow Threshold (ms)"
                                     value={String(serverForm.defaults.slow_response_threshold_ms)}
                                     onChange={(e) => setServerForm({ ...serverForm, defaults: { ...serverForm.defaults, slow_response_threshold_ms: Number(e.target.value || 0) } })}
                                     placeholder="0"
+                                    tooltip="If a tool call takes longer than this, the agent speaks the 'slow message' to keep the caller engaged. 0 disables."
                                 />
                                 <FormInput
                                     label="Slow Message"
                                     value={serverForm.defaults.slow_response_message}
                                     onChange={(e) => setServerForm({ ...serverForm, defaults: { ...serverForm.defaults, slow_response_message: e.target.value } })}
                                     placeholder="Let me look that up for you, one moment..."
+                                    tooltip="Filler spoken to the caller when a tool call exceeds the slow threshold. Keep it short and natural."
                                 />
                             </div>
                         </div>
@@ -570,12 +568,14 @@ const MCPPage = () => {
                                     value={String(serverForm.restart.max_restarts)}
                                     onChange={(e) => setServerForm({ ...serverForm, restart: { ...serverForm.restart, max_restarts: Number(e.target.value || 0) } })}
                                     placeholder="5"
+                                    tooltip="Total restart attempts before the supervisor gives up and marks the server unavailable."
                                 />
                                 <FormInput
                                     label="Backoff (ms)"
                                     value={String(serverForm.restart.backoff_ms)}
                                     onChange={(e) => setServerForm({ ...serverForm, restart: { ...serverForm.restart, backoff_ms: Number(e.target.value || 0) } })}
                                     placeholder="1000"
+                                    tooltip="Delay between restart attempts. Doubles on consecutive failures (exponential backoff)."
                                 />
                             </div>
                         </div>
@@ -659,6 +659,7 @@ const MCPPage = () => {
                                                     setServerForm({ ...serverForm, tools: next });
                                                 }}
                                                 placeholder="get_weather_by_city"
+                                                tooltip="The MCP tool name as discovered from the server (matches the server's tools/list output exactly)."
                                             />
                                             <FormInput
                                                 label="Expose As (optional)"
@@ -682,6 +683,7 @@ const MCPPage = () => {
                                                     setServerForm({ ...serverForm, tools: next });
                                                 }}
                                                 placeholder="atis_text"
+                                                tooltip="Field from the tool's JSON response that the agent should speak verbatim. Skips LLM summarization of that field."
                                             />
                                             <FormInput
                                                 label="Speech Template (optional)"
@@ -692,6 +694,7 @@ const MCPPage = () => {
                                                     setServerForm({ ...serverForm, tools: next });
                                                 }}
                                                 placeholder="The ATIS for {icao} is {atis_text}"
+                                                tooltip="Template for the spoken reply. {field} placeholders are filled from the tool's response JSON."
                                             />
                                         </div>
                                     </div>

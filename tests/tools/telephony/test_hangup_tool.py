@@ -155,6 +155,7 @@ class TestHangupCallTool:
         # Result should contain info for provider to handle hangup
         assert "will_hangup" in result
         assert "message" in result
+        assert result["farewell_message"] == result["message"]
         assert result["will_hangup"] is True
     
     # ==================== Session State Tests ====================

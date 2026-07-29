@@ -39,7 +39,9 @@ GoogleProviderConfig = _parent_config.GoogleProviderConfig
 GroqSTTProviderConfig = _parent_config.GroqSTTProviderConfig
 GroqTTSProviderConfig = _parent_config.GroqTTSProviderConfig
 ElevenLabsProviderConfig = _parent_config.ElevenLabsProviderConfig
+CambAiProviderConfig = _parent_config.CambAiProviderConfig
 OpenAIRealtimeProviderConfig = _parent_config.OpenAIRealtimeProviderConfig
+GrokProviderConfig = _parent_config.GrokProviderConfig
 AzureSTTProviderConfig = _parent_config.AzureSTTProviderConfig
 AzureTTSProviderConfig = _parent_config.AzureTTSProviderConfig
 validate_azure_region = _parent_config.validate_azure_region
@@ -51,6 +53,7 @@ MCPServerDefaultsConfig = _parent_config.MCPServerDefaultsConfig
 BargeInConfig = _parent_config.BargeInConfig
 LLMConfig = _parent_config.LLMConfig
 VADConfig = _parent_config.VADConfig
+NoInputConfig = _parent_config.NoInputConfig
 StreamingConfig = _parent_config.StreamingConfig
 LoggingConfig = _parent_config.LoggingConfig
 PipelineEntry = _parent_config.PipelineEntry
@@ -71,7 +74,9 @@ __all__ = [
     'GroqSTTProviderConfig',
     'GroqTTSProviderConfig',
     'ElevenLabsProviderConfig',
+    'CambAiProviderConfig',
     'OpenAIRealtimeProviderConfig',
+    'GrokProviderConfig',
     'AzureSTTProviderConfig',
     'AzureTTSProviderConfig',
     'validate_azure_region',
@@ -83,6 +88,7 @@ __all__ = [
     'BargeInConfig',
     'LLMConfig',
     'VADConfig',
+    'NoInputConfig',
     'StreamingConfig',
     'LoggingConfig',
     'PipelineEntry',

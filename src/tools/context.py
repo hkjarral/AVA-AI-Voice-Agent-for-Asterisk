@@ -8,10 +8,44 @@ Includes:
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Any, Dict, List
+from typing import Optional, Any, Callable, Dict, List
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_scoped_tool_config(
+    context: Any,
+    tool_key: str,
+    fallback: Callable[[], Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Resolve a tool block without letting legacy overlays broaden Agent scope."""
+    base: Dict[str, Any] = {}
+    overlay: Dict[str, Any] = {}
+    if context and getattr(context, "get_config_value", None):
+        value = context.get_config_value(f"tools.{tool_key}", {}) or {}
+        base = value if isinstance(value, dict) else {}
+        context_name = getattr(context, "context_name", None)
+        if context_name and not base.get("_agent_scope_resolved"):
+            try:
+                value = context.get_config_value(
+                    f"contexts.{context_name}.tool_overrides.{tool_key}", {}
+                ) or {}
+                overlay = value if isinstance(value, dict) else {}
+            except (KeyError, TypeError, AttributeError):
+                overlay = {}
+    merged = dict(base)
+    merged.pop("_agent_scope_resolved", None)
+    merged.update(overlay)
+    if merged:
+        return merged
+    # A context config (including an intentionally empty dict) is the immutable
+    # per-call snapshot. Never replace an empty resolved scope with current live
+    # YAML, which could broaden access or leak a post-reload generation into an
+    # active call. Only standalone/legacy callers without a snapshot may load it.
+    if not context or getattr(context, "config", None) is None:
+        return fallback()
+    return {}
 
 
 @dataclass
@@ -36,6 +70,7 @@ class ToolExecutionContext:
     session_store: Any = None  # SessionStore instance
     ari_client: Any = None      # ARIClient instance
     config: Any = None           # Config dict
+    tool_registry: Any = None    # Per-call immutable-generation registry
     
     # Provider information
     provider_name: str = None  # "deepgram", "openai_realtime", "custom_pipeline"
@@ -104,12 +139,9 @@ class ToolExecutionContext:
 
     async def get_tool_block_response(self, tool_name: Optional[str]) -> Optional[Dict[str, Any]]:
         """
-        Return a standardized error result when a pending attended transfer should
-        block tool execution for the active call.
+        Return a standardized error result when call lifecycle state should block
+        tool execution for the active call.
         """
-        if tool_name == "cancel_transfer":
-            return None
-
         try:
             session = await self.get_session()
         except Exception:
@@ -119,6 +151,26 @@ class ToolExecutionContext:
                 tool_name,
                 exc_info=True,
             )
+            return None
+
+        no_input_state = getattr(session, "no_input_state", None) or {}
+        if isinstance(no_input_state, dict) and bool(no_input_state.get("announcement_active", False)):
+            logger.warning(
+                "Blocking tool call during engine announcement for call_id=%s tool=%s provider=%s announcement_id=%s",
+                self.call_id,
+                tool_name,
+                self.provider_name,
+                no_input_state.get("announcement_id"),
+            )
+            return {
+                "status": "error",
+                "message": (
+                    "Tool calls are disabled during this engine announcement. "
+                    "Speak the requested announcement exactly and do not call tools."
+                ),
+            }
+
+        if tool_name == "cancel_transfer":
             return None
 
         if not self.is_pending_attended_transfer(session):

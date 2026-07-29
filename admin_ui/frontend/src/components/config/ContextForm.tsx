@@ -1,8 +1,10 @@
 import { FormInput, FormSelect, FormLabel } from '../ui/FormComponents';
 import { isFullAgentProvider } from '../../utils/providerNaming';
 import { ChevronDown, ChevronRight, Search, Phone, Webhook, Lock } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import HelpTooltip from '../ui/HelpTooltip';
+import { PromptToolHighlight } from '../ui/PromptToolHighlight';
+import { buildInCallStatusMap, canonicalToolName } from '../../utils/promptTools';
 
 interface ContextFormProps {
     config: any;
@@ -14,11 +16,12 @@ interface ContextFormProps {
     availableProfiles?: string[];
     defaultProfileName?: string;
     httpTools?: Record<string, any>;
+    toolsRoot?: Record<string, any>;
     onChange: (newConfig: any) => void;
     isNew?: boolean;
 }
 
-const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabledMap, toolCatalogByName, availableProfiles, defaultProfileName, httpTools, onChange, isNew }: ContextFormProps) => {
+const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabledMap, toolCatalogByName, availableProfiles, defaultProfileName, httpTools, toolsRoot, onChange, isNew }: ContextFormProps) => {
     const [expandedPhases, setExpandedPhases] = useState<Record<string, boolean>>({
         pre_call: false,
         in_call: true,
@@ -85,6 +88,7 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
         'send_email_summary',
         'request_transcript',
         'google_calendar',
+        'microsoft_calendar',
         'check_extension_status',
     ];
     const toolOptionsBase = (availableTools && availableTools.length > 0) ? availableTools : fallbackTools;
@@ -126,16 +130,54 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
         return toolEnabledMap[tool] === false;
     };
 
+    // Tool-reference highlighting for the prompt: detect every catalog tool name,
+    // colour-code by in-call status for this context.
+    const knownToolNames = useMemo(() => Object.keys(toolCatalogByName || {}), [toolCatalogByName]);
+    const toolStatusMap = useMemo(() => {
+        const asNames = (v: any): string[] =>
+            Array.isArray(v) ? v : (v && typeof v === 'object' ? Object.keys(v) : []);
+        // Canonicalize the legacy 'transfer' alias so a context that still stores
+        // it doesn't false-red a blind_transfer reference.
+        const inCall = new Set<string>([...asNames(config.tools), ...asNames(config.in_call_http_tools)].map(canonicalToolName));
+        const disabledGlobal = new Set<string>(config.disable_global_in_call_tools || []);
+        return buildInCallStatusMap(Object.values(toolCatalogByName || {}), {
+            explicitlyAdded: (n) => inCall.has(n),
+            globalDisabledHere: (n) => disabledGlobal.has(n),
+            // toolEnabledMap covers built-ins/MCP; httpTools carries the per-tool
+            // enabled flag for HTTP tools (which the catalog doesn't expose).
+            globallyDisabled: (n) => toolEnabledMap?.[n] === false || httpTools?.[n]?.enabled === false,
+        });
+    }, [toolCatalogByName, config.tools, config.in_call_http_tools, config.disable_global_in_call_tools, toolEnabledMap, httpTools]);
+
+    const estimatedTokens = useMemo(() => {
+        const text = config.prompt || '';
+        if (!text.trim()) return 0;
+        const words = text.trim().split(/\s+/).length;
+        return Math.round(words * 1.3);
+    }, [config.prompt]);
+
+    const tokenCountColor = useMemo(() => {
+        if (estimatedTokens >= 8000) return 'text-red-500';
+        if (estimatedTokens >= 4000) return 'text-yellow-500';
+        return 'text-muted-foreground';
+    }, [estimatedTokens]);
+
     const pipelineOptions = Object.entries(pipelines || {}).map(([name, _]: [string, any]) => ({
         value: `pipeline:${name}`,
         label: `[Pipeline] ${name}`,
     }));
 
     const providerOptions = Object.entries(providers || {})
-        .filter(([_, p]: [string, any]) => isFullAgentProvider(p))
+        .filter(([name, p]: [string, any]) => isFullAgentProvider(p, name))
+        // Hide disabled providers from the override picker unless the
+        // context is already pinned to one (so operators can clear a
+        // stale selection without losing visibility of what was set).
+        // Picking a disabled provider as a new override would silently
+        // route calls to nothing (CodeRabbit on PR #396).
+        .filter(([name, p]: [string, any]) => p.enabled !== false || config.provider === name)
         .map(([name, p]: [string, any]) => ({
             value: `provider:${name}`,
-            label: `[Provider] ${name}${p.enabled === false ? ' (Disabled)' : ''}`,
+            label: `[Provider] ${p.display_name || p.customer || name} (${name}, ${p.type || name})${p.customer ? ` · ${p.customer}` : ''}${p.enabled === false ? ' (Disabled)' : ''}`,
         }));
 
     const overrideValue = config.pipeline
@@ -154,6 +196,79 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
         if (raw.startsWith('provider:')) {
             updateConfigPatch({ provider: raw.slice('provider:'.length), pipeline: '' });
         }
+    };
+
+    // Google Calendar per-context selection (uses toolsRoot.google_calendar.calendars)
+    // Falls back to ['default'] when legacy single-calendar config exists but no calendars{} map
+    const googleCalCfg = (toolsRoot as any)?.google_calendar || {};
+    const googleCalKeys: string[] = (() => {
+        const explicit = Object.keys(googleCalCfg.calendars || {});
+        if (explicit.length > 0) return explicit;
+        return (googleCalCfg.credentials_path || googleCalCfg.calendar_id || googleCalCfg.timezone)
+            ? ['default']
+            : [];
+    })();
+    const googleCalEnabledInContext = Array.isArray(config.tools) && config.tools.includes('google_calendar');
+    const rawSelectedCalKeys = config.tool_overrides?.google_calendar?.selected_calendars;
+    const selectedCalKeys: string[] = Array.isArray(rawSelectedCalKeys)
+        ? rawSelectedCalKeys.map((k: any) => String(k))
+        : [];
+    // Filter against available keys so a stale/removed selection (e.g. a calendar
+    // deleted in Tools after the context was saved) doesn't lock the UI into a
+    // state where hasSelection is true but no checkbox is actually selected,
+    // disabling every option.
+    const selectedCalKeysInOptions: string[] = selectedCalKeys.filter((k) => googleCalKeys.includes(k));
+
+    // Single-select: a context uses exactly one calendar. Clicking the current
+    // selection clears it; clicking another replaces the selection.
+    const toggleSelectedCalendar = (key: string) => {
+        const isCurrentlySelected =
+            selectedCalKeysInOptions.length === 1 && selectedCalKeysInOptions[0] === key;
+        const nextSel = isCurrentlySelected ? [] : [key];
+        const next = {
+            ...config,
+            tool_overrides: {
+                ...(config.tool_overrides || {}),
+                google_calendar: {
+                    ...(config.tool_overrides?.google_calendar || {}),
+                    selected_calendars: nextSel,
+                },
+            },
+        };
+        onChange(next);
+    };
+
+    // Microsoft Calendar per-context selection (uses toolsRoot.microsoft_calendar.accounts)
+    const msCalCfg = (toolsRoot as any)?.microsoft_calendar || {};
+    const msCalKeys: string[] = (() => {
+        const explicit = Object.keys(msCalCfg.accounts || {});
+        if (explicit.length > 0) return explicit;
+        return (msCalCfg.tenant_id || msCalCfg.client_id || msCalCfg.token_cache_path || msCalCfg.calendar_id)
+            ? ['default']
+            : [];
+    })();
+    const msCalEnabledInContext = Array.isArray(config.tools) && config.tools.includes('microsoft_calendar');
+    const rawSelectedMsKeys = config.tool_overrides?.microsoft_calendar?.selected_accounts;
+    const selectedMsKeys: string[] = Array.isArray(rawSelectedMsKeys)
+        ? rawSelectedMsKeys.map((k: any) => String(k))
+        : [];
+    const selectedMsKeysInOptions: string[] = selectedMsKeys.filter((k) => msCalKeys.includes(k));
+
+    const toggleSelectedMicrosoftAccount = (key: string) => {
+        const isCurrentlySelected =
+            selectedMsKeysInOptions.length === 1 && selectedMsKeysInOptions[0] === key;
+        const nextSel = isCurrentlySelected ? [] : [key];
+        const next = {
+            ...config,
+            tool_overrides: {
+                ...(config.tool_overrides || {}),
+                microsoft_calendar: {
+                    ...(config.tool_overrides?.microsoft_calendar || {}),
+                    selected_accounts: nextSel,
+                },
+            },
+        };
+        onChange(next);
     };
 
     return (
@@ -176,12 +291,21 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
 
             <div className="space-y-2">
                 <FormLabel tooltip="The main instruction prompt for the AI agent">System Prompt</FormLabel>
-                <textarea
-                    className="w-full p-3 rounded-md border border-input bg-transparent text-sm min-h-[200px] focus:outline-none focus:ring-1 focus:ring-ring"
+                <PromptToolHighlight
                     value={config.prompt || ''}
-                    onChange={(e) => updateConfig('prompt', e.target.value)}
+                    onChange={(v) => updateConfig('prompt', v)}
+                    knownNames={knownToolNames}
+                    statusMap={toolStatusMap}
+                    rows={10}
                     placeholder="You are a helpful voice assistant..."
                 />
+                <div className="flex justify-end mt-1">
+                    <span className={`text-xs ${tokenCountColor}`}>
+                        ~{estimatedTokens.toLocaleString()} tokens estimated
+                        {estimatedTokens >= 8000 && ' (exceeds 8K limit)'}
+                        {estimatedTokens >= 4000 && estimatedTokens < 8000 && ' (approaching 8K limit)'}
+                    </span>
+                </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -435,6 +559,94 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
                 </div>
             </div>
 
+            {/* Google Calendar (Per-Context) */}
+            {googleCalEnabledInContext && (
+                <div className="space-y-2 p-4 rounded-lg border border-border bg-card/30">
+                    <div className="flex items-center justify-between">
+                        <FormLabel tooltip="Each context uses exactly one calendar. Click a calendar to select it; click it again to clear.">
+                            Google Calendar (Per-Context)
+                        </FormLabel>
+                    </div>
+                    {googleCalKeys.length === 0 ? (
+                        <div className="text-xs text-muted-foreground">No calendars defined in Tools. Add calendars under Tools → Google Calendar first.</div>
+                    ) : (
+                        <>
+                            <div className="text-xs text-muted-foreground mb-1">
+                                Pick one calendar for this context. Others are disabled until you clear the selection.
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                {googleCalKeys.map((k) => {
+                                    const isSelected = selectedCalKeysInOptions.includes(k);
+                                    const hasSelection = selectedCalKeysInOptions.length > 0;
+                                    const isDisabled = hasSelection && !isSelected;
+                                    return (
+                                        <label
+                                            key={k}
+                                            className={`inline-flex items-center gap-2 px-2 py-1 border rounded text-sm ${
+                                                isDisabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'
+                                            }`}
+                                        >
+                                            <input
+                                                type="checkbox"
+                                                className="accent-primary"
+                                                checked={isSelected}
+                                                disabled={isDisabled}
+                                                onChange={() => toggleSelectedCalendar(k)}
+                                            />
+                                            <span>{k}</span>
+                                        </label>
+                                    );
+                                })}
+                            </div>
+                        </>
+                    )}
+                </div>
+            )}
+
+            {/* Microsoft Calendar (Per-Context) */}
+            {msCalEnabledInContext && (
+                <div className="space-y-2 p-4 rounded-lg border border-border bg-card/30">
+                    <div className="flex items-center justify-between">
+                        <FormLabel tooltip="Each context uses exactly one Microsoft Calendar account. Click an account to select it; click it again to clear.">
+                            Microsoft Calendar (Per-Context)
+                        </FormLabel>
+                    </div>
+                    {msCalKeys.length === 0 ? (
+                        <div className="text-xs text-muted-foreground">No Microsoft Calendar accounts defined in Tools. Connect one under Tools → Microsoft Calendar first.</div>
+                    ) : (
+                        <>
+                            <div className="text-xs text-muted-foreground mb-1">
+                                Pick one Microsoft account for this context. Others are disabled until you clear the selection.
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                {msCalKeys.map((k) => {
+                                    const isSelected = selectedMsKeysInOptions.includes(k);
+                                    const hasSelection = selectedMsKeysInOptions.length > 0;
+                                    const isDisabled = hasSelection && !isSelected;
+                                    return (
+                                        <label
+                                            key={k}
+                                            className={`inline-flex items-center gap-2 px-2 py-1 border rounded text-sm ${
+                                                isDisabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'
+                                            }`}
+                                        >
+                                            <input
+                                                type="checkbox"
+                                                className="accent-primary"
+                                                checked={isSelected}
+                                                disabled={isDisabled}
+                                                onChange={() => toggleSelectedMicrosoftAccount(k)}
+                                            />
+                                            <span>{k}</span>
+                                        </label>
+                                    );
+                                })}
+                            </div>
+                        </>
+                    )}
+                </div>
+            )}
+
             {/* Background Music Configuration */}
             <div className="space-y-4 p-4 rounded-lg border border-border bg-card/30">
                 <div className="flex items-center justify-between">
@@ -454,7 +666,7 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
                                 }
                             }}
                         />
-                        <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                        <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-background after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
                     </label>
                 </div>
 

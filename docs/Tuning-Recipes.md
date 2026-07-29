@@ -163,9 +163,9 @@ vad:
   enabled: true
   mode: "webrtc"
   webrtc_aggressiveness: 2         # Normal (good for Vosk)
-  min_speech_duration_ms: 250
-  silence_duration_ms: 700         # Balance responsiveness vs cutting off
-  speech_pad_ms: 300
+  min_utterance_duration_ms: 250
+  webrtc_end_silence_frames: 35    # ~700ms at 20ms frames — balance responsiveness vs cutting off
+  utterance_padding_ms: 300
 
 barge_in:
   enabled: true
@@ -198,7 +198,7 @@ providers:
 vad:
   enabled: true
   webrtc_aggressiveness: 1         # CRITICAL: Low for OpenAI (prevents conflicts)
-  silence_duration_ms: 1000        # Let server VAD handle turn detection
+  webrtc_end_silence_frames: 50    # ~1000ms at 20ms frames — let server VAD handle turn detection
 
 barge_in:
   enabled: false                   # Server-side turn handling sufficient
@@ -241,7 +241,7 @@ barge_in:
 vad:
   enabled: true
   webrtc_aggressiveness: 1         # Low (Deepgram has server-side VAD)
-  silence_duration_ms: 800
+  webrtc_end_silence_frames: 40    # ~800ms at 20ms frames
 
 streaming:
   jitter_buffer_ms: 100

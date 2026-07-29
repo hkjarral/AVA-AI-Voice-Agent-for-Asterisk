@@ -89,6 +89,11 @@ def _tts_status(server) -> Tuple[bool, Optional[str], Optional[str]]:
         path = server.melotts_voice
         display = f"MeloTTS ({server.melotts_voice})"
         return loaded, path, display
+    if server.tts_backend == "matcha":
+        loaded = server.mock_models or getattr(server, "matcha_backend", None) is not None
+        path = server.config.matcha_model_path
+        display = f"Matcha ({os.path.basename(os.path.dirname(path))})"
+        return loaded, path, display
     if server.tts_backend == "silero":
         loaded = server.mock_models or server.silero_backend is not None
         # Path must match the dropdown option format: "speaker:model_id"
@@ -156,6 +161,8 @@ def build_status_response(server) -> Dict[str, Any]:
                 "path": stt_path,
                 "display": stt_display,
                 "language": _stt_language(server),
+                "device": getattr(server, "faster_whisper_device", None) if server.stt_backend == "faster_whisper" else None,
+                "compute_type": getattr(server, "faster_whisper_compute", None) if server.stt_backend == "faster_whisper" else None,
                 "sherpa_model_type": getattr(server, "sherpa_model_type", None) if server.stt_backend == "sherpa" else None,
                 "tone_decoder_type": getattr(server, "tone_decoder_type", None) if server.stt_backend == "tone" else None,
             },
@@ -172,6 +179,8 @@ def build_status_response(server) -> Dict[str, Any]:
                     "top_p": getattr(server, "llm_top_p", None),
                     "repeat_penalty": getattr(server, "llm_repeat_penalty", None),
                     "gpu_layers": getattr(server, "_llm_gpu_layers_effective", None),
+                    "gpu_layers_configured": getattr(server, "llm_gpu_layers", None),
+                    "gpu_layers_effective": getattr(server, "_llm_gpu_layers_effective", None),
                 },
                 "prompt_fit": {
                     "system_prompt_chars": system_prompt_chars,
@@ -213,6 +222,8 @@ def build_status_response(server) -> Dict[str, Any]:
         "config": {
             "log_level": _level_name,
             "debug_audio": DEBUG_AUDIO_FLOW,
+            "enable_filler_audio": bool(getattr(server.config, "enable_filler_audio", False)),
+            "llm_streaming_tts_overlap": bool(getattr(server.config, "llm_streaming_tts_overlap", True)),
             "mock_models": server.mock_models,
             "runtime_mode": runtime_mode,
             "tool_gateway_enabled": bool(getattr(server, "tool_gateway_enabled", True)),

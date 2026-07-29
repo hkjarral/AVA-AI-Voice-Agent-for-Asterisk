@@ -147,6 +147,8 @@ class SwitchModelRequest(BaseModel):
     voice: Optional[str] = None  # For Kokoro TTS
     language: Optional[str] = None  # For Kroko STT
     faster_whisper_language: Optional[str] = None  # Language code for Faster-Whisper (e.g., en, ru)
+    faster_whisper_device: Optional[str] = None  # cpu, cuda, auto
+    faster_whisper_compute_type: Optional[str] = None  # int8, float16, float32
     whisper_cpp_language: Optional[str] = None  # Language code for Whisper.cpp (e.g., en, ru)
     tone_model_path: Optional[str] = None
     tone_decoder_type: Optional[str] = None  # beam_search | greedy
@@ -174,6 +176,8 @@ class SwitchModelRequest(BaseModel):
     # LLM tuning (optional)
     llm_context: Optional[int] = None
     llm_max_tokens: Optional[int] = None
+    enable_filler_audio: Optional[bool] = None
+    llm_streaming_tts_overlap: Optional[bool] = None
     # Allow intentional override for incompatible runtime/device combinations.
     force_incompatible_apply: Optional[bool] = False
 
@@ -309,6 +313,10 @@ def _build_local_ai_env_and_yaml_updates(request: SwitchModelRequest) -> tuple[D
                 if request.model_path:
                     env_updates["FASTER_WHISPER_MODEL"] = request.model_path
                     yaml_updates["stt_model"] = request.model_path
+                if request.faster_whisper_device:
+                    env_updates["FASTER_WHISPER_DEVICE"] = request.faster_whisper_device
+                if request.faster_whisper_compute_type:
+                    env_updates["FASTER_WHISPER_COMPUTE_TYPE"] = request.faster_whisper_compute_type
                 if request.faster_whisper_language:
                     env_updates["FASTER_WHISPER_LANGUAGE"] = request.faster_whisper_language
                     yaml_updates["faster_whisper_language"] = request.faster_whisper_language
@@ -340,6 +348,7 @@ def _build_local_ai_env_and_yaml_updates(request: SwitchModelRequest) -> tuple[D
                 # provided as a real filesystem path.
                 if request.model_path and request.model_path.startswith("/"):
                     env_updates["SILERO_MODEL_PATH"] = request.model_path
+                    yaml_updates["silero_model_path"] = request.model_path
             elif request.backend == "kokoro":
                 if request.kokoro_mode:
                     env_updates["KOKORO_MODE"] = request.kokoro_mode
@@ -359,6 +368,25 @@ def _build_local_ai_env_and_yaml_updates(request: SwitchModelRequest) -> tuple[D
                 if kokoro_model_path:
                     env_updates["KOKORO_MODEL_PATH"] = kokoro_model_path
                     yaml_updates["kokoro_model_path"] = kokoro_model_path
+            elif request.backend == "matcha":
+                if request.model_path:
+                    env_updates["MATCHA_MODEL_PATH"] = request.model_path
+                    yaml_updates["matcha_model_path"] = request.model_path
+                    # Auto-detect vocoder in the same directory
+                    model_dir = os.path.dirname(request.model_path)
+                    for voc_name in ("hifigan_v2.onnx", "vocos.onnx"):
+                        voc_path = os.path.join(model_dir, voc_name)
+                        if os.path.isfile(voc_path):
+                            env_updates["MATCHA_VOCODER_PATH"] = voc_path
+                            yaml_updates["matcha_vocoder_path"] = voc_path
+                            break
+                    else:
+                        # Fallback: assume hifigan_v2 (container path)
+                        fallback_voc = os.path.join(
+                            os.path.dirname(request.model_path), "hifigan_v2.onnx"
+                        )
+                        env_updates["MATCHA_VOCODER_PATH"] = fallback_voc
+                        yaml_updates["matcha_vocoder_path"] = fallback_voc
 
     elif request.model_type == "llm":
         if request.model_path:
@@ -367,6 +395,10 @@ def _build_local_ai_env_and_yaml_updates(request: SwitchModelRequest) -> tuple[D
             env_updates["LOCAL_LLM_CONTEXT"] = str(int(request.llm_context))
         if request.llm_max_tokens is not None:
             env_updates["LOCAL_LLM_MAX_TOKENS"] = str(int(request.llm_max_tokens))
+        if request.enable_filler_audio is not None:
+            env_updates["LOCAL_ENABLE_FILLER_AUDIO"] = "true" if request.enable_filler_audio else "false"
+        if request.llm_streaming_tts_overlap is not None:
+            env_updates["LOCAL_LLM_STREAMING_TTS_OVERLAP"] = "true" if request.llm_streaming_tts_overlap else "false"
 
     return env_updates, yaml_updates
 
@@ -409,8 +441,15 @@ def _build_local_ai_ws_switch_payload(request: SwitchModelRequest) -> Optional[D
             if request.tone_kenlm_path:
                 payload["tone_kenlm_path"] = request.tone_kenlm_path
         if request.backend == "faster_whisper":
+            stt_config: Dict[str, Any] = {}
             if request.model_path:
-                payload["stt_config"] = {"model": request.model_path}
+                stt_config["model"] = request.model_path
+            if request.faster_whisper_device:
+                stt_config["device"] = request.faster_whisper_device
+            if request.faster_whisper_compute_type:
+                stt_config["compute_type"] = request.faster_whisper_compute_type
+            if stt_config:
+                payload["stt_config"] = stt_config
             if request.faster_whisper_language:
                 payload["faster_whisper_language"] = request.faster_whisper_language
         if request.backend == "kroko":
@@ -463,6 +502,18 @@ def _build_local_ai_ws_switch_payload(request: SwitchModelRequest) -> Optional[D
             payload["kokoro_api_key"] = request.kokoro_api_key
         if request.kokoro_api_model:
             payload["kokoro_api_model"] = request.kokoro_api_model
+    if request.backend == "matcha":
+        if request.model_path:
+            payload["matcha_model_path"] = request.model_path
+            # Auto-detect vocoder in the same directory (check existence)
+            model_dir = os.path.dirname(request.model_path)
+            voc_resolved = None
+            for voc_name in ("hifigan_v2.onnx", "vocos.onnx"):
+                voc_path = os.path.join(model_dir, voc_name)
+                if os.path.isfile(voc_path):
+                    voc_resolved = voc_path
+                    break
+            payload["matcha_vocoder_path"] = voc_resolved or os.path.join(model_dir, "hifigan_v2.onnx")
     return payload
 
 
@@ -514,7 +565,8 @@ async def list_available_models():
         "piper": [],
         "kokoro": [],
         "melotts": [],
-        "silero": []
+        "silero": [],
+        "matcha": []
     }
     llm_models: List[ModelInfo] = []
     
@@ -644,6 +696,30 @@ async def list_available_models():
             size_mb=entry.get("size_mb", 100),
         ))
     
+    # Scan Matcha TTS models (directories matching matcha-icefall-*)
+    if os.path.exists(tts_dir):
+        for item in os.listdir(tts_dir):
+            item_path = os.path.join(tts_dir, item)
+            if os.path.isdir(item_path) and item.startswith("matcha-icefall-"):
+                # Find the acoustic model ONNX file
+                model_onnx = None
+                for f in os.listdir(item_path):
+                    if f.endswith(".onnx") and "model" in f.lower():
+                        model_onnx = f
+                        break
+                if model_onnx:
+                    from api.models_catalog import MATCHA_TTS_MODELS
+                    catalog_match = next((m for m in MATCHA_TTS_MODELS if m.get("path", "").endswith(item)), None)
+                    display_name = catalog_match["name"] if catalog_match else f"Matcha ({item})"
+                    tts_models["matcha"].append(ModelInfo(
+                        id=f"matcha_{item}",
+                        name=display_name,
+                        path=f"/app/models/tts/{item}/{model_onnx}",
+                        type="tts",
+                        backend="matcha",
+                        size_mb=get_dir_size_mb(item_path)
+                    ))
+
     # Scan LLM models — enrich with chat_format from catalog
     from api.models_catalog import LLM_MODELS as _LLM_CATALOG
     _catalog_by_path = {m.get("model_path", ""): m for m in _LLM_CATALOG if m.get("model_path")}
@@ -935,9 +1011,14 @@ async def switch_model(request: SwitchModelRequest):
             if request.model_path and not (bool(llm.get("loaded")) and llm.get("path") == request.model_path):
                 return False
             cfg = llm.get("config") or {}
+            server_cfg = data.get("config") or {}
             if request.llm_context is not None and int(cfg.get("context") or 0) != int(request.llm_context):
                 return False
             if request.llm_max_tokens is not None and int(cfg.get("max_tokens") or 0) != int(request.llm_max_tokens):
+                return False
+            if request.enable_filler_audio is not None and bool(server_cfg.get("enable_filler_audio")) != bool(request.enable_filler_audio):
+                return False
+            if request.llm_streaming_tts_overlap is not None and bool(server_cfg.get("llm_streaming_tts_overlap")) != bool(request.llm_streaming_tts_overlap):
                 return False
             return True
 
@@ -951,8 +1032,17 @@ async def switch_model(request: SwitchModelRequest):
             if request.backend == "sherpa":
                 expected = request.sherpa_model_path or request.model_path
                 return (not expected) or stt.get("path") == expected
-            if request.backend == "faster_whisper" and request.model_path:
-                return stt.get("path") == request.model_path
+            if request.backend == "faster_whisper":
+                # Device/compute_type are intentionally NOT strict-checked here:
+                # local_ai_server applies a CUDA→CPU fallback at model-load time
+                # (see server.py: faster_whisper_device/compute reset on init
+                # failure). Strict matching would trigger an admin rollback of a
+                # working server. The env file persists the requested values for
+                # the next restart, and the status panel surfaces actual runtime
+                # device/compute_type for the operator.
+                if request.model_path and stt.get("path") != request.model_path:
+                    return False
+                return True
             if request.backend == "whisper_cpp":
                 expected = request.whisper_cpp_model_path or request.model_path
                 return (not expected) or stt.get("path") == expected
@@ -1049,11 +1139,13 @@ async def switch_model(request: SwitchModelRequest):
         "SILERO_SPEAKER", "SILERO_LANGUAGE", "SILERO_MODEL_ID", "SILERO_SAMPLE_RATE", "SILERO_MODEL_PATH",
         "KOKORO_MODE", "KOKORO_VOICE", "KOKORO_MODEL_PATH",
         "KOKORO_API_BASE_URL", "KOKORO_API_KEY", "KOKORO_API_MODEL",
+        "MATCHA_MODEL_PATH", "MATCHA_VOCODER_PATH",
         "MELOTTS_VOICE", "MELOTTS_DEVICE", "FASTER_WHISPER_MODEL", "FASTER_WHISPER_DEVICE",
         "TONE_MODEL_PATH", "TONE_DECODER_TYPE", "TONE_KENLM_PATH",
         "SHERPA_MODEL_TYPE", "SHERPA_VAD_MODEL_PATH",
-        "FASTER_WHISPER_LANGUAGE", "WHISPER_CPP_LANGUAGE",
-        "LOCAL_LLM_MODEL_PATH", "LOCAL_LLM_CONTEXT", "LOCAL_LLM_MAX_TOKENS", "GPU_AVAILABLE"
+        "FASTER_WHISPER_COMPUTE_TYPE", "FASTER_WHISPER_LANGUAGE", "WHISPER_CPP_LANGUAGE",
+        "LOCAL_LLM_MODEL_PATH", "LOCAL_LLM_CONTEXT", "LOCAL_LLM_MAX_TOKENS",
+        "LOCAL_ENABLE_FILLER_AUDIO", "LOCAL_LLM_STREAMING_TTS_OVERLAP", "GPU_AVAILABLE"
     ])
 
     # Guard CUDA-only backend selection when runtime GPU is unavailable.
@@ -1062,7 +1154,7 @@ async def switch_model(request: SwitchModelRequest):
     is_fw_cuda_selection = (
         request.model_type == "stt"
         and target_backend == "faster_whisper"
-        and (previous_env.get("FASTER_WHISPER_DEVICE", "cpu") or "cpu").strip().lower() == "cuda"
+        and (request.faster_whisper_device or previous_env.get("FASTER_WHISPER_DEVICE", "cpu") or "cpu").strip().lower() == "cuda"
     )
     is_melotts_cuda_selection = (
         request.model_type == "tts"
@@ -1107,8 +1199,38 @@ async def switch_model(request: SwitchModelRequest):
         requires_restart = False
 
     elif request.model_type == "llm":
-        wants_llm_change = bool(request.model_path) or request.llm_context is not None or request.llm_max_tokens is not None
+        wants_llm_change = (
+            bool(request.model_path)
+            or request.llm_context is not None
+            or request.llm_max_tokens is not None
+            or request.enable_filler_audio is not None
+            or request.llm_streaming_tts_overlap is not None
+        )
         if wants_llm_change:
+            # Tuning-only change (no model_path) in minimal runtime mode has no
+            # effect: minimal mode runs with llm_model=None, so context/max_tokens/
+            # filler tweaks land on a server that never loaded an LLM. The verify
+            # path only checks llm.loaded when model_path is set, so without this
+            # guard a tuning-only switch would falsely report success. Fail loudly.
+            if not request.model_path:
+                try:
+                    pre_status = await _fetch_status()
+                except Exception:
+                    pre_status = None
+                pre_runtime_mode = (
+                    ((pre_status or {}).get("config") or {}).get("runtime_mode") or ""
+                ).strip().lower()
+                if pre_runtime_mode == "minimal":
+                    return SwitchModelResponse(
+                        success=False,
+                        requires_restart=False,
+                        message=(
+                            "Cannot apply LLM tuning: local-ai-server is in minimal runtime "
+                            "mode (no LLM loaded), so context/max-tokens/filler changes have "
+                            "no effect. Set LOCAL_AI_MODE=full (and provide an LLM model) or "
+                            "add a GPU to enable LLM tuning."
+                        ),
+                    )
             # LLM flow supports best-effort hot switch + verification before falling back to recreate.
             payload: Dict[str, Any] = {"type": "switch_model"}
             if request.model_path:
@@ -1129,9 +1251,20 @@ async def switch_model(request: SwitchModelRequest):
                     llm_cfg["chat_format"] = catalog_chat_format
             if llm_cfg:
                 payload["llm_config"] = llm_cfg
+            runtime_cfg: Dict[str, Any] = {}
+            if request.enable_filler_audio is not None:
+                runtime_cfg["enable_filler_audio"] = bool(request.enable_filler_audio)
+            if request.llm_streaming_tts_overlap is not None:
+                runtime_cfg["llm_streaming_tts_overlap"] = bool(request.llm_streaming_tts_overlap)
+            if runtime_cfg:
+                payload["runtime_config"] = runtime_cfg
 
             ws_resp = await _try_ws_switch(payload)
-            if ws_resp and ws_resp.get("type") == "switch_response" and ws_resp.get("status") == "success":
+            if (
+                ws_resp
+                and ws_resp.get("type") == "switch_response"
+                and ws_resp.get("status") in {"success", "no_change"}
+            ):
                 _update_env_file(env_file, env_updates)
                 verified = await _wait_for_status(timeout_sec=45.0)
                 if verified:
@@ -1163,7 +1296,11 @@ async def switch_model(request: SwitchModelRequest):
     if request.model_type in ("stt", "tts") and request.backend:
         payload = _build_local_ai_ws_switch_payload(request)
         ws_resp = await _try_ws_switch(payload or {"type": "switch_model"})
-        if ws_resp and ws_resp.get("type") == "switch_response" and ws_resp.get("status") == "success":
+        if (
+            ws_resp
+            and ws_resp.get("type") == "switch_response"
+            and ws_resp.get("status") in {"success", "no_change"}
+        ):
             requires_restart = False
         else:
             requires_restart = True
@@ -1175,7 +1312,12 @@ async def switch_model(request: SwitchModelRequest):
     # Sync to YAML config for consistency
     if yaml_updates:
         for field, value in yaml_updates.items():
-            update_yaml_provider_field("local", field, value)
+            await asyncio.to_thread(
+                update_yaml_provider_field,
+                "local",
+                field,
+                value,
+            )
     
     # 4. Recreate container if needed (restart doesn't reload .env)
     if requires_restart:
@@ -1190,7 +1332,12 @@ async def switch_model(request: SwitchModelRequest):
             if previous_yaml:
                 for field, value in previous_yaml.items():
                     try:
-                        update_yaml_provider_field("local", field, value)
+                        await asyncio.to_thread(
+                            update_yaml_provider_field,
+                            "local",
+                            field,
+                            value,
+                        )
                     except Exception:
                         pass
             return SwitchModelResponse(
@@ -1216,7 +1363,12 @@ async def switch_model(request: SwitchModelRequest):
     if previous_yaml:
         for field, value in previous_yaml.items():
             try:
-                update_yaml_provider_field("local", field, value)
+                await asyncio.to_thread(
+                    update_yaml_provider_field,
+                    "local",
+                    field,
+                    value,
+                )
             except Exception:
                 pass
     try:

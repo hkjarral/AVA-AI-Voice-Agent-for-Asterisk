@@ -13,7 +13,7 @@ docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_u
 #   Remote: http://<server-ip>:3003
 ```
 
-**Default login**: `admin` / `admin` — change this immediately in production.
+**First login**: a one-time password is printed to the admin_ui logs on first start (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`); you must change it at first login. `admin`/`admin` no longer works.
 
 ## Pages Overview
 
@@ -39,20 +39,28 @@ The wizard writes to `config/ai-agent.local.yaml` (operator overrides), so upstr
 
 ### Configuration
 
+#### Agents
+Create and edit operator-managed agents, select their provider or pipeline, configure prompts/tools/voice, and copy a ready-to-use dialplan snippet. Resource access for transfers, Google Calendar, Microsoft Calendar, and voicemail can inherit the global inventory, allow selected resource keys, or deny that family. Under **Caller Inactivity Overrides**, an agent can partially override the global watchdog timing/messages. Inbound agents inherit the global policy; outbound agents must explicitly enable it here.
+
 #### Providers
 Configure full-agent providers and their settings (model, voice, API version, etc.). Each provider card shows its current status.
 
 #### Pipelines
 Configure modular STT/LLM/TTS pipelines for mix-and-match provider combinations.
 
-#### Contexts
-Named personas with custom greetings, system prompts, and audio profiles. Use contexts to create different agent personalities for different phone numbers or departments.
-
 #### Audio Profiles
-Transport and codec settings per context. Profiles like `telephony_ulaw_8k`, `openai_realtime_24k`, and `wideband_pcm_16k` control how audio is encoded and transmitted.
+Transport, codec, and output-downsampling settings selected globally, by Agent, or with `AI_AUDIO_PROFILE`. Use `telephony_ulaw_8k` for the compatibility baseline or opt an Agent into `telephony_enhanced_8k` for alias-safe 16/24 kHz-to-8 kHz downsampling. On a genuinely wideband extension or SIP trunk that negotiates G.722 (or another wideband codec), `wideband_pcm_16k` requests provider-native PCM, converts it once at the 16 kHz boundary, and uses per-call `slin16` AudioSocket framing. It requires Asterisk 20.17+, 21.12+, 22.7+, or 23.1+. The engine rejects that profile on older or unknown versions instead of risking bad audio. ExternalMedia RTP supports the two 8 kHz telephony profiles; its Transport page displays this compatibility boundary. Keep G.711/PSTN Agents on an 8 kHz profile. Rollback is simply assigning the Agent back to `telephony_ulaw_8k`.
 
 #### Tools
-Enable/disable AI-powered actions (transfers, hangup, email, voicemail) and configure tool-specific settings.
+Enable/disable AI-powered actions (transfers, hangup, email, voicemail) and configure the global inventory. **Save & Apply** publishes built-in and managed HTTP tool changes to new calls without restarting the engine; active calls retain their captured generation.
+
+Configure inventory here, then open an Agent to narrow which transfer destination,
+Google calendar, Microsoft account/calendar, or voicemail mailbox it can use. A global
+disable always wins. If Save & Apply validation fails, the last good tool generation
+continues serving calls and the unsaved configuration is not published.
+
+#### Advanced Settings → Voice Activity Detection
+The **Caller Inactivity** card controls the engine-level no-input watchdog. v7.3.1 defaults to a 30-second idle window, one “Are you still there?” check-in, and a 15-second reply grace period before the configured final message and hangup. The clock pauses while the agent is greeting, speaking, processing, or transferring. Changes are hot-reloaded for new calls; active calls keep the policy captured when they started.
 
 ### Call History
 
@@ -61,6 +69,7 @@ Per-call debugging and analytics:
 - Full conversation transcripts
 - Tool call history with parameters and results
 - Call quality metrics
+- A distinct **No input timeout** outcome for calls ended by the inactivity policy
 
 Use Call History as the primary debugging tool — it provides more context than raw logs.
 
@@ -84,12 +93,65 @@ Live ARI connection status, required Asterisk module checklist, configuration au
 #### Containers
 Start, stop, restart, and rebuild Docker containers directly from the UI.
 
+#### Models
+Browse, download, and manage local STT, TTS, and LLM models. Tabs split the catalog by type (`STT`, `TTS`, `LLM`) plus an `Installed` view that lists what's already on disk. The catalog itself lives in `admin_ui/backend/api/models_catalog.py` and ships with ~250 entries across the three types; new entries land via PRs and CI verifies every download URL is reachable on each PR plus weekly on `main` (see `scripts/check_catalog_urls.py`).
+
+The top of the page exposes the **Local AI Server** card with three pickers — STT, LLM, TTS — that show the currently-loaded model and let you switch the engine to any installed file. Switching applies the change to `.env` and reloads the engine in place; the running engine recovers from the swap without dropping calls already in progress.
+
+Downloaded models live under `models/<type>/` on the host (mounted into the container at `/app/models/<type>/`). The Installed tab counts files matching the catalog; deleting via the trash icon removes the file plus any sidecars (`.json` config for Piper, `.sha256` integrity sidecar).
+
+##### Community Models (best-effort)
+Operators can add LLM, TTS, or STT models that aren't in the curated catalog by pasting a HuggingFace download URL. Useful for trying new GGUF releases (Qwen3-4B, SmolLM2 variants, etc.) before they land in the official catalog.
+
+**Off by default.** Toggle on via the "Community Models" card at the bottom of the Models page; the choice persists to `.env` as `ENABLE_CUSTOM_MODELS=true`. When disabled, the panel collapses to a one-line note and no community entries appear in the main lists.
+
+When enabled:
+1. Click **+ Add custom model**. The form requires a Type (LLM/TTS/STT), Display name, and HTTPS Download URL; optional fields are Config URL (for Piper TTS), Chat format hint (for LLM, e.g. `chatml` / `llama-3` / `mistral-instruct`), Expected SHA256 (verified after download), and free-form Notes.
+2. The entry appears immediately in the relevant tab (STT/TTS/LLM) with a yellow **Community** badge alongside curated entries.
+3. Click **Download** on the entry as you would a curated model. Progress polls in the existing download UI.
+4. After download, expand the entry's chevron in the Community Models panel to **Inspect GGUF header** (LLM only): architecture, parameter count, quantization, context length, layer count, file size, and an estimated RAM requirement are surfaced. Architectures not in the verified-supported list (`llama`, `qwen2`, `qwen3`, `phi3`, `phi4`, `gemma`, `gemma2`, `mistral`, `mixtral`, `tinyllama`, etc.) get a yellow warning rather than blocking the download.
+5. Switch the engine to the new model via the LLM picker at the top of the page (a page reload may be needed for the picker to see the new file).
+6. The trash icon removes both the JSON entry and the on-disk file (plus all sidecars).
+
+The "best-effort" framing is genuine: catalog URL liveness, GGUF magic verification, file size and RAM estimation are checked, but the model isn't actually loaded as part of validation. If a community model fails to load or behaves badly at runtime, please open a GitHub issue.
+
+**Storage**:
+- Entries: `data/custom_models.json` (gitignored, persists across container rebuilds and upgrades)
+- Files: `models/<type>/custom_<type>_<slug>__<basename>` — the `custom_…__` prefix is namespaced with the unique entry id so two community entries with the same upstream filename can never collide on disk.
+
+**Security**:
+- HTTPS-only download URLs (rejects `http://` to prevent SSRF via redirect)
+- Path-traversal blocked on every endpoint that touches a model file
+- The `/delete-file` endpoint refuses to act on community-model files (community models must go through `DELETE /api/custom-models/{id}` so JSON and disk stay in sync)
+
+## Per-Instance Provider Credentials (v6.5.2)
+
+Full-agent provider forms (Grok, OpenAI Realtime, Deepgram, Google Live, ElevenLabs Agent) include a uniform **Provider Credentials** card. Paste the API key (or upload service-account JSON for Google Vertex) directly into the card; the Admin UI writes it to a per-instance file under `/app/project/secrets/providers/<provider_key>/` on the server (chmod 0600). The provider's `api_key_file` / `agent_id_file` / `credentials_path` field in YAML is updated automatically — no manual editing required, no secrets stored in `.env` or YAML.
+
+This is the canonical credential storage path for multi-instance deployments (e.g. `acme_grok` and `globex_grok` each with isolated keys). Legacy single-instance configs that set `XAI_API_KEY` / `OPENAI_API_KEY` / etc. in `.env` continue to work as a fallback.
+
+The **System → Environment** page includes a "Per-Instance Provider Credentials" status section listing every configured provider's credential file presence. Lets operators audit which instances have credentials on disk without SSH access.
+
+## System Topology (v6.5.2)
+
+The dashboard System Topology card uses tri-state health indicators (`Checking…` / healthy / error) with a 2-strike debounce: a single failed probe does not immediately flip a dot red. This eliminates the false-positive red flashes that previously appeared during engine warmup or transient localhost probe timeouts.
+
+- ARI, AI Engine, and Local AI Server each get the tri-state + debounce treatment
+- Per-provider readiness uses the same 2-strike pattern so providers start at `Checking…` instead of red on first paint
+- Backend probe timeouts raised (`ai_engine` `/health` connect 1.5s → 5s; `local_ai_server` WebSocket open_timeout 2.5s → 5s)
+- Provider cards are grouped by provider type with multi-instance sub-rows, so two `*_grok` or `*_google_live` instances render as the same provider kind with separate readiness dots
+- Asterisk + AI Engine cards stretch to match the Providers column height; Models live AI Server output in a 3-column responsive grid
+
+## Help tooltips (v6.5.2)
+
+~260 inline help tooltips were backfilled across the admin UI in v6.5.2 — provider forms (Grok 17, OpenAI Realtime 24, Deepgram 22, ElevenLabs 10, Local 30, Google Live 29, Azure 21, OpenAI 17, Telnyx 7, Ollama 6), Setup Wizard (26 fields), LLM/MCP/Profiles/Models pages. The `HelpTooltip` component is viewport-aware: it measures the trigger and flips the popover from above to below when the icon is near the top of a scrolled modal, so the content stays visible.
+
 ## Security
 
 The Admin UI has Docker socket access for container management. Treat it as a control plane with elevated privileges.
 
 **Production requirements**:
-- Change the default `admin` / `admin` credentials immediately
+- `admin`/`admin` is removed: retrieve the one-time password from the admin_ui logs (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`) and set a new one at first login
 - Set `JWT_SECRET` in `.env` (preflight generates this automatically)
 - Restrict port 3003 via firewall, VPN, or reverse proxy
 - Never expose directly to the internet without authentication

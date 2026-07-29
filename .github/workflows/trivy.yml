@@ -11,23 +11,35 @@ on:
       - 'Dockerfile'
       - 'requirements.txt'
       - 'local_ai_server/Dockerfile'
+      - 'local_ai_server/Dockerfile.gpu'
       - 'local_ai_server/requirements*.txt'
       - '.github/workflows/trivy.yml'
   pull_request:
     branches: [ "main", "staging" ]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
     paths:
       - 'Dockerfile'
       - 'requirements.txt'
       - 'local_ai_server/Dockerfile'
+      - 'local_ai_server/Dockerfile.gpu'
       - 'local_ai_server/requirements*.txt'
+      - '.github/workflows/trivy.yml'
   schedule:
     # Run weekly on Monday at 7am UTC (after CodeQL)
     - cron: '0 7 * * 1'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   scan:
     name: Scan Docker Image
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -36,7 +48,9 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
+      with:
+        persist-credentials: false
 
     - name: Build ai-engine image
       run: docker build -t ai-engine:${{ github.sha }} .
@@ -59,7 +73,7 @@ jobs:
       run: docker build -t local-ai-server-full:${{ github.sha }} ./local_ai_server
 
     - name: Scan ai-engine image
-      uses: aquasecurity/trivy-action@0.35.0
+      uses: aquasecurity/trivy-action@v0.36.0
       with:
         image-ref: 'ai-engine:${{ github.sha }}'
         format: 'sarif'
@@ -73,7 +87,7 @@ jobs:
 
     - name: Scan local-ai-server image
       if: github.event_name != 'schedule'
-      uses: aquasecurity/trivy-action@0.35.0
+      uses: aquasecurity/trivy-action@v0.36.0
       with:
         image-ref: 'local-ai-server:${{ github.sha }}'
         format: 'sarif'
@@ -87,7 +101,7 @@ jobs:
 
     - name: Scan local-ai-server image (full, scheduled)
       if: github.event_name == 'schedule'
-      uses: aquasecurity/trivy-action@0.35.0
+      uses: aquasecurity/trivy-action@v0.36.0
       with:
         image-ref: 'local-ai-server-full:${{ github.sha }}'
         format: 'sarif'
@@ -100,28 +114,28 @@ jobs:
         timeout: '30m'
 
     - name: Upload ai-engine results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v3
+      uses: github/codeql-action/upload-sarif@v4
       if: always()
       with:
         sarif_file: 'trivy-ai-engine.sarif'
         category: 'trivy-ai-engine'
 
     - name: Upload local-ai-server results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v3
+      uses: github/codeql-action/upload-sarif@v4
       if: always() && github.event_name != 'schedule'
       with:
         sarif_file: 'trivy-local-ai-server.sarif'
         category: 'trivy-local-ai-server'
 
     - name: Upload local-ai-server full results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v3
+      uses: github/codeql-action/upload-sarif@v4
       if: github.event_name == 'schedule'
       with:
         sarif_file: 'trivy-local-ai-server-full.sarif'
         category: 'trivy-local-ai-server-full'
 
     - name: Upload Trivy results as artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: always()
       with:
         name: trivy-results-${{ github.sha }}

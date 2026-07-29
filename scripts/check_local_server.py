@@ -22,8 +22,6 @@ Exit codes:
     1 = Some checks failed
     2 = Connection error
 """
-from __future__ import annotations
-
 import argparse
 import asyncio
 import base64
@@ -48,11 +46,21 @@ def _reexec_in_container(argv: List[str]) -> int:
     """Re-run this script inside the local_ai_server container via docker exec."""
     script_path = os.path.abspath(__file__)
     try:
-        with open(script_path) as f:
+        with open(script_path, encoding="utf-8") as f:
             script_content = f.read()
     except Exception as exc:
         print(f"Cannot read script for container exec: {exc}", file=sys.stderr)
         return 2
+
+    project_root = os.getcwd()
+    auth_arg_present = False
+    for i, arg in enumerate(argv[1:]):
+        if arg == "--auth-token" or arg.startswith("--auth-token="):
+            auth_arg_present = True
+        if arg == "--project-root" and i + 2 <= len(argv[1:]):
+            project_root = argv[i + 2]
+        elif arg.startswith("--project-root="):
+            project_root = arg.split("=", 1)[1]
 
     # Build the same argv but skip --project-root (not meaningful inside container)
     filtered = []
@@ -68,13 +76,20 @@ def _reexec_in_container(argv: List[str]) -> int:
             continue
         filtered.append(arg)
 
+    if not auth_arg_present:
+        auth_token = _load_auth_from_env(project_root)
+        if auth_token:
+            filtered.extend(["--auth-token", auth_token])
+
     cmd = [
         "docker", "exec", "-i", "local_ai_server",
-        "python3", "-c", script_content,
+        "python3", "-",
     ] + filtered
 
     try:
-        result = subprocess.run(cmd, timeout=120)
+        result = subprocess.run(
+            cmd, input=script_content.encode("utf-8"), timeout=120
+        )
         return result.returncode
     except FileNotFoundError:
         print("docker not found. Install websockets on the host: pip3 install websockets", file=sys.stderr)
@@ -192,6 +207,12 @@ class CheckResult:
         return d
 
 
+def _truthy(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 async def check_status(url: str, auth_token: Optional[str]) -> Tuple[Optional[Dict], List[CheckResult]]:
     """Check status and return (status_data, results)."""
     results: List[CheckResult] = []
@@ -229,13 +250,28 @@ async def check_status(url: str, auth_token: Optional[str]) -> Tuple[Optional[Di
     stt = models.get("stt", {})
     stt_loaded = stt.get("loaded", False)
     stt_msg = f"{stt.get('backend', '?')} | {stt.get('display', '?')}"
-    results.append(CheckResult("stt_loaded", stt_loaded, stt_msg))
+    stt_details = []
+    if stt.get("device"):
+        stt_details.append(f"device={stt.get('device')}")
+    if stt.get("compute_type"):
+        stt_details.append(f"compute={stt.get('compute_type')}")
+    if stt_details:
+        stt_msg += " | " + ", ".join(stt_details)
+    stt_warn = None
+    if stt.get("backend") == "faster_whisper" and stt.get("device") == "cpu" and stt.get("compute_type") == "float16":
+        stt_warn = "Faster-Whisper CPU + float16 is usually invalid; use int8 for CPU demos."
+    results.append(CheckResult("stt_loaded", stt_loaded, stt_msg, warning=stt_warn))
 
     # LLM status
     llm = models.get("llm", {})
     llm_loaded = llm.get("loaded", False)
     llm_cfg = llm.get("config", {})
-    llm_msg = f"{llm.get('display', '?')} | gpu_layers={llm_cfg.get('gpu_layers', '?')}"
+    tool_capability = llm.get("tool_capability") or {}
+    llm_msg = (
+        f"{llm.get('display', '?')} | "
+        f"ctx={llm_cfg.get('context', '?')}, max_tokens={llm_cfg.get('max_tokens', '?')}, "
+        f"gpu_layers={llm_cfg.get('gpu_layers', '?')}, tools={tool_capability.get('level', 'unknown')}"
+    )
     llm_warn = None
     if config.get("runtime_mode") == "minimal" and not llm_loaded:
         llm_warn = "Runtime mode is 'minimal' — LLM not preloaded (loaded on demand)"
@@ -247,6 +283,12 @@ async def check_status(url: str, auth_token: Optional[str]) -> Tuple[Optional[Di
     tts_loaded = tts.get("loaded", False)
     tts_msg = f"{tts.get('backend', '?')} | {tts.get('display', '?')}"
     results.append(CheckResult("tts_loaded", tts_loaded, tts_msg))
+
+    # Runtime flags
+    filler_enabled = _truthy(config.get("enable_filler_audio"), default=False)
+    overlap_enabled = _truthy(config.get("llm_streaming_tts_overlap"), default=True)
+    runtime_msg = f"filler_audio={filler_enabled}, llm_tts_overlap={overlap_enabled}"
+    results.append(CheckResult("runtime_config", True, runtime_msg))
 
     # GPU status
     gpu_usable = gpu.get("runtime_usable", False)
@@ -372,12 +414,20 @@ async def check_stt(url: str, auth_token: Optional[str]) -> CheckResult:
     except Exception as exc:
         return CheckResult("stt_test", False, f"Audio conversion failed: {exc}")
 
+    # The server intentionally suppresses STT while a synthetic TTS response
+    # would be playing, even across connections. Wait for that protection
+    # window before feeding the generated audio back into STT.
+    await asyncio.sleep(max(0.5, len(audio_mulaw) / 8000.0 + 0.5))
+
     # Step 3: Send to STT on fresh connection
     ws2, err = await _connect(url, auth_token)
     if err:
         return CheckResult("stt_test", False, f"STT connection: {err}")
 
-    await _send_recv_json(ws2, {"type": "set_mode", "mode": "stt"}, timeout=5.0)
+    check_call_id = "agent-cli-stt-check"
+    await _send_recv_json(
+        ws2, {"type": "set_mode", "mode": "stt", "call_id": check_call_id}, timeout=5.0
+    )
 
     t0 = time.time()
     audio_payload = {
@@ -385,9 +435,17 @@ async def check_stt(url: str, auth_token: Optional[str]) -> CheckResult:
         "data": base64.b64encode(pcm16k).decode(),
         "mode": "stt",
         "rate": 16000,
+        "call_id": check_call_id,
     }
     try:
         await ws2.send(json.dumps(audio_payload))
+        # Whisper-family STT uses a silence endpointer. A single batch of speech
+        # does not finalize until a later silent chunk arrives after the
+        # configured silence interval.
+        await asyncio.sleep(0.65)
+        silence_payload = dict(audio_payload)
+        silence_payload["data"] = base64.b64encode(b"\x00\x00" * 8000).decode()
+        await ws2.send(json.dumps(silence_payload))
     except Exception as exc:
         await ws2.close()
         return CheckResult("stt_test", False, f"Failed to send audio: {exc}")
@@ -473,7 +531,7 @@ def _load_auth_from_env(project_root: Optional[str]) -> Optional[str]:
     if not os.path.isfile(env_path):
         return None
     try:
-        with open(env_path) as f:
+        with open(env_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line.startswith("#") or "=" not in line:
@@ -575,7 +633,12 @@ def main() -> None:
     if not auth_token:
         auth_token = _load_auth_from_env(args.project_root)
 
-    results, status_data = asyncio.run(run_all_checks(url, auth_token, llm_timeout=args.timeout))
+    # CentOS/RHEL 7 commonly ships Python 3.6.  Keep this operator-side helper
+    # usable there even though asyncio.run() was only added in Python 3.7.
+    loop = asyncio.get_event_loop()
+    results, status_data = loop.run_until_complete(
+        run_all_checks(url, auth_token, llm_timeout=args.timeout)
+    )
 
     if args.json_output:
         exit_code = _print_json_report(url, results, status_data)

@@ -151,3 +151,8 @@ async def test_google_live_blocks_hangup_tool_during_pending_attended_transfer(m
     response = send_messages[0]["toolResponse"]["functionResponses"][0]["response"]
     assert response["status"] == "error"
     assert "attended transfer is pending" in response["message"].lower()
+    assert provider._session_store.session.conversation_history == []
+    event = provider._session_store.session.tool_calls[0]
+    assert event["tool_call_id"] == "tc-1"
+    assert event["name"] == "hangup_call"
+    assert event["status"] == "failure"

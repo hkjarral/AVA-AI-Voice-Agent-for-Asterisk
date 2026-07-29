@@ -4,44 +4,105 @@ import { toast } from 'sonner';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import yaml from 'js-yaml';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
-import { Settings, Radio, Star, AlertCircle, RefreshCw, Loader2, Plus, Trash2 } from 'lucide-react';
+import { Settings, Radio, Star, AlertCircle, RefreshCw, Loader2, Plus, Trash2, Copy } from 'lucide-react';
 import { YamlErrorBanner, YamlErrorInfo } from '../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
 import { FormInput, FormSelect } from '../components/ui/FormComponents';
+import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
+import AudioResetButton, { AudioResetResponse } from '../components/config/AudioResetButton';
+import AudioEnvironmentOverrideWarning from '../components/config/AudioEnvironmentOverrideWarning';
+
+type ApplyState = {
+    pendingApply: boolean;
+    applyMethod: 'hot_reload' | 'restart';
+};
+
+const mergeApplyRecommendation = (
+    current: ApplyState,
+    method: 'none' | 'hot_reload' | 'restart',
+): ApplyState => {
+    if (method === 'none') return current;
+    if (current.pendingApply && current.applyMethod === 'restart') return current;
+    return { pendingApply: true, applyMethod: method };
+};
 
 const ProfilesPage = () => {
 	const { confirm } = useConfirmDialog();
-	const [config, setConfig] = useState<any>({});
-	const [loading, setLoading] = useState(true);
+	const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+	const [agents, setAgents] = useState<any[]>([]);
+	const [agentsLoading, setAgentsLoading] = useState(true);
+	const [agentsLoadFailed, setAgentsLoadFailed] = useState(false);
+	const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [error, setError] = useState<string | null>(null);
-    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
+    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
 	const [editingProfile, setEditingProfile] = useState<string | null>(null);
 	const [profileForm, setProfileForm] = useState<any>({});
 	const [isNewProfile, setIsNewProfile] = useState(false);
 	const [newProfileName, setNewProfileName] = useState('');
-	const [pendingApply, setPendingApply] = useState(false);
 	const [applying, setApplying] = useState(false);
-	const [applyMethod, setApplyMethod] = useState<'hot_reload' | 'restart'>('restart');
+    const [applyState, setApplyState] = useState<ApplyState>({
+        pendingApply: false,
+        applyMethod: 'restart',
+    });
+    const { pendingApply, applyMethod } = applyState;
+    const [builtInAudioProfiles, setBuiltInAudioProfiles] = useState<ReadonlySet<string> | null>(null);
 
     useEffect(() => {
         fetchConfig();
+        fetchAgents();
+        fetchProfileAudioBaselines();
     }, []);
 
-    const fetchConfig = async () => {
+    const fetchProfileAudioBaselines = async () => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
+            const response = await axios.get<{ built_in_profiles?: unknown }>(
+                '/api/config/profiles/audio/baselines',
+            );
+            const profiles = response.data?.built_in_profiles;
+            if (!Array.isArray(profiles) || !profiles.every((name) => typeof name === 'string')) {
+                throw new Error('Invalid profile audio baseline metadata');
+            }
+            setBuiltInAudioProfiles(new Set(profiles));
+        } catch (err) {
+            console.error('Failed to load profile audio baseline metadata', err);
+            setBuiltInAudioProfiles(null);
+        }
+    };
+
+    const isCustomAudioProfile = (profileName: string): boolean | undefined => (
+        builtInAudioProfiles ? !builtInAudioProfiles.has(profileName) : undefined
+    );
+
+    const fetchAgents = async () => {
+        setAgentsLoading(true);
+        try {
+            const response = await axios.get<any[]>('/api/agents');
+            setAgents(Array.isArray(response.data) ? response.data : []);
+            setAgentsLoadFailed(false);
+        } catch (err) {
+            console.error('Failed to load Agents for audio-profile usage', err);
+            setAgents([]);
+            setAgentsLoadFailed(true);
+        } finally {
+            setAgentsLoading(false);
+        }
+    };
+
+    const fetchConfig = async (force = false) => {
+        try {
+            const r = await loadConfigYaml(force);
+            if (r.yamlError) {
+                setYamlError(r.yamlError);
                 setConfig({});
                 setError(null);
             } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
+                setConfig(r.config || {});
                 setError(null);
                 setYamlError(null);
             }
+            return r.config || {};
         } catch (err) {
             console.error('Failed to load config', err);
             const status = (err as any)?.response?.status;
@@ -51,8 +112,18 @@ const ProfilesPage = () => {
                 setError('Failed to load configuration. Check backend logs and try again.');
             }
             setYamlError(null);
+            return null;
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleProfileAudioResetComplete = async (profileName: string, response: AudioResetResponse) => {
+        const method = response?.recommended_apply_method || 'restart';
+        setApplyState((current) => mergeApplyRecommendation(current, method));
+        const refreshed = await fetchConfig(true);
+        if (refreshed && editingProfile === profileName) {
+            setProfileForm({ ...(refreshed.profiles?.[profileName] || {}) });
         }
     };
 
@@ -61,12 +132,15 @@ const ProfilesPage = () => {
             const sanitized = sanitizeConfigForSave(newConfig);
             const response = await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
             const method = (response.data?.recommended_apply_method || 'restart') as 'hot_reload' | 'restart';
-            setApplyMethod(method);
-            setPendingApply(true);
+            setApplyState((current) => mergeApplyRecommendation(current, method));
             setConfig(sanitized);
+            return true;
         } catch (err) {
             console.error('Failed to save config', err);
-            toast.error('Failed to save configuration');
+            toast.error('Failed to save configuration', {
+                description: (err as any)?.response?.data?.detail || (err as Error)?.message,
+            });
+            return false;
         }
     };
 
@@ -77,15 +151,14 @@ const ProfilesPage = () => {
 	                const response = await axios.post('/api/system/containers/ai_engine/reload');
 	                const status = response.data?.status ?? (response.status === 200 ? 'success' : undefined);
 	                if (status === 'partial' || response.data?.restart_required) {
-	                    setApplyMethod('restart');
-	                    setPendingApply(true);
+	                    setApplyState({ pendingApply: true, applyMethod: 'restart' });
 	                    toast.warning('Hot reload applied partially', { description: 'Restart AI Engine to fully apply changes' });
 	                    return;
 	                }
 	                if (status === 'success' || response.status === 200) {
-	                    setPendingApply(false);
+	                    setApplyState((current) => ({ ...current, pendingApply: false }));
 	                    toast.success('AI Engine hot reloaded! Changes are now active.');
-	                    fetchConfig();
+	                    fetchConfig(true);
 	                    return;
 	                }
 	            }
@@ -97,15 +170,15 @@ const ProfilesPage = () => {
 	                return;
 	            }
 	            if (status === 'degraded') {
-	                setPendingApply(false);
+	                setApplyState((current) => ({ ...current, pendingApply: false }));
 	                toast.warning('AI Engine restarted but may not be fully healthy', { description: response.data.output || 'Please verify manually' });
-	                fetchConfig();
+	                fetchConfig(true);
 	                return;
 	            }
 	            if (status === 'success' || response.status === 200) {
-	                setPendingApply(false);
+	                setApplyState((current) => ({ ...current, pendingApply: false }));
 	                toast.success('AI Engine restarted! Changes are now active.');
-	                fetchConfig();
+	                fetchConfig(true);
 	                return;
 	            }
 	        } catch (err: any) {
@@ -126,6 +199,7 @@ const ProfilesPage = () => {
 	const handleAddProfile = () => {
 		setEditingProfile('new_profile');
 		setProfileForm({
+			output_resampler: 'linear',
 			chunk_ms: 'auto',
 			idle_cutoff_ms: 600,
 			internal_rate_hz: 8000,
@@ -160,12 +234,30 @@ const ProfilesPage = () => {
 			toast.error(`Profile '${profileKey}' already exists`);
 			return;
 		}
+		if (!isNewProfile) {
+			if (agentsLoading || agentsLoadFailed) {
+				toast.error('Cannot safely modify this profile', {
+					description: 'Agent usage could not be verified. Reload the page and try again.',
+				});
+				return;
+			}
+			const agentsUsing = getAgentsUsingProfile(profileKey);
+			const currentProfile = config.profiles?.[profileKey] || {};
+			if (agentsUsing.length > 0 && JSON.stringify(profileForm) !== JSON.stringify(currentProfile)) {
+				toast.error(`Cannot modify '${profileKey}' while it is in use`, {
+					description: `Clone the profile, move Agent${agentsUsing.length === 1 ? '' : 's'} ${agentsUsing.join(', ')} to the clone, then edit it.`,
+				});
+				return;
+			}
+		}
 
-		const newConfig = { ...config };
-		if (!newConfig.profiles) newConfig.profiles = {};
+		const newConfig = {
+			...config,
+			profiles: { ...(config.profiles || {}) },
+		};
 		
 		newConfig.profiles[profileKey] = profileForm;
-		await saveConfig(newConfig);
+		if (!await saveConfig(newConfig)) return;
 		setEditingProfile(null);
 		setIsNewProfile(false);
 		setNewProfileName('');
@@ -173,6 +265,18 @@ const ProfilesPage = () => {
 
     const updateProfileField = (field: string, value: any) => {
         setProfileForm({ ...profileForm, [field]: value });
+    };
+
+    const updateOptionalProfileNumber = (field: string, rawValue: string) => {
+        setProfileForm((current) => {
+            const next = { ...current };
+            if (rawValue.trim() === '') {
+                delete next[field];
+            } else {
+                next[field] = parseInt(rawValue, 10);
+            }
+            return next;
+        });
     };
 
     const updateNestedField = (section: string, field: string, value: any) => {
@@ -193,15 +297,57 @@ const ProfilesPage = () => {
             .map(([name]) => name);
     };
 
+    const getAgentsUsingProfile = (profileName: string) => {
+        const configuredDefault = config.profiles?.default;
+        const defaultProfileName = typeof configuredDefault === 'string' && configuredDefault
+            ? configuredDefault
+            : 'telephony_ulaw_8k';
+        return agents
+            .filter((agent) => {
+                const explicitProfile = typeof agent?.audio_profile === 'string'
+                    ? agent.audio_profile.trim()
+                    : '';
+                return (explicitProfile || defaultProfileName) === profileName;
+            })
+            .map((agent) => agent?.display_name || agent?.name || agent?.slug || agent?.id)
+            .filter(Boolean);
+    };
+
+    const getProfileSupport = (profileName: string, profile: any): 'ga' | 'enhanced' | 'wideband' | 'experimental' | 'provider-native' | 'custom' => {
+        if (profileName === 'telephony_enhanced_8k') return 'enhanced';
+        if (profileName === 'telephony_ulaw_8k' || profileName === 'telephony_responsive') return 'ga';
+        if (profileName === 'wideband_pcm_16k') return 'wideband';
+        const wireRate = Number(profile?.transport_out?.sample_rate_hz || 0);
+        if (wireRate > 8000) return 'experimental';
+        const providerRate = Number(profile?.provider_pref?.output_sample_rate_hz || profile?.internal_rate_hz || 0);
+        if (wireRate === 8000 && providerRate > 8000) return 'provider-native';
+        return 'custom';
+    };
+
     // Get profile description
     const getProfileDescription = (profileName: string) => {
         const descriptions: Record<string, string> = {
-            'telephony_responsive': 'Standard 8kHz μ-law for telephony with adaptive timing',
-            'telephony_ulaw_8k': '8kHz μ-law matching RTP codec directly',
-            'wideband_pcm_16k': '16kHz wideband for better audio quality',
-            'openai_realtime_24k': 'High-fidelity 24kHz for OpenAI Realtime API'
+            'telephony_responsive': 'GA 8 kHz telephony transport with adaptive timing',
+            'telephony_ulaw_8k': 'GA 8 kHz telephony transport matching G.711 μ-law',
+            'telephony_enhanced_8k': 'Opt-in 8 kHz telephony with alias-safe downsampling for clearer 16/24 kHz provider audio',
+            'wideband_pcm_16k': 'Opt-in 16 kHz AudioSocket transport with provider-native PCM conversion; use only with a G.722 or other end-to-end wideband call path',
+            'openai_realtime_24k': 'Experimental profile with 24 kHz provider-native processing and an 8 kHz Asterisk wire leg'
         };
         return descriptions[profileName] || 'Custom audio profile';
+    };
+
+    const handleCloneProfile = (profileName: string) => {
+        const sourceData = config.profiles?.[profileName] || {};
+        let cloneName = `${profileName}_copy`;
+        let suffix = 2;
+        while (config.profiles?.[cloneName]) {
+            cloneName = `${profileName}_copy_${suffix}`;
+            suffix++;
+        }
+        setEditingProfile('new_profile');
+        setProfileForm({ ...sourceData });
+        setIsNewProfile(true);
+        setNewProfileName(cloneName);
     };
 
     const handleDeleteProfile = async (profileName: string) => {
@@ -213,8 +359,21 @@ const ProfilesPage = () => {
             toast.error('Cannot delete the last remaining audio profile');
             return;
         }
+		if (agentsLoading || agentsLoadFailed) {
+			toast.error(`Cannot safely delete '${profileName}'`, {
+				description: 'Agent usage could not be verified. Reload the page and try again.',
+			});
+			return;
+		}
 
         const contextsUsing = getContextsUsingProfile(profileName);
+        const agentsUsing = getAgentsUsingProfile(profileName);
+        if (agentsUsing.length > 0) {
+            toast.error(`Cannot delete '${profileName}'`, {
+                description: `Used by Agent${agentsUsing.length === 1 ? '' : 's'}: ${agentsUsing.join(', ')}. Move those Agents to another profile first.`,
+            });
+            return;
+        }
         const remainingProfiles = currentProfileKeys.filter((p) => p !== profileName);
         const fallbackDefault =
             (remainingProfiles.includes('telephony_ulaw_8k') ? 'telephony_ulaw_8k' : remainingProfiles[0]) || 'telephony_ulaw_8k';
@@ -261,7 +420,7 @@ const ProfilesPage = () => {
             newConfig.profiles.default = fallbackDefault;
         }
 
-        await saveConfig(newConfig);
+        if (!await saveConfig(newConfig)) return;
 
         if (editingProfile === profileName) {
             setEditingProfile(null);
@@ -317,6 +476,12 @@ const ProfilesPage = () => {
 					</button>
 				</div>
 			)}
+            {agentsLoadFailed && (
+                <div className="bg-red-500/15 border border-red-500/30 text-red-700 dark:text-red-400 p-4 rounded-md flex items-center">
+                    <AlertCircle className="w-5 h-5 mr-2" />
+                    Agent usage could not be verified. Editing and deleting existing profiles is disabled until this page is reloaded successfully.
+                </div>
+            )}
             {error && (
                 <div className="bg-red-500/15 border border-red-500/30 text-red-700 dark:text-red-400 p-4 rounded-md flex items-center justify-between">
                     <div className="flex items-center">
@@ -331,6 +496,7 @@ const ProfilesPage = () => {
                     </button>
                 </div>
             )}
+            <AudioEnvironmentOverrideWarning />
 			<div className="flex justify-between items-center">
 				<div>
 					<h1 className="text-3xl font-bold tracking-tight">Audio Profiles</h1>
@@ -351,9 +517,10 @@ const ProfilesPage = () => {
 	                <div className="grid grid-cols-1 gap-4">
 	                    {profileKeys.map((profileName) => {
 	                        const profile = profiles[profileName];
-	                        const contextsUsing = getContextsUsingProfile(profileName);
+	                        const agentsUsing = getAgentsUsingProfile(profileName);
 	                        const isDefault = defaultProfile === profileName;
-                            const canDelete = profileKeys.length > 1;
+	                        const support = getProfileSupport(profileName, profile);
+                            const canDelete = profileKeys.length > 1 && !agentsLoading && !agentsLoadFailed;
 	                        
 	                        return (
 	                            <div 
@@ -377,13 +544,55 @@ const ProfilesPage = () => {
                                                         Default
                                                     </span>
                                                 )}
+                                                <span className={[
+                                                    'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold',
+                                                    support === 'ga'
+                                                        ? 'bg-green-500/15 text-green-700 dark:text-green-300'
+                                                        : support === 'enhanced'
+                                                            ? 'bg-blue-500/15 text-blue-700 dark:text-blue-300'
+                                                        : support === 'wideband'
+                                                            ? 'bg-violet-500/15 text-violet-700 dark:text-violet-300'
+                                                        : support === 'experimental' || support === 'provider-native'
+                                                            ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                                                            : 'bg-secondary text-muted-foreground'
+                                                ].join(' ')}>
+                                                    {support === 'ga'
+                                                        ? 'GA Telephony'
+                                                        : support === 'enhanced'
+                                                            ? 'Enhanced Telephony'
+                                                        : support === 'wideband'
+                                                            ? 'Opt-in Wideband · Asterisk 20.17+'
+                                                        : support === 'experimental'
+                                                            ? 'Experimental Wideband'
+                                                            : support === 'provider-native'
+                                                                ? 'Provider Native · 8 kHz Wire'
+                                                                : 'Custom'}
+                                                </span>
                                             </div>
                                             <p className="text-sm text-muted-foreground mt-1">
                                                 {getProfileDescription(profileName)}
                                             </p>
                                         </div>
                                     </div>
-	                                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+	                                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
+	                                        <AudioResetButton
+	                                            scope="profile"
+	                                            target={profileName}
+	                                            customProfile={isCustomAudioProfile(profileName)}
+	                                            compact
+	                                            onResetComplete={(response) => handleProfileAudioResetComplete(profileName, response)}
+	                                        />
+	                                        <button
+	                                            onClick={(e) => {
+	                                                e.stopPropagation();
+	                                                handleCloneProfile(profileName);
+	                                            }}
+	                                            className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
+	                                            aria-label={`Clone profile ${profileName}`}
+	                                            title="Clone profile"
+	                                        >
+	                                            <Copy className="w-4 h-4" />
+	                                        </button>
 	                                        <button
 	                                            onClick={(e) => {
 	                                                e.stopPropagation();
@@ -399,7 +608,12 @@ const ProfilesPage = () => {
                                                     handleDeleteProfile(profileName);
                                                 }}
                                                 disabled={!canDelete}
-                                                title={!canDelete ? 'Cannot delete the last remaining audio profile' : undefined}
+                                                aria-label={`Delete profile ${profileName}`}
+                                                title={!canDelete
+                                                    ? agentsLoading || agentsLoadFailed
+                                                        ? 'Agent usage must be verified before deleting a profile'
+                                                        : 'Cannot delete the last remaining audio profile'
+                                                    : undefined}
                                                 className={[
                                                     "p-2 rounded-md",
                                                     canDelete
@@ -412,7 +626,7 @@ const ProfilesPage = () => {
 	                                    </div>
 	                                </div>
 
-                                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                                <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-sm">
                                     <div className="bg-secondary/30 p-2 rounded-md">
                                         <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block">Internal Rate</span>
                                         <p className="text-foreground font-mono">{profile.internal_rate_hz || 8000} Hz</p>
@@ -429,15 +643,27 @@ const ProfilesPage = () => {
                                         <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block">Transport Out</span>
                                         <p className="text-foreground font-mono">{profile.transport_out?.encoding || 'slin'}</p>
                                     </div>
+                                    <div className="bg-secondary/30 p-2 rounded-md">
+                                        <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block">Downsampling</span>
+                                        <p className="text-foreground font-mono">
+                                            {profile.output_resampler === 'bandlimited' ? 'Alias-safe' : 'Compatibility'}
+                                        </p>
+                                    </div>
+                                    <div className="bg-secondary/30 p-2 rounded-md">
+                                        <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block">Barge DSP</span>
+                                        <p className="text-foreground font-mono">
+                                            {profile.talk_detect_talking_threshold ?? config.barge_in?.pipeline_talk_detect_talking_threshold ?? 256}
+                                        </p>
+                                    </div>
                                 </div>
 
-                                {contextsUsing.length > 0 && (
+                                {agentsUsing.length > 0 && (
                                     <div className="mt-3">
-                                        <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block mb-2">Used By Contexts</span>
+                                        <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block mb-2">Used By Agents</span>
                                         <div className="flex flex-wrap gap-1.5">
-                                            {contextsUsing.map((ctx) => (
-                                                <span key={ctx} className="px-2 py-1 rounded-md text-xs bg-accent text-accent-foreground font-medium border border-accent-foreground/10">
-                                                    {ctx}
+                                            {agentsUsing.map((agent, index) => (
+                                                <span key={`${agent}-${index}`} className="px-2 py-1 rounded-md text-xs bg-accent text-accent-foreground font-medium border border-accent-foreground/10">
+                                                    {agent}
                                                 </span>
                                             ))}
                                         </div>
@@ -462,18 +688,32 @@ const ProfilesPage = () => {
 					footer={
 						<>
                             {!isNewProfile && (
-                                <button
-                                    onClick={() => {
-                                        if (editingProfile) {
-                                            handleDeleteProfile(editingProfile);
-                                        }
-                                    }}
-                                    disabled={!editingProfile || profileKeys.length <= 1}
-                                    title={profileKeys.length <= 1 ? 'Cannot delete the last remaining audio profile' : undefined}
-                                    className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-destructive/30 text-destructive hover:bg-destructive/10 h-9 px-4 py-2 mr-auto"
-                                >
-                                    Delete
-                                </button>
+                                <div className="flex items-center gap-2 mr-auto">
+                                    {editingProfile && (
+                                        <AudioResetButton
+                                            scope="profile"
+                                            target={editingProfile}
+                                            customProfile={isCustomAudioProfile(editingProfile)}
+                                            onResetComplete={(response) => handleProfileAudioResetComplete(editingProfile, response)}
+                                        />
+                                    )}
+                                    <button
+                                        onClick={() => {
+                                            if (editingProfile) {
+                                                handleDeleteProfile(editingProfile);
+                                            }
+                                        }}
+                                        disabled={!editingProfile || profileKeys.length <= 1 || agentsLoading || agentsLoadFailed}
+                                        title={agentsLoading || agentsLoadFailed
+                                            ? 'Agent usage must be verified before deleting a profile'
+                                            : profileKeys.length <= 1
+                                                ? 'Cannot delete the last remaining audio profile'
+                                                : undefined}
+                                        className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-destructive/30 text-destructive hover:bg-destructive/10 h-9 px-4 py-2"
+                                    >
+                                        Delete
+                                    </button>
+                                </div>
                             )}
 							<button
 								onClick={() => {
@@ -530,6 +770,25 @@ const ProfilesPage = () => {
                                 onChange={(e) => updateProfileField('internal_rate_hz', parseInt(e.target.value))}
                                 tooltip="Processing sample rate (8000, 16000, 24000)."
                             />
+                            <FormInput
+                                label="TALK_DETECT Talking Threshold"
+                                type="number"
+                                min={1}
+                                max={32768}
+                                value={profileForm.talk_detect_talking_threshold ?? config.barge_in?.pipeline_talk_detect_talking_threshold ?? 256}
+                                onChange={(e) => updateOptionalProfileNumber('talk_detect_talking_threshold', e.target.value)}
+                                tooltip="Per-profile Asterisk DSP magnitude threshold for pipeline barge-in. Higher values reject more playback echo. The wideband profile uses 1000; profiles without an override inherit the global barge-in value."
+                            />
+                            <FormSelect
+                                label="Output Downsampling"
+                                value={profileForm.output_resampler || 'linear'}
+                                onChange={(e) => updateProfileField('output_resampler', e.target.value)}
+                                options={[
+                                    { value: 'linear', label: 'Compatibility' },
+                                    { value: 'bandlimited', label: 'Alias-safe' }
+                                ]}
+                                tooltip="Controls conversion from provider-native 16/24 kHz audio to the lower Asterisk rate. Alias-safe removes frequencies that cannot fit in 8 kHz telephony and reduces sibilant hiss."
+                            />
                         </div>
                     </div>
 
@@ -546,12 +805,14 @@ const ProfilesPage = () => {
                                     { value: 'pcm16', label: 'PCM16' },
                                     { value: 'linear16', label: 'Linear16' }
                                 ]}
+                                tooltip="Audio encoding sent TO the provider (STT/realtime). Match the provider's preferred format to avoid extra resampling: mulaw for PSTN-grade telephony, pcm16/linear16 for wideband cloud APIs."
                             />
                             <FormInput
                                 label="Input Sample Rate (Hz)"
                                 type="number"
                                 value={profileForm.provider_pref?.input_sample_rate_hz || 8000}
                                 onChange={(e) => updateNestedField('provider_pref', 'input_sample_rate_hz', parseInt(e.target.value))}
+                                tooltip="Sample rate of the audio sent to the provider. Common values: 8000 (telephony), 16000 (wideband), 24000 (OpenAI Realtime)."
                             />
                             <FormSelect
                                 label="Output Encoding"
@@ -562,12 +823,14 @@ const ProfilesPage = () => {
                                     { value: 'pcm16', label: 'PCM16' },
                                     { value: 'linear16', label: 'Linear16' }
                                 ]}
+                                tooltip="Audio encoding the provider returns (TTS output). Match the format the provider natively produces to avoid a transcoding step."
                             />
                             <FormInput
                                 label="Output Sample Rate (Hz)"
                                 type="number"
                                 value={profileForm.provider_pref?.output_sample_rate_hz || 8000}
                                 onChange={(e) => updateNestedField('provider_pref', 'output_sample_rate_hz', parseInt(e.target.value))}
+                                tooltip="Sample rate of the audio the provider returns. Will be resampled down to transport_out rate before going to Asterisk."
                             />
                         </div>
                     </div>
@@ -585,12 +848,14 @@ const ProfilesPage = () => {
                                     { value: 'slin16', label: 'SLIN16 (16kHz)' },
                                     { value: 'ulaw', label: 'μ-law' }
                                 ]}
+                                tooltip="Encoding written to the selected Asterisk media transport. SLIN16 wideband is supported through AudioSocket; ExternalMedia RTP uses the 8 kHz telephony profiles."
                             />
                             <FormInput
                                 label="Sample Rate (Hz)"
                                 type="number"
                                 value={profileForm.transport_out?.sample_rate_hz || 8000}
                                 onChange={(e) => updateNestedField('transport_out', 'sample_rate_hz', parseInt(e.target.value))}
+                                tooltip="Sample rate of the audio frames sent to Asterisk. Must match the encoding above (slin=8000, slin16=16000, ulaw=8000)."
                             />
                         </div>
                     </div>

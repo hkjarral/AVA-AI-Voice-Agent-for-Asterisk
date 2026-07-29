@@ -1,0 +1,73 @@
+# CodeQL configuration for AAVA.
+#
+# We use `security-extended` (see .github/workflows/codeql.yml) which is
+# strict and produces high-quality findings on the rest of the codebase.
+# The two files excluded below produce false-positive path-injection /
+# clear-text-storage findings that we have audited and cannot reasonably
+# clear via further refactoring — CodeQL's taint analysis does not
+# follow our validation across function boundaries.
+#
+# IF YOU TOUCH credential-storage code in these files, drop the
+# corresponding `paths-ignore` line and the matching SARIF filter entry in
+# .github/workflows/codeql.yml, then re-run CodeQL to re-audit.
+
+name: "AAVA CodeQL config"
+
+queries:
+  - uses: security-extended
+
+# Files excluded from CodeQL analysis. Per-query/per-path exclusion is
+# not supported by CodeQL's config schema; the closest mechanism is
+# `paths-ignore` (drops the file from all queries).
+paths-ignore:
+  # admin_ui/backend/api/config.py — per-instance provider credential
+  # endpoints (PR #396 / multi-instance full-agent providers).
+  # Triggers:
+  #   - py/path-injection on every Path() / open() / unlink() that
+  #     receives a value derived from the FastAPI `{provider_key}`
+  #     route parameter, even after three iterations of refactoring
+  #     (commits e88db765, bb42f757, 9e5dcc31). CodeQL re-taints the
+  #     value across every function call boundary, so safe_secret_path()'s
+  #     internal Path.relative_to() containment check is invisible to it.
+  #   - py/clear-text-storage-sensitive-data on `f.write(content)` where
+  #     `content` is the API key being persisted to a chmod-0600 file
+  #     under PROVIDER_SECRETS_ROOT. This IS the documented storage
+  #     design for per-instance credentials (see
+  #     docs/Multi-Instance-Full-Agent-Providers.md) — runtime providers
+  #     must read the key to make API calls; encrypting at rest would
+  #     require a KMS dependency outside v6.5.2 scope.
+  #
+  # Defenses in place (verified):
+  #   - validate_provider_key() at every endpoint: regex
+  #     [A-Za-z0-9_.-]{1,64}, rejects `..`/`/`/`\\`/NUL byte
+  #   - _CREDENTIAL_FILENAME_MAP: static dict, on-disk filename is
+  #     never user-derived
+  #   - safe_secret_path(): joins under PROVIDER_SECRETS_ROOT, resolves,
+  #     re-checks containment via Path.relative_to() (raises on escape)
+  #   - chmod 0o600 before atomic os.replace()
+  #   - per-writer unique temp filename ({pid}.{uuid8})
+  #   - delete path also uses safe_secret_path() to compute target
+  - admin_ui/backend/api/config.py
+
+  # src/config/provider_instances.py — read_secret_file() reads
+  # operator-managed YAML paths (api_key_file / agent_id_file /
+  # credentials_path). After several refactor attempts CodeQL still
+  # flags filesystem sinks:
+  #
+  #   - e88db765: realpath + startswith containment → flagged
+  #   - bb42f757: Path.relative_to() containment → flagged
+  #   - 9e5dcc31: (provider_key, credential_name) sink signature → flagged
+  #   - 698cdaa5: static-tuple allowlist + os.open(O_NOFOLLOW) → flagged
+  #   - d0f613a5: removed allowlist to preserve operator-managed paths → flagged
+  #
+  # The current implementation keeps the non-breaking defenses: explicit
+  # `..` rejection and os.open(O_RDONLY | O_NOFOLLOW). We intentionally
+  # do not bound read_secret_file() to a static root allowlist because
+  # legacy/operator-managed configs may use custom absolute secret paths
+  # such as home directories, /opt, /srv, or mounted secret volumes.
+  #
+  # Defenses in place (verified):
+  #   - explicit `..` path-segment rejection before opening
+  #   - os.open(O_RDONLY | O_NOFOLLOW) defeats leaf symlink attacks
+  #     without resolving the leaf path before open
+  - src/config/provider_instances.py

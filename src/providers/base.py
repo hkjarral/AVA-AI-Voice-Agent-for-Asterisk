@@ -10,6 +10,15 @@ class AIProviderInterface(ABC):
     """
     def __init__(self, on_event: Callable[[Dict[str, Any]], None]):
         self.on_event = on_event
+        self.provider_key: str = self.__class__.__name__
+        self.provider_kind: str = self.__class__.__name__
+
+    def set_provider_identity(self, *, provider_key: str, provider_kind: str) -> None:
+        self.provider_key = provider_key
+        self.provider_kind = provider_kind
+
+    def provider_event_name(self) -> str:
+        return self.provider_key or self.provider_kind
 
     @property
     @abstractmethod
@@ -31,6 +40,32 @@ class AIProviderInterface(ABC):
     async def stop_session(self):
         """Closes the connection and cleans up resources for the call."""
         pass
+
+    async def speak_text(self, text: str) -> bool:
+        """Ask the provider to speak text with the active agent voice.
+
+        Providers that support engine-initiated announcements should override this
+        method and return ``True`` after accepting the request.
+        """
+        return False
+
+    @property
+    def terminal_output_protected(self) -> bool:
+        """Whether the active terminal farewell must not be interrupted.
+
+        Providers may override this while a confirmed end-of-call response is
+        being spoken.  The engine uses it to reject echo/noise barge-in without
+        changing ordinary conversational interruption behavior.
+        """
+        return False
+
+    def release_terminal_output_protection(self) -> None:
+        """Resume ordinary provider input after a terminal action is rejected.
+
+        Providers that suppress caller input while a farewell or hangup is in
+        progress should override this hook and clear that provider-local state.
+        """
+        return None
 
     # Optional: providers can override to describe codec/sample alignment characteristics.
     def describe_alignment(
@@ -65,7 +100,20 @@ class ProviderCapabilities:
     is_full_agent: bool = False  # True for providers like OpenAI Realtime, Google Live, Deepgram Voice Agent
     has_native_vad: bool = False  # True if provider has built-in Voice Activity Detection
     has_native_barge_in: bool = False  # True if provider handles interruption/barge-in internally
+    has_native_aec: bool = False  # True if provider has built-in Acoustic Echo Cancellation (safe to skip local VAD on telephony)
     requires_continuous_audio: bool = False  # True if provider needs continuous audio stream (not VAD-gated)
+
+    # Provider-native formats to use when an Audio Profile explicitly opts a
+    # call into a wideband linear-PCM transport.  These are deliberately
+    # separate from the general capability lists: some APIs accept several
+    # rates but have one native/recommended boundary (for example Gemini Live
+    # receives 16 kHz PCM and emits 24 kHz PCM).  None means that the provider
+    # has no declared wideband route in AAVA and the normal configured format
+    # remains authoritative.
+    wideband_input_encoding: Optional[str] = None
+    wideband_input_sample_rate_hz: Optional[int] = None
+    wideband_output_encoding: Optional[str] = None
+    wideband_output_sample_rate_hz: Optional[int] = None
 
 
 def _safe_list(val: Optional[List[Any]]) -> List[Any]:

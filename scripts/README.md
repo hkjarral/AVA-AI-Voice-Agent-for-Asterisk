@@ -50,6 +50,11 @@ This document summarizes the utilities under `scripts/` and when to use them.
   - Remote log/recording capture. Stores wav stats and now transcripts at `logs/remote/<ts>/transcripts/`.
   - When `/tmp/ai-engine-captures/<call_id>` exists in the container, the capture bundle is copied into `logs/remote/<ts>/captures/` for offline waveform review.
 
+- `scripts/index_call_archives.py`
+  - Builds a deduplicated release-evidence table from structured `RCA_CALL_START` / `RCA_CALL_END` events under `logs/archived` and `logs/remote`.
+  - Records only call id, revision, provider/pipeline, transport, outcome, media confirmation, and archive links; caller numbers, transcripts, prompts, and tool arguments are deliberately excluded.
+  - Usage: `python3 scripts/index_call_archives.py --format markdown` or `--format json`.
+
 ## Provider & Model Management
 
 - `scripts/switch_provider.py`
@@ -62,6 +67,65 @@ This document summarizes the utilities under `scripts/` and when to use them.
 
 - `scripts/download_models.sh`, `scripts/download_tts_models.py`
   - Helpers for bulk model download.
+
+## Provider Setup
+
+- `scripts/setup-vertex.sh`
+  - One-command Google Vertex AI setup. Runs on the AAVA host (where docker compose runs). Enables the Vertex API, creates a service account with `roles/aiplatform.user`, downloads the JSON key into `secrets/`, and patches `.env`. Auto-detects headless hosts and uses gcloud's code-paste auth flow over SSH. Lists existing GCP projects to pick from, or walks you through creating a new project + linking billing if you don't have one yet.
+  - Usage: `./scripts/setup-vertex.sh [project-id]`
+  - Full guide: [docs/Provider-Vertex-Setup.md](../docs/Provider-Vertex-Setup.md)
+
+## Update Recovery
+
+- `scripts/update-recover.sh`
+  - Host-side recovery for Admin UI update planner failures, stale updater images, mixed `.git`/`.agent` ownership, and local tracked source edits that need an explicit retain/overwrite/abort decision.
+  - Captures diagnostics under `/var/tmp/aava-update-recovery-*`, tracked-change patches, conflicted-file copies when a previous merge is unresolved, and a best-effort config/data backup before update. The script may repair `.git` and Git-tracked path ownership before inspection; later ownership repair is bounded to `.agent`, and it does not recursively chown the whole checkout.
+  - Usage: `sudo bash scripts/update-recover.sh --repo /path/to/AVA-AI-Voice-Agent-for-Asterisk --ref v7.5.3 --include-ui`
+
+## Admin UI URL and Catalog Maintenance
+
+These stdlib-only utilities validate the Admin UI's external URLs and maintain
+`admin_ui/backend/api/models_catalog.py` — the curated list of STT/TTS/LLM
+models surfaced in the Admin UI Models page.
+
+- `scripts/check_catalog_urls.py`
+  - HEADs every download URL in the catalog (including Kokoro's nested `voice_files`)
+    in parallel and reports any that aren't reachable. Validates URLs are HTTPS
+    before opening them. Exits non-zero on any failure so it can gate CI.
+  - Usage: `python3 scripts/check_catalog_urls.py [--include-cloud] [--max-workers N]`
+  - Also wired up as the model-artifact half of the `Admin UI URL Validation`
+    GitHub Actions workflow.
+
+- `scripts/check_admin_ui_urls.py`
+  - Extracts complete external URLs from the Admin UI frontend and backend API,
+    excluding model artifacts already owned by `check_catalog_urls.py`.
+  - Validates documentation, signup/API-key pages, API bases, provider
+    validation endpoints, and `wss://` realtime provider routes without
+    credentials. WebSockets receive a standard unauthenticated upgrade
+    handshake; `101`, authentication, and handshake-validation responses prove
+    the route still exists. `404`, `410`, TLS, DNS, and unsafe redirect failures
+    fail the check.
+  - Uses `HEAD` first, a one-byte ranged `GET` fallback, and an empty
+    unauthenticated `POST` only for POST-only API probes. Transient network,
+    rate-limit, and 5xx failures use bounded exponential-backoff retries. It
+    never performs a full model download.
+  - Usage: `python3 scripts/check_admin_ui_urls.py [--max-workers N]`
+
+The combined workflow runs on relevant pull requests, weekly on `main`, and on
+manual dispatch. Pull-request failures block merge. Scheduled failures open or
+update a single deduplicated tracking issue rather than creating duplicates.
+
+- `scripts/regenerate_piper_catalog.py`
+  - Walks `rhasspy/piper-voices` v1.0.0 on HuggingFace, fetches per-voice metadata
+    (size, num_speakers, sample rate from each `.onnx.json`), and emits Python
+    dict literals matching the existing `PIPER_TTS_MODELS` format. Filters out
+    voices already in the catalog (by id AND by underlying file path) and
+    backs off on HF 429 with `Retry-After` honoring. The output is a draft
+    intended for human review (gender heuristic only covers common names) before
+    paste into `models_catalog.py`.
+  - Usage: `python3 scripts/regenerate_piper_catalog.py --out scripts/piper_draft.py`
+  - Run when HuggingFace publishes a new piper-voices revision (e.g. v1.1.0):
+    update `HF_REV` at the top of the script, regenerate, review, paste.
 
 ## Miscellaneous
 

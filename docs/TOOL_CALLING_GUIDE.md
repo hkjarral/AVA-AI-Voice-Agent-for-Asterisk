@@ -12,6 +12,7 @@ Complete guide to AI tool calling in Asterisk AI Voice Agent—enabling AI agent
 
 - [Overview](#overview)
 - [Supported Providers](#supported-providers)
+- [Post-Call Reporting Contract](#post-call-reporting-contract)
 - [Available Tools](#available-tools)
 - [Pre-Call Tools (HTTP Lookups)](#pre-call-tools-http-lookups)
 - [In-Call HTTP Tools](#in-call-http-tools)
@@ -52,16 +53,63 @@ Tool calling enables AI agents to perform real-world actions during conversation
 | **OpenAI Realtime** | ✅ Full Support | Production validated (Nov 9, 2025) |
 | **Deepgram Voice Agent** | ✅ Full Support | Production validated (Nov 9, 2025) |
 | **Google Gemini Live** | ✅ Full Support | Production validated (Nov 2025) |
+| **xAI Grok Voice Agent** | ✅ Full Support (v6.5.2) | Custom function-tools identical to OpenAI Realtime schema. xAI-native tools (`web_search`, `x_search`, `file_search`, `mcp`) accepted via YAML `extra_tools` escape hatch — forwarded verbatim to the session. |
+| **ElevenLabs Agent** | ✅ Full Support | Full-agent provider |
 | **Modular Pipelines (local_hybrid)** | ✅ Full Support | Production validated (Nov 19, 2025) - AAVA-85 |
 
 All tools work identically across supported providers—no code changes needed when switching providers.
+
+## Post-Call Reporting Contract
+
+The call-detail API returns terminal in-call executions in the persisted
+`tool_calls` array. `conversation_history` remains transcript-only and must not
+be used as a tool telemetry stream.
+
+Starting with v7.5.3, new entries retain the legacy UI fields and add a stable,
+append-only reduction contract:
+
+```json
+{
+  "type": "tool_result",
+  "call_id": "1785299332.302",
+  "tool_call_id": "provider-call-7",
+  "name": "google_calendar",
+  "action": "create_event",
+  "status": "success",
+  "target_id": "calendar-event-42",
+  "params": {"action": "create_event"},
+  "result": "success",
+  "message": "Event created",
+  "timestamp": "2026-07-29T04:00:00+00:00",
+  "duration_ms": 121.4
+}
+```
+
+- Native provider identifiers are preserved exactly. Local or pipeline calls
+  without an upstream identifier receive a unique `generated-*` id per
+  invocation; the former `local-{tool_name}` collision is not retained.
+- A provider retry that reuses its tool-call id produces another terminal entry
+  with that same id. Consumers should reduce by `tool_call_id`, not count raw
+  success entries.
+- `target_id` prefers an identifier returned by the tool and falls back to an
+  identifier supplied to compensating actions. This lets a calendar
+  `create_event` followed by `delete_event` reconcile to zero net creations.
+- `status` is normalized to `success` or `failure`; `result` retains the legacy
+  raw status for backward compatibility.
+- `params` is a diagnostic view, not an execution replay payload. Credentials,
+  caller PII/free text, and routing targets are recursively redacted before
+  persistence; the original parameters are used only for execution. The
+  explicit top-level `target_id` remains available for reducer reconciliation.
+- The event records the tool execution fact only. A successful voicemail route
+  does not claim that a message was recorded, and a successful transfer does
+  not claim that a human answered.
 
 ### MCP Tools (Experimental)
 
 This repo is adding support for **MCP-backed tools** (Model Context Protocol) that can be called the same way as built-in tools, using the existing `ToolRegistry` + provider adapters.
 
 - Design + branch guide: `docs/MCP_INTEGRATION.md`
-- Key constraint: MCP tools must be exposed with **provider-safe names** (no `.` namespacing), and must respect `contexts.<name>.tools` allowlisting.
+- Key constraint: MCP tools must be exposed with **provider-safe names** (no `.` namespacing) and respect the selected Agent's tool allowlist.
 
 ### Modular Pipeline Tool Execution
 
@@ -125,9 +173,9 @@ pipelines:
 
 **Transfer Types**:
 
-- **Extension**: Direct dial to specific agent (uses ARI `redirect`)
-- **Queue**: Transfer to ACD queue for next available agent (uses ARI `continue` to `ext-queues`)
-- **Ring Group**: Transfer to ring group that rings multiple agents (uses ARI `continue` to `ext-group`)
+- **Extension**: Direct dial to specific agent (uses ARI `continue` to the destination/default dialplan context, default `from-internal`)
+- **Queue**: Transfer to ACD queue for next available agent (uses ARI `continue` to the destination/default dialplan context, default `ext-queues`)
+- **Ring Group**: Transfer to ring group that rings multiple agents (uses ARI `continue` to the destination/default dialplan context, default `ext-group`)
 
 **Key Features**:
 - Single unified interface for all transfer types
@@ -154,7 +202,8 @@ AI: "Transferring you to Sales team ring group now."
 ```
 
 **Technical Implementation**:
-- Extension transfers use `continue` to the configured dialplan context (e.g., `from-internal`)
+- Transfer tools can defer the ARI action until caller-facing playback completes, so the handoff sentence is not cut off
+- Dialplan context precedence is `destinations.<key>.dialplan_context`, then the type default (`extension_context`, `queue_context`, `ringgroup_context`), then built-in FreePBX defaults
 - Queue/Ring Group transfers use `continue` (channel leaves Stasis, `transfer_active` flag prevents premature hangup)
 - All transfer types verified in production
 
@@ -773,13 +822,23 @@ tools:
   # ----------------------------------------------------------------------------
   transfer:
     enabled: true
+    technology: "PJSIP"                    # Channel technology for direct extension dialing
+    defer_until_playback_complete: true    # Speak handoff text before blind/live/attended transfer actions
+    deferred_strategy: "drain_then_dial"   # Or "predial_then_bridge" to dial while handoff audio plays
+    predial_bridge_wait_timeout_sec: 10    # Wait after handoff audio for a predialed destination answer
+    predial_timeout_seconds: 30            # Asterisk originate timeout for predialed destination leg
+    predial_wait_moh_class: "default"      # MOH class while waiting for predial destination answer
+    extension_context: "from-internal"     # Default for extension destinations
+    queue_context: "ext-queues"            # Default for queue destinations
+    ringgroup_context: "ext-group"         # Default for ring group destinations
     destinations:
-      # Direct extension transfers (using redirect - stays in Stasis)
+      # Direct extension transfers
       sales_agent:
         type: extension
         target: "2765"
         description: "Sales agent"
-        attended_allowed: true         # Allows attended_transfer (warm transfer) to this destination
+        dialplan_context: "from-internal"  # Optional per-destination override
+        attended_allowed: true             # Allows attended_transfer (warm transfer) to this destination
       
       support_agent:
         type: extension
@@ -792,6 +851,7 @@ tools:
         type: queue
         target: "300"
         description: "Sales team queue"
+        dialplan_context: "ext-queues"  # Optional per-destination override
       
       support_queue:
         type: queue
@@ -808,6 +868,7 @@ tools:
         type: ringgroup
         target: "600"
         description: "Sales team ring group"
+        dialplan_context: "ext-group"  # Optional per-destination override
       
       support_team:
         type: ringgroup
@@ -924,17 +985,17 @@ tools:
     from_email: "agent@yourdomain.com"
     from_name: "AI Voice Agent"
     admin_email: "admin@yourdomain.com"
-    # Optional: route different contexts to different inboxes
+    # Legacy YAML routing maps (v7.4 operators normally configure email on Agents)
     # admin_email_by_context:
     #   support: "support@yourdomain.com"
     #   sales: "sales@yourdomain.com"
-    # Optional: route sender address per context
+    # Legacy sender routing map
     # from_email_by_context:
     #   support: "support-bot@yourdomain.com"
     #   sales: "sales-bot@yourdomain.com"
     include_transcript: true
     include_metadata: true
-    # Optional: subject prefix and per-context overrides
+    # Optional: subject prefix and legacy per-context overrides
     # subject_prefix: "[AAVA]"
     # subject_prefix_by_context:
     #   support: "[Support]"
@@ -1092,14 +1153,14 @@ exten => s,1,NoOp(AI Agent - Basic)
 ```asterisk
 [from-ai-agent-support]
 exten => s,1,NoOp(AI Agent - Support Line)
- same => n,Set(AI_CONTEXT=support)           ; Support persona
+ same => n,Set(AI_AGENT=support)             ; Support Agent slug
  same => n,Set(AI_PROVIDER=openai_realtime)  ; Fast provider
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 
 [from-ai-agent-sales]
 exten => s,1,NoOp(AI Agent - Sales Line)
- same => n,Set(AI_CONTEXT=sales)
+ same => n,Set(AI_AGENT=sales)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```
@@ -1268,7 +1329,7 @@ docker logs ai_engine | grep "request_transcript"
 
 **Event Sequence**:
 1. OpenAI: `response.output_item.done` (function_call detected)
-2. Adapter: Parses `item.name="transfer_call"` (legacy alias) and maps it to `transfer`
+2. Adapter: Parses `item.name="transfer_call"` (legacy alias) and maps it to the canonical `blind_transfer`
 3. Registry: Routes to unified tool
 4. Tool: **Exact same execution** as Deepgram (504 lines of shared code)
 5. OpenAI: Receives function output, speaks confirmation
@@ -1441,9 +1502,10 @@ request_transcript:
 **Provider Adapters**:
 - `src/tools/adapters/deepgram.py` (202 lines) - Deepgram integration
 - `src/tools/adapters/openai.py` (215 lines) - OpenAI Realtime integration
+- `src/tools/adapters/grok.py` (266 lines) - xAI Grok integration (OpenAI-Realtime-compatible function schema + `extra_tools` escape hatch for xAI-native tools)
 
 **Tools**:
-- `src/tools/telephony/unified_transfer.py` - Unified transfer tool (`transfer`)
+- `src/tools/telephony/unified_transfer.py` - Unified transfer tool (registered as `blind_transfer`; aliases: `transfer`, `transfer_call`, `transfer_to_queue`)
 - `src/tools/telephony/attended_transfer.py` - Warm transfer (`attended_transfer`)
 - `src/tools/telephony/cancel_transfer.py` - Cancel transfer tool
 - `src/tools/telephony/hangup.py` - Hangup call tool

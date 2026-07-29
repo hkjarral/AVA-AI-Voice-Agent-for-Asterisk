@@ -10,15 +10,19 @@ import json
 import logging
 import os
 import re
+import shutil
+import sqlite3
+import subprocess
 import sys
+import wave
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from zoneinfo import ZoneInfo
 
 # Add project root to path for imports
@@ -84,18 +88,32 @@ class CallRecordSummaryResponse(BaseModel):
     call_id: str
     caller_number: Optional[str] = None
     caller_name: Optional[str] = None
+    called_number: Optional[str] = None
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     duration_seconds: float = 0.0
     provider_name: str = "unknown"
     pipeline_name: Optional[str] = None
     context_name: Optional[str] = None
+    routing_method: Optional[str] = None  # 'ai_agent' | 'ai_context' | 'default' | None
+    # Additive v7 aliases (do not replace context_name/routing_method):
+    # agent_slug mirrors the resolved agent (context_name) whenever the call was
+    # routed to one -- ai_agent, ai_context or default routing -- and is null for
+    # unknown/None routing. routing_method still tells you *how* it was selected.
+    # agent_name is a best-effort display-name lookup, null if agents.db is
+    # unavailable or the slug has no matching agent.
+    agent_slug: Optional[str] = None
+    agent_name: Optional[str] = None
     outcome: str = "completed"
     error_message: Optional[str] = None
     avg_turn_latency_ms: float = 0.0
     total_turns: int = 0
     barge_in_count: int = 0
     created_at: Optional[str] = None
+    external_platform: Optional[str] = None
+    external_call_id: Optional[str] = None
+    external_direction: Optional[str] = None
+    external_disposition: Optional[str] = None
 
 
 class CallRecordResponse(BaseModel):
@@ -104,18 +122,32 @@ class CallRecordResponse(BaseModel):
     call_id: str
     caller_number: Optional[str] = None
     caller_name: Optional[str] = None
+    called_number: Optional[str] = None
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     duration_seconds: float = 0.0
     provider_name: str = "unknown"
     pipeline_name: Optional[str] = None
-    pipeline_components: dict = {}
+    pipeline_components: dict = Field(default_factory=dict)
     context_name: Optional[str] = None
-    conversation_history: list = []
+    routing_method: Optional[str] = None  # 'ai_agent' | 'ai_context' | 'default' | None
+    voice: Optional[str] = None  # Resolved session voice (v7.3.0; None = provider default)
+    voice_source: Optional[str] = None  # 'override' | 'agent' | 'provider-default' | None
+    # Additive v7 aliases (see CallRecordSummaryResponse for semantics).
+    agent_slug: Optional[str] = None
+    agent_name: Optional[str] = None
+    conversation_history: list = Field(default_factory=list)
     outcome: str = "completed"
     transfer_destination: Optional[str] = None
     error_message: Optional[str] = None
-    tool_calls: list = []
+    external_platform: Optional[str] = None
+    external_call_id: Optional[str] = None
+    external_direction: Optional[str] = None
+    external_disposition: Optional[str] = None
+    external_metadata: dict = Field(default_factory=dict)
+    tool_calls: list = Field(default_factory=list)
+    pre_call_tool_calls: list = Field(default_factory=list)
+    post_call_tool_calls: list = Field(default_factory=list)
     avg_turn_latency_ms: float = 0.0
     max_turn_latency_ms: float = 0.0
     total_turns: int = 0
@@ -163,6 +195,19 @@ class FilterOptionsResponse(BaseModel):
     outcomes: List[str] = []
 
 
+class ProviderHealthStatus(BaseModel):
+    """Health status for a single provider."""
+    status: str
+    total: int
+    failures: int
+    summary: str
+
+
+class ProviderHealthResponse(BaseModel):
+    """Response model for the /providers/health endpoint."""
+    providers: Dict[str, ProviderHealthStatus]
+
+
 def _get_call_history_store():
     """Get the call history store instance."""
     try:
@@ -191,13 +236,74 @@ def _normalize_tool_calls(tool_calls: list) -> list:
     return normalized
 
 
-def _record_to_response(record) -> CallRecordResponse:
+def _normalize_phase_tool_calls(entries: list, phase: str) -> list:
+    """
+    Normalize pre-call / post-call tool execution entries for UI consumption.
+
+    Ensures every entry has a ``phase`` field set (older rows might omit it).
+    Filters non-dict entries defensively. Does NOT mutate the input.
+    """
+    normalized: list = []
+    for item in (entries or []):
+        if not isinstance(item, dict):
+            continue
+        entry = dict(item)
+        if not entry.get("phase"):
+            entry["phase"] = phase
+        normalized.append(entry)
+    return normalized
+
+
+def _agent_name_map() -> Dict[str, str]:
+    """Best-effort {slug: display_name} from the operator agents.db.
+
+    Never raises: a missing, locked, or unreadable agents.db (e.g. headless/YAML-only
+    installs) just yields an empty map, so call-history responses still serve with
+    agent_name=None. Build this once per request and pass it into the converters to
+    avoid N+1 lookups."""
+    try:
+        from agents_store import AgentsStore
+        with AgentsStore() as store:  # close the sqlite connection promptly
+            return {
+                a["slug"]: a.get("display_name")
+                for a in store.list_all()
+                if a.get("slug")
+            }
+    except (ImportError, OSError, sqlite3.Error):
+        # Expected best-effort failures: agents_store unavailable (ImportError),
+        # the agents.db dir/file is missing or unreadable (OSError), or the DB is
+        # locked/corrupt (sqlite3.Error). Genuine logic bugs still surface.
+        return {}
+
+
+def _resolve_agent(record, agent_names: Optional[Dict[str, str]]):
+    """Compute the additive (agent_slug, agent_name) aliases for a record.
+
+    These reflect the resolved agent whenever the call was routed to one, so
+    integrations can consume the selected agent uniformly: agent_slug mirrors
+    context_name (the resolved agent slug) for ai_agent, ai_context and default
+    routing. routing_method remains the field that explains *how* the agent was
+    selected. For unknown/None routing they stay None.
+
+    agent_name is a best-effort display-name lookup keyed on the slug and is None
+    when the agents DB is unavailable or has no matching slug."""
+    routing_method = getattr(record, "routing_method", None)
+    context_name = record.context_name
+    if routing_method not in ("ai_agent", "ai_context", "default") or not context_name:
+        return None, None
+    agent_name = (agent_names or {}).get(context_name)
+    return context_name, agent_name
+
+
+def _record_to_response(record, agent_names: Optional[Dict[str, str]] = None) -> CallRecordResponse:
     """Convert a CallRecord to a response model."""
+    agent_slug, agent_name = _resolve_agent(record, agent_names)
     return CallRecordResponse(
         id=record.id,
         call_id=record.call_id,
         caller_number=record.caller_number,
         caller_name=record.caller_name,
+        called_number=getattr(record, "called_number", None),
         start_time=record.start_time.isoformat() if record.start_time else None,
         end_time=record.end_time.isoformat() if record.end_time else None,
         duration_seconds=record.duration_seconds,
@@ -205,11 +311,27 @@ def _record_to_response(record) -> CallRecordResponse:
         pipeline_name=record.pipeline_name,
         pipeline_components=record.pipeline_components or {},
         context_name=record.context_name,
+        routing_method=getattr(record, "routing_method", None),
+        voice=getattr(record, "voice", None),
+        voice_source=getattr(record, "voice_source", None),
+        agent_slug=agent_slug,
+        agent_name=agent_name,
         conversation_history=record.conversation_history or [],
         outcome=record.outcome,
         transfer_destination=record.transfer_destination,
         error_message=record.error_message,
+        external_platform=getattr(record, "external_platform", None),
+        external_call_id=getattr(record, "external_call_id", None),
+        external_direction=getattr(record, "external_direction", None),
+        external_disposition=getattr(record, "external_disposition", None),
+        external_metadata=getattr(record, "external_metadata", {}) or {},
         tool_calls=_normalize_tool_calls(record.tool_calls or []),
+        pre_call_tool_calls=_normalize_phase_tool_calls(
+            getattr(record, "pre_call_tool_calls", None) or [], "pre_call"
+        ),
+        post_call_tool_calls=_normalize_phase_tool_calls(
+            getattr(record, "post_call_tool_calls", None) or [], "post_call"
+        ),
         avg_turn_latency_ms=record.avg_turn_latency_ms,
         max_turn_latency_ms=record.max_turn_latency_ms,
         total_turns=record.total_turns,
@@ -220,26 +342,97 @@ def _record_to_response(record) -> CallRecordResponse:
     )
 
 
-def _record_to_summary_response(record) -> CallRecordSummaryResponse:
+def _record_to_summary_response(record, agent_names: Optional[Dict[str, str]] = None) -> CallRecordSummaryResponse:
     """Convert a CallRecord to a summary response model."""
+    agent_slug, agent_name = _resolve_agent(record, agent_names)
     return CallRecordSummaryResponse(
         id=record.id,
         call_id=record.call_id,
         caller_number=record.caller_number,
         caller_name=record.caller_name,
+        called_number=getattr(record, "called_number", None),
         start_time=record.start_time.isoformat() if record.start_time else None,
         end_time=record.end_time.isoformat() if record.end_time else None,
         duration_seconds=record.duration_seconds,
         provider_name=record.provider_name,
         pipeline_name=record.pipeline_name,
         context_name=record.context_name,
+        routing_method=getattr(record, "routing_method", None),
+        agent_slug=agent_slug,
+        agent_name=agent_name,
         outcome=record.outcome,
         error_message=record.error_message,
+        external_platform=getattr(record, "external_platform", None),
+        external_call_id=getattr(record, "external_call_id", None),
+        external_direction=getattr(record, "external_direction", None),
+        external_disposition=getattr(record, "external_disposition", None),
         avg_turn_latency_ms=record.avg_turn_latency_ms,
         total_turns=record.total_turns,
         barge_in_count=record.barge_in_count,
         created_at=record.created_at.isoformat() if record.created_at else None,
     )
+
+
+@router.get("/providers/health", response_model=ProviderHealthResponse)
+async def get_providers_health():
+    """
+    Aggregate call outcomes per provider from the last 24 hours.
+
+    Returns a map of provider name -> health status.
+    Status values: healthy, degraded, error, no_data.
+    """
+    store = _get_call_history_store()
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+
+    provider_stats: dict[str, dict] = {}
+    page_size = 1000
+    offset = 0
+    while True:
+        records = await store.list(
+            limit=page_size,
+            offset=offset,
+            start_date=cutoff,
+            include_details=False,
+        )
+        if not records:
+            break
+        for r in records:
+            # Normalize to lowercase so backend keys match frontend YAML config keys
+            name = (r.provider_name or "unknown").lower()
+            if name not in provider_stats:
+                provider_stats[name] = {"total": 0, "succeeded": 0, "failed": 0}
+            provider_stats[name]["total"] += 1
+            # no_input_timeout is an expected policy outcome, not a provider failure.
+            # Valid values: completed, transferred, error, abandoned, no_input_timeout.
+            if r.outcome in ("error", "abandoned"):
+                provider_stats[name]["failed"] += 1
+            else:
+                provider_stats[name]["succeeded"] += 1
+        if len(records) < page_size:
+            break
+        offset += page_size
+
+    result: dict[str, ProviderHealthStatus] = {}
+    for name, stats in provider_stats.items():
+        total = stats["total"]
+        succeeded = stats["succeeded"]
+        failed = stats["failed"]
+        if total == 0:
+            status = "no_data"
+        elif failed == 0:
+            status = "healthy"
+        elif failed / total < 0.3:
+            status = "degraded"
+        else:
+            status = "error"
+        result[name] = ProviderHealthStatus(
+            status=status,
+            total=total,
+            failures=failed,
+            summary=f"{succeeded}/{total} calls succeeded in last 24h",
+        )
+
+    return ProviderHealthResponse(providers=result)
 
 
 @router.get("/calls", response_model=CallListResponse)
@@ -257,6 +450,7 @@ async def list_calls(
     has_tool_calls: Optional[bool] = Query(None, description="Filter calls with tool executions"),
     min_duration: Optional[float] = Query(None, description="Minimum duration in seconds"),
     max_duration: Optional[float] = Query(None, description="Maximum duration in seconds"),
+    transcript_search: Optional[str] = Query(None, min_length=1, max_length=256, description="Search within conversation transcripts (case-insensitive substring match)"),
     order_by: str = Query("start_time", description="Column to order by"),
     order_dir: str = Query("DESC", description="Order direction (ASC/DESC)"),
 ):
@@ -281,6 +475,7 @@ async def list_calls(
         has_tool_calls=has_tool_calls,
         min_duration=min_duration,
         max_duration=max_duration,
+        transcript_search=transcript_search,
     )
     
     # Get paginated records
@@ -299,15 +494,17 @@ async def list_calls(
         has_tool_calls=has_tool_calls,
         min_duration=min_duration,
         max_duration=max_duration,
+        transcript_search=transcript_search,
         order_by=order_by,
         order_dir=order_dir,
         include_details=False,
     )
     
     total_pages = (total + page_size - 1) // page_size if total > 0 else 1
-    
+
+    agent_names = _agent_name_map()  # one best-effort lookup for the whole page
     return CallListResponse(
-        calls=[_record_to_summary_response(r) for r in records],
+        calls=[_record_to_summary_response(r, agent_names) for r in records],
         total=total,
         page=page,
         page_size=page_size,
@@ -391,7 +588,7 @@ async def get_call(record_id: str):
     if not record:
         raise HTTPException(status_code=404, detail="Call record not found")
     
-    return _record_to_response(record)
+    return _record_to_response(record, _agent_name_map())
 
 
 @router.get("/calls/{record_id}/transcript")
@@ -417,6 +614,7 @@ async def get_call_transcript(record_id: str):
 
 _RECORDING_BASE = Path("/mnt/asterisk_recordings")
 _MIN_VALID_WAV_SIZE = 44  # WAV header is 44 bytes; files <= header size have no audio
+_RECORDING_EXTENSIONS = {".wav", ".ulaw", ".gsm"}
 
 
 def _has_exact_call_id(filename: str, call_id: str) -> bool:
@@ -432,6 +630,10 @@ def _has_exact_call_id(filename: str, call_id: str) -> bool:
     return bool(re.search(rf"(?<![0-9]){re.escape(call_id)}(?![0-9])", filename))
 
 
+def _is_supported_recording(match: Path) -> bool:
+    return match.suffix.lower() in _RECORDING_EXTENSIONS
+
+
 def _find_recording(call_id: str, start_time=None) -> Optional[Path]:
     """Find a recording file matching the given Asterisk call_id."""
     base = _RECORDING_BASE
@@ -440,12 +642,13 @@ def _find_recording(call_id: str, start_time=None) -> Optional[Path]:
 
     import glob as _glob_mod
     safe_id = _glob_mod.escape(call_id)
-    pattern = f"*{safe_id}*.wav"
+    pattern = f"*{safe_id}*.*"
 
     def _check(match: Path) -> bool:
         return (
             match.is_file()
             and match.resolve().is_relative_to(base.resolve())
+            and _is_supported_recording(match)
             and _has_exact_call_id(match.name, call_id)
         )
 
@@ -454,21 +657,129 @@ def _find_recording(call_id: str, start_time=None) -> Optional[Path]:
         dt = start_time if isinstance(start_time, datetime) else datetime.fromisoformat(str(start_time))
         date_dir = base / dt.strftime("%Y") / dt.strftime("%m") / dt.strftime("%d")
         if date_dir.is_dir():
-            for match in date_dir.glob(pattern):
+            for match in sorted(date_dir.glob(pattern)):
                 if _check(match):
                     return match
 
     # Fallback: root directory (legacy flat layout)
-    for match in base.glob(pattern):
+    for match in sorted(base.glob(pattern)):
         if _check(match):
             return match
 
     # Last resort: recursive search across all date folders
-    for match in base.glob(f"*/*/*/*{safe_id}*.wav"):
+    for match in sorted(base.glob(f"*/*/*/*{safe_id}*.*")):
         if _check(match):
             return match
 
     return None
+
+
+def _ulaw_recording_to_wav_bytes(recording: Path) -> bytes:
+    """Wrap raw 8 kHz mu-law bytes in a browser-playable PCM WAV container."""
+    import audioop
+
+    ulaw_data = recording.read_bytes()
+    pcm16 = audioop.ulaw2lin(ulaw_data, 2)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wavf:
+        wavf.setnchannels(1)
+        wavf.setsampwidth(2)
+        wavf.setframerate(8000)
+        wavf.writeframes(pcm16)
+    return buf.getvalue()
+
+
+def _wav_recording_requires_transcode(recording: Path) -> bool:
+    """Decide whether a .wav/.WAV recording needs a sox transcode for browser playback.
+
+    Decision is based on the WAV header (compression type), not filename
+    case. Previously `.WAV` (uppercase) was unconditionally marked as
+    transcode-required, which forced `sox` for what may be a perfectly
+    standard PCM WAV — and failed with 415 in environments without
+    `sox`. We now probe the actual content for both cases (Codex P2 on
+    PR #396).
+    """
+    if recording.suffix.lower() != ".wav":
+        return False
+    try:
+        with wave.open(str(recording), "rb") as wavf:
+            return wavf.getcomptype() != "NONE"
+    except (wave.Error, EOFError, OSError):
+        # Not a parseable WAV header (truncated, non-PCM container,
+        # corrupted) — needs sox to interpret whatever the file
+        # actually contains.
+        return True
+
+
+def _transcode_recording_to_wav_bytes(recording: Path) -> bytes:
+    sox = shutil.which("sox")
+    if not sox:
+        raise HTTPException(
+            status_code=415,
+            detail="Recording format requires sox for browser playback, but sox is not installed",
+        )
+    raw_timeout = os.getenv("AAVA_RECORDING_TRANSCODE_TIMEOUT_SEC", "120")
+    try:
+        timeout_sec = float(raw_timeout or "120")
+        if timeout_sec <= 0:
+            raise ValueError("must be > 0")
+    except (TypeError, ValueError):
+        # Don't let a typo'd env var (e.g. "120s" or empty string) escape
+        # as a 500 — fall back to the documented default. CodeRabbit
+        # quick-win on PR #396.
+        logger.warning(
+            "Invalid AAVA_RECORDING_TRANSCODE_TIMEOUT_SEC=%r; defaulting to 120s",
+            raw_timeout,
+        )
+        timeout_sec = 120.0
+    try:
+        result = subprocess.run(
+            [sox, str(recording), "-t", "wav", "-"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout_sec,
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Recording transcode timed out")
+
+    if result.returncode != 0 or not result.stdout:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        logger.warning("Failed to transcode recording for playback: %s", stderr)
+        raise HTTPException(status_code=422, detail="Recording file could not be decoded for playback")
+    return result.stdout
+
+
+def _recording_response(recording: Path):
+    suffix = recording.suffix.lower()
+    if suffix == ".ulaw":
+        try:
+            wav_bytes = _ulaw_recording_to_wav_bytes(recording)
+        except Exception as err:
+            # Corrupt .ulaw should surface as a controlled client error,
+            # not a 500. Mirrors the sox transcode-failure path
+            # (CodeRabbit on PR #396).
+            logger.warning("Failed to decode .ulaw recording for playback: %s", err)
+            raise HTTPException(
+                status_code=422,
+                detail="Recording file could not be decoded for playback",
+            ) from err
+        return Response(
+            content=wav_bytes,
+            media_type="audio/wav",
+            headers={"Content-Disposition": f'inline; filename="{recording.with_suffix(".wav").name}"'},
+        )
+    if suffix == ".gsm" or _wav_recording_requires_transcode(recording):
+        return Response(
+            content=_transcode_recording_to_wav_bytes(recording),
+            media_type="audio/wav",
+            headers={"Content-Disposition": f'inline; filename="{recording.with_suffix(".wav").name}"'},
+        )
+    return FileResponse(
+        path=str(recording),
+        media_type="audio/wav",
+        filename=recording.name,
+    )
 
 
 class RecordingInfoResponse(BaseModel):
@@ -501,9 +812,8 @@ async def get_call_recording_info(record_id: str):
     )
 
 
-@router.get("/calls/{record_id}/recording.wav")
-async def stream_call_recording(record_id: str):
-    """Stream the call recording WAV file for browser playback."""
+async def _stream_call_recording(record_id: str):
+    """Stream the call recording file for browser playback."""
     store = _get_call_history_store()
     record = await store.get(record_id)
     if not record:
@@ -513,14 +823,27 @@ async def stream_call_recording(record_id: str):
     if not recording or not recording.is_file():
         raise HTTPException(status_code=404, detail="Recording file not found")
 
-    if recording.stat().st_size <= _MIN_VALID_WAV_SIZE:
+    # Codec-aware empty detection: the 44-byte threshold is WAV-header
+    # specific. A .ulaw / .gsm recording with 44 bytes of audio is short
+    # but valid; only reject when (a) size==0, or (b) it's a .wav and
+    # the file is at or below the bare WAV header size (CodeRabbit on
+    # PR #396).
+    size = recording.stat().st_size
+    is_wav = recording.suffix.lower() == ".wav"
+    if size == 0 or (is_wav and size <= _MIN_VALID_WAV_SIZE):
         raise HTTPException(status_code=404, detail="Recording is empty (no audio captured)")
 
-    return FileResponse(
-        path=str(recording),
-        media_type="audio/wav",
-        filename=recording.name,
-    )
+    return _recording_response(recording)
+
+
+@router.get("/calls/{record_id}/recording/audio")
+async def stream_call_recording_audio(record_id: str):
+    return await _stream_call_recording(record_id)
+
+
+@router.get("/calls/{record_id}/recording.wav")
+async def stream_call_recording(record_id: str):
+    return await _stream_call_recording(record_id)
 
 
 @router.delete("/calls/{record_id}")
@@ -684,10 +1007,11 @@ async def export_calls_json(
     )
     
     # Convert to JSON-serializable format
+    agent_names = _agent_name_map()
     data = {
         "exported_at": datetime.now().isoformat(),
         "total_records": len(records),
-        "records": [_record_to_response(r).model_dump() for r in records]
+        "records": [_record_to_response(r, agent_names).model_dump() for r in records]
     }
     
     json_content = json.dumps(data, indent=2)

@@ -92,6 +92,18 @@ func (llm *LLMAnalyzer) buildPrompt(analysis *Analysis, logData string) string {
 	prompt.WriteString("Be evidence-driven: if the call looks healthy, do NOT invent problems or propose config changes.\n\n")
 
 	prompt.WriteString("Call ID: " + analysis.CallID + "\n\n")
+	if analysis.CallHistory != nil {
+		h := analysis.CallHistory
+		prompt.WriteString("Canonical Call History result:\n")
+		prompt.WriteString(fmt.Sprintf("- Outcome: %s\n- Duration: %.1fs\n- Turns: %d\n", h.Outcome, h.DurationSeconds, h.TotalTurns))
+		if h.AverageTurnLatencyMS > 0 {
+			prompt.WriteString(fmt.Sprintf("- Average turn latency: %.0fms (max %.0fms)\n", h.AverageTurnLatencyMS, h.MaximumTurnLatencyMS))
+		}
+		if h.ErrorMessage != "" {
+			prompt.WriteString("- Persisted error: " + h.ErrorMessage + "\n")
+		}
+		prompt.WriteString("\n")
+	}
 
 	// Log-derived header snapshot (preferred over guessing).
 	if analysis.Header != nil {
@@ -183,11 +195,11 @@ func (llm *LLMAnalyzer) buildPrompt(analysis *Analysis, logData string) string {
 		prompt.WriteString(analysis.Metrics.FormatForLLM())
 	}
 
-	// Golden baseline comparison (PROVIDES EXACT FIXES)
+	// Baseline comparison. Recommendations are evidence-based hints, not a
+	// license to overwrite the operator's current tuning values.
 	if analysis.BaselineComparison != nil {
 		prompt.WriteString(analysis.BaselineComparison.FormatForLLM())
-		prompt.WriteString("IMPORTANT: Use the exact configuration values from the golden baseline deviations above.\n")
-		prompt.WriteString("These are VALIDATED production values that are known to work.\n\n")
+		prompt.WriteString("Treat recommendations as diagnostic guidance. Never invent current values or prescribe a config change that conflicts with the RCA header.\n\n")
 	}
 
 	// Format/Sampling alignment (CRITICAL FOR AUDIO QUALITY)
@@ -226,16 +238,16 @@ func (llm *LLMAnalyzer) buildPrompt(analysis *Analysis, logData string) string {
 	prompt.WriteString("\n")
 
 	prompt.WriteString("Please provide:\n")
-	prompt.WriteString("1. Root Cause: Identify the root cause based on golden baseline deviations (if any)\n")
+	prompt.WriteString("1. Root Cause: Identify the root cause from observed evidence (or state that the call completed successfully)\n")
 	prompt.WriteString("   - Prioritize CRITICAL severity deviations first\n")
-	prompt.WriteString("   - Reference the exact current vs expected values shown above\n")
+	prompt.WriteString("   - Reference exact observed values and the canonical Call History outcome\n")
 	prompt.WriteString("   - IMPORTANT: Greeting segments have high drift and underflows during conversation pauses - this is NORMAL\n")
 	prompt.WriteString("   - If provider_bytes ratio is 1.0 and drift is only from greeting segments, call is GOOD\n")
 	prompt.WriteString("   - If ALL metrics are GOOD (ratio ~1.0, drift <10%, no underflows), state: 'No issues detected - call quality is EXCELLENT'\n")
 	prompt.WriteString("   - In ExternalMedia mode, AudioSocket is NOT used; do NOT treat AudioSocket=false as an issue.\n")
 	prompt.WriteString("2. Confidence: How confident are you? (High/Medium/Low)\n")
-	prompt.WriteString("3. Quick Fix: Provide EXACT configuration changes (or 'N/A' if no issues)\n")
-	prompt.WriteString("   - Use the EXACT values from golden baseline (e.g., 'Set webrtc_aggressiveness: 1')\n")
+	prompt.WriteString("3. Quick Fix: Provide a configuration change only when the evidence supports one; otherwise say 'N/A'\n")
+	prompt.WriteString("   - Never claim a setting currently has a value that differs from the RCA header\n")
 	prompt.WriteString("   - Prefer operator overrides in: config/ai-agent.local.yaml (if present); otherwise config/ai-agent.yaml\n")
 	prompt.WriteString("   - Specify the EXACT section (e.g., 'vad:', 'streaming:', 'providers.openai_realtime:')\n")
 	prompt.WriteString("   - NEVER suggest config/streaming.yaml or config/deepgram.yaml - these files DO NOT EXIST\n")
@@ -248,8 +260,7 @@ func (llm *LLMAnalyzer) buildPrompt(analysis *Analysis, logData string) string {
 	prompt.WriteString("- 'DeepgramProviderConfig has no field target_encoding' - This is a benign Python validation warning, NOT a config error\n")
 	prompt.WriteString("- Deepgram provider does NOT need target_encoding field (only OpenAI Realtime uses it)\n")
 	prompt.WriteString("- Do NOT suggest adding target_encoding to Deepgram config\n")
-	prompt.WriteString("\nIMPORTANT: Your fixes MUST use the exact values from the golden baseline comparison.\n")
-	prompt.WriteString("Do NOT suggest generic fixes. Use the concrete values provided.\n")
+	prompt.WriteString("\nIMPORTANT: Do not tune jitter/buffer values solely because of drift, and do not diagnose tiny/cancelled segments.\n")
 	prompt.WriteString("\nKeep your response concise and actionable (under 400 words).")
 
 	return prompt.String()

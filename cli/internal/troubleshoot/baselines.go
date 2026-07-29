@@ -158,32 +158,41 @@ func CompareToBaseline(metrics *CallMetrics, baselineName string) *BaselineCompa
 		}
 	}
 
-	// Check drift percentage (all baselines)
-	if metrics.WorstDriftPct != 0.0 {
+	// Check drift percentage only when wall time and audio duration are
+	// comparable. Pipeline synthesis and tiny/cancelled segments are excluded.
+	if metrics.DriftAssessmentSkipped != "" {
+		comparison.Compliant = append(comparison.Compliant,
+			"Drift comparison skipped: "+metrics.DriftAssessmentSkipped)
+	} else if metrics.WorstDriftPct != 0.0 {
 		if absFloat(metrics.WorstDriftPct) > 10.0 {
 			comparison.Deviations = append(comparison.Deviations, Deviation{
 				Parameter:     "drift_pct",
 				CurrentValue:  fmt.Sprintf("%.1f%%", metrics.WorstDriftPct),
 				ExpectedValue: "<10%",
-				Severity:      "HIGH",
-				Impact:        "Timing mismatch - audio too fast/slow, playback/recording desync",
-				Fix:           "Check streaming.min_start_ms (300), low_watermark_ms (200), jitter_buffer_ms (100)",
+				Severity:      "MEDIUM",
+				Impact:        "Audio delivery wall time differed from encoded duration; pauses, interruption, or queue waits may be intentional",
+				Fix:           "Correlate with caller-observed quality and format/underflow evidence; do not tune buffers from drift alone",
 			})
 		} else {
 			comparison.Compliant = append(comparison.Compliant, fmt.Sprintf("Drift: %.1f%% ✅", metrics.WorstDriftPct))
 		}
 	}
 
-	// Check underflows (streaming baseline)
-	if metrics.UnderflowCount > 0 {
+	// Only promote underflows when they are sustained relative to call length.
+	// Isolated startup events are retained as context without a false HIGH alert.
+	underflowRate := metrics.UnderflowRatePct()
+	if metrics.UnderflowCount > 0 && underflowRate >= 1.0 {
 		comparison.Deviations = append(comparison.Deviations, Deviation{
 			Parameter:     "underflow_count",
-			CurrentValue:  fmt.Sprintf("%d", metrics.UnderflowCount),
-			ExpectedValue: "0",
+			CurrentValue:  fmt.Sprintf("%d (%.2f%% of estimated frames)", metrics.UnderflowCount, underflowRate),
+			ExpectedValue: "<1% of frames",
 			Severity:      "HIGH",
 			Impact:        "Jitter buffer starvation - causes stuttering, choppy audio",
-			Fix:           "Increase streaming.jitter_buffer_ms from 100 to 150-200ms",
+			Fix:           "Inspect sustained queue starvation and current runtime buffer settings before tuning",
 		})
+	} else if metrics.UnderflowCount > 0 {
+		comparison.Compliant = append(comparison.Compliant,
+			fmt.Sprintf("Underflows: %d (%.2f%% of estimated frames; below alert threshold)", metrics.UnderflowCount, underflowRate))
 	} else if len(metrics.StreamingSummaries) > 0 {
 		comparison.Compliant = append(comparison.Compliant, "No underflows ✅")
 	}

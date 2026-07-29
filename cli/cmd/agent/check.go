@@ -131,6 +131,7 @@ func runCheckLocalServer(cmd *cobra.Command) error {
 	pyCmd.Stdout = os.Stdout
 	pyCmd.Stderr = os.Stderr
 	pyCmd.Dir = projectRoot
+	pyCmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
 
 	if err := pyCmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

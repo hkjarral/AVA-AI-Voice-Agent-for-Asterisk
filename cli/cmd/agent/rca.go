@@ -14,6 +14,7 @@ var (
 	rcaCallID string
 	rcaJSON   bool
 	rcaLLM    bool
+	rcaNoLLM  bool
 	rcaLocal  bool
 )
 
@@ -31,6 +32,9 @@ This is the recommended post-call troubleshooting command.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// --local mode: generate community test matrix submission
 		if rcaLocal {
+			if len(args) > 0 {
+				return fmt.Errorf("--local reports the latest local call and cannot be combined with a call ID")
+			}
 			return runLocalTestReport(cmd)
 		}
 
@@ -44,10 +48,10 @@ This is the recommended post-call troubleshooting command.`,
 
 		runner := troubleshoot.NewRunner(
 			callID,
-			"",     // symptom
-			false,  // interactive
-			false,  // collectOnly
-			false,  // noLLM (auto gating will skip healthy calls)
+			"",    // symptom
+			false, // interactive
+			false, // collectOnly
+			rcaNoLLM,
 			rcaLLM, // forceLLM
 			false,  // list
 			rcaJSON,
@@ -83,6 +87,7 @@ func runLocalTestReport(cmd *cobra.Command) error {
 	pyCmd.Stdout = os.Stdout
 	pyCmd.Stderr = os.Stderr
 	pyCmd.Dir = projectRoot
+	pyCmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
 
 	if err := pyCmd.Run(); err != nil {
 		return fmt.Errorf("local test report failed: %w", err)
@@ -117,7 +122,12 @@ func findProjectRoot() (string, error) {
 func init() {
 	rcaCmd.Flags().StringVar(&rcaCallID, "call", "", "analyze specific call ID (default: last)")
 	rcaCmd.Flags().BoolVar(&rcaLLM, "llm", false, "force LLM analysis (even for healthy calls)")
+	rcaCmd.Flags().BoolVar(&rcaNoLLM, "no-llm", false, "disable external LLM analysis; report deterministic evidence only")
 	rcaCmd.Flags().BoolVar(&rcaJSON, "json", false, "output as JSON (JSON only)")
 	rcaCmd.Flags().BoolVar(&rcaLocal, "local", false, "generate Community Test Matrix submission for local provider")
+	rcaCmd.MarkFlagsMutuallyExclusive("llm", "no-llm")
+	rcaCmd.MarkFlagsMutuallyExclusive("local", "call")
+	rcaCmd.MarkFlagsMutuallyExclusive("local", "llm")
+	rcaCmd.MarkFlagsMutuallyExclusive("local", "no-llm")
 	rootCmd.AddCommand(rcaCmd)
 }

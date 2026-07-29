@@ -34,6 +34,7 @@ import aiohttp
 from urllib.parse import urlparse
 
 from ..logging_config import get_logger
+from ..tools.execution_history import stable_tool_call_id
 from ..tools.registry import tool_registry
 from .base import Component, LLMComponent, LLMResponse
 
@@ -114,8 +115,44 @@ class OllamaLLMAdapter(LLMComponent):
         model_base = model.split(":")[0].lower()
         return model_base in _TOOL_CAPABLE_MODELS
 
+    @staticmethod
+    def _parse_tool_calls(tool_calls_raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Normalize Ollama calls without reusing positional ids across turns."""
+        parsed_tool_calls: List[Dict[str, Any]] = []
+        for tool_call in tool_calls_raw:
+            function = tool_call.get("function", {})
+            parsed_tool_calls.append(
+                {
+                    "id": stable_tool_call_id(tool_call.get("id")),
+                    "name": function.get("name"),
+                    "parameters": function.get("arguments", {}),
+                    "type": "function",
+                }
+            )
+        return parsed_tool_calls
+
+    # Config keys the adapter actually consumes (plus provider-level meta keys
+    # that legitimately appear in the YAML provider block). Anything outside this
+    # set is silently ignored by the ad-hoc merged.get() reads, so warn about it
+    # to surface typos/misconfig (audit LOW-P10).
+    _KNOWN_KEYS = frozenset({
+        # consumed by the adapter
+        "base_url", "model", "temperature", "timeout_sec", "stream",
+        "max_tokens", "tools_enabled", "tools",
+        "num_ctx", "context_window", "context_length",
+        # provider-level meta keys from providers.ollama_llm
+        "enabled", "type", "display_name", "customer", "capabilities",
+        "api_key", "api_key_file", "api_key_env",
+    })
+
     async def start(self) -> None:
         """Initialize the adapter."""
+        unknown = set(self._pipeline_defaults) - self._KNOWN_KEYS
+        if unknown:
+            logger.warning(
+                "Ollama LLM adapter: ignoring unknown config key(s): %s",
+                ", ".join(sorted(unknown)),
+            )
         base_url = self._pipeline_defaults.get("base_url", _DEFAULT_BASE_URL)
         model = self._pipeline_defaults.get("model", _DEFAULT_MODEL)
         logger.info(
@@ -164,8 +201,9 @@ class OllamaLLMAdapter(LLMComponent):
     def _build_tools_schema(self, tool_names: List[str]) -> List[Dict[str, Any]]:
         """Build Ollama-compatible tool schemas from tool registry."""
         tools = []
+        call_tool_registry = self.tool_registry_or(tool_registry)
         for name in tool_names:
-            tool = tool_registry.get(name)
+            tool = call_tool_registry.get(name)
             if tool:
                 # Ollama uses same format as OpenAI for tools
                 tools.append({
@@ -331,16 +369,8 @@ class OllamaLLMAdapter(LLMComponent):
                 tool_calls_raw = message.get("tool_calls", [])
                 
                 # Parse tool calls if present
-                parsed_tool_calls = []
-                if tool_calls_raw:
-                    for tc in tool_calls_raw:
-                        func = tc.get("function", {})
-                        parsed_tool_calls.append({
-                            "id": tc.get("id", f"call_{len(parsed_tool_calls)}"),
-                            "name": func.get("name"),
-                            "parameters": func.get("arguments", {}),
-                            "type": "function",
-                        })
+                parsed_tool_calls = self._parse_tool_calls(tool_calls_raw)
+                if parsed_tool_calls:
                     logger.info(
                         "Ollama tool calls detected",
                         call_id=call_id,

@@ -16,8 +16,8 @@ If you used the Admin UI Setup Wizard, you may not need to follow this guide end
 - `INSTALLATION.md`
 - `Transport-Mode-Compatibility.md`
 
-For how provider/context selection works (including `AI_CONTEXT` / `AI_PROVIDER`), see:
-- `Configuration-Reference.md` -> "Call Selection & Precedence (Provider / Pipeline / Context)"
+For how provider/Agent selection works (including `AI_AGENT` / `AI_PROVIDER`), see:
+- `Configuration-Reference.md` -> "Call Selection & Precedence (Provider / Pipeline / Agent)"
 
 ## Quick Start
 
@@ -141,7 +141,7 @@ Add to `/etc/asterisk/extensions_custom.conf`:
 ```ini
 [from-ai-agent-telnyx]
 exten => s,1,NoOp(AI Voice Agent - Telnyx AI Inference)
-exten => s,n,Set(AI_CONTEXT=demo_telnyx)
+exten => s,n,Set(AI_AGENT=demo_telnyx)
 exten => s,n,Set(AI_PROVIDER=telnyx_hybrid)
 exten => s,n,Stasis(asterisk-ai-voice-agent)
 exten => s,n,Hangup()
@@ -170,9 +170,11 @@ Route a test call to the custom destination and verify:
 - Tool execution works if configured
 - Check logs for any API errors
 
-## Context Configuration
+## Agent Configuration
 
-Define your AI's behavior in `config/ai-agent.yaml`:
+Define this behavior in **Admin UI → Agents**. The legacy-shaped example below is
+provided only for preparing one-time migration input; `contexts:` YAML is not a live
+v7.4 Agent configuration surface:
 
 ```yaml
 contexts:
@@ -207,16 +209,9 @@ Telnyx AI Inference supports:
 - **Telnyx-hosted open models** (work with `TELNYX_API_KEY` only)
 - **External providers** like OpenAI (require `api_key_ref` Integration Secrets)
 
-Pricing varies by model family and whether it’s hosted by Telnyx or routed to an external provider.
+Pricing varies by model family and whether it's hosted by Telnyx or routed to an external provider. Telnyx-hosted open models (Llama, Qwen, etc.) are billed per token at Telnyx's published rate; external providers (OpenAI, Anthropic) are passed through at provider rates plus any Telnyx margin.
 
-| Model | Telnyx (per 1M tokens) | Direct Provider |
-|-------|------------------------|-----------------|
-| gpt-4o-mini | ~$0.15 input / $0.60 output | $0.15 / $0.60 (OpenAI) |
-| gpt-4o | ~$2.50 input / $10.00 output | $2.50 / $10.00 (OpenAI) |
-| claude-3-5-sonnet | Competitive | Via Anthropic direct |
-| llama-3.1-70b | Competitive | Via various providers |
-
-**Note**: Check Telnyx portal for current pricing. Rates may be lower than direct providers due to volume agreements.
+**Always check the [Telnyx AI Inference pricing page](https://telnyx.com/pricing/inference) for current rates** — model lineups and per-token pricing change frequently and we don't republish them here to avoid drift.
 
 ## Why Telnyx for AI Inference?
 

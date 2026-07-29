@@ -225,7 +225,12 @@ class TestPlaybackManager:
             file_path = await playback_manager._create_audio_file(audio_bytes, playback_id)
             
             assert file_path == "/tmp/test.ulaw"
-            mock_join.assert_called_once()
+            # Assert the specific intended path join happened, not an exact global
+            # call count: the write now runs via asyncio.to_thread (LOW-R1, so it no
+            # longer blocks the event loop), and the thread-pool machinery itself
+            # calls os.path.join internally — making assert_called_once() flaky
+            # depending on executor warmth / test order.
+            mock_join.assert_any_call(playback_manager.media_dir, "audio-test_playback_123.ulaw")
             mock_open.assert_called_once_with("/tmp/test.ulaw", 'wb')
     
     @pytest.mark.asyncio

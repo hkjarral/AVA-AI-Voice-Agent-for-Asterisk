@@ -161,12 +161,37 @@ func (r *Runner) Run() error {
 	metrics := ExtractMetrics(logData)
 	analysis.Metrics = metrics
 
+	// Enrich log-derived evidence with the canonical persisted call result.
+	// This fixes the historic duration=0 output and makes successful/error
+	// outcomes explicit without asking the LLM to infer them from log noise.
+	if history, historyErr := loadCallHistorySummary(r.callID); historyErr == nil && history != nil {
+		analysis.CallHistory = history
+		metrics.CallDurationSeconds = history.DurationSeconds
+		if analysis.Header == nil {
+			analysis.Header = &RCAHeader{CallID: r.callID}
+		}
+		if analysis.Header.ProviderName == "" {
+			analysis.Header.ProviderName = history.ProviderName
+		}
+		if analysis.Header.PipelineName == "" {
+			analysis.Header.PipelineName = history.PipelineName
+		}
+		if analysis.Header.ContextName == "" {
+			analysis.Header.ContextName = history.ContextName
+		}
+		if history.TotalTurns > 0 || history.ConversationHistoryBytes > 2 {
+			analysis.HasTranscription = true
+		}
+	}
+	metrics.ApplyCallContext(analysis.Header)
+	analysis.AudioIssues = audioIssuesFromMetrics(metrics)
+
 	// Analyze format/sampling alignment
 	formatAlignment := AnalyzeFormatAlignment(metrics, header)
 	metrics.FormatAlignment = formatAlignment
 
 	// Compare to golden baselines
-	baselineName := detectBaseline(logData)
+	baselineName := detectBaseline(analysis.Header)
 	if baselineName != "" {
 		comparison := CompareToBaseline(metrics, baselineName)
 		analysis.BaselineComparison = comparison
@@ -253,24 +278,25 @@ func (r *Runner) Run() error {
 }
 
 type RCAReport struct {
-	CallID string `json:"call_id"`
-	Error  string `json:"error,omitempty"`
-	Header *RCAHeader `json:"header,omitempty"`
+	CallID          string                `json:"call_id"`
+	Error           string                `json:"error,omitempty"`
+	Header          *RCAHeader            `json:"header,omitempty"`
 	ProviderRuntime *ProviderRuntimeAudio `json:"provider_runtime,omitempty"`
+	CallHistory     *CallHistorySummary   `json:"call_history,omitempty"`
 
 	AudioTransport string `json:"audio_transport,omitempty"`
 
 	Pipeline struct {
-		HasAudioSocket    bool `json:"has_audiosocket"`
-		HasExternalMedia  bool `json:"has_externalmedia"`
-		HasTranscription  bool `json:"has_transcription"`
-		HasPlayback       bool `json:"has_playback"`
+		HasAudioSocket   bool `json:"has_audiosocket"`
+		HasExternalMedia bool `json:"has_externalmedia"`
+		HasTranscription bool `json:"has_transcription"`
+		HasPlayback      bool `json:"has_playback"`
 	} `json:"pipeline"`
 
 	Errors   []string `json:"errors,omitempty"`
 	Warnings []string `json:"warnings,omitempty"`
 
-	AudioIssues []string `json:"audio_issues,omitempty"`
+	AudioIssues []string         `json:"audio_issues,omitempty"`
 	ToolCalls   []ToolCallRecord `json:"tool_calls,omitempty"`
 
 	Symptom         string           `json:"symptom,omitempty"`
@@ -283,17 +309,18 @@ type RCAReport struct {
 
 func buildRCAReport(analysis *Analysis, llm *LLMDiagnosis) *RCAReport {
 	rep := &RCAReport{
-		CallID:       analysis.CallID,
-		Header:       analysis.Header,
+		CallID:          analysis.CallID,
+		Header:          analysis.Header,
 		ProviderRuntime: analysis.ProviderRuntime,
-		Errors:       capSlice(analysis.Errors, 20),
-		Warnings:     capSlice(analysis.Warnings, 20),
-		AudioIssues:  capSlice(analysis.AudioIssues, 50),
-		ToolCalls:    analysis.ToolCalls,
-		Symptom:      analysis.Symptom,
-		Metrics:      analysis.Metrics,
-		LLMDiagnosis: llm,
-		AudioTransport: analysis.AudioTransport,
+		CallHistory:     analysis.CallHistory,
+		Errors:          capSlice(analysis.Errors, 20),
+		Warnings:        capSlice(analysis.Warnings, 20),
+		AudioIssues:     capSlice(analysis.AudioIssues, 50),
+		ToolCalls:       analysis.ToolCalls,
+		Symptom:         analysis.Symptom,
+		Metrics:         analysis.Metrics,
+		LLMDiagnosis:    llm,
+		AudioTransport:  analysis.AudioTransport,
 	}
 	rep.Pipeline.HasAudioSocket = analysis.HasAudioSocket
 	rep.Pipeline.HasExternalMedia = analysis.HasExternalMedia
@@ -559,6 +586,7 @@ type Analysis struct {
 	CallID             string
 	Header             *RCAHeader
 	ProviderRuntime    *ProviderRuntimeAudio
+	CallHistory        *CallHistorySummary
 	Errors             []string
 	Warnings           []string
 	AudioIssues        []string
@@ -627,10 +655,8 @@ func (r *Runner) analyzeBasic(logData string) *Analysis {
 			analysis.HasPlayback = true
 		}
 
-		// Audio quality issues
-		if strings.Contains(lower, "underflow") {
-			analysis.AudioIssues = append(analysis.AudioIssues, "Jitter buffer underflow detected")
-		}
+		// Audio quality issues. Underflows are summarized later from structured
+		// segment metrics so a single event is not duplicated for every log line.
 		if strings.Contains(lower, "garbled") || strings.Contains(lower, "distorted") {
 			analysis.AudioIssues = append(analysis.AudioIssues, "Audio quality issue detected")
 		}
@@ -1106,8 +1132,11 @@ func (r *Runner) displayMetrics(metrics *CallMetrics) {
 		}
 		fmt.Println()
 
-		// Drift analysis (excluding greeting)
-		if metrics.WorstDriftPct == 0.0 && greetingSegment != nil {
+		// Drift analysis (excluding greeting). Delivery wall time includes
+		// pauses and interruption, so drift alone is not a failure verdict.
+		if metrics.DriftAssessmentSkipped != "" {
+			infoColor.Printf("  Drift assessment skipped: %s\n", metrics.DriftAssessmentSkipped)
+		} else if metrics.WorstDriftPct == 0.0 && greetingSegment != nil {
 			// Only greeting segment exists, show its drift as informational
 			warningColor.Printf("  Greeting drift: %.1f%% (expected - includes conversation pauses)\n", greetingSegment.DriftPct)
 			successColor.Println("  Conversation drift: N/A (no separate segments)")
@@ -1116,18 +1145,13 @@ func (r *Runner) displayMetrics(metrics *CallMetrics) {
 		} else if absFloat(metrics.WorstDriftPct) <= 10.0 {
 			warningColor.Printf("  Drift: %.1f%% ⚠️  ACCEPTABLE\n", metrics.WorstDriftPct)
 		} else {
-			errorColor.Printf("  Drift: %.1f%% ❌ CRITICAL (should be <10%%)\n", metrics.WorstDriftPct)
-			fmt.Println("  Impact: Timing mismatch - audio too fast/slow")
+			warningColor.Printf("  Delivery drift: %.1f%% ⚠️  OBSERVED\n", metrics.WorstDriftPct)
+			fmt.Println("  Correlate with caller-observed quality; pauses/interruption can be normal")
 		}
 
 		// Underflow analysis
 		if metrics.UnderflowCount > 0 {
-			// Calculate underflow rate
-			totalFrames := 0
-			for _, seg := range metrics.StreamingSummaries {
-				totalFrames += seg.BytesSent / 320 // 320 bytes per 20ms frame
-			}
-			underflowRate := float64(metrics.UnderflowCount) / float64(totalFrames) * 100
+			underflowRate := metrics.UnderflowRatePct()
 
 			if underflowRate < 1.0 {
 				warningColor.Printf("  Underflows: %d (%.1f%% of frames - acceptable)\n", metrics.UnderflowCount, underflowRate)
@@ -1226,19 +1250,12 @@ func evaluateCallQuality(metrics *CallMetrics) (float64, []string) {
 		}
 	}
 
-	// Check drift (excluding greeting segments)
-	if absFloat(metrics.WorstDriftPct) > 10.0 {
-		issues = append(issues, fmt.Sprintf("High drift (%.1f%%)", metrics.WorstDriftPct))
-		score -= 25.0
-	}
+	// Drift is observational: wall time includes pauses, barge-in, and queue
+	// waits. It must not independently turn a successful call into a failed RCA.
 
 	// Check underflows (with rate-based severity)
 	if metrics.UnderflowCount > 0 && len(metrics.StreamingSummaries) > 0 {
-		totalFrames := 0
-		for _, seg := range metrics.StreamingSummaries {
-			totalFrames += seg.BytesSent / 320
-		}
-		underflowRate := float64(metrics.UnderflowCount) / float64(totalFrames) * 100
+		underflowRate := metrics.UnderflowRatePct()
 
 		if underflowRate >= 5.0 {
 			issues = append(issues, fmt.Sprintf("%d underflows (%.1f%% rate - significant)", metrics.UnderflowCount, underflowRate))
@@ -1404,25 +1421,29 @@ func (r *Runner) interactiveSession(analysis *Analysis) error {
 }
 
 // detectBaseline determines which golden baseline to use
-func detectBaseline(logData string) string {
-	lower := strings.ToLower(logData)
-
-	// Check for OpenAI Realtime
-	if strings.Contains(lower, "openai") && strings.Contains(lower, "realtime") {
+func detectBaseline(header *RCAHeader) string {
+	provider := ""
+	if header != nil {
+		provider = strings.ToLower(strings.TrimSpace(header.ProviderName))
+	}
+	if provider == "openai_realtime" {
 		return "openai_realtime"
 	}
-
-	// Check for Deepgram
-	if strings.Contains(lower, "deepgram") {
+	if provider == "deepgram" || strings.HasPrefix(provider, "deepgram_") {
 		return "deepgram_standard"
 	}
+	return "streaming_performance"
+}
 
-	// Default to streaming performance baseline
-	if strings.Contains(lower, "streaming tuning") {
-		return "streaming_performance"
+func audioIssuesFromMetrics(metrics *CallMetrics) []string {
+	if metrics == nil {
+		return nil
 	}
-
-	return "streaming_performance" // Default baseline
+	issues := []string{}
+	if rate := metrics.UnderflowRatePct(); rate >= 1.0 {
+		issues = append(issues, fmt.Sprintf("Jitter buffer underflows: %d (%.2f%% of estimated frames)", metrics.UnderflowCount, rate))
+	}
+	return issues
 }
 
 // Helper functions

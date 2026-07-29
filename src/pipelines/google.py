@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import struct
 import json
 import os
 import time
@@ -13,7 +14,12 @@ from typing import Any, AsyncIterator, Callable, Dict, Iterable, Optional, Seque
 
 import aiohttp
 
-from ..audio import convert_pcm16le_to_target_format, mulaw_to_pcm16le, resample_audio
+from ..audio import (
+    convert_pcm16le_to_target_format,
+    mulaw_to_pcm16le,
+    resample_audio,
+    resolve_output_resampler_policy,
+)
 from ..config import AppConfig, GoogleProviderConfig
 from ..logging_config import get_logger
 from .base import LLMComponent, LLMResponse, STTComponent, TTSComponent
@@ -88,6 +94,38 @@ def _decode_google_audio(audio_content: str) -> bytes:
     except (base64.binascii.Error, TypeError):
         logger.error("Failed to decode Google TTS audioContent payload")
         return b""
+
+
+def _unwrap_google_wav(audio_bytes: bytes) -> Tuple[bytes, Optional[int]]:
+    """Return the WAV data chunk and declared rate from Google TTS output.
+
+    Google wraps both LINEAR16 and MULAW results in RIFF/WAV.  AudioSocket
+    consumes headerless media, so treating the container bytes as samples
+    causes a click/static burst at the start of each utterance.
+    """
+    if not (
+        len(audio_bytes) >= 12
+        and audio_bytes[:4] == b"RIFF"
+        and audio_bytes[8:12] == b"WAVE"
+    ):
+        return audio_bytes, None
+
+    offset = 12
+    sample_rate: Optional[int] = None
+    while offset + 8 <= len(audio_bytes):
+        chunk_id = audio_bytes[offset : offset + 4]
+        chunk_size = int.from_bytes(audio_bytes[offset + 4 : offset + 8], "little")
+        payload_start = offset + 8
+        payload_end = payload_start + chunk_size
+        if payload_end > len(audio_bytes):
+            raise RuntimeError("Google TTS returned a truncated WAV container")
+        if chunk_id == b"fmt " and chunk_size >= 8:
+            sample_rate = struct.unpack_from("<I", audio_bytes, payload_start + 4)[0]
+        elif chunk_id == b"data":
+            return audio_bytes[payload_start:payload_end], sample_rate
+        offset = payload_end + (chunk_size % 2)
+
+    raise RuntimeError("Google TTS WAV response did not contain an audio data chunk")
 
 
 class _GoogleCredentialManager:
@@ -265,7 +303,7 @@ class GoogleSTTAdapter(STTComponent):
 
     def _compose_options(self, runtime_options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         merged = _merge_dicts(self._pipeline_defaults, runtime_options)
-        return {
+        options = {
             "encoding": merged.get("encoding", "LINEAR16"),
             "language_code": merged.get("language_code", self._provider_defaults.stt_language_code),
             "model": merged.get("model"),
@@ -274,6 +312,7 @@ class GoogleSTTAdapter(STTComponent):
             "config_overrides": dict(merged.get("config_overrides") or merged.get("config") or {}),
             "request_overrides": dict(merged.get("request_overrides") or merged.get("request") or {}),
         }
+        return options
 
 
 class GoogleLLMAdapter(LLMComponent):
@@ -388,7 +427,7 @@ class GoogleLLMAdapter(LLMComponent):
                 sys_instr = getattr(self._app_config.llm, "prompt", None) or None
             except Exception:
                 sys_instr = None
-        return {
+        options = {
             "model": merged.get("model", self._provider_defaults.llm_model),
             "temperature": merged.get("temperature", 0.7),
             "top_p": merged.get("top_p"),
@@ -399,6 +438,7 @@ class GoogleLLMAdapter(LLMComponent):
             "request_overrides": dict(merged.get("request_overrides") or merged.get("request") or {}),
             "timeout_sec": float(merged.get("timeout_sec", 10.0)),
         }
+        return options
 
     def _build_payload(self, transcript: str, context: Dict[str, Any], merged: Dict[str, Any]) -> Dict[str, Any]:
         contents = context.get("google_contents")
@@ -453,6 +493,12 @@ class GoogleLLMAdapter(LLMComponent):
 
 class GoogleTTSAdapter(TTSComponent):
     """# Milestone7: Google Cloud Text-to-Speech adapter with μ-law/PCM chunking."""
+
+    wideband_output_format = {
+        "encoding": "linear16",
+        "sample_rate": 16000,
+        "options": {"audio_encoding": "LINEAR16", "audio_sample_rate": 16000},
+    }
 
     def __init__(
         self,
@@ -565,6 +611,7 @@ class GoogleTTSAdapter(TTSComponent):
             merged["audio_sample_rate"],
             merged["target_format"]["encoding"],
             merged["target_format"]["sample_rate"],
+            merged["output_resampler"],
         )
 
         latency_ms = (time.perf_counter() - started_at) * 1000.0
@@ -597,7 +644,7 @@ class GoogleTTSAdapter(TTSComponent):
         merged = _merge_dicts(self._pipeline_defaults, runtime_options)
         target_format = merged.get("format") or merged.get("target_format") or {}
         source_format = merged.get("source_format") or {}
-        return {
+        options = {
             "voice_name": merged.get("voice", self._provider_defaults.tts_voice_name),
             "language_code": merged.get("language_code", self._provider_defaults.stt_language_code),
             "audio_encoding": (merged.get("audio_encoding") or source_format.get("encoding") or self._provider_defaults.tts_audio_encoding).upper(),
@@ -617,7 +664,14 @@ class GoogleTTSAdapter(TTSComponent):
                 "encoding": (target_format.get("encoding") or "mulaw").lower(),
                 "sample_rate": int(target_format.get("sample_rate") or 8000),
             },
+            "output_resampler": merged.get(
+                "output_resampler", self._provider_defaults.output_resampler
+            ),
         }
+        options["output_resampler"] = resolve_output_resampler_policy(
+            provider_mode=options.get("output_resampler")
+        )[0]
+        return options
 
     @staticmethod
     def _convert_audio(
@@ -626,9 +680,14 @@ class GoogleTTSAdapter(TTSComponent):
         source_rate: int,
         target_encoding: str,
         target_rate: int,
+        output_resampler: str = "linear",
     ) -> bytes:
         if not audio_bytes:
             return b""
+
+        audio_bytes, container_rate = _unwrap_google_wav(audio_bytes)
+        if container_rate:
+            source_rate = int(container_rate)
 
         fmt = (source_encoding or "").lower()
         if fmt in ("ulaw", "mulaw", "mu-law", "g711_ulaw"):
@@ -637,13 +696,18 @@ class GoogleTTSAdapter(TTSComponent):
             pcm_bytes = audio_bytes
 
         if source_rate != target_rate:
-            pcm_bytes, _ = resample_audio(pcm_bytes, source_rate, target_rate)
+            pcm_bytes, _ = resample_audio(
+                pcm_bytes,
+                source_rate,
+                target_rate,
+                mode=output_resampler,
+            )
 
         return convert_pcm16le_to_target_format(pcm_bytes, target_encoding)
 
 
 __all__ = [
-    "GoogleSTTAdapter",
     "GoogleLLMAdapter",
+    "GoogleSTTAdapter",
     "GoogleTTSAdapter",
 ]

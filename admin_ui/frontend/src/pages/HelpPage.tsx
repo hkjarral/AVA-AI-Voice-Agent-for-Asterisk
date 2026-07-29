@@ -247,6 +247,7 @@ const HelpPage = () => {
                                 )}
                                 <button
                                     onClick={closeModal}
+                                    aria-label="Close"
                                     className="p-1 hover:bg-accent rounded transition-colors"
                                 >
                                     <X className="w-5 h-5" />

@@ -12,6 +12,7 @@ from websockets.asyncio.client import ClientConnection
 
 from structlog import get_logger
 from prometheus_client import Gauge, Info
+from ..utils.voice_catalog import known_voice_map
 from ..audio.resampler import (
     mulaw_to_pcm16le,
     pcm16le_to_mulaw,
@@ -23,6 +24,13 @@ from .base import AIProviderInterface, ProviderCapabilities
 # Tool calling support
 from src.tools.registry import tool_registry
 from src.tools.adapters.deepgram import DeepgramToolAdapter
+from src.tools.execution_history import record_in_call_tool_result
+from src.tools.telephony.hangup_policy import (
+    DEFAULT_HANGUP_MARKERS,
+    normalize_hangup_policy,
+    text_contains_end_call_intent,
+    text_is_short_polite_closing,
+)
 
 logger = get_logger(__name__)
 
@@ -34,6 +42,89 @@ def _log_provider_task_exception(task: asyncio.Task) -> None:
     exc = task.exception()
     if exc:
         logger.error("Provider background task failed", task_name=task.get_name(), error=str(exc), exc_info=exc)
+
+
+def resolve_speak_model(session_voice: Optional[str], configured: Optional[str]) -> str:
+    """Resolve the `agent.speak.provider.model` (aura voice) for a session.
+
+    Per-agent voice override wins over the configured `tts_model`; the shipped
+    default is the final fallback. Overrides are validated against the known
+    Aura catalog (Deepgram rejects unknown speak models at Settings time) —
+    an unrecognized value, e.g. stale free text from the pre-7.3.0
+    display-only agent field, falls back to the configured model instead of
+    failing the session. Module-level pure function so the behavior is
+    unit-testable without a full provider (same pattern as
+    ``build_listen_provider_block``). Both the primary Settings payload and the
+    UNPARSABLE-retry minimal payload consume this via the single `speak_model`
+    local in ``_configure_agent``.
+    """
+    if isinstance(session_voice, str) and session_voice.strip():
+        canonical = known_voice_map("deepgram").get(session_voice.strip().lower())
+        if canonical:
+            return canonical
+        logger.warning(
+            "Agent voice is not a known Deepgram Aura model; using configured speak model",
+            requested_voice=session_voice.strip(),
+        )
+    if isinstance(configured, str) and configured.strip():
+        return configured.strip()
+    return "aura-asteria-en"
+
+
+def build_listen_provider_block(
+    *,
+    model: str,
+    eot_threshold: Optional[float] = 0.7,
+    eager_eot_threshold: Optional[float] = None,
+    keyterms: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Build the `agent.listen.provider` block for the Deepgram Voice Agent
+    Settings JSON.
+
+    Pre-v6.5.0 the listen model was hardcoded to ``nova-3`` regardless of
+    config. v6.5.0 makes the model honor config and additionally builds a
+    Flux-aware payload when the configured model starts with ``flux``,
+    matching Deepgram's published Voice Agent configuration:
+    https://developers.deepgram.com/docs/configure-voice-agent
+
+    Behavior:
+      - Nova-* models (default): emit ``{"type": "deepgram", "model": <model>}``.
+      - Flux models (``flux-general-en``, ``flux-general-multi``): additionally
+        emit ``version: "v2"`` (required) plus the Flux-specific tuning fields
+        ``eot_threshold`` (default 0.7, valid range 0.5-0.9), optional
+        ``eager_eot_threshold`` (default None, valid range 0.3-0.9), and
+        optional ``keyterms`` (list of strings to bias recognition).
+
+    Centralized as a module-level pure function so the Settings-builder
+    behavior can be unit-tested without spinning up a full
+    ``DeepgramProvider`` (which requires WebSocket, asyncio loop, etc.).
+
+    Args:
+        model: The configured listen model. Required.
+        eot_threshold: Flux end-of-turn confidence threshold. Ignored for Nova.
+        eager_eot_threshold: Flux eager end-of-turn confidence threshold.
+            Ignored for Nova; ``None`` disables the eager VAD on Flux.
+        keyterms: Optional list of strings to bias Flux recognition. Ignored
+            for Nova; empty/None values are dropped.
+
+    Returns:
+        dict suitable for use as the ``agent.listen.provider`` block.
+    """
+    block: Dict[str, Any] = {"type": "deepgram", "model": model}
+    if not isinstance(model, str) or not model.lower().startswith("flux"):
+        return block
+
+    # Flux-specific augmentations.
+    block["version"] = "v2"
+    if eot_threshold is not None:
+        block["eot_threshold"] = float(eot_threshold)
+    if eager_eot_threshold is not None:
+        block["eager_eot_threshold"] = float(eager_eot_threshold)
+    if isinstance(keyterms, list) and keyterms:
+        cleaned = [str(k) for k in keyterms if str(k).strip()]
+        if cleaned:
+            block["keyterms"] = cleaned
+    return block
 
 
 _DEEPGRAM_INPUT_RATE = Gauge(
@@ -54,6 +145,156 @@ _DEEPGRAM_SETTINGS_ACK_LATENCY_MS = Gauge(
 )
 
 class DeepgramProvider(AIProviderInterface):
+    # Deepgram owns the initial agent greeting and supplies a safe default even
+    # when AVA's provider greeting setting is blank.
+    provider_owned_initial_greeting = True
+    _FALLBACK_END_MARKERS = tuple(
+        marker
+        for marker in DEFAULT_HANGUP_MARKERS["end_call"]
+        if marker not in {"thanks", "thank you", "no thanks", "no thank you"}
+    )
+
+    @classmethod
+    def next_farewell_fallback_state(
+        cls,
+        state: Optional[Dict[str, Any]],
+        *,
+        role: str,
+        text: str,
+        end_markers: Optional[List[str]] = None,
+        assistant_farewell_markers: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Advance missed-hangup state using ordered Deepgram lifecycle text."""
+        current = dict(state or {})
+        role = str(role or "").strip().lower()
+        text = str(text or "").strip()
+        if role not in ("user", "assistant") or not text:
+            return current
+
+        if role == "user":
+            fallback_end_markers = [
+                marker
+                for marker in (end_markers or cls._FALLBACK_END_MARKERS)
+                if marker not in {"thanks", "thank you", "no thanks", "no thank you"}
+            ]
+            has_end_intent = (
+                text_contains_end_call_intent(text, fallback_end_markers)
+                or text_is_short_polite_closing(text)
+            )
+            if not has_end_intent:
+                return {}
+            return {
+                "pending": True,
+                "farewell_seen": False,
+                "user_text": text,
+            }
+
+        if current.get("pending") and text_contains_end_call_intent(
+            text,
+            assistant_farewell_markers
+            or DEFAULT_HANGUP_MARKERS["assistant_farewell"],
+        ):
+            current["farewell_seen"] = True
+            current["assistant_text"] = text
+        return current
+
+    def _track_farewell_fallback(self, *, role: str, text: str) -> None:
+        markers = self._hangup_policy.get("markers") or {}
+        normalized_role = str(role or "").strip().lower()
+        if normalized_role == "user":
+            self._farewell_fallback_audio_seen = False
+        self._farewell_fallback_state = self.next_farewell_fallback_state(
+            self._farewell_fallback_state,
+            role=role,
+            text=text,
+            end_markers=markers.get("end_call"),
+            assistant_farewell_markers=markers.get("assistant_farewell"),
+        )
+        if (
+            normalized_role == "assistant"
+            and self._farewell_fallback_state.get("pending")
+            and self._farewell_fallback_state.get("farewell_seen")
+        ):
+            # Once the assistant has committed to the terminal farewell, do
+            # not let line echo or residual end-intent audio cancel it.  The
+            # fallback emits HangupReady at AgentAudioDone, so this state has a
+            # bounded lifetime and does not alter normal conversational turns.
+            self._terminal_turn_suppressed = True
+
+    def _consume_farewell_fallback(self) -> bool:
+        state = self._farewell_fallback_state
+        should_hangup = bool(
+            state.get("pending")
+            and state.get("farewell_seen")
+            and not self._hangup_pending
+        )
+        if should_hangup:
+            self._farewell_fallback_state = {}
+            self._farewell_fallback_audio_seen = False
+        return should_hangup
+
+    @property
+    def terminal_output_protected(self) -> bool:
+        return bool(self._terminal_turn_suppressed or self._hangup_pending)
+
+    def release_terminal_output_protection(self) -> None:
+        """Resume the conversation when terminal control was not confirmed."""
+        self._cancel_hangup_audio_fallback()
+        self._cancel_farewell_text_fallback()
+        self._hangup_pending = False
+        self._terminal_turn_suppressed = False
+        self._hangup_audio_started = False
+        self._farewell_message = None
+        self._farewell_fallback_state = {}
+        self._farewell_fallback_audio_seen = False
+
+    async def _emit_farewell_fallback_if_needed(self, *, had_audio: bool = True) -> bool:
+        if not self.on_event or not self._consume_farewell_fallback():
+            return False
+        self._terminal_turn_suppressed = True
+        logger.warning(
+            "Deepgram omitted hangup_call after farewell; emitting HangupReady fallback",
+            call_id=self.call_id,
+        )
+        await self.on_event({
+            'type': 'HangupReady',
+            'call_id': self.call_id,
+            'reason': 'farewell_without_tool',
+            'had_audio': had_audio,
+        })
+        return True
+
+    def _cancel_farewell_text_fallback(self) -> None:
+        task = getattr(self, "_farewell_text_fallback_task", None)
+        self._farewell_text_fallback_task = None
+        if task and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+    def _schedule_farewell_text_fallback(self, timeout_sec: float = 2.0) -> None:
+        """End a missed-tool farewell if Deepgram never emits any audio."""
+        self._cancel_farewell_text_fallback()
+
+        async def _fallback() -> None:
+            try:
+                await asyncio.sleep(max(0.0, float(timeout_sec)))
+                if self._in_audio_burst:
+                    return
+                await self._emit_farewell_fallback_if_needed(
+                    had_audio=bool(
+                        getattr(self, "_farewell_fallback_audio_seen", False)
+                    )
+                )
+            except asyncio.CancelledError:
+                return
+            finally:
+                if self._farewell_text_fallback_task is asyncio.current_task():
+                    self._farewell_text_fallback_task = None
+
+        self._farewell_text_fallback_task = asyncio.create_task(
+            _fallback(),
+            name=f"deepgram-farewell-text-fallback-{self.call_id}",
+        )
+
     @staticmethod
     def _canonicalize_encoding(value: Optional[str]) -> str:
         t = (value or '').strip().lower()
@@ -142,13 +383,24 @@ class DeepgramProvider(AIProviderInterface):
         except Exception:
             logger.debug("Deepgram output format update failed", encoding=encoding, sample_rate=sample_rate, source=source, exc_info=True)
 
-    def __init__(self, config: Dict[str, Any], llm_config: LLMConfig, on_event: Callable[[Dict[str, Any]], None]):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        llm_config: LLMConfig,
+        on_event: Callable[[Dict[str, Any]], None],
+        *,
+        hangup_policy: Optional[Dict[str, Any]] = None,
+    ):
         super().__init__(on_event)
+        self.set_provider_identity(provider_key="deepgram", provider_kind="deepgram")
         self.config = config
         self.llm_config = llm_config
+        self._hangup_policy = normalize_hangup_policy(hangup_policy)
         self.websocket: Optional[ClientConnection] = None
         self._keep_alive_task: Optional[asyncio.Task] = None
         self._receive_task: Optional[asyncio.Task] = None
+        self._tool_call_tasks: set[asyncio.Task] = set()
+        self._settings_failure_stop_task: Optional[asyncio.Task] = None
         self._is_audio_flowing = False
         self.request_id: Optional[str] = None
         self.session_id: Optional[str] = None
@@ -193,7 +445,15 @@ class DeepgramProvider(AIProviderInterface):
         self._user_last_ts: float = 0.0
         # Hangup tracking (for farewell + HangupReady event)
         self._hangup_pending: bool = False
+        self._terminal_turn_suppressed: bool = False
+        self._hangup_audio_started: bool = False
+        self._hangup_fallback_task: Optional[asyncio.Task] = None
+        self._farewell_text_fallback_task: Optional[asyncio.Task] = None
         self._farewell_message: Optional[str] = None
+        # Provider-local because shared media/VAD state is mutated throughout
+        # a turn and is not a reliable lifecycle handoff boundary.
+        self._farewell_fallback_state: Dict[str, Any] = {}
+        self._farewell_fallback_audio_seen: bool = False
         # Cache declared Deepgram input settings
         try:
             self._dg_input_rate = int(self._get_config_value('input_sample_rate_hz', 8000) or 8000)
@@ -219,6 +479,42 @@ class DeepgramProvider(AIProviderInterface):
         """Set the session store for turn latency tracking (Milestone 21)."""
         self._session_store = session_store
 
+    async def _handle_user_started_speaking(self) -> None:
+        """Bridge Deepgram's native VAD signal into platform playback flush.
+
+        Deepgram owns response cancellation and turn-taking.  The engine still
+        owns AudioSocket/ARI playback buffers, so it needs an explicit
+        ``ProviderBargeIn`` event to discard audio already queued locally.
+        """
+        logger.info(
+            "🎤 Deepgram UserStartedSpeaking",
+            call_id=self.call_id,
+            request_id=getattr(self, "request_id", None),
+        )
+        if not self.on_event:
+            return
+        if self.terminal_output_protected:
+            logger.info(
+                "Deepgram provider barge-in suppressed during terminal farewell",
+                call_id=self.call_id,
+            )
+            return
+        try:
+            await self.on_event(
+                {
+                    "type": "ProviderBargeIn",
+                    "call_id": self.call_id,
+                    "provider": self.provider_event_name(),
+                    "event": "UserStartedSpeaking",
+                }
+            )
+        except Exception:
+            logger.debug(
+                "Failed to emit Deepgram ProviderBargeIn",
+                call_id=self.call_id,
+                exc_info=True,
+            )
+
     @property
     def supported_codecs(self) -> List[str]:
         return ["ulaw"]
@@ -234,8 +530,8 @@ class DeepgramProvider(AIProviderInterface):
             # Audio format capabilities
             input_encodings=["mulaw", "linear16"],
             input_sample_rates_hz=[8000, 16000],
-            output_encodings=["mulaw"],
-            output_sample_rates_hz=[8000],
+            output_encodings=["linear16", "mulaw"],
+            output_sample_rates_hz=[16000, 24000, 8000],
             preferred_chunk_ms=20,
             can_negotiate=True,  # Uses SettingsApplied ACK for runtime negotiation
             # Provider type and audio processing capabilities
@@ -243,6 +539,10 @@ class DeepgramProvider(AIProviderInterface):
             has_native_vad=True,  # Deepgram Voice Agent has built-in VAD
             has_native_barge_in=True,  # Handles interruptions internally
             requires_continuous_audio=True,  # Needs continuous audio for VAD
+            wideband_input_encoding="linear16",
+            wideband_input_sample_rate_hz=16000,
+            wideband_output_encoding="linear16",
+            wideband_output_sample_rate_hz=16000,
         )
     
     def parse_ack(self, event_data: Dict[str, Any]) -> Optional[ProviderCapabilities]:
@@ -362,12 +662,17 @@ class DeepgramProvider(AIProviderInterface):
 
             # Persist call context for downstream events
             self.call_id = call_id
+            self._farewell_fallback_state = {}
+            self._terminal_turn_suppressed = False
             # Per-call tool allowlist (contexts are the source of truth).
             # Missing/None is treated as [] for safety.
             if context and "tools" in context:
                 self._allowed_tools = list(context.get("tools") or [])
             else:
                 self._allowed_tools = []
+            # Per-agent/per-call voice override (agent.speak.provider.model).
+            raw_voice = (context or {}).get("voice")
+            self._session_voice = raw_voice.strip() if isinstance(raw_voice, str) and raw_voice.strip() else None
             # Capture Deepgram request id if provided
             try:
                 rid = None
@@ -397,9 +702,23 @@ class DeepgramProvider(AIProviderInterface):
         # Derive codec settings from config with safe defaults
         input_encoding = self._get_config_value('input_encoding', None) or 'ulaw'
         input_sample_rate = int(self._get_config_value('input_sample_rate_hz', 8000) or 8000)
-        # Choose output based on voice capabilities (fallback to configured defaults)
-        output_encoding = self._original_output_encoding
-        output_sample_rate = int(self._original_output_rate or 8000)
+        # Per-call transport overrides are applied after this provider instance
+        # is constructed. Read the live config here instead of the constructor
+        # snapshot so an Agent selecting wideband_pcm_16k actually requests
+        # linear16/16 kHz from Deepgram. Keep the resolved values as the session
+        # baseline for ACK/autodetect handling below.
+        output_encoding = (
+            self._get_config_value('output_encoding', self._original_output_encoding)
+            or self._original_output_encoding
+            or 'mulaw'
+        )
+        output_sample_rate = int(
+            self._get_config_value('output_sample_rate_hz', self._original_output_rate)
+            or self._original_output_rate
+            or 8000
+        )
+        self._original_output_encoding = output_encoding
+        self._original_output_rate = output_sample_rate
         self._dg_output_encoding = self._canonicalize_encoding(output_encoding)
         self._dg_output_rate = output_sample_rate
         self._dg_output_inferred = not self.allow_output_autodetect
@@ -420,8 +739,20 @@ class DeepgramProvider(AIProviderInterface):
         if not greeting_val:
             greeting_val = "Hello, how can I help you today?"
 
-        listen_model = self._get_config_value('model', None) or getattr(self.llm_config, 'listen_model', None) or "nova-2-general"
-        speak_model = self._get_config_value('tts_model', None) or getattr(self.llm_config, 'tts_model', None) or "aura-asteria-en"
+        # Final fallback aligned with DeepgramProviderConfig + shipped YAML defaults.
+        # In normal config flow this fallback never fires (config provides "nova-3"),
+        # but kept consistent so the unhappy-path doesn't downgrade behind users' backs.
+        listen_model = self._get_config_value('model', None) or getattr(self.llm_config, 'listen_model', None) or "nova-3"
+        speak_model = resolve_speak_model(
+            getattr(self, "_session_voice", None),
+            self._get_config_value('tts_model', None) or getattr(self.llm_config, 'tts_model', None),
+        )
+        if getattr(self, "_session_voice", None):
+            logger.info(
+                "Using per-call Deepgram speak-model override",
+                call_id=self.call_id,
+                speak_model=speak_model,
+            )
 
         # Use configured output encoding/sample rate directly (no catalog fetch needed)
         self._dg_output_encoding = self._canonicalize_encoding(output_encoding)
@@ -433,7 +764,14 @@ class DeepgramProvider(AIProviderInterface):
             output_encoding=self._dg_output_encoding,
             output_sample_rate=self._dg_output_rate,
         )
-        think_model = getattr(self.llm_config, 'model', None) or "gpt-4o"
+        # Resolved think (LLM) model used by both the primary Settings build and
+        # the `_last_settings_minimal` retry fallback. Default kept at
+        # "gpt-4o-mini" (the previously-hardcoded primary-path value) to
+        # preserve the conservative cost behavior on upgrade for deployments
+        # that don't set `llm_config.model`. Per CodeRabbit review of PR #384
+        # comment 3214130572 — eliminates the primary/retry think-model drift
+        # that pre-fix could swap a configured model for "gpt-4o-mini" on retry.
+        think_model = getattr(self.llm_config, 'model', None) or "gpt-4o-mini"
         # Try context-injected prompt first (can be 'instructions' or 'prompt' key), then provider config, then llm_config, then default
         think_prompt = (
             self._get_config_value('instructions', None) or  # Context injection uses 'instructions' for Deepgram
@@ -462,6 +800,26 @@ class DeepgramProvider(AIProviderInterface):
         # Get configured agent language (default: "en")
         agent_language = str(self._get_config_value("agent_language", "en") or "").strip() or "en"
         
+        # Listen provider block. See `build_listen_provider_block` for the
+        # full rationale (Nova vs Flux divergence, version=v2 requirement,
+        # Flux-specific tuning fields).
+        listen_provider = build_listen_provider_block(
+            model=listen_model,
+            eot_threshold=self._get_config_value("eot_threshold", 0.7),
+            eager_eot_threshold=self._get_config_value("eager_eot_threshold", None),
+            keyterms=self._get_config_value("keyterms", None),
+        )
+        if listen_provider.get("version") == "v2":
+            logger.info(
+                "Deepgram Flux listen-provider configured",
+                call_id=self.call_id,
+                model=listen_model,
+                version="v2",
+                eot_threshold=listen_provider.get("eot_threshold"),
+                eager_eot_threshold=listen_provider.get("eager_eot_threshold"),
+                keyterms_count=len(listen_provider.get("keyterms") or []),
+            )
+
         # Build settings with configured audio formats
         settings = {
             "type": "Settings",
@@ -471,22 +829,22 @@ class DeepgramProvider(AIProviderInterface):
             },
             "agent": {
                 "language": agent_language,
-                "listen": { 
-                    "provider": { 
-                        "type": "deepgram", 
-                        "model": "nova-3"  # Twilio uses nova-3
-                    } 
-                },
-                "think": { 
-                    "provider": { 
-                        "type": "open_ai", 
-                        "model": "gpt-4o-mini",  # Twilio uses gpt-4o-mini
+                "listen": {"provider": listen_provider},
+                "think": {
+                    "provider": {
+                        "type": "open_ai",
+                        # Use the resolved `think_model` so primary and retry
+                        # paths can't drift. Default still "gpt-4o-mini" (set
+                        # at the variable definition above) to preserve the
+                        # prior conservative cost default. Per CodeRabbit
+                        # review of PR #384 comment 3214130572.
+                        "model": think_model,
                         "temperature": 0.7
-                    }, 
-                    "prompt": think_prompt 
+                    },
+                    "prompt": think_prompt
                 },
                 "speak": {
-                    "provider": {"type": "deepgram", "model": speak_model}  # Revert: keep provider format
+                    "provider": {"type": "deepgram", "model": speak_model}
                 },
                 "greeting": greeting_val
             }
@@ -494,6 +852,7 @@ class DeepgramProvider(AIProviderInterface):
         
         # Add tools from context allowlist only.
         # Per Deepgram docs: functions go in agent.think.functions.
+        tools_schemas: List[Dict[str, Any]] = []
         try:
             tools_schemas = self.tool_adapter.get_tools_config(list(self._allowed_tools or []))
             if tools_schemas:
@@ -506,21 +865,39 @@ class DeepgramProvider(AIProviderInterface):
                 )
         except Exception as e:
             logger.warning(f"Failed to configure tools: {e}", call_id=self.call_id, exc_info=True)
-        # Build and store a minimal Settings payload for fallback retry on UNPARSABLE error
+        # Build and store a minimal Settings payload for fallback retry on UNPARSABLE error.
+        # The retry's listen-provider block must match the primary one's shape (same
+        # call to `build_listen_provider_block`) so Flux models get `version: "v2"` plus
+        # threshold fields on retry too — otherwise the retry would silently drop those
+        # required fields and Deepgram would reject every retry. Per CodeRabbit review of
+        # PR #384 comment 3214117420.
         try:
+            minimal_listen_provider = build_listen_provider_block(
+                model=listen_model,
+                eot_threshold=self._get_config_value("eot_threshold", 0.7),
+                eager_eot_threshold=self._get_config_value("eager_eot_threshold", None),
+                keyterms=self._get_config_value("keyterms", None),
+            )
             self._last_settings_minimal = {
                 "type": "Settings",
                 "audio": {
-                    "input": { "encoding": input_format, "sample_rate": int(input_sample_rate) }
+                    "input": { "encoding": input_format, "sample_rate": int(input_sample_rate) },
+                    "output": {
+                        "encoding": self._dg_output_encoding,
+                        "sample_rate": self._dg_output_rate,
+                        "container": "none",
+                    },
                 },
                 "agent": {
                     "greeting": greeting_val,
                     "language": agent_language,
-                    "listen": { "provider": { "type": "deepgram", "model": listen_model } },
+                    "listen": { "provider": minimal_listen_provider },
                     "think": { "provider": { "type": "open_ai", "model": think_model }, "prompt": think_prompt },
                     "speak": { "provider": { "type": "deepgram", "model": speak_model } }
                 }
             }
+            if tools_schemas:
+                self._last_settings_minimal["agent"]["think"]["functions"] = tools_schemas
         except Exception:
             self._last_settings_minimal = None
         self._last_settings_payload = settings
@@ -603,6 +980,8 @@ class DeepgramProvider(AIProviderInterface):
         Engine provides explicit encoding/sample_rate when available.
         Falls back to chunk size inference for backward compatibility.
         """
+        if self._terminal_turn_suppressed or self._hangup_pending:
+            return
         if self.websocket and audio_chunk:
             try:
                 self._is_audio_flowing = True
@@ -842,6 +1221,20 @@ class DeepgramProvider(AIProviderInterface):
         
         Routes the function call to the appropriate tool via the tool adapter.
         """
+        function_data = (event_data.get("functions") or [{}])[0]
+        function_call_id = function_data.get("id")
+        function_name = function_data.get("name")
+        raw_parameters = function_data.get("arguments", {})
+        try:
+            parameters = json.loads(raw_parameters) if isinstance(raw_parameters, str) else raw_parameters
+        except (TypeError, json.JSONDecodeError):
+            parameters = {}
+        if not isinstance(parameters, dict):
+            parameters = {}
+        invocation_call_id = self.call_id
+        tool_started_at = time.time()
+        tool_result_recorded = False
+
         try:
             # Build context for tool execution
             # These will be injected by the engine when it sets up the provider
@@ -849,7 +1242,10 @@ class DeepgramProvider(AIProviderInterface):
                 'call_id': self.call_id,
                 'caller_channel_id': getattr(self, '_caller_channel_id', None),
                 'bridge_id': getattr(self, '_bridge_id', None),
+                'caller_number': getattr(self, '_caller_number', None),
+                'caller_name': getattr(self, '_caller_name', None),
                 'called_number': getattr(self, '_called_number', None),
+                'context_name': getattr(self, '_context_name', None),
                 'session_store': getattr(self, '_session_store', None),
                 'ari_client': getattr(self, '_ari_client', None),
                 'config': getattr(self, '_full_config', None),
@@ -863,43 +1259,46 @@ class DeepgramProvider(AIProviderInterface):
             # Check if this was a hangup request
             if result.get('function_name') == 'hangup_call' and result.get('status') == 'success':
                 self._hangup_pending = True
-                self._farewell_message = result.get('farewell_message', '')
+                self._terminal_turn_suppressed = True
+                self._hangup_audio_started = False
+                self._farewell_message = result.get('farewell_message') or result.get('message', '')
                 logger.info(
                     "🔚 Hangup tool executed - will trigger after farewell audio completes",
                     call_id=self.call_id,
                     farewell=self._farewell_message
                 )
+                self._schedule_hangup_audio_fallback()
             
             # Capture function name BEFORE send_tool_result (which pops it from result)
-            func_name = result.get('function_name')
-            func_params = event_data.get('functions', [{}])[0].get('arguments', '{}')
+            func_name = result.get('function_name') or function_name
+
+            await record_in_call_tool_result(
+                session_store=getattr(self, "_session_store", None),
+                call_id=invocation_call_id,
+                tool_call_id=function_call_id,
+                tool_name=func_name,
+                canonical_name=tool_registry.canonicalize_tool_name(func_name),
+                parameters=parameters,
+                result=result,
+                duration_ms=(time.time() - tool_started_at) * 1000,
+            )
+            tool_result_recorded = True
             
             # Send result back to Deepgram
             await self.tool_adapter.send_tool_result(result, context)
-            
-            # Log tool call to session for call history (Milestone 21)
-            try:
-                session_store = getattr(self, '_session_store', None)
-                if session_store and self.call_id and func_name:
-                    from datetime import datetime
-                    session = await session_store.get_by_call_id(self.call_id)
-                    if session:
-                        tool_record = {
-                            "name": func_name,
-                            "params": func_params,
-                            "result": result.get("status", "unknown") if isinstance(result, dict) else "success",
-                            "message": result.get("message", "") if isinstance(result, dict) else str(result),
-                            "timestamp": datetime.now().isoformat(),
-                            "duration_ms": 0,
-                        }
-                        if not hasattr(session, 'tool_calls') or session.tool_calls is None:
-                            session.tool_calls = []
-                        session.tool_calls.append(tool_record)
-                        await session_store.upsert_call(session)
-                        logger.debug("Tool call logged to session", call_id=self.call_id, tool=func_name)
-            except Exception as log_err:
-                logger.debug(f"Failed to log tool call to session: {log_err}", call_id=self.call_id)
-            
+        except asyncio.CancelledError:
+            if not tool_result_recorded:
+                await record_in_call_tool_result(
+                    session_store=getattr(self, "_session_store", None),
+                    call_id=invocation_call_id,
+                    tool_call_id=function_call_id,
+                    tool_name=function_name,
+                    canonical_name=tool_registry.canonicalize_tool_name(function_name),
+                    parameters=parameters,
+                    result={"status": "cancelled", "message": "Tool execution cancelled"},
+                    duration_ms=(time.time() - tool_started_at) * 1000,
+                )
+            raise
         except Exception as e:
             logger.error(
                 "Function call handling failed",
@@ -908,18 +1307,30 @@ class DeepgramProvider(AIProviderInterface):
                 error=str(e),
                 exc_info=True
             )
+            if not tool_result_recorded:
+                await record_in_call_tool_result(
+                    session_store=getattr(self, "_session_store", None),
+                    call_id=invocation_call_id,
+                    tool_call_id=function_call_id,
+                    tool_name=function_name,
+                    canonical_name=tool_registry.canonicalize_tool_name(function_name),
+                    parameters=parameters,
+                    result={"status": "error", "message": str(e)},
+                    duration_ms=(time.time() - tool_started_at) * 1000,
+                )
             # Send error response to Deepgram in correct format
             try:
-                function_call_id = event_data.get("id")
                 if function_call_id:
+                    error_content = {
+                        "status": "error",
+                        "message": f"Tool execution failed: {str(e)}",
+                        "error": str(e),
+                    }
                     error_response = {
-                        "type": "function_call_result",
+                        "type": "FunctionCallResponse",
                         "id": function_call_id,
-                        "function_call_result": {
-                            "status": "error",
-                            "message": f"Tool execution failed: {str(e)}",
-                            "error": str(e)
-                        }
+                        "name": function_name,
+                        "content": json.dumps(error_content),
                     }
                     if self.websocket and self.websocket.state.name == "OPEN":
                         await self.websocket.send(json.dumps(error_response))
@@ -927,11 +1338,32 @@ class DeepgramProvider(AIProviderInterface):
             except Exception as send_error:
                 logger.error(f"Failed to send error response: {send_error}")
 
+    def _schedule_settings_failure_stop(self) -> None:
+        """Keep the fail-closed stop task alive until it completes."""
+        current = self._settings_failure_stop_task
+        if current and not current.done():
+            return
+
+        task = asyncio.create_task(
+            self.stop_session(),
+            name=f"deepgram-settings-failure-stop-{self.call_id}",
+        )
+        self._settings_failure_stop_task = task
+
+        def _done(completed: asyncio.Task) -> None:
+            if self._settings_failure_stop_task is completed:
+                self._settings_failure_stop_task = None
+            _log_provider_task_exception(completed)
+
+        task.add_done_callback(_done)
+
     async def stop_session(self):
         # Prevent duplicate disconnect logs/ops
         if self._closed or self._closing:
             return
         self._closing = True
+        self._cancel_hangup_audio_fallback()
+        self._cancel_farewell_text_fallback()
         try:
             if self._keep_alive_task:
                 self._keep_alive_task.cancel()
@@ -939,6 +1371,14 @@ class DeepgramProvider(AIProviderInterface):
                 self._receive_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._receive_task
+            current_task = asyncio.current_task()
+            tool_tasks = [task for task in self._tool_call_tasks if task is not current_task]
+            for task in tool_tasks:
+                if not task.done():
+                    task.cancel()
+            if tool_tasks:
+                await asyncio.gather(*tool_tasks, return_exceptions=True)
+            self._tool_call_tasks.clear()
             if self.websocket and self.websocket.state.name == "OPEN":
                 await self.websocket.close()
             if not self._closed:
@@ -948,6 +1388,7 @@ class DeepgramProvider(AIProviderInterface):
             self._receive_task = None
             self._clear_metrics(self.call_id)
             self.call_id = None
+            self._farewell_fallback_state = {}
             self._closing = False
 
     async def _keep_alive(self):
@@ -1199,11 +1640,7 @@ class DeepgramProvider(AIProviderInterface):
                                     session_id=getattr(self, "session_id", None),
                                 )
                             elif et == "UserStartedSpeaking":
-                                logger.info(
-                                    "🎤 Deepgram UserStartedSpeaking",
-                                    call_id=self.call_id,
-                                    request_id=getattr(self, "request_id", None),
-                                )
+                                await self._handle_user_started_speaking()
                             elif et == "UserStoppedSpeaking":
                                 logger.info(
                                     "🔇 Deepgram UserStoppedSpeaking",
@@ -1227,9 +1664,20 @@ class DeepgramProvider(AIProviderInterface):
                                     function_count=len(functions),
                                     request_id=getattr(self, "request_id", None),
                                 )
-                                # Handle function call via tool adapter
-                                _t = asyncio.create_task(self._handle_function_call(event_data))
-                                _t.add_done_callback(_log_provider_task_exception)
+                                # Terminal calls are handled in receive order so
+                                # audio boundaries cannot race ahead of terminal
+                                # intent. Other tools remain concurrent.
+                                if func_name == "hangup_call":
+                                    await self._handle_function_call(event_data)
+                                else:
+                                    _t = asyncio.create_task(self._handle_function_call(event_data))
+                                    self._tool_call_tasks.add(_t)
+
+                                    def _tool_done(completed: asyncio.Task) -> None:
+                                        self._tool_call_tasks.discard(completed)
+                                        _log_provider_task_exception(completed)
+
+                                    _t.add_done_callback(_tool_done)
                             elif et == "ConnectionClosed":
                                 logger.info(
                                     "🔌 Deepgram ConnectionClosed",
@@ -1255,22 +1703,72 @@ class DeepgramProvider(AIProviderInterface):
                                 if not self._settings_retry_attempted and self._last_settings_minimal and self.websocket and self.websocket.state.name == "OPEN":
                                     try:
                                         self._settings_retry_attempted = True
-                                        logger.warning("Deepgram Settings error; retrying with minimal Settings", call_id=self.call_id)
+                                        logger.warning(
+                                            "Deepgram Settings error; retrying with capability-preserving Settings",
+                                            call_id=self.call_id,
+                                            function_count=len(
+                                                self._last_settings_minimal
+                                                .get("agent", {})
+                                                .get("think", {})
+                                                .get("functions", [])
+                                            ),
+                                        )
                                         await self.websocket.send(json.dumps(self._last_settings_minimal))
                                         # Do not continue here; allow loop to process next server message
                                     except Exception:
-                                        logger.debug("Failed to send minimal Settings retry", exc_info=True)
+                                        logger.error(
+                                            "Failed to send Deepgram Settings retry; closing session",
+                                            call_id=self.call_id,
+                                            exc_info=True,
+                                        )
+                                        self._settings_acked = False
+                                        self._ready_to_stream = False
+                                        self._schedule_settings_failure_stop()
+                                        return
                                 else:
-                                    try:
-                                        asyncio.create_task(self.stop_session())
-                                    except Exception:
-                                        pass
-                                    continue
+                                    if self._settings_retry_attempted:
+                                        logger.error(
+                                            "Deepgram Settings negotiation failed after retry; closing session",
+                                            call_id=self.call_id,
+                                        )
+                                    else:
+                                        logger.error(
+                                            "Deepgram Settings negotiation failed; retry unavailable; closing session",
+                                            call_id=self.call_id,
+                                        )
+                                    self._settings_acked = False
+                                    self._ready_to_stream = False
+                                    self._schedule_settings_failure_stop()
+                                    return
                             if isinstance(event_data, dict) and et == "ConversationText":
                                 try:
                                     role = event_data.get("role")
                                     text = event_data.get("text") or event_data.get("content")
-                                    logger.info(
+                                    if (
+                                        str(role or "").strip().lower() == "user"
+                                        and self._terminal_turn_suppressed
+                                    ):
+                                        logger.debug(
+                                            "Suppressing caller transcript after terminal turn",
+                                            call_id=self.call_id,
+                                            text=text,
+                                        )
+                                        continue
+                                    self._track_farewell_fallback(role=role, text=text)
+                                    if str(role or "").strip().lower() == "user":
+                                        self._cancel_farewell_text_fallback()
+                                    elif (
+                                        self._farewell_fallback_state.get("pending")
+                                        and self._farewell_fallback_state.get("farewell_seen")
+                                        and not self._in_audio_burst
+                                    ):
+                                        # ConversationText can be terminal even
+                                        # when Deepgram never sends a binary
+                                        # audio burst or AgentAudioDone. Allow a
+                                        # short window for late audio, then end
+                                        # the missed-tool farewell explicitly.
+                                        self._schedule_farewell_text_fallback()
+                                    logger.debug(
                                         "Deepgram conversation text",
                                         call_id=self.call_id,
                                         role=role,
@@ -1361,17 +1859,21 @@ class DeepgramProvider(AIProviderInterface):
                                     #     logger.debug("Post-ACK greeting injection failed", exc_info=True)
                         except Exception:
                             pass
-                        # If we were in an audio burst, a JSON control/event frame marks a boundary
-                        if self._in_audio_burst and self.on_event:
+                        # Only Deepgram's explicit AgentAudioDone event is an
+                        # audio boundary. ConversationText and other JSON control
+                        # frames can arrive while audio is still streaming.
+                        if et == "AgentAudioDone" and self._in_audio_burst and self.on_event:
                             await self.on_event({
                                 'type': 'AgentAudioDone',
                                 'streaming_done': True,
                                 'call_id': self.call_id
                             })
                             self._in_audio_burst = False
-                            
+
+                            await self._emit_farewell_fallback_if_needed(had_audio=True)
+
                             # Check if farewell audio completed after hangup request
-                            if self._hangup_pending:
+                            if self._hangup_pending and self._hangup_audio_started:
                                 logger.info(
                                     "🔚 Farewell audio completed - emitting HangupReady",
                                     call_id=self.call_id,
@@ -1388,10 +1890,12 @@ class DeepgramProvider(AIProviderInterface):
                                     logger.error("Failed to emit HangupReady event", call_id=self.call_id, error=str(e))
                                 
                                 # Reset hangup tracking
+                                self._cancel_hangup_audio_fallback()
                                 self._hangup_pending = False
+                                self._hangup_audio_started = False
                                 self._farewell_message = None
 
-                        if self.on_event:
+                        if self.on_event and et != "AgentAudioDone":
                             await self.on_event(event_data)
                     except json.JSONDecodeError:
                         logger.error("Failed to parse JSON message from Deepgram", message=message)
@@ -1532,6 +2036,11 @@ class DeepgramProvider(AIProviderInterface):
                         )
                         self._first_output_chunk_logged = True
                     self._in_audio_burst = True
+                    if self._farewell_fallback_state.get("pending"):
+                        self._farewell_fallback_audio_seen = True
+                    self._cancel_farewell_text_fallback()
+                    if self._hangup_pending:
+                        self._hangup_audio_started = True
                     if self.on_event:
                         await self.on_event(audio_event)
         except websockets.exceptions.ConnectionClosed as e:
@@ -1549,9 +2058,10 @@ class DeepgramProvider(AIProviderInterface):
                         'streaming_done': True,
                         'call_id': self.call_id
                     })
+                    await self._emit_farewell_fallback_if_needed(had_audio=True)
                     
                     # Check if farewell audio completed after hangup request (socket closing)
-                    if self._hangup_pending:
+                    if self._hangup_pending and self._hangup_audio_started:
                         logger.info(
                             "🔚 Farewell audio completed (socket closing) - emitting HangupReady",
                             call_id=self.call_id,
@@ -1568,20 +2078,68 @@ class DeepgramProvider(AIProviderInterface):
                             logger.error("Failed to emit HangupReady event", call_id=self.call_id, error=str(e))
                         
                         # Reset hangup tracking
+                        self._cancel_hangup_audio_fallback()
                         self._hangup_pending = False
+                        self._hangup_audio_started = False
                         self._farewell_message = None
                 except Exception:
                     pass
             self._in_audio_burst = False
 
-    async def speak(self, text: str):
+    def _cancel_hangup_audio_fallback(self) -> None:
+        task = self._hangup_fallback_task
+        self._hangup_fallback_task = None
+        if task and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+    def _schedule_hangup_audio_fallback(self, timeout_sec: float = 12.0) -> None:
+        """End a terminal tool flow if Deepgram never sends farewell audio."""
+        self._cancel_hangup_audio_fallback()
+
+        async def _fallback() -> None:
+            try:
+                await asyncio.sleep(max(1.0, float(timeout_sec)))
+                if not self._hangup_pending or not self.on_event:
+                    return
+                logger.warning(
+                    "Deepgram farewell audio timeout - emitting HangupReady",
+                    call_id=self.call_id,
+                    timeout_sec=timeout_sec,
+                )
+                await self.on_event({
+                    'type': 'HangupReady',
+                    'call_id': self.call_id,
+                    'reason': 'farewell_timeout' if self._hangup_audio_started else 'farewell_no_audio',
+                    'had_audio': self._hangup_audio_started,
+                })
+                self._hangup_pending = False
+                self._hangup_audio_started = False
+                self._farewell_message = None
+            except asyncio.CancelledError:
+                return
+            finally:
+                if self._hangup_fallback_task is asyncio.current_task():
+                    self._hangup_fallback_task = None
+
+        self._hangup_fallback_task = asyncio.create_task(
+            _fallback(),
+            name=f"deepgram-hangup-fallback-{self.call_id}",
+        )
+
+    async def speak_text(self, text: str) -> bool:
         if not text or not self.websocket:
-            return
+            return False
         inject_message = {"type": "InjectAgentMessage", "content": text}
         try:
             await self.websocket.send(json.dumps(inject_message))
+            return True
         except websockets.exceptions.ConnectionClosed as e:
             logger.error("Failed to send inject agent message: Connection is closed.", exc_info=True, code=e.code, reason=e.reason)
+            return False
+
+    async def speak(self, text: str):
+        """Backward-compatible alias for the legacy provider API."""
+        await self.speak_text(text)
 
     async def _inject_message_dual(self, text: str):
         if not text or not self.websocket:

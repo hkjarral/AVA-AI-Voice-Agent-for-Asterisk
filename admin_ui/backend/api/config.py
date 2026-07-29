@@ -2,30 +2,183 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 import yaml
 from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode, SequenceNode, ScalarNode
+import errno
 import os
 import re
 import asyncio
 import glob
+import sqlite3
+import stat
 import tempfile
 import sys
+import threading
 import logging
 import ssl
 import smtplib
+from copy import deepcopy
 from email.message import EmailMessage
 from contextlib import contextmanager
+from pathlib import Path
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, Union
 from urllib.parse import urlparse
 import settings
+
+try:
+    # The production Admin image copies the shared module into /app.
+    from config_apply import classify_config_change
+except ModuleNotFoundError:
+    # Source checkout/tests: import the same canonical module from root src/.
+    PROJECT_SOURCE_ROOT = Path(__file__).resolve().parents[3]
+    if str(PROJECT_SOURCE_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_SOURCE_ROOT))
+    from src.config_apply import classify_config_change
 
 # A11: Maximum number of backups to keep
 MAX_BACKUPS = 5
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+# Transactions call _write_local_config(), which re-enters this lock while
+# preserving the writer's direct-call safety for tests and synchronous helpers.
+_CONFIG_UPDATE_LOCK = threading.RLock()
+
+
+def _assert_in_use_audio_profiles_unchanged(
+    old_config: Dict[str, Any],
+    new_config: Dict[str, Any],
+    *,
+    trusted_profile_reset: Optional[tuple[str, Dict[str, Any]]] = None,
+) -> None:
+    """Fail closed before mutating a profile referenced by an Agent.
+
+    Agent assignments live in a separate SQLite source of truth, so schema
+    validation alone cannot detect this cross-store dependency. Read the
+    existing database without creating or migrating it; a missing database is
+    an empty first-run store, while an unreadable existing database makes a
+    profile mutation unsafe.
+    """
+    old_profiles = old_config.get("profiles") or {}
+    new_profiles = new_config.get("profiles") or {}
+    if not isinstance(old_profiles, dict) or not isinstance(new_profiles, dict):
+        return
+
+    changed_profiles = {
+        name
+        for name in (set(old_profiles) | set(new_profiles)) - {"default"}
+        if old_profiles.get(name) != new_profiles.get(name)
+    }
+    if trusted_profile_reset is not None:
+        reset_name, expected_body = trusted_profile_reset
+        # This exception is deliberately value-bound.  Callers cannot bypass
+        # the Agent-reference guard merely by naming a profile: the resulting
+        # body must be the exact backend-owned canonical reset value.
+        if (
+            reset_name != "default"
+            and reset_name in changed_profiles
+            and new_profiles.get(reset_name) == expected_body
+        ):
+            changed_profiles.remove(reset_name)
+    configured_old_default = old_profiles.get("default")
+    old_default_profile = (
+        configured_old_default.strip()
+        if isinstance(configured_old_default, str) and configured_old_default.strip()
+        else "telephony_ulaw_8k"
+    )
+    configured_new_default = new_profiles.get("default")
+    new_default_profile = (
+        configured_new_default.strip()
+        if isinstance(configured_new_default, str) and configured_new_default.strip()
+        else "telephony_ulaw_8k"
+    )
+    default_changed = old_default_profile != new_default_profile
+    if not changed_profiles and not default_changed:
+        return
+
+    inheritance_impacted = default_changed or old_default_profile in changed_profiles
+
+    db_path = Path(
+        os.getenv("AGENTS_DB_PATH", "/app/data/operator/agents.db")
+    ).expanduser()
+    if not db_path.exists():
+        return
+
+    try:
+        db_uri = db_path.resolve().as_uri() + "?mode=ro"
+        with sqlite3.connect(db_uri, uri=True) as conn:
+            where_clauses = []
+            query_params = []
+            if changed_profiles:
+                placeholders = ",".join("?" for _ in changed_profiles)
+                where_clauses.append(f"audio_profile IN ({placeholders})")
+                query_params.extend(sorted(changed_profiles))
+            if inheritance_impacted:
+                where_clauses.append(
+                    "(audio_profile IS NULL OR TRIM(audio_profile) = '')"
+                )
+            rows = conn.execute(
+                "SELECT slug, display_name, audio_profile FROM agents "
+                f"WHERE {' OR '.join(where_clauses)}",
+                tuple(query_params),
+            ).fetchall()
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning(
+            "Cannot verify Agent audio-profile usage before config save",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Cannot safely change audio profiles because Agent usage "
+                "could not be verified. Restore access to the Agent store and retry."
+            ),
+        ) from exc
+
+    if rows:
+        references: Dict[str, list[str]] = {}
+        for slug, display_name, profile_name in rows:
+            explicit_profile = (
+                profile_name.strip() if isinstance(profile_name, str) else ""
+            )
+            if not explicit_profile and default_changed:
+                reference_name = (
+                    "profiles.default "
+                    f"({old_default_profile} -> {new_default_profile})"
+                )
+                references.setdefault(reference_name, []).append(
+                    str(display_name or slug)
+                )
+                continue
+            effective_profile = explicit_profile or old_default_profile
+            if effective_profile not in changed_profiles:
+                continue
+            references.setdefault(str(effective_profile), []).append(
+                str(display_name or slug)
+            )
+        if not references:
+            return
+        detail = "; ".join(
+            f"{profile}: {', '.join(sorted(names))}"
+            for profile, names in sorted(references.items())
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot change audio profile configuration used by an Agent. "
+                f"Assign or migrate the Agent first ({detail})."
+            ),
+        )
 
 def _is_prefix(key: str, prefixes: tuple[str, ...]) -> bool:
     return any(key.startswith(p) for p in prefixes)
+
+
+_LIVE_STATUS_PUBLISHER_KEYS = {
+    "LIVE_STATUS_ADMIN_URL",
+    "LIVE_STATUS_PUSH_TOKEN",
+    "LIVE_STATUS_PUSH_INTERVAL_SECONDS",
+    "LIVE_STATUS_PUSH_TIMEOUT_SECONDS",
+}
 
 
 def _running_container_names() -> set:
@@ -82,27 +235,37 @@ def _ai_engine_env_key(key: str) -> bool:
             "RESEND_API_KEY",
             "ELEVENLABS_API_KEY",
             "ELEVENLABS_AGENT_ID",
+            "XAI_API_KEY",  # xAI Grok Voice Agent (legacy single-instance fallback)
             "TZ",
             "STREAMING_LOG_LEVEL",
         )
-        or _is_prefix(key, ("AUDIO_TRANSPORT", "DOWNSTREAM_MODE", "AUDIOSOCKET_", "EXTERNAL_MEDIA_", "BARGE_IN_"))
+        or _is_prefix(key, ("AUDIO_TRANSPORT", "DOWNSTREAM_MODE", "AUDIOSOCKET_", "EXTERNAL_MEDIA_", "BARGE_IN_", "VICIDIAL_"))
         or _is_prefix(key, ("SMTP_",))
         # Local provider runtime uses these env vars via ${LOCAL_WS_*} placeholders in ai-agent.yaml
         or _is_prefix(key, ("LOCAL_WS_",))
+        or key in _LIVE_STATUS_PUBLISHER_KEYS
     )
 
 
 def _local_ai_env_key(key: str) -> bool:
     return (
         _is_prefix(key, ("LOCAL_", "KROKO_", "FASTER_WHISPER_", "WHISPER_CPP_", "MELOTTS_", "KOKORO_"))
-        or key in ("SHERPA_MODEL_PATH",)
+        or key in ("SHERPA_MODEL_PATH", "HEALTH_API_TOKEN")
+        or key in _LIVE_STATUS_PUBLISHER_KEYS
     )
 
 
 def _admin_ui_env_key(key: str) -> bool:
+    # AAVA_HTTP_TOOL_TEST_* are read by the admin_ui's HTTP tool test endpoint
+    # (admin_ui/backend/api/tools.py). They take effect live via the .env file
+    # (no restart needed — see tools.py `_dotenv_value`), but recognizing them
+    # here surfaces them in the Admin UI Environment-page apply/restart UX as
+    # admin_ui-impacting keys, which is honest signaling: changes affect this
+    # service's runtime behavior. Refs #370.
     return (
-        key in ("JWT_SECRET", "DOCKER_SOCK", "DOCKER_GID", "TZ")
-        or _is_prefix(key, ("UVICORN_", "ADMIN_UI_"))
+        key in ("JWT_SECRET", "DOCKER_SOCK", "DOCKER_GID", "TZ", "HEALTH_API_TOKEN", "LIVE_STATUS_PUSH_TOKEN")
+        or _is_prefix(key, ("UVICORN_", "ADMIN_UI_", "AAVA_HTTP_TOOL_TEST_", "VICIDIAL_"))
+        or key in ("LIVE_STATUS_POLL_INTERVAL_SECONDS", "LIVE_STATUS_INITIAL_PROBE_TIMEOUT_SECONDS")
     )
 
 
@@ -245,23 +408,37 @@ def _read_merged_config_content() -> str:
 
 def _write_local_config(content: str) -> None:
     """
-    Atomically write *content* to the local override config file.
+    Write *content* to the local override config file.
 
     Creates a backup of the existing local file (if any), validates permissions,
-    and performs an atomic temp-file + rename write.
+    and normally performs an atomic temp-file + rename write. Docker cannot
+    replace a path that is itself a bind-mount target (``EBUSY``), so that
+    topology falls back to a validated, fsynced in-place rewrite with automatic
+    rollback to the backup if the rewrite fails.
     """
+    with _CONFIG_UPDATE_LOCK:
+        _write_local_config_locked(content)
+
+
+def _write_local_config_locked(content: str) -> None:
+    """Persist local config while the process-wide writer lock is held."""
     import datetime
     dir_path = os.path.dirname(settings.LOCAL_CONFIG_PATH)
     if dir_path:
         os.makedirs(dir_path, exist_ok=True)
 
     # Backup existing local file
+    previous_bytes: Optional[bytes] = None
+    backup_path: Optional[str] = None
     if os.path.exists(settings.LOCAL_CONFIG_PATH):
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_path = f"{settings.LOCAL_CONFIG_PATH}.bak.{timestamp}"
-        with open(settings.LOCAL_CONFIG_PATH, "r") as src:
-            with open(backup_path, "w") as dst:
-                dst.write(src.read())
+        with open(settings.LOCAL_CONFIG_PATH, "rb") as src:
+            previous_bytes = src.read()
+            with open(backup_path, "wb") as dst:
+                dst.write(previous_bytes)
+                dst.flush()
+                os.fsync(dst.fileno())
         _rotate_backups(settings.LOCAL_CONFIG_PATH)
 
     # Preserve permissions from existing local or base file
@@ -271,14 +448,96 @@ def _write_local_config(content: str) -> None:
             original_mode = os.stat(candidate).st_mode
             break
 
-    with tempfile.NamedTemporaryFile("w", dir=dir_path, delete=False, suffix=".tmp") as f:
-        f.write(content)
+    desired_bytes = content.encode("utf-8")
+    with tempfile.NamedTemporaryFile("wb", dir=dir_path, delete=False, suffix=".tmp") as f:
+        f.write(desired_bytes)
+        f.flush()
+        os.fsync(f.fileno())
         temp_path = f.name
 
     if original_mode is not None:
         os.chmod(temp_path, original_mode)
 
-    os.replace(temp_path, settings.LOCAL_CONFIG_PATH)
+    try:
+        os.replace(temp_path, settings.LOCAL_CONFIG_PATH)
+        temp_path = ""
+    except OSError as exc:
+        if exc.errno != errno.EBUSY:
+            raise
+
+        # A file mounted directly into a container is a mount point and cannot
+        # be replaced, even when the mount is writable. The desired content has
+        # already passed schema validation and is staged in the adjacent temp
+        # file. Rewrite the mounted inode, fsync it, and restore the pre-write
+        # snapshot if any part of the fallback fails.
+        try:
+            target_stat = os.stat(settings.LOCAL_CONFIG_PATH)
+        except OSError as stat_exc:
+            raise OSError(
+                errno.EBUSY,
+                "Refusing bind-mount fallback because the local config target "
+                "cannot be inspected",
+                settings.LOCAL_CONFIG_PATH,
+            ) from stat_exc
+        if previous_bytes is None or not stat.S_ISREG(target_stat.st_mode):
+            raise OSError(
+                errno.EBUSY,
+                "Refusing bind-mount fallback without an existing regular "
+                "local config file",
+                settings.LOCAL_CONFIG_PATH,
+            ) from exc
+
+        logger.warning(
+            "Atomic config replace unavailable for bind-mounted file; "
+            "using fsynced in-place rewrite",
+            extra={"path": settings.LOCAL_CONFIG_PATH},
+        )
+        try:
+            with open(settings.LOCAL_CONFIG_PATH, "r+b") as dst:
+                dst.seek(0)
+                dst.write(desired_bytes)
+                dst.truncate()
+                dst.flush()
+                os.fsync(dst.fileno())
+            with open(settings.LOCAL_CONFIG_PATH, "rb") as current:
+                if current.read() != desired_bytes:
+                    raise OSError(
+                        errno.EIO,
+                        "Bind-mounted local config verification failed",
+                    )
+        except Exception as write_exc:
+            try:
+                with open(settings.LOCAL_CONFIG_PATH, "r+b") as dst:
+                    dst.seek(0)
+                    dst.write(previous_bytes)
+                    dst.truncate()
+                    dst.flush()
+                    os.fsync(dst.fileno())
+                with open(settings.LOCAL_CONFIG_PATH, "rb") as restored:
+                    if restored.read() != previous_bytes:
+                        raise OSError(
+                            errno.EIO,
+                            "Bind-mounted local config rollback verification failed",
+                        )
+            except Exception as rollback_exc:
+                recovery_path = backup_path or "unavailable"
+                raise OSError(
+                    errno.EIO,
+                    "Bind-mounted local config write failed and automatic "
+                    f"recovery failed; restore backup {recovery_path}",
+                    settings.LOCAL_CONFIG_PATH,
+                ) from rollback_exc
+            raise write_exc
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                logger.warning(
+                    "Failed to remove staged local config temp file",
+                    extra={"path": temp_path},
+                    exc_info=True,
+                )
 
 
 # Regex to strip ANSI escape codes from logs
@@ -446,6 +705,54 @@ def _collect_unknown_keys(data: Any, schema_root: Dict[str, Any], schema_node: D
     return warnings
 
 
+# MED-E1: email tool keys whose values must be valid addresses. Each has a
+# *_by_context companion map (per-context overrides) whose values are validated too.
+_EMAIL_TOOL_KEYS = ("admin_email", "from_email")
+
+
+def _assert_tool_emails_valid(content: str) -> None:
+    """Reject the tools-config save if any configured email address is malformed.
+
+    Empty/None means "unset/inherit" and is allowed. ${ENV:-...} placeholders are
+    resolved at load time, not literal addresses, so they are skipped. Raises
+    HTTPException(422) naming the bad field/value on the first invalid address.
+    """
+    try:
+        parsed = _safe_load_no_duplicates(content) or {}
+    except yaml.YAMLError:
+        return  # malformed YAML is caught by _validate_ai_agent_config (400)
+    tools = parsed.get("tools") if isinstance(parsed, dict) else None
+    if not isinstance(tools, dict):
+        return
+
+    project_root = getattr(settings, "PROJECT_ROOT", None)
+    if project_root and project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from src.utils.email_validator import EmailValidator
+
+    def _check(value: Any, field: str) -> None:
+        if value is None:
+            return
+        s = str(value).strip()
+        if not s or "${" in s:  # unset/inherit, or env placeholder
+            return
+        if not EmailValidator.validate_email(s):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid email address in tools.{field}: {value!r}",
+            )
+
+    for tool_name, tool_cfg in tools.items():
+        if not isinstance(tool_cfg, dict):
+            continue
+        for key in _EMAIL_TOOL_KEYS:
+            _check(tool_cfg.get(key), f"{tool_name}.{key}")
+            mapping = tool_cfg.get(f"{key}_by_context")
+            if isinstance(mapping, dict):
+                for ctx, v in mapping.items():
+                    _check(v, f"{tool_name}.{key}_by_context.{ctx}")
+
+
 def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
     """
     Validate ai-agent.yaml content against the canonical AppConfig schema.
@@ -472,6 +779,7 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
     try:
         from pydantic import ValidationError
         from src.config import AppConfig, load_config
+        from src.config.provider_instances import validate_provider_instances
     except Exception as exc:
         raise HTTPException(
             status_code=500,
@@ -479,6 +787,11 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
         )
 
     warnings: list[str] = []
+
+    try:
+        validate_provider_instances(parsed)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     # Warn if user put credentials in YAML (they will be ignored by design).
     try:
@@ -514,8 +827,10 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
         pass
 
     # Validate using the same loader pipeline as ai-engine (env injection + defaults + normalization).
-    dir_path = os.path.dirname(settings.CONFIG_PATH)
-    with tempfile.NamedTemporaryFile("w", dir=dir_path, delete=False, suffix=".validate.yaml") as f:
+    # Validation is read-only and does not need to stage beside the live config.
+    # Use the process temp directory so a read-only/project-owned checkout cannot
+    # fail before the actual persistence path reports or repairs write access.
+    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".validate.yaml") as f:
         f.write(content)
         tmp_path = f.name
 
@@ -541,65 +856,354 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
     return {"warnings": warnings}
 
 
+def persist_config_content(
+    content: str,
+    *,
+    trusted_profile_reset: Optional[tuple[str, Dict[str, Any]]] = None,
+) -> dict:
+    """
+    Validate and persist a full merged ai-agent config (YAML string).
+
+    Shared by the Raw YAML editor (``POST /yaml``) and the structured tools
+    CRUD API (``api/tools.py``). Runs the same schema validation, inline-secret
+    migration, and minimal-local-override computation, then writes the operator
+    local override file. Returns the apply-plan payload describing whether a
+    hot reload or restart is needed.
+
+    Raises ``HTTPException`` on validation failure (propagated to the caller).
+    """
+    with _CONFIG_UPDATE_LOCK:
+        return _persist_config_content_locked(
+            content,
+            trusted_profile_reset=trusted_profile_reset,
+        )
+
+
+def _persist_config_content_locked(
+    content: str,
+    *,
+    trusted_profile_reset: Optional[tuple[str, Dict[str, Any]]] = None,
+) -> dict:
+    """Persist a complete config while the shared update lock is held."""
+    # MED-E1: reject malformed tool email addresses (422) on EVERY persistence
+    # path. Both the Raw YAML editor (POST /yaml) and the structured tools CRUD
+    # API (api/tools.py -> _persist_cfg) funnel through here, so centralizing the
+    # check guarantees no endpoint can persist an invalid address. Runs before the
+    # schema validation, matching the order the YAML editor used previously.
+    _assert_tool_emails_valid(content)
+
+    # Validate YAML + schema before saving.
+    validation = _validate_ai_agent_config(content)
+    warnings = validation.get("warnings") or []
+
+    # Parse desired merged config content from UI.
+    new_parsed = _safe_load_no_duplicates(content) or {}
+    if not isinstance(new_parsed, dict):
+        raise HTTPException(status_code=400, detail="Config YAML must be a mapping at the top level")
+
+    # Persist the canonical replacement for the exact v7.5.2 OpenAI audio
+    # typo. Runtime load performs the same migration so an existing local
+    # override cannot prevent startup; rewriting on the next save removes the
+    # stale pair from operator-owned YAML as well.
+    from src.config.normalization import normalize_legacy_openai_audio
+
+    if normalize_legacy_openai_audio(new_parsed):
+        content = yaml.dump(new_parsed, default_flow_style=False, sort_keys=False)
+        validation = _validate_ai_agent_config(content)
+        migrated_warnings = validation.get("warnings")
+        warnings = warnings if migrated_warnings is None else migrated_warnings
+
+    if _migrate_inline_provider_secrets(new_parsed):
+        content = yaml.dump(new_parsed, default_flow_style=False, sort_keys=False)
+        validation = _validate_ai_agent_config(content)
+        migrated_warnings = validation.get("warnings")
+        warnings = warnings if migrated_warnings is None else migrated_warnings
+
+    # Snapshot current merged config for hot-reload comparison
+    old_merged = _read_merged_config_dict()
+
+    # Audio profiles are referenced from the independent Agent store. Guard
+    # every persistence path (structured pages and Raw YAML), not only the
+    # frontend button flow, before writing the local override.
+    _assert_in_use_audio_profiles_unchanged(
+        old_merged,
+        new_parsed,
+        trusted_profile_reset=trusted_profile_reset,
+    )
+
+    # Convert desired merged config into a minimal local override (supports deletions).
+    base = _read_base_config_dict()
+    local_override = _compute_local_override(base, new_parsed)
+    local_content = yaml.dump(local_override or {}, default_flow_style=False, sort_keys=False)
+
+    # Write to LOCAL override file (keeps base ai-agent.yaml clean for git)
+    _write_local_config(local_content)
+
+    decision = classify_config_change(old_merged, new_parsed)
+    recommended_method = decision.recommended_apply_method
+    apply_plan = decision.apply_plan()
+
+    return {
+        "status": "success",
+        "apply_required": decision.apply_required,
+        "restart_required": decision.restart_required,
+        "recommended_apply_method": recommended_method,
+        "apply_plan": apply_plan,
+        "message": (
+            "Configuration saved. No runtime changes detected."
+            if recommended_method == "none"
+            else f"Configuration saved. {'Hot reload' if recommended_method == 'hot_reload' else 'Restart'} AI Engine to apply changes."
+        ),
+        "warnings": warnings,
+    }
+
+
+async def _fetch_engine_config_state() -> Optional[Dict[str, Any]]:
+    """Read engine-owned apply state without making config saves depend on it."""
+    import httpx
+
+    engine_url = os.getenv("AI_ENGINE_HEALTH_URL", "http://localhost:15000")
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(engine_url.rstrip("/") + "/config/state")
+        if response.status_code != 200:
+            return None
+        payload = response.json()
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        logger.debug("Engine config state unavailable after config save", exc_info=True)
+        return None
+
+
+async def reconcile_apply_result_with_engine_state(result: dict) -> dict:
+    """Overlay a pre-existing deferred restart onto save-time diff metadata."""
+    state = await _fetch_engine_config_state()
+    if not state or state.get("restart_required") is not True:
+        return result
+
+    reconciled = dict(result)
+    reconciled["restart_required"] = True
+    reconciled["recommended_apply_method"] = "restart"
+    reconciled["apply_plan"] = [{
+        "service": "ai_engine",
+        "method": "restart",
+        "endpoint": "/api/system/containers/ai_engine/restart",
+    }]
+    reconciled["message"] = (
+        "Configuration saved. Restart AI Engine to finish applying pending changes."
+    )
+    return reconciled
+
+
+def _audio_baseline_helpers() -> dict[str, Any]:
+    """Load canonical audio baseline helpers in source and image layouts."""
+    project_root = getattr(settings, "PROJECT_ROOT", None)
+    if project_root and project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from src.config.audio_baselines import (
+        BUILTIN_PROFILE_BASELINES,
+        PIPELINE_AUDIO_FIELDS,
+        PROVIDER_AUDIO_BASELINES,
+        profile_audio_baseline,
+        provider_audio_baseline,
+        provider_audio_fields,
+    )
+
+    return {
+        "pipeline_fields": PIPELINE_AUDIO_FIELDS,
+        "provider_baselines": PROVIDER_AUDIO_BASELINES,
+        "profile_baselines": BUILTIN_PROFILE_BASELINES,
+        "profile_baseline": profile_audio_baseline,
+        "provider_baseline": provider_audio_baseline,
+        "provider_fields": provider_audio_fields,
+    }
+
+
+def _get_resettable_provider_block(
+    provider_key: str,
+) -> tuple[Dict[str, Any], Dict[str, Any], str]:
+    """Resolve a configured provider instance to its canonical audio kind."""
+    instance_helpers = _provider_instances_module()
+    try:
+        instance_helpers["validate_provider_key"](provider_key)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    merged = _read_merged_config_dict()
+    providers = merged.get("providers")
+    if not isinstance(providers, dict):
+        raise HTTPException(status_code=404, detail="No providers are configured")
+    provider_cfg = providers.get(provider_key)
+    if not isinstance(provider_cfg, dict):
+        raise HTTPException(status_code=404, detail=f"Provider '{provider_key}' not found")
+
+    baseline_helpers = _audio_baseline_helpers()
+    known_kinds = baseline_helpers["provider_baselines"]
+    full_agent_kind = instance_helpers["provider_kind"](provider_key, provider_cfg)
+    candidates = [full_agent_kind, provider_key]
+
+    capabilities = provider_cfg.get("capabilities") or []
+    if isinstance(capabilities, str):
+        capabilities = [capabilities]
+    roles = [role for role in ("stt", "tts") if role in capabilities]
+    raw_type = str(provider_cfg.get("type") or "").strip()
+    if len(roles) == 1 and raw_type:
+        candidates.append(f"{raw_type}_{roles[0]}")
+
+    audio_kind = next(
+        (str(candidate) for candidate in candidates if candidate in known_kinds),
+        None,
+    )
+    if audio_kind is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Provider '{provider_key}' does not have a recognized audio "
+                "baseline"
+            ),
+        )
+    return merged, provider_cfg, audio_kind
+
+
+async def _persist_audio_reset(
+    merged: Dict[str, Any],
+    *,
+    trusted_profile_reset: Optional[tuple[str, Dict[str, Any]]] = None,
+) -> dict:
+    """Persist a reset without blocking the Admin UI event loop."""
+    content = yaml.dump(merged, default_flow_style=False, sort_keys=False)
+    result = await asyncio.to_thread(
+        persist_config_content,
+        content,
+        trusted_profile_reset=trusted_profile_reset,
+    )
+    return await reconcile_apply_result_with_engine_state(result)
+
+
+@router.post("/providers/{provider_key}/audio/reset")
+async def reset_provider_audio(provider_key: str):
+    """Restore a provider instance's managed audio fields to its baseline."""
+    merged, provider_cfg, audio_kind = _get_resettable_provider_block(provider_key)
+    helpers = _audio_baseline_helpers()
+    baseline = helpers["provider_baseline"](audio_kind)
+    if baseline is None:  # Defensive; resolver only returns registered kinds.
+        raise HTTPException(status_code=400, detail="Provider audio baseline not found")
+
+    updated_provider = deepcopy(provider_cfg)
+    reset_fields = helpers["provider_fields"](audio_kind)
+    for field in reset_fields:
+        updated_provider.pop(field, None)
+    updated_provider.update(baseline)
+    merged["providers"][provider_key] = updated_provider
+
+    result = await _persist_audio_reset(merged)
+    return {
+        **result,
+        "provider_key": provider_key,
+        "provider_kind": audio_kind,
+        "audio_baseline": baseline,
+    }
+
+
+@router.get("/profiles/audio/baselines")
+async def get_profile_audio_baselines():
+    """List profile names backed by canonical shipped audio baselines."""
+    helpers = _audio_baseline_helpers()
+    return {"built_in_profiles": sorted(helpers["profile_baselines"])}
+
+
+@router.post("/profiles/{profile_name}/audio/reset")
+async def reset_profile_audio(profile_name: str):
+    """Restore an existing profile to its built-in or telephony baseline."""
+    if profile_name == "default":
+        raise HTTPException(status_code=400, detail="profiles.default is a selector, not a profile")
+    merged = _read_merged_config_dict()
+    profiles = merged.get("profiles")
+    if not isinstance(profiles, dict) or not isinstance(profiles.get(profile_name), dict):
+        raise HTTPException(status_code=404, detail=f"Audio profile '{profile_name}' not found")
+
+    helpers = _audio_baseline_helpers()
+    built_in = profile_name in helpers.get("profile_baselines", {})
+    # The helper deliberately maps custom profiles to the standard 8 kHz
+    # telephony body while preserving the custom profile key.
+    baseline = helpers["profile_baseline"](profile_name)
+    profiles[profile_name] = baseline
+
+    result = await _persist_audio_reset(
+        merged,
+        trusted_profile_reset=(profile_name, baseline),
+    )
+    return {
+        **result,
+        "profile_name": profile_name,
+        "baseline_kind": "built_in" if built_in else "standard_telephony",
+        "audio_baseline": baseline,
+    }
+
+
+@router.post("/pipelines/{pipeline_name}/audio/reset")
+async def reset_pipeline_audio(pipeline_name: str):
+    """Remove pipeline audio overrides so profile policy is inherited."""
+    merged = _read_merged_config_dict()
+    pipelines = merged.get("pipelines")
+    if not isinstance(pipelines, dict) or pipeline_name not in pipelines:
+        raise HTTPException(status_code=404, detail=f"Pipeline '{pipeline_name}' not found")
+    pipeline = pipelines.get(pipeline_name)
+    removed: Dict[str, Dict[str, Any]] = {}
+    if isinstance(pipeline, dict):
+        helpers = _audio_baseline_helpers()
+        options = pipeline.get("options")
+        if isinstance(options, dict):
+            for role, fields in helpers["pipeline_fields"].items():
+                role_options = options.get(role)
+                if not isinstance(role_options, dict):
+                    continue
+                role_removed = {
+                    field: role_options.pop(field)
+                    for field in tuple(role_options)
+                    if field in fields
+                }
+                if role_removed:
+                    removed[role] = role_removed
+
+    if not removed:
+        # Legacy shorthand and dict pipelines without audio overrides already
+        # inherit profile audio policy, so do not rotate a backup or rewrite
+        # the local override file.
+        return {
+            "status": "success",
+            "apply_required": False,
+            "restart_required": False,
+            "recommended_apply_method": "none",
+            "apply_plan": [],
+            "message": "Pipeline already inherits profile audio policy.",
+            "warnings": [],
+            "pipeline_name": pipeline_name,
+            "removed_audio_overrides": {},
+        }
+
+    result = await _persist_audio_reset(merged)
+    return {
+        **result,
+        "pipeline_name": pipeline_name,
+        "removed_audio_overrides": removed,
+    }
+
+
+@router.get("")
+@router.get("/")
+async def get_config():
+    return _read_merged_config_dict()
+
+
 @router.post("/yaml")
 async def update_yaml_config(update: ConfigUpdate):
     try:
-        # Validate YAML + schema before saving.
-        validation = _validate_ai_agent_config(update.content)
-        warnings = validation.get("warnings") or []
-
-        # Snapshot current merged config for hot-reload comparison
-        old_merged = _read_merged_config_dict()
-
-        # Parse desired merged config content from UI.
-        new_parsed = _safe_load_no_duplicates(update.content) or {}
-        if not isinstance(new_parsed, dict):
-            raise HTTPException(status_code=400, detail="Config YAML must be a mapping at the top level")
-
-        # Convert desired merged config into a minimal local override (supports deletions).
-        base = _read_base_config_dict()
-        local_override = _compute_local_override(base, new_parsed)
-        local_content = yaml.dump(local_override or {}, default_flow_style=False, sort_keys=False)
-
-        # Write to LOCAL override file (keeps base ai-agent.yaml clean for git)
-        _write_local_config(local_content)
-        
-        # Determine recommended apply method based on what changed
-        # hot_reload: contexts, MCP servers, greetings/instructions only
-        # restart: most YAML changes (providers, pipelines, transport, VAD, etc.)
-        # recreate: .env changes (handled separately in /env endpoint)
-        recommended_method = "restart"  # Default for YAML changes
-        
-        # Check if change is limited to hot-reloadable sections
-        try:
-            if old_merged:
-                # Keys that can be hot-reloaded
-                hot_reload_keys = {'contexts', 'profiles', 'mcp'}
-                
-                # Check if only hot-reloadable keys changed
-                all_keys = set(old_merged.keys()) | set(new_parsed.keys())
-                changed_keys = set()
-                for key in all_keys:
-                    if old_merged.get(key) != new_parsed.get(key):
-                        changed_keys.add(key)
-                
-                if changed_keys and changed_keys.issubset(hot_reload_keys):
-                    recommended_method = "hot_reload"
-        except Exception:
-            pass  # Fall back to restart if comparison fails
-        
-        apply_plan = ([{"service": "ai_engine", "method": "hot_reload", "endpoint": "/api/system/containers/ai_engine/reload"}]
-                     if recommended_method == "hot_reload"
-                     else [{"service": "ai_engine", "method": "restart", "endpoint": "/api/system/containers/ai_engine/restart"}])
-
-        return {
-            "status": "success",
-            "restart_required": recommended_method != "hot_reload",
-            "recommended_apply_method": recommended_method,
-            "apply_plan": apply_plan,
-            "message": f"Configuration saved. {'Hot reload' if recommended_method == 'hot_reload' else 'Restart'} AI Engine to apply changes.",
-            "warnings": warnings,
-        }
+        # Persist via the shared helper (also used by the structured tools CRUD
+        # API). MED-E1 email validation now lives inside persist_config_content
+        # so every persistence path enforces it (not just this endpoint).
+        result = await asyncio.to_thread(persist_config_content, update.content)
+        return await reconcile_apply_result_with_engine_state(result)
     except HTTPException:
         raise
     except Exception as e:
@@ -1455,30 +2059,83 @@ async def test_provider_connection(request: ProviderTestRequest):
         return {"success": False, "message": f"Test failed: {str(e)}"}
 
 @router.get("/export")
-async def export_configuration():
+async def export_configuration(include_secrets: bool = False):
     """Export configuration as a ZIP file"""
     try:
         import zipfile
         import io
         from datetime import datetime
-        
+
         # Create ZIP in memory
         zip_buffer = io.BytesIO()
-        
+
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
             # Add YAML config (base + local override)
             if os.path.exists(settings.CONFIG_PATH):
                 zip_file.write(settings.CONFIG_PATH, 'ai-agent.yaml')
             if os.path.exists(settings.LOCAL_CONFIG_PATH):
                 zip_file.write(settings.LOCAL_CONFIG_PATH, 'ai-agent.local.yaml')
-            
-            # Add ENV file
-            if os.path.exists(settings.ENV_PATH):
+
+            # .env contains credentials — excluded by default; opt-in via include_secrets=true
+            env_actually_included = include_secrets and os.path.exists(settings.ENV_PATH)
+            if env_actually_included:
                 zip_file.write(settings.ENV_PATH, '.env')
-            
+
+            # agents.db snapshot (operator agents config) — via sqlite online backup.
+            # Failure is non-fatal: the YAML files are the primary export; the snapshot
+            # is a convenience. Any open/backup error logs a warning and the export
+            # continues without the snapshot.
+            import sqlite3
+            agents_db = os.environ.get("AGENTS_DB_PATH", "/app/data/operator/agents.db")
+            agents_db_included = False
+            if os.path.exists(agents_db):
+                try:
+                    tmp_name = None
+                    src = sqlite3.connect(f"file:{agents_db}?mode=ro", uri=True)
+                    try:
+                        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+                            tmp_name = tf.name
+                        disk = sqlite3.connect(tmp_name)
+                        try:
+                            src.backup(disk)
+                        finally:
+                            disk.close()
+                        zip_file.write(tmp_name, "operator/agents.db")
+                        agents_db_included = True
+                    finally:
+                        src.close()
+                        if tmp_name:
+                            try:
+                                os.unlink(tmp_name)
+                            except OSError:
+                                pass
+                except Exception as e:
+                    logger.warning("agents.db snapshot failed — excluded from export: %s", e)
+
+            # README explaining what is (and is not) included — three distinct cases:
+            # (1) secrets requested and .env present  (2) requested but no .env on disk
+            # (3) not requested (default).
+            if env_actually_included:
+                env_line = "Included: ai-agent.yaml, ai-agent.local.yaml, .env (REQUESTED — CONTAINS API KEYS/SECRETS)\n"
+            elif include_secrets:
+                env_line = ("Included: ai-agent.yaml, ai-agent.local.yaml\n"
+                            "Note: .env was requested (include_secrets=true) but no .env file was found on disk.\n")
+            else:
+                env_line = ("Included: ai-agent.yaml, ai-agent.local.yaml\n"
+                            "Excluded by default: .env (pass include_secrets=true to include — the file contains credentials)\n")
+            readme = (
+                "AVA configuration export\n"
+                f"Created: {datetime.utcnow().isoformat()}Z\n\n"
+                + env_line
+                + ("operator/agents.db contains your agent configurations including prompts.\n" if agents_db_included else "")
+            )
+            zip_file.writestr("EXPORT_README.txt", readme)
+
             # Add timestamp file
             timestamp = datetime.now().isoformat()
-            zip_file.writestr('backup_info.txt', f'Backup created: {timestamp}\n')
+            zip_file.writestr('backup_info.txt',
+                              f'Backup created: {timestamp}\n'
+                              'operator/agents.db contains your agent configurations including prompts.\n')
         
         zip_buffer.seek(0)
         
@@ -1796,6 +2453,16 @@ def update_yaml_provider_field(provider_name: str, field: str, value: Any) -> bo
     and writes the result to the LOCAL override file so the git-tracked
     base stays clean.
     """
+    with _CONFIG_UPDATE_LOCK:
+        return _update_yaml_provider_field_locked(provider_name, field, value)
+
+
+def _update_yaml_provider_field_locked(
+    provider_name: str,
+    field: str,
+    value: Any,
+) -> bool:
+    """Update one provider field while the shared config lock is held."""
     try:
         base_config = _read_base_config_dict()
         merged_config = _read_merged_config_dict()
@@ -1841,14 +2508,22 @@ def update_yaml_provider_field(provider_name: str, field: str, value: Any) -> bo
 async def get_provider_options(provider_type: str):
     """Get available options (models, voices) for a specific provider."""
     
-    # Common catalogs
+    # Common catalogs.
+    # Aligned with the DeepgramProviderForm.tsx STT-model dropdown and the
+    # docs/Provider-Deepgram-Setup.md model table. v6.5.0+ ships nova-3 as the
+    # default (preserves pre-fix runtime hardcoded behavior) and exposes Flux
+    # for conversational voice-agent workloads. Flux models are flagged so
+    # frontend consumers can render the EOT VAD note where appropriate.
     DEEPGRAM_MODELS = [
+        {"id": "flux-general-en", "name": "Flux General — English (recommended for voice agents)", "cost": "Low", "latency": "Ultra Low", "flux": True},
+        {"id": "flux-general-multi", "name": "Flux General — Multilingual", "cost": "Low", "latency": "Ultra Low", "flux": True},
+        {"id": "nova-3", "name": "Nova 3 (General, default)", "cost": "Low", "latency": "Ultra Low"},
+        {"id": "nova-3-medical", "name": "Nova 3 (Medical)", "cost": "Low", "latency": "Ultra Low"},
         {"id": "nova-2", "name": "Nova 2 (General)", "cost": "Low", "latency": "Ultra Low"},
         {"id": "nova-2-phonecall", "name": "Nova 2 (Phonecall)", "cost": "Low", "latency": "Ultra Low"},
         {"id": "nova-2-medical", "name": "Nova 2 (Medical)", "cost": "Low", "latency": "Ultra Low"},
         {"id": "nova-2-meeting", "name": "Nova 2 (Meeting)", "cost": "Low", "latency": "Ultra Low"},
         {"id": "nova-2-general", "name": "Nova 2 (General Legacy)", "cost": "Low", "latency": "Ultra Low"},
-        {"id": "listen", "name": "General (Listen)", "cost": "Medium", "latency": "Low"},
     ]
     
     OPENAI_LLM_MODELS = [
@@ -1914,6 +2589,532 @@ async def get_provider_options(provider_type: str):
 
 # Store in project secrets dir - Admin UI has write access, ai_engine mounts it
 VERTEX_CREDENTIALS_PATH = "/app/project/secrets/gcp-service-account.json"
+PROVIDER_SECRETS_ROOT = "/app/project/secrets/providers"
+
+
+def _provider_instances_module():
+    project_root = getattr(settings, "PROJECT_ROOT", None)
+    if project_root and project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from src.config.provider_instances import (
+        API_KEY_COMPATIBLE_KINDS,
+        CREDENTIAL_NAME_TO_FIELD,
+        FULL_AGENT_KINDS,
+        ProviderInstanceError,
+        provider_kind,
+        resolve_secret_value,
+        safe_secret_path,
+        validate_provider_key,
+        write_secret_file_bytes,
+    )
+    return {
+        "api_key_kinds": API_KEY_COMPATIBLE_KINDS,
+        "credential_fields": CREDENTIAL_NAME_TO_FIELD,
+        "full_agent_kinds": FULL_AGENT_KINDS,
+        "ProviderInstanceError": ProviderInstanceError,
+        "provider_kind": provider_kind,
+        "resolve_secret_value": resolve_secret_value,
+        "safe_secret_path": safe_secret_path,
+        "validate_provider_key": validate_provider_key,
+        "write_secret_file_bytes": write_secret_file_bytes,
+    }
+
+
+def _get_provider_block(provider_key: str) -> tuple[Dict[str, Any], Dict[str, Any], str]:
+    helpers = _provider_instances_module()
+    try:
+        helpers["validate_provider_key"](provider_key)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    merged = _read_merged_config_dict()
+    providers = merged.get("providers") if isinstance(merged.get("providers"), dict) else {}
+    provider_cfg = providers.get(provider_key)
+    if not isinstance(provider_cfg, dict):
+        raise HTTPException(status_code=404, detail=f"Provider '{provider_key}' not found")
+    kind = helpers["provider_kind"](provider_key, provider_cfg)
+    if kind not in helpers["full_agent_kinds"]:
+        raise HTTPException(status_code=400, detail=f"Provider '{provider_key}' is not a full-agent provider")
+    return merged, provider_cfg, kind
+
+
+def _provider_secret_path(provider_key: str, credential_name: str) -> str:
+    """Build a secrets-root-bounded path for a per-provider credential file.
+
+    Delegates to :func:`src.config.provider_instances.safe_secret_path`
+    which (a) re-validates ``provider_key`` against the strict allowlist
+    and (b) re-checks that the realpath stays inside
+    :data:`PROVIDER_SECRETS_ROOT`. CodeQL flags string interpolation of
+    request data into file paths, even when the input has already been
+    sanitized — routing every call through the central helper makes the
+    validation local to every filesystem operation and removes the
+    finding.
+    """
+    filename_map = {
+        "api-key": "api-key",
+        "agent-id": "agent-id",
+        "vertex-json": "vertex-service-account.json",
+    }
+    if credential_name not in filename_map:
+        raise HTTPException(status_code=400, detail="credential_name must be one of: api-key, agent-id, vertex-json")
+    helpers = _provider_instances_module()
+    try:
+        return helpers["safe_secret_path"](
+            provider_key,
+            filename_map[credential_name],
+            root=PROVIDER_SECRETS_ROOT,
+        )
+    except helpers["ProviderInstanceError"] as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _credential_allowed_for_kind(kind: str, credential_name: str) -> bool:
+    helpers = _provider_instances_module()
+    if credential_name == "api-key":
+        return kind in helpers["api_key_kinds"]
+    if credential_name == "agent-id":
+        return kind == "elevenlabs_agent"
+    if credential_name == "vertex-json":
+        return kind == "google_live"
+    return False
+
+
+def _write_provider_secret(provider_key: str, credential_name: str, content: bytes) -> None:
+    """Atomically write a per-instance provider credential to disk.
+
+    Sinks take ``(provider_key, credential_name)`` rather than a path
+    string so the only request-derived value entering the filesystem
+    operation is the strictly-validated provider key (regex
+    ``[A-Za-z0-9_.-]{1,64}``). The path is constructed locally from
+    that validated key plus a constant filename lookup, eliminating
+    the cross-function taint flow that CodeQL's CWE-022 query could
+    not see through (PR #396 — replaces alerts 1704–1726 with a
+    refactor instead of mid-flow sanitizers).
+
+    Storing credentials in chmod-600 files under
+    :data:`PROVIDER_SECRETS_ROOT` is the intentional design (see
+    :doc:`docs/Multi-Instance-Full-Agent-Providers`): runtime providers
+    need to read them to make API calls, and the env-vars-only
+    alternative does not scale to multi-tenant deployments.
+
+    Atomic write via per-writer unique ``.tmp`` sibling + ``os.replace``.
+    The temp file is created with mode 0o600, so it is owner-only readable
+    before content is written and before the rename.
+    """
+    import uuid
+
+    helpers = _provider_instances_module()
+    try:
+        target_str = helpers["safe_secret_path"](
+            provider_key,
+            _credential_filename(credential_name),
+            root=PROVIDER_SECRETS_ROOT,
+        )
+    except helpers["ProviderInstanceError"] as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    target = Path(target_str)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Per-writer unique temp filename so two concurrent uploads /
+    # migrations to the same credential can't clobber each other's
+    # ``.tmp`` mid-write or race on ``os.replace`` (CodeRabbit on
+    # PR #396).
+    temp_path = target.with_name(
+        f"{target.name}.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+    )
+    try:
+        # nosec B306: writing the credential to a chmod-600 file under
+        # the secrets root is the intended storage layer for
+        # per-instance API keys; see docstring above.
+        helpers["write_secret_file_bytes"](str(temp_path), content)
+        os.replace(temp_path, target)
+    finally:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass
+
+
+_CREDENTIAL_FILENAME_MAP = {
+    "api-key": "api-key",
+    "agent-id": "agent-id",
+    "vertex-json": "vertex-service-account.json",
+}
+
+
+def _credential_filename(credential_name: str) -> str:
+    """Resolve credential_name → on-disk filename via the static map.
+
+    Raises HTTPException 400 if the credential_name is not one of the
+    three allowlist values. The output is a constant string from the
+    map — never request-derived — so any path constructed downstream
+    has only validated provider_key + constant filename inputs.
+    """
+    fname = _CREDENTIAL_FILENAME_MAP.get(credential_name)
+    if fname is None:
+        raise HTTPException(
+            status_code=400,
+            detail="credential_name must be one of: api-key, agent-id, vertex-json",
+        )
+    return fname
+
+
+def _save_merged_config(merged_config: Dict[str, Any]) -> None:
+    base_config = _read_base_config_dict()
+    merged_content = yaml.dump(merged_config, default_flow_style=False, sort_keys=False)
+    _validate_ai_agent_config(merged_content)
+    local_override = _compute_local_override(base_config, merged_config)
+    content = yaml.dump(local_override or {}, default_flow_style=False, sort_keys=False)
+    _write_local_config(content)
+
+
+def _update_provider_credentials_field(provider_key: str, field: str, value: Optional[str]) -> None:
+    merged, provider_cfg, _kind = _get_provider_block(provider_key)
+    providers = merged.get("providers")
+    if not isinstance(providers, dict):
+        providers = {}
+    if value:
+        provider_cfg[field] = value
+    else:
+        provider_cfg.pop(field, None)
+    providers[provider_key] = provider_cfg
+    merged["providers"] = providers
+    _save_merged_config(merged)
+
+
+def _migrate_inline_provider_secrets(config_data: Dict[str, Any]) -> bool:
+    """Move inline Admin UI secrets into provider-scoped secret files."""
+    helpers = _provider_instances_module()
+    providers = config_data.get("providers") if isinstance(config_data.get("providers"), dict) else {}
+    changed = False
+    for provider_key, provider_cfg in providers.items():
+        if not isinstance(provider_cfg, dict):
+            continue
+        kind = helpers["provider_kind"](provider_key, provider_cfg)
+        for inline_field, credential_name, file_field in (
+            ("api_key", "api-key", "api_key_file"),
+            ("agent_id", "agent-id", "agent_id_file"),
+        ):
+            value = provider_cfg.get(inline_field)
+            if not isinstance(value, str) or not value.strip() or value.strip().startswith("${"):
+                continue
+            if not _credential_allowed_for_kind(kind, credential_name):
+                continue
+            path = _provider_secret_path(str(provider_key), credential_name)
+            _write_provider_secret(str(provider_key), credential_name, value.strip().encode("utf-8"))
+            provider_cfg[file_field] = path
+            provider_cfg.pop(inline_field, None)
+            changed = True
+    return changed
+
+
+def _credential_metadata(provider_key: str, credential_name: str) -> Dict[str, Any]:
+    """Stat + optional JSON-parse a per-instance credential file.
+
+    Takes ``(provider_key, credential_name)`` so the path is constructed
+    locally from the validated key + constant filename map — same
+    no-taint-flow shape as ``_write_provider_secret`` (CodeQL CWE-022
+    elimination via refactor, not mid-flow sanitizer).
+    """
+    helpers = _provider_instances_module()
+    try:
+        target_str = helpers["safe_secret_path"](
+            provider_key,
+            _credential_filename(credential_name),
+            root=PROVIDER_SECRETS_ROOT,
+        )
+    except helpers["ProviderInstanceError"] as exc:
+        return {"uploaded": False, "error": str(exc)}
+
+    target = Path(target_str)
+    if not target.exists():
+        return {"uploaded": False, "path": str(target)}
+    stat = target.stat()
+    meta: Dict[str, Any] = {
+        "uploaded": True,
+        "path": str(target),
+        "uploaded_at": stat.st_mtime,
+    }
+    if credential_name == "vertex-json":
+        try:
+            import json
+
+            with open(target, "r") as f:
+                creds = json.load(f)
+            meta.update(
+                {
+                    "project_id": creds.get("project_id"),
+                    "client_email": creds.get("client_email"),
+                }
+            )
+        except Exception:
+            meta["error"] = "Failed to read credentials metadata"
+    return meta
+
+
+@router.get("/providers/{provider_key}/credentials")
+async def get_provider_credentials_status(provider_key: str):
+    merged, provider_cfg, kind = _get_provider_block(provider_key)
+    helpers = _provider_instances_module()
+    fields = helpers["credential_fields"]
+    credentials: Dict[str, Any] = {}
+    for credential_name, field in fields.items():
+        if not _credential_allowed_for_kind(kind, credential_name):
+            continue
+        credentials[credential_name] = _credential_metadata(provider_key, credential_name)
+        credentials[credential_name]["configured"] = bool(provider_cfg.get(field))
+    return {
+        "provider_key": provider_key,
+        "type": kind,
+        "credentials": credentials,
+    }
+
+
+@router.post("/providers/{provider_key}/credentials/api-key")
+async def upload_provider_api_key(provider_key: str, payload: Dict[str, Any]):
+    _merged, _provider_cfg, kind = _get_provider_block(provider_key)
+    if not _credential_allowed_for_kind(kind, "api-key"):
+        raise HTTPException(status_code=400, detail=f"api-key is not valid for provider type '{kind}'")
+    api_key = str(payload.get("api_key") or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="api_key is required")
+    path = _provider_secret_path(provider_key, "api-key")
+    await asyncio.to_thread(
+        _write_provider_secret,
+        provider_key,
+        "api-key",
+        api_key.encode("utf-8"),
+    )
+    await asyncio.to_thread(
+        _update_provider_credentials_field,
+        provider_key,
+        "api_key_file",
+        path,
+    )
+    return {"status": "success", "restart_pending": True, "path": path}
+
+
+@router.post("/providers/{provider_key}/credentials/agent-id")
+async def upload_provider_agent_id(provider_key: str, payload: Dict[str, Any]):
+    _merged, _provider_cfg, kind = _get_provider_block(provider_key)
+    if not _credential_allowed_for_kind(kind, "agent-id"):
+        raise HTTPException(status_code=400, detail=f"agent-id is not valid for provider type '{kind}'")
+    agent_id = str(payload.get("agent_id") or "").strip()
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="agent_id is required")
+    path = _provider_secret_path(provider_key, "agent-id")
+    await asyncio.to_thread(
+        _write_provider_secret,
+        provider_key,
+        "agent-id",
+        agent_id.encode("utf-8"),
+    )
+    await asyncio.to_thread(
+        _update_provider_credentials_field,
+        provider_key,
+        "agent_id_file",
+        path,
+    )
+    return {"status": "success", "restart_pending": True, "path": path}
+
+
+@router.post("/providers/{provider_key}/credentials/vertex-json")
+async def upload_provider_vertex_json(provider_key: str, file: UploadFile = File(...)):
+    import json
+
+    _merged, _provider_cfg, kind = _get_provider_block(provider_key)
+    if not _credential_allowed_for_kind(kind, "vertex-json"):
+        raise HTTPException(status_code=400, detail=f"vertex-json is not valid for provider type '{kind}'")
+    if not file.filename or not file.filename.endswith(".json"):
+        raise HTTPException(status_code=400, detail="File must be a JSON file")
+    try:
+        content = await file.read()
+        creds = json.loads(content)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON file")
+    required_fields = ["type", "project_id", "private_key", "client_email"]
+    missing = [field for field in required_fields if field not in creds]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Invalid service account JSON. Missing fields: {', '.join(missing)}")
+    if creds.get("type") != "service_account":
+        raise HTTPException(status_code=400, detail="JSON file must be a service account key (type: service_account)")
+    path = _provider_secret_path(provider_key, "vertex-json")
+    await asyncio.to_thread(
+        _write_provider_secret,
+        provider_key,
+        "vertex-json",
+        content,
+    )
+    await asyncio.to_thread(
+        _update_provider_credentials_field,
+        provider_key,
+        "credentials_path",
+        path,
+    )
+    return {
+        "status": "success",
+        "restart_pending": True,
+        "path": path,
+        "project_id": creds.get("project_id"),
+        "client_email": creds.get("client_email"),
+    }
+
+
+@router.delete("/providers/{provider_key}/credentials/{credential_name}")
+async def delete_provider_credential(provider_key: str, credential_name: str):
+    helpers = _provider_instances_module()
+    fields = helpers["credential_fields"]
+    if credential_name not in fields:
+        raise HTTPException(status_code=400, detail="credential_name must be one of: api-key, agent-id, vertex-json")
+    merged, provider_cfg, kind = _get_provider_block(provider_key)
+    if not _credential_allowed_for_kind(kind, credential_name):
+        raise HTTPException(status_code=400, detail=f"{credential_name} is not valid for provider type '{kind}'")
+    field = fields[credential_name]
+    path = str(provider_cfg.get(field) or _provider_secret_path(provider_key, credential_name))
+    providers = merged.get("providers") if isinstance(merged.get("providers"), dict) else {}
+    references = [
+        name
+        for name, cfg in providers.items()
+        if isinstance(cfg, dict) and str(cfg.get(field) or "") == path
+    ]
+    if references and references != [provider_key]:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "Credential file is referenced by other providers", "references": references},
+        )
+    provider_cfg.pop(field, None)
+    providers[provider_key] = provider_cfg
+    merged["providers"] = providers
+    await asyncio.to_thread(_save_merged_config, merged)
+    # Compute the on-disk path locally from (provider_key,
+    # credential_name) so the unlink target is constructed from
+    # validated inputs only — same no-taint shape as
+    # _write_provider_secret / _credential_metadata.
+    try:
+        canonical_str = helpers["safe_secret_path"](
+            provider_key,
+            _credential_filename(credential_name),
+            root=PROVIDER_SECRETS_ROOT,
+        )
+    except helpers["ProviderInstanceError"]:
+        # Defensive: provider_key just passed validation above, so this
+        # shouldn't happen in practice. If it does, the YAML field has
+        # already been popped and we just don't unlink.
+        return {"status": "success", "restart_pending": True}
+    canonical = Path(canonical_str)
+    if canonical.exists():
+        await asyncio.to_thread(canonical.unlink)
+    return {"status": "success", "restart_pending": True}
+
+
+@router.post("/providers/{provider_key}/credentials/verify")
+async def verify_provider_credentials(provider_key: str):
+    import httpx
+
+    _merged, provider_cfg, kind = _get_provider_block(provider_key)
+    helpers = _provider_instances_module()
+    api_key = helpers["resolve_secret_value"](
+        provider_cfg,
+        file_field="api_key_file",
+        env_field="api_key_env",
+        inline_field="api_key",
+        legacy_env_names=(
+            ("OPENAI_API_KEY",)
+            if kind == "openai_realtime"
+            else ("DEEPGRAM_API_KEY",)
+            if kind == "deepgram"
+            else ("GOOGLE_API_KEY",)
+            if kind == "google_live"
+            else ("ELEVENLABS_API_KEY",)
+            if kind == "elevenlabs_agent"
+            else ("XAI_API_KEY",)
+            if kind == "grok"
+            else ()
+        ),
+    )
+    try:
+        if kind == "google_live" and provider_cfg.get("credentials_path"):
+            from google.oauth2 import service_account
+            from google.auth.transport.requests import Request
+
+            def _refresh_credentials():
+                creds = service_account.Credentials.from_service_account_file(
+                    provider_cfg["credentials_path"],
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                )
+                creds.refresh(Request())
+                return creds
+
+            credentials = await asyncio.to_thread(_refresh_credentials)
+            return {
+                "status": "success",
+                "message": "Vertex credentials verified successfully",
+                "token_expiry": credentials.expiry.isoformat() if credentials.expiry else None,
+            }
+        if kind == "openai_realtime":
+            if not api_key:
+                raise HTTPException(status_code=400, detail="OpenAI API key is not configured")
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get("https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {api_key}"})
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=400, detail="OpenAI API key verification failed")
+            return {"status": "success", "message": "OpenAI API key verified"}
+        if kind == "deepgram":
+            if not api_key:
+                raise HTTPException(status_code=400, detail="Deepgram API key is not configured")
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get("https://api.deepgram.com/v1/projects", headers={"Authorization": f"Token {api_key}"})
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=400, detail="Deepgram API key verification failed")
+            return {"status": "success", "message": "Deepgram API key verified"}
+        if kind == "google_live":
+            if not api_key:
+                raise HTTPException(status_code=400, detail="Google API key or Vertex credentials are not configured")
+            # Pass the API key via httpx `params=` rather than f-string
+            # interpolation. The hostname is hardcoded, so this isn't an
+            # SSRF risk in practice, but the f-string trips CodeQL's
+            # partial-SSRF rule (alert ID 1715) because the interpolated
+            # value crosses the URL boundary; httpx handles encoding
+            # cleanly and the request stays on the intended host.
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    params={"key": api_key},
+                )
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=400, detail="Google API key verification failed")
+            return {"status": "success", "message": "Google Developer API key verified"}
+        if kind == "elevenlabs_agent":
+            agent_id = helpers["resolve_secret_value"](
+                provider_cfg,
+                file_field="agent_id_file",
+                env_field="agent_id_env",
+                inline_field="agent_id",
+                legacy_env_names=("ELEVENLABS_AGENT_ID",),
+            )
+            if not api_key or not agent_id:
+                raise HTTPException(status_code=400, detail="ElevenLabs API key and agent_id are required")
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get("https://api.elevenlabs.io/v1/voices", headers={"xi-api-key": api_key})
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=400, detail="ElevenLabs API key verification failed")
+            return {"status": "success", "message": "ElevenLabs credentials verified"}
+        if kind == "grok":
+            if not api_key:
+                raise HTTPException(status_code=400, detail="xAI API key is not configured")
+            # xAI exposes an OpenAI-compatible /v1/models endpoint for credential check.
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get("https://api.x.ai/v1/models", headers={"Authorization": f"Bearer {api_key}"})
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=400, detail="xAI API key verification failed")
+            return {"status": "success", "message": "xAI API key verified"}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Error verifying provider credentials: {exc}")
+        raise HTTPException(status_code=400, detail=f"Verification failed: {exc}")
+    raise HTTPException(status_code=400, detail=f"Unsupported provider type '{kind}'")
 VERTEX_REGIONS = [
     {"value": "us-central1", "label": "US Central (Iowa)"},
     {"value": "us-east1", "label": "US East (South Carolina)"},
@@ -2113,3 +3314,1526 @@ async def verify_vertex_credentials():
     except Exception as e:
         logger.error(f"Error verifying Vertex AI credentials: {e}")
         raise HTTPException(status_code=400, detail="Verification failed - check credentials are valid")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Google Calendar — Per-Key Info & Verify
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# These endpoints support the Tools page Google Calendar section. They cover:
+#   - Surfacing the service account identity (client_email + client_id) for
+#     each calendar entry, so operators don't have to grep the JSON file to
+#     know what email to share their calendar with, and so DWD setup can use
+#     the correct client_id (NOT the email — admin.google.com expects the
+#     OAuth client ID).
+#   - Verifying that the configured credentials can actually read the
+#     configured calendar — distinguishing "bad credentials" from "calendar
+#     not shared" from "wrong calendar id" with separate error codes.
+#
+# Verify uses the raw googleapiclient (not the GCalendar wrapper, which
+# swallows API exceptions as [] / None / False — unusable for diagnostics).
+# Per Codex feedback: error codes must surface 401 / 403 / 404 distinctly.
+#
+# Verify accepts an optional POST body so the UI can test unsaved form state
+# without forcing a save first. Body fields override persisted config.
+
+# Calendar keys are user-chosen identifiers (e.g. "work", "calendar_1").
+# They appear in URL paths for these endpoints, so we constrain them tightly
+# to prevent path-traversal-shaped values from being smuggled through.
+# The same regex is used by the gcal tool's calendar resolver — keys outside
+# this set are not addressable in YAML either.
+_CALENDAR_KEY_PATTERN = re.compile(r"^[a-z0-9_-]{1,64}$", re.IGNORECASE)
+
+
+def _validate_calendar_key_or_400(key: str) -> str:
+    """Validate a calendar key from a URL path. Raise 400 on bad input.
+
+    Allowed: alphanumeric, underscore, hyphen, 1-64 chars. Rejects path
+    components, slashes, dots, control chars, oversized values, unicode etc.
+    """
+    if not isinstance(key, str) or not _CALENDAR_KEY_PATTERN.fullmatch(key or ""):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "invalid_calendar_key",
+                "message": "Calendar key must be 1-64 chars of [a-z0-9_-] only.",
+            },
+        )
+    return key
+
+
+def _read_google_calendar_entry(key: str) -> dict:
+    """Look up the persisted config for one calendar key. Returns {} if absent."""
+    try:
+        merged = _read_merged_config_dict()
+    except Exception:
+        return {}
+    gcal = (merged.get("tools") or {}).get("google_calendar") or {}
+    cals = gcal.get("calendars") or {}
+    if not isinstance(cals, dict):
+        return {}
+    entry = cals.get(key)
+    return entry if isinstance(entry, dict) else {}
+
+
+_ALLOWED_CREDENTIALS_DIRS = (
+    "/app/project/secrets/providers",
+    "/app/project/secrets",
+    "/app/secrets",
+    "/secrets",
+)
+
+
+def _assert_creds_path_in_allowed_dir(norm_path: str, original: str) -> None:
+    """Reject any path that doesn't resolve under one of our known secrets
+    directories. Defense-in-depth even when ``creds_path`` came from
+    persisted config (the UI writes new uploads into GOOGLE_CALENDAR_SECRETS_DIR
+    but legacy YAML may point elsewhere — we still constrain to a fixed set
+    of mount roots so user-controlled values can never escape into reading
+    arbitrary host files via this endpoint). Closes CodeQL warnings re
+    ``Uncontrolled data used in path expression``.
+    """
+    real_dirs = [os.path.realpath(d) for d in _ALLOWED_CREDENTIALS_DIRS]
+    for safe in real_dirs:
+        try:
+            common = os.path.commonpath([norm_path, safe])
+        except ValueError:
+            continue
+        if common == safe:
+            return
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "error_code": "credentials_path_outside_allowed_dirs",
+            "message": (
+                f"credentials_path '{original}' resolves outside the allowed "
+                f"secrets directories ({', '.join(_ALLOWED_CREDENTIALS_DIRS)}). "
+                "Move the file under one of those mounts and update the path."
+            ),
+        },
+    )
+
+
+def _load_sa_metadata(creds_path: str) -> dict:
+    """Read the SA JSON at ``creds_path`` and return its identity metadata.
+
+    Raises HTTPException with structured detail on any failure: file missing,
+    not JSON, not a service-account file, unreadable, etc.
+    """
+    import json
+
+    if not creds_path:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "missing_credentials_path",
+                "message": "No credentials_path configured for this calendar key.",
+            },
+        )
+
+    # Canonicalize and resolve; refuse traversal-shaped paths.
+    try:
+        norm_path = os.path.realpath(creds_path)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "invalid_credentials_path",
+                "message": "credentials_path could not be resolved.",
+            },
+        ) from e
+
+    # Constrain user-supplied creds_path to a known set of mount roots
+    # via Path.relative_to() — the CodeQL-recognized sanitizer pattern.
+    # Without this, an operator (or a UI bug) could submit a path like
+    # "/etc/passwd" and trigger a file read against an arbitrary host
+    # file. After this guard, `safe_path` is provably-rooted under one
+    # of the allow-listed dirs and CAN be used in subsequent file ops.
+    #
+    # Past attempts using commonpath() in a list-loop weren't recognized
+    # by CodeQL's py/path-injection analyzer; the relative_to() pattern
+    # below is the canonical sanitizer per CodeQL's published
+    # documentation.
+    from pathlib import Path
+    _candidate_path = Path(norm_path)
+    safe_path: Path | None = None
+    for _allowed in _ALLOWED_CREDENTIALS_DIRS:
+        _allowed_real = Path(_allowed).resolve()
+        try:
+            _candidate_path.relative_to(_allowed_real)
+        except ValueError:
+            continue
+        # `relative_to` succeeded → _candidate_path is provably under
+        # _allowed_real. Construct the sanitized path by re-rooting at
+        # the safe prefix to make the constraint visible to data-flow
+        # analysis rather than relying on the unmodified user input.
+        safe_path = _allowed_real / _candidate_path.relative_to(_allowed_real)
+        break
+    if safe_path is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "credentials_path_outside_allowed_dirs",
+                "message": (
+                    f"credentials_path '{creds_path}' resolves outside the allowed "
+                    f"secrets directories ({', '.join(_ALLOWED_CREDENTIALS_DIRS)}). "
+                    "Move the file under one of those mounts and update the path."
+                ),
+            },
+        )
+
+    if not safe_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "credentials_file_not_found",
+                "message": f"No file at credentials_path '{creds_path}'.",
+            },
+        )
+
+    if not safe_path.is_file():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "credentials_path_not_a_file",
+                "message": f"credentials_path '{creds_path}' is not a regular file.",
+            },
+        )
+
+    try:
+        with safe_path.open("r") as f:
+            raw = f.read()
+    except OSError as e:
+        # Most common case here is a permissions error (e.g. file owned by
+        # root with mode 600 and admin_ui running as appuser). Surface it
+        # explicitly so the operator knows to chmod 640 + chgrp appuser.
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "credentials_file_unreadable",
+                "message": (
+                    f"Cannot read credentials file: {e}. "
+                    "This is usually a permissions issue — the admin_ui "
+                    "process needs read access (try chmod 640 + group "
+                    "ownership 'appuser')."
+                ),
+            },
+        ) from e
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "credentials_not_json",
+                "message": "credentials_path file does not contain valid JSON.",
+            },
+        ) from e
+
+    if not isinstance(data, dict) or data.get("type") != "service_account":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "credentials_not_service_account",
+                "message": "credentials_path does not point to a Google service-account JSON file.",
+            },
+        )
+
+    required = ("client_email", "private_key", "private_key_id")
+    if not all(data.get(k) for k in required):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "credentials_missing_fields",
+                "message": f"Service account JSON missing required fields: {required}.",
+            },
+        )
+
+    return {
+        "client_email": data.get("client_email", ""),
+        "client_id": data.get("client_id", ""),
+        "project_id": data.get("project_id", ""),
+        "private_key_id": data.get("private_key_id", ""),
+    }
+
+
+@router.get("/google-calendar/{key}/info")
+async def get_google_calendar_info(key: str, credentials_path: Optional[str] = None):
+    """Return SA identity metadata for a configured calendar entry.
+
+    The operator needs `client_email` to share their calendar with the SA,
+    and `client_id` for Domain-Wide Delegation setup. Both are surfaced so
+    the operator never has to crack open the JSON file by hand.
+
+    Accepts an optional ``credentials_path`` query parameter so the UI can
+    load identity for unsaved form state (e.g. a manual path edit before
+    Save). Without this, the UI would load stale identity from the
+    persisted YAML for any path that's been typed but not saved. Symmetric
+    with /verify's POST-body override. Codex feedback #4.
+    """
+    _validate_calendar_key_or_400(key)
+    entry = _read_google_calendar_entry(key)
+    # Override-then-fallback: if the caller passed credentials_path explicitly,
+    # use that; otherwise fall back to the persisted entry's path.
+    effective_path = (credentials_path or "").strip() or (entry.get("credentials_path") or "").strip()
+    metadata = _load_sa_metadata(effective_path)
+    return {
+        "key": key,
+        "calendar_id": entry.get("calendar_id", ""),
+        "configured_timezone": entry.get("timezone", ""),
+        **metadata,
+    }
+
+
+class _GoogleCalendarVerifyRequest(BaseModel):
+    """Optional overrides so the UI can verify unsaved form state.
+
+    All fields are optional; missing fields fall back to the persisted
+    configuration for the calendar key. This means the operator can edit
+    the form and click Verify without saving first — Codex feedback #1.
+    """
+    credentials_path: Optional[str] = None
+    calendar_id: Optional[str] = None
+    timezone: Optional[str] = None
+    subject: Optional[str] = None  # For Domain-Wide Delegation (Phase 1)
+
+
+def _verify_calendar_access_sync(
+    creds_path: str,
+    calendar_id: str,
+    configured_timezone: str,
+    subject: Optional[str],
+) -> dict:
+    """Blocking work: build SA creds, optionally impersonate, hit Calendar API.
+
+    Run via asyncio.to_thread. Raises HTTPException with structured detail on
+    any failure (so the FastAPI handler doesn't have to translate exceptions).
+
+    Per Codex feedback #5: when ``subject`` is set, refresh the token and call
+    ``calendars.get()`` as the impersonated user. Building the credential with
+    ``with_subject()`` alone can succeed even when DWD scopes/admin consent
+    haven't been configured — the failure only surfaces on the first API call.
+    """
+    import json
+
+    try:
+        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
+        from googleapiclient.errors import HttpError
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "google_libs_not_installed",
+                "message": "google-auth + googleapiclient are required for verify.",
+            },
+        )
+
+    # Constrain creds_path to the allow-listed secrets dirs before opening
+    # the file. The verify endpoint accepts creds_path from the request body
+    # (so operators can verify unsaved UI edits), so without this check it
+    # could be used to read arbitrary host files. Same guard applied in
+    # _load_sa_metadata and _discover_accessible_calendars; this closes the
+    # gap CodeRabbit flagged on this endpoint specifically.
+    try:
+        norm_creds_path = os.path.realpath(creds_path)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "invalid_credentials_path",
+                "message": f"credentials_path could not be resolved: {e}",
+            },
+        ) from e
+    _assert_creds_path_in_allowed_dir(norm_creds_path, creds_path)
+
+    # Build SA creds. Failures here are credential-shape problems, not
+    # API-side problems — distinguish them.
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            norm_creds_path,
+            scopes=["https://www.googleapis.com/auth/calendar"],
+        )
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "invalid_credentials",
+                "message": f"Could not load service-account credentials: {e}",
+            },
+        ) from e
+
+    if subject:
+        creds = creds.with_subject(subject)
+
+    # Force a token refresh — surfaces DWD misconfiguration BEFORE we hit the
+    # Calendar API. With DWD, with_subject() succeeds at construction but the
+    # token mint can fail (admin consent not granted, scopes wrong, etc.).
+    try:
+        creds.refresh(Request())
+    except Exception as e:
+        # Heuristic: "unauthorized_client" is the canonical DWD-not-configured
+        # response from Google's token endpoint.
+        msg = str(e).lower()
+        if subject and ("unauthorized_client" in msg or "invalid_grant" in msg):
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error_code": "dwd_not_configured",
+                    "message": (
+                        f"Domain-Wide Delegation is not configured for "
+                        f"subject '{subject}'. Add the service account's "
+                        f"client_id (NOT email) at admin.google.com → "
+                        f"Security → Access and data control → API controls "
+                        f"→ Domain-wide delegation, with scope "
+                        f"'https://www.googleapis.com/auth/calendar'. "
+                        f"Underlying error: {e}"
+                    ),
+                },
+            )
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error_code": "auth_failed",
+                "message": f"Could not obtain access token: {e}",
+            },
+        )
+
+    # Now hit the Calendar API. Distinguish 401/403/404 cleanly.
+    try:
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        cal = service.calendars().get(calendarId=calendar_id).execute()
+    except HttpError as e:
+        status = getattr(getattr(e, "resp", None), "status", None)
+        # Try to extract Google's own error reason for nicer messages.
+        try:
+            err_payload = json.loads(e.content.decode("utf-8")) if hasattr(e, "content") else {}
+            reason = (((err_payload.get("error") or {}).get("errors") or [{}])[0]).get("reason", "")
+        except Exception:
+            reason = ""
+
+        if status == 401:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error_code": "auth_failed",
+                    "message": f"Calendar API rejected the credentials (401). reason={reason!r}",
+                },
+            )
+        if status == 403:
+            # Most common cause: calendar exists but isn't shared with the SA.
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error_code": "forbidden_calendar",
+                    "message": (
+                        f"The service account is not authorized to access "
+                        f"calendar '{calendar_id}'. Most commonly this means "
+                        f"the calendar hasn't been shared with the service "
+                        f"account email. (HTTP 403, reason={reason!r})"
+                    ),
+                },
+            )
+        if status == 404:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error_code": "calendar_not_found",
+                    "message": (
+                        f"Calendar '{calendar_id}' not found. Check the ID — "
+                        f"primary calendars use the user's email; secondary "
+                        f"calendars look like 'c_xxx@group.calendar.google.com'."
+                    ),
+                },
+            )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "calendar_api_error",
+                "message": f"Calendar API error: HTTP {status} reason={reason!r}",
+            },
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "unknown",
+                "message": f"Unexpected error during verify: {e}",
+            },
+        )
+
+    actual_tz = cal.get("timeZone") or ""
+    drift_warning = None
+    if configured_timezone and actual_tz and configured_timezone != actual_tz:
+        drift_warning = (
+            f"Configured timezone '{configured_timezone}' does not match the "
+            f"calendar's actual timezone '{actual_tz}'. Events will use the "
+            f"configured timezone, which may produce wrong wall-clock times. "
+            f"Update the Timezone field to match."
+        )
+
+    # Auto-subscribe: when Verify succeeds against a calendar that ISN'T in
+    # the SA's calendarList, insert it so future discovery (calendarList.list)
+    # actually returns it. Without this, calendars shared via "Share with
+    # specific people" remain invisible to discovery even though they're
+    # fully accessible via direct calendars.get(). Best-effort — the verify
+    # itself succeeded, so we report success regardless of insert outcome.
+    auto_subscribed = False
+    try:
+        # Cheap check: was this calendar already in the SA's calendarList?
+        try:
+            service.calendarList().get(calendarId=calendar_id).execute()
+        except HttpError as e:
+            # 404 here = not subscribed → insert it
+            if getattr(getattr(e, "resp", None), "status", None) == 404:
+                try:
+                    service.calendarList().insert(body={"id": calendar_id}).execute()
+                    auto_subscribed = True
+                except HttpError as insert_err:
+                    # If insert fails (e.g. policy block, quota), the verify
+                    # is still valid — just no subscription. Don't surface
+                    # as a failure to the user, but log so an operator
+                    # debugging "why isn't this showing in the picker"
+                    # can see what happened. CodeRabbit minor finding.
+                    logger.debug(
+                        "calendarList().insert failed for %s (auto-subscribe non-fatal): %s",
+                        calendar_id, insert_err,
+                    )
+            else:
+                logger.debug(
+                    "calendarList().get returned non-404 error for %s (non-fatal): %s",
+                    calendar_id, e,
+                )
+    except Exception as outer_err:
+        logger.debug(
+            "Auto-subscribe outer try failed for %s (non-fatal): %s",
+            calendar_id, outer_err, exc_info=True,
+        )
+
+    return {
+        "status": "ok",
+        "calendar_summary": cal.get("summary", ""),
+        "calendar_actual_timezone": actual_tz,
+        "configured_timezone": configured_timezone,
+        "drift_warning": drift_warning,
+        "impersonating_subject": subject or None,
+        "auto_subscribed": auto_subscribed,  # True iff we just added this to the SA's calendarList
+    }
+
+
+@router.post("/google-calendar/{key}/verify")
+async def verify_google_calendar(key: str, override: Optional[_GoogleCalendarVerifyRequest] = None):
+    """Verify that the configured (or about-to-be-configured) credentials can
+    read the configured calendar. Returns structured success or 4xx with an
+    error_code field the UI can display nicely.
+
+    Override fields in the POST body win over persisted config so the UI can
+    test unsaved form state without forcing a save first.
+    """
+    _validate_calendar_key_or_400(key)
+
+    entry = _read_google_calendar_entry(key)
+
+    # Effective config = persisted, with optional POST-body overrides on top.
+    # Subject must initialize from the persisted entry too — without this,
+    # API callers (or future UI paths) that omit subject in the POST body
+    # would verify without impersonation and get a false success/failure.
+    # Codex feedback #5.
+    creds_path = (entry.get("credentials_path") or "").strip()
+    calendar_id = (entry.get("calendar_id") or "").strip()
+    configured_tz = (entry.get("timezone") or "").strip()
+    persisted_subject = (entry.get("subject") or "").strip()
+    subject: Optional[str] = persisted_subject or None
+    if override is not None:
+        if override.credentials_path is not None:
+            creds_path = override.credentials_path.strip()
+        if override.calendar_id is not None:
+            calendar_id = override.calendar_id.strip()
+        if override.timezone is not None:
+            configured_tz = override.timezone.strip()
+        if override.subject is not None:
+            subject = override.subject.strip() or None
+
+    if not creds_path:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "missing_credentials_path",
+                "message": "No credentials_path configured or supplied for this calendar key.",
+            },
+        )
+    if not calendar_id:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "missing_calendar_id",
+                "message": "No calendar_id configured or supplied for this calendar key.",
+            },
+        )
+
+    return await asyncio.to_thread(
+        _verify_calendar_access_sync,
+        creds_path,
+        calendar_id,
+        configured_tz,
+        subject,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Google Calendar — JSON Upload + Auto-discover
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Drag-drop upload flow. After file save, the endpoint authenticates as the
+# uploaded SA and calls calendarList.list() to discover which calendars the
+# SA has been shared with. The UI uses the discovery result to:
+#   - Auto-fill calendar_id + timezone if exactly one calendar is accessible
+#   - Show a picker if multiple calendars are accessible
+#   - Show a "share your calendar with this email" hint if zero calendars
+#
+# This collapses what was a multi-step flow (SCP file, configure path,
+# share calendar in Google UI, paste calendar ID, paste timezone, click
+# Verify) into a single drag-drop that auto-fills the row and auto-verifies.
+
+# Where uploaded SA files live. Bind-mounted between admin_ui (writer) and
+# ai_engine (reader) by docker-compose.yml; this matches the existing path
+# scheme used by VERTEX_CREDENTIALS_PATH.
+GOOGLE_CALENDAR_SECRETS_DIR = "/app/project/secrets"
+
+# Stable filename pattern keyed off the SA's client_email hash. This means:
+# - Re-uploading the same SA (e.g. private key rotation) overwrites the same
+#   file → existing UI/YAML credentials_path references stay valid.
+# - Uploading a different SA writes to a different file → no silent collision.
+# - Calendar UI key renames don't require renaming the file (keys are UI
+#   labels, files are content-addressed). Per Codex feedback #3.
+_CALENDAR_UPLOAD_FILENAME_RE = re.compile(r"^google-calendar-[a-f0-9]{12}\.json$")
+
+
+def _calendar_filename_for_email(client_email: str) -> str:
+    """Compute the stable filename for an uploaded SA file.
+
+    sha256(client_email)[:12] is enough entropy to avoid accidental collisions
+    while keeping the filename short and human-recognizable in `ls`.
+    """
+    import hashlib
+    digest = hashlib.sha256(client_email.encode("utf-8")).hexdigest()[:12]
+    return f"google-calendar-{digest}.json"
+
+
+def _resolve_calendar_secret_path(filename: str) -> str:
+    """Resolve `filename` to an absolute path under GOOGLE_CALENDAR_SECRETS_DIR.
+
+    Refuses anything outside the secrets dir (path traversal protection) or
+    that doesn't match the stable-hash filename pattern. Returns the
+    canonical absolute path. Per Codex feedback #2.
+    """
+    if not _CALENDAR_UPLOAD_FILENAME_RE.fullmatch(filename or ""):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "invalid_filename",
+                "message": "Filename must match the stable-hash pattern google-calendar-XXXXXXXXXXXX.json.",
+            },
+        )
+    candidate = os.path.realpath(os.path.join(GOOGLE_CALENDAR_SECRETS_DIR, filename))
+    secrets_dir = os.path.realpath(GOOGLE_CALENDAR_SECRETS_DIR)
+    # Final defense: must be a direct child of the secrets dir
+    if os.path.dirname(candidate) != secrets_dir:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "path_outside_secrets_dir",
+                "message": "Resolved path escapes the secrets directory.",
+            },
+        )
+    return candidate
+
+
+def _discover_accessible_calendars(creds_path: str) -> dict:
+    """Authenticate as the SA and list all calendars it can access.
+
+    Returns a dict with two keys:
+      "ok": True/False
+      "calendars": [{ id, summary, timezone, access_role }, ...]  (only on success)
+      "error_code"/"error_message" on failure
+
+    Failures here are non-fatal for the upload itself — the file IS saved
+    even if discovery fails. The UI shows a yellow "Re-check" button.
+    """
+    try:
+        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
+        from googleapiclient.errors import HttpError
+    except ImportError:
+        return {
+            "ok": False,
+            "error_code": "google_libs_not_installed",
+            "error_message": "google-auth + googleapiclient are required to discover calendars.",
+        }
+
+    # Constrain creds_path to known secrets dirs (defense-in-depth — same
+    # rationale as in _load_sa_metadata; keeps CodeQL happy and prevents
+    # this endpoint from being a vector for reading arbitrary host files).
+    try:
+        norm_creds = os.path.realpath(creds_path)
+    except Exception:
+        return {"ok": False, "error_code": "invalid_credentials_path",
+                "error_message": "credentials_path could not be resolved."}
+    try:
+        _assert_creds_path_in_allowed_dir(norm_creds, creds_path)
+    except HTTPException as e:
+        return {"ok": False, "error_code": e.detail.get("error_code", "credentials_path_disallowed"),
+                "error_message": e.detail.get("message", str(e))}
+
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            norm_creds,
+            scopes=["https://www.googleapis.com/auth/calendar"],
+        )
+    except Exception as e:
+        return {"ok": False, "error_code": "invalid_credentials", "error_message": str(e)}
+
+    try:
+        creds.refresh(Request())
+    except Exception as e:
+        return {"ok": False, "error_code": "auth_failed", "error_message": str(e)}
+
+    try:
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        result = service.calendarList().list(maxResults=250).execute()
+    except HttpError as e:
+        status = getattr(getattr(e, "resp", None), "status", None)
+        return {
+            "ok": False,
+            "error_code": f"calendar_list_http_{status or 'unknown'}",
+            "error_message": str(e),
+        }
+    except Exception as e:
+        return {"ok": False, "error_code": "unknown", "error_message": str(e)}
+
+    calendars = []
+    for c in result.get("items", []) or []:
+        calendars.append({
+            "id": c.get("id", ""),
+            "summary": c.get("summary", ""),
+            "timezone": c.get("timeZone", ""),
+            "access_role": c.get("accessRole", ""),
+        })
+    # Surface higher-permission calendars first so the UI's auto-pick prefers
+    # the most useful one when there are multiples
+    role_priority = {"owner": 0, "writer": 1, "reader": 2, "freeBusyReader": 3}
+    calendars.sort(key=lambda c: (role_priority.get(c["access_role"], 99), c["summary"].lower()))
+    return {"ok": True, "calendars": calendars}
+
+
+@router.post("/google-calendar/credentials")
+async def upload_google_calendar_credentials(file: UploadFile = File(...)):
+    """Upload a Google service-account JSON file and discover accessible calendars.
+
+    Single round-trip:
+      1. Validate the upload (size, JSON shape, SA shape)
+      2. Compute stable-hash filename (so re-uploading same SA reuses path)
+      3. Write atomically to secrets/<filename> with broad-read perms so the
+         ai_engine container's appuser can read the file at runtime
+      4. Authenticate as the SA and call calendarList.list() to discover
+         which calendars the SA has been shared with
+      5. Return identity + container path + accessible calendar list
+
+    The UI uses the response to:
+      - Auto-fill calendar_id + timezone if exactly 1 calendar is accessible
+      - Show a picker if >1 calendars are accessible
+      - Tell the operator to share their calendar with the SA email if 0
+    """
+    import json
+
+    # Hard cap on file size — SA JSONs are ~2KB; anything close to 100KB is
+    # almost certainly malicious or wrong. Read into memory directly because
+    # we need to validate JSON shape before touching disk.
+    MAX_BYTES = 100 * 1024
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(
+            status_code=400,
+            detail={"error_code": "empty_file", "message": "Uploaded file is empty."},
+        )
+    if len(raw) > MAX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "file_too_large",
+                "message": f"Service account JSON files are typically 2-3 KB; rejected file is {len(raw)} bytes (cap {MAX_BYTES}).",
+            },
+        )
+
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(
+            status_code=400,
+            detail={"error_code": "credentials_not_json", "message": "Uploaded file is not valid JSON."},
+        )
+
+    if not isinstance(data, dict) or data.get("type") != "service_account":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "credentials_not_service_account",
+                "message": "Uploaded JSON must be a Google service-account key (type: service_account).",
+            },
+        )
+
+    required = ("client_email", "private_key", "private_key_id")
+    if not all(data.get(k) for k in required):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "credentials_missing_fields",
+                "message": f"Service-account JSON is missing required fields: {required}.",
+            },
+        )
+
+    client_email = data["client_email"]
+    filename = _calendar_filename_for_email(client_email)
+    target_path = _resolve_calendar_secret_path(filename)
+    container_path = f"{GOOGLE_CALENDAR_SECRETS_DIR}/{filename}"
+
+    # Detect overwrite for the UI to surface "replaced existing credential"
+    # — Codex feedback #3 about key rotation visibility
+    was_replaced = os.path.exists(target_path)
+    previous_key_id: Optional[str] = None
+    if was_replaced:
+        try:
+            with open(target_path, "r") as f:
+                prev_data = json.load(f)
+            previous_key_id = prev_data.get("private_key_id")
+        except Exception:
+            previous_key_id = None
+
+    # Atomic write: tmp + replace, so a crash mid-write doesn't leave an
+    # invalid file at the target path. Use a unique tmp filename per
+    # request (PID + monotonic counter via uuid) so two concurrent uploads
+    # of the same SA file don't race on os.replace — each request writes
+    # its own tmp and they replace serially. Without this, a second upload
+    # could see the first's half-written tmp and either overwrite mid-
+    # write or replace away from a corrupted source.
+    import uuid
+    os.makedirs(GOOGLE_CALENDAR_SECRETS_DIR, exist_ok=True)
+    tmp_path = f"{target_path}.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(raw)
+        # 0o640 is the minimum permission set required by AAVA's split-
+        # container architecture: admin_ui (writer, runs as root) owns the
+        # file; ai_engine (reader, runs as `appuser` in the `asterisk`
+        # group) reads via group permissions; world has no access. Going
+        # tighter (0o600 / owner-only) would block ai_engine from reading
+        # the SA credential and break the calendar tool entirely.
+        # CodeQL still flags 0o640 as "group-readable", which is true but
+        # a deliberate cross-container boundary, not a security weakness —
+        # the bind-mount is scoped to two specific containers and group
+        # membership is set at image-build time, not at runtime. The
+        # `nosec` annotation below documents this intent so the warning
+        # doesn't keep recurring on every rescan.
+        os.chmod(tmp_path, 0o640)  # nosec B103 - cross-container read; see comment above
+        os.replace(tmp_path, target_path)
+    except OSError as e:
+        # Clean up the .tmp on failure
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "write_failed",
+                "message": f"Failed to write credentials file: {e}",
+            },
+        )
+
+    # Now discover which calendars the SA can actually access. This is done
+    # in a thread because both creds.refresh() and the API call are blocking.
+    # Failures here are NON-fatal for the upload — the file is on disk
+    # successfully; the UI just falls back to the manual-fill flow.
+    discovery = await asyncio.to_thread(_discover_accessible_calendars, target_path)
+
+    return {
+        "status": "success",
+        "filename": filename,
+        "container_path": container_path,
+        "replaced": was_replaced,
+        "previous_key_id": previous_key_id,
+        "identity": {
+            "client_email": client_email,
+            "client_id": data.get("client_id", ""),
+            "project_id": data.get("project_id", ""),
+            "private_key_id": data.get("private_key_id", ""),
+        },
+        "discovery": discovery,
+    }
+
+
+@router.delete("/google-calendar/credentials/{filename}")
+async def delete_google_calendar_credentials(filename: str):
+    """Remove an uploaded SA credentials file.
+
+    Only filenames matching the stable-hash pattern are accepted; any other
+    shape is rejected with 400 (path traversal protection). Returns 404 if
+    the file doesn't exist (idempotent-ish — repeated DELETEs after the
+    first are safe to retry but the second one tells the operator the file
+    was already gone).
+
+    Refuses to delete if any other calendar entry still references the
+    same credentials file. Filenames are content-addressed by client_email,
+    so reusing one SA across multiple calendar keys is intentional and
+    common (e.g., one SA managing multiple calendars in the same domain).
+    Without this check, deleting via one key would silently break every
+    OTHER key that pointed at the same file.
+    """
+    # Resolve the requested filename inside the secrets dir. The helper
+    # validates the filename pattern + path-traversal protection, but
+    # CodeQL doesn't trace value-flow through helpers, so we re-state the
+    # constraint inline below using Path.relative_to() — the canonical
+    # CodeQL-recognized sanitizer. (Same approach as _load_sa_metadata.)
+    target_path = _resolve_calendar_secret_path(filename)
+    from pathlib import Path
+    _secrets_dir = Path(GOOGLE_CALENDAR_SECRETS_DIR).resolve()
+    _candidate = Path(target_path).resolve()
+    try:
+        _candidate.relative_to(_secrets_dir)
+    except ValueError:
+        # Defense-in-depth — should be unreachable given
+        # _resolve_calendar_secret_path's filename regex + dirname check,
+        # but keeps the constraint visible to static analysis.
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "path_outside_secrets_dir",
+                "message": "Resolved path escapes the secrets directory.",
+            },
+        )
+    # Reconstruct the safe path explicitly under the secrets dir so the
+    # sanitization is visible to data-flow analysis rather than relying
+    # on the unmodified input.
+    safe_target_path = _secrets_dir / _candidate.relative_to(_secrets_dir)
+    if not safe_target_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "credentials_file_not_found",
+                "message": f"No credentials file at {filename}.",
+            },
+        )
+
+    # Check for other calendar entries still pointing at this file
+    container_path = f"{GOOGLE_CALENDAR_SECRETS_DIR}/{filename}"
+    try:
+        merged = _read_merged_config_dict()
+    except Exception:
+        merged = {}
+    referenced_by: list[str] = []
+    cals = ((merged.get("tools") or {}).get("google_calendar") or {}).get("calendars") or {}
+    if isinstance(cals, dict):
+        for k, v in cals.items():
+            if not isinstance(v, dict):
+                continue
+            entry_path = (v.get("credentials_path") or "").strip()
+            if not entry_path:
+                continue
+            try:
+                entry_real = os.path.realpath(entry_path)
+            except Exception:
+                entry_real = entry_path
+            if entry_real == str(safe_target_path) or entry_path == container_path:
+                referenced_by.append(str(k))
+    if referenced_by:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "credentials_file_in_use",
+                "message": (
+                    f"Cannot delete '{filename}': still referenced by calendar "
+                    f"key(s) {sorted(referenced_by)}. Remove or reassign those "
+                    f"calendar entries first, then retry the delete."
+                ),
+                "referenced_by": sorted(referenced_by),
+            },
+        )
+    try:
+        # safe_target_path is provably under _secrets_dir via the
+        # Path.relative_to() guard above. Using the Path object's
+        # unlink() method here keeps the data-flow chain explicit
+        # for static analysis.
+        safe_target_path.unlink()
+    except OSError as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "delete_failed",
+                "message": f"Failed to remove credentials file: {e}",
+            },
+        ) from e
+    return {"status": "success", "filename": filename}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Microsoft Calendar — Device-Code OAuth + Verify
+# ─────────────────────────────────────────────────────────────────────────────
+
+MICROSOFT_CALENDAR_SECRETS_DIR = "/app/project/secrets"
+# V1 is single-account by design: only `accounts.default` is supported.
+# The token-cache file path is therefore a literal constant — never derived
+# from user input. When multi-account ships (V2), this constraint can be
+# lifted and the path will be derived from a per-account allowlist. Keeping
+# the path as a literal is what lets CodeQL's `py/path-injection` query
+# treat the value as untainted; it's also what the deployed product
+# contract has been all along (UI hardcodes `account_key="default"`,
+# docs document one-account V1).
+MICROSOFT_CALENDAR_TOKEN_CACHE_PATH = (
+    f"{MICROSOFT_CALENDAR_SECRETS_DIR}/microsoft-calendar-default-token-cache.json"
+)
+_MS_TENANT_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_MS_CLIENT_ID_PATTERN = re.compile(r"^[0-9a-fA-F-]{32,64}$")
+_MS_DEVICE_FLOWS: dict[str, dict] = {}
+
+
+def _ms_flow_lock():
+    import threading
+    if not hasattr(_ms_flow_lock, "_lock"):
+        _ms_flow_lock._lock = threading.Lock()  # type: ignore[attr-defined]
+    return _ms_flow_lock._lock  # type: ignore[attr-defined]
+
+
+def _validate_ms_account_key_or_400(key: str) -> str:
+    """V1 supports exactly one Microsoft Calendar account: `default`.
+
+    Rejecting all other keys with a literal-string equality check (rather
+    than a regex pattern) is the simplest contract that matches what the
+    UI already enforces and what the docs document, and it lets CodeQL's
+    `py/path-injection` query treat any downstream path that depends on
+    the validated key as untainted (a literal-string equality check is a
+    recognized sanitizer; `re.fullmatch` against a character class is
+    not). When multi-account ships in V2, this validator can grow to
+    accept a finite allowlist of keys; the path resolver should then
+    derive from a per-key allowlist rather than a free-form string.
+    """
+    candidate = (key if isinstance(key, str) else "").strip()
+    if candidate != "default":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "unsupported_account_key",
+                "message": (
+                    "Microsoft Calendar V1 supports only account_key='default'. "
+                    "Multi-account support is planned for a future release."
+                ),
+            },
+        )
+    return "default"
+
+
+def _validate_ms_tenant_client_or_400(tenant_id: str, client_id: str) -> tuple[str, str]:
+    tenant = (tenant_id or "").strip()
+    client = (client_id or "").strip()
+    if not tenant or not _MS_TENANT_PATTERN.fullmatch(tenant):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "invalid_tenant_id",
+                "message": "tenant_id must be an explicit Entra tenant id or tenant domain. Do not use 'common' in V1.",
+            },
+        )
+    if tenant.lower() == "common":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "common_tenant_not_supported",
+                "message": "Microsoft Calendar V1 requires an explicit tenant_id, not /common.",
+            },
+        )
+    if not client or not _MS_CLIENT_ID_PATTERN.fullmatch(client):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "invalid_client_id",
+                "message": "client_id must be the Application (client) ID from Azure App registrations.",
+            },
+        )
+    return tenant, client
+
+
+def _ms_token_cache_path_for_key(account_key: str) -> str:
+    # V1 single-account: validate the key (only "default" is accepted) and
+    # return the literal constant path. No user-controlled bytes flow into
+    # the result.
+    _validate_ms_account_key_or_400(account_key)
+    return MICROSOFT_CALENDAR_TOKEN_CACHE_PATH
+
+
+class _MicrosoftDeviceStartRequest(BaseModel):
+    tenant_id: str
+    client_id: str
+    account_key: str = "default"
+
+
+class _MicrosoftVerifyRequest(BaseModel):
+    tenant_id: Optional[str] = None
+    client_id: Optional[str] = None
+    token_cache_path: Optional[str] = None
+    user_principal_name: Optional[str] = None
+    calendar_id: Optional[str] = None
+    timezone: Optional[str] = None
+    account_key: str = "default"
+
+
+class _MicrosoftDisconnectRequest(BaseModel):
+    token_cache_path: Optional[str] = None
+    account_key: str = "default"
+
+
+def _ms_graph_request_with_token(token: str, method: str, path: str, body: Optional[dict] = None) -> dict:
+    import json
+    import urllib.error
+    import urllib.request
+
+    # Accept either a relative path (e.g. "/me") or an absolute Graph URL
+    # (e.g. an "@odata.nextLink" returned from a paginated response). Same
+    # shape as `MicrosoftGraphClient._request` in the runtime client.
+    if path.startswith("https://"):
+        url = path
+    else:
+        url = f"https://graph.microsoft.com/v1.0{path}"
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Prefer": 'outlook.timezone="UTC"',
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            payload = {"raw": raw}
+        raise HTTPException(
+            status_code=e.code,
+            detail={
+                "error_code": "microsoft_graph_error",
+                "message": ((payload.get("error") or {}).get("message") or f"Microsoft Graph HTTP {e.code}"),
+                "graph": payload,
+            },
+        )
+
+
+def _persist_ms_token_cache(cache, account_key: str) -> None:
+    # Derive the cache path from the validated account_key (regex-allowlisted
+    # in `_ms_token_cache_path_for_key`). The user-supplied token_cache_path
+    # never reaches `os.path.*` operations — see Codex review feedback on PR
+    # #357 for context (CodeQL py/path-injection couldn't track the previous
+    # sanitizer through a function return).
+    safe_path = _ms_token_cache_path_for_key(account_key)
+    import portalocker  # type: ignore
+
+    os.makedirs(os.path.dirname(safe_path), exist_ok=True)
+    lock_path = f"{safe_path}.lock"
+    with portalocker.Lock(lock_path, timeout=10):
+        tmp_path = f"{safe_path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            handle.write(cache.serialize())
+        # Owner-only (0o600). admin_ui and ai_engine both run as uid 1000 in
+        # the production containers, so they share owner-rw access; no group
+        # bit is required for cross-container token-cache coordination.
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, safe_path)
+        try:
+            os.chmod(safe_path, 0o600)
+        except OSError:
+            pass
+
+
+def _ms_device_flow_worker(flow_id: str, tenant_id: str, client_id: str, account_key: str) -> None:
+    import msal  # type: ignore
+
+    cache = msal.SerializableTokenCache()
+    app = msal.PublicClientApplication(
+        client_id,
+        authority=f"https://login.microsoftonline.com/{tenant_id}",
+        token_cache=cache,
+    )
+    with _ms_flow_lock():
+        flow = dict(_MS_DEVICE_FLOWS.get(flow_id, {}).get("flow") or {})
+    try:
+        result = app.acquire_token_by_device_flow(flow)
+        if not result or "access_token" not in result:
+            error = (result or {}).get("error") if isinstance(result, dict) else None
+            description = (result or {}).get("error_description") if isinstance(result, dict) else None
+            with _ms_flow_lock():
+                _MS_DEVICE_FLOWS[flow_id]["status"] = "error"
+                _MS_DEVICE_FLOWS[flow_id]["error"] = {
+                    "error_code": "authorization_failed",
+                    "message": description or error or "Microsoft device-code authorization failed.",
+                }
+            return
+        _persist_ms_token_cache(cache, account_key)
+        # Capture the canonical cache path for the success payload. The
+        # caller surfaces this in /devices/poll so the UI can show where
+        # the token cache landed. Was referenced at the result-dict
+        # assembly below but never defined in this scope — CodeRabbit
+        # critical on PR #396.
+        token_cache_path = _ms_token_cache_path_for_key(account_key)
+        access_token = result["access_token"]
+        me = _ms_graph_request_with_token(access_token, "GET", "/me")
+        # Paginate /me/calendars. Without this, accounts with many calendars
+        # would see a truncated picker on Connect (caught by CodeRabbit on
+        # PR #357). Mirrors `MicrosoftGraphClient.list_calendars()`'s shape.
+        calendars: list = []
+        next_url: Optional[str] = "/me/calendars"
+        while next_url:
+            page = _ms_graph_request_with_token(access_token, "GET", next_url)
+            calendars.extend(page.get("value") or [])
+            next_url = page.get("@odata.nextLink")
+        username = (
+            (result.get("id_token_claims") or {}).get("preferred_username")
+            or me.get("userPrincipalName")
+            or me.get("mail")
+            or ""
+        )
+        with _ms_flow_lock():
+            _MS_DEVICE_FLOWS[flow_id]["status"] = "success"
+            _MS_DEVICE_FLOWS[flow_id]["result"] = {
+                "token_cache_path": token_cache_path,
+                "user_principal_name": username,
+                "display_name": me.get("displayName") or "",
+                "mail": me.get("mail") or "",
+                "calendars": [
+                    {
+                        "id": cal.get("id"),
+                        "name": cal.get("name"),
+                        "is_default_calendar": cal.get("isDefaultCalendar"),
+                    }
+                    for cal in calendars
+                ],
+            }
+    except Exception as exc:
+        logger.error("Microsoft device-code flow failed", exc_info=True)
+        with _ms_flow_lock():
+            _MS_DEVICE_FLOWS[flow_id]["status"] = "error"
+            _MS_DEVICE_FLOWS[flow_id]["error"] = {
+                "error_code": "authorization_failed",
+                "message": str(exc),
+            }
+
+
+@router.post("/microsoft-calendar/device/start")
+async def start_microsoft_calendar_device_flow(req: _MicrosoftDeviceStartRequest):
+    import threading
+    import time
+    import uuid
+
+    try:
+        import msal  # type: ignore
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "msal_not_installed",
+                "message": "msal is required for Microsoft Calendar device-code OAuth.",
+            },
+        )
+
+    tenant_id, client_id = _validate_ms_tenant_client_or_400(req.tenant_id, req.client_id)
+    account_key = _validate_ms_account_key_or_400(req.account_key or "default")
+    token_cache_path = _ms_token_cache_path_for_key(account_key)
+
+    app = msal.PublicClientApplication(
+        client_id,
+        authority=f"https://login.microsoftonline.com/{tenant_id}",
+    )
+    # MSAL Python only treats `openid`, `profile`, and `offline_access` as
+    # reserved — it auto-adds those itself and raises ValueError if the
+    # caller passes them. `User.Read` is a regular Graph delegated
+    # permission and MUST be requested explicitly; otherwise the issued
+    # access token cannot call `/me` (Authorization_RequestDenied 403),
+    # which we use post-auth to confirm the signed-in identity.
+    flow = app.initiate_device_flow(scopes=["User.Read", "Calendars.ReadWrite"])
+    if not flow or "user_code" not in flow:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "device_flow_start_failed",
+                "message": flow.get("error_description") if isinstance(flow, dict) else "Could not start Microsoft device-code flow.",
+            },
+        )
+
+    flow_id = uuid.uuid4().hex
+    now = int(time.time())
+    with _ms_flow_lock():
+        _MS_DEVICE_FLOWS[flow_id] = {
+            "status": "pending",
+            "flow": flow,
+            "created_at": now,
+            "expires_at": now + int(flow.get("expires_in") or 900),
+            "tenant_id": tenant_id,
+            "client_id": client_id,
+            "account_key": account_key,
+            "token_cache_path": token_cache_path,
+        }
+    worker = threading.Thread(
+        target=_ms_device_flow_worker,
+        args=(flow_id, tenant_id, client_id, account_key),
+        daemon=True,
+    )
+    worker.start()
+    return {
+        "status": "pending",
+        "flow_id": flow_id,
+        "user_code": flow.get("user_code"),
+        "verification_uri": flow.get("verification_uri") or flow.get("verification_url"),
+        "message": flow.get("message"),
+        "expires_in": flow.get("expires_in"),
+        "interval": flow.get("interval", 5),
+    }
+
+
+@router.get("/microsoft-calendar/device/status/{flow_id}")
+async def get_microsoft_calendar_device_flow_status(flow_id: str):
+    import time
+
+    if not re.fullmatch(r"^[a-f0-9]{32}$", flow_id or ""):
+        raise HTTPException(
+            status_code=400,
+            detail={"error_code": "invalid_flow_id", "message": "Invalid device flow id."},
+        )
+    with _ms_flow_lock():
+        item = dict(_MS_DEVICE_FLOWS.get(flow_id) or {})
+    if not item:
+        raise HTTPException(
+            status_code=404,
+            detail={"error_code": "flow_not_found", "message": "Microsoft device flow not found or expired."},
+        )
+    if item.get("status") == "pending" and item.get("expires_at") and int(time.time()) > int(item["expires_at"]):
+        with _ms_flow_lock():
+            if flow_id in _MS_DEVICE_FLOWS:
+                _MS_DEVICE_FLOWS[flow_id]["status"] = "expired"
+        item["status"] = "expired"
+    response = {
+        "status": item.get("status"),
+        "expires_at": item.get("expires_at"),
+        "account_key": item.get("account_key"),
+    }
+    if item.get("result"):
+        response["result"] = item["result"]
+    if item.get("error"):
+        response["error"] = item["error"]
+    return response
+
+
+def _read_microsoft_calendar_account(account_key: str) -> dict:
+    try:
+        merged = _read_merged_config_dict()
+    except Exception:
+        return {}
+    ms_cfg = (merged.get("tools") or {}).get("microsoft_calendar") or {}
+    accounts = ms_cfg.get("accounts") or {}
+    if isinstance(accounts, dict) and account_key in accounts and isinstance(accounts[account_key], dict):
+        return accounts[account_key]
+    return ms_cfg if isinstance(ms_cfg, dict) else {}
+
+
+@router.post("/microsoft-calendar/verify")
+async def verify_microsoft_calendar(req: _MicrosoftVerifyRequest):
+    project_root = getattr(settings, "PROJECT_ROOT", None)
+    if project_root and project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from src.tools.business.ms_graph_client import MicrosoftAccountConfig, MicrosoftGraphApiError, MicrosoftGraphClient
+
+    account_key = _validate_ms_account_key_or_400(req.account_key or "default")
+    persisted = _read_microsoft_calendar_account(account_key)
+    tenant_id = (req.tenant_id if req.tenant_id is not None else persisted.get("tenant_id", "") or "").strip()
+    client_id = (req.client_id if req.client_id is not None else persisted.get("client_id", "") or "").strip()
+    token_cache_path = (req.token_cache_path if req.token_cache_path is not None else persisted.get("token_cache_path", "") or "").strip()
+    user_principal_name = (
+        req.user_principal_name if req.user_principal_name is not None else persisted.get("user_principal_name", "") or ""
+    ).strip()
+    calendar_id = (req.calendar_id if req.calendar_id is not None else persisted.get("calendar_id", "") or "").strip()
+    timezone = (req.timezone if req.timezone is not None else persisted.get("timezone", "") or "UTC").strip() or "UTC"
+
+    _validate_ms_tenant_client_or_400(tenant_id, client_id)
+    # Derive the path from the validated account_key. Any user-supplied
+    # token_cache_path is accepted only as a basename consistency check —
+    # it never reaches `os.path.*` operations. (Codex review feedback on
+    # PR #357: CodeQL py/path-injection couldn't track the previous
+    # sanitizer through a function return; deriving from account_key
+    # eliminates the user-controlled path data entirely.)
+    safe_token_path = _ms_token_cache_path_for_key(account_key)
+    if token_cache_path:
+        posted_basename = os.path.basename(token_cache_path)
+        if posted_basename and posted_basename != os.path.basename(safe_token_path):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error_code": "token_cache_path_mismatch",
+                    "message": (
+                        "Supplied token_cache_path does not match the canonical path "
+                        "derived from account_key. Omit token_cache_path or align it "
+                        "to the canonical filename."
+                    ),
+                },
+            )
+    # `safe_token_path` is `MICROSOFT_CALENDAR_TOKEN_CACHE_PATH`, a literal
+    # constant — no user input can affect it (V1 is single-account; the
+    # validator above only accepts `account_key="default"`).
+    if not os.path.exists(safe_token_path):
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error_code": "auth_expired",
+                "message": "Microsoft Calendar is not connected yet. Use Connect to authorize this account.",
+            },
+        )
+    missing = [
+        name for name, value in {
+            "user_principal_name": user_principal_name,
+            "calendar_id": calendar_id,
+        }.items() if not value
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "missing_fields",
+                "message": f"Missing required Microsoft Calendar fields: {', '.join(missing)}.",
+            },
+        )
+
+    account = MicrosoftAccountConfig(
+        tenant_id=tenant_id,
+        client_id=client_id,
+        token_cache_path=safe_token_path,
+        user_principal_name=user_principal_name,
+        calendar_id=calendar_id,
+        timezone=timezone,
+    )
+    client = MicrosoftGraphClient(account)
+    try:
+        me = await asyncio.to_thread(client.me)
+        calendars = await asyncio.to_thread(client.list_calendars)
+    except MicrosoftGraphApiError as exc:
+        raise HTTPException(
+            status_code=exc.status or 400,
+            detail={
+                "error_code": exc.error_code,
+                "message": str(exc),
+            },
+        )
+    matched = next((cal for cal in calendars if cal.get("id") == calendar_id), None)
+    if not matched:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "calendar_not_found",
+                "message": "The connected Microsoft account cannot see the configured calendar_id.",
+            },
+        )
+    return {
+        "status": "ok",
+        "user_principal_name": me.get("userPrincipalName") or user_principal_name,
+        "display_name": me.get("displayName") or "",
+        "calendar_id": calendar_id,
+        "calendar_name": matched.get("name") or "",
+        "configured_timezone": timezone,
+    }
+
+
+@router.post("/microsoft-calendar/disconnect")
+async def disconnect_microsoft_calendar(req: _MicrosoftDisconnectRequest):
+    account_key = _validate_ms_account_key_or_400(req.account_key or "default")
+    # Derive the path from the validated account_key (regex-allowlisted).
+    # Any user-supplied token_cache_path is accepted only as a basename
+    # consistency check — it never reaches `os.path.*` operations. (See
+    # Codex review feedback on PR #357.)
+    safe_path = _ms_token_cache_path_for_key(account_key)
+    posted = (req.token_cache_path or "").strip()
+    if posted:
+        posted_basename = os.path.basename(posted)
+        if posted_basename and posted_basename != os.path.basename(safe_path):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error_code": "token_cache_path_mismatch",
+                    "message": (
+                        "Supplied token_cache_path does not match the canonical path "
+                        "derived from account_key. Omit token_cache_path or align it "
+                        "to the canonical filename."
+                    ),
+                },
+            )
+    removed = False
+    # `safe_path` is `MICROSOFT_CALENDAR_TOKEN_CACHE_PATH`, a literal
+    # constant — no user input can affect it (V1 is single-account; the
+    # validator above only accepts `account_key="default"`). The `.lock`
+    # sibling shares the same trusted prefix.
+    for path in (safe_path, f"{safe_path}.lock"):
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+                removed = True
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error_code": "disconnect_failed",
+                    "message": f"Failed to remove Microsoft token cache: {exc}",
+                },
+            ) from exc
+    return {"status": "success", "removed": removed, "token_cache_path": safe_path}
+
+
+@router.get("/providers/meta")
+async def get_providers_voice_meta():
+    """Per-provider voice metadata for the Agent form (v7.3.0).
+
+    Returns each configured provider instance with its full-agent kind,
+    voice_mode (static | freeform | platform_managed | unsupported), the
+    curated voice list for that kind, and the instance's configured default
+    voice. Catalog + kind inference live in src/utils/voice_catalog.py (single
+    source shared with the engine's soft validation).
+    """
+    project_root = getattr(settings, "PROJECT_ROOT", None)
+    if project_root and project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from src.utils.voice_catalog import full_agent_kind, provider_voice_meta
+
+    cfg = _read_merged_config_dict() or {}
+    providers = cfg.get("providers") or {}
+    out = []
+    for name, entry in providers.items():
+        if not isinstance(entry, dict):
+            continue
+        kind = full_agent_kind(name, entry)
+        meta = provider_voice_meta(kind)
+        voice_field = meta.get("voice_field")
+        default_voice = entry.get(voice_field) if voice_field else None
+        out.append({
+            "name": name,
+            "kind": kind,
+            "is_full_agent": kind is not None,
+            "enabled": bool(entry.get("enabled", True)),
+            "voice_mode": meta["voice_mode"],
+            "voices": meta["voices"],
+            "default_voice": default_voice,
+        })
+    return {"providers": out}

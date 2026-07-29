@@ -1,7 +1,8 @@
 package main
 
 import (
-	"github.com/hkjarral/ava-ai-voice-agent-for-asterisk/cli/internal/demo"
+	"fmt"
+
 	"github.com/spf13/cobra"
 )
 
@@ -26,10 +27,11 @@ Tests:
 
 This helps validate configuration before production use.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		verbose, _ := cmd.Flags().GetBool("verbose")
-
-		runner := demo.NewRunner(verbose)
-		return runner.Run()
+		if cmd.Flags().Changed("wav") || cmd.Flags().Changed("loop") || cmd.Flags().Changed("save") {
+			return fmt.Errorf("legacy demo audio flags are no longer supported; use `agent check` and a real test call followed by `agent rca`")
+		}
+		fmt.Println("Note: `agent demo` is a legacy alias; running `agent check`.")
+		return checkCmd.RunE(cmd, args)
 	},
 }
 

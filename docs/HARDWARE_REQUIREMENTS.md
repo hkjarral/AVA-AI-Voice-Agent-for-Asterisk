@@ -158,6 +158,8 @@ Total:                     ~600MB
 Fully Local mode runs **STT + LLM + TTS** on your own hardware with **no cloud APIs**.
 
 - The **local LLM** is the bottleneck: CPU-only inference requires a modern CPU and enough RAM; for best UX and higher concurrency, use a GPU-backed local LLM where possible.
+- **CPU-optimized model**: Qwen 2.5-1.5B Instruct (940MB, ~15-30 tok/s on 16-core CPU). With streaming overlap + filler audio enabled, delivers ~7-9s per voice response. The Setup Wizard auto-recommends this model for CPU-only setups.
+- **GPU model**: Phi-3 Mini or larger models deliver sub-1s responses with GPU offloading.
 - Setup guide: `docs/LOCAL_ONLY_SETUP.md`
 
 ## GPU Acceleration (Optional)
@@ -196,7 +198,9 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build loc
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml exec local_ai_server nvidia-smi
 ```
 
-Tune `LOCAL_LLM_GPU_LAYERS=-1` (all layers) in `.env`. See [LOCAL_ONLY_SETUP.md](LOCAL_ONLY_SETUP.md) for topology-specific configuration.
+Use `LOCAL_LLM_GPU_LAYERS=-1` for AVA's conservative VRAM-based auto-selection,
+or configure an explicit positive layer count after measuring model-specific
+VRAM usage. See [LOCAL_ONLY_SETUP.md](LOCAL_ONLY_SETUP.md) for topology-specific configuration.
 
 ---
 
@@ -295,29 +299,31 @@ Tune `LOCAL_LLM_GPU_LAYERS=-1` (all layers) in `.env`. See [LOCAL_ONLY_SETUP.md]
 
 #### AWS EC2
 
-| Configuration | Instance Type | Monthly Cost (estimate) |
-|---------------|---------------|-------------------------|
+| Configuration | Instance Type | Monthly Cost |
+|---------------|---------------|--------------|
 | OpenAI Realtime | t3.medium (2 vCPU, 4GB) | ~$30 |
-| Deepgram | t3.large (2 vCPU, 8GB) | ~$60 |
-| Local Hybrid | c5.2xlarge (8 vCPU, 16GB) | ~$250 |
+| Deepgram | t3.large (2 vCPU, 8GB) | ~$61 |
+| Local Hybrid | c5.2xlarge (8 vCPU, 16GB) | ~$248 |
 
-**Note**: Add data transfer costs (~$0.09/GB egress)
+**Note**: Add data transfer costs (~$0.09/GB egress).
 
 #### Google Cloud (GCE)
 
-| Configuration | Machine Type | Monthly Cost (estimate) |
-|---------------|--------------|-------------------------|
-| OpenAI Realtime | e2-medium (2 vCPU, 4GB) | ~$25 |
-| Deepgram | e2-standard-2 (2 vCPU, 8GB) | ~$50 |
-| Local Hybrid | c2-standard-8 (8 vCPU, 32GB) | ~$240 |
+| Configuration | Machine Type | Monthly Cost |
+|---------------|--------------|--------------|
+| OpenAI Realtime | e2-medium (2 vCPU, 4GB) | ~$40 |
+| Deepgram | e2-standard-2 (2 vCPU, 8GB) | ~$49 |
+| Local Hybrid | c2-standard-8 (8 vCPU, 32GB) | ~$305 |
 
 #### Azure
 
-| Configuration | VM Size | Monthly Cost (estimate) |
-|---------------|---------|-------------------------|
+| Configuration | VM Size | Monthly Cost |
+|---------------|---------|--------------|
 | OpenAI Realtime | Standard_B2s (2 vCPU, 4GB) | ~$30 |
-| Deepgram | Standard_B2ms (2 vCPU, 8GB) | ~$60 |
-| Local Hybrid | Standard_F8s_v2 (8 vCPU, 16GB) | ~$280 |
+| Deepgram | Standard_B2ms (2 vCPU, 8GB) | ~$61 |
+| Local Hybrid | Standard_F8s_v2 (8 vCPU, 16GB) | ~$247 |
+
+> **Pricing basis (verified 2026-04):** on-demand / pay-as-you-go rates in `us-east-1` (AWS), `us-central1` (GCE), and East US (Azure), Linux. Excludes egress, storage, and any savings plans / SUD / reserved-instance discounts. Verify current rates with each provider's calculator before budgeting — prices can move 10-20% in either direction over a year.
 
 **Cloud Considerations**:
 - Local Hybrid is expensive in cloud (CPU-intensive)

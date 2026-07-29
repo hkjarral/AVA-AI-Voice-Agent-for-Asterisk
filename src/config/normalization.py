@@ -9,6 +9,15 @@ This module handles:
 
 from typing import Any, Dict
 
+from src.config.audio_baselines import profile_audio_baseline
+from src.config.provider_instances import (
+    FULL_AGENT_KINDS,
+    VALID_ROLE_SUFFIXES,
+    full_agent_default,
+    provider_kind,
+    validate_provider_instances,
+)
+
 
 def _compose_provider_components(provider: str) -> Dict[str, Any]:
     """
@@ -45,6 +54,10 @@ def _generate_default_pipeline(config_data: Dict[str, Any]) -> None:
     Complexity: 4
     """
     default_provider = config_data.get("default_provider", "openai_realtime")
+    if full_agent_default(config_data):
+        config_data.setdefault("pipelines", {})
+        config_data.setdefault("active_pipeline", None)
+        return
     pipeline_name = "default"
     default_components = _compose_provider_components(default_provider)
     
@@ -88,6 +101,11 @@ def normalize_pipelines(config_data: Dict[str, Any]) -> None:
     config_data.setdefault("default_provider", "openai_realtime")
     default_provider = config_data.get("default_provider")
     pipelines_cfg = config_data.get("pipelines")
+
+    if not pipelines_cfg and full_agent_default(config_data):
+        config_data["pipelines"] = {}
+        config_data.setdefault("active_pipeline", None)
+        return
     
     if not pipelines_cfg:
         _generate_default_pipeline(config_data)
@@ -152,16 +170,17 @@ def normalize_profiles(config_data: Dict[str, Any]) -> None:
     
     # Inject default telephony profile if missing
     if 'telephony_ulaw_8k' not in profiles_block:
-        profiles_block['telephony_ulaw_8k'] = {
-            'internal_rate_hz': 8000,
-            'transport_out': {'encoding': 'ulaw', 'sample_rate_hz': 8000},
-            'provider_pref': {
-                'input': {'encoding': 'mulaw', 'sample_rate_hz': 8000},
-                'output': {'encoding': 'mulaw', 'sample_rate_hz': 8000},
-                'preferred_chunk_ms': 20,
-            },
-            'idle_cutoff_ms': 1200,
-        }
+        profiles_block['telephony_ulaw_8k'] = profile_audio_baseline(
+            'telephony_ulaw_8k'
+        )
+
+    # Opt-in enhanced profile: same stable 8 kHz telephony contract, with
+    # alias-safe downsampling when a provider emits 16/24 kHz audio. Existing
+    # profiles remain untouched so upgrades are backward compatible.
+    if 'telephony_enhanced_8k' not in profiles_block:
+        profiles_block['telephony_enhanced_8k'] = profile_audio_baseline(
+            'telephony_enhanced_8k'
+        )
     
     # Provide default selector if not present
     try:
@@ -265,20 +284,43 @@ def normalize_local_provider_tokens(config_data: Dict[str, Any]) -> None:
         pass
 
 
+def normalize_legacy_openai_audio(config_data: Dict[str, Any]) -> bool:
+    """Migrate the exact legacy OpenAI GA output pair to its wire truth.
+
+    The v7.5.2 shipped YAML accidentally combined ``mulaw`` with ``24000``.
+    GA sessions always request PCM16 at 24 kHz, so only this exact historical
+    pair is rewritten. Other operator choices remain subject to validation.
+    """
+    providers = config_data.get("providers")
+    if not isinstance(providers, dict):
+        return False
+
+    changed = False
+    for provider_key, provider_cfg in providers.items():
+        if not isinstance(provider_cfg, dict):
+            continue
+        if provider_kind(str(provider_key), provider_cfg) != "openai_realtime":
+            continue
+        encoding = str(provider_cfg.get("output_encoding") or "").strip().lower()
+        try:
+            rate = int(provider_cfg.get("output_sample_rate_hz"))
+        except (TypeError, ValueError):
+            continue
+        if encoding in {"mulaw", "ulaw", "mu-law"} and rate == 24000:
+            provider_cfg["output_encoding"] = "linear16"
+            changed = True
+    return changed
+
+
 class ConfigValidationError(Exception):
     """Raised when configuration validation fails."""
     pass
 
 
 # Known full-agent providers (multiple capabilities allowed)
-FULL_AGENT_PROVIDERS = frozenset({
-    "openai_realtime", "deepgram", "google_live", "local"
-})
+FULL_AGENT_PROVIDERS = FULL_AGENT_KINDS
 
 # Valid modular role suffixes
-VALID_ROLE_SUFFIXES = ("_stt", "_llm", "_tts")
-
-
 def validate_providers(config_data: Dict[str, Any]) -> None:
     """
     Validate provider configurations.
@@ -299,6 +341,11 @@ def validate_providers(config_data: Dict[str, Any]) -> None:
         return
     
     errors = []
+
+    try:
+        validate_provider_instances(config_data)
+    except Exception as exc:
+        errors.append(str(exc))
     
     for name, cfg in providers.items():
         if not isinstance(cfg, dict):

@@ -4,25 +4,29 @@ import { toast } from 'sonner';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import yaml from 'js-yaml';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
-import { Plus, Settings, Trash2, ArrowRight, Workflow, AlertTriangle, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
+import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
+import { Plus, Settings, Trash2, Copy, ArrowRight, Workflow, AlertTriangle, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 import { YamlErrorBanner, YamlErrorInfo } from '../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
 import PipelineForm from '../components/config/PipelineForm';
 import { ensureModularKey, isFullAgentProvider } from '../utils/providerNaming';
-import { usePendingChanges } from '../hooks/usePendingChanges';
+import { normalizeSttOptions } from '../utils/sttAudioContract';
+import { useRestartRequired } from '../hooks/useRestartRequired';
+import AudioResetButton from '../components/config/AudioResetButton';
+import AudioEnvironmentOverrideWarning from '../components/config/AudioEnvironmentOverrideWarning';
 
 const PipelinesPage = () => {
     const { confirm } = useConfirmDialog();
-    const [config, setConfig] = useState<any>({});
-    const [loading, setLoading] = useState(true);
+    const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [error, setError] = useState<string | null>(null);
-    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
+    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [editingPipeline, setEditingPipeline] = useState<string | null>(null);
     const [pipelineForm, setPipelineForm] = useState<any>({});
     const [isNewPipeline, setIsNewPipeline] = useState(false);
-    const { pendingRestart, setPendingChanges, clearPendingChanges } = usePendingChanges();
+    const { restartRequired, refetch } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
     const providers = config?.providers || {};
 
@@ -79,46 +83,20 @@ const PipelinesPage = () => {
         return compactModelLabel(llmLabel) || 'default model';
     };
 
-    const normalizeSttOptions = (sttKey: string, sttOptions: any) => {
-        const opts = (sttOptions && typeof sttOptions === 'object') ? sttOptions : {};
-
-        if (sttKey === 'local_stt') {
-            return {
-                streaming: true,
-                chunk_ms: 160,
-                stream_format: 'pcm16_16k',
-                mode: 'stt',
-            };
-        }
-
-        const normalized: any = {};
-        normalized.chunk_ms = typeof opts.chunk_ms === 'number' ? opts.chunk_ms : 4000;
-        if (typeof opts.response_format === 'string') normalized.response_format = opts.response_format;
-        if (typeof opts.temperature === 'number') normalized.temperature = opts.temperature;
-        if (typeof opts.language === 'string') normalized.language = opts.language;
-        if (typeof opts.prompt === 'string') normalized.prompt = opts.prompt;
-        if (opts.request_timeout_sec != null) normalized.request_timeout_sec = opts.request_timeout_sec;
-        if (opts.timeout_sec != null) normalized.timeout_sec = opts.timeout_sec;
-        return normalized;
-    };
-
     useEffect(() => {
+        // Cache-first: seed from the shared cache (no flash on revisit). The write
+        // interceptor invalidates the cache on every save, so a background
+        // revalidate is unnecessary and could clobber in-progress form edits.
         fetchConfig();
     }, []);
 
-    const fetchConfig = async () => {
+    const fetchConfig = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
-                setConfig({});
-                setError(null);
-            } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
-                setError(null);
-                setYamlError(null);
-            }
+            const r = await loadConfigYaml(force);
+            setConfig(r.config);
+            setYamlError(r.yamlError);
+            setError(null);
+            return r.config;
         } catch (err) {
             console.error('Failed to load config', err);
             const status = (err as any)?.response?.status;
@@ -128,8 +106,21 @@ const PipelinesPage = () => {
                 setError('Failed to load configuration. Check backend logs and try again.');
             }
             setYamlError(null);
+            return null;
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handlePipelineAudioResetComplete = async (pipelineName: string) => {
+        const refreshed = await fetchConfig(true);
+        await refetch();
+        if (refreshed && editingPipeline === pipelineName) {
+            const pipelineData = refreshed.pipelines?.[pipelineName];
+            if (pipelineData) {
+                const { tools: _legacyTools, ...rest } = pipelineData;
+                setPipelineForm({ name: pipelineName, ...rest });
+            }
         }
     };
 
@@ -138,7 +129,7 @@ const PipelinesPage = () => {
             const sanitized = sanitizeConfigForSave(newConfig);
             await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
             setConfig(sanitized);
-            setPendingChanges('restart');
+            await refetch();
         } catch (err) {
             console.error('Failed to save config', err);
             toast.error('Failed to save configuration');
@@ -171,7 +162,7 @@ const PipelinesPage = () => {
             }
 
             if (response.data.status === 'success') {
-                clearPendingChanges();
+                await refetch();
                 toast.success('AI Engine restarted! Changes are now active.');
             }
         } catch (error: any) {
@@ -202,6 +193,20 @@ const PipelinesPage = () => {
                 tts: { format: { encoding: 'mulaw', sample_rate: 8000 } }
             }
         });
+        setIsNewPipeline(true);
+    };
+
+    const handleClonePipeline = (name: string) => {
+        const sourceData = config.pipelines?.[name] || {};
+        let cloneName = `${name}_copy`;
+        let suffix = 2;
+        while (config.pipelines?.[cloneName]) {
+            cloneName = `${name}_copy_${suffix}`;
+            suffix++;
+        }
+        setEditingPipeline('new_pipeline');
+        const { tools: _legacyTools, ...rest } = (sourceData && typeof sourceData === 'object') ? sourceData : {};
+        setPipelineForm({ ...rest, name: cloneName });
         setIsNewPipeline(true);
     };
 
@@ -278,7 +283,7 @@ const PipelinesPage = () => {
         }
 
         // Block full agents in modular slots
-        if (isFullAgentProvider(providers[normalizedForm.stt]) || isFullAgentProvider(providers[normalizedForm.llm]) || isFullAgentProvider(providers[normalizedForm.tts])) {
+        if (isFullAgentProvider(providers[normalizedForm.stt], normalizedForm.stt) || isFullAgentProvider(providers[normalizedForm.llm], normalizedForm.llm) || isFullAgentProvider(providers[normalizedForm.tts], normalizedForm.tts)) {
             toast.error('Full-agent providers cannot be used in modular pipeline slots. Please select modular providers with a single capability.');
             return;
         }
@@ -341,6 +346,8 @@ const PipelinesPage = () => {
                 if (nextTtsOpts.timeout_sec != null) portable.timeout_sec = nextTtsOpts.timeout_sec;
                 if (nextTtsOpts.response_timeout_sec != null) portable.response_timeout_sec = nextTtsOpts.response_timeout_sec;
                 if (nextTtsOpts.mode) portable.mode = nextTtsOpts.mode;
+                if (nextTtsOpts.output_resampler) portable.output_resampler = nextTtsOpts.output_resampler;
+                if (typeof nextTtsOpts.streaming_overlap === 'boolean') portable.streaming_overlap = nextTtsOpts.streaming_overlap;
             }
             mergedPipeline.options = { ...(mergedPipeline.options || {}), tts: portable };
         }
@@ -349,7 +356,12 @@ const PipelinesPage = () => {
         if (!isNewPipeline && existingData?.stt && mergedPipeline.stt && existingData.stt !== mergedPipeline.stt) {
             const existingSttOpts = (existingData.options || {}).stt || {};
             const nextSttOpts = (mergedPipeline.options || {}).stt || existingSttOpts;
-            mergedPipeline.options = { ...(mergedPipeline.options || {}), stt: normalizeSttOptions(mergedPipeline.stt, nextSttOpts) };
+            mergedPipeline.options = {
+                ...(mergedPipeline.options || {}),
+                stt: normalizeSttOptions(mergedPipeline.stt, nextSttOpts, providers, {
+                    preserveStreamingChoice: false,
+                }),
+            };
         }
 
         // Keep only portable LLM options when LLM provider changes (avoid carrying provider-specific base_url/model).
@@ -372,7 +384,11 @@ const PipelinesPage = () => {
         // Always normalize STT options for the selected STT provider. This prevents stale cloud STT keys
         // (e.g., response_format/temperature/chunk_ms=4000) from breaking local_stt when users swap providers.
         mergedPipeline.options = { ...(mergedPipeline.options || {}) };
-        mergedPipeline.options.stt = normalizeSttOptions(mergedPipeline.stt, (mergedPipeline.options || {}).stt);
+        mergedPipeline.options.stt = normalizeSttOptions(
+            mergedPipeline.stt,
+            (mergedPipeline.options || {}).stt,
+            providers,
+        );
 
         newConfig.pipelines[pipelineName] = mergedPipeline;
 
@@ -403,27 +419,26 @@ const PipelinesPage = () => {
 
     return (
         <div className="space-y-6">
-            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
-                <div className="flex items-center">
-                    <AlertCircle className="w-5 h-5 mr-2" />
-                    Changes to pipeline configurations require an AI Engine restart to take effect.
+            {restartRequired && (
+                <div className="bg-orange-500/15 border-orange-500/30 border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
+                    <div className="flex items-center">
+                        <AlertCircle className="w-5 h-5 mr-2" />
+                        Changes to pipeline configurations require an AI Engine restart to take effect.
+                    </div>
+                    <button
+                        onClick={() => handleReloadAIEngine(false)}
+                        disabled={restartingEngine}
+                        className="flex items-center text-xs px-3 py-1.5 rounded transition-colors bg-orange-500 text-white hover:bg-orange-600 font-medium disabled:opacity-50"
+                    >
+                        {restartingEngine ? (
+                            <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                        ) : (
+                            <RefreshCw className="w-3 h-3 mr-1.5" />
+                        )}
+                        {restartingEngine ? 'Restarting...' : 'Reload AI Engine'}
+                    </button>
                 </div>
-                <button
-                    onClick={() => handleReloadAIEngine(false)}
-                    disabled={restartingEngine}
-                    className={`flex items-center text-xs px-3 py-1.5 rounded transition-colors ${pendingRestart
-                        ? 'bg-orange-500 text-white hover:bg-orange-600 font-medium'
-                        : 'bg-yellow-500/20 hover:bg-yellow-500/30'
-                        } disabled:opacity-50`}
-                >
-                    {restartingEngine ? (
-                        <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                    ) : (
-                        <RefreshCw className="w-3 h-3 mr-1.5" />
-                    )}
-                    {restartingEngine ? 'Restarting...' : 'Reload AI Engine'}
-                </button>
-            </div>
+            )}
 
             {error && (
                 <div className="bg-red-500/15 border border-red-500/30 text-red-700 dark:text-red-400 p-4 rounded-md flex items-center justify-between">
@@ -439,6 +454,8 @@ const PipelinesPage = () => {
                     </button>
                 </div>
             )}
+
+            <AudioEnvironmentOverrideWarning />
 
             <div className="flex justify-between items-center">
                 <div>
@@ -498,6 +515,14 @@ const PipelinesPage = () => {
                                 </div>
                                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                     <button
+                                        onClick={() => handleClonePipeline(name)}
+                                        className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
+                                        aria-label={`Clone pipeline ${name}`}
+                                        title="Clone pipeline"
+                                    >
+                                        <Copy className="w-4 h-4" />
+                                    </button>
+                                    <button
                                         onClick={() => handleEditPipeline(name)}
                                         className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
                                     >
@@ -546,7 +571,7 @@ const PipelinesPage = () => {
                             </div>
 
                             {name === 'local_only' && (
-                                <div className="mt-3 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded text-xs text-yellow-600 dark:text-yellow-400 flex items-start gap-2">
+                                <div className="mt-3 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded text-xs text-yellow-800 dark:text-yellow-400 flex items-start gap-2">
                                     <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                                     <div>
                                         <strong>Hardware Warning:</strong> This pipeline runs entirely on your local machine.
@@ -571,6 +596,14 @@ const PipelinesPage = () => {
                 size="xl"
                 footer={
                     <>
+                        {!isNewPipeline && editingPipeline && (
+                            <AudioResetButton
+                                scope="pipeline"
+                                target={editingPipeline}
+                                onResetComplete={() => handlePipelineAudioResetComplete(editingPipeline)}
+                                className="mr-auto"
+                            />
+                        )}
                         <button
                             onClick={() => setEditingPipeline(null)}
                             className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"

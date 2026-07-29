@@ -24,7 +24,7 @@ Transport selection is configuration-driven (see `Transport-Mode-Compatibility.m
 **For co-located deployment** (recommended for beginners):
 - FreePBX installation with Asterisk 18+ (or FreePBX 15+) and ARI enabled
 - Docker and Docker Compose installed on the **same host** as FreePBX
-- Repository cloned (e.g., `/root/Asterisk-AI-Voice-Agent`)
+- Repository cloned (e.g., `/opt/AVA-AI-Voice-Agent-for-Asterisk`)
 - Port **8090/TCP** accessible for AudioSocket connections
 - Port **18080/UDP** accessible for ExternalMedia RTP (if using RTP transport)
 - Valid `.env` containing ARI credentials and provider API keys
@@ -256,10 +256,11 @@ You can customize agent behavior per-call using Asterisk channel variables:
 | Variable | Description | Example Values | Required? |
 |----------|-------------|----------------|-----------|
 | `AI_PROVIDER` | Override which provider/pipeline to use | `google_live`, `deepgram`, `openai_realtime`, `local_hybrid` | No (uses `default_provider` from config) |
-| `AI_CONTEXT` | Select custom greeting and system prompt | `sales-agent`, `demo_google_live`, `sales`, `support` | No (uses `default` context) |
-| `AI_AUDIO_PROFILE` | Override which audio profile to use (format/sample rate/pacing) | `telephony_ulaw_8k`, `wideband_pcm_16k` | No (uses context profile or `profiles.default`) |
-| `AI_GREETING` | Override the greeting for this call | `"Hello! Welcome to our sales team."` | No (deprecated - use AI_CONTEXT instead) |
-| `AI_PERSONA` | Override the AI persona/instructions | `"You are a helpful billing assistant."` | No (deprecated - use AI_CONTEXT instead) |
+| `AI_AGENT` | Select an agent by slug (preferred) | `sales`, `support`, `after_hours` | No (uses default agent or `default` context) |
+| `AI_CONTEXT` | Deprecated compatibility selector (display-name-first, then slug) | `Sales`, `demo_google_live` | No (uses the default Agent) |
+| `AI_AUDIO_PROFILE` | Override which audio profile to use (format/sample rate/pacing) | `telephony_ulaw_8k`, `wideband_pcm_16k` | No (uses agent profile or `profiles.default`) |
+| `AI_GREETING` | (Not read by the engine — no effect; set the greeting on the agent instead) | — | No (use AI_AGENT) |
+| `AI_PERSONA` | (Not read by the engine — no effect; set the prompt on the agent instead) | — | No (use AI_AGENT) |
 | `CALLERID(name)` | Caller's name (automatically available to AI) | Any string | No |
 | `CALLERID(num)` | Caller's number (automatically available to AI) | Phone number | No |
 
@@ -267,17 +268,17 @@ You can customize agent behavior per-call using Asterisk channel variables:
 
 **Provider/Pipeline Selection:**
 1. `AI_PROVIDER` variable (highest priority)
-2. Context provider field (if AI_CONTEXT set and context has `provider:` in YAML)
+2. Agent provider field (if `AI_AGENT` / `AI_CONTEXT` set and the agent has a `provider:`)
 3. `default_provider` from `ai-agent.yaml` (lowest priority - currently: `local_hybrid`)
 
 **Greeting/Prompt Selection:**
-1. Context greeting/prompt (if AI_CONTEXT set)
+1. Agent greeting/prompt (if `AI_AGENT` or `AI_CONTEXT` set; `AI_AGENT` wins if both present)
 2. Provider/pipeline defaults
 3. Global `llm.prompt` from config
 
 **Audio Profile Selection:**
 1. `AI_AUDIO_PROFILE` variable (highest priority)
-2. Context profile field (if AI_CONTEXT set and context has `profile:` in YAML)
+2. Agent profile field (if `AI_AGENT` / `AI_CONTEXT` set and the agent has a `profile:`)
 3. `profiles.default` (fallback: `telephony_ulaw_8k`)
 
 **Note**: The AI engine reads these variables when the call enters Stasis. Set them **before** calling `Stasis()`.
@@ -310,13 +311,13 @@ exten => s,1,NoOp(Asterisk AI Voice Agent)
 
 **What happens:**
 - Uses `default_provider: local_hybrid` (privacy-focused pipeline)
-- Uses `default` context (generic assistant persona)
+- Uses the default Agent from `agents.db`
 - No variables required!
 
 **How it works:**
 
 - The dialplan always routes the call to `Stasis(asterisk-ai-voice-agent)`.
-- Optionally set `AI_PROVIDER`, `AI_CONTEXT`, and/or `AI_AUDIO_PROFILE` before `Stasis()` to override behavior per extension.
+- Optionally set `AI_PROVIDER`, `AI_AGENT`, and/or `AI_AUDIO_PROFILE` before `Stasis()` to override behavior per extension. `AI_CONTEXT` is accepted only for legacy dialplans.
 - Audio transport (AudioSocket vs ExternalMedia RTP) is determined by your config and should match a validated combination in `Transport-Mode-Compatibility.md`.
 
 No `AudioSocket()` or `ExternalMedia()` needed in dialplan.
@@ -330,7 +331,7 @@ To use a specific provider/pipeline for a call, set `AI_PROVIDER`:
 [from-ai-agent-deepgram]
 exten => s,1,NoOp(AI Agent - Deepgram)
  same => n,Set(AI_PROVIDER=deepgram)           ; Override to Deepgram provider
- same => n,Set(AI_CONTEXT=demo_deepgram)       ; Optional: custom greeting/prompt
+ same => n,Set(AI_AGENT=demo_deepgram)         ; Select agent by slug (AI_CONTEXT=demo_deepgram also works, legacy)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 
@@ -338,7 +339,7 @@ exten => s,1,NoOp(AI Agent - Deepgram)
 [from-ai-agent-openai]
 exten => s,1,NoOp(AI Agent - OpenAI Realtime)
  same => n,Set(AI_PROVIDER=openai_realtime)    ; Override to OpenAI provider
- same => n,Set(AI_CONTEXT=demo_openai)         ; Optional: custom greeting/prompt
+ same => n,Set(AI_AGENT=demo_openai)           ; Select agent by slug (AI_CONTEXT=demo_openai also works, legacy)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 
@@ -346,7 +347,7 @@ exten => s,1,NoOp(AI Agent - OpenAI Realtime)
 [from-ai-agent-hybrid]
 exten => s,1,NoOp(AI Agent - Local Hybrid)
  same => n,Set(AI_PROVIDER=local_hybrid)       ; Override to local_hybrid pipeline
- same => n,Set(AI_CONTEXT=demo_hybrid)         ; Optional: custom greeting/prompt
+ same => n,Set(AI_AGENT=demo_hybrid)           ; Select agent by slug (AI_CONTEXT=demo_hybrid also works, legacy)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```
@@ -363,44 +364,57 @@ exten => s,1,NoOp(AI Agent - Wideband Profile)
  same => n,Hangup()
 ```
 
-### 3.4 Advanced: Context-Based Routing (No Provider Override)
+For AudioSocket, `wideband_pcm_16k` requires Asterisk 20.17+, 21.12+, 22.7+,
+or 23.1+ and a wideband endpoint leg such as G.722. The engine verifies the
+Asterisk version through ARI and rejects an incompatible wideband call cleanly.
+For a SIP trunk, confirm that the provider and the negotiated trunk leg both
+support G.722 before assigning the profile. This profile does not improve a
+PSTN/G.711 leg, which remains limited to 8 kHz.
 
-Use `AI_CONTEXT` alone to change greeting/prompt while keeping the default provider (`local_hybrid`):
+`wideband_pcm_16k` is not supported with ExternalMedia RTP. Use
+`telephony_ulaw_8k` or `telephony_enhanced_8k` for ExternalMedia, or switch the
+global transport to AudioSocket before assigning the wideband profile.
+
+### 3.4 Advanced: Agent-Based Routing (No Provider Override)
+
+Use `AI_AGENT` alone to select an agent and change greeting/prompt while keeping the default provider (`local_hybrid`). `AI_CONTEXT` is also accepted (legacy, equivalent).
 
 ```asterisk
-; Sales context - uses default provider (local_hybrid)
+; Sales agent - uses default provider (local_hybrid)
 [from-ai-agent-sales]
 exten => s,1,NoOp(AI Agent - Sales)
- same => n,Set(AI_CONTEXT=sales)               ; Select sales persona
+ same => n,Set(AI_AGENT=sales)                 ; Select agent by slug (AI_CONTEXT=sales also works, legacy)
  ; AI_PROVIDER not set, uses default_provider from config
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 
-; Support context - uses default provider (local_hybrid)
+; Support agent - uses default provider (local_hybrid)
 [from-ai-agent-support]
 exten => s,1,NoOp(AI Agent - Support)
- same => n,Set(AI_CONTEXT=support)             ; Select support persona
+ same => n,Set(AI_AGENT=support)               ; Select agent by slug
  ; AI_PROVIDER not set, uses default_provider from config
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 
-; Premium customer context - uses default provider (local_hybrid)
+; Premium customer agent - uses default provider (local_hybrid)
 [from-ai-agent-premium]
 exten => s,1,NoOp(AI Agent - Premium Customer)
- same => n,Set(AI_CONTEXT=premium)             ; Select premium persona
+ same => n,Set(AI_AGENT=premium)               ; Select agent by slug
  same => n,Set(CALLERID(name)=${ODBC_CUSTOMER_LOOKUP(${CALLERID(num)})})  ; Optional: CRM lookup
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```
 
-**Note:** Define these contexts in `config/ai-agent.yaml` under `contexts:` section with custom `greeting:` and `prompt:` fields.
+**Note:** Agents are managed in the Admin UI Agents tab or API. On a headless upgrade,
+legacy YAML Contexts are one-time atomic import input only; provision and back up
+`agents.db` for ongoing v7.4 operation. See [AGENTS.md](AGENTS.md).
 
 ### 3.5 Advanced: After-Hours with Custom Greeting
 
 ```asterisk
 [from-ai-agent-after-hours]
 exten => s,1,NoOp(AI Agent - After Hours)
- same => n,Set(AI_CONTEXT=after_hours)
+ same => n,Set(AI_AGENT=after_hours)
  same => n,Set(AI_GREETING=Thank you for calling. Our office is currently closed. I can help answer questions or take a message.)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()

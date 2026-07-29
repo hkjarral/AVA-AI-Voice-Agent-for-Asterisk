@@ -30,47 +30,23 @@ from api.models_catalog import (
     LANGUAGE_NAMES, REGION_NAMES, VOSK_STT_MODELS, SHERPA_STT_MODELS,
     KROKO_STT_MODELS, PIPER_TTS_MODELS, KOKORO_TTS_MODELS, SILERO_TTS_MODELS, LLM_MODELS
 )
+from api.custom_models import merge_into_catalog as _merge_custom_models
 from api.rebuild_jobs import (
     start_rebuild_job, get_rebuild_job, get_enabled_backends,
     is_rebuild_in_progress, BACKEND_BUILD_ARGS, BUILD_TIME_ESTIMATES
+)
+from services.google_live_validation import (
+    GOOGLE_LIVE_DEFAULT_MODEL,
+    GOOGLE_MODELS_URL,
+    build_google_key_validation_result,
+    extract_google_live_models as _extract_google_live_models,
+    select_google_live_model as _select_google_live_model,
 )
 
 router = APIRouter()
 
 DISK_WARNING_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
 DISK_BLOCK_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB (hard stop for downloads)
-GOOGLE_LIVE_DEFAULT_MODEL = "gemini-2.5-flash-native-audio-latest"
-GOOGLE_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-GOOGLE_LIVE_PREFERRED_MODELS = [
-    GOOGLE_LIVE_DEFAULT_MODEL,
-    "gemini-2.5-flash-native-audio-preview-12-2025",
-    "gemini-2.5-flash-native-audio-preview-09-2025",
-    "gemini-live-2.5-flash-native-audio",
-    "gemini-live-2.5-flash-preview-native-audio-09-2025",
-    "gemini-live-2.5-flash-preview",
-]
-
-
-def _extract_google_live_models(models: List[Dict[str, Any]]) -> List[str]:
-    """Extract model names that support bidiGenerateContent (Gemini Live)."""
-    live_models: List[str] = []
-    for model in models:
-        methods = model.get("supportedGenerationMethods", [])
-        if "bidiGenerateContent" in methods:
-            model_name = model.get("name", "").replace("models/", "")
-            if model_name:
-                live_models.append(model_name)
-    return live_models
-
-
-def _select_google_live_model(live_models: List[str]) -> Optional[str]:
-    """Pick the best available Google Live model using preferred order."""
-    for preferred_model in GOOGLE_LIVE_PREFERRED_MODELS:
-        if preferred_model in live_models:
-            return preferred_model
-    if live_models:
-        return live_models[0]
-    return None
 
 
 async def _discover_google_live_model(api_key: str) -> Optional[str]:
@@ -776,6 +752,7 @@ async def load_existing_config():
             "google_key": env_values.get("GOOGLE_API_KEY", ""),
             "elevenlabs_key": env_values.get("ELEVENLABS_API_KEY", ""),
             "elevenlabs_agent_id": env_values.get("ELEVENLABS_AGENT_ID", ""),
+            "xai_key": env_values.get("XAI_API_KEY", ""),
             "local_stt_backend": env_values.get("LOCAL_STT_BACKEND", "vosk"),
             "local_tts_backend": env_values.get("LOCAL_TTS_BACKEND", "piper"),
             "kroko_embedded": _parse_optional_bool(env_values.get("KROKO_EMBEDDED")) is True,
@@ -1104,7 +1081,12 @@ async def get_available_models(language: Optional[str] = None):
         full_catalog["llm"] = LLM_MODELS
     else:
         full_catalog = get_full_catalog()
-    
+
+    # Merge in user-added custom models when the toggle is on. They appear
+    # in the same lists as catalog entries with source="user" so the UI
+    # can badge them appropriately.
+    full_catalog = _merge_custom_models(full_catalog)
+
     # Add recommendation flags based on system
     catalog = {}
     for category, models in full_catalog.items():
@@ -1118,10 +1100,13 @@ async def get_available_models(language: Optional[str] = None):
             system_recommended = False
             if category == "llm":
                 model_id = model.get("id")
-                if model_id == "tinyllama":
+                if model_id == "qwen25_1_5b":
+                    # Best CPU voice model: fast inference, reliable tool calling
+                    system_recommended = meets_ram and cpu_cores >= 4
+                elif model_id == "tinyllama":
                     system_recommended = meets_ram and cpu_cores >= 2
                 elif model_id == "phi3_mini":
-                    system_recommended = meets_ram and cpu_cores >= 4
+                    system_recommended = meets_ram and cpu_cores >= 4 and gpu_detected
                 elif model_id == "llama32_3b":
                     system_recommended = meets_ram and (gpu_detected or cpu_cores >= 6)
                 elif model_id == "mistral_7b_instruct":
@@ -1327,6 +1312,7 @@ class SingleModelDownload(BaseModel):
     model_path: Optional[str] = None
     config_url: Optional[str] = None  # For TTS models that need JSON config
     voice_files: Optional[Dict[str, str]] = None  # For Kokoro TTS voice files
+    vocoder_url: Optional[str] = None  # For Matcha TTS vocoder
     expected_sha256: Optional[str] = None  # Optional integrity check
 
 
@@ -1467,6 +1453,27 @@ async def download_single_model(request: SingleModelDownload):
                 # Clean up archive file after extraction
                 os.remove(temp_file)
                 _job_output(job.id, "🧹 Cleaned up archive file")
+
+                # Download vocoder for Matcha TTS models
+                if request.vocoder_url and request.type == "tts":
+                    # Security: only allow https:// URLs for vocoder downloads
+                    if not request.vocoder_url.startswith(("https://", "http://")):
+                        _job_output(job.id, f"⚠️ Vocoder URL rejected (invalid scheme): {request.vocoder_url}")
+                    else:
+                        vocoder_dir = os.path.join(target_dir, root_folder) if root_folder else target_dir
+                        vocoder_filename = os.path.basename(request.vocoder_url)
+                        vocoder_dest = os.path.join(vocoder_dir, vocoder_filename)
+                        _job_output(job.id, f"📥 Downloading vocoder: {vocoder_filename}...")
+                        try:
+                            tmp_voc = vocoder_dest + f".{uuid.uuid4().hex}.part"
+                            urllib.request.urlretrieve(request.vocoder_url, tmp_voc)
+                            voc_sha = _sha256_file(tmp_voc)
+                            shutil.move(tmp_voc, vocoder_dest)
+                            _write_sha256_sidecar(vocoder_dest, voc_sha)
+                            _job_output(job.id, f"✅ Vocoder saved to {vocoder_dest}")
+                        except Exception as voc_err:
+                            _job_output(job.id, f"❌ Vocoder download failed: {voc_err}")
+                            _job_output(job.id, "⚠️ Matcha TTS may not work without vocoder")
             else:
                 # Single file - rename to model_path or keep original name
                 # Special handling for Kokoro which uses a directory structure
@@ -1976,6 +1983,7 @@ async def download_selected_models(selection: ModelSelection):
                 if stt_backend == "sherpa":
                     stt_path = _safe_join_under_dir("/app/models/stt", stt_model["model_path"])
                     env_updates.append(f"SHERPA_MODEL_PATH={stt_path}")
+                    env_updates.append(f"SHERPA_MODEL_TYPE={stt_model.get('model_type', 'online')}")
                 elif stt_backend == "kroko":
                     if selection.kroko_embedded:
                         stt_path = _safe_join_under_dir("/app/models/kroko", stt_model["model_path"])
@@ -2430,11 +2438,17 @@ async def get_local_server_logs():
         ready = "Enhanced Local AI Server started" in all_logs or \
                 "All models loaded successfully" in all_logs or \
                 "models loaded" in all_logs.lower()
-        
+
+        # Detect first-run HuggingFace model downloads so the frontend can extend
+        # its polling timeout beyond the normal 2-minute window.
+        _DOWNLOAD_MARKERS = ("Downloading ", "huggingface_hub", "from_pretrained", "fetching model")
+        downloading = (not ready) and any(m.lower() in all_logs.lower() for m in _DOWNLOAD_MARKERS)
+
         return {
             "logs": lines[-20:],
             "ready": ready,
-            "phase": "running" if ready else "starting"
+            "phase": "running" if ready else ("downloading" if downloading else "starting"),
+            "downloading": downloading,
         }
     except subprocess.TimeoutExpired:
         return {"logs": [], "ready": False, "error": "Timeout getting logs"}
@@ -2682,36 +2696,44 @@ async def validate_api_key(validation: ApiKeyValidation):
                     timeout=10.0
                 )
                 if response.status_code == 200:
-                    # Check if the required model with bidiGenerateContent is available
                     data = response.json()
                     models = data.get("models", [])
-
-                    # Find models that support bidiGenerateContent (required for Live API)
-                    live_models = _extract_google_live_models(models)
-                    
-                    if not live_models:
-                        return {
-                            "valid": False, 
-                            "error": "API key valid but no Live API models available. Your API key doesn't have access to Gemini Live models (bidiGenerateContent). Try creating a new key at aistudio.google.com"
-                        }
-                    
-                    selected_model = _select_google_live_model(live_models)
-                    if selected_model:
-                        return {
-                            "valid": True,
-                            "message": f"Google API key is valid. Live model '{selected_model}' is available.",
-                            "selected_model": selected_model,
-                            "available_models": live_models,
-                        }
-
-                    # Defensive fallback (should not happen if live_models is non-empty)
+                    return build_google_key_validation_result(models)
+                elif response.status_code in [400, 401]:
+                    return {"valid": False, "error": "Invalid API key"}
+                elif response.status_code == 403:
+                    detail = response.text if hasattr(response, "text") else ""
+                    try:
+                        payload = response.json()
+                    except ValueError:
+                        payload = None
+                    if isinstance(payload, dict):
+                        error_detail = payload.get("error", {})
+                        if isinstance(error_detail, dict):
+                            detail = error_detail.get("message", "") or detail
+                        elif isinstance(error_detail, str):
+                            detail = error_detail or detail
+                    return {
+                        "valid": False,
+                        "error": detail or (
+                            "Google API access denied. Verify API enablement, key restrictions, "
+                            "and project permissions."
+                        ),
+                    }
+                elif response.status_code == 429:
                     return {
                         "valid": True,
-                        "message": f"Google API key is valid. Available Live models: {', '.join(live_models[:3])}",
-                        "available_models": live_models,
+                        "message": (
+                            "Google API key appears valid, but model discovery is currently "
+                            "rate-limited. Setup will continue using the default Gemini Live model."
+                        ),
+                        "warning": (
+                            "Google model discovery is rate-limited. Setup will continue using "
+                            f"{GOOGLE_LIVE_DEFAULT_MODEL}; verify quota in AI Studio if calls fail."
+                        ),
+                        "selected_model": GOOGLE_LIVE_DEFAULT_MODEL,
+                        "available_models": [],
                     }
-                elif response.status_code in [400, 403]:
-                    return {"valid": False, "error": "Invalid API key"}
                 else:
                     return {"valid": False, "error": f"API error: HTTP {response.status_code}"}
             
@@ -2758,7 +2780,46 @@ async def validate_api_key(validation: ApiKeyValidation):
                         return {"valid": False, "error": error_msg}
                     else:
                         return {"valid": False, "error": f"API error: HTTP {response.status_code}"}
-            
+
+            elif provider == "grok":
+                # xAI exposes an OpenAI-compatible /v1/models endpoint.
+                # 200 = key valid; 403 with team_blocked usually means "no credits/license yet".
+                response = await client.get(
+                    "https://api.x.ai/v1/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=10.0,
+                )
+                if response.status_code == 200:
+                    return {"valid": True, "message": "xAI API key is valid"}
+                if response.status_code == 401:
+                    return {"valid": False, "error": "Invalid xAI API key"}
+                if response.status_code == 403:
+                    detail = ""
+                    try:
+                        body = response.json()
+                        # xAI sometimes returns {"error": {"message": "..."}} (Google-like shape)
+                        # and sometimes {"error": "string"}. Unwrap the nested message
+                        # so the UI doesn't show "Details: {'message': ...}" verbatim
+                        # (CodeRabbit on PR #396).
+                        error = body.get("error")
+                        if isinstance(error, dict):
+                            detail = error.get("message") or error.get("code") or ""
+                        elif isinstance(error, str):
+                            detail = error
+                        else:
+                            detail = body.get("message") or ""
+                    except ValueError:
+                        detail = response.text or ""
+                    return {
+                        "valid": False,
+                        "error": (
+                            "xAI rejected the key (403). Common cause: team has no credits or licenses yet — "
+                            "add credits at https://console.x.ai/."
+                            + (f" Details: {detail}" if detail else "")
+                        ),
+                    }
+                return {"valid": False, "error": f"API error: HTTP {response.status_code}"}
+
             else:
                 return {"valid": False, "error": f"Unknown provider: {provider}"}
                 
@@ -2872,6 +2933,7 @@ class SetupConfig(BaseModel):
     elevenlabs_key: Optional[str] = None
     elevenlabs_agent_id: Optional[str] = None
     cartesia_key: Optional[str] = None
+    xai_key: Optional[str] = None
     greeting: str
     ai_name: str
     ai_role: str
@@ -2894,19 +2956,15 @@ class SetupConfig(BaseModel):
 
 # ... (keep existing endpoints) ...
 
-@router.post("/save")
-async def save_setup_config(config: SetupConfig):
-    """Persist wizard configuration into `.env` and baseline config files."""
-    # Validation: Check for required keys based on provider
+def _validate_setup_provider_credentials(config: SetupConfig) -> None:
+    """Validate only credentials owned by the selected setup target."""
     if config.provider == "openai_realtime" and not config.openai_key:
-            raise HTTPException(status_code=400, detail="OpenAI API Key is required for OpenAI Realtime provider")
+        raise HTTPException(status_code=400, detail="OpenAI API Key is required for OpenAI Realtime provider")
     if config.provider == "deepgram":
         if not config.deepgram_key:
             raise HTTPException(status_code=400, detail="Deepgram API Key is required for Deepgram provider")
-        if not config.openai_key:
-            raise HTTPException(status_code=400, detail="OpenAI API Key is required for Deepgram Think stage")
     if config.provider == "google_live" and not config.google_key:
-            raise HTTPException(status_code=400, detail="Google API Key is required for Google Live provider")
+        raise HTTPException(status_code=400, detail="Google API Key is required for Google Live provider")
     # Local hybrid uses a cloud LLM (Groq/OpenAI) or Ollama
     if config.provider == "local_hybrid":
         llm_provider = (config.hybrid_llm_provider or "groq").lower()
@@ -2919,6 +2977,14 @@ async def save_setup_config(config: SetupConfig):
             raise HTTPException(status_code=400, detail="ElevenLabs API Key is required for ElevenLabs Conversational provider")
         if not config.elevenlabs_agent_id:
             raise HTTPException(status_code=400, detail="ElevenLabs Agent ID is required for ElevenLabs Conversational provider")
+    if config.provider == "grok" and not config.xai_key:
+        raise HTTPException(status_code=400, detail="xAI API Key is required for Grok Voice Agent provider")
+
+
+@router.post("/save")
+async def save_setup_config(config: SetupConfig):
+    """Persist wizard configuration into `.env` and baseline config files."""
+    _validate_setup_provider_credentials(config)
 
     try:
         import shutil
@@ -2960,6 +3026,8 @@ async def save_setup_config(config: SetupConfig):
             env_updates["ELEVENLABS_AGENT_ID"] = config.elevenlabs_agent_id
         if config.cartesia_key:
             env_updates["CARTESIA_API_KEY"] = config.cartesia_key
+        if config.xai_key:
+            env_updates["XAI_API_KEY"] = config.xai_key
 
         if config.provider in ("local", "local_hybrid"):
             catalog = get_full_catalog()
@@ -3008,6 +3076,7 @@ async def save_setup_config(config: SetupConfig):
             stt_model_path = (stt_model or {}).get("model_path")
             if stt_backend == "sherpa" and stt_model_path:
                 env_updates["SHERPA_MODEL_PATH"] = _safe_join_under_dir("/app/models/stt", stt_model_path)
+                env_updates["SHERPA_MODEL_TYPE"] = (stt_model or {}).get("model_type", "online")
             elif stt_backend == "kroko":
                 env_updates["KROKO_EMBEDDED"] = "1" if config.kroko_embedded else "0"
                 if config.kroko_api_key:
@@ -3087,6 +3156,13 @@ async def save_setup_config(config: SetupConfig):
         if not yaml_config and os.path.exists(CONFIG_PATH):
             with open(CONFIG_PATH, "r") as f:
                 yaml_config = yaml.safe_load(f)
+        pipeline_name = None
+        if config.provider == "local_hybrid":
+            llm_provider = (config.hybrid_llm_provider or "groq").lower()
+            pipeline_name = "local_hybrid_groq" if llm_provider == "groq" else (
+                "local_hybrid_ollama" if llm_provider == "ollama" else "local_hybrid"
+            )
+
         if yaml_config is not None:
             pre_edit_config = copy.deepcopy(yaml_config) if isinstance(yaml_config, dict) else {}
             
@@ -3110,7 +3186,7 @@ async def save_setup_config(config: SetupConfig):
                     )
             
             # Full agent providers - clear active_pipeline when setting as default
-            if config.provider in ["openai_realtime", "deepgram", "google_live", "elevenlabs_agent", "local"]:
+            if config.provider in ["openai_realtime", "deepgram", "google_live", "elevenlabs_agent", "local", "grok"]:
                 yaml_config["default_provider"] = config.provider
                 yaml_config["active_pipeline"] = None  # Full agents don't use pipelines
             
@@ -3119,8 +3195,11 @@ async def save_setup_config(config: SetupConfig):
                 # Only set full config if provider doesn't exist yet
                 if not provider_exists("openai_realtime"):
                     providers["openai_realtime"].update({
-                        "api_version": "beta",
-                        "model": "gpt-4o-realtime-preview-2024-12-17",
+                        # GA defaults — OpenAI sunset the Beta Realtime API on
+                        # 2026-05-12 and removed gpt-4o-realtime-preview-* on
+                        # 2026-05-07. See docs/MIGRATION.md.
+                        "api_version": "ga",
+                        "model": "gpt-realtime",
                         "voice": "alloy",
                         "input_encoding": "ulaw",
                         "input_sample_rate_hz": 8000,
@@ -3142,7 +3221,9 @@ async def save_setup_config(config: SetupConfig):
                 providers.setdefault("deepgram", {})["enabled"] = True
                 if not provider_exists("deepgram"):
                     providers["deepgram"].update({
-                        "model": "nova-2-general",
+                        # Aligned with shipped config/ai-agent.yaml + DeepgramProviderConfig
+                        # default. Pre-v6.5.0 runtime hardcoded nova-3 regardless of config.
+                        "model": "nova-3",
                         "tts_model": "aura-asteria-en",
                         "input_encoding": "mulaw",
                         "input_sample_rate_hz": 8000,
@@ -3186,6 +3267,38 @@ async def save_setup_config(config: SetupConfig):
                         "target_sample_rate_hz": 8000
                     })
 
+            elif config.provider == "grok":
+                providers.setdefault("grok", {})["enabled"] = True
+                if not provider_exists("grok"):
+                    providers["grok"].update({
+                        "type": "grok",
+                        "api_key": "${XAI_API_KEY}",
+                        "base_url": "wss://api.x.ai/v1/realtime",
+                        "model": "grok-voice-latest",
+                        "voice": "eve",
+                        "capabilities": ["stt", "llm", "tts"],
+                        # Audio: μ-law in / PCM16-24k out (xAI emits 24 kHz PCM16 regardless of
+                        # output_format declaration). See docs/Provider-Grok-Setup.md.
+                        "input_encoding": "ulaw",
+                        "input_sample_rate_hz": 8000,
+                        "provider_input_encoding": "ulaw",
+                        "provider_input_sample_rate_hz": 8000,
+                        "output_encoding": "linear16",
+                        "output_sample_rate_hz": 24000,
+                        "target_encoding": "ulaw",
+                        "target_sample_rate_hz": 8000,
+                        "response_modalities": ["audio", "text"],
+                        "turn_detection": {
+                            "type": "server_vad",
+                            "threshold": 0.5,
+                            "silence_duration_ms": 1000,
+                            "prefix_padding_ms": 300,
+                        },
+                        "session_warn_after_seconds": 1680,  # 28 min (30-min xAI hard cap)
+                    })
+                providers["grok"]["greeting"] = config.greeting
+                providers["grok"]["instructions"] = f"You are {config.ai_name}, a {config.ai_role}. Be helpful and concise. Always speak your responses out loud."
+
             elif config.provider == "local":
                 providers.setdefault("local", {})["enabled"] = True
                 if not provider_exists("local"):
@@ -3205,9 +3318,6 @@ async def save_setup_config(config: SetupConfig):
                 # AAVA-185: Use variant-specific pipeline name so the dashboard
                 # correctly highlights the active pipeline (e.g. local_hybrid_groq).
                 llm_provider = (config.hybrid_llm_provider or "groq").lower()
-                pipeline_name = "local_hybrid_groq" if llm_provider == "groq" else (
-                    "local_hybrid_ollama" if llm_provider == "ollama" else "local_hybrid"
-                )
                 yaml_config["active_pipeline"] = pipeline_name
                 yaml_config["default_provider"] = pipeline_name  # Fallback provider
                 
@@ -3283,16 +3393,9 @@ async def save_setup_config(config: SetupConfig):
                     "tts": "local_tts"
                 }
 
-            # C6 Fix: Create default context
-            default_context = {
-                "greeting": config.greeting,
-                "prompt": f"You are {config.ai_name}, a {config.ai_role}. Be helpful and concise.",
-                "provider": config.provider if config.provider != "local_hybrid" else "local",
-                "profile": "telephony_ulaw_8k"
-            }
-            if config.provider == "local_hybrid":
-                default_context["pipeline"] = pipeline_name
-            yaml_config.setdefault("contexts", {})["default"] = default_context
+            # v7.4: Agents are the only active persona/configuration model. Do not
+            # create a new YAML Context; existing legacy Contexts are left untouched
+            # so the one-time migration bridge can import them safely.
 
             # Canonical: ARI application name is YAML-owned (asterisk.app_name).
             asterisk_block = yaml_config.get("asterisk")
@@ -3335,9 +3438,34 @@ async def save_setup_config(config: SetupConfig):
                 yaml.dump(local_override, default_flow_style=False, sort_keys=False),
                 mode_from_existing=True,
             )
+
+        # Seed only a genuinely empty, non-legacy install. This is independent of
+        # YAML write success; pending Contexts remain reserved for the engine's
+        # atomic one-time importer and must never be shadowed by starter rows.
+        from agents_migration import merged_effective_contexts
+        from agents_store import AgentsStore
+        from starter_agents import seed_starter_agents
+        starter_pipeline = pipeline_name if config.provider == "local_hybrid" else None
+        starter_provider = "local" if starter_pipeline else config.provider
+        with AgentsStore() as agent_store:
+            starter_result = seed_starter_agents(
+                agent_store,
+                provider=starter_provider,
+                pipeline=starter_pipeline,
+                assistant_name=config.ai_name,
+                assistant_role=config.ai_role,
+                receptionist_greeting=config.greeting,
+                legacy_contexts=merged_effective_contexts(
+                    CONFIG_PATH, os.path.join(os.path.dirname(CONFIG_PATH), "contexts")
+                ),
+            )
         
         # Config saved - engine start will be handled by completion step UI
-        return {"status": "success", "provider": config.provider}
+        return {
+            "status": "success",
+            "provider": config.provider,
+            "starter_agents": starter_result,
+        }
     except HTTPException:
         raise
     except Exception as e:

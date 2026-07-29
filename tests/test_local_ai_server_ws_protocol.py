@@ -13,7 +13,8 @@ def _load_ws_protocol_modules():
     try:
         ws_protocol = importlib.import_module("ws_protocol")
         session_mod = importlib.import_module("session")
-        return ws_protocol, session_mod
+        constants_mod = importlib.import_module("constants")
+        return ws_protocol, session_mod, constants_mod
     finally:
         if sys.path and sys.path[0] == str(local_ai_dir):
             sys.path.pop(0)
@@ -24,6 +25,16 @@ class _FakeServer:
         self.ws_auth_token = None
         self.sent_payloads = []
         self.clear_calls = []
+        self.cancel_calls = []
+        self.rollback_calls = []
+
+    def _apply_tts_output_preferences(self, session, data, *, reset_if_missing=False):
+        encoding = data.get("output_encoding")
+        rate = data.get("output_sample_rate_hz")
+        if encoding is None and rate is None and not reset_if_missing:
+            return
+        session.tts_output_encoding = encoding or "mulaw"
+        session.tts_output_sample_rate_hz = int(rate or 8000)
 
     async def _send_json(self, _websocket, payload):
         self.sent_payloads.append(payload)
@@ -31,10 +42,114 @@ class _FakeServer:
     def _clear_whisper_stt_suppression(self, session, *, reason: str):
         self.clear_calls.append({"call_id": session.call_id, "reason": reason})
 
+    def _cancel_session_response_tasks(self, session, *, reason: str):
+        session.output_generation += 1
+        self.cancel_calls.append({"call_id": session.call_id, "reason": reason})
+
+    def _rollback_interrupted_exchange(self, session):
+        self.rollback_calls.append(session.call_id)
+
+
+@pytest.mark.asyncio
+async def test_set_mode_applies_scoped_whisper_segmenter_policy():
+    ws_protocol_mod, session_mod, _constants_mod = _load_ws_protocol_modules()
+    protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
+    session = session_mod.SessionContext(call_id="seed")
+
+    await protocol.handle_json_message(
+        websocket=None,
+        session=session,
+        message=(
+            '{"type":"set_mode","mode":"stt","call_id":"call-policy",'
+            '"segment_energy_threshold":800,"segment_silence_ms":1200}'
+        ),
+    )
+
+    assert session.stt_segment_energy_threshold == 800
+    assert session.stt_segment_silence_ms == 1200
+    assert protocol._server.sent_payloads[-1] == {
+        "type": "mode_ready",
+        "mode": "stt",
+        "call_id": "call-policy",
+        "segment_energy_threshold": 800,
+        "segment_silence_ms": 1200,
+        "output_encoding": "mulaw",
+        "output_sample_rate_hz": 8000,
+    }
+
+
+@pytest.mark.asyncio
+async def test_set_mode_ignores_invalid_whisper_segmenter_policy(caplog):
+    ws_protocol_mod, session_mod, _constants_mod = _load_ws_protocol_modules()
+    protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
+    session = session_mod.SessionContext(call_id="seed")
+
+    with caplog.at_level("WARNING"):
+        await protocol.handle_json_message(
+            websocket=None,
+            session=session,
+            message=(
+                '{"type":"set_mode","mode":"stt","call_id":"call-invalid",'
+                '"segment_energy_threshold":true,"segment_silence_ms":50}'
+            ),
+        )
+
+    assert session.stt_segment_energy_threshold is None
+    assert session.stt_segment_silence_ms is None
+    assert caplog.text.count("Ignoring invalid Local STT session option") == 2
+
+
+@pytest.mark.asyncio
+async def test_set_mode_omission_restores_server_segmenter_defaults():
+    ws_protocol_mod, session_mod, _constants_mod = _load_ws_protocol_modules()
+    protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
+    session = session_mod.SessionContext(call_id="call-policy")
+    session.stt_segment_energy_threshold = 800
+    session.stt_segment_silence_ms = 1200
+
+    await protocol.handle_json_message(
+        websocket=None,
+        session=session,
+        message='{"type":"set_mode","mode":"stt","call_id":"call-defaults"}',
+    )
+
+    assert session.stt_segment_energy_threshold is None
+    assert session.stt_segment_silence_ms is None
+    assert protocol._server.sent_payloads[-1] == {
+        "type": "mode_ready",
+        "mode": "stt",
+        "call_id": "call-defaults",
+        "segment_energy_threshold": None,
+        "segment_silence_ms": None,
+        "output_encoding": "mulaw",
+        "output_sample_rate_hz": 8000,
+    }
+
+
+@pytest.mark.asyncio
+async def test_set_mode_negotiates_per_session_tts_output():
+    ws_protocol_mod, session_mod, _constants_mod = _load_ws_protocol_modules()
+    protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
+    session = session_mod.SessionContext(call_id="seed")
+
+    await protocol.handle_json_message(
+        websocket=None,
+        session=session,
+        message=(
+            '{"type":"set_mode","mode":"tts","call_id":"call-wideband",'
+            '"output_encoding":"linear16","output_sample_rate_hz":16000}'
+        ),
+    )
+
+    assert session.tts_output_encoding == "linear16"
+    assert session.tts_output_sample_rate_hz == 16000
+    assert protocol._server.sent_payloads[-1]["output_encoding"] == "linear16"
+    assert protocol._server.sent_payloads[-1]["output_sample_rate_hz"] == 16000
+
 
 @pytest.mark.asyncio
 async def test_ws_protocol_handles_barge_in_and_returns_ack():
-    ws_protocol_mod, session_mod = _load_ws_protocol_modules()
+    ws_protocol_mod, session_mod, _constants_mod = _load_ws_protocol_modules()
     protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
     session = session_mod.SessionContext(call_id="seed")
 
@@ -55,7 +170,7 @@ async def test_ws_protocol_handles_barge_in_and_returns_ack():
 
 @pytest.mark.asyncio
 async def test_ws_protocol_normalizes_hyphenated_barge_type():
-    ws_protocol_mod, session_mod = _load_ws_protocol_modules()
+    ws_protocol_mod, session_mod, _constants_mod = _load_ws_protocol_modules()
     protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
     session = session_mod.SessionContext(call_id="seed")
 
@@ -68,3 +183,133 @@ async def test_ws_protocol_normalizes_hyphenated_barge_type():
     assert protocol._server.clear_calls == [{"call_id": "call-xyz", "reason": "engine_barge_in"}]
     assert protocol._server.sent_payloads[-1]["type"] == "barge_in_ack"
     assert protocol._server.sent_payloads[-1]["request_id"] == "barge-2"
+
+
+@pytest.mark.asyncio
+async def test_ws_protocol_uses_stop_session_cancellation_reason():
+    ws_protocol_mod, session_mod, _constants_mod = _load_ws_protocol_modules()
+    protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
+    session = session_mod.SessionContext(call_id="call-stop")
+
+    await protocol.handle_json_message(
+        websocket=None,
+        session=session,
+        message=(
+            '{"type":"barge_in","call_id":"call-stop",'
+            '"request_id":"stop-1","reason":"stop_session"}'
+        ),
+    )
+
+    assert protocol._server.cancel_calls == [
+        {"call_id": "call-stop", "reason": "stop_session"}
+    ]
+    assert protocol._server.clear_calls == [
+        {"call_id": "call-stop", "reason": "engine_stop_session"}
+    ]
+    assert protocol._server.sent_payloads[-1]["type"] == "barge_in_ack"
+
+
+@pytest.mark.asyncio
+async def test_ws_protocol_rolls_back_interrupted_exchange_when_requested():
+    ws_protocol_mod, session_mod, _constants_mod = _load_ws_protocol_modules()
+    protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
+    session = session_mod.SessionContext(call_id="call-rollback")
+
+    await protocol.handle_json_message(
+        websocket=None,
+        session=session,
+        message=(
+            '{"type":"barge_in","call_id":"call-rollback",'
+            '"request_id":"barge-rollback","rollback_assistant":true}'
+        ),
+    )
+
+    assert protocol._server.rollback_calls == ["call-rollback"]
+
+
+@pytest.mark.asyncio
+async def test_stop_session_never_rolls_back_conversation_history():
+    ws_protocol_mod, session_mod, _constants_mod = _load_ws_protocol_modules()
+    protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
+    session = session_mod.SessionContext(call_id="call-stop")
+
+    await protocol.handle_json_message(
+        websocket=None,
+        session=session,
+        message=(
+            '{"type":"barge_in","call_id":"call-stop",'
+            '"reason":"stop_session","rollback_assistant":true}'
+        ),
+    )
+
+    assert protocol._server.rollback_calls == []
+
+
+# MED-R5: protocol-version handshake
+
+
+@pytest.mark.asyncio
+async def test_matching_protocol_version_does_not_warn(caplog):
+    ws_protocol_mod, session_mod, constants_mod = _load_ws_protocol_modules()
+    protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
+    session = session_mod.SessionContext(call_id="call-ok")
+
+    with caplog.at_level("WARNING"):
+        await protocol.handle_json_message(
+            websocket=None,
+            session=session,
+            message=(
+                '{"type":"barge_in","call_id":"call-ok",'
+                f'"protocol_version":{constants_mod.PROTOCOL_VERSION}}}'
+            ),
+        )
+
+    assert "PROTOCOL MISMATCH" not in caplog.text
+    assert session.protocol_version_warned is False
+    # Message still processed normally.
+    assert protocol._server.sent_payloads[-1]["type"] == "barge_in_ack"
+
+
+@pytest.mark.asyncio
+async def test_mismatched_protocol_version_warns_once_but_still_processes(caplog):
+    ws_protocol_mod, session_mod, constants_mod = _load_ws_protocol_modules()
+    protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
+    session = session_mod.SessionContext(call_id="call-skew")
+    bad_version = constants_mod.PROTOCOL_VERSION + 99
+
+    with caplog.at_level("WARNING"):
+        await protocol.handle_json_message(
+            websocket=None,
+            session=session,
+            message=(
+                '{"type":"barge_in","call_id":"call-skew",'
+                f'"protocol_version":{bad_version}}}'
+            ),
+        )
+        # Second mismatched message must not warn again.
+        await protocol.handle_json_message(
+            websocket=None,
+            session=session,
+            message=(
+                '{"type":"barge_in","call_id":"call-skew",'
+                f'"protocol_version":{bad_version}}}'
+            ),
+        )
+
+    assert caplog.text.count("PROTOCOL MISMATCH") == 1
+    assert session.protocol_version_warned is True
+    # Mismatch is best-effort: the message is still handled (call not dropped).
+    assert protocol._server.sent_payloads[-1]["type"] == "barge_in_ack"
+
+
+def test_protocol_version_is_single_source_of_truth():
+    """Server-emitted protocol_version literals must come from constants.PROTOCOL_VERSION."""
+    _ws, _session, constants_mod = _load_ws_protocol_modules()
+    server_src = (
+        Path(__file__).resolve().parents[1] / "local_ai_server" / "server.py"
+    ).read_text()
+    # No bare numeric protocol_version literals should remain in server.py.
+    assert '"protocol_version": 2' not in server_src
+    assert "protocol_version" in server_src
+    assert server_src.count('"protocol_version": PROTOCOL_VERSION') >= 2
+    assert isinstance(constants_mod.PROTOCOL_VERSION, int)

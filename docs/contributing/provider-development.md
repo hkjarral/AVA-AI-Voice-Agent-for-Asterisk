@@ -11,7 +11,7 @@ AAVA has two ways to integrate AI providers:
 Monolithic providers that handle STT+LLM+TTS as a single streaming session. These connect via WebSocket and manage the entire conversation flow.
 
 - **Location**: `src/providers/`
-- **Examples**: `openai_realtime.py`, `deepgram.py`, `google_live.py`, `elevenlabs.py`
+- **Examples**: `openai_realtime.py`, `deepgram.py`, `google_live.py`, `elevenlabs_agent.py`
 - **When to use**: When the provider offers an all-in-one voice API
 
 ### 2. Pipeline Adapters
@@ -19,7 +19,7 @@ Monolithic providers that handle STT+LLM+TTS as a single streaming session. Thes
 Modular components that slot into the STT/LLM/TTS pipeline. Each adapter handles one piece of the pipeline and can be mixed with other adapters.
 
 - **Location**: `src/pipelines/`
-- **Examples**: `google.py` (google_stt, google_tts), `elevenlabs_tts.py`, `groq.py`
+- **Examples**: `google.py` (google_stt, google_tts), `elevenlabs.py`, `groq.py`
 - **When to use**: When adding a standalone STT, LLM, or TTS service
 
 ## Tutorial: Adding a Pipeline Adapter
@@ -140,3 +140,28 @@ Create `docs/Provider-MyProvider-Setup.md` following the pattern of existing set
   - [Provider-Deepgram-Setup.md](../Provider-Deepgram-Setup.md)
   - [Provider-OpenAI-Setup.md](../Provider-OpenAI-Setup.md)
   - [Provider-ElevenLabs-Setup.md](../Provider-ElevenLabs-Setup.md)
+
+## Voice capability matrix (v7.3.0+)
+
+When adding or changing a provider, declare how it handles per-agent voice and keep this
+matrix + `src/utils/voice_catalog.py` in sync (the catalog is the single source consumed by
+both the engine's soft validation and `GET /api/config/providers/meta`, which drives the
+Agent form's voice control).
+
+| Kind | voice_mode | Config field | Session-settable? | Runtime validation |
+|---|---|---|---|---|
+| `openai_realtime` | `static` | `voice` | ✅ `session.update` at start | Closed GA list (`OPENAI_GA_VOICES`) — unknown → warn + fall back to provider default |
+| `grok` | `freeform` | `voice` | ✅ session config | None (custom clone IDs are valid) |
+| `google_live` | `static` | `tts_voice_name` | ✅ `prebuiltVoiceConfig` in setup | Known prebuilt catalog (`known_voice_map`, case-insensitive canonicalization) — unknown → warn + fall back to configured voice. voice_mode matches the runtime: closed catalog → `static` UI, never a free-text hint |
+| `deepgram` | `static` | `tts_model` | ✅ Settings message — **must cover BOTH the primary payload and `_last_settings_minimal` (retry)**; both consume the `speak_model` local via `resolve_speak_model()` | Known Aura catalog — unknown → warn + fall back to configured model |
+| `elevenlabs_agent` | `platform_managed` | — | ❌ voice baked into the platform agent | Override ignored with explanatory log |
+| `local`, modular adapters | `unsupported` | pipeline TTS options | — | Per-agent voice N/A (future work) |
+
+For a NEW provider with voices:
+1. Read `context.get("voice")` at session setup with fallback to your config field
+   (see `_set_session_voice_from_context` in `openai_realtime.py`/`grok.py` for the pattern;
+   soft validation ONLY if the provider's voice list is closed — never fail a call on a
+   voice value).
+2. Add the kind + catalog to `src/utils/voice_catalog.py` (voice_mode, voices, voice_field).
+3. Add tests mirroring `tests/test_agent_voice_override_v730.py`.
+4. Update `docs/VOICE_SELECTION.md`'s per-provider table.

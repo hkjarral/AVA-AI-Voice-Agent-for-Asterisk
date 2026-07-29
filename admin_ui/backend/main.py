@@ -114,8 +114,9 @@ if _is_remote_bind and _raw_jwt_secret in _placeholder_secrets:
         _uvicorn_host,
     )
 
-from api import config, system, wizard, logs, local_ai, ollama, mcp, calls, outbound, tools, docs  # noqa: E402
+from api import config, system, live_status, wizard, logs, local_ai, ollama, mcp, calls, outbound, vicidial, tools, docs, custom_models, agents, support  # noqa: E402
 import auth  # noqa: E402
+from agents_store import AgentsStore  # noqa: E402
 
 # Allow disabling API docs in production for security hardening
 _enable_api_docs = os.getenv("ENABLE_API_DOCS", "true").lower() in ("1", "true", "yes")
@@ -151,7 +152,7 @@ Most endpoints require JWT authentication. Obtain a token via `POST /api/auth/lo
 |---------|-----------|
 | **AI Engine Health Server** (port 15000) | `/health`, `/metrics`, `/live`, `/ready`, `/reload` |
 """,
-    version="6.2.0",
+    version="7.4.0",
     docs_url="/docs" if _enable_api_docs else None,
     redoc_url="/redoc" if _enable_api_docs else None,
     openapi_url="/openapi.json" if _enable_api_docs else None,
@@ -161,18 +162,32 @@ Most endpoints require JWT authentication. Obtain a token via `POST /api/auth/lo
         {"name": "system", "description": "System operations, containers, updates, health"},
         {"name": "wizard", "description": "Setup wizard and local AI model downloads"},
         {"name": "local-ai", "description": "Local AI server management"},
+        {"name": "agents", "description": "Agents (v7) — CRUD, per-agent stats, dialplan snippets, templates, and YAML→DB migration status"},
         {"name": "calls", "description": "Call history and analytics"},
         {"name": "outbound", "description": "Outbound campaigns and lead management"},
-        {"name": "tools", "description": "Tool catalog and HTTP tool testing"},
+        {"name": "tools", "description": "Tool catalog, HTTP tool testing, and managed HTTP/webhook tool CRUD"},
         {"name": "logs", "description": "Container logs and events"},
         {"name": "mcp", "description": "MCP server status (proxied from AI Engine)"},
         {"name": "ollama", "description": "Ollama integration testing"},
         {"name": "documentation", "description": "In-app documentation browser"},
+        {"name": "custom-models", "description": "Community-contributed model entries (off by default)"},
     ],
 )
 
-# Initialize users (create default admin if needed)
-auth.load_users()
+# Initialize users — generate a random one-time password on first run.
+_first_run_pw = auth.ensure_default_user()
+if _first_run_pw:
+    _log = logging.getLogger(__name__)
+    _log.warning("=" * 60)
+    _log.warning("ONE-TIME ADMIN PASSWORD (username: admin) — change at first login")
+    _log.warning("Password: %s", _first_run_pw)
+    _log.warning(
+        "Also saved to root-only file: %s", auth.FIRST_RUN_PASSWORD_PATH
+    )
+    _log.warning(
+        "If these logs are rotated/forwarded away, read the file above (host: ./config/.first-run-password)."
+    )
+    _log.warning("=" * 60)
 
 # Warn if JWT_SECRET isn't set (localhost-only is okay for dev)
 if getattr(auth, "USING_PLACEHOLDER_SECRET", False):
@@ -180,6 +195,32 @@ if getattr(auth, "USING_PLACEHOLDER_SECRET", False):
         "JWT_SECRET is missing/placeholder; Admin UI is using an insecure secret. "
         "Set JWT_SECRET in .env for production (recommended: openssl rand -hex 32)."
     )
+
+# The engine owns the one-time, atomic legacy Context import in v7.4.0. Keeping
+# Context import out of Admin UI startup avoids a race where two services import
+# the same empty store with different validation and promotion semantics. For an
+# existing store only, run the additive schema initializer and the explicit,
+# one-time legacy resource-policy promotion before the first authenticated API
+# visit. Ordinary API store construction never scans or mutates Agent rows, and
+# Agent CRUD returns 409 while legacy Contexts exist but the store is still empty.
+app.state.agents_migration_result = None
+_existing_agents_db = os.path.abspath(
+    os.getenv("AGENTS_DB_PATH", "/app/data/operator/agents.db")
+)
+if os.path.exists(_existing_agents_db):
+    try:
+        _schema_store = AgentsStore(db_path=_existing_agents_db)
+        _resource_rows_upgraded = _schema_store.upgrade_legacy_resource_policies()
+        _schema_store.close()
+        logging.getLogger(__name__).info(
+            "Existing Agent store schema is current: %s (resource policies upgraded: %s)",
+            _existing_agents_db,
+            _resource_rows_upgraded,
+        )
+    except Exception as _schema_error:
+        logging.getLogger(__name__).error(
+            "Existing Agent store schema upgrade failed: %s", _schema_error
+        )
 
 # Configure CORS
 def _parse_cors_origins() -> list[str]:
@@ -211,6 +252,8 @@ app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 # Protected routes
 app.include_router(config.router, prefix="/api/config", tags=["config"], dependencies=[Depends(auth.get_current_user)])
 app.include_router(system.router, prefix="/api/system", tags=["system"], dependencies=[Depends(auth.get_current_user)])
+app.include_router(live_status.publish_router, prefix="/api/system", tags=["system"])
+app.include_router(live_status.router, prefix="/api/system", tags=["system"], dependencies=[Depends(auth.get_current_user)])
 app.include_router(wizard.router, prefix="/api/wizard", tags=["wizard"], dependencies=[Depends(auth.get_current_user)])
 app.include_router(logs.router, prefix="/api/logs", tags=["logs"], dependencies=[Depends(auth.get_current_user)])
 app.include_router(local_ai.router, prefix="/api/local-ai", tags=["local-ai"], dependencies=[Depends(auth.get_current_user)])
@@ -218,8 +261,12 @@ app.include_router(mcp.router, dependencies=[Depends(auth.get_current_user)])
 app.include_router(ollama.router, tags=["ollama"], dependencies=[Depends(auth.get_current_user)])
 app.include_router(calls.router, prefix="/api", tags=["calls"], dependencies=[Depends(auth.get_current_user)])
 app.include_router(outbound.router, prefix="/api", tags=["outbound"], dependencies=[Depends(auth.get_current_user)])
+app.include_router(vicidial.router, prefix="/api", tags=["outbound"], dependencies=[Depends(auth.get_current_user)])
 app.include_router(tools.router, prefix="/api/tools", tags=["tools"], dependencies=[Depends(auth.get_current_user)])
 app.include_router(docs.router, tags=["documentation"], dependencies=[Depends(auth.get_current_user)])
+app.include_router(custom_models.router, prefix="/api/custom-models", tags=["custom-models"], dependencies=[Depends(auth.get_current_user)])
+app.include_router(agents.router, prefix="/api", tags=["agents"], dependencies=[Depends(auth.get_current_user)])
+app.include_router(support.router, prefix="/api", tags=["support"], dependencies=[Depends(auth.get_current_user)])
 
 @app.get("/health")
 async def health_check():

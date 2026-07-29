@@ -418,3 +418,212 @@ class SileroTTSBackend:
         self.model = None
         self._initialized = False
         logging.info("🛑 SILERO - TTS shutdown")
+
+
+class MatchaTTSBackend:
+    """Matcha-TTS backend via sherpa-onnx — fast, high-quality CPU TTS.
+
+    Uses flow-matching architecture (RTF ~0.015 on CPU) with Vocos vocoder.
+    Outputs 22 kHz PCM16 mono.
+    """
+
+    def __init__(
+        self,
+        model_path: str = "/app/models/tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx",
+        vocoder_path: str = "/app/models/tts/matcha-icefall-en_US-ljspeech/hifigan_v2.onnx",
+        tokens_path: str = "",
+        data_dir: str = "",
+        speed: float = 1.0,
+        sid: int = 0,
+    ):
+        self.model_path = model_path
+        self.vocoder_path = vocoder_path
+        self.tokens_path = tokens_path
+        self.data_dir = data_dir
+        self.speed = speed
+        self.sid = sid
+        self.tts = None
+        self._initialized = False
+        self.sample_rate = 22050
+
+    def initialize(self) -> bool:
+        try:
+            import sherpa_onnx
+
+            if not os.path.isfile(self.model_path):
+                logging.error(
+                    "❌ MATCHA - Model not found at %s", self.model_path
+                )
+                return False
+
+            if not os.path.isfile(self.vocoder_path):
+                logging.error(
+                    "❌ MATCHA - Vocoder not found at %s", self.vocoder_path
+                )
+                return False
+
+            # Auto-detect tokens and data_dir from model directory
+            model_dir = os.path.dirname(self.model_path)
+            tokens = self.tokens_path or os.path.join(model_dir, "tokens.txt")
+            data_dir = self.data_dir or model_dir
+
+            if not os.path.isfile(tokens):
+                logging.error("❌ MATCHA - tokens.txt not found at %s", tokens)
+                return False
+
+            matcha_config = sherpa_onnx.OfflineTtsMatchaModelConfig(
+                acoustic_model=self.model_path,
+                vocoder=self.vocoder_path,
+                tokens=tokens,
+                data_dir=data_dir,
+            )
+            model_config = sherpa_onnx.OfflineTtsModelConfig(matcha=matcha_config)
+            tts_config = sherpa_onnx.OfflineTtsConfig(model=model_config)
+
+            self.tts = sherpa_onnx.OfflineTts(tts_config)
+            self.sample_rate = self.tts.sample_rate or 22050
+            self._initialized = True
+
+            logging.info(
+                "✅ MATCHA - TTS initialized (sample_rate=%d, speed=%.1f)",
+                self.sample_rate,
+                self.speed,
+            )
+            return True
+
+        except ImportError:
+            logging.error(
+                "❌ MATCHA - sherpa-onnx not installed. "
+                "Install with: pip install sherpa-onnx"
+            )
+            return False
+        except Exception as exc:
+            logging.error("❌ MATCHA - Initialization failed: %s", exc)
+            return False
+
+    def synthesize(self, text: str) -> bytes:
+        if not self._initialized or not self.tts:
+            logging.error("❌ MATCHA - Not initialized")
+            return b""
+
+        try:
+            import numpy as np
+
+            audio = self.tts.generate(text, sid=self.sid, speed=self.speed)
+            if audio.samples is None or len(audio.samples) == 0:
+                logging.warning("⚠️ MATCHA - No audio generated")
+                return b""
+
+            samples = np.array(audio.samples, dtype=np.float32)
+            pcm16 = (samples * 32767).astype(np.int16)
+
+            logging.debug(
+                "🎙️ MATCHA - Generated %d samples at %dHz",
+                len(pcm16),
+                self.sample_rate,
+            )
+            return pcm16.tobytes()
+
+        except Exception as exc:
+            logging.error("❌ MATCHA - Synthesis failed: %s", exc)
+            return b""
+
+    def shutdown(self) -> None:
+        self.tts = None
+        self._initialized = False
+        logging.info("🛑 MATCHA - TTS shutdown")
+
+
+class EspeakNGBackend:
+    """Ultra-fast CPU TTS via espeak-ng for ack/filler phrases.
+
+    Produces µ-law 8 kHz audio directly in-memory. Typical synthesis time
+    for a short phrase is <10 ms, making it suitable for instant
+    acknowledgment audio before LLM inference begins.
+    """
+
+    def __init__(
+        self,
+        voice: str = "en",
+        speed: int = 160,
+        pitch: int = 50,
+    ):
+        self.voice = voice
+        self.speed = speed
+        self.pitch = pitch
+        self._available: Optional[bool] = None
+
+    def is_available(self) -> bool:
+        if self._available is None:
+            import shutil
+            self._available = shutil.which("espeak-ng") is not None
+        return self._available
+
+    def synthesize(self, text: str) -> bytes:
+        """Synthesize *text* and return µ-law 8 kHz bytes.
+
+        Uses ``espeak-ng --stdout`` which emits a WAV to stdout, then
+        converts in-memory via ``audioop`` (no temp files, no sox).
+        """
+        import audioop
+        import io
+        import subprocess
+        import wave
+
+        if not self.is_available():
+            logging.error("espeak-ng binary not found on PATH")
+            return b""
+
+        try:
+            result = subprocess.run(
+                [
+                    "espeak-ng",
+                    "-v", self.voice,
+                    "-s", str(self.speed),
+                    "-p", str(self.pitch),
+                    "--stdout",
+                    text,
+                ],
+                capture_output=True,
+                check=True,
+                timeout=5,
+            )
+
+            wav_data = result.stdout
+            if not wav_data:
+                logging.warning("espeak-ng produced no output")
+                return b""
+
+            # Parse WAV header from stdout output
+            wav_io = io.BytesIO(wav_data)
+            with wave.open(wav_io, "rb") as wf:
+                pcm_data = wf.readframes(wf.getnframes())
+                channels = wf.getnchannels()
+                sampwidth = wf.getsampwidth()
+                framerate = wf.getframerate()
+
+            # Stereo → mono
+            if channels > 1:
+                pcm_data = audioop.tomono(pcm_data, sampwidth, 1, 1)
+
+            # Ensure 16-bit
+            if sampwidth != 2:
+                pcm_data = audioop.lin2lin(pcm_data, sampwidth, 2)
+
+            # Resample to 8 kHz
+            if framerate != 8000:
+                pcm_data, _ = audioop.ratecv(pcm_data, 2, 1, framerate, 8000, None)
+
+            # PCM16 → µ-law
+            return audioop.lin2ulaw(pcm_data, 2)
+
+        except FileNotFoundError:
+            logging.error("espeak-ng not installed")
+            self._available = False
+            return b""
+        except subprocess.TimeoutExpired:
+            logging.error("espeak-ng timed out")
+            return b""
+        except Exception as exc:
+            logging.error("espeak-ng synthesis failed: %s", exc)
+            return b""

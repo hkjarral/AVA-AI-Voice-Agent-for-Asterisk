@@ -1,12 +1,14 @@
 import asyncio
 import math
+import time
 import pytest
 
 from src.core.streaming_playback_manager import StreamingPlaybackManager
 
 
 class Dummy:
-    pass
+    async def clear_gating_token(self, *_args, **_kwargs):
+        return None
 
 
 def make_manager(**overrides):
@@ -69,6 +71,55 @@ def test_first_segment_requires_min_start_when_empty():
     assert mgr._startup_ready.get(call_id) is False
 
 
+def test_playback_position_uses_real_audio_not_filler_bytes():
+    mgr = make_manager()
+    mgr.active_streams["call-position"] = {
+        "target_format": "ulaw",
+        "target_sample_rate": 8000,
+        "real_tx_bytes": 62_720,
+        "tx_bytes": 70_720,
+    }
+
+    assert mgr.get_playback_position_ms("call-position") == 7_840
+
+
+def test_playback_position_is_scoped_to_current_segment():
+    mgr = make_manager()
+    mgr.active_streams["call-segment-position"] = {
+        "target_format": "ulaw",
+        "target_sample_rate": 8000,
+        "real_tx_bytes": 24_000,
+        "real_tx_bytes_segment_baseline": 16_000,
+    }
+
+    assert mgr.get_playback_position_ms("call-segment-position") == 1_000
+
+
+def test_first_segment_releases_short_audio_after_producer_closes():
+    mgr = make_manager()
+    call_id = "test-call-short"
+    stream_id = "stream:resp:test-call-short:1"
+    mgr._startup_ready[call_id] = False
+    stream_info = {
+        'segments_played': 0,
+        'min_start_chunks': 7,
+        'producer_closed': True,
+        'target_format': 'ulaw',
+        'target_sample_rate': 8000,
+    }
+    jitter = asyncio.Queue()
+    payload = b"\xff" * 80
+    stream_info["buffered_bytes"] = len(payload)
+    mgr.active_streams[call_id] = stream_info
+    jitter.put_nowait(payload)
+
+    ready = mgr._ensure_startup_ready(call_id, stream_id, jitter, stream_info)
+
+    assert ready is True
+    assert mgr._startup_ready.get(call_id) is True
+    assert stream_info.get('startup_ready') is True
+
+
 @pytest.mark.asyncio
 async def test_mark_segment_boundary_increments_and_resets_attack():
     mgr = make_manager()
@@ -78,6 +129,7 @@ async def test_mark_segment_boundary_increments_and_resets_attack():
         'stream_id': "stream:resp:test-call-3:1",
         'target_sample_rate': 8000,
         'segments_played': 0,
+        'real_tx_bytes': 8_000,
     }
     # attack bytes expected: sr * (attack_ms/1000) * 2
     expected_attack = int(max(0, int(8000 * (mgr.attack_ms / 1000.0)) * 2))
@@ -87,3 +139,235 @@ async def test_mark_segment_boundary_increments_and_resets_attack():
     info = mgr.active_streams[call_id]
     assert info['segments_played'] == 1
     assert info.get('attack_bytes_remaining') == expected_attack
+
+
+@pytest.mark.asyncio
+async def test_start_segment_gating_baselines_actual_playback_position():
+    mgr = make_manager()
+    call_id = "test-call-segment-baseline"
+    mgr.active_streams[call_id] = {
+        'stream_id': "stream:resp:test-call-segment-baseline:1",
+        'real_tx_bytes': 8_000,
+    }
+
+    await mgr.start_segment_gating(call_id)
+
+    assert (
+        mgr.active_streams[call_id]['real_tx_bytes_segment_baseline'] == 8_000
+    )
+
+
+@pytest.mark.asyncio
+async def test_interrupted_cleanup_skips_provider_tail_grace(monkeypatch):
+    mgr = make_manager(provider_grace_ms=200)
+    call_id = "test-call-barge-cleanup"
+    stream_id = "stream:resp:test-call-barge-cleanup:1"
+    mgr.active_streams[call_id] = {
+        "stream_id": stream_id,
+        "end_reason": "barge-in",
+        "start_time": time.time(),
+    }
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(
+        "src.core.streaming_playback_manager.asyncio.sleep",
+        fake_sleep,
+    )
+
+    await mgr._cleanup_stream(call_id, stream_id)
+
+    assert sleeps == []
+    assert call_id not in mgr.active_streams
+
+
+@pytest.mark.asyncio
+async def test_natural_cleanup_keeps_single_provider_tail_grace(monkeypatch):
+    mgr = make_manager(provider_grace_ms=200)
+    call_id = "test-call-natural-cleanup"
+    stream_id = "stream:resp:test-call-natural-cleanup:1"
+    mgr.active_streams[call_id] = {
+        "stream_id": stream_id,
+        "end_reason": "provider-complete",
+        "start_time": time.time(),
+    }
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(
+        "src.core.streaming_playback_manager.asyncio.sleep",
+        fake_sleep,
+    )
+
+    await mgr._cleanup_stream(call_id, stream_id)
+    await mgr._cleanup_stream(call_id, stream_id)
+
+    assert sleeps == [0.2]
+    assert call_id not in mgr.active_streams
+
+
+@pytest.mark.asyncio
+async def test_old_cleanup_cannot_remove_replacement_stream(monkeypatch):
+    mgr = make_manager(provider_grace_ms=200)
+    call_id = "test-call-replaced-during-grace"
+    old_stream_id = "stream:resp:test-call-replaced-during-grace:1"
+    new_stream_id = "stream:resp:test-call-replaced-during-grace:2"
+    mgr.active_streams[call_id] = {
+        "stream_id": old_stream_id,
+        "end_reason": "provider-complete",
+        "start_time": time.time(),
+    }
+    grace_started = asyncio.Event()
+    release_grace = asyncio.Event()
+
+    async def controlled_sleep(_seconds):
+        grace_started.set()
+        await release_grace.wait()
+
+    monkeypatch.setattr(
+        "src.core.streaming_playback_manager.asyncio.sleep",
+        controlled_sleep,
+    )
+
+    cleanup = asyncio.create_task(mgr._cleanup_stream(call_id, old_stream_id))
+    await asyncio.wait_for(grace_started.wait(), timeout=1)
+    replacement = {
+        "stream_id": new_stream_id,
+        "end_reason": "",
+        "start_time": time.time(),
+    }
+    mgr.active_streams[call_id] = replacement
+    release_grace.set()
+    await asyncio.wait_for(cleanup, timeout=1)
+
+    assert mgr.active_streams[call_id] is replacement
+
+
+def test_low_water_grace_does_not_rearm_after_expiry_without_audio():
+    mgr = make_manager(provider_grace_ms=200)
+    call_id = "test-call-partial-tail"
+    info = {
+        "startup_ready": True,
+        "low_water_deadline": time.time() - 0.01,
+    }
+
+    assert mgr._should_wait_for_low_water(call_id, info, 0, False) is False
+    assert info.get("low_water_expired") is True
+    assert "low_water_deadline" not in info
+
+    # A subsequent pacer tick must continue into adaptive backoff/partial-frame
+    # flushing instead of starting a fresh grace period.
+    assert mgr._should_wait_for_low_water(call_id, info, 0, False) is False
+    assert "low_water_deadline" not in info
+
+
+def test_interrupted_end_reason_requires_known_exact_value():
+    assert StreamingPlaybackManager._is_interrupted_end_reason("barge-in")
+    assert StreamingPlaybackManager._is_interrupted_end_reason("cancelled")
+    assert not StreamingPlaybackManager._is_interrupted_end_reason(
+        "generic-task-cancellation-error"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_producer_does_not_block_on_full_jitter_queue():
+    mgr = make_manager(fallback_timeout_ms=10_000)
+    audio_chunks = asyncio.Queue()
+    jitter_buffer = asyncio.Queue(maxsize=1)
+    jitter_buffer.put_nowait(b"queued-audio")
+
+    producer = asyncio.create_task(
+        mgr._stream_audio_loop(
+            "test-call-cancel-full-jitter",
+            "stream:resp:test-call-cancel-full-jitter:1",
+            audio_chunks,
+            jitter_buffer,
+        )
+    )
+    await asyncio.sleep(0)
+    producer.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(producer, timeout=0.2)
+    assert producer.done()
+
+
+@pytest.mark.asyncio
+async def test_stop_owns_cleanup_when_blocked_producer_is_cancelled():
+    mgr = make_manager(fallback_timeout_ms=10_000)
+    call_id = "test-call-stop-full-jitter"
+    stream_id = "stream:resp:test-call-stop-full-jitter:1"
+    audio_chunks = asyncio.Queue()
+    audio_chunks.put_nowait(b"new-provider-audio")
+
+    class ObservedQueue(asyncio.Queue):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.put_started = asyncio.Event()
+
+        async def put(self, item):
+            self.put_started.set()
+            await super().put(item)
+
+    jitter_buffer = ObservedQueue(maxsize=1)
+    jitter_buffer.put_nowait(b"queued-audio")
+
+    class BlockProducerSessionStore(Dummy):
+        producer = None
+
+        async def get_by_call_id(self, *_args, **_kwargs):
+            if asyncio.current_task() is self.producer:
+                await asyncio.Event().wait()
+            return None
+
+    session_store = BlockProducerSessionStore()
+    mgr.session_store = session_store
+    producer = asyncio.create_task(
+        mgr._stream_audio_loop(call_id, stream_id, audio_chunks, jitter_buffer)
+    )
+    session_store.producer = producer
+    mgr.active_streams[call_id] = {
+        "stream_id": stream_id,
+        "streaming_task": producer,
+        "pacer_task": None,
+        "keepalive_task": None,
+        "end_reason": "barge-in",
+    }
+    mgr.jitter_buffers[call_id] = jitter_buffer
+
+    # Let the producer consume its input and block on the already-full jitter
+    # queue. Its normal finally path would then block on the session write.
+    await asyncio.wait_for(jitter_buffer.put_started.wait(), timeout=0.2)
+    assert audio_chunks.empty()
+
+    async def cleanup(_call_id, _stream_id):
+        mgr.active_streams.pop(_call_id, None)
+        mgr.jitter_buffers.pop(_call_id, None)
+
+    mgr._cleanup_stream = cleanup
+
+    assert await asyncio.wait_for(
+        mgr.stop_streaming_playback(call_id), timeout=0.2
+    )
+    assert producer.done()
+    assert producer.cancelled()
+    assert jitter_buffer.empty()
+    assert call_id not in mgr.active_streams
+
+def test_low_water_expiry_resets_when_a_full_frame_arrives():
+    mgr = make_manager(provider_grace_ms=200)
+    call_id = "test-call-resumed-audio"
+    info = {
+        "startup_ready": True,
+        "low_water_expired": True,
+    }
+
+    assert mgr._should_wait_for_low_water(call_id, info, 1, False) is False
+    assert "low_water_expired" not in info
+
+    assert mgr._should_wait_for_low_water(call_id, info, 0, False) is True
+    assert "low_water_deadline" in info

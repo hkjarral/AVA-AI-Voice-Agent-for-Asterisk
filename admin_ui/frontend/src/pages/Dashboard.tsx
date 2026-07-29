@@ -1,17 +1,18 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Activity, Cpu, HardDrive, RefreshCw, FolderCheck, Wrench, Globe, Tag, Box, CheckCircle2, XCircle, Phone, type LucideIcon } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { SystemTopology } from '../components/SystemTopology';
 import { ApiErrorInfo, buildDockerAccessHints, describeApiError } from '../utils/apiErrors';
-
-interface Container {
-    id: string;
-    name: string;
-    status: string;
-    state: string;
-}
+import DonationBanner from '../components/DonationBanner';
+import { useDonationReminder } from '../hooks/useDonationReminder';
+import { useLiveStatus } from '../hooks/useLiveStatus';
+import {
+    INITIAL_CONNECTION_STATE,
+    reduceConnection,
+    type ConnectionSample,
+} from '../utils/connectionHysteresis';
 
 interface SystemMetrics {
     cpu: {
@@ -77,8 +78,13 @@ const CompactMetric = ({ title, value, subValue, icon: Icon, color }: CompactMet
     </div>
 );
 
+// Consecutive explicit failures before a card degrades (I4). Matches the
+// 2-strike debounce SystemTopology uses for its health indicators, so the top
+// cards stop half-flickering to "Loading…" during the single-poll blips an
+// AI-engine restart (which this page can trigger) causes.
+const CARD_FAIL_THRESHOLD = 2;
+
 const Dashboard = () => {
-    const [, setContainers] = useState<Container[]>([]);
     const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
     const [directoryHealth, setDirectoryHealth] = useState<DirectoryHealth | null>(null);
     const [loading, setLoading] = useState(true);
@@ -86,37 +92,38 @@ const Dashboard = () => {
     const [fixingDirectories, setFixingDirectories] = useState(false);
     const [reconnectingAri, setReconnectingAri] = useState(false);
 
-    const [containersError, setContainersError] = useState<ApiErrorInfo | null>(null);
     const [metricsError, setMetricsError] = useState<ApiErrorInfo | null>(null);
+    const [platformError, setPlatformError] = useState<ApiErrorInfo | null>(null);
+    const [directoriesError, setDirectoriesError] = useState<ApiErrorInfo | null>(null);
+    const [asteriskError, setAsteriskError] = useState<ApiErrorInfo | null>(null);
     const [platformData, setPlatformData] = useState<PlatformResponse | null>(null);
     const [platformLoadFailed, setPlatformLoadFailed] = useState(false);
     const [ariConnected, setAriConnected] = useState<boolean | null>(null);
     const navigate = useNavigate();
+    const donation = useDonationReminder();
+    const liveStatus = useLiveStatus();
+
+    // Cross-poll hysteresis/debounce streaks. Kept in refs so updating them
+    // doesn't trigger renders; the resulting display values land in reactive
+    // state. ariState carries the 3-strike last-good reducer (I1); the dir /
+    // platform streaks debounce those cards' degrade-to-failure (I4).
+    const ariState = useRef(INITIAL_CONNECTION_STATE);
+    const dirFailStreak = useRef(0);
+    const platformFailStreak = useRef(0);
 
     const fetchData = async () => {
-        setContainersError(null);
-        setMetricsError(null);
-
         const results = await Promise.allSettled([
-            axios.get('/api/system/containers'),
             axios.get('/api/system/metrics'),
             axios.get('/api/system/directories'),
             axios.get('/api/system/platform'),
             axios.get('/api/system/asterisk-status'),
         ]);
 
-        const [containersRes, metricsRes, dirHealthRes, platformRes, asteriskRes] = results;
-
-        if (containersRes.status === 'fulfilled') {
-            setContainers(containersRes.value.data);
-        } else {
-            const info = describeApiError(containersRes.reason, '/api/system/containers');
-            console.error('Failed to fetch containers:', info);
-            setContainersError(info);
-        }
+        const [metricsRes, dirHealthRes, platformRes, asteriskRes] = results;
 
         if (metricsRes.status === 'fulfilled') {
             setMetrics(metricsRes.value.data);
+            setMetricsError(null);
         } else {
             const info = describeApiError(metricsRes.reason, '/api/system/metrics');
             console.error('Failed to fetch metrics:', info);
@@ -124,25 +131,52 @@ const Dashboard = () => {
         }
 
         if (dirHealthRes.status === 'fulfilled') {
+            dirFailStreak.current = 0;
             setDirectoryHealth(dirHealthRes.value.data);
+            setDirectoriesError(null);
         } else {
-            setDirectoryHealth(null);
+            // Keep last-good through one failure; only clear after the debounce.
+            dirFailStreak.current += 1;
+            const info = describeApiError(dirHealthRes.reason, '/api/system/directories');
+            console.error('Failed to fetch directory health:', info);
+            setDirectoriesError(info);
+            if (dirFailStreak.current >= CARD_FAIL_THRESHOLD) {
+                setDirectoryHealth(null);
+            }
         }
 
         if (platformRes.status === 'fulfilled') {
+            platformFailStreak.current = 0;
             setPlatformData(platformRes.value.data);
             setPlatformLoadFailed(false);
+            setPlatformError(null);
         } else {
-            console.error('Failed to fetch platform info:', platformRes.reason);
-            setPlatformData(null);
-            setPlatformLoadFailed(true);
+            platformFailStreak.current += 1;
+            const info = describeApiError(platformRes.reason, '/api/system/platform');
+            console.error('Failed to fetch platform info:', info);
+            setPlatformError(info);
+            // Keep last-good platform info through one failure; degrade after.
+            if (platformFailStreak.current >= CARD_FAIL_THRESHOLD) {
+                setPlatformData(null);
+                setPlatformLoadFailed(true);
+            }
         }
 
+        // Asterisk pill: feed the hysteresis reducer. A rejected request or a
+        // response missing `data.live` is "unknown" (hold previous), NOT false.
+        let asteriskSample: ConnectionSample;
         if (asteriskRes.status === 'fulfilled') {
-            setAriConnected(asteriskRes.value.data?.live?.ari_reachable ?? false);
+            const reachable = asteriskRes.value.data?.live?.ari_reachable;
+            asteriskSample = typeof reachable === 'boolean' ? reachable : 'unknown';
+            setAsteriskError(null);
         } else {
-            setAriConnected(null);
+            asteriskSample = 'unknown';
+            const info = describeApiError(asteriskRes.reason, '/api/system/asterisk-status');
+            console.error('Failed to fetch asterisk status:', info);
+            setAsteriskError(info);
         }
+        ariState.current = reduceConnection(ariState.current, asteriskSample);
+        setAriConnected(ariState.current.display);
 
         setLoading(false);
         setRefreshing(false);
@@ -190,10 +224,52 @@ const Dashboard = () => {
     };
 
     useEffect(() => {
+        const snapshot = liveStatus.snapshot;
+        if (!snapshot) return;
+
+        const metricsComponent = snapshot.components.metrics;
+        if (metricsComponent?.metrics) {
+            setMetrics(metricsComponent.metrics as unknown as SystemMetrics);
+            setMetricsError(null);
+        }
+
+        const directoriesComponent = snapshot.components.directories;
+        if (directoriesComponent?.details?.overall) {
+            dirFailStreak.current = 0;
+            setDirectoryHealth(directoriesComponent.details as DirectoryHealth);
+            setDirectoriesError(null);
+        }
+
+        const platformComponent = snapshot.components.platform;
+        if (platformComponent?.details?.platform && platformComponent?.details?.summary) {
+            platformFailStreak.current = 0;
+            setPlatformData(platformComponent.details as PlatformResponse);
+            setPlatformLoadFailed(false);
+            setPlatformError(null);
+        }
+
+        const reachable = snapshot.components.asterisk?.details?.live?.ari_reachable;
+        const asteriskSample: ConnectionSample = typeof reachable === 'boolean' ? reachable : 'unknown';
+        ariState.current = reduceConnection(ariState.current, asteriskSample);
+        setAriConnected(ariState.current.display);
+        setAsteriskError(null);
+
+        setLoading(false);
+        setRefreshing(false);
+    }, [liveStatus.snapshot]);
+
+    useEffect(() => {
+        const components = liveStatus.snapshot?.components || {};
+        const hasProbeHydration = ['metrics', 'directories', 'platform', 'asterisk'].every(
+            name => components[name]
+        );
+        if (hasProbeHydration) return;
+        if (liveStatus.loading && !liveStatus.error) return;
+
         fetchData();
-        const interval = setInterval(fetchData, 5000); // Refresh every 5s
+        const interval = setInterval(fetchData, 5000); // Fallback until live-status hydrates
         return () => clearInterval(interval);
-    }, []);
+    }, [liveStatus.error, liveStatus.loading, liveStatus.snapshot]);
 
     const formatBytes = (bytes: number) => {
         if (bytes === 0) return '0 B';
@@ -202,6 +278,16 @@ const Dashboard = () => {
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     };
+
+    // I5 — surface every swallowed poll failure in the one shared banner, not
+    // just containers/metrics. Platform / directories / asterisk-status used to
+    // fail silently (console.error only).
+    const dataErrors = [
+        { label: 'Metrics', info: metricsError },
+        { label: 'Platform', info: platformError },
+        { label: 'Audio Directories', info: directoriesError },
+        { label: 'Asterisk Status', info: asteriskError },
+    ].filter((e): e is { label: string; info: ApiErrorInfo } => e.info != null);
 
     if (loading) {
         return (
@@ -217,6 +303,7 @@ const Dashboard = () => {
                 <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
                 <button
                     onClick={() => { setRefreshing(true); fetchData(); }}
+                    aria-label="Refresh dashboard"
                     className="p-2 rounded-md hover:bg-accent hover:text-accent-foreground transition-colors"
                     disabled={refreshing}
                 >
@@ -224,7 +311,18 @@ const Dashboard = () => {
                 </button>
             </div>
 
-            {(containersError || metricsError) && (
+            {donation.show && (
+                <DonationBanner
+                    callCount={donation.callCount}
+                    onLater={donation.onLater}
+                    onDismiss={donation.onDismiss}
+                    onDonate={donation.onDonate}
+                    onAlreadyDonated={donation.onAlreadyDonated}
+                    onKeepReminders={donation.onKeepReminders}
+                />
+            )}
+
+            {dataErrors.length > 0 && (
                 <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-4">
                     <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
@@ -243,24 +341,15 @@ const Dashboard = () => {
                     </div>
 
                     <div className="mt-3 space-y-2 text-sm">
-                        {containersError && (
-                            <div className="break-words">
-                                <span className="font-medium">Containers:</span>{' '}
+                        {dataErrors.map(({ label, info }) => (
+                            <div key={label} className="break-words">
+                                <span className="font-medium">{label}:</span>{' '}
                                 <span className="text-muted-foreground">
-                                    {containersError.status ? `HTTP ${containersError.status}` : containersError.kind}{' '}
-                                    {containersError.detail ? `- ${containersError.detail}` : ''}
+                                    {info.status ? `HTTP ${info.status}` : info.kind}{' '}
+                                    {info.detail ? `- ${info.detail}` : ''}
                                 </span>
                             </div>
-                        )}
-                        {metricsError && (
-                            <div className="break-words">
-                                <span className="font-medium">Metrics:</span>{' '}
-                                <span className="text-muted-foreground">
-                                    {metricsError.status ? `HTTP ${metricsError.status}` : metricsError.kind}{' '}
-                                    {metricsError.detail ? `- ${metricsError.detail}` : ''}
-                                </span>
-                            </div>
-                        )}
+                        ))}
                     </div>
 
                     <details className="mt-3">
@@ -269,7 +358,7 @@ const Dashboard = () => {
                         </summary>
                         <div className="mt-2 space-y-2 text-sm">
                             <ul className="list-disc pl-5 space-y-1">
-                                {(buildDockerAccessHints(containersError || metricsError!) || []).map((h, idx) => (
+                                {(buildDockerAccessHints(dataErrors[0].info) || []).map((h, idx) => (
                                     <li key={idx}>{h}</li>
                                 ))}
                             </ul>
@@ -439,7 +528,10 @@ const Dashboard = () => {
             </div>
 
             {/* Live System Topology */}
-            <SystemTopology />
+            <SystemTopology
+                liveStatusEnabled={Boolean(liveStatus.snapshot) && !liveStatus.error}
+                liveStatusSnapshot={liveStatus.snapshot}
+            />
         </div>
     );
 };

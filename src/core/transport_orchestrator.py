@@ -22,8 +22,37 @@ from typing import Dict, Any, Optional, List, Union
 from structlog import get_logger
 
 from ..providers.base import ProviderCapabilities
+from ..audio.audiosocket_protocol import normalize_slin_format
 
 logger = get_logger(__name__)
+
+
+def _coerce_optional_bool(value: Any) -> Optional[bool]:
+    """Normalize a tri-state on/off value (bool, int 0/1, or YAML string such as
+    'true'/'false'/'0'/'1'/'yes'/'no') to Optional[bool]. None or an unrecognized
+    value means inherit. Avoids the bool('false') == True footgun from quoted YAML
+    scalars and matches the agents.db coercion."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if value == 0:
+            return False
+        if value == 1:
+            return True
+        return None  # unexpected numeric (e.g. 2, 0.5) → inherit, never force-enable
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("1", "true", "yes", "on"):
+            return True
+        if v in ("0", "false", "no", "off"):
+            return False
+        # Blank/whitespace ("") or any unrecognized string → inherit (None),
+        # matching absent/None and the agents.db NULL behavior — a cleared
+        # field must not become an explicit disable.
+        return None
+    return None
 
 
 @dataclass
@@ -33,8 +62,10 @@ class AudioProfile:
     internal_rate_hz: int
     transport_out: Dict[str, Any]
     provider_pref: Dict[str, Any]
+    output_resampler: str = "linear"
     chunk_ms: str | int = "auto"
     idle_cutoff_ms: int = 1200
+    talk_detect_talking_threshold: Optional[int] = None
 
 
 @dataclass
@@ -44,9 +75,12 @@ class ContextConfig:
     greeting: Optional[str] = None
     profile: Optional[str] = None
     provider: Optional[str] = None
+    voice: Optional[str] = None  # Per-agent voice override; provider config voice is the fallback
     pipeline: Optional[str] = None  # Pipeline name for modular STT/LLM/TTS (e.g., local_hybrid)
     tools: Optional[list] = None  # In-call tool names for function calling
+    tool_configs: Optional[Dict[str, Any]] = None  # v7.4 per-agent tool-scope policies
     background_music: Optional[str] = None  # MOH class name for background music during calls
+    connection_audio: Optional[str] = None  # Caller-only ARI media while provider/pipeline connects
     
     # Phase tool configuration (Milestone 24)
     pre_call_tools: Optional[List[str]] = None  # Tool names to run after answer, before AI speaks
@@ -62,6 +96,88 @@ class ContextConfig:
     disable_global_in_call_tools: Optional[List[str]] = None  # Global in-call tools to disable
     disable_global_post_call_tools: Optional[List[str]] = None  # Global post-call tools to disable
 
+    # Per-agent post-call email overrides (H5). None means "unset" -> fall back to
+    # per-context map / global config. email_enabled is tri-state (None = inherit).
+    email_recipient: Optional[str] = None
+    email_from: Optional[str] = None
+    email_enabled: Optional[bool] = None
+    # Partial per-agent override of the global no_input policy. Missing fields
+    # inherit their global value.
+    no_input: Optional[Dict[str, Any]] = None
+
+
+def resolve_effective_voice(
+    overrides: Dict[str, Any],
+    context_config: Optional["ContextConfig"],
+) -> tuple:
+    """Resolve the session voice with its source for logging.
+
+    Precedence: per-call override > agent/context voice > provider default.
+    Returns (voice, source) where source is "override" | "agent" |
+    "provider-default"; voice is None when the provider config should decide.
+    """
+    override = (overrides or {}).get("voice")
+    if isinstance(override, str) and override.strip():
+        return override.strip(), "override"
+    ctx_voice = getattr(context_config, "voice", None)
+    if isinstance(ctx_voice, str) and ctx_voice.strip():
+        return ctx_voice.strip(), "agent"
+    return None, "provider-default"
+
+
+def apply_context_voice(
+    provider_context: Dict[str, Any],
+    overrides: Dict[str, Any],
+    context_config: Optional["ContextConfig"],
+    call_id: Optional[str] = None,
+    allowed_voices: Optional[Union[set, Dict[str, str]]] = None,
+    voice_unsupported: bool = False,
+) -> str:
+    """Apply the resolved session voice to a provider context and log the decision.
+
+    Leaves ``provider_context`` untouched when the provider's configured voice
+    should decide. Returns the decision source for callers that want it.
+
+    ``allowed_voices``/``voice_unsupported`` let the caller reconcile the value
+    with what the target provider can actually use, so Call History records the
+    voice the session USES rather than the raw request: an unknown value on a
+    closed-list provider (or any value on a provider that never consumes a
+    context voice — ElevenLabs Agent, Local) resolves to provider-default here,
+    matching the provider-side behavior. ``allowed_voices`` is a set of
+    lowercase ids, or a mapping of lowercase → canonical id for catalogs with
+    canonical casing (Google Live).
+    """
+    voice, source = resolve_effective_voice(overrides, context_config)
+    if voice and voice_unsupported:
+        logger.info(
+            "Agent voice not applicable for this provider; using provider default",
+            call_id=call_id, requested_voice=voice,
+        )
+        voice, source = None, "provider-default"
+    elif voice and allowed_voices is not None:
+        normalized = voice.lower()
+        if isinstance(allowed_voices, dict):
+            canonical = allowed_voices.get(normalized)
+        else:
+            canonical = normalized if normalized in allowed_voices else None
+        if canonical:
+            voice = canonical
+        else:
+            logger.warning(
+                "Agent voice not in provider catalog; using provider default",
+                call_id=call_id, requested_voice=voice,
+            )
+            voice, source = None, "provider-default"
+    if voice:
+        provider_context["voice"] = voice
+    logger.info(
+        "Session voice resolved",
+        call_id=call_id,
+        voice=voice or "(provider default)",
+        source=source,
+    )
+    return source
+
 
 @dataclass
 class TransportProfile:
@@ -76,8 +192,11 @@ class TransportProfile:
     internal_rate: int
     chunk_ms: int
     idle_cutoff_ms: int
+    output_resampler: str = "linear"
+    output_resampler_source: str = "profile"
     context: Optional[str] = None
     remediation: Optional[str] = None
+    talk_detect_talking_threshold: Optional[int] = None
 
 
 class TransportOrchestrator:
@@ -95,6 +214,12 @@ class TransportOrchestrator:
         self.profiles = self._load_profiles(config)
         self.contexts = self._load_contexts(config)
         self.default_profile_name = config.get('profiles', {}).get('default', 'telephony_ulaw_8k')
+
+        # agents.db is the only runtime persona source in v7.4. YAML Contexts are
+        # loaded only as compatibility diagnostics after the startup importer. Lazy import breaks the
+        # agent_store <-> transport_orchestrator circular import (ContextConfig).
+        from src.core.agent_store import EngineAgentStore
+        self.agent_store = EngineAgentStore()
         
         # Store audio transport config for wire format detection
         self.audio_transport = config.get('audio_transport', 'audiosocket')
@@ -125,8 +250,12 @@ class TransportOrchestrator:
                     internal_rate_hz=profile_dict.get('internal_rate_hz', 8000),
                     transport_out=profile_dict.get('transport_out', {}),
                     provider_pref=profile_dict.get('provider_pref', {}),
+                    output_resampler=profile_dict.get('output_resampler', 'linear'),
                     chunk_ms=profile_dict.get('chunk_ms', 'auto'),
                     idle_cutoff_ms=profile_dict.get('idle_cutoff_ms', 1200),
+                    talk_detect_talking_threshold=profile_dict.get(
+                        'talk_detect_talking_threshold'
+                    ),
                 )
                 logger.debug("Loaded audio profile", name=name, profile=profiles[name])
             except Exception as exc:
@@ -149,9 +278,11 @@ class TransportOrchestrator:
                     greeting=context_dict.get('greeting'),
                     profile=context_dict.get('profile'),
                     provider=context_dict.get('provider'),
+                    voice=context_dict.get('voice'),
                     pipeline=context_dict.get('pipeline'),  # Modular pipeline name (e.g., local_hybrid)
                     tools=context_dict.get('tools'),  # In-call tools for function calling
                     background_music=context_dict.get('background_music'),  # MOH class for background music
+                    connection_audio=context_dict.get('connection_audio'),  # Caller-only setup/ringback media
                     # Phase tool configuration (Milestone 24)
                     pre_call_tools=context_dict.get('pre_call_tools'),
                     post_call_tools=context_dict.get('post_call_tools'),
@@ -163,10 +294,27 @@ class TransportOrchestrator:
                         or context_dict.get('disable_global_in_call_http_tools')  # legacy Admin UI key
                     ),
                     disable_global_post_call_tools=context_dict.get('disable_global_post_call_tools'),
+                    # Per-agent post-call email overrides (#437). email_enabled is
+                    # tri-state: absent key stays None (inherit). Coerce to bool so
+                    # an exported integer 0/1 works with the `is True`/`is False`
+                    # dispatch gate in email_summary.py, matching the agents.db path
+                    # (EngineAgentStore.resolve() already does the same coercion).
+                    email_recipient=context_dict.get('email_recipient'),
+                    email_from=context_dict.get('email_from'),
+                    email_enabled=_coerce_optional_bool(context_dict.get('email_enabled')),
+                    no_input=context_dict.get('no_input'),
                 )
-                logger.debug("Loaded context mapping", name=name, context=contexts[name])
+                logger.debug(
+                    "Loaded legacy Context for migration diagnostics",
+                    name=name,
+                    context=contexts[name],
+                )
             except Exception as exc:
-                logger.warning("Failed to load context mapping", name=name, error=str(exc))
+                logger.warning(
+                    "Failed to load legacy Context diagnostic",
+                    name=name,
+                    error=str(exc),
+                )
         
         return contexts
     
@@ -223,24 +371,35 @@ class TransportOrchestrator:
         provider_caps: Optional[ProviderCapabilities],
         channel_vars: Optional[Dict[str, str]] = None,
         provider_config: Optional[Any] = None,
+        resolved_context: Optional[str] = None,
+        routing_method: Optional[str] = None,
     ) -> TransportProfile:
         """
         Resolve transport profile for a call.
-        
+
         Args:
             provider_name: Selected provider (deepgram, openai_realtime, etc.)
             provider_caps: Provider capabilities (static or from ACK)
             channel_vars: Asterisk channel variables (AI_PROVIDER, AI_AUDIO_PROFILE, AI_CONTEXT)
             provider_config: Provider configuration
-        
+            resolved_context: Context/agent slug already resolved by the caller
+                (from AI_AGENT, AI_CONTEXT, or the agents.db default). When given, it
+                is authoritative for context + audio-profile resolution so that
+                AI_AGENT / DB-default calls apply the agent's audio_profile even
+                though only AI_CONTEXT is present in channel_vars.
+            routing_method: Dialplan channel-variable INTENT (Finding 1) used to
+                disambiguate colliding context slugs during audio-profile lookup
+                (``'ai_context'`` resolves display_name-first; otherwise slug-first).
+
         Returns:
             TransportProfile with resolved settings
-        
+
         Raises:
             ValueError: If profile not found or negotiation fails
         """
         # Step 1: Resolve profile name with precedence
-        profile_name, context_name = self._resolve_profile_name(channel_vars)
+        profile_name, context_name = self._resolve_profile_name(
+            channel_vars, resolved_context, routing_method)
         profile = self.profiles.get(profile_name)
         
         if not profile:
@@ -273,19 +432,29 @@ class TransportOrchestrator:
     def _resolve_profile_name(
         self,
         channel_vars: Dict[str, str],
+        resolved_context: Optional[str] = None,
+        routing_method: Optional[str] = None,
     ) -> tuple[str, Optional[str]]:
         """
         Resolve profile name from channel vars with precedence.
-        
+
+        The context name is the caller-resolved context when provided
+        (from AI_AGENT / AI_CONTEXT / agents.db default); otherwise it falls back
+        to the AI_CONTEXT channel var. This ensures AI_AGENT and DB-default calls
+        apply the agent's audio_profile even though only AI_CONTEXT is present in
+        channel_vars.
+
         Returns:
             (profile_name, context_name) tuple
         """
-        context_name = None
-        
-        # Always read AI_CONTEXT first (needed for greeting/prompt injection)
-        context_name = channel_vars.get('AI_CONTEXT', '').strip() or None
-        
-        # Precedence 1: AI_AUDIO_PROFILE directly specified
+        # Context name: caller-resolved (DB-aware) takes precedence over AI_CONTEXT.
+        context_name = (
+            (resolved_context or '').strip()
+            or channel_vars.get('AI_CONTEXT', '').strip()
+            or None
+        )
+
+        # Precedence 1: AI_AUDIO_PROFILE directly specified (explicit per-call override)
         if 'AI_AUDIO_PROFILE' in channel_vars and channel_vars['AI_AUDIO_PROFILE']:
             profile_name = channel_vars['AI_AUDIO_PROFILE']
             logger.debug(
@@ -294,19 +463,18 @@ class TransportOrchestrator:
                 context=context_name,
             )
             return profile_name, context_name
-        
-        # Precedence 2: AI_CONTEXT maps to context config
-        context_name = channel_vars.get('AI_CONTEXT', '').strip()
-        if context_name and context_name in self.contexts:
-            context = self.contexts[context_name]
-            if context.profile:
+
+        # Precedence 2: context maps to a context config (DB-aware) with a profile
+        if context_name:
+            context = self.get_context_config(context_name, routing_method)
+            if context and context.profile:
                 logger.debug(
-                    "Profile from AI_CONTEXT mapping",
+                    "Profile from context mapping",
                     context=context_name,
                     profile=context.profile,
                 )
                 return context.profile, context_name
-        
+
         # Precedence 3: Default from YAML
         profile_name = self.default_profile_name
         logger.debug("Profile from config default", profile=profile_name)
@@ -323,15 +491,34 @@ class TransportOrchestrator:
         """
         Negotiate formats between profile preferences and provider capabilities.
         
-        Wire format: For AudioSocket, use audiosocket.format (authoritative).
-                     For RTP, use profile.transport_out (negotiated codec).
+        Wire format: AudioSocket signed-linear profiles may opt into their
+                     rate-specific wire format. Companded profiles retain the
+                     global AudioSocket fallback for backward compatibility.
+                     RTP always uses profile.transport_out.
         Provider format: try profile preference, fallback to provider's supported formats.
         """
         # CRITICAL: Wire format depends on transport type
         if self.audio_transport == "audiosocket":
-            # AudioSocket: use actual format from audiosocket.format config
+            # AudioSocket message types represent signed-linear sample rates.
+            # A signed-linear profile selects its matching wire type. Companded
+            # profiles use the 8 kHz signed-linear compatibility carrier; they
+            # must never inherit a process-wide slin16 setting from another call.
             wire_enc = self.audiosocket_format
             wire_rate = self.audiosocket_sample_rate
+            profile_wire_enc = profile.transport_out.get('encoding', '')
+            profile_wire_rate = profile.transport_out.get('sample_rate_hz')
+            try:
+                wire_enc, wire_rate = normalize_slin_format(
+                    profile_wire_enc,
+                    int(profile_wire_rate) if profile_wire_rate is not None else None,
+                )
+            except (TypeError, ValueError):
+                profile_encoding = str(profile_wire_enc or "").strip().lower()
+                if profile_encoding in {
+                    "ulaw", "mulaw", "mu-law", "g711_ulaw",
+                    "alaw", "a-law", "g711_alaw",
+                }:
+                    wire_enc, wire_rate = "slin", 8000
             if not wire_rate:
                 # Infer rate from format: slin=8kHz, slin16=16kHz
                 wire_enc_lower = wire_enc.lower().strip()
@@ -348,7 +535,10 @@ class TransportOrchestrator:
             wire_enc = profile.transport_out.get('encoding', 'slin')
             wire_rate = profile.transport_out.get('sample_rate_hz', 8000)
         
-        # CRITICAL: Read provider's actual requirements from provider config
+        # Read the provider's configured requirements. Compatibility profiles
+        # retain these values exactly. An explicitly selected wideband linear
+        # profile may replace them below with the provider's declared native
+        # wideband boundary, keeping the choice call-scoped.
         # Modern providers (Google Live, OpenAI) have provider_input_* fields
         # Legacy providers (Deepgram Voice Agent) use input_* fields
         # Fall back to profile preferences if provider config unavailable
@@ -386,6 +576,29 @@ class TransportOrchestrator:
             pref_out_enc = profile.provider_pref.get('output_encoding', 'linear16')
             pref_in_rate = profile.provider_pref.get('input_sample_rate_hz', 16000)
             pref_out_rate = profile.provider_pref.get('output_sample_rate_hz', 16000)
+
+        normalized_wire = self._normalize_encoding(str(wire_enc or ""))
+        wideband_selected = bool(
+            self.audio_transport == "audiosocket"
+            and normalized_wire == "linear16"
+            and int(wire_rate or 0) >= 16000
+        )
+        provider_format_source = "provider-config"
+        if wideband_selected and provider_caps:
+            wideband_values = (
+                provider_caps.wideband_input_encoding,
+                provider_caps.wideband_input_sample_rate_hz,
+                provider_caps.wideband_output_encoding,
+                provider_caps.wideband_output_sample_rate_hz,
+            )
+            if all(value is not None for value in wideband_values):
+                pref_in_enc = str(provider_caps.wideband_input_encoding)
+                pref_in_rate = int(provider_caps.wideband_input_sample_rate_hz)
+                pref_out_enc = str(provider_caps.wideband_output_encoding)
+                pref_out_rate = int(provider_caps.wideband_output_sample_rate_hz)
+                provider_format_source = "provider-wideband-capability"
+            else:
+                provider_format_source = "provider-config-no-wideband-route"
         
         # Negotiate with provider if capabilities available
         if provider_caps:
@@ -437,13 +650,18 @@ class TransportOrchestrator:
             internal_rate=profile.internal_rate_hz,
             chunk_ms=chunk_ms,
             idle_cutoff_ms=profile.idle_cutoff_ms,
+            output_resampler=profile.output_resampler,
+            output_resampler_source=f"profile:{profile.name}",
             context=context_name,  # Propagate context for greeting/prompt injection
+            talk_detect_talking_threshold=profile.talk_detect_talking_threshold,
         )
         
         logger.debug(
             "Negotiated transport profile",
             profile=profile.name,
             transport=transport,
+            provider_format_source=provider_format_source,
+            wideband_selected=wideband_selected,
         )
         
         return transport
@@ -559,6 +777,12 @@ class TransportOrchestrator:
                 f"Provider may not support input rate {transport.provider_input_sample_rate} Hz "
                 f"(supported: {provider_caps.input_sample_rates_hz})"
             )
+
+        if transport.provider_output_sample_rate not in provider_caps.output_sample_rates_hz:
+            issues.append(
+                f"Provider may not support output rate {transport.provider_output_sample_rate} Hz "
+                f"(supported: {provider_caps.output_sample_rates_hz})"
+            )
         
         # Add remediation if issues found
         if issues:
@@ -572,8 +796,53 @@ class TransportOrchestrator:
         
         return transport
     
-    def get_context_config(self, context_name: Optional[str]) -> Optional[ContextConfig]:
-        """Get context configuration by name."""
+    def get_context_config(
+        self, context_name: Optional[str], routing_method: Optional[str] = None
+    ) -> Optional[ContextConfig]:
+        """Resolve an Agent. ``agents.db`` is the only v7.4 runtime persona source.
+
+        An inactive/unknown slug is not routable, and an unreadable or absent DB
+        fails closed. YAML Context data is retained only for migration diagnostics.
+
+        ``routing_method`` carries the dialplan channel-variable INTENT (Finding 1):
+        ``'ai_context'`` (legacy original-name selector) resolves display_name-first;
+        ``'ai_agent'``/``'default'``/None resolve slug-first (canonical, anti-shadow)."""
+        if not context_name:
+            return None
+        if self.agent_store.available():
+            from src.core.agent_store import AgentStoreReadError
+            prefer = "display_name" if routing_method == "ai_context" else "slug"
+            try:
+                return self.agent_store.resolve(context_name, prefer=prefer)
+            except AgentStoreReadError:
+                logger.error(
+                    "agents.db unreadable; Agent routing failed closed",
+                    context=context_name)
+                return None
+        logger.error("agents.db unavailable; Agent routing failed closed", context=context_name)
+        return None
+
+    def _yaml_context_config(self, context_name: Optional[str]) -> Optional[ContextConfig]:
+        """Original YAML-backed context lookup (fallback path)."""
         if not context_name:
             return None
         return self.contexts.get(context_name)
+
+    def yaml_context_shadowed_by_agent_db(
+        self, context_name: Optional[str], routing_method: Optional[str] = None
+    ) -> bool:
+        """Return whether YAML defines a context omitted/inactive in the authoritative DB.
+
+        This is diagnostic only: callers must not route through the YAML value,
+        because the missing DB row may represent an intentional delete/deactivate.
+        """
+        if not context_name or not self.agent_store.available():
+            return False
+        if self._yaml_context_config(context_name) is None:
+            return False
+        from src.core.agent_store import AgentStoreReadError
+        prefer = "display_name" if routing_method == "ai_context" else "slug"
+        try:
+            return self.agent_store.resolve(context_name, prefer=prefer) is None
+        except AgentStoreReadError:
+            return False

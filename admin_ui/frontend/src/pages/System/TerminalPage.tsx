@@ -29,12 +29,13 @@ const TerminalPage = () => {
                         '  clear        - Clear terminal output'
                     ];
 
-                case 'status':
+                case 'status': {
                     const health = await axios.get('/api/system/health');
                     return [
                         'System Health Status:',
                         JSON.stringify(health.data, null, 2)
                     ];
+                }
 
                 case 'restart':
                     if (args.length === 0) return ['Usage: restart <service> (e.g., ai_engine, all)'];
@@ -45,7 +46,7 @@ const TerminalPage = () => {
                     }
                     return [`Command sent: Restarting ${args[0]}...`];
 
-                case 'logs':
+                case 'logs': {
                     const container = args[0] || 'ai_engine';
                     const lines = args[1] || '20';
                     const logRes = await axios.get(`/api/logs/${container}?tail=${lines}`);
@@ -53,6 +54,7 @@ const TerminalPage = () => {
                         `--- Logs for ${container} (last ${lines} lines) ---`,
                         logRes.data.logs || 'No logs found.'
                     ];
+                }
 
                 case 'version':
                     return ['Asterisk AI Agent v1.0.0 (Admin UI)'];

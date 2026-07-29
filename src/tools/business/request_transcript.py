@@ -51,17 +51,28 @@ class RequestTranscriptTool(Tool):
         return ToolDefinition(
             name="request_transcript",
             description=(
-                "Send the call transcript to the caller's email. "
+                "Request, update, or cancel end-of-call transcript delivery. "
+                "Use action='cancel' immediately when the caller withdraws consent, "
+                "asks not to send, or says to forget the transcript request. "
+                "For action='request', send the call transcript to the caller's email. "
                 "Ask for their email, spell it back (repeat it back) for confirmation, "
-                "then call this tool only after they confirm."
+                "then request delivery only after they confirm."
             ),
             category=ToolCategory.BUSINESS,
             parameters=[
                 ToolParameter(
+                    name="action",
+                    type="string",
+                    description="Whether to request/update delivery or cancel a pending request.",
+                    required=False,
+                    enum=["request", "cancel"],
+                    default="request",
+                ),
+                ToolParameter(
                     name="caller_email",
                     type="string",
-                    description="The caller's confirmed email address.",
-                    required=True
+                    description="The caller's confirmed email address. Required when action is request; omit when cancelling.",
+                    required=False
                 )
             ]
         )
@@ -95,6 +106,53 @@ class RequestTranscriptTool(Tool):
                     "status": "disabled",
                     "message": "I'm sorry, but the email transcript feature is not available at the moment.",
                     "ai_should_speak": True
+                }
+
+            action = str(parameters.get("action") or "request").strip().lower()
+            if action not in {"request", "cancel"}:
+                return {
+                    "status": "error",
+                    "message": "Please specify whether to request or cancel the transcript.",
+                    "ai_should_speak": True,
+                }
+
+            # Resolve the session before parsing an address because cancellation
+            # deliberately has no caller_email parameter.
+            try:
+                session = await context.get_session()
+            except RuntimeError as exc:
+                logger.error("No session found", call_id=call_id)
+                logger.debug(
+                    "Request transcript session lookup failed",
+                    call_id=call_id,
+                    error=str(exc),
+                )
+                return {
+                    "status": "error",
+                    "message": "I'm sorry, I couldn't access the call data to update the transcript request.",
+                    "ai_should_speak": True,
+                }
+
+            if action == "cancel":
+                existing_emails = getattr(session, "transcript_emails", None)
+                if hasattr(existing_emails, "clear"):
+                    existing_emails.clear()
+                else:
+                    session.transcript_emails = set()
+                session.transcript_consent_state = "revoked"
+                session.transcript_consent_updated_at = datetime.now(timezone.utc).isoformat()
+                session.transcript_consent_revision = int(
+                    getattr(session, "transcript_consent_revision", 0) or 0
+                ) + 1
+                await context.session_store.upsert_call(session)
+                # A later, newly confirmed request must not be blocked by the
+                # per-call duplicate cache.
+                self._sent_emails.pop(call_id, None)
+                logger.info("Transcript delivery consent revoked", call_id=call_id)
+                return {
+                    "status": "cancelled",
+                    "message": "Understood. I cancelled the transcript request and it will not be sent.",
+                    "ai_should_speak": True,
                 }
             
             # Get caller email from parameters
@@ -162,16 +220,6 @@ class RequestTranscriptTool(Tool):
                         "ai_should_speak": True
                     }
 
-            # Get session data
-            session = await context.get_session()
-            if not session:
-                logger.error("No session found", call_id=call_id)
-                return {
-                    "status": "error",
-                    "message": "I'm sorry, I couldn't access the call data to send the transcript.",
-                    "ai_should_speak": True
-                }
-
             allow_multiple = bool(config.get("allow_multiple_recipients", False))
             normalized_email = parsed_email.lower()
             existing_emails = getattr(session, "transcript_emails", None)
@@ -229,6 +277,11 @@ class RequestTranscriptTool(Tool):
                 # Default: last email wins (set/update semantics).
                 session.transcript_emails.clear()
                 session.transcript_emails.add(normalized_email)
+            session.transcript_consent_state = "granted"
+            session.transcript_consent_updated_at = datetime.now(timezone.utc).isoformat()
+            session.transcript_consent_revision = int(
+                getattr(session, "transcript_consent_revision", 0) or 0
+            ) + 1
             
             # Save session with transcript email
             await context.session_store.upsert_call(session)
@@ -253,7 +306,7 @@ class RequestTranscriptTool(Tool):
                 "caller_email": parsed_email,
                 "email_for_speech": email_for_speech
             }
-            
+
         except Exception as e:
             logger.error(
                 "Failed to process transcript request",
@@ -269,6 +322,17 @@ class RequestTranscriptTool(Tool):
                 ),
                 "ai_should_speak": True
             }
+
+    @staticmethod
+    def is_delivery_authorized(session: Any, caller_email: str) -> bool:
+        """Fail closed after an explicit revoke while preserving legacy sessions."""
+        if str(getattr(session, "transcript_consent_state", "") or "").lower() == "revoked":
+            return False
+        recipients = getattr(session, "transcript_emails", None)
+        if not recipients:
+            return False
+        normalized = str(caller_email or "").strip().lower()
+        return normalized in {str(value).strip().lower() for value in recipients}
     
     def _prepare_email_data(
         self,

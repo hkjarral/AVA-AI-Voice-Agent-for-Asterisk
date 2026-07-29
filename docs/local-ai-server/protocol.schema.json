@@ -69,6 +69,28 @@
         },
         "call_id": {
           "type": "string"
+        },
+        "segment_energy_threshold": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32767
+        },
+        "segment_silence_ms": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 5000
+        },
+        "output_encoding": {
+          "enum": [
+            "mulaw",
+            "linear16"
+          ]
+        },
+        "output_sample_rate_hz": {
+          "enum": [
+            8000,
+            16000
+          ]
         }
       },
       "additionalProperties": true
@@ -94,6 +116,34 @@
         },
         "call_id": {
           "type": "string"
+        },
+        "segment_energy_threshold": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 32767
+        },
+        "segment_silence_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 100,
+          "maximum": 5000
+        },
+        "output_encoding": {
+          "enum": [
+            "mulaw",
+            "linear16"
+          ]
+        },
+        "output_sample_rate_hz": {
+          "enum": [
+            8000,
+            16000
+          ]
         }
       },
       "additionalProperties": true
@@ -332,8 +382,29 @@
         "type": {
           "const": "switch_model"
         },
+        "scope": {
+          "enum": [
+            "global",
+            "session"
+          ]
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
         "dry_run": {
           "type": "boolean"
+        },
+        "llm_config": {
+          "type": "object",
+          "properties": {
+            "system_prompt": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
         },
         "stt_backend": {
           "type": "string"
@@ -361,6 +432,95 @@
         },
         "faster_whisper_language": {
           "type": "string"
+        },
+        "stt_config": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string"
+            },
+            "model_path": {
+              "type": "string"
+            },
+            "device": {
+              "type": "string",
+              "enum": [
+                "cpu",
+                "cuda",
+                "auto"
+              ]
+            },
+            "compute_type": {
+              "type": "string",
+              "enum": [
+                "int8",
+                "float16",
+                "float32"
+              ]
+            },
+            "faster_whisper_language": {
+              "type": "string"
+            },
+            "whisper_cpp_language": {
+              "type": "string"
+            },
+            "whisper_cpp_model_path": {
+              "type": "string"
+            },
+            "sherpa_model_path": {
+              "type": "string"
+            },
+            "sherpa_model_type": {
+              "type": "string",
+              "enum": [
+                "online",
+                "offline"
+              ]
+            },
+            "sherpa_vad_model_path": {
+              "type": "string"
+            },
+            "tone_model_path": {
+              "type": "string"
+            },
+            "tone_decoder_type": {
+              "type": "string",
+              "enum": [
+                "beam_search",
+                "greedy"
+              ]
+            },
+            "tone_kenlm_path": {
+              "type": "string"
+            },
+            "kroko_url": {
+              "type": "string"
+            },
+            "kroko_language": {
+              "type": "string"
+            },
+            "kroko_port": {
+              "type": "integer"
+            },
+            "kroko_embedded": {
+              "type": "boolean"
+            },
+            "kroko_model_path": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        "runtime_config": {
+          "type": "object",
+          "properties": {
+            "enable_filler_audio": {
+              "type": "boolean"
+            },
+            "llm_streaming_tts_overlap": {
+              "type": "boolean"
+            }
+          }
         },
         "whisper_cpp_language": {
           "type": "string"
@@ -416,6 +576,33 @@
           "type": "string"
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "const": "session"
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          },
+          "then": {
+            "required": [
+              "call_id",
+              "llm_config"
+            ],
+            "properties": {
+              "llm_config": {
+                "required": [
+                  "system_prompt"
+                ]
+              }
+            }
+          }
+        }
+      ],
       "additionalProperties": true
     },
     "SwitchResponse": {
@@ -444,6 +631,21 @@
           "items": {
             "type": "string"
           }
+        },
+        "scope": {
+          "enum": [
+            "global",
+            "session"
+          ]
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": true
@@ -663,6 +865,88 @@
       },
       "additionalProperties": true
     },
+    "ToolContext": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "const": "tool_context"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "allowed_tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "tool_policy": {
+          "enum": [
+            "auto",
+            "strict",
+            "compatible",
+            "off"
+          ]
+        },
+        "protocol_version": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true
+    },
+    "ToolResult": {
+      "type": "object",
+      "required": [
+        "type",
+        "tool_name"
+      ],
+      "properties": {
+        "type": {
+          "const": "tool_result"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "tool_name": {
+          "type": "string"
+        },
+        "function_call_id": {
+          "type": "string"
+        },
+        "result": {},
+        "is_error": {
+          "type": "boolean"
+        },
+        "protocol_version": {
+          "type": "integer"
+        },
+        "output_encoding": {
+          "enum": [
+            "mulaw",
+            "linear16"
+          ]
+        },
+        "output_sample_rate_hz": {
+          "enum": [
+            8000,
+            16000
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
     "TTSRequest": {
       "type": "object",
       "required": [
@@ -687,6 +971,21 @@
         },
         "encoding": {
           "type": "string"
+        },
+        "sample_rate_hz": {
+          "type": "integer"
+        },
+        "output_encoding": {
+          "enum": [
+            "mulaw",
+            "linear16"
+          ]
+        },
+        "output_sample_rate_hz": {
+          "enum": [
+            8000,
+            16000
+          ]
         }
       },
       "additionalProperties": true
@@ -754,6 +1053,18 @@
         },
         "request_id": {
           "type": "string"
+        },
+        "output_encoding": {
+          "enum": [
+            "mulaw",
+            "linear16"
+          ]
+        },
+        "output_sample_rate_hz": {
+          "enum": [
+            8000,
+            16000
+          ]
         }
       },
       "additionalProperties": true
@@ -886,6 +1197,12 @@
     },
     {
       "$ref": "#/$defs/LLMToolResponse"
+    },
+    {
+      "$ref": "#/$defs/ToolContext"
+    },
+    {
+      "$ref": "#/$defs/ToolResult"
     },
     {
       "$ref": "#/$defs/TTSRequest"

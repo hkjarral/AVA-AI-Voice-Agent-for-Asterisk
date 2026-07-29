@@ -51,6 +51,10 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
                 "type": {"const": "set_mode"},
                 "mode": {"enum": ["full", "stt", "llm", "tts"]},
                 "call_id": {"type": "string"},
+                "segment_energy_threshold": {"type": "integer", "minimum": 0, "maximum": 32767},
+                "segment_silence_ms": {"type": "integer", "minimum": 100, "maximum": 5000},
+                "output_encoding": {"enum": ["mulaw", "linear16"]},
+                "output_sample_rate_hz": {"enum": [8000, 16000]},
             },
             "additionalProperties": True,
         },
@@ -61,6 +65,18 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
                 "type": {"const": "mode_ready"},
                 "mode": {"enum": ["full", "stt", "llm", "tts"]},
                 "call_id": {"type": "string"},
+                "segment_energy_threshold": {
+                    "type": ["integer", "null"],
+                    "minimum": 0,
+                    "maximum": 32767,
+                },
+                "segment_silence_ms": {
+                    "type": ["integer", "null"],
+                    "minimum": 100,
+                    "maximum": 5000,
+                },
+                "output_encoding": {"enum": ["mulaw", "linear16"]},
+                "output_sample_rate_hz": {"enum": [8000, 16000]},
             },
             "additionalProperties": True,
         },
@@ -167,7 +183,15 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
             "required": ["type"],
             "properties": {
                 "type": {"const": "switch_model"},
+                "scope": {"enum": ["global", "session"]},
+                "call_id": {"type": "string"},
+                "request_id": {"type": "string"},
                 "dry_run": {"type": "boolean"},
+                "llm_config": {
+                    "type": "object",
+                    "properties": {"system_prompt": {"type": "string"}},
+                    "additionalProperties": True,
+                },
                 "stt_backend": {"type": "string"},
                 "stt_model_path": {"type": "string"},
                 "sherpa_model_path": {"type": "string"},
@@ -177,6 +201,37 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
                 "kroko_url": {"type": "string"},
                 "kroko_model_path": {"type": "string"},
                 "faster_whisper_language": {"type": "string"},
+                "stt_config": {
+                    "type": "object",
+                    "properties": {
+                        "model": {"type": "string"},
+                        "model_path": {"type": "string"},
+                        "device": {"type": "string", "enum": ["cpu", "cuda", "auto"]},
+                        "compute_type": {"type": "string", "enum": ["int8", "float16", "float32"]},
+                        "faster_whisper_language": {"type": "string"},
+                        "whisper_cpp_language": {"type": "string"},
+                        "whisper_cpp_model_path": {"type": "string"},
+                        "sherpa_model_path": {"type": "string"},
+                        "sherpa_model_type": {"type": "string", "enum": ["online", "offline"]},
+                        "sherpa_vad_model_path": {"type": "string"},
+                        "tone_model_path": {"type": "string"},
+                        "tone_decoder_type": {"type": "string", "enum": ["beam_search", "greedy"]},
+                        "tone_kenlm_path": {"type": "string"},
+                        "kroko_url": {"type": "string"},
+                        "kroko_language": {"type": "string"},
+                        "kroko_port": {"type": "integer"},
+                        "kroko_embedded": {"type": "boolean"},
+                        "kroko_model_path": {"type": "string"},
+                    },
+                    "additionalProperties": True,
+                },
+                "runtime_config": {
+                    "type": "object",
+                    "properties": {
+                        "enable_filler_audio": {"type": "boolean"},
+                        "llm_streaming_tts_overlap": {"type": "boolean"},
+                    },
+                },
                 "whisper_cpp_language": {"type": "string"},
                 "sherpa_model_type": {"type": "string", "enum": ["online", "offline"]},
                 "sherpa_vad_model_path": {"type": "string"},
@@ -193,6 +248,20 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
                 "kokoro_api_model": {"type": "string"},
                 "llm_model_path": {"type": "string"},
             },
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"scope": {"const": "session"}},
+                        "required": ["scope"],
+                    },
+                    "then": {
+                        "required": ["call_id", "llm_config"],
+                        "properties": {
+                            "llm_config": {"required": ["system_prompt"]}
+                        },
+                    },
+                }
+            ],
             "additionalProperties": True,
         },
         "SwitchResponse": {
@@ -203,6 +272,9 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
                 "status": {"enum": ["success", "no_change", "error"]},
                 "message": {"type": "string"},
                 "changed": {"type": "array", "items": {"type": "string"}},
+                "scope": {"enum": ["global", "session"]},
+                "call_id": {"type": "string"},
+                "request_id": {"type": ["string", "null"]},
             },
             "additionalProperties": True,
         },
@@ -288,6 +360,57 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
             },
             "additionalProperties": True,
         },
+        # Issue #368 — local LLM tool-gated response.
+        # Inbound: client→server, sets session-scoped tool state once per turn.
+        # Sent before `llm_tool_request` so the server knows which tools the
+        # current call may legally invoke and what their JSON schemas look like.
+        # Server does not reply directly to `tool_context`; it stores the state
+        # on the session and uses it during subsequent `llm_tool_request`
+        # processing.
+        "ToolContext": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+                "type": {"const": "tool_context"},
+                "call_id": {"type": "string"},
+                "allowed_tools": {"type": "array", "items": {"type": "string"}},
+                "tools": {"type": "array", "items": {"type": "object"}},
+                "tool_policy": {"enum": ["auto", "strict", "compatible", "off"]},
+                "protocol_version": {"type": "integer"},
+            },
+            "additionalProperties": True,
+        },
+        # Issue #368 — local LLM tool-gated response.
+        # Inbound: client→server, delivers a tool's execution result back to
+        # the local LLM after the engine ran it. Triggers a follow-up LLM
+        # turn that produces the final spoken response (via `llm_response` +
+        # `tts_request`), NOT another tool call.
+        # Two operating shapes:
+        #   - Success: { type: "tool_result", call_id, tool_name, result: <obj> }
+        #   - Error:   { type: "tool_result", call_id, tool_name, result: <obj>,
+        #                is_error: true }
+        # The server renders an internal "tool turn" prompt
+        # ("The tool X returned <result>. Now answer the caller using the
+        # actual values only.") and re-prompts the local LLM. The follow-up
+        # final response is emitted with `extra.tool_result_final=true` so the
+        # engine can recognize it as the post-tool answer.
+        "ToolResult": {
+            "type": "object",
+            "required": ["type", "tool_name"],
+            "properties": {
+                "type": {"const": "tool_result"},
+                "call_id": {"type": "string"},
+                "request_id": {"type": "string"},
+                "tool_name": {"type": "string"},
+                "function_call_id": {"type": "string"},
+                "result": {},  # any JSON value (object preferred); server stringifies for the prompt
+                "is_error": {"type": "boolean"},
+                "protocol_version": {"type": "integer"},
+                "output_encoding": {"enum": ["mulaw", "linear16"]},
+                "output_sample_rate_hz": {"enum": [8000, 16000]},
+            },
+            "additionalProperties": True,
+        },
         "TTSRequest": {
             "type": "object",
             "required": ["type", "text"],
@@ -298,6 +421,9 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
                 "call_id": {"type": "string"},
                 "request_id": {"type": "string"},
                 "encoding": {"type": "string"},
+                "sample_rate_hz": {"type": "integer"},
+                "output_encoding": {"enum": ["mulaw", "linear16"]},
+                "output_sample_rate_hz": {"enum": [8000, 16000]},
             },
             "additionalProperties": True,
         },
@@ -326,6 +452,8 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
                 "mode": {"type": "string"},
                 "call_id": {"type": "string"},
                 "request_id": {"type": "string"},
+                "output_encoding": {"enum": ["mulaw", "linear16"]},
+                "output_sample_rate_hz": {"enum": [8000, 16000]},
             },
             "additionalProperties": True,
         },
@@ -377,6 +505,12 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
         {"$ref": "#/$defs/LLMResponse"},
         {"$ref": "#/$defs/LLMToolRequest"},
         {"$ref": "#/$defs/LLMToolResponse"},
+        # v6.5.0+: tool gateway extensions for #368 (local LLM tool-gated response).
+        # Without these in the top-level oneOf, environments running with
+        # `jsonschema` installed reject valid tool_context / tool_result
+        # messages even though the server handles them correctly.
+        {"$ref": "#/$defs/ToolContext"},
+        {"$ref": "#/$defs/ToolResult"},
         {"$ref": "#/$defs/TTSRequest"},
         {"$ref": "#/$defs/TTSResponse"},
         {"$ref": "#/$defs/AudioFrameRequest"},

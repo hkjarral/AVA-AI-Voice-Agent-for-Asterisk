@@ -4,8 +4,10 @@ Focuses on robust connection and logging to debug startup issues.
 """
 
 import asyncio
+import contextlib
 import json
 import os
+import re
 import time
 import uuid
 import audioop
@@ -25,6 +27,8 @@ from .config import AsteriskConfig
 from .logging_config import get_logger
 
 logger = get_logger(__name__)
+
+_UNSAFE_DIALPLAN_TARGET_RE = re.compile(r"[,()\x00-\x1f\x7f]")
 
 class ARIClient:
     """A client for interacting with the Asterisk REST Interface (ARI)."""
@@ -52,6 +56,8 @@ class ARIClient:
         self._reconnect_attempt = 0
         self._max_reconnect_backoff = 60  # Max seconds between reconnect attempts
         self._connected = False  # True readiness state for /ready endpoint
+        self.asterisk_version: Optional[str] = None
+        self._listener_active = False  # Guard against duplicate listener supervisors
         self.event_handlers: Dict[str, List[Callable]] = {}
         self.active_playbacks: Dict[str, str] = {}
         self.audio_frame_handler: Optional[Callable] = None
@@ -101,9 +107,23 @@ class ARIClient:
             async with self.http_session.get(f"{self.http_url}/asterisk/info") as response:
                 if response.status != 200:
                     raise ConnectionError(f"Failed to connect to ARI HTTP endpoint. Status: {response.status}")
-                logger.info("Successfully connected to ARI HTTP endpoint.", scheme=http_scheme, ssl_verify=self.ssl_verify)
+                info = await response.json(content_type=None)
+                system_info = info.get("system", {}) if isinstance(info, dict) else {}
+                self.asterisk_version = str(system_info.get("version") or "").strip() or None
+                logger.info(
+                    "Successfully connected to ARI HTTP endpoint.",
+                    scheme=http_scheme,
+                    ssl_verify=self.ssl_verify,
+                    asterisk_version=self.asterisk_version,
+                )
 
-            # Then, connect to the WebSocket
+            # Then, connect to the WebSocket. Close any stale socket first so a reconnect
+            # never reuses a dead iterator.
+            if self.websocket is not None:
+                with contextlib.suppress(Exception):
+                    await self.websocket.close()
+                self.websocket = None
+
             self.websocket = await websockets.connect(self.ws_url, ssl=ssl_context)
             self.running = True
             self._connected = True
@@ -119,7 +139,59 @@ class ARIClient:
 
     async def start_listening(self):
         """Start listening for events from the ARI WebSocket with automatic reconnection."""
-        await self._listen_with_reconnect()
+        if self._listener_active:
+            logger.warning("ARI listener already active; ignoring duplicate start")
+            return
+
+        self._listener_active = True
+        self._should_reconnect = True
+        try:
+            await self._listen_with_reconnect()
+        finally:
+            self._listener_active = False
+
+    async def _mark_disconnected_and_backoff(
+        self,
+        message: str,
+        *,
+        level: str = "warning",
+        error: Optional[str] = None,
+        exc_info: bool = False,
+    ) -> bool:
+        """Clear ARI connection state and sleep before reconnecting."""
+        self._connected = False
+        self.running = False
+
+        websocket = self.websocket
+        self.websocket = None
+        if websocket is not None:
+            with contextlib.suppress(Exception):
+                await websocket.close()
+
+        if not self._should_reconnect:
+            logger.info(f"{message} (shutdown requested).")
+            return False
+
+        self._reconnect_attempt += 1
+        backoff = min(2 ** self._reconnect_attempt, self._max_reconnect_backoff)
+        log = logger.error if level == "error" else logger.warning
+        kwargs = {
+            "attempt": self._reconnect_attempt,
+            "backoff_seconds": backoff,
+        }
+        if error is not None:
+            kwargs["error"] = error
+        if exc_info:
+            kwargs["exc_info"] = True
+        log(message, **kwargs)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + backoff
+        while self._should_reconnect:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return True
+            await asyncio.sleep(min(remaining, 0.5))
+        return False
 
     async def _listen_with_reconnect(self):
         """
@@ -139,15 +211,12 @@ class ARIClient:
                 try:
                     await self.connect()
                 except Exception as e:
-                    self._reconnect_attempt += 1
-                    backoff = min(2 ** self._reconnect_attempt, self._max_reconnect_backoff)
-                    logger.warning(
+                    should_continue = await self._mark_disconnected_and_backoff(
                         "ARI connection failed, will retry",
-                        attempt=self._reconnect_attempt,
-                        backoff_seconds=backoff,
-                        error=str(e)
+                        error=str(e),
                     )
-                    await asyncio.sleep(backoff)
+                    if not should_continue:
+                        break
                     continue
 
             logger.info("Starting ARI event listener.")
@@ -172,41 +241,30 @@ class ARIClient:
                                 asyncio.create_task(handler(event_data))
                     except json.JSONDecodeError:
                         logger.warning("Failed to decode ARI event JSON", message=message)
+
+                # A clean iterator end is still a disconnect. Without this branch the outer
+                # loop immediately re-enters with the stale websocket and spams listener logs.
+                should_continue = await self._mark_disconnected_and_backoff(
+                    "ARI WebSocket listener ended, will reconnect"
+                )
+                if not should_continue:
+                    break
                         
             except ConnectionClosed:
-                self._connected = False
-                self.running = False
-                self.websocket = None
-                if self._should_reconnect:
-                    self._reconnect_attempt += 1
-                    backoff = min(2 ** self._reconnect_attempt, self._max_reconnect_backoff)
-                    logger.warning(
-                        "ARI WebSocket connection closed, will reconnect",
-                        attempt=self._reconnect_attempt,
-                        backoff_seconds=backoff
-                    )
-                    await asyncio.sleep(backoff)
-                else:
-                    logger.info("ARI WebSocket closed (shutdown requested).")
+                should_continue = await self._mark_disconnected_and_backoff(
+                    "ARI WebSocket connection closed, will reconnect"
+                )
+                if not should_continue:
                     break
                     
             except Exception as e:
-                self._connected = False
-                self.running = False
-                self.websocket = None
-                if self._should_reconnect:
-                    self._reconnect_attempt += 1
-                    backoff = min(2 ** self._reconnect_attempt, self._max_reconnect_backoff)
-                    logger.error(
-                        "ARI listener error, will reconnect",
-                        attempt=self._reconnect_attempt,
-                        backoff_seconds=backoff,
-                        error=str(e),
-                        exc_info=True
-                    )
-                    await asyncio.sleep(backoff)
-                else:
-                    logger.error("ARI listener error (shutdown requested).", exc_info=True)
+                should_continue = await self._mark_disconnected_and_backoff(
+                    "ARI listener error, will reconnect",
+                    level="error",
+                    error=str(e),
+                    exc_info=True,
+                )
+                if not should_continue:
                     break
         
         logger.info("ARI reconnect supervisor stopped.")
@@ -220,7 +278,8 @@ class ARIClient:
         self._connected = False
         self.running = False
         if self.websocket:
-            await self.websocket.close()
+            with contextlib.suppress(Exception):
+                await self.websocket.close()
             self.websocket = None
         if self.http_session and not self.http_session.closed:
             await self.http_session.close()
@@ -362,8 +421,15 @@ class ARIClient:
         extension: str = "s",
         priority: int = 1,
         label: Optional[str] = None,
-    ) -> bool:
-        """Return a Stasis channel back to the dialplan (POST /channels/{id}/continue)."""
+    ) -> Optional[bool]:
+        """Return the tri-state outcome of handing a Stasis channel to dialplan.
+
+        A 2xx response confirms acceptance, an explicit 4xx response rejects the
+        command, and ``None`` represents an indeterminate 5xx, missing, redirect,
+        or malformed response. Callers must retain ownership while reconciling an
+        indeterminate result because Asterisk may have accepted the request before
+        the HTTP response was lost.
+        """
         params: Dict[str, Any] = {
             "context": str(context),
             "extension": str(extension),
@@ -373,24 +439,122 @@ class ARIClient:
             params["label"] = str(label)
         resp = await self.send_command("POST", f"channels/{channel_id}/continue", params=params)
         status = resp.get("status") if isinstance(resp, dict) else None
-        if status is not None and int(status) >= 400:
+        if status is None:
+            return None
+        try:
+            status_code = int(status)
+        except (TypeError, ValueError):
+            return None
+        if 200 <= status_code < 300:
+            return True
+        if 400 <= status_code < 500:
             return False
-        return True
+        return None
+
+    async def dialplan_target_exists(
+        self,
+        channel_id: str,
+        *,
+        context: str,
+        extension: str = "s",
+        priority: int = 1,
+    ) -> Optional[bool]:
+        """Return whether a concrete dialplan destination exists for this channel.
+
+        ``None`` means Asterisk could not answer the discovery probe. Callers that
+        require fail-closed recovery can treat it as false, while normal transfer
+        paths may still attempt ``continue`` and use that command's result as the
+        authoritative handoff outcome.
+
+        ARI can accept ``continue`` before Asterisk resolves the destination.  An
+        invalid target therefore looks successful to the caller of
+        :meth:`continue_in_dialplan` but is immediately hung up by Asterisk.  Read
+        Asterisk's ``DIALPLAN_EXISTS`` function first so recovery code can retain
+        channel ownership and use its safe fallback instead.
+        """
+        context = str(context or "").strip()
+        extension = str(extension or "").strip()
+        try:
+            priority = int(priority)
+        except (TypeError, ValueError):
+            return False
+
+        # Function arguments are comma-separated. Reject delimiters/control bytes
+        # rather than allowing configuration to alter the function expression.
+        if (
+            not context
+            or not extension
+            or priority < 1
+            or _UNSAFE_DIALPLAN_TARGET_RE.search(context)
+            or _UNSAFE_DIALPLAN_TARGET_RE.search(extension)
+        ):
+            logger.error(
+                "Unsafe or invalid dialplan redirect target",
+                channel_id=channel_id,
+                context=context,
+                extension=extension,
+                priority=priority,
+            )
+            return False
+
+        variable = f"DIALPLAN_EXISTS({context},{extension},{priority})"
+        try:
+            resp = await self.send_command(
+                "GET",
+                f"channels/{channel_id}/variable",
+                params={"variable": variable},
+                tolerate_statuses=[404],
+            )
+        except Exception:
+            logger.warning(
+                "Failed to validate dialplan redirect target",
+                channel_id=channel_id,
+                context=context,
+                extension=extension,
+                priority=priority,
+                exc_info=True,
+            )
+            return None
+
+        if not isinstance(resp, dict):
+            return None
+        status = resp.get("status")
+        if status is not None:
+            try:
+                if int(status) >= 400:
+                    return None
+            except (TypeError, ValueError):
+                return None
+
+        value = str(resp.get("value") or "").strip().lower()
+        if value in {"1", "true", "yes", "on"}:
+            return True
+        if value in {"0", "false", "no", "off"}:
+            return False
+        return None
 
     async def answer_channel(self, channel_id: str):
         """Answer a channel."""
         logger.info("Answering channel", channel_id=channel_id)
         await self.send_command("POST", f"channels/{channel_id}/answer")
 
-    async def hangup_channel(self, channel_id: str):
-        """Hang up a channel."""
+    async def hangup_channel(self, channel_id: str) -> bool:
+        """Hang up a channel and report whether ARI accepted the request."""
         logger.info("Hanging up channel", channel_id=channel_id)
-        # We add a check here. If the command fails with a 404, we log it
-        # as a debug message instead of an error, as this can happen in race
-        # conditions during cleanup and is not necessarily a critical failure.
+        # A 404 here is the normal post-StasisEnd race: caller disconnected first,
+        # Asterisk destroyed the channel, and our cleanup hangup arrives a beat later.
+        # Not a failure — log neutrally so it doesn't read as an error in RCAs.
         response = await self.send_command("DELETE", f"channels/{channel_id}", tolerate_statuses=[404])
         if response and response.get("status") == 404:
-            logger.debug("Channel hangup failed (404), likely already hung up.", channel_id=channel_id)
+            logger.debug(
+                "Hangup no-op: channel already destroyed (expected post-StasisEnd race)",
+                channel_id=channel_id,
+            )
+            return True
+        if not isinstance(response, dict):
+            return False
+        status = response.get("status")
+        return status is None or int(status) < 400
 
     async def execute_application(self, channel_id: str, app_name: str, app_data: str) -> bool:
         """Execute an Asterisk application on a channel."""
@@ -483,8 +647,13 @@ class ARIClient:
                 f"channels/{channel_id}/variable",
                 data={"variable": variable, "value": value},
             )
-            # Some ARI implementations return {} on success.
-            return resp is not None
+            # Some ARI implementations return {} on success. send_command()
+            # also returns a status dictionary for HTTP/transport failures, so
+            # non-None alone is not a success signal.
+            if not isinstance(resp, dict):
+                return False
+            status = resp.get("status")
+            return status is None or int(status) < 400
         except Exception:
             logger.error("Failed to set channel variable", channel_id=channel_id, variable=variable, exc_info=True)
             return False
@@ -515,9 +684,18 @@ class ARIClient:
     async def stop_playback(self, playback_id: str) -> bool:
         """Stop an active playback by its playbackId."""
         try:
-            response = await self.send_command("DELETE", f"playbacks/{playback_id}")
+            response = await self.send_command(
+                "DELETE",
+                f"playbacks/{playback_id}",
+                tolerate_statuses=[404],
+            )
             status = response.get("status") if isinstance(response, dict) else None
             if status is not None:
+                if int(status) == 404:
+                    # Idempotent cleanup: finite media or channel teardown may
+                    # already have removed the playback.
+                    logger.debug("Playback already absent", playback_id=playback_id)
+                    return True
                 if 200 <= int(status) < 300:
                     logger.info("Playback stopped", playback_id=playback_id, status=status)
                     return True

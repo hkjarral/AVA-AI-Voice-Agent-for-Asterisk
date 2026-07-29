@@ -20,10 +20,15 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import aiohttp
 import websockets
 
-from ..audio import convert_pcm16le_to_target_format, mulaw_to_pcm16le, resample_audio
+from ..audio import (
+    convert_pcm16le_to_target_format,
+    mulaw_to_pcm16le,
+    resample_audio,
+    resolve_output_resampler_policy,
+)
 from ..config import AppConfig, DeepgramProviderConfig
 from ..logging_config import get_logger
-from .base import STTComponent, TTSComponent
+from .base import STREAMING_STT_FORMAT_ALIASES, STTComponent, TTSComponent
 
 logger = get_logger(__name__)
 
@@ -104,6 +109,8 @@ class DeepgramSTTAdapter(STTComponent):
 
     Note: This is separate from src/providers/deepgram.py (monolithic full agent).
     """
+
+    supports_streaming = True
 
     def __init__(
         self,
@@ -362,7 +369,14 @@ class DeepgramSTTAdapter(STTComponent):
 
     # Streaming Methods (for streaming: true mode) --------------------------------
 
-    async def start_stream(self, call_id: str, options: Dict[str, Any]) -> None:
+    async def start_stream(
+        self,
+        call_id: str,
+        options: Dict[str, Any],
+        *,
+        sample_rate_hz: int,
+        fmt: str,
+    ) -> None:
         """Open WebSocket streaming connection to Deepgram."""
         session = self._sessions.get(call_id)
         if not session:
@@ -392,12 +406,19 @@ class DeepgramSTTAdapter(STTComponent):
         else:
             path = parsed.path.rstrip("/") + "/v1/listen"
 
-        # Build query parameters
+        normalized_fmt = str(fmt or "").strip().lower()
+        if normalized_fmt not in STREAMING_STT_FORMAT_ALIASES:
+            raise ValueError(f"Unsupported Deepgram streaming STT format: {fmt!r}")
+        if int(sample_rate_hz) <= 0:
+            raise ValueError("Deepgram streaming STT sample_rate_hz must be positive")
+
+        # Raw audio requires encoding and sample_rate query parameters that
+        # describe the bytes actually sent by the engine.
         query_params = {
             "model": merged.get("model", "nova-2"),
             "language": merged.get("language", "en-US"),
-            "encoding": merged.get("encoding", "linear16"),
-            "sample_rate": str(merged.get("sample_rate", 16000)),
+            "encoding": "linear16",
+            "sample_rate": str(sample_rate_hz),
             "channels": "1",
         }
         existing = dict(parse_qsl(parsed.query))
@@ -447,6 +468,8 @@ class DeepgramSTTAdapter(STTComponent):
             "Deepgram STT streaming session opened",
             call_id=call_id,
             model=merged.get("model"),
+            encoding="linear16",
+            sample_rate_hz=sample_rate_hz,
         )
 
     async def send_audio(
@@ -585,6 +608,14 @@ class DeepgramTTSAdapter(TTSComponent):
     # Milestone7: Deepgram REST TTS adapter with μ-law conversion and chunking.
     """
 
+    wideband_output_format = {
+        "encoding": "linear16",
+        "sample_rate": 16000,
+        "options": {
+            "source_format": {"encoding": "linear16", "sample_rate": 16000}
+        },
+    }
+
     def __init__(
         self,
         component_key: str,
@@ -676,7 +707,14 @@ class DeepgramTTSAdapter(TTSComponent):
             raw_audio = await response.read()
             source_encoding = params.get("encoding", "linear16")
             source_sample_rate = int(params.get("sample_rate", target_sample_rate))
-            converted = self._convert_audio(raw_audio, source_encoding, source_sample_rate, target_encoding, target_sample_rate)
+            converted = self._convert_audio(
+                raw_audio,
+                source_encoding,
+                source_sample_rate,
+                target_encoding,
+                target_sample_rate,
+                merged["output_resampler"],
+            )
             latency_ms = (time.perf_counter() - started_at) * 1000.0
 
         logger.info(
@@ -716,6 +754,12 @@ class DeepgramTTSAdapter(TTSComponent):
             "chunk_size_ms": runtime_options.get("chunk_size_ms", self._pipeline_defaults.get("chunk_size_ms", 20)),
             "api_key": runtime_options.get("api_key", self._pipeline_defaults.get("api_key", self._provider_defaults.api_key)),
             "format": merged_format,
+            "output_resampler": runtime_options.get(
+                "output_resampler",
+                self._pipeline_defaults.get(
+                    "output_resampler", self._provider_defaults.output_resampler
+                ),
+            ),
         }
         # Default the provider output (source_format) sample rate to the target sample rate
         # so we request 8 kHz from Deepgram when our downstream is μ-law 8 kHz.
@@ -724,7 +768,11 @@ class DeepgramTTSAdapter(TTSComponent):
         merged["source_format"] = {
             "encoding": source_cfg.get("encoding", "linear16"),
             "sample_rate": int(source_cfg.get("sample_rate", default_source_rate)),
+            "container": source_cfg.get("container", "none"),
         }
+        merged["output_resampler"] = resolve_output_resampler_policy(
+            provider_mode=merged.get("output_resampler")
+        )[0]
         return merged
 
     def _build_tts_request(
@@ -743,6 +791,7 @@ class DeepgramTTSAdapter(TTSComponent):
         params["encoding"] = source_format.get("encoding", "linear16")
         # Request provider to emit audio at the downstream target sample rate by default
         params["sample_rate"] = int(source_format.get("sample_rate", target_sample_rate))
+        params["container"] = source_format.get("container", "none")
         params["target_encoding"] = target_encoding
         params["target_sample_rate"] = target_sample_rate
         # Remove None values
@@ -756,6 +805,7 @@ class DeepgramTTSAdapter(TTSComponent):
         source_rate: int,
         target_encoding: str,
         target_rate: int,
+        output_resampler: str = "linear",
     ) -> bytes:
         if not audio_bytes:
             return b""
@@ -767,7 +817,12 @@ class DeepgramTTSAdapter(TTSComponent):
             pcm_bytes = audio_bytes
 
         if source_rate != target_rate:
-            pcm_bytes, _ = resample_audio(pcm_bytes, source_rate, target_rate)
+            pcm_bytes, _ = resample_audio(
+                pcm_bytes,
+                source_rate,
+                target_rate,
+                mode=output_resampler,
+            )
 
         return convert_pcm16le_to_target_format(pcm_bytes, target_encoding)
 

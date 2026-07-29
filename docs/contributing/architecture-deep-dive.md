@@ -1,14 +1,14 @@
 ---
 trigger: always_on
-description: Architecture Details for Asterisk AI Voice Agent v5.0 project
+description: Architecture details for Asterisk AI Voice Agent (current — v7.3+)
 globs: src/**/*.py, *.py, docker-compose.yml, Dockerfile, config/ai-agent.yaml
 ---
 
-# Asterisk AI Voice Agent - Architecture Documentation (v5.0)
+# Asterisk AI Voice Agent — Architecture Documentation
 
 ## System Overview
 
-The Asterisk AI Voice Agent v5.0 is a **production-ready, modular conversational AI system** that enables **real-time, two-way voice conversations** through Asterisk/FreePBX systems. It features a **modular pipeline architecture** that allows mixing and matching STT, LLM, and TTS providers, alongside support for **monolithic providers** like OpenAI Realtime, Deepgram, Google Live, and ElevenLabs.
+The Asterisk AI Voice Agent is a **production-ready, modular conversational AI system** that enables **real-time, two-way voice conversations** through Asterisk/FreePBX systems. It features a **modular pipeline architecture** that allows mixing and matching STT, LLM, and TTS providers, alongside support for **monolithic providers** like OpenAI Realtime, Deepgram, Google Live, and ElevenLabs.
 
 ### Key Architecture Components
 
@@ -19,9 +19,9 @@ The Asterisk AI Voice Agent v5.0 is a **production-ready, modular conversational
 - **Production Monitoring** – Bring-your-own Prometheus/Grafana; metrics are intentionally low-cardinality. Use Call History for per-call debugging.
 - **State Management** – Centralized SessionStore with type-safe call state tracking
 
-### Golden Baselines (v5.0)
+### Representative Golden Baselines
 
-Five validated configurations ship production-ready:
+Validated reference configurations include:
 
 1. **OpenAI Realtime** (`config/ai-agent.golden-openai.yaml`)
    - Monolithic provider (STT+LLM+TTS integrated)
@@ -45,6 +45,17 @@ Five validated configurations ship production-ready:
    - Pipeline: Vosk (STT) + OpenAI (LLM) + Piper (TTS)
    - Response time: 3-7 seconds
    - Privacy-focused (audio stays local)
+
+6. **xAI Grok Voice Agent** (`config/ai-agent.golden-grok.yaml`)
+   - Full-agent server-VAD provider with multi-instance routing
+   - μ-law 8 kHz caller input; observed PCM16 24 kHz provider output
+
+7. **Telnyx Hybrid** (`config/ai-agent.golden-telnyx.yaml`)
+   - Modular local speech + Telnyx-hosted LLM pipeline
+
+Release-specific validation is authoritative. A golden file is a configuration
+reference, not proof that its provider/transport pair passed the current
+candidate; consult [`docs/baselines/golden/`](../baselines/golden/).
 
 **Fully Local (optional)** is also supported (no cloud APIs), but performance depends heavily on your hardware (especially local LLM inference). See `docs/LOCAL_ONLY_SETUP.md` and `docs/HARDWARE_REQUIREMENTS.md`.
 
@@ -249,17 +260,26 @@ Ongoing milestones and their acceptance criteria live in `docs/ROADMAP.md`. Upda
 
 ### IDE Playbooks
 
-- **Codex / CLI**: `Agents.md` and `.agent/workflows/` summarize deployment runbooks and regression expectations for terminal-first workflows.
-- **Cursor**: `.cursor/rules/asterisk_ai_voice_agent.mdc` mirrors the same guardrails, emphasizing SessionStore usage, dual upstream transport, and streaming-first playback.
-- **Windsurf**: `.windsurf/rules/asterisk_ai_voice_agent.md` keeps IDE prompts aligned with the roadmap so code and documentation stays in sync.
-- **Shared artifacts**: Golden baselines (`docs/baselines/golden/`), regression evidence (`docs/resilience.md`), and architecture/roadmap snapshots (`docs/contributing/architecture-deep-dive.md`, `docs/ROADMAP.md`) are the canonical hand-off regardless of editor; update them after every call so all IDEs inherit the latest context.
+Each editor's project-specific rules live alongside its config (most are gitignored — they're operator-specific). The canonical, repo-tracked sources of truth that all IDE rules should reflect are:
+
+- **Architecture & roadmap**: this file (`docs/contributing/architecture-deep-dive.md`) plus `docs/ROADMAP.md`.
+- **Golden baselines & regression evidence**: `docs/baselines/golden/` and `docs/resilience.md`.
+- **Tool/provider patterns**: `docs/TOOL_CALLING_GUIDE.md`, `docs/contributing/tool-development.md`, `docs/contributing/provider-development.md`.
+
+Rule files seen in this repo (when present locally):
+
+- **Cursor**: `.cursor/rules/architecture-overview.mdc`, `.cursor/rules/project-roadmap.mdc`
+- **Windsurf**: `.windsurf/rules/architecture-overview.md`, `.windsurf/rules/diagnosis.md`, `.windsurf/rules/project-roadmap.md`
+- **Claude Code / agentic CLIs**: `CLAUDE.md` (project root, gitignored)
+
+Treat the doc files above as the source of truth — IDE rule files should be regenerated from them, not the other way around.
 
 ## Contributing
 
 - See the repository-level [Contributing Guide](../../CONTRIBUTING.md) for branching strategy and PR workflow.
 - Typical flow:
-  - Fork and branch from `develop`.
-  - Open a PR against `staging` with a clear description and testing notes.
+  - Fork and branch from `main`.
+  - Open a PR against `main` with a clear description and testing notes.
   - Keep changes small and documented; update `docs/` where behavior changes.
 - License: MIT. See [LICENSE](../../LICENSE).
 
@@ -473,7 +493,7 @@ exten => s,1,NoOp(Asterisk AI Voice Agent v4.0)
 [from-ai-agent-support]
 exten => s,1,NoOp(AI Agent - Customer Support)
  same => n,Set(AI_PROVIDER=deepgram)  ; Optional override
- same => n,Set(AI_CONTEXT=support)    ; Custom context
+ same => n,Set(AI_AGENT=support)      ; Agent slug
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```
@@ -509,15 +529,15 @@ Implementation references:
 
 ### Transport Selection
 
-**AudioSocket (Modern - Recommended for Full Agents)**:
-- **Use for**: OpenAI Realtime, Deepgram Voice Agent (monolithic providers)
-- **Advantages**: Lower latency, streaming TTS support, simpler architecture
+**AudioSocket (TCP media transport)**:
+- **Use for**: Full-agent providers or modular pipelines when TCP media fits the deployment
+- **Advantages**: Bidirectional framed audio, direct streaming playback, and simple localhost deployments
 - **Implementation**: Engine originates AudioSocket channel via ARI
 - **Configuration**: `audio_transport: audiosocket` in config YAML
 
-**ExternalMedia RTP (Legacy - For Hybrid Pipelines)**:
-- **Use for**: Local Hybrid, modular STT+LLM+TTS pipelines
-- **Advantages**: Battle-tested, file-based playback compatibility
+**ExternalMedia RTP (UDP media transport)**:
+- **Use for**: Full-agent providers or modular pipelines when RTP is preferred or required
+- **Advantages**: Standards-based RTP ingress/egress, direct streaming, and file-playback compatibility
 - **Implementation**: Engine originates ExternalMedia channel via ARI
 - **Configuration**: `audio_transport: externalmedia` in config YAML
 
@@ -528,19 +548,21 @@ Implementation references:
 3. **Select Configuration**: Choose golden baseline in `config/ai-agent.yaml`
 4. **Test**: Place call, monitor engine logs for StasisStart → bridge creation
 
-### Optional: ExternalMedia RTP Bridging
+## Streaming TTS over ExternalMedia RTP
 
-In deployments that require RTP/SRTP interop, an optional path using Asterisk `ExternalMedia` may be enabled to bridge media via RTP. This is not required for the default ExternalMedia architecture and should be considered only when standards-based RTP interop is necessary.
+With `downstream_mode=stream`, the engine streams provider audio directly back
+to Asterisk over the ExternalMedia RTP leg (normally μ-law @ 8 kHz). The jitter
+buffer is managed in process and the transport can fall back to file playback
+if the downstream path becomes unhealthy.
 
-## Streaming TTS over ExternalMedia Gateway (Feature Flag)
-
-With `downstream_mode=stream`, the engine now streams provider audio directly back to Asterisk over the ExternalMedia RTP leg (μ-law @ 8 kHz). The jitter buffer is managed in process and the transport will automatically fall back to file playback if the downstream path becomes unhealthy. The remaining work in this area focuses on:
-
-- **Barge-in**: detect inbound speech while streaming and cancel/attenuate TTS on demand.
+- **Barge-in**: provider VAD plus an AVA local fallback flush caller-facing and provider-side output; Grok's v7.3.2 regression sequence validates cancelled-output quarantine and replacement turns.
 - **Reliability**: expand keepalive/reconnect logic beyond the initial implementation and expose underrun/overrun counters.
 - **Observability**: extend metrics with end-to-end latency, queue depth, and retransmission counters for streamed audio.
 
-The streaming path remains feature-flagged; deployments can switch back to file playback instantly by reverting `downstream_mode` to `file`.
+This is a normal runtime mode, not an experimental feature flag. Deployments can
+switch to file playback with `downstream_mode: file`. Consult the current
+[transport compatibility guide](../Transport-Mode-Compatibility.md) and release
+matrix before choosing a production baseline.
 
 ## Streaming Observability (Milestone 6)
 
@@ -582,7 +604,7 @@ All streaming state is also reflected in `SessionStore` (`CallSession` fields: `
 Two-way audio hinges on the `RTPServer` implementation in `src/rtp_server.py`:
 
 - **Transport**: UDP socket bound to the configured host/port range (default `0.0.0.0:18080-18099`) – Asterisk’s `ExternalMedia()` application sends 20 ms μ-law frames to this endpoint.
-- **Packet Handling**: `_rtp_receiver()` parses RTP headers, tracks expected sequence numbers/packet loss, converts μ-law to PCM16, and resamples 8 kHz audio to 16 kHz using `audioop.ratecv`.
+- **Packet Handling**: `_rtp_receiver()` parses RTP headers, tracks expected sequence numbers/packet loss, converts μ-law to PCM16, and resamples 8 kHz audio to 16 kHz via `src/audio/resampler.py` (replaces the legacy `audioop.ratecv` path — see `docs/AUDIO_RESAMPLING_NOTES.md`).
 - **Engine Callback**: Every decoded frame is delivered back to `engine._on_rtp_audio(ssrc, pcm_16k)` where VAD, fallback buffering, and provider routing are performed. SSRCs are mapped to call sessions on the first packet through `SessionStore`.
 - **Outbound Audio**: Downstream audio remains file-based (no RTP transmit path yet); playback continues to flow through ARI bridges managed by `PlaybackManager`.
 

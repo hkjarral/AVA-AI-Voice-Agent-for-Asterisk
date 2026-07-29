@@ -1,4 +1,6 @@
+import asyncio
 import sys
+import time
 import types
 
 import pytest
@@ -241,7 +243,7 @@ async def test_attended_transfer_ai_briefing_generates_intro_summary_and_prompt(
     async def fake_start_helper(*, call_id, agent_channel_id, attended_cfg=None):
         return {"rtp_session_id": f"attx:{call_id}:{agent_channel_id}"}
 
-    async def fake_generate(*, session, destination_description, timeout_sec):
+    async def fake_generate(*, session, destination_description, timeout_sec, **kwargs):
         return "John needs billing help."
 
     async def fake_tts(*, call_id, text, timeout_sec):
@@ -418,6 +420,415 @@ def test_attended_transfer_ai_briefing_rejects_local_ai_fallback_text():
 
 
 @pytest.mark.asyncio
+async def test_deferred_transfer_commit_waits_for_audio_drain(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-deferred",
+        caller_channel_id="caller-deferred",
+        context_name="support",
+    )
+    session.pending_deferred_transfer = {
+        "kind": "transfer",
+        "commit_tool": "blind_transfer",
+        "transfer_type": "extension",
+        "target": "6000",
+        "description": "Support agent",
+    }
+    await engine.session_store.upsert_call(session)
+
+    calls = []
+
+    async def fake_wait(call_id):
+        calls.append(("drain", call_id))
+        return True
+
+    async def fake_commit(context):
+        calls.append(("commit", context.call_id))
+        return {"status": "success", "message": "ok"}
+
+    monkeypatch.setattr(engine, "_wait_for_deferred_transfer_audio_drain", fake_wait)
+    monkeypatch.setattr(
+        "src.tools.telephony.deferred_transfer.commit_pending_deferred_transfer",
+        fake_commit,
+    )
+
+    result = await engine._commit_pending_deferred_transfer_for_call("call-deferred", session)
+
+    assert result == {"status": "success", "message": "ok"}
+    assert calls == [("drain", "call-deferred"), ("commit", "call-deferred")]
+
+
+@pytest.mark.asyncio
+async def test_deferred_transfer_deepgram_plays_local_handoff_before_commit(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    engine.config.tools["transfer"]["local_handoff_audio_providers"] = ["deepgram"]
+    session = CallSession(
+        call_id="call-deepgram-handoff",
+        caller_channel_id="caller-deepgram-handoff",
+        context_name="support",
+        provider_name="deepgram",
+    )
+    session.pending_deferred_transfer = {
+        "kind": "transfer",
+        "commit_tool": "blind_transfer",
+        "transfer_type": "extension",
+        "target": "6000",
+        "description": "Support agent",
+    }
+    await engine.session_store.upsert_call(session)
+
+    calls = []
+
+    async def fake_tts(*, call_id, text, timeout_sec):
+        calls.append(("tts", call_id, text))
+        return b"\xff" * 1600
+
+    async def fake_wait(call_id):
+        calls.append(("drain", call_id))
+        return True
+
+    async def fake_commit(context):
+        calls.append(("commit", context.call_id))
+        return {"status": "success", "message": "ok"}
+
+    class _Playback:
+        async def play_audio(self, call_id, audio, playback_type):
+            calls.append(("play", call_id, playback_type, len(audio)))
+            return "pb-handoff"
+
+        async def wait_for_playback_end(self, call_id, playback_id, *, timeout_sec):
+            calls.append(("wait-playback", call_id, playback_id))
+            return True
+
+    engine.playback_manager = _Playback()
+    monkeypatch.setattr(engine, "_local_ai_server_tts", fake_tts)
+    monkeypatch.setattr(engine, "_wait_for_deferred_transfer_audio_drain", fake_wait)
+    monkeypatch.setattr(
+        "src.tools.telephony.deferred_transfer.commit_pending_deferred_transfer",
+        fake_commit,
+    )
+
+    result = await engine._commit_pending_deferred_transfer_for_call("call-deepgram-handoff", session)
+
+    assert result == {"status": "success", "message": "ok"}
+    assert calls == [
+        ("tts", "call-deepgram-handoff", "Transferring you to Support agent now."),
+        ("play", "call-deepgram-handoff", "transfer-handoff", 1600),
+        ("wait-playback", "call-deepgram-handoff", "pb-handoff"),
+        ("drain", "call-deepgram-handoff"),
+        ("commit", "call-deepgram-handoff"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deferred_transfer_audio_drain_waits_for_streaming_buffer():
+    engine = _build_engine({"enabled": True})
+    engine.config.tools["transfer"]["deferred_audio_drain_timeout_sec"] = 1.0
+    engine.config.tools["transfer"]["deferred_audio_drain_quiet_ms"] = 60
+
+    call_id = "call-drain"
+    engine.streaming_playback_manager.active_streams[call_id] = {
+        "buffered_bytes": 160,
+        "jitter_depth": 0,
+        "last_real_emit_ts": time.time(),
+    }
+    engine.streaming_playback_manager.frame_remainders[call_id] = b""
+    observations = []
+
+    async def clear_buffer():
+        await asyncio.sleep(0.05)
+        observations.append(("before_clear", engine.streaming_playback_manager.active_streams[call_id]["buffered_bytes"]))
+        engine.streaming_playback_manager.active_streams[call_id]["buffered_bytes"] = 0
+        engine.streaming_playback_manager.active_streams[call_id]["last_real_emit_ts"] = time.time()
+
+    clear_task = asyncio.create_task(clear_buffer())
+    drained = await engine._wait_for_deferred_transfer_audio_drain(call_id)
+    await clear_task
+
+    assert drained is True
+    assert observations == [("before_clear", 160)]
+    assert engine.streaming_playback_manager.active_streams[call_id]["buffered_bytes"] == 0
+
+
+@pytest.mark.asyncio
+async def test_predial_transfer_finalize_removes_ai_media_and_bridges_destination():
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-predial",
+        caller_channel_id="caller-predial",
+        bridge_id="bridge-predial",
+        audiosocket_channel_id="audiosocket-predial",
+        external_media_id="rtp-predial",
+    )
+    session.current_action = {
+        "type": "predial_transfer",
+        "target": "6000",
+        "target_name": "Support agent",
+        "answered": True,
+        "predial_channel_id": "SIP/6000-00000001",
+    }
+    await engine.session_store.upsert_call(session)
+    engine.ari_client.remove_channel_from_bridge = types.MethodType(
+        lambda self, bridge_id, channel_id: asyncio.sleep(0, result=True),
+        engine.ari_client,
+    )
+    engine.ari_client.add_channel_to_bridge = types.MethodType(
+        lambda self, bridge_id, channel_id: asyncio.sleep(0, result=True),
+        engine.ari_client,
+    )
+    engine.ari_client.send_command = types.MethodType(
+        lambda self, **kwargs: asyncio.sleep(0, result={"status": 204}),
+        engine.ari_client,
+    )
+
+    ok = await engine._finalize_predial_transfer_bridge(session, "SIP/6000-00000001")
+
+    assert ok is True
+    updated = await engine.session_store.get_by_call_id("call-predial")
+    assert updated.current_action["bridged"] is True
+    assert updated.current_action["channel_id"] == "SIP/6000-00000001"
+    assert updated.transfer_state == "bridged"
+    assert updated.transfer_destination == "Support agent"
+
+
+@pytest.mark.asyncio
+async def test_predial_transfer_bridges_before_slow_provider_shutdown():
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-predial-fast",
+        caller_channel_id="caller-predial-fast",
+        bridge_id="bridge-predial-fast",
+        audiosocket_channel_id="audiosocket-predial-fast",
+        external_media_id="rtp-predial-fast",
+        provider_name="google_live",
+    )
+    session.current_action = {
+        "type": "predial_transfer",
+        "target": "6000",
+        "target_name": "Support agent",
+        "answered": True,
+        "predial_channel_id": "SIP/6000-00000002",
+    }
+    await engine.session_store.upsert_call(session)
+
+    order = []
+    stop_started = asyncio.Event()
+    stop_release = asyncio.Event()
+    stop_done = asyncio.Event()
+
+    class SlowProvider:
+        async def stop_session(self):
+            order.append("provider-stop-start")
+            stop_started.set()
+            await stop_release.wait()
+            order.append("provider-stop-done")
+            stop_done.set()
+
+    engine._call_providers["call-predial-fast"] = SlowProvider()
+
+    async def fake_remove(self, bridge_id, channel_id):
+        order.append(f"remove:{channel_id}")
+        return True
+
+    async def fake_add(self, bridge_id, channel_id):
+        order.append(f"add:{channel_id}")
+        return True
+
+    engine.ari_client.remove_channel_from_bridge = types.MethodType(fake_remove, engine.ari_client)
+    engine.ari_client.add_channel_to_bridge = types.MethodType(fake_add, engine.ari_client)
+    engine.ari_client.send_command = types.MethodType(
+        lambda self, **kwargs: asyncio.sleep(0, result={"status": 204}),
+        engine.ari_client,
+    )
+
+    ok = await engine._finalize_predial_transfer_bridge(session, "SIP/6000-00000002")
+
+    assert ok is True
+    assert order[:3] == [
+        "remove:rtp-predial-fast",
+        "remove:audiosocket-predial-fast",
+        "add:SIP/6000-00000002",
+    ]
+    assert "provider-stop-done" not in order
+
+    await asyncio.wait_for(stop_started.wait(), timeout=1)
+    stop_release.set()
+    await asyncio.wait_for(stop_done.wait(), timeout=1)
+    assert order[-1] == "provider-stop-done"
+
+
+@pytest.mark.asyncio
+async def test_predial_transfer_bridge_failure_cleans_destination_leg_and_provider():
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-predial-fail",
+        caller_channel_id="caller-predial-fail",
+        bridge_id="bridge-predial-fail",
+        provider_name="google_live",
+    )
+    session.current_action = {
+        "type": "predial_transfer",
+        "target": "6000",
+        "target_name": "Support agent",
+        "answered": True,
+        "predial_channel_id": "SIP/6000-00000003",
+    }
+    await engine.session_store.upsert_call(session)
+    engine.register_predial_transfer_channel("call-predial-fail", "SIP/6000-00000003")
+
+    stopped = asyncio.Event()
+    hung_up = []
+    scheduled = []
+
+    class Provider:
+        async def stop_session(self):
+            stopped.set()
+
+    engine._call_providers["call-predial-fail"] = Provider()
+    engine.ari_client.add_channel_to_bridge = types.MethodType(
+        lambda self, bridge_id, channel_id: asyncio.sleep(0, result=False),
+        engine.ari_client,
+    )
+    engine.ari_client.send_command = types.MethodType(
+        lambda self, **kwargs: asyncio.sleep(0, result={"status": 204}),
+        engine.ari_client,
+    )
+
+    async def fake_hangup(channel_id):
+        hung_up.append(channel_id)
+        return True
+
+    def fake_fire_and_forget(coro, *, name=None):
+        scheduled.append(name)
+        return asyncio.create_task(coro)
+
+    engine.ari_client.hangup_channel = fake_hangup
+    engine._fire_and_forget = fake_fire_and_forget
+
+    ok = await engine._finalize_predial_transfer_bridge(session, "SIP/6000-00000003")
+
+    assert ok is False
+    assert "SIP/6000-00000003" not in engine._predial_transfer_channel_to_call_id
+    assert hung_up == ["SIP/6000-00000003"]
+    assert scheduled == ["predial-provider-stop-failed-call-predial-fail"]
+    await asyncio.wait_for(stopped.wait(), timeout=1)
+    updated = await engine.session_store.get_by_call_id("call-predial-fail")
+    assert updated.current_action is None
+
+
+@pytest.mark.asyncio
+async def test_predial_transfer_finalize_is_serialized():
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-predial-race",
+        caller_channel_id="caller-predial-race",
+        bridge_id="bridge-predial-race",
+    )
+    session.current_action = {
+        "type": "predial_transfer",
+        "target": "6000",
+        "target_name": "Support agent",
+        "answered": True,
+        "predial_channel_id": "SIP/6000-00000004",
+    }
+    await engine.session_store.upsert_call(session)
+
+    add_started = asyncio.Event()
+    release_add = asyncio.Event()
+    add_calls = []
+
+    async def fake_add(self, bridge_id, channel_id):
+        add_calls.append((bridge_id, channel_id))
+        add_started.set()
+        await release_add.wait()
+        return True
+
+    engine.ari_client.add_channel_to_bridge = types.MethodType(fake_add, engine.ari_client)
+    engine.ari_client.send_command = types.MethodType(
+        lambda self, **kwargs: asyncio.sleep(0, result={"status": 204}),
+        engine.ari_client,
+    )
+
+    first = asyncio.create_task(engine._finalize_predial_transfer_bridge(session, "SIP/6000-00000004"))
+    await asyncio.wait_for(add_started.wait(), timeout=1)
+    second = asyncio.create_task(engine._finalize_predial_transfer_bridge(session, "SIP/6000-00000004"))
+    await asyncio.sleep(0)
+    release_add.set()
+
+    assert await asyncio.wait_for(first, timeout=1) is True
+    assert await asyncio.wait_for(second, timeout=1) is True
+    assert add_calls == [("bridge-predial-race", "SIP/6000-00000004")]
+    assert "call-predial-race" not in engine._predial_bridge_in_progress
+
+
+@pytest.mark.asyncio
+async def test_predial_transfer_finalize_in_progress_does_not_report_success(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-predial-in-flight",
+        caller_channel_id="caller-predial-in-flight",
+        bridge_id="bridge-predial-in-flight",
+    )
+    session.current_action = {
+        "type": "predial_transfer",
+        "target": "6000",
+        "target_name": "Support agent",
+        "answered": True,
+        "bridged": False,
+        "predial_channel_id": "SIP/6000-00000006",
+    }
+    await engine.session_store.upsert_call(session)
+    engine._predial_bridge_in_progress.add("call-predial-in-flight")
+
+    ticks = iter([0.0, 10.0])
+    monkeypatch.setattr("src.engine.time.time", lambda: next(ticks, 10.0))
+
+    ok = await engine._finalize_predial_transfer_bridge(session, "SIP/6000-00000006")
+
+    assert ok is False
+    assert "call-predial-in-flight" in engine._predial_bridge_in_progress
+    updated = await engine.session_store.get_by_call_id("call-predial-in-flight")
+    assert updated.current_action["bridged"] is False
+
+
+@pytest.mark.asyncio
+async def test_unbridged_predial_leg_cleanup_does_not_cleanup_caller():
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-predial-unbridged",
+        caller_channel_id="caller-predial-unbridged",
+        bridge_id="bridge-predial-unbridged",
+    )
+    session.current_action = {
+        "type": "predial_transfer",
+        "target": "6000",
+        "target_name": "Support agent",
+        "answered": True,
+        "ready_to_bridge": False,
+        "bridged": False,
+        "predial_channel_id": "SIP/6000-00000005",
+    }
+    await engine.session_store.upsert_call(session)
+    engine.register_predial_transfer_channel("call-predial-unbridged", "SIP/6000-00000005")
+
+    destroyed_bridges = []
+
+    async def fake_destroy_bridge(bridge_id):
+        destroyed_bridges.append(bridge_id)
+        return True
+
+    engine.ari_client.destroy_bridge = fake_destroy_bridge
+
+    await engine._cleanup_call("SIP/6000-00000005")
+
+    assert destroyed_bridges == []
+    assert "SIP/6000-00000005" not in engine._predial_transfer_channel_to_call_id
+    updated = await engine.session_store.get_by_call_id("call-predial-unbridged")
+    assert updated is not None
+    assert updated.current_action is None
+
+
+@pytest.mark.asyncio
 async def test_attended_transfer_ai_briefing_falls_back_to_basic_tts_when_generation_unavailable(monkeypatch):
     engine = _build_engine(
         {
@@ -447,7 +858,7 @@ async def test_attended_transfer_ai_briefing_falls_back_to_basic_tts_when_genera
     async def fake_start_helper(*, call_id, agent_channel_id, attended_cfg=None):
         return {"rtp_session_id": f"attx:{call_id}:{agent_channel_id}"}
 
-    async def fake_generate(*, session, destination_description, timeout_sec):
+    async def fake_generate(*, session, destination_description, timeout_sec, **kwargs):
         return None
 
     async def fake_tts(*, call_id, text, timeout_sec):

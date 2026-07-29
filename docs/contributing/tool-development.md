@@ -191,7 +191,7 @@ Study these as examples:
 | `leave_voicemail` | `src/tools/telephony/voicemail.py` | Simple | ARI integration |
 | `blind_transfer` | `src/tools/telephony/unified_transfer.py` | Complex | ARI origination, error handling |
 | `send_email_summary` | `src/tools/business/email_summary.py` | Medium | External service integration |
-| `request_transcript` | `src/tools/business/transcript_request.py` | Medium | Multi-step conversation flow |
+| `request_transcript` | `src/tools/business/request_transcript.py` | Medium | Multi-step conversation flow |
 
 ## Provider Adapter Wiring
 

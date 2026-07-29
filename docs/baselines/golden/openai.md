@@ -3,7 +3,7 @@
 Use these references for a known-good OpenAI Realtime flow:
 
 - OpenAI Realtime Golden Baseline: `docs/case-studies/OpenAI-Realtime-Golden-Baseline.md`
-- Golden Baseline Analysis: `logs/remote/rca-20251026-033115/GOLDEN_BASELINE_ANALYSIS.md`
+- Golden Baseline Analysis: `archived/logs/remote/rca-20251026-033115/GOLDEN_BASELINE_ANALYSIS.md`
 
 Quick checks to match the baseline:
 - AudioSocket upstream active; downstream streaming with automatic file fallback

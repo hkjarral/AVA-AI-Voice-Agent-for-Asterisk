@@ -11,7 +11,8 @@ import ToolForm from '../components/config/ToolForm';
 import HTTPToolForm from '../components/config/HTTPToolForm';
 import { useAuth } from '../auth/AuthContext';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
-import { usePendingChanges } from '../hooks/usePendingChanges';
+import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
+import { useRestartRequired } from '../hooks/useRestartRequired';
 
 type ToolPhase = 'in_call' | 'pre_call' | 'post_call' | 'catalog';
 
@@ -35,12 +36,13 @@ type ToolDef = {
 const ToolsPage = () => {
     const { confirm } = useConfirmDialog();
     const { token } = useAuth();
-    const [config, setConfig] = useState<any>({});
-    const configRef = useRef<any>({});
-    const [loading, setLoading] = useState(true);
-    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
+    const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+    const configRef = useRef<any>(getCachedConfig()?.config ?? {});
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
+    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [saving, setSaving] = useState(false);
-    const { pendingRestart, setPendingChanges, clearPendingChanges } = usePendingChanges();
+    const [applyStatus, setApplyStatus] = useState<string | null>(null);
+    const { restartRequired, applyRequired, recommendedApplyMethod, stateStale, refetch } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
     const [activePhase, setActivePhase] = useState<ToolPhase>('in_call');
     const [toolCatalog, setToolCatalog] = useState<ToolDef[]>([]);
@@ -95,17 +97,11 @@ const ToolsPage = () => {
         configRef.current = config;
     }, [config]);
 
-    const fetchConfig = async () => {
+    const fetchConfig = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
-                setConfig({});
-            } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
-                setYamlError(null);
-            }
+            const r = await loadConfigYaml(force);
+            setConfig(r.config);
+            setYamlError(r.yamlError);
         } catch (err) {
             console.error('Failed to load config', err);
             setYamlError(null);
@@ -138,7 +134,7 @@ const ToolsPage = () => {
                 headers: { Authorization: `Bearer ${token}` },
                 timeout: 30000  // 30 second timeout
             });
-            setPendingChanges('restart');
+            await refetch();
             if (successToast) toast.success(successToast);
         } catch (err: any) {
             console.error('Failed to save config', err);
@@ -151,7 +147,37 @@ const ToolsPage = () => {
     };
 
     const handleSave = async () => {
-        await persistConfigNow(configRef.current, 'Tools configuration saved');
+        setSaving(true);
+        setApplyStatus(null);
+        let configSaved = false;
+        try {
+            const sanitized = sanitizeConfigForSave(configRef.current);
+            const saved = await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) }, {
+                headers: { Authorization: `Bearer ${token}` }, timeout: 30000,
+            });
+            configSaved = true;
+            if (saved.data?.recommended_apply_method === 'hot_reload') {
+                const applied = await axios.post('/api/system/containers/ai_engine/reload', {}, {
+                    headers: { Authorization: `Bearer ${token}` }, timeout: 30000,
+                });
+                const generation = applied.data?.tool_generation;
+                const message = `Applied${generation ? ` as tool generation ${generation}` : ''}. New calls use it; active calls remain unchanged.`;
+                setApplyStatus(message);
+                toast.success('Tools saved and applied', { description: message });
+            } else {
+                setApplyStatus('Saved. A restart is required for these changes.');
+                toast.success('Tools configuration saved');
+            }
+            await refetch();
+        } catch (err: any) {
+            const detail = err.response?.data?.detail || err.message || 'Unknown error';
+            setApplyStatus(configSaved
+                ? 'Saved changes could not be applied; the previous tool generation remains active.'
+                : 'Tools were not saved.');
+            toast.error('Failed to save or apply tools', { description: detail });
+        } finally {
+            setSaving(false);
+        }
     };
 
     const handleRestartAIEngine = async (force: boolean = false) => {
@@ -180,7 +206,7 @@ const ToolsPage = () => {
                 return;
             }
 
-            clearPendingChanges();
+            await refetch();
             toast.success('AI Engine restarted! Changes are now active.');
         } catch (error: any) {
             toast.error('Failed to restart AI Engine', { description: error.response?.data?.detail || error.message });
@@ -189,15 +215,51 @@ const ToolsPage = () => {
         }
     };
 
+    const handleApplyAIEngine = async () => {
+        if (recommendedApplyMethod !== 'hot_reload') {
+            await handleRestartAIEngine(false);
+            return;
+        }
+        setRestartingEngine(true);
+        try {
+            const response = await axios.post('/api/system/containers/ai_engine/reload', {}, {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: 30000,
+            });
+            if (response.data?.restart_required) {
+                setApplyStatus('Hot reload applied partially. Restart the AI Engine to finish applying changes.');
+                toast.warning('Restart still required', { description: response.data?.message });
+            } else {
+                const generation = response.data?.tool_generation;
+                const message = `Applied${generation ? ` as tool generation ${generation}` : ''}. New calls use it; active calls remain unchanged.`;
+                setApplyStatus(message);
+                toast.success('Changes applied', { description: message });
+            }
+            await refetch();
+        } catch (error: any) {
+            toast.error('Failed to apply changes', { description: error.response?.data?.detail || error.message });
+        } finally {
+            setRestartingEngine(false);
+        }
+    };
+
     const mergeToolsConfig = (baseConfig: any, newToolsConfig: any) => {
         // Extract root-level settings that should not be nested under tools
-        const { farewell_hangup_delay_sec, ...toolsOnly } = newToolsConfig;
+        const {
+            farewell_hangup_delay_sec,
+            on_provider_failure,
+            provider_failure_prompt,
+            provider_failure_redirect_context,
+            provider_failure_redirect_extension,
+            provider_failure_redirect_priority,
+            ...toolsOnly
+        } = newToolsConfig;
 
         // P1 Fix: Preserve ALL existing tool entries that are not being explicitly updated.
         // This prevents silent config loss of custom/unknown tool entries.
         // Built-in tools that ToolForm manages: transfer, hangup_call, leave_voicemail, 
         // send_email_summary, request_transcript
-        const builtInToolKeys = ['transfer', 'attended_transfer', 'cancel_transfer', 'hangup_call', 'leave_voicemail', 'send_email_summary', 'request_transcript', 'google_calendar'];
+        const builtInToolKeys = ['transfer', 'attended_transfer', 'cancel_transfer', 'hangup_call', 'leave_voicemail', 'send_email_summary', 'request_transcript', 'google_calendar', 'microsoft_calendar'];
         const existingTools = baseConfig.tools || {};
         const preservedTools: Record<string, any> = {};
 
@@ -216,10 +278,25 @@ const ToolsPage = () => {
             }
         });
 
-        // Update both tools config and root-level farewell_hangup_delay_sec
+        // Update both tools config and root-level call-behavior settings
         const updatedConfig = { ...baseConfig, tools: { ...preservedTools, ...toolsOnly } };
         if (farewell_hangup_delay_sec !== undefined) {
             updatedConfig.farewell_hangup_delay_sec = farewell_hangup_delay_sec;
+        }
+        if (on_provider_failure !== undefined) {
+            updatedConfig.on_provider_failure = on_provider_failure;
+        }
+        if (provider_failure_prompt !== undefined) {
+            updatedConfig.provider_failure_prompt = provider_failure_prompt;
+        }
+        if (provider_failure_redirect_context !== undefined) {
+            updatedConfig.provider_failure_redirect_context = provider_failure_redirect_context;
+        }
+        if (provider_failure_redirect_extension !== undefined) {
+            updatedConfig.provider_failure_redirect_extension = provider_failure_redirect_extension;
+        }
+        if (provider_failure_redirect_priority !== undefined) {
+            updatedConfig.provider_failure_redirect_priority = provider_failure_redirect_priority;
         }
         return updatedConfig;
     };
@@ -257,27 +334,44 @@ const ToolsPage = () => {
 
     return (
         <div className="space-y-6">
-            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
-                <div className="flex items-center">
-                    <AlertCircle className="w-5 h-5 mr-2" />
-                    Tool configuration changes require an AI Engine restart to take effect.
+            {(applyRequired || restartRequired) && (
+                <div className="bg-orange-500/15 border-orange-500/30 border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
+                    <div className="flex items-center">
+                        <AlertCircle className="w-5 h-5 mr-2" />
+                        <span>
+                            {recommendedApplyMethod === 'hot_reload'
+                                ? 'Saved tool changes are ready to apply to new calls. Active calls will remain unchanged.'
+                                : 'Some saved configuration changes require an AI Engine restart to take effect.'}
+                            {stateStale && ' Status refresh failed; showing the last known action.'}
+                        </span>
+                    </div>
+                    <button
+                        onClick={handleApplyAIEngine}
+                        disabled={restartingEngine}
+                        className="flex items-center text-xs px-3 py-1.5 rounded transition-colors bg-orange-500 text-white hover:bg-orange-600 font-medium disabled:opacity-50"
+                    >
+                        {restartingEngine ? (
+                            <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                        ) : (
+                            <RefreshCw className="w-3 h-3 mr-1.5" />
+                        )}
+                        {restartingEngine
+                            ? (recommendedApplyMethod === 'hot_reload' ? 'Applying...' : 'Restarting...')
+                            : (recommendedApplyMethod === 'hot_reload' ? 'Apply Changes' : 'Restart AI Engine')}
+                    </button>
                 </div>
-                <button
-                    onClick={() => handleRestartAIEngine(false)}
-                    disabled={restartingEngine || !pendingRestart}
-                    className={`flex items-center text-xs px-3 py-1.5 rounded transition-colors ${pendingRestart
-                            ? 'bg-orange-500 text-white hover:bg-orange-600 font-medium'
-                            : 'bg-yellow-500/20 hover:bg-yellow-500/30'
-                        } disabled:opacity-50`}
-                >
-                    {restartingEngine ? (
-                        <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                    ) : (
-                        <RefreshCw className="w-3 h-3 mr-1.5" />
-                    )}
-                    {restartingEngine ? 'Restarting...' : 'Restart AI Engine'}
-                </button>
-            </div>
+            )}
+            {stateStale && !applyRequired && !restartRequired && (
+                <div className="bg-yellow-500/10 border-yellow-500/30 border text-yellow-800 dark:text-yellow-500 p-3 rounded-md flex items-center">
+                    <AlertCircle className="w-5 h-5 mr-2" />
+                    Unable to refresh the AI Engine apply status. No pending action is known; retry after connectivity recovers.
+                </div>
+            )}
+            {applyStatus && (
+                <div className="rounded-md border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+                    {applyStatus}
+                </div>
+            )}
             <div className="flex justify-between items-center">
                 <div>
                     <h1 className="text-3xl font-bold tracking-tight">Tools & Capabilities</h1>
@@ -291,7 +385,7 @@ const ToolsPage = () => {
                     className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
                 >
                     <Save className="w-4 h-4 mr-2" />
-                    {saving ? 'Saving...' : 'Save Changes'}
+                    {saving ? 'Saving...' : 'Save & Apply'}
                 </button>
             </div>
 
@@ -364,10 +458,19 @@ const ToolsPage = () => {
                     <ConfigSection title="Built-in Tools" description="Core tools available during the conversation (transfer, hangup, email, etc.)">
                         <ConfigCard>
                             <ToolForm
-                                config={{ ...(config.tools || {}), farewell_hangup_delay_sec: config.farewell_hangup_delay_sec }}
+                                config={{
+                                    ...(config.tools || {}),
+                                    farewell_hangup_delay_sec: config.farewell_hangup_delay_sec,
+                                    on_provider_failure: config.on_provider_failure,
+                                    provider_failure_prompt: config.provider_failure_prompt,
+                                    provider_failure_redirect_context: config.provider_failure_redirect_context,
+                                    provider_failure_redirect_extension: config.provider_failure_redirect_extension,
+                                    provider_failure_redirect_priority: config.provider_failure_redirect_priority,
+                                }}
                                 contexts={config.contexts || {}}
                                 hangupUsage={hangupUsage}
                                 onChange={updateToolsConfig}
+                                onContextsChange={(newContexts) => setConfig((prev: any) => ({ ...prev, contexts: newContexts }))}
                                 onSaveNow={updateToolsConfigAndSaveNow}
                             />
                         </ConfigCard>

@@ -1,0 +1,70 @@
+name: Local AI GPU Image Build
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 8 * * 1"
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    paths:
+      - "local_ai_server/Dockerfile.gpu"
+      - "local_ai_server/requirements*.txt"
+      - ".github/workflows/local-ai-gpu-build.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-gpu-image:
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          docker system prune --all --force
+
+      - name: Build CUDA Local AI image
+        run: |
+          # Keep the clean-runner smoke build bounded. Production builds remain
+          # portable unless LLAMA_CUDA_ARCHITECTURES is configured.
+          docker build \
+            --file local_ai_server/Dockerfile.gpu \
+            --tag local-ai-server-gpu:${{ github.sha }} \
+            --build-arg INCLUDE_VOSK=false \
+            --build-arg INCLUDE_SHERPA=false \
+            --build-arg INCLUDE_FASTER_WHISPER=true \
+            --build-arg INCLUDE_WHISPER_CPP=false \
+            --build-arg INCLUDE_PIPER=false \
+            --build-arg INCLUDE_KOKORO=true \
+            --build-arg INCLUDE_MELOTTS=false \
+            --build-arg INCLUDE_SILERO=false \
+            --build-arg INCLUDE_LLAMA=true \
+            --build-arg LLAMA_CUDA_ARCHITECTURES=70 \
+            --build-arg INCLUDE_KROKO_EMBEDDED=false \
+            local_ai_server
+
+      - name: Verify packaged dependencies without requiring a GPU runner
+        run: |
+          docker run --rm local-ai-server-gpu:${{ github.sha }} \
+            bash -ec '
+              python -c "import faster_whisper, kokoro, importlib.util; assert importlib.util.find_spec(\"llama_cpp\"); print(\"GPU-independent imports succeed and llama_cpp is packaged\")"
+              LLAMA_LIB="$(find /opt/venv/lib/python3.10/site-packages/llama_cpp/lib -name "libllama.so" -print -quit)"
+              test -n "$LLAMA_LIB"
+              ldd "$LLAMA_LIB" | tee /tmp/llama-ldd.txt
+              grep -q "libcuda.so.1" /tmp/llama-ldd.txt
+              echo "llama_cpp shared library is packaged with CUDA linkage"
+            '

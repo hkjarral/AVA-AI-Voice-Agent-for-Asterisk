@@ -1,37 +1,37 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import yaml from 'js-yaml';
-import { Save, Zap, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
+import { Save, Zap, AlertCircle, RefreshCw, Loader2, Clock } from 'lucide-react';
 import { YamlErrorBanner, YamlErrorInfo } from '../../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput, FormSelect, FormSwitch } from '../../components/ui/FormComponents';
 import { sanitizeConfigForSave } from '../../utils/configSanitizers';
+import { getCachedConfig, loadConfigYaml } from '../../utils/configCache';
+import { useRestartRequired } from '../../hooks/useRestartRequired';
 
 const StreamingPage = () => {
-    const [config, setConfig] = useState<any>({});
-    const [loading, setLoading] = useState(true);
-    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
+    const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
+    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [saving, setSaving] = useState(false);
-    const [pendingRestart, setPendingRestart] = useState(false);
+    const { restartRequired, refetch } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
+    const [applyMethod, setApplyMethod] = useState<string>('restart');
 
     useEffect(() => {
+        // Cache-first: seed from the shared cache (no flash on revisit). The write
+        // interceptor invalidates the cache on every save, so a background
+        // revalidate is unnecessary and could clobber in-progress form edits.
         fetchConfig();
     }, []);
 
-    const fetchConfig = async () => {
+    const fetchConfig = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
-                setConfig({});
-            } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
-                setYamlError(null);
-            }
+            const r = await loadConfigYaml(force);
+            setConfig(r.config);
+            setYamlError(r.yamlError);
         } catch (err) {
             console.error('Failed to load config', err);
             setYamlError(null);
@@ -44,9 +44,15 @@ const StreamingPage = () => {
         setSaving(true);
         try {
             const sanitized = sanitizeConfigForSave(config);
-            await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
-            setPendingRestart(true);
-            toast.success('Streaming configuration saved');
+            const response = await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
+            const method = response.data?.recommended_apply_method || 'restart';
+            setApplyMethod(method);
+            await refetch();
+            if (method === 'hot_reload') {
+                toast.success('Streaming configuration saved. Changes can be applied via hot-reload.');
+            } else {
+                toast.success('Streaming configuration saved. Restart AI Engine to apply changes.');
+            }
         } catch (err) {
             console.error('Failed to save config', err);
             toast.error('Failed to save configuration');
@@ -55,10 +61,30 @@ const StreamingPage = () => {
         }
     };
 
-    const handleReloadAIEngine = async (force: boolean = false) => {
+    const handleApplyAIEngine = async (force: boolean = false) => {
         setRestartingEngine(true);
         try {
-            // Use restart to ensure all changes are picked up
+            // Prefer hot-reload (no dropped calls) when the backend says it suffices (MED-R1).
+            if (applyMethod === 'hot_reload') {
+                const response = await axios.post('/api/system/containers/ai_engine/reload');
+
+                if (response.data?.restart_required) {
+                    setApplyMethod('restart');
+                    await refetch();
+                    toast.warning('Hot reload applied partially', { description: response.data.message || 'Restart AI Engine to fully apply changes' });
+                    return;
+                }
+
+                if (response.data?.status === 'success') {
+                    await refetch();
+                    toast.success('AI Engine hot reloaded! Changes are now active.');
+                    return;
+                }
+
+                toast.info(`Hot reload response: ${response.data?.message || 'unknown status'}`);
+                return;
+            }
+
             const response = await axios.post(`/api/system/containers/ai_engine/restart?force=${force}`);
 
             if (response.data.status === 'warning') {
@@ -67,7 +93,7 @@ const StreamingPage = () => {
                         `${response.data.message}\n\nDo you want to force restart anyway? This may disconnect active calls.`
                     );
                     if (confirmForce) {
-                        await handleReloadAIEngine(true);
+                        await handleApplyAIEngine(true);
                     }
                     return;
                 }
@@ -81,11 +107,12 @@ const StreamingPage = () => {
             }
 
             if (response.data.status === 'success') {
-                setPendingRestart(false);
+                await refetch();
                 toast.success('AI Engine restarted! Changes are now active.');
             }
         } catch (error: any) {
-            toast.error('Failed to restart AI Engine', { description: error.response?.data?.detail || error.message });
+            const actionLabel = applyMethod === 'hot_reload' ? 'hot reload' : 'restart';
+            toast.error(`Failed to ${actionLabel} AI Engine`, { description: error.response?.data?.detail || error.message });
         } finally {
             setRestartingEngine(false);
         }
@@ -101,6 +128,60 @@ const StreamingPage = () => {
         });
     };
 
+    const toFiniteNumber = (v: unknown, fallback: number): number => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : fallback;
+    };
+
+    const latencyEstimate = useMemo(() => {
+        const sc = config.streaming || {};
+        // Base latency: STT recognition + LLM inference + TTS synthesis
+        let estimated = 3.0; // seconds baseline
+
+        // LLM→TTS streaming overlap significantly reduces time-to-first-audio
+        if (sc.pipeline_streaming_overlap ?? true) {
+            estimated -= 1.0;
+        }
+
+        // Filler audio makes perceived latency lower but adds actual processing
+        const fillerEnabled = sc.pipeline_filler_enabled ?? false;
+
+        // Jitter buffer adds proportional delay (baseline 950ms)
+        const jitterMs = toFiniteNumber(sc.jitter_buffer_ms, 950);
+        estimated += (jitterMs - 950) / 1000;
+
+        // Min start threshold affects when playback begins (baseline 120ms)
+        const minStartMs = toFiniteNumber(sc.min_start_ms, 120);
+        estimated += (minStartMs - 120) / 1000;
+
+        // Low watermark affects buffering delay (baseline 80ms)
+        const lowWatermarkMs = toFiniteNumber(sc.low_watermark_ms, 80);
+        estimated += (lowWatermarkMs - 80) / 1000;
+
+        const actual = Math.max(0.5, estimated);
+        const perceived = fillerEnabled ? Math.max(0.3, actual - 0.7) : actual;
+
+        return { actual, perceived, fillerEnabled };
+    }, [config]);
+
+    const getLatencyColor = (seconds: number) => {
+        if (seconds < 2) return 'text-green-600 dark:text-green-400';
+        if (seconds <= 3) return 'text-yellow-800 dark:text-yellow-400';
+        return 'text-red-600 dark:text-red-400';
+    };
+
+    const getLatencyBg = (seconds: number) => {
+        if (seconds < 2) return 'bg-green-500/10 border-green-500/20';
+        if (seconds <= 3) return 'bg-yellow-500/10 border-yellow-500/20';
+        return 'bg-red-500/10 border-red-500/20';
+    };
+
+    const getLatencyLabel = (seconds: number) => {
+        if (seconds < 2) return 'Fast';
+        if (seconds <= 3) return 'Moderate';
+        return 'Slow';
+    };
+
     if (loading) return <div className="p-8 text-center text-muted-foreground">Loading configuration...</div>;
 
     if (yamlError) return (
@@ -111,30 +192,34 @@ const StreamingPage = () => {
 
     const streamingConfig = config.streaming || {};
 
+    const bannerMessage = applyMethod === 'hot_reload'
+        ? 'Changes saved. Apply Changes to hot reload AI Engine without dropping active calls.'
+        : 'Changes to streaming configurations require an AI Engine restart to take effect.';
+
     return (
         <div className="space-y-6">
-            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
-                <div className="flex items-center">
-                    <AlertCircle className="w-5 h-5 mr-2" />
-                    Changes to streaming configurations require an AI Engine restart to take effect.
+            {restartRequired && (
+                <div className="bg-orange-500/15 border-orange-500/30 border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
+                    <div className="flex items-center">
+                        <AlertCircle className="w-5 h-5 mr-2" />
+                        {bannerMessage}
+                    </div>
+                    <button
+                        onClick={() => handleApplyAIEngine(false)}
+                        disabled={restartingEngine}
+                        className="flex items-center text-xs px-3 py-1.5 rounded transition-colors bg-orange-500 text-white hover:bg-orange-600 font-medium disabled:opacity-50"
+                    >
+                        {restartingEngine ? (
+                            <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                        ) : (
+                            <RefreshCw className="w-3 h-3 mr-1.5" />
+                        )}
+                        {restartingEngine
+                            ? (applyMethod === 'hot_reload' ? 'Applying...' : 'Restarting...')
+                            : (applyMethod === 'hot_reload' ? 'Apply Changes' : 'Restart AI Engine')}
+                    </button>
                 </div>
-                <button
-                    onClick={() => handleReloadAIEngine(false)}
-                    disabled={restartingEngine}
-                    className={`flex items-center text-xs px-3 py-1.5 rounded transition-colors ${
-                        pendingRestart 
-                            ? 'bg-orange-500 text-white hover:bg-orange-600 font-medium' 
-                            : 'bg-yellow-500/20 hover:bg-yellow-500/30'
-                    } disabled:opacity-50`}
-                >
-                    {restartingEngine ? (
-                        <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                    ) : (
-                        <RefreshCw className="w-3 h-3 mr-1.5" />
-                    )}
-                    {restartingEngine ? 'Restarting...' : 'Reload AI Engine'}
-                </button>
-            </div>
+            )}
 
             <div className="flex justify-between items-center">
                 <div>
@@ -319,6 +404,79 @@ const StreamingPage = () => {
                             checked={streamingConfig.egress_force_mulaw ?? false}
                             onChange={(e) => updateStreamingConfig('egress_force_mulaw', e.target.checked)}
                             tooltip="Force μ-law (G.711) encoding for all downstream audio. Enable if Asterisk expects μ-law but provider sends PCM16. Typically needed for telephony compatibility."
+                        />
+                    </div>
+                </ConfigCard>
+            </ConfigSection>
+
+            <ConfigSection title="Estimated Latency" description="Live estimate of first-byte latency based on current settings. Updates as you change options below.">
+                <ConfigCard className={`border ${getLatencyBg(latencyEstimate.actual)}`}>
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                            <Clock className={`w-6 h-6 ${getLatencyColor(latencyEstimate.actual)}`} />
+                            <div>
+                                <div className="flex items-baseline gap-2">
+                                    <span className={`text-3xl font-bold ${getLatencyColor(latencyEstimate.actual)}`}>
+                                        ~{latencyEstimate.actual.toFixed(1)}s
+                                    </span>
+                                    <span className={`text-sm font-medium ${getLatencyColor(latencyEstimate.actual)}`}>
+                                        {getLatencyLabel(latencyEstimate.actual)}
+                                    </span>
+                                </div>
+                                <p className="text-xs text-muted-foreground mt-0.5">
+                                    Estimated first-byte latency (actual)
+                                </p>
+                            </div>
+                        </div>
+                        {latencyEstimate.fillerEnabled && (
+                            <div className="text-right">
+                                <div className={`text-2xl font-bold ${getLatencyColor(latencyEstimate.perceived)}`}>
+                                    ~{latencyEstimate.perceived.toFixed(1)}s
+                                </div>
+                                <p className="text-xs text-muted-foreground">perceived (with filler)</p>
+                            </div>
+                        )}
+                    </div>
+                    <div className="mt-4 grid grid-cols-3 gap-2 text-xs text-muted-foreground border-t border-border/50 pt-3">
+                        <div className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full bg-green-500 inline-block" />
+                            &lt;2s Fast
+                        </div>
+                        <div className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full bg-yellow-500 inline-block" />
+                            2–3s Moderate
+                        </div>
+                        <div className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full bg-red-500 inline-block" />
+                            &gt;3s Slow
+                        </div>
+                    </div>
+                </ConfigCard>
+            </ConfigSection>
+
+            <ConfigSection title="Latency Optimization" description="Reduce perceived response time with streaming overlap and filler audio.">
+                <ConfigCard>
+                    <div className="space-y-6">
+                        <FormSwitch
+                            label="LLM → TTS Streaming Overlap"
+                            description="Stream LLM tokens and synthesize TTS per-sentence instead of waiting for full response. Significantly reduces time-to-first-audio."
+                            checked={streamingConfig.pipeline_streaming_overlap ?? true}
+                            onChange={(e) => updateStreamingConfig('pipeline_streaming_overlap', e.target.checked)}
+                            tooltip="Only applies to pipeline LLM adapters that support token streaming (e.g. OpenAI, Groq). Non-streaming adapters use the serial path automatically."
+                        />
+                        <FormSwitch
+                            label="Enable Pipeline Filler Audio"
+                            description="Play a brief acknowledgment phrase (e.g. 'One moment please.') via the pipeline TTS adapter before LLM inference starts. Works with all pipeline configurations."
+                            checked={streamingConfig.pipeline_filler_enabled ?? false}
+                            onChange={(e) => updateStreamingConfig('pipeline_filler_enabled', e.target.checked)}
+                            tooltip="Synthesizes one random filler phrase using the pipeline's TTS adapter, plays it to the caller, then starts LLM inference. Adds ~0.5-1s of perceived responsiveness."
+                        />
+                        <FormInput
+                            label="Filler Phrases"
+                            value={(Array.isArray(streamingConfig.pipeline_filler_phrases) ? streamingConfig.pipeline_filler_phrases : ['One moment please.', 'Let me check on that.', 'Sure thing.', 'Just a moment.']).join(', ')}
+                            onChange={(e) => updateStreamingConfig('pipeline_filler_phrases', e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean))}
+                            disabled={!streamingConfig.pipeline_filler_enabled}
+                            tooltip="Comma-separated list of filler phrases to randomly choose from. One is selected at random before each LLM turn."
                         />
                     </div>
                 </ConfigCard>
