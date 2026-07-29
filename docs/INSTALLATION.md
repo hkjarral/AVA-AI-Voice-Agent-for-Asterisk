@@ -1,15 +1,15 @@
 # Asterisk AI Voice Agent - Installation and Upgrade Guide (v7.5)
 
-This guide covers fresh installations and the supported upgrade path to v7.5.2.
+This guide covers fresh installations and the supported upgrade path to v7.5.3.
 For release-specific behavior changes, also read the
-[v7.5.2 migration notes](MIGRATION.md#v751-to-v752). Operators upgrading from
+[v7.5.3 migration notes](MIGRATION.md#v752-to-v753). Operators upgrading from
 v7.3.x or earlier must also follow the [v7.4 Agent migration](MIGRATION.md#v73x-to-v740).
 
 ## Three Setup Paths
 
 Choose the path that best fits your experience level:
 
-## Upgrade to v7.5.2 (Existing Checkout)
+## Upgrade to v7.5.3 (Existing Checkout)
 
 This section is for operators upgrading an existing repo checkout (not a fresh install).
 
@@ -37,8 +37,8 @@ Run these commands from your actual checkout path. Do not assume it is `/root/..
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 git status --short
-git diff --binary > ../aava-pre-v752-working-tree.patch
-git diff --binary --cached > ../aava-pre-v752-staged.patch
+git diff --binary > ../aava-pre-v753-working-tree.patch
+git diff --binary --cached > ../aava-pre-v753-staged.patch
 docker compose config --quiet
 ```
 
@@ -72,7 +72,7 @@ Preferred CLI path:
 
 ```bash
 git fetch origin --prune --tags
-agent update --ref v7.5.2 --include-ui --local-changes=retain
+agent update --ref v7.5.3 --include-ui --local-changes=retain
 ```
 
 Replace `retain` with your explicit `overwrite` or `abort` decision. In an interactive
@@ -103,7 +103,7 @@ Run the host recovery script from an SSH shell on the AAVA server. This path doe
 depend on the failing Admin UI planner container:
 
 ```bash
-AAVA_RECOVERY_REF=v7.5.2
+AAVA_RECOVERY_REF=v7.5.3
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -139,7 +139,7 @@ terminal:
 For non-interactive recovery, pass the decision explicitly:
 
 ```bash
-AAVA_RECOVERY_REF=v7.5.2
+AAVA_RECOVERY_REF=v7.5.3
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -154,7 +154,7 @@ Use `overwrite` only when the operator accepts that tracked local code changes w
 discarded:
 
 ```bash
-AAVA_RECOVERY_REF=v7.5.2
+AAVA_RECOVERY_REF=v7.5.3
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -248,7 +248,7 @@ explicit policy. Never use `git reset --hard` as generic upgrade advice.
 
 Do not treat a second update run as proof that the containers were updated. If the first
 job reached **Fast-forwarding code** and then failed during Docker Compose, the checkout may
-already be at v7.5.2 while the old containers are still running. Save the failed job log and
+already be at v7.5.3 while the old containers are still running. Save the failed job log and
 either use its **Rollback** action or, after fixing the reported Compose/build error, reconcile
 only the services that were running before the update:
 

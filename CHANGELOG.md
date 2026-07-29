@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.5.3] - 2026-07-28
+
 ### Added
 
 - **Contextual audio baseline recovery:** provider, Audio Profile, and modular pipeline editors can restore only their audio encoding, sample-rate, format, and resampler settings to a canonical backend-owned baseline without changing credentials, models, voices, prompts, enabled state, provider identity, Agent assignments, or pipeline composition. Built-in profiles restore their shipped contract, custom profiles return to the standard 8 kHz telephony contract under the same name, named provider instances resolve defaults by implementation kind, and active environment-level resampler overrides remain visible without being silently changed. Restore responses state whether the result is already active or requires hot reload/restart before new calls.
@@ -19,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Explicit health-check targets are authoritative** ([#578](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/578)): when `HEALTH_CHECK_LOCAL_AI_URL` or `HEALTH_CHECK_AI_ENGINE_URL` is configured, the Admin UI probes only that address and reports its failure directly instead of walking discovery fallbacks and potentially returning a slow or misleading result. Unconfigured installations retain the existing discovery order.
 - **Deepgram managed reasoning no longer requires an unused OpenAI key** ([#580](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/580)): the engine and Setup Wizard now load and validate a Deepgram Voice Agent with only its Deepgram credential. The default Settings contract continues to use Deepgram's managed `open_ai` Think provider without a custom endpoint; bring-your-own reasoning endpoints remain out of scope.
 - **Deepgram Settings retry preserves declared tools and fails closed** ([#581](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/581)): the fallback Settings payload carries the same validated function schemas as the primary request. A retry send failure or second Settings rejection closes the provider session without opening its readiness/audio gates, preventing a healthy-looking call from silently losing transfers or other tools.
+
+### Known issues
+
+- **Admin UI can falsely report Docker missing after a clean rebuild** ([#585](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/585)): the shipped `docker==7.0.0` SDK cannot use its Unix-socket transport with the newer Requests dependency, so the Dashboard platform strip may show **Action Required**, `Docker: --`, and an incorrect **Install Docker** action even while Docker, Compose, and all AAVA services are healthy. This affects Admin UI Docker discovery only; do not reinstall Docker when the socket, containers, and service health checks are otherwise working.
 
 ## [7.5.2] - 2026-07-25
 

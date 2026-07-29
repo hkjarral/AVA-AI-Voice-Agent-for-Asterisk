@@ -2,6 +2,35 @@
 
 This guide covers upgrading between major versions of Asterisk AI Voice Agent.
 
+## v7.5.2 to v7.5.3
+
+v7.5.3 is an in-place patch release with no database migration, Agent reassignment,
+provider credential change, or default Audio Profile change.
+
+After upgrading:
+
+1. Rebuild and recreate `admin_ui` and `ai_engine`; recreate `local_ai_server` when
+   using the bundled local stack so every service records the same release checkout.
+2. Verify ARI, AudioSocket, enabled providers, configured pipelines, and local models
+   are healthy before returning calls to service.
+3. Use **Restore audio defaults** in an individual Provider, Audio Profile, or modular
+   Pipeline editor when you need to remove stale audio overrides. Restore is deliberately
+   scoped and does not change credentials, models, prompts, voices, Agent assignments,
+   provider identity, or pipeline composition.
+4. Existing transfer destinations require no migration. Queue, ring-group, and extension
+   handoffs now report success only after a confirmed Asterisk continuation and retain
+   ownership when the transport result is indeterminate.
+
+Known UI-only issue: a clean Admin UI rebuild can show **Action Required** and
+`Docker: --` because of the Docker SDK/Requests adapter mismatch tracked in
+[#585](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/585).
+If the Docker socket, containers, Compose, and AAVA health checks are working, do not
+run the suggested **Install Docker** action.
+
+Rollback is the normal tagged-release rollback. Restored audio values are ordinary
+operator configuration changes; use the generated backup or restore the prior local
+configuration if those values also need to be rolled back.
+
 ## v7.5.1 to v7.5.2
 
 v7.5.2 is an in-place, backward-compatible audio release. It does not migrate

@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-7.5.2-blue.svg)
+![Version](https://img.shields.io/badge/version-7.5.3-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -167,7 +167,7 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
-<summary><b>Upcoming v7.5.3 — One-click audio recovery and safer transfers</b></summary>
+<summary><b>v7.5.3 — One-click audio recovery and safer transfers</b></summary>
 
 v7.5.3 focuses on getting an installation back to a known-good configuration
 without undoing the operator's unrelated work.
@@ -191,7 +191,7 @@ without undoing the operator's unrelated work.
 These recovery actions are intentionally narrow: they do not provide a global
 factory reset and do not change secrets or Agent routing.
 
-See the [Unreleased changelog](CHANGELOG.md#unreleased) for implementation and
+See the [v7.5.3 changelog](CHANGELOG.md#753---2026-07-28) for implementation and
 compatibility details.
 
 </details>
@@ -215,8 +215,8 @@ profiles or the established 8 kHz compatibility defaults.
   required.
 
 See the [v7.5.2 changelog](CHANGELOG.md#752---2026-07-25),
-[v7.5.2 upgrade notes](docs/INSTALLATION.md#upgrade-to-v752-existing-checkout),
-and [validation matrix](docs/baselines/golden/v7.5.2-validation-matrix.md).
+[v7.5.2 migration notes](docs/MIGRATION.md#v751-to-v752),
+and [v7.5.2 validation matrix](docs/baselines/golden/v7.5.2-validation-matrix.md).
 
 </details>
 
@@ -332,7 +332,7 @@ voicemail mailboxes it should be allowed to use.**
   working.
 
 Before upgrading—especially from v7.3.0–v7.3.3—read the
-[current upgrade procedure](docs/INSTALLATION.md#upgrade-to-v752-existing-checkout)
+[current upgrade procedure](docs/INSTALLATION.md#upgrade-to-v753-existing-checkout)
 and [Contexts → Agents migration guide](docs/OPERATOR_MIGRATION.md).
 
 </details>
