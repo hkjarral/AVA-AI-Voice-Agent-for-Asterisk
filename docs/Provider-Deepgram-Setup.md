@@ -100,7 +100,9 @@ actionable log message; AAVA does not silently substitute another voice.
 
 Deepgram's speak language is encoded by the Aura model. AAVA therefore does not
 send an unsupported `agent.speak.provider.language` field. The deprecated
-top-level `agent.language` remains temporarily for backward compatibility.
+top-level `agent.language` remains temporarily on Nova/V1 Settings for backward
+compatibility, but is omitted for Flux/V2 because Deepgram rejects that field
+when the V2 listen API is selected.
 
 Existing custom/legacy listen-model values are preserved and passed through,
 but are not presented as new recommended choices in the Admin UI. Whisper Cloud

@@ -945,7 +945,8 @@ class DeepgramProvider(AIProviderInterface):
             keyterms=self._get_config_value("keyterms", None),
             agent_language=resolved_agent_language,
         )
-        if listen_provider.get("version") == "v2":
+        is_flux_v2 = listen_provider.get("version") == "v2"
+        if is_flux_v2:
             logger.info(
                 "Deepgram Flux listen-provider configured",
                 call_id=self.call_id,
@@ -957,33 +958,40 @@ class DeepgramProvider(AIProviderInterface):
             )
 
         # Build settings with configured audio formats
+        agent_settings = {
+            "listen": {"provider": listen_provider},
+            "think": {
+                "provider": {
+                    "type": "open_ai",
+                    # Use the resolved `think_model` so primary and retry
+                    # paths can't drift. Default still "gpt-4o-mini" (set
+                    # at the variable definition above) to preserve the
+                    # prior conservative cost default. Per CodeRabbit
+                    # review of PR #384 comment 3214130572.
+                    "model": think_model,
+                    "temperature": 0.7
+                },
+                "prompt": think_prompt
+            },
+            "speak": {
+                "provider": {"type": "deepgram", "model": speak_model}
+            },
+            "greeting": greeting_val
+        }
+        # Deepgram V2 (Flux) rejects the deprecated top-level agent.language
+        # field. V1/Nova keeps it for backward compatibility. Flux English
+        # encodes language in the model name; Flux Multilingual additionally
+        # uses listen.provider.language_hints.
+        if not is_flux_v2:
+            agent_settings["language"] = agent_language
+
         settings = {
             "type": "Settings",
             "audio": {
                 "input": { "encoding": input_format, "sample_rate": int(input_sample_rate) },
                 "output": { "encoding": output_format, "sample_rate": int(output_sample_rate), "container": "none" }
             },
-            "agent": {
-                "language": agent_language,
-                "listen": {"provider": listen_provider},
-                "think": {
-                    "provider": {
-                        "type": "open_ai",
-                        # Use the resolved `think_model` so primary and retry
-                        # paths can't drift. Default still "gpt-4o-mini" (set
-                        # at the variable definition above) to preserve the
-                        # prior conservative cost default. Per CodeRabbit
-                        # review of PR #384 comment 3214130572.
-                        "model": think_model,
-                        "temperature": 0.7
-                    },
-                    "prompt": think_prompt
-                },
-                "speak": {
-                    "provider": {"type": "deepgram", "model": speak_model}
-                },
-                "greeting": greeting_val
-            }
+            "agent": agent_settings,
         }
         
         # Add tools from context allowlist only.
@@ -1011,6 +1019,14 @@ class DeepgramProvider(AIProviderInterface):
             # Consume the already validated primary block so retry cannot
             # drift on model-specific language projection.
             minimal_listen_provider = dict(listen_provider)
+            minimal_agent_settings = {
+                "greeting": greeting_val,
+                "listen": { "provider": minimal_listen_provider },
+                "think": { "provider": { "type": "open_ai", "model": think_model }, "prompt": think_prompt },
+                "speak": { "provider": { "type": "deepgram", "model": speak_model } }
+            }
+            if not is_flux_v2:
+                minimal_agent_settings["language"] = agent_language
             self._last_settings_minimal = {
                 "type": "Settings",
                 "audio": {
@@ -1021,13 +1037,7 @@ class DeepgramProvider(AIProviderInterface):
                         "container": "none",
                     },
                 },
-                "agent": {
-                    "greeting": greeting_val,
-                    "language": agent_language,
-                    "listen": { "provider": minimal_listen_provider },
-                    "think": { "provider": { "type": "open_ai", "model": think_model }, "prompt": think_prompt },
-                    "speak": { "provider": { "type": "deepgram", "model": speak_model } }
-                }
+                "agent": minimal_agent_settings,
             }
             if tools_schemas:
                 self._last_settings_minimal["agent"]["think"]["functions"] = tools_schemas

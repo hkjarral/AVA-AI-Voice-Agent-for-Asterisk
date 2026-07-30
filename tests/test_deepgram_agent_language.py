@@ -103,13 +103,26 @@ def test_voice_language_mismatch_fails_without_fallback():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("model", "language", "voice", "expected_listen"),
+    ("model", "language", "voice", "expected_listen", "expected_top_level_language"),
     [
         (
             "nova-3",
             "en-US",
             "aura-2-thalia-en",
             {"type": "deepgram", "model": "nova-3", "language": "en"},
+            "en-US",
+        ),
+        (
+            "flux-general-en",
+            "en",
+            "aura-2-luna-en",
+            {
+                "type": "deepgram",
+                "model": "flux-general-en",
+                "version": "v2",
+                "eot_threshold": 0.7,
+            },
+            None,
         ),
         (
             "flux-general-multi",
@@ -122,6 +135,7 @@ def test_voice_language_mismatch_fails_without_fallback():
                 "eot_threshold": 0.7,
                 "language_hints": ["es"],
             },
+            None,
         ),
     ],
 )
@@ -130,6 +144,7 @@ async def test_primary_and_retry_payloads_share_language_contract(
     language,
     voice,
     expected_listen,
+    expected_top_level_language,
 ):
     provider = DeepgramProvider(
         {
@@ -152,9 +167,19 @@ async def test_primary_and_retry_payloads_share_language_contract(
     assert retry["agent"]["listen"]["provider"] == expected_listen
     assert primary["agent"]["speak"] == retry["agent"]["speak"]
     assert "language" not in primary["agent"]["speak"]["provider"]
-    # Retain the deprecated top-level value during the compatibility window.
-    assert primary["agent"]["language"] == language
-    assert retry["agent"]["language"] == language
+    if expected_top_level_language is None:
+        # Deepgram rejects deprecated agent.language with the V2/Flux API.
+        assert "language" not in primary["agent"]
+        assert "language" not in retry["agent"]
+        if model == "flux-general-multi":
+            assert primary["agent"]["listen"]["provider"]["language_hints"] == ["es"]
+        else:
+            assert "language_hints" not in primary["agent"]["listen"]["provider"]
+        assert primary["agent"]["speak"]["provider"]["model"] == voice
+    else:
+        # Nova/V1 retains the deprecated top-level value for compatibility.
+        assert primary["agent"]["language"] == expected_top_level_language
+        assert retry["agent"]["language"] == expected_top_level_language
 
 
 @pytest.mark.asyncio
