@@ -302,6 +302,7 @@ func runUpdate() (retErr error) {
 		}
 		decideDockerActions(ctx)
 		applyServiceFilters(ctx)
+		applyOptionalServiceFilters(ctx)
 		if err := preflightDockerChangeGuard(ctx); err != nil {
 			return err
 		}
@@ -490,6 +491,7 @@ func runUpdatePlan(ctx *updateContext) error {
 		}
 		decideDockerActions(ctx)
 		applyServiceFilters(ctx)
+		applyOptionalServiceFilters(ctx)
 	} else {
 		ctx.changedFiles = nil
 	}
@@ -568,6 +570,9 @@ func runUpdatePlan(ctx *updateContext) error {
 	if !updateIncludeUI && ctx.composeChanged {
 		rep.Warnings = append(rep.Warnings, "Compose files changed; admin_ui changes (if any) are excluded unless --include-ui is enabled.")
 	}
+	if reason := ctx.skippedServices["local_ai_server"]; strings.Contains(reason, "not installed") {
+		rep.Warnings = append(rep.Warnings, "Local AI Server changes were detected, but local_ai_server is neither installed nor selected by the active configuration; it will not be built or started.")
+	}
 	if !updateAvailable && remoteIsAncestor && strings.TrimSpace(ctx.newSHA) != strings.TrimSpace(ctx.oldSHA) {
 		rep.Warnings = append(rep.Warnings, fmt.Sprintf("Local branch is ahead of %s/%s; no fast-forward update available.", updateRemote, updateRef))
 	}
@@ -611,6 +616,232 @@ func applyServiceFilters(ctx *updateContext) {
 			ctx.skippedServices["admin_ui"] = "restart"
 		}
 	}
+}
+
+var detectLocalAIInstallationForUpdate = detectLocalAIInstallation
+var readActiveAgentRoutesForUpdate = readActiveAgentRoutes
+var aiEngineRunningForActiveRouteRead = aiEngineRunning
+var existingComposeServicesForUpdate = existingComposeServices
+var runDockerCommandForUpdate = runCmd
+
+type activeAgentRoute struct {
+	Provider  string  `json:"provider"`
+	ExtraJSON *string `json:"extra_json"`
+}
+
+func applyOptionalServiceFilters(ctx *updateContext) {
+	// `--rebuild=all` is an explicit request to build every service.  Automatic
+	// file-impact detection, however, must not turn Local AI into an installed
+	// component merely because the release contains local_ai_server changes.
+	if rebuildMode(strings.ToLower(strings.TrimSpace(updateRebuild))) == rebuildAll {
+		return
+	}
+	if !ctx.servicesToRebuild["local_ai_server"] && !ctx.servicesToRestart["local_ai_server"] {
+		return
+	}
+
+	installed, known := detectLocalAIInstallationForUpdate()
+	if !known || installed {
+		return
+	}
+	if ctx.servicesToRebuild["local_ai_server"] {
+		delete(ctx.servicesToRebuild, "local_ai_server")
+		ctx.skippedServices["local_ai_server"] = "rebuild (not installed or selected)"
+	}
+	if ctx.servicesToRestart["local_ai_server"] {
+		delete(ctx.servicesToRestart, "local_ai_server")
+		ctx.skippedServices["local_ai_server"] = "restart (not installed or selected)"
+	}
+}
+
+func detectLocalAIInstallation() (bool, bool) {
+	existing, existingKnown := existingComposeServices()
+	if existing["local_ai_server"] {
+		return true, true
+	}
+
+	configured, configKnown := configuredActiveRouteUsesLocalAI()
+	if configured {
+		return true, true
+	}
+	if existingKnown && configKnown {
+		return false, true
+	}
+	// Detection failures are conservative: keep the planned action instead of
+	// silently failing to update a component that might be in use.
+	return false, false
+}
+
+func existingComposeServices() (map[string]bool, bool) {
+	out, err := runCmd("docker", "compose", "ps", "--services", "--all")
+	if err != nil {
+		out, err = runCmd("docker", "compose", "ps", "--services", "-a")
+	}
+	if err != nil {
+		return map[string]bool{}, false
+	}
+	services := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		if service := strings.TrimSpace(line); service != "" {
+			services[service] = true
+		}
+	}
+	return services, true
+}
+
+func configuredActiveRouteUsesLocalAI() (bool, bool) {
+	cfg, known := readMergedOperatorConfig()
+	if !known {
+		return false, false
+	}
+	if activeRouteUsesLocalAI(cfg) {
+		return true, true
+	}
+
+	routes, routesKnown := readActiveAgentRoutesForUpdate()
+	if !routesKnown {
+		return false, false
+	}
+	return activeAgentRoutesUseLocalAI(routes, cfg)
+}
+
+func readMergedOperatorConfig() (map[string]any, bool) {
+	basePath := filepath.Join("config", "ai-agent.yaml")
+	base, err := configmerge.ReadYAMLFile(basePath)
+	if err != nil {
+		return nil, false
+	}
+	cfg := base
+	localPath := filepath.Join("config", "ai-agent.local.yaml")
+	if _, err := os.Stat(localPath); err == nil {
+		local, readErr := configmerge.ReadYAMLFile(localPath)
+		if readErr != nil {
+			return nil, false
+		}
+		cfg = configmerge.DeepMerge(cfg, local)
+	} else if !os.IsNotExist(err) {
+		return nil, false
+	}
+	return cfg, true
+}
+
+func activeRouteUsesLocalAI(cfg map[string]any) bool {
+	for _, field := range []string{"default_provider", "active_pipeline"} {
+		target, _ := cfg[field].(string)
+		if targetUsesLocalAI(strings.TrimSpace(target), cfg) {
+			return true
+		}
+	}
+	return false
+}
+
+func targetUsesLocalAI(target string, cfg map[string]any) bool {
+	if target == "" {
+		return false
+	}
+	providers, _ := cfg["providers"].(map[string]any)
+	if providerUsesLocalAI(target, providers[target]) {
+		return true
+	}
+
+	pipelines, _ := cfg["pipelines"].(map[string]any)
+	pipeline, _ := pipelines[target].(map[string]any)
+	for _, role := range []string{"stt", "llm", "tts"} {
+		providerKey, _ := pipeline[role].(string)
+		if providerUsesLocalAI(strings.TrimSpace(providerKey), providers[strings.TrimSpace(providerKey)]) {
+			return true
+		}
+	}
+	return false
+}
+
+func providerUsesLocalAI(providerKey string, raw any) bool {
+	if providerKey == "local" {
+		return true
+	}
+	provider, _ := raw.(map[string]any)
+	providerType, _ := provider["type"].(string)
+	return strings.EqualFold(strings.TrimSpace(providerType), "local")
+}
+
+func readActiveAgentRoutes() ([]activeAgentRoute, bool) {
+	dbPath := filepath.Join("data", "operator", "agents.db")
+
+	const script = `
+import json, os, sqlite3, sys
+db_path = sys.argv[1] if len(sys.argv) > 1 else os.getenv(
+    "AGENTS_DB_PATH", "/app/data/operator/agents.db"
+)
+db = sqlite3.connect("file:" + db_path + "?mode=ro", uri=True, timeout=5)
+try:
+    rows = db.execute(
+        "SELECT provider, extra_json FROM agents WHERE COALESCE(is_active, 1) = 1"
+    ).fetchall()
+    print(json.dumps([{"provider": row[0] or "", "extra_json": row[1]} for row in rows]))
+finally:
+    db.close()
+`
+
+	cmd, known := activeAgentRouteReadCommand(dbPath, script)
+	if !known {
+		// The Admin updater image deliberately has no Python runtime. If the
+		// engine is stopped and the host also lacks Python, route state is
+		// unknown and the caller conservatively retains Local AI.
+		return nil, false
+	}
+	if cmd == nil {
+		// A missing host database is a known empty state only when the engine is
+		// stopped. A running engine can use an env-configured or container-only
+		// database path, so that path is always queried inside the container.
+		return nil, true
+	}
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, false
+	}
+	var routes []activeAgentRoute
+	if err := json.Unmarshal(bytes.TrimSpace(out), &routes); err != nil {
+		return nil, false
+	}
+	return routes, true
+}
+
+func activeAgentRouteReadCommand(dbPath, script string) (*exec.Cmd, bool) {
+	if aiEngineRunningForActiveRouteRead() {
+		return exec.Command("docker", "exec", "ai_engine", "python3", "-c", script), true
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil, true
+		}
+		return nil, false
+	}
+	pythonPath, err := exec.LookPath("python3")
+	if err != nil {
+		return nil, false
+	}
+	return exec.Command(pythonPath, "-c", script, dbPath), true
+}
+
+func activeAgentRoutesUseLocalAI(routes []activeAgentRoute, cfg map[string]any) (bool, bool) {
+	for _, route := range routes {
+		if targetUsesLocalAI(strings.TrimSpace(route.Provider), cfg) {
+			return true, true
+		}
+		if route.ExtraJSON == nil || strings.TrimSpace(*route.ExtraJSON) == "" {
+			continue
+		}
+		var extra map[string]any
+		if err := json.Unmarshal([]byte(*route.ExtraJSON), &extra); err != nil {
+			return false, false
+		}
+		pipeline, _ := extra["pipeline"].(string)
+		if targetUsesLocalAI(strings.TrimSpace(pipeline), cfg) {
+			return true, true
+		}
+	}
+	return false, true
 }
 
 func maybeSelfUpdateAndReexec() {
@@ -1727,7 +1958,7 @@ func applyDockerActions(ctx *updateContext) error {
 		return nil
 	}
 
-	if _, err := runCmd("docker", "compose", "version"); err != nil {
+	if _, err := runDockerCommandForUpdate("docker", "compose", "version"); err != nil {
 		return fmt.Errorf("docker compose is required but not available: %w", err)
 	}
 
@@ -1737,10 +1968,10 @@ func applyDockerActions(ctx *updateContext) error {
 	// plus any services we explicitly intend to rebuild/restart.
 	runningServices := map[string]bool{}
 	runningServicesKnown := false
-	out, err := runCmd("docker", "compose", "ps", "--services", "--status", "running")
+	out, err := runDockerCommandForUpdate("docker", "compose", "ps", "--services", "--status", "running")
 	if err != nil {
 		// Fallback for older compose versions (or environments where --status isn't supported).
-		out, err = runCmd("docker", "compose", "ps", "--services")
+		out, err = runDockerCommandForUpdate("docker", "compose", "ps", "--services")
 	}
 	if err == nil {
 		runningServicesKnown = true
@@ -1754,6 +1985,7 @@ func applyDockerActions(ctx *updateContext) error {
 
 	rebuildServices := sortedKeys(ctx.servicesToRebuild)
 	restartServices := sortedKeys(ctx.servicesToRestart)
+	buildOnlyServices := []string{}
 
 	// Avoid starting services that aren't already running unless explicitly targeted by rebuild/restart.
 	if !updateIncludeUI {
@@ -1766,8 +1998,27 @@ func applyDockerActions(ctx *updateContext) error {
 	// e.g. local_ai_server/ should not force-start that service on deployments that don't use it.
 	if runningServicesKnown {
 		rebuildServices = filterSlice(rebuildServices, func(svc string) bool {
-			return runningServices[svc]
+			// Optional-service filtering already established whether Local AI is
+			// installed or selected.  Preserve a stopped-but-installed/selected
+			// Local AI service so an update repairs it instead of silently leaving
+			// stale code behind.
+			return runningServices[svc] || svc == "local_ai_server"
 		})
+	}
+
+	// Rebuild the image for an installed-but-stopped Local AI container without
+	// changing its runtime state. `docker compose up -d --build` would start it
+	// and, because the service uses restart: unless-stopped, leave it running
+	// after an otherwise routine update. A selected-but-not-yet-created Local AI
+	// service is not build-only: it must still be started below so the active
+	// route can work.
+	if containsString(rebuildServices, "local_ai_server") && !runningServices["local_ai_server"] {
+		if existingServices, known := existingComposeServicesForUpdate(); known && existingServices["local_ai_server"] {
+			buildOnlyServices = append(buildOnlyServices, "local_ai_server")
+			rebuildServices = filterSlice(rebuildServices, func(svc string) bool {
+				return svc != "local_ai_server"
+			})
+		}
 	}
 
 	// If a service isn't running, and we aren't rebuilding it, prefer to skip a plain restart
@@ -1824,9 +2075,16 @@ func applyDockerActions(ctx *updateContext) error {
 		// Only run compose-up if we have explicit targets; otherwise, don't implicitly start services.
 		if len(targets) > 0 {
 			args = append(args, sortedKeys(targets)...)
-			if _, err := runCmd("docker", args...); err != nil {
+			if _, err := runDockerCommandForUpdate("docker", args...); err != nil {
 				return fmt.Errorf("docker compose up (remove-orphans) failed: %w", err)
 			}
+		}
+	}
+
+	if len(buildOnlyServices) > 0 {
+		args := append([]string{"compose", "build"}, buildOnlyServices...)
+		if _, err := runDockerCommandForUpdate("docker", args...); err != nil {
+			return fmt.Errorf("docker compose build failed: %w", err)
 		}
 	}
 
@@ -1836,15 +2094,15 @@ func applyDockerActions(ctx *updateContext) error {
 			args = append(args, "--force-recreate")
 		}
 		args = append(args, rebuildServices...)
-		if _, err := runCmd("docker", args...); err != nil {
+		if _, err := runDockerCommandForUpdate("docker", args...); err != nil {
 			return fmt.Errorf("docker compose up --build failed: %w", err)
 		}
 	}
 
 	for _, svc := range restartServices {
-		if _, err := runCmd("docker", "compose", "restart", svc); err != nil {
+		if _, err := runDockerCommandForUpdate("docker", "compose", "restart", svc); err != nil {
 			// Fallback: start/recreate service if restart fails.
-			if _, err2 := runCmd("docker", "compose", "up", "-d", "--no-build", svc); err2 != nil {
+			if _, err2 := runDockerCommandForUpdate("docker", "compose", "up", "-d", "--no-build", svc); err2 != nil {
 				return fmt.Errorf("failed to restart %s (restart error: %v; up error: %w)", svc, err, err2)
 			}
 		}

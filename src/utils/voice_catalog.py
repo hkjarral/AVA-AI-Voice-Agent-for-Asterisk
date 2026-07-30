@@ -14,7 +14,7 @@ developers.openai.com realtime guide (10/10), docs.x.ai voice-agent (5 named
 developers.deepgram.com tts-models (103/103 ID-level match).
 
 voice_mode semantics for the Agent form:
-  static           closed list; engine soft-validates and falls back on unknowns
+  static           closed list; each provider enforces its documented failure policy
   freeform         curated suggestions, arbitrary values allowed (clone IDs, new names)
   platform_managed voice lives outside AVA (e.g. ElevenLabs agent config)
   unsupported      per-agent voice does not apply to this provider kind
@@ -199,7 +199,7 @@ _VOICE_META = {
     "grok": {"voice_mode": "freeform", "voices": GROK_NAMED_VOICES, "voice_field": "voice"},
     # google_live/deepgram are STATIC, matching the runtime: the engine
     # validates overrides against these verified catalogs (known_voice_map),
-    # so the UI must not invite free-text values the runtime would drop.
+    # so the UI must not invite free-text values the runtime would reject.
     # Grok stays freeform — custom cloned-voice IDs are pass-through.
     "google_live": {"voice_mode": "static", "voices": GOOGLE_LIVE_VOICES, "voice_field": "tts_voice_name"},
     "deepgram": {"voice_mode": "static", "voices": DEEPGRAM_AURA_VOICES, "voice_field": "tts_model"},
@@ -218,10 +218,9 @@ def known_voice_map(kind: Optional[str]) -> Optional[Dict[str, str]]:
     """lowercase id → canonical id for kinds with a closed, verified catalog.
 
     Returns None for open kinds (Grok accepts arbitrary cloned-voice IDs) and
-    for kinds without per-agent voice. Used to soft-validate agent voice
-    overrides — an unknown value falls back to the provider default instead of
-    reaching the provider API, where OpenAI/Google/Deepgram all reject unknown
-    voice/model names at session setup.
+    for kinds without per-agent voice. Callers choose whether an unknown value
+    falls back or fails closed. Deepgram fails closed because silently changing
+    a customer's configured voice would violate its language contract.
     """
     if kind == "openai_realtime":
         return {v: v for v in OPENAI_GA_VOICES}

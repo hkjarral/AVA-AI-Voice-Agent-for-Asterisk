@@ -14,6 +14,14 @@ def _drop_to_project_owner_body(runner: str) -> str:
     return runner[start:end]
 
 
+def _run_rollback_body(runner: str) -> str:
+    start_marker = "run_rollback() {\n"
+    end_marker = "\n}\n\nmain() {"
+    start = runner.index(start_marker) + len(start_marker)
+    end = runner.index(end_marker, start)
+    return runner[start:end]
+
+
 def test_active_call_probe_keeps_stdin_open_for_embedded_python() -> None:
     runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
 
@@ -231,6 +239,29 @@ def test_rollback_stashes_untracked_files_only_when_they_block_checkout() -> Non
     assert conflict_check in runner
     assert fallback_stash in runner
     assert runner.index(conflict_check) < runner.index(fallback_stash)
+
+
+def test_rollback_never_reconciles_a_fully_stopped_stack_with_compose_up() -> None:
+    runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
+    rollback = _run_rollback_body(runner)
+
+    assert "Reconciling stopped services with built images" not in rollback
+    assert 'docker compose up -d --remove-orphans --no-build "${safe_targets[@]}"' not in rollback
+    assert 'if [ "${#targets[@]}" -gt 0 ]; then' in rollback
+    assert 'docker compose up -d --remove-orphans --no-build "${targets[@]}"' in rollback
+
+
+def test_rollback_builds_stopped_local_ai_without_starting_it() -> None:
+    runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
+    rollback = _run_rollback_body(runner)
+
+    assert 'build_only_services+=("${svc}")' in rollback
+    assert 'docker compose build "${build_only_services[@]}"' in rollback
+    assert 'filtered_rebuild_services+=("${svc}")' in rollback
+    assert 'rebuild_services=("${filtered_rebuild_services[@]}")' in rollback
+    assert rollback.index('docker compose build "${build_only_services[@]}"') < rollback.index(
+        'docker compose up -d --build "${rebuild_services[@]}"'
+    )
 
 
 def test_source_built_cli_is_written_as_the_project_owner() -> None:

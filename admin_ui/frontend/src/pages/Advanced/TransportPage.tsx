@@ -14,7 +14,11 @@ import { useRestartRequired } from '../../hooks/useRestartRequired';
 
 type TransportConfig = Record<string, unknown> & {
     audio_transport?: string;
-    asterisk?: { app_name?: string };
+    asterisk?: {
+        app_name?: string;
+        ws_ping_interval_sec?: number;
+        ws_ping_timeout_sec?: number;
+    };
     audiosocket?: {
         host?: string;
         advertise_host?: string;
@@ -41,7 +45,9 @@ const TransportPage = () => {
         () => (getCachedConfig()?.config ?? {}) as TransportConfig
     );
     const [loading, setLoading] = useState(() => getCachedConfig() == null);
-    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
+    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(
+        () => getCachedConfig()?.yamlError ?? null
+    );
     const [saving, setSaving] = useState(false);
     const { restartRequired, refetch } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
@@ -72,7 +78,9 @@ const TransportPage = () => {
         setSaving(true);
         try {
             const sanitized = sanitizeConfigForSave(config);
-            const response = await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
+            const response = await axios.post('/api/config/yaml', {
+                content: yaml.dump(sanitized),
+            });
             const method = response.data?.recommended_apply_method || 'restart';
             setApplyMethod(method);
             await refetch();
@@ -100,7 +108,10 @@ const TransportPage = () => {
                 if (response.data?.restart_required) {
                     setApplyMethod('restart');
                     await refetch();
-                    toast.warning('Hot reload applied partially', { description: response.data.message || 'Restart AI Engine to fully apply changes' });
+                    toast.warning('Hot reload applied partially', {
+                        description:
+                            response.data.message || 'Restart AI Engine to fully apply changes',
+                    });
                     return;
                 }
 
@@ -114,14 +125,16 @@ const TransportPage = () => {
                 return;
             }
 
-            const response = await axios.post(`/api/system/containers/ai_engine/restart?force=${force}`);
+            const response = await axios.post(
+                `/api/system/containers/ai_engine/restart?force=${force}`
+            );
 
             if (response.data.status === 'warning') {
                 const confirmForce = await confirm({
                     title: 'Force Restart?',
                     description: `${response.data.message}\n\nDo you want to force restart anyway? This may disconnect active calls.`,
                     confirmText: 'Force Restart',
-                    variant: 'destructive'
+                    variant: 'destructive',
                 });
                 if (confirmForce) {
                     setRestartingEngine(false);
@@ -131,7 +144,9 @@ const TransportPage = () => {
             }
 
             if (response.data.status === 'degraded') {
-                toast.warning('AI Engine restarted but may not be fully healthy', { description: response.data.output || 'Please verify manually' });
+                toast.warning('AI Engine restarted but may not be fully healthy', {
+                    description: response.data.output || 'Please verify manually',
+                });
                 return;
             }
 
@@ -145,8 +160,8 @@ const TransportPage = () => {
             const description = axios.isAxiosError(error)
                 ? error.response?.data?.detail || error.message
                 : error instanceof Error
-                    ? error.message
-                    : String(error);
+                  ? error.message
+                  : String(error);
             toast.error(`Failed to ${actionLabel} AI Engine`, { description });
         } finally {
             setRestartingEngine(false);
@@ -159,15 +174,16 @@ const TransportPage = () => {
 
     const updateSectionConfig = (section: string, field: string, value: unknown) => {
         const currentSection = config[section];
-        const sectionConfig = currentSection && typeof currentSection === 'object'
-            ? currentSection as Record<string, unknown>
-            : {};
+        const sectionConfig =
+            currentSection && typeof currentSection === 'object'
+                ? (currentSection as Record<string, unknown>)
+                : {};
         setConfig({
             ...config,
             [section]: {
                 ...sectionConfig,
-                [field]: value
-            }
+                [field]: value,
+            },
         });
     };
 
@@ -177,23 +193,28 @@ const TransportPage = () => {
         }
     }, [config?.external_media?.lock_remote_endpoint]);
 
-    if (loading) return <div className="p-8 text-center text-muted-foreground">Loading configuration...</div>;
+    if (loading)
+        return (
+            <div className="p-8 text-center text-muted-foreground">Loading configuration...</div>
+        );
 
-    if (yamlError) return (
-        <div className="space-y-6">
-            <YamlErrorBanner error={yamlError} />
-        </div>
-    );
+    if (yamlError)
+        return (
+            <div className="space-y-6">
+                <YamlErrorBanner error={yamlError} />
+            </div>
+        );
 
     const transportType = config.audio_transport || 'audiosocket';
     const audiosocketConfig = config.audiosocket || {};
     const externalMediaConfig = config.external_media || {};
 
     // Determine banner message based on apply method
-    const bannerMessage = applyMethod === 'hot_reload'
-        ? 'Changes saved. Apply Changes to hot reload AI Engine without a restart.'
-        : 'Changes to transport configurations require an AI Engine restart to take effect.';
-    
+    const bannerMessage =
+        applyMethod === 'hot_reload'
+            ? 'Changes saved. Apply Changes to hot reload AI Engine without a restart.'
+            : 'Changes to transport configurations require an AI Engine restart to take effect.';
+
     const buttonLabel = applyMethod === 'hot_reload' ? 'Apply Changes' : 'Restart AI Engine';
 
     return (
@@ -236,14 +257,53 @@ const TransportPage = () => {
                 </button>
             </div>
 
-            <ConfigSection title="Asterisk Configuration" description="Core Asterisk integration settings.">
+            <ConfigSection
+                title="Asterisk Configuration"
+                description="Core Asterisk integration settings."
+            >
                 <ConfigCard>
-                    <FormInput
-                        label="Stasis Application Name"
-                        value={config.asterisk?.app_name || 'asterisk-ai-voice-agent'}
-                        onChange={(e) => updateSectionConfig('asterisk', 'app_name', e.target.value)}
-                        tooltip="Name of the Stasis application in your dialplan. Must match the app name in your Asterisk configuration."
-                    />
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <FormInput
+                            label="Stasis Application Name"
+                            value={config.asterisk?.app_name || 'asterisk-ai-voice-agent'}
+                            onChange={e =>
+                                updateSectionConfig('asterisk', 'app_name', e.target.value)
+                            }
+                            tooltip="Name of the Stasis application in your dialplan. Must match the app name in your Asterisk configuration."
+                        />
+                        <FormInput
+                            label="ARI Ping Interval (seconds)"
+                            type="number"
+                            min={5}
+                            max={60}
+                            step={1}
+                            value={config.asterisk?.ws_ping_interval_sec ?? 10}
+                            onChange={e =>
+                                updateSectionConfig(
+                                    'asterisk',
+                                    'ws_ping_interval_sec',
+                                    Number(e.target.value)
+                                )
+                            }
+                            tooltip="How often the engine probes an otherwise-idle ARI WebSocket. Lower values detect silent network loss sooner but increase sensitivity to event-loop stalls."
+                        />
+                        <FormInput
+                            label="ARI Ping Timeout (seconds)"
+                            type="number"
+                            min={5}
+                            max={60}
+                            step={1}
+                            value={config.asterisk?.ws_ping_timeout_sec ?? 10}
+                            onChange={e =>
+                                updateSectionConfig(
+                                    'asterisk',
+                                    'ws_ping_timeout_sec',
+                                    Number(e.target.value)
+                                )
+                            }
+                            tooltip="How long the engine waits for the ARI pong. The default interval plus timeout bounds silent-failure detection to approximately 20 seconds."
+                        />
+                    </div>
                 </ConfigCard>
             </ConfigSection>
 
@@ -252,10 +312,10 @@ const TransportPage = () => {
                     <FormSelect
                         label="Transport Method"
                         value={transportType}
-                        onChange={(e) => updateConfig('audio_transport', e.target.value)}
+                        onChange={e => updateConfig('audio_transport', e.target.value)}
                         options={[
                             { value: 'audiosocket', label: 'AudioSocket (Default)' },
-                            { value: 'externalmedia', label: 'External Media (RTP)' }
+                            { value: 'externalmedia', label: 'External Media (RTP)' },
                         ]}
                         description="Choose 'AudioSocket' for standard deployments or 'External Media' for RTP-based integration."
                     />
@@ -263,34 +323,59 @@ const TransportPage = () => {
             </ConfigSection>
 
             {transportType === 'audiosocket' && (
-                <ConfigSection title="AudioSocket Settings" description="Configuration for the AudioSocket server.">
+                <ConfigSection
+                    title="AudioSocket Settings"
+                    description="Configuration for the AudioSocket server."
+                >
                     <ConfigCard>
                         <div className="space-y-6">
-                            <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Network Configuration</h4>
+                            <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                                Network Configuration
+                            </h4>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <FormInput
                                     label="Bind Host"
                                     value={audiosocketConfig.host || '127.0.0.1'}
-                                    onChange={(e) => updateSectionConfig('audiosocket', 'host', e.target.value)}
+                                    onChange={e =>
+                                        updateSectionConfig('audiosocket', 'host', e.target.value)
+                                    }
                                     tooltip="IP address the AudioSocket server listens on. Use 0.0.0.0 to listen on all interfaces."
                                 />
                                 <FormInput
                                     label="Advertise Host"
-                                    value={audiosocketConfig.advertise_host || audiosocketConfig.host || '127.0.0.1'}
-                                    onChange={(e) => updateSectionConfig('audiosocket', 'advertise_host', e.target.value)}
+                                    value={
+                                        audiosocketConfig.advertise_host ||
+                                        audiosocketConfig.host ||
+                                        '127.0.0.1'
+                                    }
+                                    onChange={e =>
+                                        updateSectionConfig(
+                                            'audiosocket',
+                                            'advertise_host',
+                                            e.target.value
+                                        )
+                                    }
                                     tooltip="IP address Asterisk connects to. For NAT/VPN deployments, set this to your routable IP (VPN IP, public IP, or LAN IP). Leave as Bind Host for same-host deployments."
                                 />
                                 <FormInput
                                     label="Port"
                                     type="number"
                                     value={audiosocketConfig.port || 8090}
-                                    onChange={(e) => updateSectionConfig('audiosocket', 'port', parseInt(e.target.value))}
+                                    onChange={e =>
+                                        updateSectionConfig(
+                                            'audiosocket',
+                                            'port',
+                                            parseInt(e.target.value)
+                                        )
+                                    }
                                     tooltip="TCP port for AudioSocket connections (default: 8090)."
                                 />
                                 <FormInput
                                     label="Format"
                                     value={audiosocketConfig.format || 'slin'}
-                                    onChange={(e) => updateSectionConfig('audiosocket', 'format', e.target.value)}
+                                    onChange={e =>
+                                        updateSectionConfig('audiosocket', 'format', e.target.value)
+                                    }
                                     tooltip="Audio format (e.g., slin, ulaw)"
                                 />
                             </div>
@@ -300,7 +385,10 @@ const TransportPage = () => {
             )}
 
             {transportType === 'externalmedia' && (
-                <ConfigSection title="External Media (RTP) Settings" description="Configuration for RTP-based audio transport.">
+                <ConfigSection
+                    title="External Media (RTP) Settings"
+                    description="Configuration for RTP-based audio transport."
+                >
                     <ConfigCard>
                         <div className="space-y-6">
                             <div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
@@ -308,50 +396,93 @@ const TransportPage = () => {
                                 <div>
                                     <p className="font-medium">Supported Audio Profiles</p>
                                     <p className="mt-1">
-                                        ExternalMedia RTP is supported with the 8 kHz <code>telephony_ulaw_8k</code> and{' '}
-                                        <code>telephony_enhanced_8k</code> profiles. The <code>wideband_pcm_16k</code> profile is
-                                        AudioSocket-only; select AudioSocket for end-to-end 16 kHz audio.
+                                        ExternalMedia RTP is supported with the 8 kHz{' '}
+                                        <code>telephony_ulaw_8k</code> and{' '}
+                                        <code>telephony_enhanced_8k</code> profiles. The{' '}
+                                        <code>wideband_pcm_16k</code> profile is AudioSocket-only;
+                                        select AudioSocket for end-to-end 16 kHz audio.
                                     </p>
                                 </div>
                             </div>
 
-                            <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Network Configuration</h4>
+                            <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                                Network Configuration
+                            </h4>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <FormInput
                                     label="RTP Bind Host"
                                     value={externalMediaConfig.rtp_host || '127.0.0.1'}
-                                    onChange={(e) => updateSectionConfig('external_media', 'rtp_host', e.target.value)}
+                                    onChange={e =>
+                                        updateSectionConfig(
+                                            'external_media',
+                                            'rtp_host',
+                                            e.target.value
+                                        )
+                                    }
                                     tooltip="IP address the RTP server listens on. Use 0.0.0.0 to listen on all interfaces."
                                 />
                                 <FormInput
                                     label="Advertise Host"
-                                    value={externalMediaConfig.advertise_host || externalMediaConfig.rtp_host || '127.0.0.1'}
-                                    onChange={(e) => updateSectionConfig('external_media', 'advertise_host', e.target.value)}
+                                    value={
+                                        externalMediaConfig.advertise_host ||
+                                        externalMediaConfig.rtp_host ||
+                                        '127.0.0.1'
+                                    }
+                                    onChange={e =>
+                                        updateSectionConfig(
+                                            'external_media',
+                                            'advertise_host',
+                                            e.target.value
+                                        )
+                                    }
                                     tooltip="IP address Asterisk sends RTP to. For NAT/VPN deployments, set this to your routable IP (VPN IP, public IP, or LAN IP). Leave as Bind Host for same-host deployments."
                                 />
                                 <FormInput
                                     label="RTP Port"
                                     type="number"
                                     value={externalMediaConfig.rtp_port || 18080}
-                                    onChange={(e) => updateSectionConfig('external_media', 'rtp_port', parseInt(e.target.value))}
+                                    onChange={e =>
+                                        updateSectionConfig(
+                                            'external_media',
+                                            'rtp_port',
+                                            parseInt(e.target.value)
+                                        )
+                                    }
                                     tooltip="Base UDP port for RTP streams (default: 18080)."
                                 />
                                 <FormInput
                                     label="Port Range"
                                     value={externalMediaConfig.port_range || '18080:18099'}
-                                    onChange={(e) => updateSectionConfig('external_media', 'port_range', e.target.value)}
+                                    onChange={e =>
+                                        updateSectionConfig(
+                                            'external_media',
+                                            'port_range',
+                                            e.target.value
+                                        )
+                                    }
                                     placeholder="18080:18099"
                                     tooltip="Range of UDP ports for concurrent calls (format: start:end, e.g., 18080:18099)."
                                 />
                                 <FormInput
                                     label="Allowed Remote Hosts"
-                                    value={Array.isArray(externalMediaConfig.allowed_remote_hosts) 
-                                        ? externalMediaConfig.allowed_remote_hosts.join(', ') 
-                                        : (externalMediaConfig.allowed_remote_hosts || '')}
-                                    onChange={(e) => {
+                                    value={
+                                        Array.isArray(externalMediaConfig.allowed_remote_hosts)
+                                            ? externalMediaConfig.allowed_remote_hosts.join(', ')
+                                            : externalMediaConfig.allowed_remote_hosts || ''
+                                    }
+                                    onChange={e => {
                                         const value = e.target.value.trim();
-                                        const hosts = value ? value.split(',').map(h => h.trim()).filter(h => h) : [];
-                                        updateSectionConfig('external_media', 'allowed_remote_hosts', hosts.length > 0 ? hosts : null);
+                                        const hosts = value
+                                            ? value
+                                                  .split(',')
+                                                  .map(h => h.trim())
+                                                  .filter(h => h)
+                                            : [];
+                                        updateSectionConfig(
+                                            'external_media',
+                                            'allowed_remote_hosts',
+                                            hosts.length > 0 ? hosts : null
+                                        );
                                     }}
                                     placeholder="e.g., 192.168.1.100, 10.0.0.5"
                                     tooltip="IP addresses allowed to send RTP packets. Required when ASTERISK_HOST is a hostname. Comma-separated for multiple IPs."
@@ -360,44 +491,66 @@ const TransportPage = () => {
 
                             <div className="border-t border-border my-4"></div>
 
-                            <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Asterisk-side Configuration</h4>
+                            <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                                Asterisk-side Configuration
+                            </h4>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <FormSelect
                                     label="Codec"
                                     value={externalMediaConfig.codec || 'ulaw'}
-                                    onChange={(e) => updateSectionConfig('external_media', 'codec', e.target.value)}
+                                    onChange={e =>
+                                        updateSectionConfig(
+                                            'external_media',
+                                            'codec',
+                                            e.target.value
+                                        )
+                                    }
                                     options={[
                                         { value: 'ulaw', label: 'μ-law (8kHz)' },
                                         { value: 'alaw', label: 'A-law (8kHz)' },
                                         { value: 'slin', label: 'SLIN (8kHz)' },
-                                        { value: 'slin16', label: 'SLIN16 (16kHz)' }
+                                        { value: 'slin16', label: 'SLIN16 (16kHz)' },
                                     ]}
                                     description="Codec Asterisk sends/receives."
                                 />
                                 <FormSelect
                                     label="Direction"
                                     value={externalMediaConfig.direction || 'both'}
-                                    onChange={(e) => updateSectionConfig('external_media', 'direction', e.target.value)}
+                                    onChange={e =>
+                                        updateSectionConfig(
+                                            'external_media',
+                                            'direction',
+                                            e.target.value
+                                        )
+                                    }
                                     options={[
                                         { value: 'both', label: 'Both' },
                                         { value: 'sendonly', label: 'Send Only' },
-                                        { value: 'recvonly', label: 'Receive Only' }
+                                        { value: 'recvonly', label: 'Receive Only' },
                                     ]}
                                 />
                             </div>
 
                             <div className="border-t border-border my-4"></div>
 
-                            <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Engine-side Configuration</h4>
+                            <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                                Engine-side Configuration
+                            </h4>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <FormSelect
                                     label="Internal Format"
                                     value={externalMediaConfig.format || 'slin16'}
-                                    onChange={(e) => updateSectionConfig('external_media', 'format', e.target.value)}
+                                    onChange={e =>
+                                        updateSectionConfig(
+                                            'external_media',
+                                            'format',
+                                            e.target.value
+                                        )
+                                    }
                                     options={[
                                         { value: 'slin', label: 'SLIN (8kHz)' },
                                         { value: 'slin16', label: 'SLIN16 (16kHz)' },
-                                        { value: 'ulaw', label: 'μ-law (8kHz)' }
+                                        { value: 'ulaw', label: 'μ-law (8kHz)' },
                                     ]}
                                     description="Engine internal format. Pipelines typically expect 16kHz PCM16 (slin16)."
                                 />
@@ -405,7 +558,13 @@ const TransportPage = () => {
                                     label="Sample Rate (Hz)"
                                     type="number"
                                     value={externalMediaConfig.sample_rate || 16000}
-                                    onChange={(e) => updateSectionConfig('external_media', 'sample_rate', parseInt(e.target.value))}
+                                    onChange={e =>
+                                        updateSectionConfig(
+                                            'external_media',
+                                            'sample_rate',
+                                            parseInt(e.target.value)
+                                        )
+                                    }
                                     tooltip="Auto-inferred from format if not set."
                                 />
                             </div>
@@ -415,10 +574,12 @@ const TransportPage = () => {
                                     label="External Media Expert Settings"
                                     description="Expose RTP source endpoint hardening controls."
                                     checked={showExternalMediaExpert}
-                                    onChange={(e) => setShowExternalMediaExpert(e.target.checked)}
+                                    onChange={e => setShowExternalMediaExpert(e.target.checked)}
                                     className="mb-0 border-0 p-0 bg-transparent"
                                 />
-                                <p className={`text-xs mt-2 ${showExternalMediaExpert ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}>
+                                <p
+                                    className={`text-xs mt-2 ${showExternalMediaExpert ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}
+                                >
                                     {showExternalMediaExpert
                                         ? 'Warning: incorrect settings can drop RTP packets or break media connectivity.'
                                         : 'Expert values are visible and read-only until enabled.'}
@@ -428,11 +589,18 @@ const TransportPage = () => {
                                         label="Lock Remote Endpoint"
                                         description="Drop RTP packets if source host/port changes mid-call."
                                         checked={externalMediaConfig.lock_remote_endpoint ?? true}
-                                        onChange={(e) => updateSectionConfig('external_media', 'lock_remote_endpoint', e.target.checked)}
+                                        onChange={e =>
+                                            updateSectionConfig(
+                                                'external_media',
+                                                'lock_remote_endpoint',
+                                                e.target.checked
+                                            )
+                                        }
                                         disabled={!showExternalMediaExpert}
                                     />
                                     <p className="text-xs text-muted-foreground mt-2">
-                                        Security hardening: keep enabled unless your network path legitimately rewrites RTP source mid-call.
+                                        Security hardening: keep enabled unless your network path
+                                        legitimately rewrites RTP source mid-call.
                                     </p>
                                 </div>
                             </div>

@@ -9,7 +9,11 @@ import TransportPage from './TransportPage';
 const mocks = vi.hoisted(() => ({
     config: {
         audio_transport: 'externalmedia',
-        asterisk: { app_name: 'asterisk-ai-voice-agent' },
+        asterisk: {
+            app_name: 'asterisk-ai-voice-agent',
+            ws_ping_interval_sec: 10,
+            ws_ping_timeout_sec: 10,
+        },
         external_media: {
             rtp_host: '127.0.0.1',
             rtp_port: 18080,
@@ -48,5 +52,12 @@ describe('TransportPage audio profile guidance', () => {
         expect(screen.getByText('telephony_enhanced_8k')).toBeInTheDocument();
         expect(screen.getByText('wideband_pcm_16k')).toBeInTheDocument();
         expect(screen.getByText(/AudioSocket-only/i)).toBeInTheDocument();
+    });
+
+    it('shows the bounded ARI keepalive controls', async () => {
+        render(<TransportPage />);
+
+        expect(await screen.findByLabelText('ARI Ping Interval (seconds)')).toHaveValue(10);
+        expect(screen.getByLabelText('ARI Ping Timeout (seconds)')).toHaveValue(10);
     });
 });

@@ -114,7 +114,7 @@ If you’re not sure, start without these; use `agent check` and `docs/Transport
 ### Logging / diagnostics
 
 - `LOG_LEVEL`, `LOG_FORMAT`, `STREAMING_LOG_LEVEL`: tune verbosity per environment.
-- `DIAG_ENABLE_TAPS`: enable streaming diagnostic taps (writes under `/tmp` by default; see `config/ai-agent.yaml` `streaming.diag_*`).
+- `DIAG_ENABLE_TAPS`: explicit opt-in for both playback-tap WAVs under `/tmp/ai-engine-taps` and full-call RCA WAVs under `/tmp/ai-engine-captures/<call_id>`. `false`/unset is the production default. The permission-restricted capture root may already exist, and disabling capture does not delete historical artifacts; no per-call capture operation creates directories, converts audio, acquires locks, opens files, writes, changes permissions, or removes files. The legacy `AAVA_AUDIO_DIAGNOSTICS` override can independently enable playback taps only; leave both settings false/unset for a no-write call path. Set diagnostics true only for bounded troubleshooting and remove retained WAVs according to your data-handling policy.
 
 ## Outbound calling (alpha)
 

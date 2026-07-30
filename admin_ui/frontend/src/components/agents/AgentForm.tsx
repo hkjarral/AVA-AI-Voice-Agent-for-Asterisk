@@ -565,7 +565,20 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                             )}
                             {vc.unrecognized && (
                                 <p className="text-xs text-amber-600 dark:text-amber-500 mt-1">
-                                    This voice is not in the provider catalog — calls will fall back to its default voice until you pick a valid one.
+                                    {vc.unrecognizedFailsClosed
+                                        ? 'This saved Deepgram voice is not in the supported Aura catalog. It is preserved for review, but calls will fail until you select a supported voice or clear the override after confirming the provider default matches.'
+                                        : 'This voice is not in the provider catalog — calls will fall back to its default voice until you pick a valid one.'}
+                                </p>
+                            )}
+                            {vc.languageMismatch && (
+                                <p
+                                    className="text-xs text-red-600 dark:text-red-500 mt-1"
+                                    role="alert"
+                                >
+                                    This saved Deepgram voice does not match the provider Agent
+                                    Language ({vc.requiredLanguage}). It is preserved for review,
+                                    but calls will fail until you select a matching voice or clear
+                                    the override after confirming the provider default matches.
                                 </p>
                             )}
                         </div>

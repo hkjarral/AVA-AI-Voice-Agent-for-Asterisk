@@ -53,6 +53,16 @@ def test_nova_ignores_flux_tuning_arguments():
     assert block == {"type": "deepgram", "model": "nova-3"}
 
 
+def test_nova_3_projects_language_to_listen_provider():
+    block = build_listen_provider_block(model="nova-3", agent_language="es-419")
+    assert block == {"type": "deepgram", "model": "nova-3", "language": "es"}
+
+
+def test_legacy_custom_model_does_not_receive_unverified_language_field():
+    block = build_listen_provider_block(model="nova-2-medical", agent_language="en")
+    assert block == {"type": "deepgram", "model": "nova-2-medical"}
+
+
 # --- Flux family: version=v2 required + tuning fields wired through ---
 
 @pytest.mark.parametrize("model", ["flux-general-en", "flux-general-multi"])
@@ -64,6 +74,24 @@ def test_flux_models_get_version_v2_required_field(model):
         "Flux models require `version: \"v2\"` in listen.provider per "
         "Deepgram's Configure Voice Agent docs."
     )
+
+
+def test_flux_multilingual_projects_single_selected_language_hint():
+    block = build_listen_provider_block(
+        model="flux-general-multi",
+        agent_language="ja",
+    )
+    assert block["language_hints"] == ["ja"]
+    assert "language" not in block
+
+
+def test_flux_english_never_receives_language_hints():
+    block = build_listen_provider_block(
+        model="flux-general-en",
+        agent_language="en",
+    )
+    assert "language_hints" not in block
+    assert "language" not in block
 
 
 def test_flux_default_eot_threshold_is_07():

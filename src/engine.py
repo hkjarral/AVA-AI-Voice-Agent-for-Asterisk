@@ -80,6 +80,7 @@ from .core.no_input_watchdog import NoInputPolicy, NoInputWatchdog
 from .core.outbound_schedule import normalize_outbound_daily_window
 from .core.outbound_store import get_outbound_store
 from .utils.audio_capture import AudioCaptureManager
+from .utils.voice_catalog import known_voice_map
 from src.pipelines.base import LLMResponse
 from src.tools.telephony.hangup_policy import (
     DEFAULT_HANGUP_MARKERS,
@@ -97,6 +98,37 @@ from src.tools.execution_history import (
 
 if TYPE_CHECKING:
     from src.tools.context import ToolExecutionContext
+
+
+def _apply_provider_context_voice(
+    provider: AIProviderInterface,
+    provider_context: Dict[str, Any],
+    overrides: Dict[str, Any],
+    context_config: Any,
+    *,
+    call_id: Optional[str] = None,
+) -> str:
+    """Reconcile the Agent voice using the target provider's contract.
+
+    OpenAI and Google retain their established soft-fallback behavior for
+    stale closed-catalog values. Deepgram deliberately receives the explicit
+    value unchanged so its preflight can reject an unknown voice (or a known
+    voice with the wrong language) before opening a remote WebSocket. This
+    prevents an explicit customer voice from being silently substituted.
+    """
+    voice_kind = (
+        "openai_realtime" if isinstance(provider, OpenAIRealtimeProvider)
+        else "google_live" if isinstance(provider, GoogleLiveProvider)
+        else None
+    )
+    return apply_context_voice(
+        provider_context,
+        overrides,
+        context_config,
+        call_id=call_id,
+        allowed_voices=known_voice_map(voice_kind),
+        voice_unsupported=isinstance(provider, (ElevenLabsAgentProvider, LocalProvider)),
+    )
 
 logger = get_logger(__name__)
 
@@ -334,7 +366,9 @@ class Engine:
             password=config.asterisk.password,
             base_url=base_url,
             app_name=config.asterisk.app_name,
-            ssl_verify=config.asterisk.ssl_verify
+            ssl_verify=config.asterisk.ssl_verify,
+            ws_ping_interval_sec=config.asterisk.ws_ping_interval_sec,
+            ws_ping_timeout_sec=config.asterisk.ws_ping_timeout_sec,
         )
         # Set engine reference for event propagation
         self.ari_client.engine = self
@@ -471,13 +505,20 @@ class Engine:
         # Captures are written under /tmp/ai-engine-captures/<call_id>/stream_name.wav,
         # which is what scripts/rca_collect.sh expects when building the "captures" bundle.
         capture_dir = "/tmp/ai-engine-captures"
-        # Use DIAG_ENABLE_TAPS as a generic switch for keeping capture files after calls complete.
-        keep_captures = os.getenv("DIAG_ENABLE_TAPS", "false").lower() in ("true", "1", "yes")
-        self.audio_capture = AudioCaptureManager(base_dir=capture_dir, keep_files=keep_captures)
+        # Full-call RCA capture is opt-in. The resolved streaming flag is fed by
+        # DIAG_ENABLE_TAPS and is intentionally independent of the legacy
+        # AAVA_AUDIO_DIAGNOSTICS playback-tap override.
+        capture_enabled = bool(getattr(config.streaming, "diag_enable_taps", False))
+        self.audio_capture = AudioCaptureManager(
+            base_dir=capture_dir,
+            keep_files=capture_enabled,
+            enabled=capture_enabled,
+        )
         logger.info(
             "Audio capture initialized",
             base_dir=capture_dir,
-            keep_files=keep_captures,
+            enabled=capture_enabled,
+            keep_files=capture_enabled,
         )
         self.streaming_playback_manager = StreamingPlaybackManager(
             self.session_store,
@@ -8633,6 +8674,7 @@ class Engine:
     ) -> None:
         """Shared cleanup for StasisEnd/ChannelDestroyed paths."""
         resolved_call_id = None  # Track for finally block cleanup
+        cleanup_owned = False
         try:
             # Resolve session by call_id first, then fallback to channel lookup.
             session = await self.session_store.get_by_call_id(channel_or_call_id)
@@ -8730,6 +8772,7 @@ class Engine:
                     logger.debug("Cleanup already in progress (in-memory guard)", call_id=call_id)
                     return
                 _cleanup_in_progress.add(call_id)
+                cleanup_owned = True
                 # Fail closed before the first cleanup await. Pipeline/provider
                 # operations retain this CallSession object and may finish an
                 # in-flight network request even after task cancellation. The
@@ -9219,11 +9262,6 @@ class Engine:
             except Exception:
                 pass
 
-            try:
-                self.audio_capture.close_call(call_id)
-            except Exception:
-                logger.debug("Audio capture cleanup failed", call_id=call_id, exc_info=True)
-
             if self.conversation_coordinator:
                 await self.conversation_coordinator.unregister_call(call_id)
             
@@ -9275,8 +9313,18 @@ class Engine:
         except Exception as exc:
             logger.error("Error cleaning up call", identifier=channel_or_call_id, error=str(exc), exc_info=True)
         finally:
-            # Clean up in-memory guard
-            if resolved_call_id:
+            # Finalize diagnostic handles even if an earlier awaited cleanup
+            # step fails. Only the invocation that acquired cleanup ownership
+            # may close handles or release the in-memory guard.
+            if resolved_call_id and cleanup_owned:
+                try:
+                    self.audio_capture.close_call(resolved_call_id)
+                except Exception:
+                    logger.debug(
+                        "Audio capture cleanup failed",
+                        call_id=resolved_call_id,
+                        exc_info=True,
+                    )
                 _cleanup_in_progress.discard(resolved_call_id)
                 seen_caller_stasis = getattr(self, "_seen_caller_stasis_channels", None)
                 if seen_caller_stasis is not None:
@@ -18794,22 +18842,16 @@ class Engine:
                             provider_context['greeting'] = self._apply_prompt_template_substitution(context_config.greeting, session)
 
                         # Per-agent/per-call voice override (7.3.0): override > agent > provider default.
-                        # Reconcile with what THIS provider can use so Call History records
-                        # the voice the session uses, not the raw request: closed-catalog
-                        # kinds (OpenAI/Google/Deepgram) validate here, Grok passes through
-                        # (custom clone IDs), and providers that never consume a context
-                        # voice (ElevenLabs Agent, Local) resolve to provider-default.
-                        from .utils.voice_catalog import known_voice_map
-                        _voice_kind = (
-                            "openai_realtime" if isinstance(provider, OpenAIRealtimeProvider)
-                            else "google_live" if isinstance(provider, GoogleLiveProvider)
-                            else "deepgram" if isinstance(provider, DeepgramProvider)
-                            else None
-                        )
-                        voice_source = apply_context_voice(
-                            provider_context, overrides, context_config, call_id=call_id,
-                            allowed_voices=known_voice_map(_voice_kind),
-                            voice_unsupported=isinstance(provider, (ElevenLabsAgentProvider, LocalProvider)),
+                        # Reconcile with what THIS provider can use. OpenAI/Google
+                        # retain their soft closed-catalog fallback, Grok passes
+                        # through custom clone IDs, and Deepgram receives the raw
+                        # explicit value for strict preflight validation.
+                        voice_source = _apply_provider_context_voice(
+                            provider,
+                            provider_context,
+                            overrides,
+                            context_config,
+                            call_id=call_id,
                         )
                         session.session_voice = provider_context.get("voice")
                         session.voice_source = voice_source

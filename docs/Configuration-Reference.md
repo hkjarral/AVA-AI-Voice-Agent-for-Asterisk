@@ -13,6 +13,24 @@ Keys in the local file win over the base file (deep merge — nested dicts are m
 
 This separation means `git pull` during updates will never conflict with operator config, eliminating the merge-conflict problem on `ai-agent.yaml`.
 
+### ARI WebSocket silent-failure detection
+
+The engine uses protocol-level WebSocket pings to detect an ARI connection that
+has stopped carrying packets without a clean TCP close:
+
+```yaml
+asterisk:
+  ws_ping_interval_sec: 10
+  ws_ping_timeout_sec: 10
+```
+
+The nominal detection bound is the interval plus the timeout, so the shipped
+defaults make `/ready` fail in approximately 20 seconds before the existing
+reconnect supervisor takes over. Both values accept 5–60 seconds and require an
+AI Engine restart. Values near the lower bound should be used only after load
+testing because a severely stalled event loop can delay pong processing and
+cause an unnecessary reconnect.
+
 ## Configuration Architecture
 
 Starting in v4.0, the project added a **modular pipeline architecture** alongside monolithic provider support:
@@ -512,8 +530,9 @@ Notes:
 
 - providers.deepgram.api_key: injected from `DEEPGRAM_API_KEY` (env-only; do not commit secrets to YAML).
 - The default Think stage uses Deepgram-managed reasoning and does not consume or require `OPENAI_API_KEY`. Custom/BYO reasoning endpoints are not currently exposed by this provider configuration.
-- providers.deepgram.model, providers.deepgram.tts_model: Deepgram Voice Agent + Aura TTS models.
-- `providers.deepgram.agent_language`: Language for Deepgram Voice Agent mode (default: `en`).
+- `providers.deepgram.model`: Deepgram Voice Agent listen model. The verified UI surface is `nova-3`, `flux-general-en`, and `flux-general-multi`; `nova-2-phonecall` is a legacy English telephony compatibility option. Existing custom values are preserved.
+- `providers.deepgram.tts_model`: Aura voice model. Its language suffix must match `agent_language`; unknown or mismatched voices fail the Deepgram call before Settings are sent rather than silently falling back.
+- `providers.deepgram.agent_language`: Full Voice Agent conversation language (default: `en`). Supported end-to-end languages are `en`, `es`, `de`, `fr`, `it`, `nl`, and `ja`; BCP-47 variants are normalized to their base language. This is separate from modular pipeline `stt_language`.
 - providers.deepgram.greeting: Agent greeting. Leave empty to inherit `llm.initial_greeting`.
 - providers.deepgram.instructions: Persona override for the “think” stage; leave empty to inherit `llm.prompt`.
 - providers.deepgram.input_encoding/input_sample_rate_hz: Keep `input_encoding=ulaw` at 8 kHz when AudioSocket runs μ-law transport.

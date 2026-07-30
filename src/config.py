@@ -56,6 +56,11 @@ class AsteriskConfig(BaseModel):
     username: str
     password: str
     app_name: str = Field(default="asterisk-ai-voice-agent")
+    # ARI is the engine's call-control ownership channel. Keepalive defaults
+    # bound a silent packet-drop to roughly interval + timeout (20 seconds)
+    # before /ready fails and the reconnect supervisor takes over.
+    ws_ping_interval_sec: float = Field(default=10.0, ge=5.0, le=60.0)
+    ws_ping_timeout_sec: float = Field(default=10.0, ge=5.0, le=60.0)
 
 class ExternalMediaConfig(BaseModel):
     # Network configuration
@@ -217,8 +222,9 @@ class DeepgramProviderConfig(BaseModel):
     base_url: str = Field(default="https://api.deepgram.com")
     tts_voice: Optional[str] = None
     stt_language: str = Field(default="en-US")
-    # Deepgram Voice Agent language (for full agent mode)
-    # Supported: en, en-US, es, fr, de, it, pt, nl, ja, zh, ko, hi, ru, pl, uk, tr, sv, da, no, fi, cs, el, he, ar, id, ms, th, vi
+    # Deepgram Voice Agent language (full-agent mode only). AAVA's verified
+    # end-to-end Aura surface is en/es/de/fr/it/nl/ja; existing BCP-47 locale
+    # variants are normalized to their base language by the provider.
     agent_language: str = Field(default="en")
     # Deepgram Voice Agent (monolithic) WebSocket endpoint
     voice_agent_base_url: str = Field(
@@ -948,6 +954,13 @@ class StreamingConfig(BaseModel):
     low_watermark_ms: int = Field(default=80)
     provider_grace_ms: int = Field(default=500)
     logging_level: str = Field(default="info")
+    # Development diagnostics. These fields must be declared so the resolved
+    # environment values survive Pydantic validation and reach every tap and
+    # full-call capture consumer. Capture remains opt-in by default.
+    diag_enable_taps: bool = Field(default=False)
+    diag_pre_secs: int = Field(default=1, ge=0, le=60)
+    diag_post_secs: int = Field(default=1, ge=0, le=60)
+    diag_out_dir: str = Field(default="/tmp/ai-engine-taps")
     # Smaller warm-up only for the initial greeting to get first audio out sooner
     greeting_min_start_ms: int = Field(default=0)
     # ExternalMedia-specific: safety net timeout (ms) for RTP endpoint establishment.

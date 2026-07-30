@@ -2502,6 +2502,7 @@ def _detect_docker():
         "cli_present": shutil.which("docker") is not None,
         "is_docker_desktop": False,
         "permission_denied": False,
+        "client_adapter_error": False,
         "needs_docker_gid": None,
     }
 
@@ -2568,6 +2569,22 @@ def _detect_docker():
             docker_info["status"] = "error"
             docker_info["permission_denied"] = True
             docker_info["message"] = "Docker daemon not accessible from Admin UI (permission denied to docker.sock)"
+        elif docker_info["socket_present"] and (
+            "not supported url scheme" in lowered
+            or "unsupported url scheme" in lowered
+            or "http+docker" in lowered
+        ):
+            # Docker SDK 7.0 combined with Requests 2.32+ fails before it can
+            # contact an otherwise healthy Unix socket.  Treat that as an
+            # Admin UI client/runtime problem, not as evidence that Docker is
+            # absent from the host.
+            docker_info["installed"] = True
+            docker_info["status"] = "error"
+            docker_info["client_adapter_error"] = True
+            docker_info["message"] = (
+                "Admin UI Docker client cannot use the mounted Docker socket "
+                "(incompatible Docker SDK/Requests adapter)"
+            )
     
     return docker_info
 
@@ -2970,6 +2987,20 @@ def _build_checks(os_info, docker_info, compose_info, selinux_info, dir_info, as
                 ]),
                 "docs_url": _github_docs_url("docs/TROUBLESHOOTING_GUIDE.md"),
                 "docs_label": "Troubleshooting guide",
+            },
+        })
+    elif docker_info.get("client_adapter_error"):
+        checks.append({
+            "id": "docker_client_adapter",
+            "status": "error",
+            "message": docker_info["message"],
+            "blocking": True,
+            "action": {
+                "type": "command",
+                "label": "Rebuild Admin UI",
+                "value": "docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui",
+                "docs_url": _github_docs_url("docs/INSTALLATION.md"),
+                "docs_label": "AAVA installation docs",
             },
         })
     elif docker_info["status"] == "error":

@@ -138,12 +138,17 @@ class TestConfigLoading:
     def test_diagnostic_settings_from_env(self, monkeypatch):
         """Should apply diagnostic settings from environment variables."""
         monkeypatch.setenv("STREAMING_LOG_LEVEL", "debug")
+        monkeypatch.setenv("DIAG_ENABLE_TAPS", "false")
         
         config = load_config("config/ai-agent.example.yaml")
         
-        # Diagnostic fields like diag_enable_taps are set but not validated by Pydantic
-        # (they don't exist in StreamingConfig model). Only test fields that exist.
+        # Documented diagnostic fields must survive Pydantic validation so the
+        # resolved opt-in reaches both playback taps and full-call capture.
         assert config.streaming.logging_level == "debug"
+        assert config.streaming.diag_enable_taps is False
+        assert config.streaming.diag_pre_secs == 1
+        assert config.streaming.diag_post_secs == 1
+        assert config.streaming.diag_out_dir == "/tmp/ai-engine-taps"
     
     def test_barge_in_env_overrides(self, monkeypatch):
         """Should apply barge-in env var overrides."""

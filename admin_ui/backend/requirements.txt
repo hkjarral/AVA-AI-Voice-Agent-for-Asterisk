@@ -2,7 +2,8 @@ fastapi==0.109.0
 uvicorn==0.27.0
 python-dotenv==1.2.2
 pyyaml==6.0.1
-docker==7.0.0
+# Docker SDK 7.1 carries the Requests 2.32+ Unix-socket adapter fix.
+docker==7.1.0
 pydantic==2.6.1
 httpx==0.27.0
 urllib3<2

@@ -141,7 +141,9 @@ class ExternalMediaEngine:
                 password=self.config.asterisk.password,
                 base_url=f"{self.config.asterisk.scheme}://{self.config.asterisk.host}:{self.config.asterisk.port}/ari",
                 app_name=self.config.asterisk.app_name,
-                ssl_verify=self.config.asterisk.ssl_verify
+                ssl_verify=self.config.asterisk.ssl_verify,
+                ws_ping_interval_sec=self.config.asterisk.ws_ping_interval_sec,
+                ws_ping_timeout_sec=self.config.asterisk.ws_ping_timeout_sec,
             )
             
             # Set up event handlers

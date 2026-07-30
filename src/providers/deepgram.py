@@ -35,6 +35,80 @@ from src.tools.telephony.hangup_policy import (
 logger = get_logger(__name__)
 
 
+DEEPGRAM_AGENT_LANGUAGES = frozenset({"en", "es", "de", "fr", "it", "nl", "ja"})
+DEEPGRAM_LEGACY_PHONECALL_MODEL = "nova-2-phonecall"
+
+
+def normalize_agent_language(language: Optional[str]) -> str:
+    """Return the base language used by AAVA's supported Aura catalog.
+
+    Existing configurations may contain BCP-47 variants such as ``en-US`` or
+    ``es-419``. Aura model identifiers encode the base language, so retaining
+    the configured top-level value while comparing/projecting its base keeps
+    those installations compatible without advertising an exhaustive locale
+    matrix in the product UI.
+    """
+    value = str(language or "en").strip().lower().replace("_", "-")
+    return value.split("-", 1)[0] or "en"
+
+
+def deepgram_aura_language(model: Optional[str]) -> Optional[str]:
+    """Extract the language encoded by a known Deepgram Aura model ID."""
+    if not isinstance(model, str) or not model.strip():
+        return None
+    canonical = known_voice_map("deepgram").get(model.strip().lower())
+    if not canonical:
+        return None
+    suffix = canonical.rsplit("-", 1)[-1].lower()
+    return suffix if suffix in DEEPGRAM_AGENT_LANGUAGES else None
+
+
+def validate_agent_language_configuration(
+    *,
+    listen_model: str,
+    agent_language: Optional[str],
+    speak_model: str,
+) -> str:
+    """Validate the supported full-agent language contract before connect.
+
+    The modular Deepgram pipeline does not use this helper. Unknown/legacy
+    listen models remain pass-through for upgrade compatibility, but the
+    language and Aura voice must still form an end-to-end combination AAVA
+    intentionally supports. Invalid combinations fail closed rather than
+    silently changing the customer's voice.
+    """
+    language = normalize_agent_language(agent_language)
+    supported = ", ".join(sorted(DEEPGRAM_AGENT_LANGUAGES))
+    if language not in DEEPGRAM_AGENT_LANGUAGES:
+        raise ValueError(
+            f"Unsupported Deepgram Voice Agent language '{agent_language}'. "
+            f"AAVA supports: {supported}. Select a supported agent_language "
+            "and a matching Aura voice in Admin UI > Providers > Deepgram."
+        )
+
+    normalized_model = str(listen_model or "").strip().lower()
+    if normalized_model in {"flux-general-en", DEEPGRAM_LEGACY_PHONECALL_MODEL} and language != "en":
+        raise ValueError(
+            f"Deepgram listen model '{listen_model}' is English-only, but "
+            f"agent_language is '{agent_language}'. Select English or use "
+            "flux-general-multi/nova-3."
+        )
+
+    voice_language = deepgram_aura_language(speak_model)
+    if voice_language is None:
+        raise ValueError(
+            f"Unknown or unsupported Deepgram Aura voice '{speak_model}'. "
+            "Select a voice from Admin UI > Providers > Deepgram."
+        )
+    if voice_language != language:
+        raise ValueError(
+            f"Deepgram Aura voice '{speak_model}' speaks '{voice_language}', "
+            f"but agent_language is '{agent_language}'. Select a matching "
+            "Aura voice; AAVA will not silently replace it."
+        )
+    return language
+
+
 def _log_provider_task_exception(task: asyncio.Task) -> None:
     """Done-callback: log exceptions from fire-and-forget provider tasks."""
     if task.cancelled():
@@ -48,11 +122,11 @@ def resolve_speak_model(session_voice: Optional[str], configured: Optional[str])
     """Resolve the `agent.speak.provider.model` (aura voice) for a session.
 
     Per-agent voice override wins over the configured `tts_model`; the shipped
-    default is the final fallback. Overrides are validated against the known
-    Aura catalog (Deepgram rejects unknown speak models at Settings time) —
-    an unrecognized value, e.g. stale free text from the pre-7.3.0
-    display-only agent field, falls back to the configured model instead of
-    failing the session. Module-level pure function so the behavior is
+    default is the final fallback. Values are validated against the known Aura
+    catalog because Deepgram rejects unknown speak models at Settings time.
+    Invalid explicit values fail closed with an actionable message; silently
+    changing a customer's configured voice is not acceptable. Module-level
+    pure function so the behavior is
     unit-testable without a full provider (same pattern as
     ``build_listen_provider_block``). Both the primary Settings payload and the
     UNPARSABLE-retry minimal payload consume this via the single `speak_model`
@@ -62,12 +136,18 @@ def resolve_speak_model(session_voice: Optional[str], configured: Optional[str])
         canonical = known_voice_map("deepgram").get(session_voice.strip().lower())
         if canonical:
             return canonical
-        logger.warning(
-            "Agent voice is not a known Deepgram Aura model; using configured speak model",
-            requested_voice=session_voice.strip(),
+        raise ValueError(
+            f"Unknown Deepgram per-agent Aura voice '{session_voice.strip()}'. "
+            "Select a supported Deepgram voice on the Agents page."
         )
     if isinstance(configured, str) and configured.strip():
-        return configured.strip()
+        canonical = known_voice_map("deepgram").get(configured.strip().lower())
+        if canonical:
+            return canonical
+        raise ValueError(
+            f"Unknown Deepgram configured Aura voice '{configured.strip()}'. "
+            "Select a supported voice in Admin UI > Providers > Deepgram."
+        )
     return "aura-asteria-en"
 
 
@@ -77,6 +157,7 @@ def build_listen_provider_block(
     eot_threshold: Optional[float] = 0.7,
     eager_eot_threshold: Optional[float] = None,
     keyterms: Optional[List[str]] = None,
+    agent_language: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the `agent.listen.provider` block for the Deepgram Voice Agent
     Settings JSON.
@@ -88,12 +169,17 @@ def build_listen_provider_block(
     https://developers.deepgram.com/docs/configure-voice-agent
 
     Behavior:
-      - Nova-* models (default): emit ``{"type": "deepgram", "model": <model>}``.
+      - ``nova-3`` (and the legacy ``nova-2-phonecall`` option): project the
+        normalized conversation language to ``listen.provider.language``.
+      - Unknown/legacy models: pass the model through without unverified
+        provider-specific language fields.
       - Flux models (``flux-general-en``, ``flux-general-multi``): additionally
         emit ``version: "v2"`` (required) plus the Flux-specific tuning fields
         ``eot_threshold`` (default 0.7, valid range 0.5-0.9), optional
         ``eager_eot_threshold`` (default None, valid range 0.3-0.9), and
         optional ``keyterms`` (list of strings to bias recognition).
+        ``flux-general-multi`` also receives one ``language_hints`` entry;
+        ``flux-general-en`` must never receive that field.
 
     Centralized as a module-level pure function so the Settings-builder
     behavior can be unit-tested without spinning up a full
@@ -106,12 +192,24 @@ def build_listen_provider_block(
             Ignored for Nova; ``None`` disables the eager VAD on Flux.
         keyterms: Optional list of strings to bias Flux recognition. Ignored
             for Nova; empty/None values are dropped.
+        agent_language: Optional validated Voice Agent language. Omitted only
+            for compatibility callers/tests that request the pre-7.5.4 shape.
 
     Returns:
         dict suitable for use as the ``agent.listen.provider`` block.
     """
     block: Dict[str, Any] = {"type": "deepgram", "model": model}
-    if not isinstance(model, str) or not model.lower().startswith("flux"):
+    normalized_model = model.lower() if isinstance(model, str) else ""
+    language = normalize_agent_language(agent_language) if agent_language is not None else None
+
+    # Nova owns language on its listen-provider block. nova-2-phonecall is a
+    # preserved telephony compatibility option pending live provider
+    # validation; other custom/legacy model values retain the old pass-through
+    # payload rather than receiving fields AAVA cannot verify for that model.
+    if language is not None and normalized_model in {"nova-3", DEEPGRAM_LEGACY_PHONECALL_MODEL}:
+        block["language"] = language
+
+    if not normalized_model.startswith("flux"):
         return block
 
     # Flux-specific augmentations.
@@ -124,6 +222,10 @@ def build_listen_provider_block(
         cleaned = [str(k) for k in keyterms if str(k).strip()]
         if cleaned:
             block["keyterms"] = cleaned
+    if normalized_model == "flux-general-multi" and language is not None:
+        # Deepgram accepts language_hints only on flux-general-multi. AAVA's
+        # Voice Agent surface selects one end-to-end conversation language.
+        block["language_hints"] = [language]
     return block
 
 
@@ -655,13 +757,36 @@ class DeepgramProvider(AIProviderInterface):
         ws_url = base_url
         headers = {'Authorization': f'Token {self.config.api_key}'}
 
+        # Fail closed before opening a remote session. The engine's provider-
+        # start failure lifecycle will announce and hang up; no WebSocket or
+        # receiver task should exist for an invalid language/voice pairing.
+        self.call_id = call_id
+        raw_voice = (context or {}).get("voice")
+        self._session_voice = raw_voice.strip() if isinstance(raw_voice, str) and raw_voice.strip() else None
+        preflight_listen_model = (
+            self._get_config_value('model', None)
+            or getattr(self.llm_config, 'listen_model', None)
+            or "nova-3"
+        )
+        preflight_speak_model = resolve_speak_model(
+            self._session_voice,
+            self._get_config_value('tts_model', None) or getattr(self.llm_config, 'tts_model', None),
+        )
+        preflight_language = str(
+            self._get_config_value("agent_language", "en") or ""
+        ).strip() or "en"
+        validate_agent_language_configuration(
+            listen_model=preflight_listen_model,
+            agent_language=preflight_language,
+            speak_model=preflight_speak_model,
+        )
+
         try:
             logger.info("Connecting to Deepgram Voice Agent...", url=ws_url)
             self.websocket = await websockets.connect(ws_url, additional_headers=list(headers.items()))
             logger.info("✅ Successfully connected to Deepgram Voice Agent.")
 
             # Persist call context for downstream events
-            self.call_id = call_id
             self._farewell_fallback_state = {}
             self._terminal_turn_suppressed = False
             # Per-call tool allowlist (contexts are the source of truth).
@@ -670,9 +795,6 @@ class DeepgramProvider(AIProviderInterface):
                 self._allowed_tools = list(context.get("tools") or [])
             else:
                 self._allowed_tools = []
-            # Per-agent/per-call voice override (agent.speak.provider.model).
-            raw_voice = (context or {}).get("voice")
-            self._session_voice = raw_voice.strip() if isinstance(raw_voice, str) and raw_voice.strip() else None
             # Capture Deepgram request id if provided
             try:
                 rid = None
@@ -799,6 +921,19 @@ class DeepgramProvider(AIProviderInterface):
 
         # Get configured agent language (default: "en")
         agent_language = str(self._get_config_value("agent_language", "en") or "").strip() or "en"
+        resolved_agent_language = validate_agent_language_configuration(
+            listen_model=listen_model,
+            agent_language=agent_language,
+            speak_model=speak_model,
+        )
+        logger.info(
+            "Deepgram Voice Agent language configuration validated",
+            call_id=self.call_id,
+            listen_model=listen_model,
+            agent_language=agent_language,
+            resolved_agent_language=resolved_agent_language,
+            speak_model=speak_model,
+        )
         
         # Listen provider block. See `build_listen_provider_block` for the
         # full rationale (Nova vs Flux divergence, version=v2 requirement,
@@ -808,6 +943,7 @@ class DeepgramProvider(AIProviderInterface):
             eot_threshold=self._get_config_value("eot_threshold", 0.7),
             eager_eot_threshold=self._get_config_value("eager_eot_threshold", None),
             keyterms=self._get_config_value("keyterms", None),
+            agent_language=resolved_agent_language,
         )
         if listen_provider.get("version") == "v2":
             logger.info(
@@ -872,12 +1008,9 @@ class DeepgramProvider(AIProviderInterface):
         # required fields and Deepgram would reject every retry. Per CodeRabbit review of
         # PR #384 comment 3214117420.
         try:
-            minimal_listen_provider = build_listen_provider_block(
-                model=listen_model,
-                eot_threshold=self._get_config_value("eot_threshold", 0.7),
-                eager_eot_threshold=self._get_config_value("eager_eot_threshold", None),
-                keyterms=self._get_config_value("keyterms", None),
-            )
+            # Consume the already validated primary block so retry cannot
+            # drift on model-specific language projection.
+            minimal_listen_provider = dict(listen_provider)
             self._last_settings_minimal = {
                 "type": "Settings",
                 "audio": {

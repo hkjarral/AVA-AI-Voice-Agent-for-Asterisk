@@ -9,9 +9,15 @@ import audioop
 class AudioCaptureManager:
     """Utility for capturing per-call audio streams to WAV files."""
 
-    def __init__(self, base_dir: str = "/tmp/ai-engine-captures", keep_files: bool = False):
+    def __init__(
+        self,
+        base_dir: str = "/tmp/ai-engine-captures",
+        keep_files: bool = False,
+        enabled: bool = False,
+    ):
         self.base_dir = base_dir
-        self.keep_files = keep_files
+        self.keep_files = bool(keep_files)
+        self.enabled = bool(enabled)
         self._lock = threading.Lock()
         # key -> (wave.Wave_write, sample_rate)
         self._handles: Dict[Tuple[str, str], Tuple[wave.Wave_write, int]] = {}
@@ -43,6 +49,11 @@ class AudioCaptureManager:
         return wf
 
     def append_pcm16(self, call_id: str, stream_name: str, pcm16: bytes, sample_rate: int) -> None:
+        # This guard must stay ahead of payload inspection, key construction,
+        # lock acquisition, directory/file handling, and WAV writes. Disabled
+        # diagnostic capture is a privacy boundary, not a retention policy.
+        if not self.enabled:
+            return
         if not pcm16:
             return
         key = (call_id, stream_name)
@@ -80,6 +91,10 @@ class AudioCaptureManager:
         encoding: str,
         sample_rate: int,
     ) -> None:
+        # In particular, return before audioop conversion. Encoding work done
+        # solely for diagnostics must not run while capture is disabled.
+        if not self.enabled:
+            return
         if not payload:
             return
         encoding = (encoding or "").lower()
@@ -111,6 +126,10 @@ class AudioCaptureManager:
             )
 
     def close_call(self, call_id: str) -> None:
+        # A disabled manager never owns per-call handles or files. Avoid the
+        # lock and leave any artifacts from an earlier enabled run untouched.
+        if not self.enabled:
+            return
         keys_to_close = []
         with self._lock:
             for key, (wf, _rate) in list(self._handles.items()):
@@ -142,4 +161,3 @@ class AudioCaptureManager:
                     pass
         except Exception:
             pass
-

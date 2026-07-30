@@ -4,9 +4,9 @@ Voice precedence: per-call override > agent/context voice > provider config voic
 The agents.db ``voice`` column (collected by the Admin UI since v7.0.0 but never
 read at runtime) becomes runtime-active; the provider-level voice is the fallback.
 
-Seeded by PR #497 (foytech) — generalized across full-agent providers with soft
-validation: an unrecognized voice on a closed-list provider falls back to the
-provider default and never fails the call.
+Seeded by PR #497 (foytech) — generalized across full-agent providers. OpenAI
+and Google retain soft fallback for stale closed-list values; Deepgram rejects
+an invalid explicit Agent voice before opening its remote session.
 """
 import sqlite3
 
@@ -342,14 +342,60 @@ def test_deepgram_default_when_nothing_configured():
     assert resolve_speak_model(None, None) == "aura-asteria-en"
 
 
-def test_deepgram_unknown_voice_falls_back_to_configured():
-    # Stale free-text from the pre-7.3.0 display-only field must not reach
-    # agent.speak.provider.model (CodeRabbit Major on #503).
-    assert resolve_speak_model("Jenny - British", "aura-orion-en") == "aura-orion-en"
+def test_deepgram_unknown_agent_voice_fails_closed():
+    # Never replace an explicitly selected customer voice without consent.
+    with pytest.raises(ValueError, match="Unknown Deepgram per-agent Aura voice"):
+        resolve_speak_model("Jenny - British", "aura-orion-en")
+
+
+def test_deepgram_unknown_configured_voice_fails_closed():
+    with pytest.raises(ValueError, match="Unknown Deepgram configured Aura voice"):
+        resolve_speak_model(None, "aura-future-en")
 
 
 def test_deepgram_known_voice_is_case_insensitive():
     assert resolve_speak_model("AURA-2-Thalia-EN", "aura-orion-en") == "aura-2-thalia-en"
+
+
+@pytest.mark.asyncio
+async def test_engine_preserves_unknown_deepgram_voice_for_provider_preflight():
+    """Cover the real engine reconciliation boundary, not only the resolver."""
+    from unittest.mock import AsyncMock, patch
+
+    from src.config import DeepgramProviderConfig, LLMConfig
+    from src.engine import _apply_provider_context_voice
+    from src.providers.deepgram import DeepgramProvider
+
+    provider = DeepgramProvider(
+        DeepgramProviderConfig(
+            api_key="test-key",
+            model="nova-3",
+            agent_language="en",
+            tts_model="aura-2-thalia-en",
+        ),
+        LLMConfig(),
+        None,
+    )
+    provider_context = {}
+    source = _apply_provider_context_voice(
+        provider,
+        provider_context,
+        {},
+        ContextConfig(voice="customer-private-aura"),
+        call_id="deepgram-engine-preflight",
+    )
+
+    assert source == "agent"
+    assert provider_context["voice"] == "customer-private-aura"
+    with patch("src.providers.deepgram.websockets.connect", new=AsyncMock()) as connect:
+        with pytest.raises(ValueError, match="Unknown Deepgram per-agent Aura voice"):
+            await provider.start_session(
+                "deepgram-engine-preflight",
+                context=provider_context,
+            )
+
+    connect.assert_not_awaited()
+    assert provider.websocket is None
 
 
 # ---------------------------------------------------------------------------

@@ -56,6 +56,7 @@ providers:
     
     # Models — see "Choosing models" below
     model: nova-3                        # Deepgram's current recommended default
+    agent_language: en                   # en, es, de, fr, it, nl, or ja
     tts_model: aura-2-thalia-en
     
     # Audio (telephony defaults)
@@ -71,6 +72,7 @@ providers:
 
 **Key Settings**:
 - `model`: Deepgram listen (STT) model — see **Choosing models** below
+- `agent_language`: Voice Agent conversation language; must match the Aura voice suffix
 - `tts_model`: Aura speak (TTS) voice (example: `aura-2-thalia-en`)
 - `input_encoding`/`input_sample_rate_hz`: what the engine receives from Asterisk (telephony defaults are μ-law @ 8 kHz)
 
@@ -78,11 +80,31 @@ providers:
 
 | Model | Type | Status | When to use |
 |-------|------|--------|-------------|
-| `nova-3` | Listen (STT) | **GA — Deepgram's recommended default** | New deployments. Higher accuracy than nova-2, multilingual conversation, customizable vocabulary. |
-| `nova-2` | Listen (STT) | GA, still supported | Languages not yet supported by nova-3, or workloads that depend on filler-word identification. |
+| `nova-3` | Listen (STT) | **GA — AAVA default** | General Voice Agent compatibility path. AAVA projects the selected language to `listen.provider.language`. |
 | `flux-general-en` | Listen (STT) + turn detection | GA, conversational | **Recommended for voice agents.** English-only conversational STT with built-in EndOfTurn / EagerEndOfTurn detection. Selectable from the Admin UI's Deepgram STT Model dropdown. End-to-end verified on the Voice Agent path (2026-05-09). |
-| `flux-general-multi` | Listen (STT) + turn detection | GA, conversational | Multilingual variant of Flux for non-English voice-agent deployments. |
+| `flux-general-multi` | Listen (STT) + turn detection | GA, conversational | Multilingual Voice Agent path. AAVA supplies one `language_hints` entry matching the selected conversation language. |
+| `nova-2-phonecall` | Listen (STT) | Legacy compatibility | English-only telephony compatibility option; retain only after a live `SettingsApplied` validation on the target account. |
 | `aura-2-thalia-en` | Speak (TTS) | GA | Default voice. Browse the full Aura-2 voice catalog at [developers.deepgram.com/docs/tts-models](https://developers.deepgram.com/docs/tts-models). |
+
+#### Voice Agent languages
+
+AAVA intentionally supports the languages it can provide end to end with its
+verified Aura catalog: `en`, `es`, `de`, `fr`, `it`, `nl`, and `ja`. Existing
+BCP-47 variants such as `en-US` and `es-419` are preserved in configuration and
+normalized to their base language for listen-model projection and voice checks.
+
+The selected Aura model must encode the same language in its suffix. For
+example, `agent_language: es` pairs with `aura-2-celeste-es`. A mismatch or an
+unknown Aura model fails the Deepgram call before Settings are sent, with an
+actionable log message; AAVA does not silently substitute another voice.
+
+Deepgram's speak language is encoded by the Aura model. AAVA therefore does not
+send an unsupported `agent.speak.provider.language` field. The deprecated
+top-level `agent.language` remains temporarily for backward compatibility.
+
+Existing custom/legacy listen-model values are preserved and passed through,
+but are not presented as new recommended choices in the Admin UI. Whisper Cloud
+is not offered for Voice Agent because it does not support live streaming.
 
 > **Upgrade behavior in v6.5.0 — read this before upgrading.** Pre-v6.5.0 the Deepgram Voice Agent provider hardcoded `listen.provider.model: "nova-3"` in the Settings JSON sent to Deepgram, regardless of the YAML `model:` field. v6.5.0 makes the YAML field actually apply. To preserve the previously-effective production behavior on upgrade, the shipped default is now **`nova-3`** (was previously documented as `nova-2` but had no runtime effect). Operators who had explicitly set `model: nova-2` in their YAML will see Deepgram move to Nova-2 *for real* on this upgrade — if you intentionally relied on the hidden Nova-3 hardcoding, leave the YAML at `nova-3` after upgrade.
 >

@@ -202,6 +202,11 @@ BACKUP_DIR_REL=".agent/update-backups/${JOB_ID}"
 
 now_iso() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
+compose_existing_services() {
+  docker compose ps --services --all 2>/dev/null \
+    || docker compose ps --services -a 2>/dev/null
+}
+
 ensure_dirs() {
   mkdir -p "${JOBS_DIR}" "${BIN_DIR}"
 }
@@ -680,19 +685,28 @@ run_rollback() {
     include_ui_effective="${INCLUDE_UI}"
   fi
 
+  rollback_default_rebuild=("ai_engine")
+  if compose_existing_services | grep -Fxq "local_ai_server"; then
+    rollback_default_rebuild+=("local_ai_server")
+  fi
+  if [ "${include_ui_effective}" = "true" ]; then
+    rollback_default_rebuild+=("admin_ui")
+  fi
+  rollback_default_rebuild_json="$(printf '%s\n' "${rollback_default_rebuild[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')"
+
   # Prefer the original job plan to determine which services were impacted.
-  plan_patch="$(jq -c --arg include_ui "${include_ui_effective}" '
+  plan_patch="$(jq -c --arg include_ui "${include_ui_effective}" --argjson fallback_rebuild "${rollback_default_rebuild_json}" '
     def arr(x): (x // []) | map(select(. != null)) | map(tostring);
     def filter_ui(a): if $include_ui == "true" then a else a | map(select(. != "admin_ui")) end;
     def r: filter_ui(arr(.plan.services_rebuild));
     def s: filter_ui(arr(.plan.services_restart));
     def missing: ((r|length) == 0 and (s|length) == 0);
     {
-      services_rebuild: (if missing then (if ($include_ui == "true") then ["ai_engine","local_ai_server","admin_ui"] else ["ai_engine","local_ai_server"] end) else r end),
+      services_rebuild: (if missing then $fallback_rebuild else r end),
       services_restart: (if missing then [] else s end),
       changed_file_count: (.plan.changed_file_count // null),
       compose_changed: (.plan.compose_changed // false)
-    }' "${src_state}" 2>/dev/null || echo '{"services_rebuild":["ai_engine","local_ai_server"],"services_restart":[],"changed_file_count":null,"compose_changed":false}')"
+    }' "${src_state}" 2>/dev/null || jq -cn --argjson fallback_rebuild "${rollback_default_rebuild_json}" '{services_rebuild:$fallback_rebuild,services_restart:[],changed_file_count:null,compose_changed:false}')"
 
   meta_patch="$(jq -n \
     --arg type "rollback" \
@@ -735,15 +749,8 @@ run_rollback() {
     compose_changed="$(jq -r '.compose_changed // false' <<<"${plan_patch}" 2>/dev/null || echo false)"
 
     if [ "${#rebuild_services[@]}" -eq 0 ] && [ "${#restart_services[@]}" -eq 0 ]; then
-      extra=""
-      if [ "${include_ui_effective}" = "true" ]; then
-        extra=" + admin_ui"
-      fi
-      echo "==> No service impact found in source plan; defaulting rollback targets to ai_engine + local_ai_server${extra}" >&2
-      rebuild_services=("ai_engine" "local_ai_server")
-      if [ "${include_ui_effective}" = "true" ]; then
-        rebuild_services+=("admin_ui")
-      fi
+      echo "==> No service impact found in source plan; defaulting rollback targets to ${rollback_default_rebuild[*]}" >&2
+      rebuild_services=("${rollback_default_rebuild[@]}")
     fi
 
     rollback_touches_ai_engine=false
@@ -830,52 +837,55 @@ run_rollback() {
       echo "==> Compose changed; reconciling services (no-build): ${targets[*]:-none}" >&2
       if [ "${#targets[@]}" -gt 0 ]; then
         docker compose up -d --remove-orphans --no-build "${targets[@]}"
-      else
-        # Stack is fully stopped. Reconcile the whole project but skip services
-        # whose images were never built (prevents "no such image" failures for
-        # e.g. local_ai_server on non-Local-AI deployments).
-        mapfile -t all_svcs < <(docker compose config --services 2>/dev/null || true)
-        local safe_targets=()
-        for svc in "${all_svcs[@]}"; do
-          [[ -z "${svc}" ]] && continue
-          local img
-          img="$(docker compose images --format json 2>/dev/null | grep -o "\"${svc}\"" || true)"
-          if [ -n "$img" ] || docker image inspect "asterisk-ai-voice-agent-${svc}:latest" &>/dev/null 2>&1; then
-            safe_targets+=("${svc}")
-          fi
-        done
-        if [ "${#safe_targets[@]}" -gt 0 ]; then
-          echo "==> Reconciling stopped services with built images: ${safe_targets[*]}" >&2
-          docker compose up -d --remove-orphans --no-build "${safe_targets[@]}"
-        fi
       fi
     fi
 
-    # Preserve partial installs: do not force-start/rebuild services the operator was not running.
+    # Preserve runtime state: running services may be recreated, while an
+    # installed-but-stopped Local AI service gets an image-only rebuild. Never
+    # use compose up for a service that was stopped before rollback.
     mapfile -t running_svcs_now < <(docker compose ps --services --status running 2>/dev/null \
       || docker compose ps --services 2>/dev/null \
       || true)
-    if [ "${#running_svcs_now[@]}" -gt 0 ]; then
-      mapfile -t rebuild_services < <(
-        for svc in "${rebuild_services[@]}"; do
-          for r in "${running_svcs_now[@]}"; do
-            if [ "${svc}" = "${r}" ]; then
-              printf '%s\n' "${svc}"
-              break
-            fi
-          done
+    mapfile -t existing_svcs_now < <(compose_existing_services || true)
+    filtered_rebuild_services=()
+    build_only_services=()
+    for svc in "${rebuild_services[@]}"; do
+      eligible=false
+      for r in "${running_svcs_now[@]}"; do
+        if [ "${svc}" = "${r}" ]; then
+          eligible=true
+          break
+        fi
+      done
+      if [ "${eligible}" = "true" ]; then
+        filtered_rebuild_services+=("${svc}")
+        continue
+      fi
+      if [ "${svc}" = "local_ai_server" ]; then
+        for existing in "${existing_svcs_now[@]}"; do
+          if [ "${svc}" = "${existing}" ]; then
+            build_only_services+=("${svc}")
+            break
+          fi
         done
-      )
-      mapfile -t restart_services < <(
-        for svc in "${restart_services[@]}"; do
-          for r in "${running_svcs_now[@]}"; do
-            if [ "${svc}" = "${r}" ]; then
-              printf '%s\n' "${svc}"
-              break
-            fi
-          done
+      fi
+    done
+    rebuild_services=("${filtered_rebuild_services[@]}")
+
+    mapfile -t restart_services < <(
+      for svc in "${restart_services[@]}"; do
+        for r in "${running_svcs_now[@]}"; do
+          if [ "${svc}" = "${r}" ]; then
+            printf '%s\n' "${svc}"
+            break
+          fi
         done
-      )
+      done
+    )
+
+    if [ "${#build_only_services[@]}" -gt 0 ]; then
+      echo "==> Rebuilding stopped service images without starting them: ${build_only_services[*]}" >&2
+      docker compose build "${build_only_services[@]}"
     fi
 
     if [ "${#rebuild_services[@]}" -gt 0 ]; then

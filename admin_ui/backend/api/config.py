@@ -4823,8 +4823,10 @@ async def get_providers_voice_meta():
     Returns each configured provider instance with its full-agent kind,
     voice_mode (static | freeform | platform_managed | unsupported), the
     curated voice list for that kind, and the instance's configured default
-    voice. Catalog + kind inference live in src/utils/voice_catalog.py (single
-    source shared with the engine's soft validation).
+    voice. Deepgram entries also expose their normalized Voice Agent language
+    so the Agent form cannot offer a voice that runtime preflight will reject.
+    Catalog + kind inference live in src/utils/voice_catalog.py (single source
+    shared with the engine's soft validation).
     """
     project_root = getattr(settings, "PROJECT_ROOT", None)
     if project_root and project_root not in sys.path:
@@ -4841,6 +4843,10 @@ async def get_providers_voice_meta():
         meta = provider_voice_meta(kind)
         voice_field = meta.get("voice_field")
         default_voice = entry.get(voice_field) if voice_field else None
+        agent_language = None
+        if kind == "deepgram":
+            raw_language = str(entry.get("agent_language") or "en").strip().lower()
+            agent_language = raw_language.replace("_", "-").split("-", 1)[0] or "en"
         out.append({
             "name": name,
             "kind": kind,
@@ -4849,5 +4855,6 @@ async def get_providers_voice_meta():
             "voice_mode": meta["voice_mode"],
             "voices": meta["voices"],
             "default_voice": default_voice,
+            "agent_language": agent_language,
         })
     return {"providers": out}

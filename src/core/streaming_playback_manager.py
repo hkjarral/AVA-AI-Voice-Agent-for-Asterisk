@@ -2818,7 +2818,11 @@ class StreamingPlaybackManager:
                     # Per-segment diag tap flush (snapshot on first frame)
                     try:
                         info = self.active_streams.get(call_id, {})
-                        if info and bool(info.get('diag_enabled')):
+                        if (
+                            getattr(self, "diag_enable_taps", False)
+                            and info
+                            and bool(info.get('diag_enabled'))
+                        ):
                             try:
                                 raw_rate = int(info.get('tap_rate') or 0)
                             except Exception:
@@ -3581,7 +3585,11 @@ class StreamingPlaybackManager:
             # Diagnostic: write pre/post tap WAVs if enabled
             try:
                 info = self.active_streams.get(call_id, {})
-                if info and bool(info.get('diag_enabled')):
+                if (
+                    getattr(self, "diag_enable_taps", False)
+                    and info
+                    and bool(info.get('diag_enabled'))
+                ):
                     try:
                         raw_rate = int(info.get('tap_rate') or 0)
                     except Exception:
@@ -3742,21 +3750,6 @@ class StreamingPlaybackManager:
                                 logger.info("Wrote call-level post-compand PCM16 tap", call_id=call_id, path=fnc2, bytes=len(cpost), rate=crate)
                             except Exception:
                                 logger.warning("Failed to write call-level post-compand tap", call_id=call_id, path=fnc2, rate=crate, exc_info=True)
-                        if not getattr(self, "diag_enable_taps", False):
-                            try:
-                                if os.path.isdir(self.diag_out_dir):
-                                    prefix_pre = f"pre_compand_pcm16_{call_id}"
-                                    prefix_post = f"post_compand_pcm16_{call_id}"
-                                    for name in os.listdir(self.diag_out_dir):
-                                        if name.startswith(prefix_pre) or name.startswith(prefix_post):
-                                            fpath = os.path.join(self.diag_out_dir, name)
-                                            try:
-                                                if os.path.isfile(fpath):
-                                                    os.remove(fpath)
-                                            except Exception:
-                                                pass
-                            except Exception:
-                                pass
                     except Exception:
                         logger.debug("Call-level tap write failed", call_id=call_id, exc_info=True)
             except Exception:

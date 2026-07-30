@@ -29,7 +29,7 @@ Agent voice changes apply **immediately** — agents.db is read at call time, no
 | **OpenAI Realtime** | ✅ Dropdown | 10 GA voices (alloy, ash, ballad, cedar, coral, echo, marin, sage, shimmer, verse) | Closed list. An unrecognized value (e.g. stale text from the pre-7.3.0 display-only field) logs a warning and **falls back to the provider default — the call never fails** |
 | **xAI Grok** | ✅ Suggestions + free text | eve, ara, rex, sal, leo — or a custom cloned `voice_id` | Pass-through (clone IDs are valid, so no local validation) |
 | **Google Live** | ✅ Dropdown | 30 prebuilt voices (Aoede, Kore, Charon, Puck, …) | Validated against the prebuilt catalog (case-insensitive) — unknown values warn and **fall back to the configured voice**, never failing the call |
-| **Deepgram Voice Agent** | ✅ Dropdown | Aura models (`aura-2-thalia-en`, …, legacy `aura-*-en`) | Validated against the Aura catalog — unknown values warn and fall back; applies to both the primary session and Deepgram's retry path |
+| **Deepgram Voice Agent** | ✅ Language-filtered dropdown | Aura models matching the provider's `agent_language` (`aura-2-thalia-en`, `aura-2-celeste-es`, …) | An unknown Aura value or a known voice with a different language is preserved for review but fails closed before the remote session opens; select a supported matching voice before calling. |
 | **ElevenLabs Agent** | ❌ Platform-managed | Voice is baked into the agent on the ElevenLabs platform | An agent voice set in AVA is ignored with an explanatory log |
 | **Local full-agent / pipelines** | ❌ (v7.3.0) | Voice comes from the provider / pipeline TTS configuration | Per-agent pipeline TTS voice is planned for a later release |
 
@@ -40,6 +40,10 @@ Agent voice changes apply **immediately** — agents.db is read at call time, no
   for Grok (custom clone IDs allowed), and a disabled field with an explanation for
   ElevenLabs and pipelines. "— provider default —" (or empty) means "use the provider's
   voice", exactly like before 7.3.0.
+- For **Deepgram**, the Agents page offers only Aura voices matching that provider
+  instance's **Agent Language**. A stored legacy or mismatched value remains visible and is
+  never silently rewritten; the form explains that it must be corrected before calls can
+  start.
 - **Provider pages** now label their voice fields **Default Voice** — that value is used by
   every agent that doesn't set its own.
 - **YAML contexts** (headless installs) accept an optional `voice:` key with the same
@@ -49,8 +53,9 @@ Agent voice changes apply **immediately** — agents.db is read at call time, no
 
 Nothing to do. Existing agents have no voice set, so every call keeps using the provider
 default. The old free-text "display-only" voice field becomes live: if you ever typed a
-**valid** voice into it, that agent starts using it (the feature working as intended); junk
-values are flagged in the Agents form ("unrecognized — will fall back") and never break calls.
+**valid, provider-compatible** voice into it, that agent starts using it (the feature working
+as intended). OpenAI/Google junk values are flagged and fall back; Deepgram unknown or
+language-mismatched values are preserved with a warning and must be corrected before calling.
 
 ## Troubleshooting
 

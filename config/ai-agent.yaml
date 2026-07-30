@@ -1,6 +1,11 @@
 active_pipeline: null
 asterisk:
   app_name: asterisk-ai-voice-agent
+  # ARI call-control keepalive. With these defaults a silent packet drop is
+  # detected in approximately 20 seconds (interval + timeout), after which
+  # readiness fails and the reconnect supervisor takes over.
+  ws_ping_interval_sec: 10
+  ws_ping_timeout_sec: 10
 audio_transport: audiosocket
 audiosocket:
   format: slin
@@ -556,7 +561,9 @@ streaming:
   chunk_size_ms: 20
   connection_timeout_ms: 120000
   continuous_stream: true
-  diag_enable_taps: true
+  # Diagnostic audio is opt-in. DIAG_ENABLE_TAPS may explicitly enable both
+  # playback taps and full-call RCA capture for a development session.
+  diag_enable_taps: false
   diag_out_dir: /tmp/ai-engine-taps
   diag_post_secs: 1
   diag_pre_secs: 1

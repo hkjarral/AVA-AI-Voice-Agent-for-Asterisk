@@ -33,12 +33,23 @@ _UNSAFE_DIALPLAN_TARGET_RE = re.compile(r"[,()\x00-\x1f\x7f]")
 class ARIClient:
     """A client for interacting with the Asterisk REST Interface (ARI)."""
 
-    def __init__(self, username: str, password: str, base_url: str, app_name: str, ssl_verify: bool = True):
+    def __init__(
+        self,
+        username: str,
+        password: str,
+        base_url: str,
+        app_name: str,
+        ssl_verify: bool = True,
+        ws_ping_interval_sec: float = 10.0,
+        ws_ping_timeout_sec: float = 10.0,
+    ):
         self.username = username
         self.password = password
         self.app_name = app_name
         self.http_url = base_url
         self.ssl_verify = ssl_verify
+        self.ws_ping_interval_sec = float(ws_ping_interval_sec)
+        self.ws_ping_timeout_sec = float(ws_ping_timeout_sec)
         # Determine WebSocket scheme based on HTTP scheme
         if base_url.startswith("https://"):
             ws_scheme = "wss"
@@ -124,11 +135,24 @@ class ARIClient:
                     await self.websocket.close()
                 self.websocket = None
 
-            self.websocket = await websockets.connect(self.ws_url, ssl=ssl_context)
+            self.websocket = await websockets.connect(
+                self.ws_url,
+                ssl=ssl_context,
+                ping_interval=self.ws_ping_interval_sec,
+                ping_timeout=self.ws_ping_timeout_sec,
+            )
             self.running = True
             self._connected = True
             self._reconnect_attempt = 0  # Reset on successful connect
-            logger.info("Successfully connected to ARI WebSocket.", scheme=ws_scheme)
+            logger.info(
+                "Successfully connected to ARI WebSocket.",
+                scheme=ws_scheme,
+                ping_interval_seconds=self.ws_ping_interval_sec,
+                ping_timeout_seconds=self.ws_ping_timeout_sec,
+                silent_failure_bound_seconds=(
+                    self.ws_ping_interval_sec + self.ws_ping_timeout_sec
+                ),
+            )
         except Exception as e:
             self._connected = False
             logger.error("Failed to connect to ARI", error=str(e), attempt=self._reconnect_attempt + 1)
