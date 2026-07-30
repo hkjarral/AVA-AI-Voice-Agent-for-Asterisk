@@ -88,7 +88,7 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
     const selectedModel = String(config.model || 'nova-3');
     const configuredAgentLanguage = String(config.agent_language || 'en');
     const agentLanguage = normalizeAgentLanguage(configuredAgentLanguage);
-    const configuredVoice = String(config.tts_model || 'aura-2-thalia-en');
+    const configuredVoice = String(config.tts_model || 'aura-asteria-en');
     const configuredVoiceLanguage = auraVoiceLanguage(configuredVoice);
     const legacyModel = !DEEPGRAM_RECOMMENDED_MODELS.has(selectedModel);
     const legacyLanguage = !DEEPGRAM_AGENT_LANGUAGE_IDS.has(agentLanguage);
@@ -468,9 +468,17 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
                         </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
-                            value={config.tts_model || 'aura-2-thalia-en'}
+                            value={configuredVoice}
                             onChange={e => handleChange('tts_model', e.target.value)}
                         >
+                            {voiceLanguageMismatch && (
+                                <option value={configuredVoice}>
+                                    {config.tts_model
+                                        ? 'Current configured value'
+                                        : 'Current effective fallback'}{' '}
+                                    — {configuredVoice}
+                                </option>
+                            )}
                             <optgroup
                                 label="🇺🇸 English - Aura-2 Female"
                                 hidden={agentLanguage !== 'en'}
@@ -628,11 +636,6 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
                                 <option value="aura-helios-en">Helios (EN Legacy)</option>
                                 <option value="aura-zeus-en">Zeus (EN Legacy)</option>
                             </optgroup>
-                            {config.tts_model && configuredVoiceLanguage === null && (
-                                <option value={configuredVoice} hidden>
-                                    Current legacy/custom value — {configuredVoice}
-                                </option>
-                            )}
                         </select>
                         <p className="text-xs text-muted-foreground">
                             ⭐ = Featured, 🔄 = Codeswitching (ES↔EN). EN (53), ES (17), DE (7), FR

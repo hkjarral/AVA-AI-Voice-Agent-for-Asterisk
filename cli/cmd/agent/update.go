@@ -131,6 +131,13 @@ type updateContext struct {
 	servicesToRestart map[string]bool
 	composeChanged    bool
 
+	// Local AI is optional. Keep the active-route selection signal separate
+	// from container existence so Docker actions can distinguish a selected,
+	// not-yet-created service from an unselected stopped service.
+	localAISelected      bool
+	localAIExisting      bool
+	localAIExistingKnown bool
+
 	skippedServices map[string]string // service -> "rebuild"|"restart" (filtered by flags)
 }
 
@@ -618,11 +625,21 @@ func applyServiceFilters(ctx *updateContext) {
 	}
 }
 
-var detectLocalAIInstallationForUpdate = detectLocalAIInstallation
 var readActiveAgentRoutesForUpdate = readActiveAgentRoutes
 var aiEngineRunningForActiveRouteRead = aiEngineRunning
 var existingComposeServicesForUpdate = existingComposeServices
+var configuredActiveRouteUsesLocalAIForUpdate = configuredActiveRouteUsesLocalAI
+var detectLocalAIUpdateStateForUpdate = detectLocalAIUpdateState
 var runDockerCommandForUpdate = runCmd
+
+const activeAgentRouteReadTimeout = 15 * time.Second
+
+type localAIUpdateState struct {
+	selected       bool
+	selectionKnown bool
+	existing       bool
+	existingKnown  bool
+}
 
 type activeAgentRoute struct {
 	Provider  string  `json:"provider"`
@@ -630,18 +647,26 @@ type activeAgentRoute struct {
 }
 
 func applyOptionalServiceFilters(ctx *updateContext) {
-	// `--rebuild=all` is an explicit request to build every service.  Automatic
-	// file-impact detection, however, must not turn Local AI into an installed
-	// component merely because the release contains local_ai_server changes.
-	if rebuildMode(strings.ToLower(strings.TrimSpace(updateRebuild))) == rebuildAll {
-		return
-	}
 	if !ctx.servicesToRebuild["local_ai_server"] && !ctx.servicesToRestart["local_ai_server"] {
 		return
 	}
 
-	installed, known := detectLocalAIInstallationForUpdate()
-	if !known || installed {
+	state := detectLocalAIUpdateStateForUpdate()
+	ctx.localAISelected = state.selected
+	ctx.localAIExisting = state.existing
+	ctx.localAIExistingKnown = state.existingKnown
+
+	// A positive route selection may start a not-yet-created Local AI service,
+	// while an existing container remains eligible for an image refresh. Never
+	// create Local AI merely because --rebuild=all was requested or because
+	// route/existence detection failed.
+	if state.selected || state.existing {
+		return
+	}
+	// Preserve the existing fail-conservative plan when detection is incomplete;
+	// applyDockerActions will require a positive selection/existence signal
+	// before it can create, start, or image-build Local AI.
+	if !state.selectionKnown || !state.existingKnown {
 		return
 	}
 	if ctx.servicesToRebuild["local_ai_server"] {
@@ -654,28 +679,21 @@ func applyOptionalServiceFilters(ctx *updateContext) {
 	}
 }
 
-func detectLocalAIInstallation() (bool, bool) {
-	existing, existingKnown := existingComposeServices()
-	if existing["local_ai_server"] {
-		return true, true
+func detectLocalAIUpdateState() localAIUpdateState {
+	existing, existingKnown := existingComposeServicesForUpdate()
+	selected, selectionKnown := configuredActiveRouteUsesLocalAIForUpdate()
+	return localAIUpdateState{
+		selected:       selected,
+		selectionKnown: selectionKnown,
+		existing:       existing["local_ai_server"],
+		existingKnown:  existingKnown,
 	}
-
-	configured, configKnown := configuredActiveRouteUsesLocalAI()
-	if configured {
-		return true, true
-	}
-	if existingKnown && configKnown {
-		return false, true
-	}
-	// Detection failures are conservative: keep the planned action instead of
-	// silently failing to update a component that might be in use.
-	return false, false
 }
 
 func existingComposeServices() (map[string]bool, bool) {
-	out, err := runCmd("docker", "compose", "ps", "--services", "--all")
+	out, err := runDockerCommandForUpdate("docker", "compose", "ps", "--services", "--all")
 	if err != nil {
-		out, err = runCmd("docker", "compose", "ps", "--services", "-a")
+		out, err = runDockerCommandForUpdate("docker", "compose", "ps", "--services")
 	}
 	if err != nil {
 		return map[string]bool{}, false
@@ -782,7 +800,10 @@ finally:
     db.close()
 `
 
-	cmd, known := activeAgentRouteReadCommand(dbPath, script)
+	readCtx, cancel := context.WithTimeout(context.Background(), activeAgentRouteReadTimeout)
+	defer cancel()
+
+	cmd, known := activeAgentRouteReadCommand(readCtx, dbPath, script)
 	if !known {
 		// The Admin updater image deliberately has no Python runtime. If the
 		// engine is stopped and the host also lacks Python, route state is
@@ -807,9 +828,9 @@ finally:
 	return routes, true
 }
 
-func activeAgentRouteReadCommand(dbPath, script string) (*exec.Cmd, bool) {
+func activeAgentRouteReadCommand(ctx context.Context, dbPath, script string) (*exec.Cmd, bool) {
 	if aiEngineRunningForActiveRouteRead() {
-		return exec.Command("docker", "exec", "ai_engine", "python3", "-c", script), true
+		return exec.CommandContext(ctx, "docker", "exec", "ai_engine", "python3", "-c", script), true
 	}
 	if _, err := os.Stat(dbPath); err != nil {
 		if os.IsNotExist(err) {
@@ -821,7 +842,7 @@ func activeAgentRouteReadCommand(dbPath, script string) (*exec.Cmd, bool) {
 	if err != nil {
 		return nil, false
 	}
-	return exec.Command(pythonPath, "-c", script, dbPath), true
+	return exec.CommandContext(ctx, pythonPath, "-c", script, dbPath), true
 }
 
 func activeAgentRoutesUseLocalAI(routes []activeAgentRoute, cfg map[string]any) (bool, bool) {
@@ -1986,6 +2007,14 @@ func applyDockerActions(ctx *updateContext) error {
 	rebuildServices := sortedKeys(ctx.servicesToRebuild)
 	restartServices := sortedKeys(ctx.servicesToRestart)
 	buildOnlyServices := []string{}
+	localAIExisting := ctx.localAIExisting
+	localAIExistingKnown := ctx.localAIExistingKnown
+	if containsString(rebuildServices, "local_ai_server") {
+		if existingServices, known := existingComposeServicesForUpdate(); known {
+			localAIExisting = existingServices["local_ai_server"]
+			localAIExistingKnown = true
+		}
+	}
 
 	// Avoid starting services that aren't already running unless explicitly targeted by rebuild/restart.
 	if !updateIncludeUI {
@@ -1998,11 +2027,17 @@ func applyDockerActions(ctx *updateContext) error {
 	// e.g. local_ai_server/ should not force-start that service on deployments that don't use it.
 	if runningServicesKnown {
 		rebuildServices = filterSlice(rebuildServices, func(svc string) bool {
-			// Optional-service filtering already established whether Local AI is
-			// installed or selected.  Preserve a stopped-but-installed/selected
-			// Local AI service so an update repairs it instead of silently leaving
-			// stale code behind.
-			return runningServices[svc] || svc == "local_ai_server"
+			if svc != "local_ai_server" {
+				return runningServices[svc]
+			}
+			return runningServices[svc] || ctx.localAISelected || (localAIExistingKnown && localAIExisting)
+		})
+	} else {
+		// Without a trustworthy running-state snapshot, only an explicit active
+		// route selection may authorize `compose up` for Local AI. Existence alone
+		// cannot distinguish a running service from one intentionally left stopped.
+		rebuildServices = filterSlice(rebuildServices, func(svc string) bool {
+			return svc != "local_ai_server" || ctx.localAISelected
 		})
 	}
 
@@ -2012,13 +2047,12 @@ func applyDockerActions(ctx *updateContext) error {
 	// after an otherwise routine update. A selected-but-not-yet-created Local AI
 	// service is not build-only: it must still be started below so the active
 	// route can work.
-	if containsString(rebuildServices, "local_ai_server") && !runningServices["local_ai_server"] {
-		if existingServices, known := existingComposeServicesForUpdate(); known && existingServices["local_ai_server"] {
-			buildOnlyServices = append(buildOnlyServices, "local_ai_server")
-			rebuildServices = filterSlice(rebuildServices, func(svc string) bool {
-				return svc != "local_ai_server"
-			})
-		}
+	if runningServicesKnown && containsString(rebuildServices, "local_ai_server") &&
+		!runningServices["local_ai_server"] && localAIExistingKnown && localAIExisting {
+		buildOnlyServices = append(buildOnlyServices, "local_ai_server")
+		rebuildServices = filterSlice(rebuildServices, func(svc string) bool {
+			return svc != "local_ai_server"
+		})
 	}
 
 	// If a service isn't running, and we aren't rebuilding it, prefer to skip a plain restart

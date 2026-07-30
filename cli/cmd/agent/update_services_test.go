@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,11 +18,11 @@ func updateTestContext() *updateContext {
 	}
 }
 
-func withLocalAIInstallDetector(t *testing.T, installed, known bool) {
+func withLocalAIUpdateState(t *testing.T, state localAIUpdateState) {
 	t.Helper()
-	original := detectLocalAIInstallationForUpdate
-	detectLocalAIInstallationForUpdate = func() (bool, bool) { return installed, known }
-	t.Cleanup(func() { detectLocalAIInstallationForUpdate = original })
+	original := detectLocalAIUpdateStateForUpdate
+	detectLocalAIUpdateStateForUpdate = func() localAIUpdateState { return state }
+	t.Cleanup(func() { detectLocalAIUpdateStateForUpdate = original })
 }
 
 func withUpdateRebuildMode(t *testing.T, mode rebuildMode) {
@@ -92,7 +94,7 @@ func commandContainingSeen(commands []string, fragments ...string) bool {
 }
 
 func TestOptionalLocalAIChangesSkippedWhenNotInstalledOrSelected(t *testing.T) {
-	withLocalAIInstallDetector(t, false, true)
+	withLocalAIUpdateState(t, localAIUpdateState{selectionKnown: true, existingKnown: true})
 	withUpdateRebuildMode(t, rebuildAuto)
 
 	ctx := updateTestContext()
@@ -107,7 +109,7 @@ func TestOptionalLocalAIChangesSkippedWhenNotInstalledOrSelected(t *testing.T) {
 }
 
 func TestOptionalLocalAIChangesKeptForStoppedInstalledContainer(t *testing.T) {
-	withLocalAIInstallDetector(t, true, true)
+	withLocalAIUpdateState(t, localAIUpdateState{existing: true, existingKnown: true, selectionKnown: true})
 	withUpdateRebuildMode(t, rebuildAuto)
 
 	ctx := updateTestContext()
@@ -118,27 +120,92 @@ func TestOptionalLocalAIChangesKeptForStoppedInstalledContainer(t *testing.T) {
 	}
 }
 
-func TestOptionalLocalAIChangesKeptWhenDetectionIsUnavailable(t *testing.T) {
-	withLocalAIInstallDetector(t, false, false)
+func TestOptionalLocalAIChangesRemainPlannedWhenEligibilityIsUnknown(t *testing.T) {
+	withLocalAIUpdateState(t, localAIUpdateState{})
 	withUpdateRebuildMode(t, rebuildAuto)
 
 	ctx := updateTestContext()
 	applyOptionalServiceFilters(ctx)
 
 	if !ctx.servicesToRebuild["local_ai_server"] {
-		t.Fatal("unknown installation state must fail conservatively")
+		t.Fatal("unknown eligibility should retain the conservative plan for Docker-time filtering")
 	}
 }
 
-func TestRebuildAllStillIncludesLocalAI(t *testing.T) {
-	withLocalAIInstallDetector(t, false, true)
+func TestRebuildAllSkipsAbsentUnselectedLocalAI(t *testing.T) {
+	withLocalAIUpdateState(t, localAIUpdateState{selectionKnown: true, existingKnown: true})
 	withUpdateRebuildMode(t, rebuildAll)
 
 	ctx := updateTestContext()
 	applyOptionalServiceFilters(ctx)
 
-	if !ctx.servicesToRebuild["local_ai_server"] {
-		t.Fatal("explicit --rebuild=all must include local_ai_server")
+	if ctx.servicesToRebuild["local_ai_server"] {
+		t.Fatal("--rebuild=all must not install an absent, unselected Local AI service")
+	}
+}
+
+func TestRebuildAllWithUnknownEligibilityDoesNotStartAbsentLocalAI(t *testing.T) {
+	withLocalAIUpdateState(t, localAIUpdateState{})
+	withUpdateRebuildMode(t, rebuildAll)
+	commands := withDockerActionState(t, "ai_engine\n", map[string]bool{})
+	ctx := updateTestContext()
+	applyOptionalServiceFilters(ctx)
+
+	if err := applyDockerActions(ctx); err != nil {
+		t.Fatalf("applyDockerActions: %v", err)
+	}
+	if commandContainingSeen(*commands, "compose up", "local_ai_server") ||
+		commandContainingSeen(*commands, "compose build", "local_ai_server") {
+		t.Fatalf("unknown eligibility must not create, start, or build absent Local AI: %#v", *commands)
+	}
+}
+
+func TestLocalAIStateDetectionUsesUpdateSeams(t *testing.T) {
+	originalExisting := existingComposeServicesForUpdate
+	originalConfigured := configuredActiveRouteUsesLocalAIForUpdate
+	existingComposeServicesForUpdate = func() (map[string]bool, bool) {
+		return map[string]bool{"local_ai_server": true}, true
+	}
+	configuredActiveRouteUsesLocalAIForUpdate = func() (bool, bool) { return false, true }
+	t.Cleanup(func() {
+		existingComposeServicesForUpdate = originalExisting
+		configuredActiveRouteUsesLocalAIForUpdate = originalConfigured
+	})
+
+	state := detectLocalAIUpdateState()
+	if !state.existing || !state.existingKnown || state.selected || !state.selectionKnown {
+		t.Fatalf("unexpected Local AI state: %#v", state)
+	}
+}
+
+func TestExistingComposeServicesFallsBackWithoutAllFlag(t *testing.T) {
+	original := runDockerCommandForUpdate
+	commands := []string{}
+	runDockerCommandForUpdate = func(name string, args ...string) (string, error) {
+		command := strings.Join(append([]string{name}, args...), " ")
+		commands = append(commands, command)
+		if strings.HasSuffix(command, " --all") {
+			return "", errors.New("unsupported flag")
+		}
+		return "ai_engine\n", nil
+	}
+	t.Cleanup(func() { runDockerCommandForUpdate = original })
+
+	services, known := existingComposeServices()
+	if !known || !services["ai_engine"] {
+		t.Fatalf("fallback result not parsed: known=%v services=%#v", known, services)
+	}
+	want := []string{
+		"docker compose ps --services --all",
+		"docker compose ps --services",
+	}
+	if len(commands) != len(want) {
+		t.Fatalf("unexpected commands: %#v", commands)
+	}
+	for i := range want {
+		if commands[i] != want[i] {
+			t.Fatalf("unexpected commands: %#v", commands)
+		}
 	}
 }
 
@@ -175,8 +242,10 @@ func TestDockerActionsRebuildRunningLocalAIWithComposeUp(t *testing.T) {
 }
 
 func TestDockerActionsStartSelectedLocalAIWithoutExistingContainer(t *testing.T) {
+	withLocalAIUpdateState(t, localAIUpdateState{selected: true, selectionKnown: true, existingKnown: true})
 	commands := withDockerActionState(t, "ai_engine\n", map[string]bool{})
 	ctx := updateTestContext()
+	applyOptionalServiceFilters(ctx)
 
 	if err := applyDockerActions(ctx); err != nil {
 		t.Fatalf("applyDockerActions: %v", err)
@@ -205,7 +274,7 @@ func TestRebuildAllDoesNotStartStoppedInstalledLocalAI(t *testing.T) {
 }
 
 func TestDockerActionsDoNothingForSkippedUnusedLocalAI(t *testing.T) {
-	withLocalAIInstallDetector(t, false, true)
+	withLocalAIUpdateState(t, localAIUpdateState{selectionKnown: true, existingKnown: true})
 	withUpdateRebuildMode(t, rebuildAuto)
 	commands := withDockerActionState(t, "ai_engine\n", map[string]bool{})
 	ctx := updateTestContext()
@@ -345,7 +414,7 @@ func TestActiveAgentRouteReaderPrefersRunningEngineOverMissingHostDB(t *testing.
 	withAIEngineRunningForActiveRouteRead(t, true)
 
 	dbPath := filepath.Join(t.TempDir(), "missing", "agents.db")
-	cmd, known := activeAgentRouteReadCommand(dbPath, "route-reader-script")
+	cmd, known := activeAgentRouteReadCommand(context.Background(), dbPath, "route-reader-script")
 	if !known || cmd == nil {
 		t.Fatal("a running engine must be queried even when the host-relative database is absent")
 	}

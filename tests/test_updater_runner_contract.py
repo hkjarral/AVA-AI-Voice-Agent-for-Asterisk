@@ -241,6 +241,17 @@ def test_rollback_stashes_untracked_files_only_when_they_block_checkout() -> Non
     assert runner.index(conflict_check) < runner.index(fallback_stash)
 
 
+def test_existing_service_probe_falls_back_without_the_all_flag() -> None:
+    runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
+
+    start = runner.index("compose_existing_services() {\n")
+    end = runner.index("\n}\n", start)
+    helper = runner[start:end]
+    assert "docker compose ps --services --all" in helper
+    assert "|| docker compose ps --services 2>/dev/null" in helper
+    assert "docker compose ps --services -a" not in helper
+
+
 def test_rollback_never_reconciles_a_fully_stopped_stack_with_compose_up() -> None:
     runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
     rollback = _run_rollback_body(runner)
@@ -251,7 +262,7 @@ def test_rollback_never_reconciles_a_fully_stopped_stack_with_compose_up() -> No
     assert 'docker compose up -d --remove-orphans --no-build "${targets[@]}"' in rollback
 
 
-def test_rollback_builds_stopped_local_ai_without_starting_it() -> None:
+def test_rollback_builds_every_existing_stopped_target_without_starting_it() -> None:
     runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
     rollback = _run_rollback_body(runner)
 
@@ -259,6 +270,7 @@ def test_rollback_builds_stopped_local_ai_without_starting_it() -> None:
     assert 'docker compose build "${build_only_services[@]}"' in rollback
     assert 'filtered_rebuild_services+=("${svc}")' in rollback
     assert 'rebuild_services=("${filtered_rebuild_services[@]}")' in rollback
+    assert 'if [ "${svc}" = "local_ai_server" ]; then' not in rollback
     assert rollback.index('docker compose build "${build_only_services[@]}"') < rollback.index(
         'docker compose up -d --build "${rebuild_services[@]}"'
     )

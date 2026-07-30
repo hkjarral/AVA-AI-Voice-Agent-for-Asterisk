@@ -62,7 +62,7 @@ describe('Deepgram Voice Agent supported language surface', () => {
 
         expect(selectBesideLabel('Agent Language')).toHaveValue('en-US');
         expect(
-            screen.queryByText(/not supported by AAVA's Deepgram Voice Agent surface/i)
+            screen.queryByText(/not supported by the AAVA Deepgram Voice Agent surface/i)
         ).not.toBeInTheDocument();
     });
 
@@ -115,7 +115,7 @@ describe('Deepgram Voice Agent supported language surface', () => {
         expect(onChange).not.toHaveBeenCalled();
     });
 
-    it('does not duplicate a known configured voice, including a cross-language value', () => {
+    it('keeps a known cross-language voice visible and enabled for preservation', () => {
         render(
             <DeepgramProviderForm
                 config={{ agent_language: 'es', tts_model: 'aura-2-thalia-en' }}
@@ -125,10 +125,16 @@ describe('Deepgram Voice Agent supported language surface', () => {
 
         const voice = selectBesideLabel('Default Voice Model');
         expect(voice).toHaveValue('aura-2-thalia-en');
-        expect(voice.querySelectorAll('option[value="aura-2-thalia-en"]')).toHaveLength(1);
+        const preservationOption = screen.getByRole('option', {
+            name: /Current configured value — aura-2-thalia-en/i,
+        });
+        expect(preservationOption).not.toHaveAttribute('hidden');
+        expect(preservationOption).not.toBeDisabled();
+        expect(preservationOption.closest('optgroup')).toBeNull();
+        expect(voice.selectedOptions[0]).toBe(preservationOption);
     });
 
-    it('adds one preservation option only for an unknown configured voice', () => {
+    it('keeps an unknown configured voice visible and enabled for preservation', () => {
         render(
             <DeepgramProviderForm
                 config={{ agent_language: 'en', tts_model: 'aura-future-en' }}
@@ -138,7 +144,28 @@ describe('Deepgram Voice Agent supported language surface', () => {
 
         const voice = selectBesideLabel('Default Voice Model');
         expect(voice).toHaveValue('aura-future-en');
-        expect(voice.querySelectorAll('option[value="aura-future-en"]')).toHaveLength(1);
+        const preservationOption = screen.getByRole('option', {
+            name: /Current configured value — aura-future-en/i,
+        });
+        expect(preservationOption).not.toHaveAttribute('hidden');
+        expect(preservationOption).not.toBeDisabled();
+        expect(preservationOption.closest('optgroup')).toBeNull();
+        expect(voice.selectedOptions[0]).toBe(preservationOption);
+        expect(screen.getByText(/AAVA will not silently replace it/i)).toBeInTheDocument();
+    });
+
+    it('keeps the unset English fallback visible and enabled for a Spanish agent', () => {
+        render(<DeepgramProviderForm config={{ agent_language: 'es' }} onChange={vi.fn()} />);
+
+        const voice = selectBesideLabel('Default Voice Model');
+        expect(voice).toHaveValue('aura-asteria-en');
+        const preservationOption = screen.getByRole('option', {
+            name: /Current effective fallback — aura-asteria-en/i,
+        });
+        expect(preservationOption).not.toHaveAttribute('hidden');
+        expect(preservationOption).not.toBeDisabled();
+        expect(preservationOption.closest('optgroup')).toBeNull();
+        expect(voice.selectedOptions[0]).toBe(preservationOption);
         expect(screen.getByText(/AAVA will not silently replace it/i)).toBeInTheDocument();
     });
 

@@ -204,7 +204,7 @@ now_iso() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
 compose_existing_services() {
   docker compose ps --services --all 2>/dev/null \
-    || docker compose ps --services -a 2>/dev/null
+    || docker compose ps --services 2>/dev/null
 }
 
 ensure_dirs() {
@@ -840,9 +840,9 @@ run_rollback() {
       fi
     fi
 
-    # Preserve runtime state: running services may be recreated, while an
-    # installed-but-stopped Local AI service gets an image-only rebuild. Never
-    # use compose up for a service that was stopped before rollback.
+    # Preserve runtime state: running services may be recreated, while any
+    # existing-but-stopped rebuild target gets an image-only rebuild. Never use
+    # compose up for a service that was stopped before rollback.
     mapfile -t running_svcs_now < <(docker compose ps --services --status running 2>/dev/null \
       || docker compose ps --services 2>/dev/null \
       || true)
@@ -861,14 +861,12 @@ run_rollback() {
         filtered_rebuild_services+=("${svc}")
         continue
       fi
-      if [ "${svc}" = "local_ai_server" ]; then
-        for existing in "${existing_svcs_now[@]}"; do
-          if [ "${svc}" = "${existing}" ]; then
-            build_only_services+=("${svc}")
-            break
-          fi
-        done
-      fi
+      for existing in "${existing_svcs_now[@]}"; do
+        if [ "${svc}" = "${existing}" ]; then
+          build_only_services+=("${svc}")
+          break
+        fi
+      done
     done
     rebuild_services=("${filtered_rebuild_services[@]}")
 
