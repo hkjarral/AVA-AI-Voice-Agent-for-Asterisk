@@ -195,6 +195,55 @@ describe('ProvidersPage OpenAI Realtime save contract', () => {
         expect(within(providerBDialog).queryByDisplayValue('provider_a')).not.toBeInTheDocument();
     });
 
+    it('removes stale Flux-only fields when Deepgram is saved with Nova-3', async () => {
+        mocks.config = {
+            providers: {
+                deepgram: {
+                    type: 'deepgram',
+                    capabilities: ['stt', 'llm', 'tts'],
+                    enabled: true,
+                    model: 'nova-3',
+                    agent_language: 'es',
+                    tts_model: 'aura-2-celeste-es',
+                    version: 'v2',
+                    eot_threshold: 0.7,
+                    eager_eot_threshold: 0.5,
+                    keyterms: ['Asterisk'],
+                },
+            },
+            default_provider: 'deepgram',
+        };
+
+        render(
+            <MemoryRouter>
+                <ProvidersPage />
+            </MemoryRouter>,
+        );
+
+        fireEvent.click(await screen.findByTitle('Settings'));
+        const dialog = await screen.findByRole('dialog', {
+            name: 'Edit Provider: deepgram',
+        });
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }));
+
+        await waitFor(() => {
+            expect(axios.post).toHaveBeenCalledWith(
+                '/api/config/yaml',
+                expect.objectContaining({ content: expect.any(String) }),
+            );
+        });
+        const saveCall = vi.mocked(axios.post).mock.calls.find(([url]) => url === '/api/config/yaml');
+        const body = saveCall?.[1] as { content: string };
+        const saved = yaml.load(body.content) as {
+            providers: Record<string, Record<string, unknown>>;
+        };
+        expect(saved.providers.deepgram.model).toBe('nova-3');
+        expect(saved.providers.deepgram).not.toHaveProperty('version');
+        expect(saved.providers.deepgram).not.toHaveProperty('eot_threshold');
+        expect(saved.providers.deepgram).not.toHaveProperty('eager_eot_threshold');
+        expect(saved.providers.deepgram).not.toHaveProperty('keyterms');
+    });
+
     it('serializes the OpenAI Realtime template with the GA output contract', async () => {
         mocks.config = { providers: {} };
 
