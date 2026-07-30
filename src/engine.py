@@ -80,6 +80,7 @@ from .core.no_input_watchdog import NoInputPolicy, NoInputWatchdog
 from .core.outbound_schedule import normalize_outbound_daily_window
 from .core.outbound_store import get_outbound_store
 from .utils.audio_capture import AudioCaptureManager
+from .utils.diagnostic_paths import DEFAULT_DIAGNOSTIC_CAPTURE_DIR
 from .utils.voice_catalog import known_voice_map
 from src.pipelines.base import LLMResponse
 from src.tools.telephony.hangup_policy import (
@@ -502,9 +503,10 @@ class Engine:
             streaming_config['audiosocket_broadcast_debug'] = False
 
         # Initialize per-call audio capture used for diagnostics/RCA.
-        # Captures are written under /tmp/ai-engine-captures/<call_id>/stream_name.wav,
-        # which is what scripts/rca_collect.sh expects when building the "captures" bundle.
-        capture_dir = "/tmp/ai-engine-captures"
+        # Full-call capture uses a separate per-call tree from the flat
+        # playback-tap diag_out_dir. Combining them would collide two artifact
+        # layouts and break scripts/rca_collect.sh collection semantics.
+        capture_dir = DEFAULT_DIAGNOSTIC_CAPTURE_DIR
         # Full-call RCA capture is opt-in. The resolved streaming flag is fed by
         # DIAG_ENABLE_TAPS and is intentionally independent of the legacy
         # AAVA_AUDIO_DIAGNOSTICS playback-tap override.

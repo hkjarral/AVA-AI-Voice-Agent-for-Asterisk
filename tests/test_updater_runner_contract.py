@@ -252,6 +252,20 @@ def test_existing_service_probe_falls_back_without_the_all_flag() -> None:
     assert "docker compose ps --services -a" not in helper
 
 
+def test_rollback_snapshots_existing_services_before_matching_local_ai() -> None:
+    runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
+    rollback = _run_rollback_body(runner)
+
+    snapshot = 'rollback_existing_services="$(compose_existing_services || true)"'
+    snapshot_match = (
+        'if grep -Fxq "local_ai_server" <<<"${rollback_existing_services}"; then'
+    )
+    assert snapshot in rollback
+    assert snapshot_match in rollback
+    assert 'compose_existing_services | grep -Fxq "local_ai_server"' not in rollback
+    assert rollback.index(snapshot) < rollback.index(snapshot_match)
+
+
 def test_rollback_never_reconciles_a_fully_stopped_stack_with_compose_up() -> None:
     runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
     rollback = _run_rollback_body(runner)

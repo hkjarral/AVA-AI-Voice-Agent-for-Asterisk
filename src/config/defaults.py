@@ -12,6 +12,8 @@ This module handles:
 import os
 from typing import Any, Dict
 
+from src.utils.diagnostic_paths import DEFAULT_DIAGNOSTIC_TAP_DIR
+
 
 def apply_transport_defaults(config_data: Dict[str, Any]) -> None:
     """
@@ -123,7 +125,7 @@ def apply_diagnostic_defaults(config_data: Dict[str, Any]) -> None:
     - DIAG_ENABLE_TAPS: Enable diagnostic audio taps (default: false)
     - DIAG_TAP_PRE_SECS: Pre-event tap duration (default: 1)
     - DIAG_TAP_POST_SECS: Post-event tap duration (default: 1)
-    - DIAG_TAP_OUTPUT_DIR: Tap output directory (default: /tmp/ai-engine-taps)
+    - DIAG_TAP_OUTPUT_DIR: Playback-tap output directory only
     - STREAMING_LOG_LEVEL: Streaming log verbosity (default: info)
     
     Args:
@@ -152,7 +154,9 @@ def apply_diagnostic_defaults(config_data: Dict[str, Any]) -> None:
     streaming_cfg['diag_enable_taps'] = env_taps.lower() in ('true', '1', 'yes')
     streaming_cfg['diag_pre_secs'] = int(os.getenv('DIAG_TAP_PRE_SECS', '1'))
     streaming_cfg['diag_post_secs'] = int(os.getenv('DIAG_TAP_POST_SECS', '1'))
-    streaming_cfg['diag_out_dir'] = os.getenv('DIAG_TAP_OUTPUT_DIR', '/tmp/ai-engine-taps')
+    streaming_cfg['diag_out_dir'] = os.getenv(
+        'DIAG_TAP_OUTPUT_DIR', DEFAULT_DIAGNOSTIC_TAP_DIR
+    )
     
     # Streaming logger verbosity
     streaming_cfg['logging_level'] = os.getenv('STREAMING_LOG_LEVEL', 'info')

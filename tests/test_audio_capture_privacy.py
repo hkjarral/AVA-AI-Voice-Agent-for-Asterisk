@@ -12,6 +12,7 @@ from src.core.session_store import SessionStore
 from src.core.streaming_playback_manager import StreamingPlaybackManager
 from src.engine import Engine, _cleanup_in_progress
 from src.utils.audio_capture import AudioCaptureManager
+from src.utils.diagnostic_paths import DEFAULT_DIAGNOSTIC_CAPTURE_DIR
 
 
 _CONFIG = {
@@ -98,6 +99,36 @@ def test_capture_root_may_exist_while_disabled_and_is_restricted(tmp_path):
     assert stat.S_IMODE(root.stat().st_mode) == 0o700
 
 
+def test_enabled_capture_rejects_symlink_root_without_writing(tmp_path):
+    outside = tmp_path / "attacker-controlled"
+    outside.mkdir()
+    root = tmp_path / "captures"
+    root.symlink_to(outside, target_is_directory=True)
+
+    manager = AudioCaptureManager(base_dir=str(root), keep_files=True, enabled=True)
+    manager.append_pcm16("call-1", "caller_inbound", b"\x00\x00" * 80, 8000)
+
+    assert manager.enabled is False
+    assert manager.storage_ready is False
+    assert list(outside.iterdir()) == []
+
+
+def test_enabled_capture_rejects_world_writable_ancestor(tmp_path):
+    shared = tmp_path / "shared"
+    shared.mkdir(mode=0o777)
+    shared.chmod(0o777)
+
+    manager = AudioCaptureManager(
+        base_dir=str(shared / "captures"),
+        keep_files=True,
+        enabled=True,
+    )
+
+    assert manager.enabled is False
+    assert manager.storage_ready is False
+    assert not (shared / "captures").exists()
+
+
 def test_capture_manager_defaults_fail_closed(tmp_path):
     root = tmp_path / "captures"
     manager = AudioCaptureManager(base_dir=str(root))
@@ -163,14 +194,18 @@ def test_engine_passes_resolved_capture_enablement(monkeypatch, enabled):
 
     monkeypatch.setattr("src.engine.AudioCaptureManager", _RecordingCaptureManager)
     config_data = dict(_CONFIG)
-    config_data["streaming"] = {"diag_enable_taps": enabled}
+    config_data["streaming"] = {
+        "diag_enable_taps": enabled,
+        "diag_out_dir": "/custom/playback-taps",
+    }
     config = AppConfig(**config_data)
 
-    Engine(config)
+    engine = Engine(config)
 
     assert captured["enabled"] is enabled
     assert captured["keep_files"] is enabled
-    assert captured["base_dir"] == "/tmp/ai-engine-captures"
+    assert captured["base_dir"] == DEFAULT_DIAGNOSTIC_CAPTURE_DIR
+    assert engine.streaming_playback_manager.diag_out_dir == "/custom/playback-taps"
 
 
 @pytest.mark.parametrize(("raw", "enabled"), [("false", False), ("true", True)])
@@ -289,6 +324,26 @@ async def test_disabled_playback_taps_do_not_write_or_delete_stale_files(
     await manager._cleanup_stream(call_id, stream_id)
 
     assert existing.read_bytes() == b"historical-tap"
+
+
+def test_enabled_playback_taps_reject_symlink_root(tmp_path):
+    outside = tmp_path / "attacker-controlled-taps"
+    outside.mkdir()
+    root = tmp_path / "taps"
+    root.symlink_to(outside, target_is_directory=True)
+
+    manager = StreamingPlaybackManager(
+        session_store=SessionStore(),
+        ari_client=_DummyARI(),
+        conversation_coordinator=None,
+        streaming_config={
+            "diag_enable_taps": True,
+            "diag_out_dir": str(root),
+        },
+    )
+
+    assert manager.diag_enable_taps is False
+    assert list(outside.iterdir()) == []
 
 
 @pytest.mark.parametrize("transport", ["audiosocket", "externalmedia"])

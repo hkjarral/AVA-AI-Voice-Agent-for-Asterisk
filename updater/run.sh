@@ -686,7 +686,8 @@ run_rollback() {
   fi
 
   rollback_default_rebuild=("ai_engine")
-  if compose_existing_services | grep -Fxq "local_ai_server"; then
+  rollback_existing_services="$(compose_existing_services || true)"
+  if grep -Fxq "local_ai_server" <<<"${rollback_existing_services}"; then
     rollback_default_rebuild+=("local_ai_server")
   fi
   if [ "${include_ui_effective}" = "true" ]; then

@@ -2482,14 +2482,36 @@ def _detect_os():
 
 def _detect_docker():
     """Detect Docker version and mode."""
-    sock_path = "/var/run/docker.sock"
-    socket_present = os.path.exists(sock_path)
+    # Match docker.from_env() endpoint resolution instead of assuming the
+    # rootful default. Docker SDK normalizes an unset/empty DOCKER_HOST to
+    # http+unix:///var/run/docker.sock and a configured unix:// endpoint to
+    # http+unix://<path>; TCP, SSH, and Windows named-pipe endpoints do not
+    # expose local Unix socket metadata.
+    docker_host = (os.environ.get("DOCKER_HOST") or "").strip()
+    try:
+        effective_endpoint = docker.utils.parse_host(docker_host or None)
+    except Exception:
+        # docker.from_env() will report the malformed endpoint below. Do not
+        # reinterpret a non-Unix value as a local filesystem path here.
+        effective_endpoint = docker_host or None
+
+    sock_path = None
+    if isinstance(effective_endpoint, str) and effective_endpoint.startswith("http+unix://"):
+        sock_path = effective_endpoint[len("http+unix://"):]
+        # UnixHTTPAdapter applies the same leading-slash compatibility rule for
+        # legacy unix://path values. normpath removes harmless duplicate
+        # separators without expanding variables or following filesystem links.
+        if not sock_path.startswith("/"):
+            sock_path = f"/{sock_path}"
+        sock_path = os.path.normpath(sock_path)
+
+    socket_present = bool(sock_path and os.path.exists(sock_path))
     docker_info = {
         "installed": False,
         "reachable": False,
         "version": None,
         "api_version": None,
-        "mode": "unknown",
+        "mode": "rootless" if sock_path and "/run/user/" in sock_path else "unknown",
         "status": "error",
         "message": "Docker not detected",
         "socket_present": socket_present,
@@ -2550,8 +2572,7 @@ def _detect_docker():
             pass
         
         # Detect rootless (check socket path)
-        docker_host = os.environ.get("DOCKER_HOST", "")
-        if "rootless" in docker_host or "/run/user/" in docker_host:
+        if "rootless" in docker_host or (sock_path and "/run/user/" in sock_path):
             docker_info["mode"] = "rootless"
         else:
             docker_info["mode"] = "rootful"
@@ -2582,7 +2603,7 @@ def _detect_docker():
             docker_info["status"] = "error"
             docker_info["client_adapter_error"] = True
             docker_info["message"] = (
-                "Admin UI Docker client cannot use the mounted Docker socket "
+                "Admin UI Docker client cannot use the configured Docker endpoint "
                 "(incompatible Docker SDK/Requests adapter)"
             )
     

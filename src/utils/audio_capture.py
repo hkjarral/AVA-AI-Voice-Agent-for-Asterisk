@@ -4,6 +4,15 @@ import threading
 from typing import Dict, Tuple, Optional
 
 import audioop
+import structlog
+
+from .diagnostic_paths import (
+    DEFAULT_DIAGNOSTIC_CAPTURE_DIR,
+    prepare_private_diagnostic_dir,
+)
+
+
+logger = structlog.get_logger(__name__)
 
 
 class AudioCaptureManager:
@@ -11,33 +20,36 @@ class AudioCaptureManager:
 
     def __init__(
         self,
-        base_dir: str = "/tmp/ai-engine-captures",
+        base_dir: str = DEFAULT_DIAGNOSTIC_CAPTURE_DIR,
         keep_files: bool = False,
         enabled: bool = False,
     ):
-        self.base_dir = base_dir
+        self.base_dir = str(base_dir)
         self.keep_files = bool(keep_files)
         self.enabled = bool(enabled)
+        self.storage_ready = False
         self._lock = threading.Lock()
         # key -> (wave.Wave_write, sample_rate)
         self._handles: Dict[Tuple[str, str], Tuple[wave.Wave_write, int]] = {}
         try:
-            os.makedirs(self.base_dir, mode=0o700, exist_ok=True)
-            try:
-                os.chmod(self.base_dir, 0o700)
-            except Exception:
-                pass
-        except Exception:
-            pass
+            # The empty capture root is an allowed installation artifact even
+            # while capture is disabled. Per-call methods remain strict no-ops.
+            self.base_dir = prepare_private_diagnostic_dir(self.base_dir)
+            self.storage_ready = True
+        except Exception as exc:
+            # Never write diagnostic audio through an untrusted path. Calls
+            # continue normally with capture disabled.
+            self.enabled = False
+            logger.warning(
+                "Audio capture directory rejected; capture disabled",
+                base_dir=self.base_dir,
+                error=str(exc),
+            )
 
     def _open_handle(self, call_id: str, stream_name: str, sample_rate: int) -> wave.Wave_write:
         path = os.path.join(self.base_dir, call_id, f"{stream_name}.wav")
         dir_path = os.path.dirname(path)
-        os.makedirs(dir_path, mode=0o700, exist_ok=True)
-        try:
-            os.chmod(dir_path, 0o700)
-        except Exception:
-            pass
+        prepare_private_diagnostic_dir(dir_path)
         wf = wave.open(path, "wb")
         wf.setnchannels(1)
         wf.setsampwidth(2)  # PCM16
@@ -112,8 +124,6 @@ class AudioCaptureManager:
             self.append_pcm16(call_id, stream_name, pcm16, rate)
         except Exception as e:
             # Log capture failures for debugging but don't break call flow
-            import structlog
-            logger = structlog.get_logger(__name__)
             logger.warning(
                 "Audio capture failed",
                 call_id=call_id,

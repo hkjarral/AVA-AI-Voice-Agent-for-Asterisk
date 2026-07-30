@@ -19,6 +19,8 @@ from typing import Dict, Any, Literal, Optional, List
 import re
 import structlog
 
+from src.utils.diagnostic_paths import DEFAULT_DIAGNOSTIC_TAP_DIR
+
 # Import configuration helpers (AAVA-40 refactor)
 from src.config.loaders import resolve_config_path, load_yaml_with_env_expansion, load_yaml_with_local_override
 from src.config.security import (
@@ -954,13 +956,14 @@ class StreamingConfig(BaseModel):
     low_watermark_ms: int = Field(default=80)
     provider_grace_ms: int = Field(default=500)
     logging_level: str = Field(default="info")
-    # Development diagnostics. These fields must be declared so the resolved
-    # environment values survive Pydantic validation and reach every tap and
-    # full-call capture consumer. Capture remains opt-in by default.
+    # Development diagnostics. diag_out_dir is the legacy playback-tap output
+    # directory (DIAG_TAP_OUTPUT_DIR), not the separate full-call RCA tree.
+    # These fields must survive validation so the shared opt-in reaches both
+    # consumers while their incompatible artifact layouts remain separate.
     diag_enable_taps: bool = Field(default=False)
     diag_pre_secs: int = Field(default=1, ge=0, le=60)
     diag_post_secs: int = Field(default=1, ge=0, le=60)
-    diag_out_dir: str = Field(default="/tmp/ai-engine-taps")
+    diag_out_dir: str = Field(default=DEFAULT_DIAGNOSTIC_TAP_DIR)
     # Smaller warm-up only for the initial greeting to get first audio out sooner
     greeting_min_start_ms: int = Field(default=0)
     # ExternalMedia-specific: safety net timeout (ms) for RTP endpoint establishment.

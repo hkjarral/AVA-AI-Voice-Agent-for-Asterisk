@@ -564,6 +564,8 @@ streaming:
   # Diagnostic audio is opt-in. DIAG_ENABLE_TAPS may explicitly enable both
   # playback taps and full-call RCA capture for a development session.
   diag_enable_taps: false
+  # Flat playback-tap directory only. Full-call RCA captures intentionally use
+  # the separate /tmp/ai-engine-captures/<call_id>/ layout.
   diag_out_dir: /tmp/ai-engine-taps
   diag_post_secs: 1
   diag_pre_secs: 1

@@ -47,6 +47,7 @@ def _platform_check_inputs(docker_info: dict):
 
 
 def test_detect_docker_classifies_requests_adapter_failure_as_client_error(monkeypatch):
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
     monkeypatch.setattr(system.os.path, "exists", lambda path: path == "/var/run/docker.sock")
     monkeypatch.setattr(
         system.os,
@@ -69,6 +70,100 @@ def test_detect_docker_classifies_requests_adapter_failure_as_client_error(monke
     assert result["client_adapter_error"] is True
     assert result["permission_denied"] is False
     assert "incompatible Docker SDK/Requests adapter" in result["message"]
+
+
+def test_detect_docker_uses_rootless_docker_host_for_adapter_failure(monkeypatch):
+    rootless_socket = "/run/user/1000/docker.sock"
+    monkeypatch.setenv("DOCKER_HOST", f"unix://{rootless_socket}")
+    monkeypatch.setattr(system.os.path, "exists", lambda path: path == rootless_socket)
+
+    def fake_stat(path):
+        if path != rootless_socket:
+            raise AssertionError(f"unexpected stat path: {path}")
+        return SimpleNamespace(st_gid=1000, st_mode=0o140660)
+
+    monkeypatch.setattr(system.os, "stat", fake_stat)
+    monkeypatch.setattr(system.shutil, "which", lambda _command: None)
+
+    def fail_from_env():
+        raise RuntimeError(
+            "Error while fetching server API version: Not supported URL scheme http+docker"
+        )
+
+    monkeypatch.setattr(system.docker, "from_env", fail_from_env)
+
+    result = system._detect_docker()
+
+    assert result["socket_path"] == rootless_socket
+    assert result["socket_present"] is True
+    assert result["socket_gid"] == 1000
+    assert result["socket_mode"] == "0o660"
+    assert result["mode"] == "rootless"
+    assert result["installed"] is True
+    assert result["client_adapter_error"] is True
+
+    checks = system._build_checks(**_platform_check_inputs(result))
+    docker_checks = [check for check in checks if check["id"].startswith("docker_")]
+    assert any(check["id"] == "docker_client_adapter" for check in docker_checks)
+    assert all(check["id"] != "docker_socket" for check in docker_checks)
+    adapter_check = next(check for check in docker_checks if check["id"] == "docker_client_adapter")
+    assert adapter_check["action"]["label"] == "Rebuild Admin UI"
+    assert "DOCKER_SOCK" not in adapter_check["action"]["value"]
+
+
+def test_missing_rootless_socket_is_not_mislabeled_as_adapter_failure(monkeypatch):
+    monkeypatch.setenv("DOCKER_HOST", "unix:///run/user/1000/docker.sock")
+    monkeypatch.setattr(system.os.path, "exists", lambda _path: False)
+    monkeypatch.setattr(system.shutil, "which", lambda _command: None)
+    monkeypatch.setattr(
+        system.docker,
+        "from_env",
+        lambda: (_ for _ in ()).throw(
+            RuntimeError(
+                "Error while fetching server API version: Not supported URL scheme http+docker"
+            )
+        ),
+    )
+
+    result = system._detect_docker()
+
+    assert result["socket_present"] is False
+    assert result["installed"] is False
+    assert result["client_adapter_error"] is False
+    checks = system._build_checks(**_platform_check_inputs(result))
+    assert any(check["id"] == "docker_socket" for check in checks)
+    assert all(check["id"] != "docker_client_adapter" for check in checks)
+
+
+def test_detect_docker_does_not_stat_non_unix_docker_hosts(monkeypatch):
+    class FakeDockerClient:
+        def version(self):
+            return {"Version": "27.1.1", "ApiVersion": "1.46"}
+
+        def info(self):
+            return {
+                "OperatingSystem": "Docker Engine",
+                "Architecture": "x86_64",
+                "OSType": "linux",
+            }
+
+    def unexpected_filesystem_probe(path):
+        raise AssertionError(f"unexpected filesystem probe: {path}")
+
+    monkeypatch.setattr(system.os.path, "exists", unexpected_filesystem_probe)
+    monkeypatch.setattr(system.docker, "from_env", lambda: FakeDockerClient())
+    monkeypatch.setattr(system.shutil, "which", lambda _command: None)
+
+    for docker_host in ("tcp://127.0.0.1:2375", "npipe:////./pipe/docker_engine"):
+        monkeypatch.setenv("DOCKER_HOST", docker_host)
+
+        result = system._detect_docker()
+
+        assert result["socket_path"] is None
+        assert result["socket_present"] is False
+        assert result["installed"] is True
+        assert result["reachable"] is True
+        assert result["mode"] == "rootful"
 
 
 def test_client_adapter_failure_never_recommends_installing_docker():

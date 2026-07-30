@@ -26,6 +26,10 @@ from src.audio.resampler import (
 from src.core.session_store import SessionStore
 from src.core.models import CallSession, PlaybackRef
 from src.config.provider_instances import FULL_AGENT_KINDS_WITH_NATIVE_TTS_GATING
+from src.utils.diagnostic_paths import (
+    DEFAULT_DIAGNOSTIC_TAP_DIR,
+    prepare_private_diagnostic_dir,
+)
 from .adaptive_streaming import (
     StreamCharacterizer,
     AdaptiveBufferController,
@@ -293,18 +297,22 @@ class StreamingPlaybackManager:
         except Exception:
             self.diag_post_secs = 2
         try:
-            self.diag_out_dir = str(self.streaming_config.get('diag_out_dir', '/tmp/ai-engine-taps') or '/tmp/ai-engine-taps')
+            self.diag_out_dir = str(
+                self.streaming_config.get('diag_out_dir', DEFAULT_DIAGNOSTIC_TAP_DIR)
+                or DEFAULT_DIAGNOSTIC_TAP_DIR
+            )
         except Exception:
-            self.diag_out_dir = '/tmp/ai-engine-taps'
+            self.diag_out_dir = DEFAULT_DIAGNOSTIC_TAP_DIR
         if self.diag_enable_taps:
             try:
-                os.makedirs(self.diag_out_dir, mode=0o700, exist_ok=True)
-                try:
-                    os.chmod(self.diag_out_dir, 0o700)
-                except Exception:
-                    pass
-            except Exception:
-                pass
+                self.diag_out_dir = prepare_private_diagnostic_dir(self.diag_out_dir)
+            except Exception as exc:
+                self.diag_enable_taps = False
+                logger.warning(
+                    "Diagnostic tap directory rejected; playback taps disabled",
+                    diag_out_dir=self.diag_out_dir,
+                    error=str(exc),
+                )
         # μ-law fast-path sanity guard (enabled by default)
         try:
             self.ulaw_fastpath_guard: bool = bool(self.streaming_config.get('ulaw_fastpath_guard', True))
