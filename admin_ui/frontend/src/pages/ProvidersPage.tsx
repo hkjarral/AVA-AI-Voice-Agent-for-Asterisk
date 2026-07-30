@@ -646,11 +646,13 @@ const ProvidersPage: React.FC = () => {
         }
         if (fullAgentKind === 'deepgram') {
             const listenModel = String(providerData.model || 'nova-3').trim().toLowerCase();
-            if (!listenModel.startsWith('flux-')) {
+            if (listenModel === 'nova-3' || listenModel === 'nova-2-phonecall') {
                 // The engine derives the Voice Agent API version from the listen
                 // model and ignores these values for Nova. Remove stale Flux-only
                 // state at the persistence boundary so a Flux -> Nova switch is
                 // represented truthfully in YAML and cannot affect future readers.
+                // Preserve unrecognized/private models verbatim: their custom
+                // provider contracts may use similarly named fields.
                 for (const field of [
                     'version',
                     'eot_threshold',

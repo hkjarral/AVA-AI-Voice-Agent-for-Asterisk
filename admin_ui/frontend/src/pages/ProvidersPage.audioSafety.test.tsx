@@ -244,6 +244,59 @@ describe('ProvidersPage OpenAI Realtime save contract', () => {
         expect(saved.providers.deepgram).not.toHaveProperty('keyterms');
     });
 
+    it('preserves version and tuning fields for a custom Deepgram model', async () => {
+        mocks.config = {
+            providers: {
+                deepgram: {
+                    type: 'deepgram',
+                    capabilities: ['stt', 'llm', 'tts'],
+                    enabled: true,
+                    model: 'customer-private-model',
+                    agent_language: 'en',
+                    tts_model: 'aura-2-luna-en',
+                    version: 'private-v2',
+                    eot_threshold: 0.8,
+                    eager_eot_threshold: 0.4,
+                    keyterms: ['PrivateTerm'],
+                },
+            },
+            default_provider: 'deepgram',
+        };
+
+        render(
+            <MemoryRouter>
+                <ProvidersPage />
+            </MemoryRouter>,
+        );
+
+        fireEvent.click(await screen.findByTitle('Settings'));
+        const dialog = await screen.findByRole('dialog', {
+            name: 'Edit Provider: deepgram',
+        });
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }));
+
+        await waitFor(() => {
+            expect(axios.post).toHaveBeenCalledWith(
+                '/api/config/yaml',
+                expect.objectContaining({ content: expect.any(String) }),
+            );
+        });
+        const saveCall = vi.mocked(axios.post).mock.calls.find(([url]) => url === '/api/config/yaml');
+        const body = saveCall?.[1] as { content: string };
+        const saved = yaml.load(body.content) as {
+            providers: Record<string, Record<string, unknown>>;
+        };
+        expect(saved.providers.deepgram).toEqual(
+            expect.objectContaining({
+                model: 'customer-private-model',
+                version: 'private-v2',
+                eot_threshold: 0.8,
+                eager_eot_threshold: 0.4,
+                keyterms: ['PrivateTerm'],
+            }),
+        );
+    });
+
     it('serializes the OpenAI Realtime template with the GA output contract', async () => {
         mocks.config = { providers: {} };
 
