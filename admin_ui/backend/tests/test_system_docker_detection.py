@@ -135,6 +135,42 @@ def test_missing_rootless_socket_is_not_mislabeled_as_adapter_failure(monkeypatc
     assert all(check["id"] != "docker_client_adapter" for check in checks)
 
 
+def test_rootless_permission_failure_uses_resolved_socket_guidance(monkeypatch):
+    rootless_socket = "/run/user/1000/docker.sock"
+    monkeypatch.setenv("DOCKER_HOST", f"unix://{rootless_socket}")
+    monkeypatch.setattr(system.os.path, "exists", lambda path: path == rootless_socket)
+    monkeypatch.setattr(
+        system.os,
+        "stat",
+        lambda path: (
+            SimpleNamespace(st_gid=1000, st_mode=0o140660)
+            if path == rootless_socket
+            else (_ for _ in ()).throw(AssertionError(f"unexpected stat path: {path}"))
+        ),
+    )
+    monkeypatch.setattr(system.shutil, "which", lambda _command: None)
+    monkeypatch.setattr(
+        system.docker,
+        "from_env",
+        lambda: (_ for _ in ()).throw(PermissionError(13, "Permission denied")),
+    )
+
+    result = system._detect_docker()
+
+    assert result["permission_denied"] is True
+    assert result["socket_path"] == rootless_socket
+    assert result["socket_gid"] == 1000
+
+    checks = system._build_checks(**_platform_check_inputs(result))
+    permission_check = next(
+        check for check in checks if check["id"] == "docker_socket_perms"
+    )
+    command = permission_check["action"]["value"]
+    assert rootless_socket in command
+    assert "DOCKER_GID=1000" in command
+    assert "/var/run/docker.sock" not in command
+
+
 def test_detect_docker_does_not_stat_non_unix_docker_hosts(monkeypatch):
     class FakeDockerClient:
         def version(self):

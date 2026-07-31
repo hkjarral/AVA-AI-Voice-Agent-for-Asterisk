@@ -686,7 +686,12 @@ run_rollback() {
   fi
 
   rollback_default_rebuild=("ai_engine")
-  rollback_existing_services="$(compose_existing_services || true)"
+  if ! rollback_existing_services="$(compose_existing_services)"; then
+    echo "ERR: could not discover existing Compose services before rollback" >&2
+    write_job_state "failed" "2"
+    prune_job_logs || true
+    exit 2
+  fi
   if grep -Fxq "local_ai_server" <<<"${rollback_existing_services}"; then
     rollback_default_rebuild+=("local_ai_server")
   fi
@@ -816,9 +821,15 @@ run_rollback() {
     if [ "${compose_changed}" = "true" ]; then
       # Scope --no-build to services that are already running to avoid "no such image" failures
       # for services the operator never built (e.g. local_ai_server on non-Local-AI deployments).
-      mapfile -t running_svcs < <(docker compose ps --services --status running 2>/dev/null \
-        || docker compose ps --services 2>/dev/null \
-        || true)
+      if ! running_services_snapshot="$(docker compose ps --services --status running 2>/dev/null \
+        || docker compose ps --services 2>/dev/null)"; then
+        echo "ERR: could not discover running Compose services during rollback" >&2
+        exit 1
+      fi
+      running_svcs=()
+      if [ -n "${running_services_snapshot}" ]; then
+        mapfile -t running_svcs <<<"${running_services_snapshot}"
+      fi
       targets=("${running_svcs[@]}")
       # Add rebuild/restart targets only if they are already running.
       for svc in "${rebuild_services[@]}" "${restart_services[@]}"; do
@@ -844,10 +855,23 @@ run_rollback() {
     # Preserve runtime state: running services may be recreated, while any
     # existing-but-stopped rebuild target gets an image-only rebuild. Never use
     # compose up for a service that was stopped before rollback.
-    mapfile -t running_svcs_now < <(docker compose ps --services --status running 2>/dev/null \
-      || docker compose ps --services 2>/dev/null \
-      || true)
-    mapfile -t existing_svcs_now < <(compose_existing_services || true)
+    if ! running_services_snapshot="$(docker compose ps --services --status running 2>/dev/null \
+      || docker compose ps --services 2>/dev/null)"; then
+      echo "ERR: could not discover running Compose services during rollback" >&2
+      exit 1
+    fi
+    if ! existing_services_snapshot="$(compose_existing_services)"; then
+      echo "ERR: could not discover existing Compose services during rollback" >&2
+      exit 1
+    fi
+    running_svcs_now=()
+    existing_svcs_now=()
+    if [ -n "${running_services_snapshot}" ]; then
+      mapfile -t running_svcs_now <<<"${running_services_snapshot}"
+    fi
+    if [ -n "${existing_services_snapshot}" ]; then
+      mapfile -t existing_svcs_now <<<"${existing_services_snapshot}"
+    fi
     filtered_rebuild_services=()
     build_only_services=()
     for svc in "${rebuild_services[@]}"; do

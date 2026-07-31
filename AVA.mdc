@@ -15,7 +15,7 @@ It is self-contained: everything an external contributor's assistant needs is ei
 this file or in the committed docs it links to. If this file ever contradicts the code or
 the docs, trust the code, then the docs — and please open an issue so we can fix it here.
 
-> Last verified against: **v7.4.0 candidate** (2026-07). Freshness is
+> Last verified against: **v7.5.4 candidate** (2026-07). Freshness is
 > checked as part of the release checklist (`docs/RELEASE_CHECKLIST.md`).
 
 ## What This Project Is
@@ -97,9 +97,11 @@ Use these terms consistently and tie every change back to them:
   Agent voice in `agents.db` > provider default. Resolution lives
   in `resolve_effective_voice()`/`apply_context_voice()` (`src/core/transport_orchestrator.py`);
   per-provider catalogs and metadata in `src/utils/voice_catalog.py` (single source shared
-  by the engine's soft validation and `GET /api/config/providers/meta`). OpenAI Realtime,
-  Google Live, and Deepgram validate against their closed catalogs and fall back on
-  unknowns (never failing a call); Grok passes through (custom clone IDs); ElevenLabs
+  by the engine's validation and `GET /api/config/providers/meta`). OpenAI Realtime and
+  Google Live validate against their closed catalogs and fall back on unknowns; Deepgram
+  preserves unknown values for operator review but fails closed before connection when
+  an Aura voice is unknown or mismatched with the Agent language. Grok passes through
+  custom clone IDs; ElevenLabs
   Agent and the Local full agent never consume a context voice; pipeline TTS
   voices are per-pipeline (per-agent pipeline voice is future work). The resolved
   (voice, source) is logged per session and recorded in Call History.

@@ -2,6 +2,45 @@
 
 This guide covers upgrading between major versions of Asterisk AI Voice Agent.
 
+## v7.5.3 to v7.5.4
+
+v7.5.4 is an in-place patch release with no database migration, Agent
+reassignment, provider credential change, or default Audio Profile change.
+
+After upgrading:
+
+1. Rebuild and recreate `admin_ui` and `ai_engine`. The Admin UI recreation is
+   required to install Docker SDK 7.1 and remove the false **Install Docker**
+   guidance from v7.5.3. Recreate `local_ai_server` only when its image or local
+   stack is intentionally part of the update.
+2. Confirm `DIAG_ENABLE_TAPS=false` (and legacy `AAVA_AUDIO_DIAGNOSTICS` unset or
+   false) for production. Disabled calls create no per-call diagnostic audio,
+   but disabling diagnostics never deletes historical WAVs. The empty restricted
+   `/tmp/ai-engine-captures` root may exist. Custom diagnostic roots must be owned
+   by the engine user and cannot traverse unsafe writable or symlinked components.
+3. Restart the AI Engine after changing `asterisk.ws_ping_interval_sec` or
+   `asterisk.ws_ping_timeout_sec`. Both default to 10 seconds, producing a nominal
+   20-second silent-failure detection bound before reconnect.
+4. Review Deepgram Agent model, `agent_language`, and Aura voice selections.
+   AAVA supports Flux English/Multilingual, Nova-3, and the legacy English
+   Nova-2 Phone Call path across the documented seven-language Aura surface.
+   Unknown or language-mismatched voices now fail before the provider session
+   opens instead of silently falling back.
+5. Preview updates that include Local AI. A missing and unselected service stays
+   absent; a selected missing service may start; an installed stopped service is
+   rebuilt image-only and stays stopped. Incomplete detection or
+   `--rebuild=all` alone does not authorize creating or starting an absent Local
+   AI service. Rollback preserves the stopped state.
+
+The call-history redaction modes introduced since v7.5.3 affect only future
+tool-result persistence. Existing redactions are not reversible and historical
+rows are not rewritten.
+
+Rollback uses the normal prior tagged images and the pre-update configuration
+backup. There is no database downgrade step. Diagnostic artifacts written while
+the opt-in was enabled must be removed separately according to the operator's
+data-retention policy.
+
 ## v7.5.2 to v7.5.3
 
 v7.5.3 is an in-place patch release with no database migration, Agent reassignment,
@@ -150,7 +189,7 @@ v7.4 removes Contexts as a product and runtime model. Agents in
 
 ### Before upgrading
 
-1. Follow the [current upgrade procedure](INSTALLATION.md#upgrade-to-v750-existing-checkout),
+1. Follow the [current upgrade procedure](INSTALLATION.md#upgrade-to-v754-existing-checkout),
    including the documented older-installation updater recovery path.
 2. Back up `data/operator/agents.db`, `data/call_history.db`, `.env`, operator YAML,
    `config/users.json`, and any legacy `config/contexts/` files.

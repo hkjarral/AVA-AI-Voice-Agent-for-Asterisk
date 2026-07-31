@@ -8,6 +8,7 @@ import os
 import shutil
 import logging
 import re
+import shlex
 import subprocess
 import threading
 import tempfile
@@ -2989,6 +2990,25 @@ def _build_checks(os_info, docker_info, compose_info, selinux_info, dir_info, as
                 }
             })
     elif docker_info.get("permission_denied"):
+        socket_path = docker_info.get("socket_path")
+        quoted_socket_path = shlex.quote(str(socket_path)) if socket_path else None
+        socket_gid = docker_info.get("socket_gid")
+        if quoted_socket_path:
+            gid_assignment = (
+                f"DOCKER_GID={shlex.quote(str(socket_gid))}"
+                if socket_gid is not None
+                else f"DOCKER_GID=$(stat -c '%g' -- {quoted_socket_path})"
+            )
+            permission_commands = [
+                f"ls -ln -- {quoted_socket_path}",
+                gid_assignment,
+                "grep -qE '^[# ]*DOCKER_GID=' .env && sed -i.bak -E \"s/^[# ]*DOCKER_GID=.*/DOCKER_GID=$DOCKER_GID/\" .env || echo \"DOCKER_GID=$DOCKER_GID\" >> .env",
+                "docker compose -p asterisk-ai-voice-agent up -d --force-recreate admin_ui",
+            ]
+        else:
+            permission_commands = [
+                "Review the configured DOCKER_HOST permissions and credentials",
+            ]
         checks.append({
             "id": "docker_socket_perms",
             "status": "error",
@@ -3000,12 +3020,7 @@ def _build_checks(os_info, docker_info, compose_info, selinux_info, dir_info, as
             "action": {
                 "type": "command",
                 "label": "Set DOCKER_GID and recreate admin_ui",
-                "value": "\n".join([
-                    "ls -ln /var/run/docker.sock",
-                    "DOCKER_GID=$(ls -ln /var/run/docker.sock | awk '{print $4}')",
-                    "grep -qE '^[# ]*DOCKER_GID=' .env && sed -i.bak -E \"s/^[# ]*DOCKER_GID=.*/DOCKER_GID=$DOCKER_GID/\" .env || echo \"DOCKER_GID=$DOCKER_GID\" >> .env",
-                    "docker compose -p asterisk-ai-voice-agent up -d --force-recreate admin_ui",
-                ]),
+                "value": "\n".join(permission_commands),
                 "docs_url": _github_docs_url("docs/TROUBLESHOOTING_GUIDE.md"),
                 "docs_label": "Troubleshooting guide",
             },

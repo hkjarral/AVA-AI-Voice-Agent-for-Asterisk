@@ -12,7 +12,10 @@ from src.core.session_store import SessionStore
 from src.core.streaming_playback_manager import StreamingPlaybackManager
 from src.engine import Engine, _cleanup_in_progress
 from src.utils.audio_capture import AudioCaptureManager
-from src.utils.diagnostic_paths import DEFAULT_DIAGNOSTIC_CAPTURE_DIR
+from src.utils.diagnostic_paths import (
+    DEFAULT_DIAGNOSTIC_CAPTURE_DIR,
+    UnsafeDiagnosticPathError,
+)
 
 
 _CONFIG = {
@@ -129,6 +132,36 @@ def test_enabled_capture_rejects_world_writable_ancestor(tmp_path):
     assert not (shared / "captures").exists()
 
 
+def test_runtime_path_rejection_disables_capture_without_retry(tmp_path, monkeypatch):
+    manager = AudioCaptureManager(
+        base_dir=str(tmp_path / "captures"),
+        keep_files=True,
+        enabled=True,
+    )
+    attempts = 0
+
+    def reject_path(_path):
+        nonlocal attempts
+        attempts += 1
+        raise UnsafeDiagnosticPathError("unsafe test path")
+
+    monkeypatch.setattr(capture_module, "prepare_private_diagnostic_dir", reject_path)
+    monkeypatch.setattr(
+        capture_module.wave,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unsafe path reached wave.open")
+        ),
+    )
+
+    manager.append_pcm16("call-1", "caller_inbound", b"\x00\x00" * 80, 8000)
+    manager.append_pcm16("call-1", "caller_inbound", b"\x00\x00" * 80, 8000)
+
+    assert manager.enabled is False
+    assert manager._handles == {}
+    assert attempts == 1
+
+
 def test_capture_manager_defaults_fail_closed(tmp_path):
     root = tmp_path / "captures"
     manager = AudioCaptureManager(base_dir=str(root))
@@ -176,7 +209,7 @@ def test_enabled_capture_writes_all_streams_with_restricted_permissions(tmp_path
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_engine_passes_resolved_capture_enablement(monkeypatch, enabled):
+def test_engine_passes_resolved_capture_enablement(monkeypatch, tmp_path, enabled):
     captured = {}
 
     class _RecordingCaptureManager:
@@ -193,10 +226,11 @@ def test_engine_passes_resolved_capture_enablement(monkeypatch, enabled):
             return None
 
     monkeypatch.setattr("src.engine.AudioCaptureManager", _RecordingCaptureManager)
+    taps_dir = tmp_path / "playback-taps"
     config_data = dict(_CONFIG)
     config_data["streaming"] = {
         "diag_enable_taps": enabled,
-        "diag_out_dir": "/custom/playback-taps",
+        "diag_out_dir": str(taps_dir),
     }
     config = AppConfig(**config_data)
 
@@ -205,7 +239,7 @@ def test_engine_passes_resolved_capture_enablement(monkeypatch, enabled):
     assert captured["enabled"] is enabled
     assert captured["keep_files"] is enabled
     assert captured["base_dir"] == DEFAULT_DIAGNOSTIC_CAPTURE_DIR
-    assert engine.streaming_playback_manager.diag_out_dir == "/custom/playback-taps"
+    assert engine.streaming_playback_manager.diag_out_dir == str(taps_dir)
 
 
 @pytest.mark.parametrize(("raw", "enabled"), [("false", False), ("true", True)])

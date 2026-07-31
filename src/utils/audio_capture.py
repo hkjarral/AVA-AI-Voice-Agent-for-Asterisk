@@ -8,6 +8,7 @@ import structlog
 
 from .diagnostic_paths import (
     DEFAULT_DIAGNOSTIC_CAPTURE_DIR,
+    UnsafeDiagnosticPathError,
     prepare_private_diagnostic_dir,
 )
 
@@ -71,19 +72,38 @@ class AudioCaptureManager:
         key = (call_id, stream_name)
         with self._lock:
             handle = self._handles.get(key)
-            if handle is None:
-                wf = self._open_handle(call_id, stream_name, sample_rate)
-                self._handles[key] = (wf, sample_rate)
-            else:
-                wf, existing_rate = handle
-                if existing_rate != sample_rate:
-                    # Close and reopen with new rate to avoid inconsistent headers
-                    try:
-                        wf.close()
-                    except Exception:
-                        pass
+            try:
+                if handle is None:
                     wf = self._open_handle(call_id, stream_name, sample_rate)
                     self._handles[key] = (wf, sample_rate)
+                else:
+                    wf, existing_rate = handle
+                    if existing_rate != sample_rate:
+                        # Close and reopen with new rate to avoid inconsistent headers
+                        try:
+                            wf.close()
+                        except Exception:
+                            pass
+                        wf = self._open_handle(call_id, stream_name, sample_rate)
+                        self._handles[key] = (wf, sample_rate)
+            except UnsafeDiagnosticPathError as exc:
+                # A path that becomes unsafe after initialization is a writer-wide
+                # privacy failure. Disable once, close any previously opened WAVs,
+                # and make later chunks strict no-ops instead of retrying per frame.
+                self.enabled = False
+                for open_handle, _rate in self._handles.values():
+                    try:
+                        open_handle.close()
+                    except Exception:
+                        pass
+                self._handles.clear()
+                logger.warning(
+                    "Audio capture path rejected; capture disabled",
+                    call_id=call_id,
+                    stream_name=stream_name,
+                    error=str(exc),
+                )
+                return
             wf = self._handles[key][0]
             try:
                 wf.writeframes(pcm16)

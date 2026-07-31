@@ -15,6 +15,12 @@
 # Override per-call via dialplan `AI_PROVIDER` when needed.
 default_provider: "local_hybrid"
 
+# ARI call-control keepalive. These defaults detect a silent network path in
+# approximately 20 seconds (interval + timeout) before reconnect begins.
+asterisk:
+  ws_ping_interval_sec: 10
+  ws_ping_timeout_sec: 10
+
 # Example pipelines. Pick one and set active_pipeline accordingly.
 pipelines:
   # Cloud OpenAI across STT/LLM/TTS
@@ -157,6 +163,11 @@ streaming:
   low_watermark_ms: 200         # Pause when buffer dips below this; raise if underruns occur.
   provider_grace_ms: 500        # Absorb late chunks after cleanup; avoids tail-chop.
   logging_level: "info"
+  # Troubleshooting only. false prevents playback-tap and full-call RCA writes.
+  # The empty restricted capture root may still exist; historical WAVs are not deleted.
+  diag_enable_taps: false
+  # Playback taps only; full-call RCA uses /tmp/ai-engine-captures/<call_id>/.
+  diag_out_dir: "/tmp/ai-engine-taps"
 
 # VAD: add a `vad:` block if you need utterance segmentation control; see docs/Configuration-Reference.md
 

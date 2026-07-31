@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-7.5.3-blue.svg)
+![Version](https://img.shields.io/badge/version-7.5.4-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -167,6 +167,39 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>v7.5.4 — Privacy-safe diagnostics and provider/update hardening</b></summary>
+
+v7.5.4 is an in-place reliability and privacy release. It does not migrate
+databases, reassign Agents, or change Audio Profiles.
+
+- **Diagnostics are truly opt-in** — disabled playback taps and full-call RCA
+  capture perform no per-call conversion, locking, file creation, write, or
+  cleanup deletion. Enabled paths reject symlinks, unsafe writable ancestors,
+  and foreign ownership before audio is written.
+- **ARI silent failures recover promptly** — 10-second WebSocket ping and timeout
+  defaults make readiness fail in about 20 seconds before normal reconnect logic
+  takes over.
+- **Deepgram telephony choices are coherent** — Flux and Nova receive the right
+  language fields, the UI exposes the commonly used telephony models and seven
+  end-to-end Aura languages, and incompatible language/model/voice combinations
+  fail before a remote session opens.
+- **Docker status is accurate again** — Docker SDK 7.1 restores Admin UI socket
+  compatibility and detection follows rootful, rootless, TCP, and named-pipe
+  endpoint configuration.
+- **Updates preserve optional Local AI state** — absent and unselected Local AI
+  stays absent, while an installed stopped service can be refreshed without
+  being started, including rollback.
+- **Call History privacy is operator-controlled** — strict, routing-visible, and
+  explicit off modes make the redaction boundary visible without rewriting
+  historical records ([#589](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/589)).
+
+See the [v7.5.4 changelog](CHANGELOG.md#754---2026-07-30),
+[migration notes](docs/MIGRATION.md#v753-to-v754), and
+[validation matrix](docs/baselines/golden/v7.5.4-validation-matrix.md).
+
+</details>
+
+<details>
 <summary><b>v7.5.3 — One-click audio recovery and safer transfers</b></summary>
 
 v7.5.3 focuses on getting an installation back to a known-good configuration
@@ -336,7 +369,7 @@ voicemail mailboxes it should be allowed to use.**
   working.
 
 Before upgrading—especially from v7.3.0–v7.3.3—read the
-[current upgrade procedure](docs/INSTALLATION.md#upgrade-to-v753-existing-checkout)
+[current upgrade procedure](docs/INSTALLATION.md#upgrade-to-v754-existing-checkout)
 and [Contexts → Agents migration guide](docs/OPERATOR_MIGRATION.md).
 
 </details>
@@ -436,7 +469,7 @@ See [Caller inactivity configuration](docs/Configuration-Reference.md#caller-ina
 **Voice now belongs to agents.** Configure one provider, create multiple agents that share it — each with its own voice.
 
 - **Provider-aware voice picker** in the Agent form: a dropdown of OpenAI's 10 GA voices, suggestions + custom clone IDs for Grok, Google Live's 30 prebuilt voices, Deepgram's Aura models — the control adapts to the agent's selected AI Engine.
-- **Safe by default** — the provider-level voice becomes the *default voice*; agents without one behave exactly as before. Unrecognized values (OpenAI/Google/Deepgram catalogs are validated) log a warning and fall back — a bad voice value never fails a call.
+- **Provider-specific safety** — the provider-level voice becomes the *default voice*; agents without one behave exactly as before. OpenAI and Google log and fall back for unknown values. Deepgram preserves a configured Aura value for review but fails the call before connection when the voice is unknown or its language does not match the Deepgram Agent language.
 - **Observable** — every call logs the resolved voice and its source, and Call History shows "Voice: marin (from agent)" per call.
 - Agent voice changes apply instantly — no engine restart.
 

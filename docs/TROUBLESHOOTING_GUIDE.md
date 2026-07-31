@@ -6,6 +6,7 @@ Complete guide to diagnosing and fixing issues with Asterisk AI Voice Agent.
 
 - [Installation](#installation)
 - [Quick Diagnostics](#quick-diagnostics)
+- [Bounded Diagnostic Audio Capture](#bounded-diagnostic-audio-capture)
 - [Common Issues](#common-issues)
 - [Troubleshooting Tools](#troubleshooting-tools)
 - [Log Analysis](#log-analysis)
@@ -182,6 +183,27 @@ Notes:
 - If you run **bridge networking** and want Local AI Server reachable across containers, set:
   - `LOCAL_WS_HOST=0.0.0.0`
   - `LOCAL_WS_AUTH_TOKEN=...` (required; server refuses to start if exposed without auth)
+
+### Bounded Diagnostic Audio Capture
+
+Diagnostic WAVs can contain caller audio, agent audio, names, phone numbers, or
+other sensitive content. Enable them only for a short, controlled reproduction
+and handle the resulting files according to your retention policy.
+
+1. Set `DIAG_ENABLE_TAPS=true`, rebuild or restart `ai_engine`, and reproduce the
+   issue once. Playback taps use `/tmp/ai-engine-taps`; full-call RCA streams use
+   `/tmp/ai-engine-captures/<call_id>/`.
+2. Collect only the required call with `agent rca` or `scripts/rca_collect.sh`.
+3. Set `DIAG_ENABLE_TAPS=false` and restart `ai_engine` before returning the
+   system to normal service.
+4. Remove retained WAVs explicitly when the investigation is complete.
+
+Disabling diagnostics prevents new per-call writes; it never deletes historical
+artifacts. The restricted empty capture root may remain present. The legacy
+`AAVA_AUDIO_DIAGNOSTICS` switch can independently enable playback taps, so leave
+both settings false or unset for a no-write call path. Enabled writers reject
+symlinked, foreign-owned, or unsafe writable directory paths and disable only the
+affected diagnostic writer rather than failing the call.
 
 ### Step 2: Analyze Recent Call
 

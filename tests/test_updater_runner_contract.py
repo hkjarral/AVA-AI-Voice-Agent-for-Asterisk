@@ -256,7 +256,7 @@ def test_rollback_snapshots_existing_services_before_matching_local_ai() -> None
     runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
     rollback = _run_rollback_body(runner)
 
-    snapshot = 'rollback_existing_services="$(compose_existing_services || true)"'
+    snapshot = 'if ! rollback_existing_services="$(compose_existing_services)"; then'
     snapshot_match = (
         'if grep -Fxq "local_ai_server" <<<"${rollback_existing_services}"; then'
     )
@@ -264,6 +264,19 @@ def test_rollback_snapshots_existing_services_before_matching_local_ai() -> None
     assert snapshot_match in rollback
     assert 'compose_existing_services | grep -Fxq "local_ai_server"' not in rollback
     assert rollback.index(snapshot) < rollback.index(snapshot_match)
+
+
+def test_rollback_service_discovery_failures_cannot_report_success() -> None:
+    runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
+    rollback = _run_rollback_body(runner)
+
+    assert 'compose_existing_services || true' not in rollback
+    assert 'if ! running_services_snapshot="$(docker compose ps --services --status running' in rollback
+    assert 'if ! existing_services_snapshot="$(compose_existing_services)"; then' in rollback
+    assert "could not discover existing Compose services before rollback" in rollback
+    assert "could not discover running Compose services during rollback" in rollback
+    assert "could not discover existing Compose services during rollback" in rollback
+    assert 'write_job_state "failed" "2"' in rollback
 
 
 def test_rollback_never_reconciles_a_fully_stopped_stack_with_compose_up() -> None:
