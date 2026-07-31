@@ -95,6 +95,8 @@ class TestCheckExtensionStatusTool:
                 return {"technology": "PJSIP", "resource": "2765", "state": "online", "channel_ids": []}
             if method == "GET" and resource == "deviceStates/PJSIP%2F2765":
                 return {"name": "PJSIP/2765", "state": "NOT_INUSE"}
+            if method == "GET" and resource == "channels":
+                return []
             raise Exception(f"Unexpected ARI call: {method} {resource}")
 
         mock_ari_client.send_command = AsyncMock(side_effect=send_command_side_effect)
@@ -144,6 +146,30 @@ class TestCheckExtensionStatusTool:
         assert result["available"] is False
         assert result["availability_source"] == "device_state+endpoint_channels"
         assert result["endpoint_channel_ids"] == ["SIP/6000-00000001"]
+        assert result["message"] == "Extension 6000 is in use (active_endpoint_channels_detected)."
+        assert "active endpoint channel(s)" in str(result.get("warnings", []))
+
+    async def test_does_not_match_prefixed_extension_in_active_channels(self, tool, tool_context, mock_ari_client):
+        tool_context.config["tools"]["extensions"]["internal"].setdefault("600", {})["device_state_tech"] = "SIP"
+
+        async def send_command_side_effect(method, resource, data=None, params=None):
+            if method == "GET" and resource == "endpoints/SIP/600":
+                return {"technology": "SIP", "resource": "600", "state": "online", "channel_ids": []}
+            if method == "GET" and resource == "deviceStates/SIP%2F600":
+                return {"name": "SIP/600", "state": "NOT_INUSE"}
+            if method == "GET" and resource == "channels":
+                return [
+                    {"id": "SIP/6000-00000001", "name": "SIP/6000-00000001", "state": "Up"},
+                ]
+            raise Exception(f"Unexpected ARI call: {method} {resource}")
+
+        mock_ari_client.send_command = AsyncMock(side_effect=send_command_side_effect)
+
+        result = await tool.execute({"extension": "600"}, tool_context)
+        assert result["status"] == "success"
+        assert result["available"] is True
+        assert result["availability_source"] == "device_state"
+        assert result["endpoint_channel_ids"] == []
 
     async def test_keeps_extension_available_if_active_channels_check_fails(self, tool, tool_context, mock_ari_client):
         tool_context.config["tools"]["extensions"]["internal"]["6000"]["device_state_tech"] = "SIP"
@@ -161,9 +187,10 @@ class TestCheckExtensionStatusTool:
 
         result = await tool.execute({"extension": "6000"}, tool_context)
         assert result["status"] == "success"
-        assert result["available"] is True
-        assert result["availability_source"] == "device_state"
+        assert result["available"] is False
+        assert result["availability_source"] == "device_state+endpoint_channels_lookup_failed"
         assert result["endpoint_channel_ids"] == []
+        assert result["message"] == "Extension 6000 is in use (channel_lookup_failed)."
 
     @pytest.mark.asyncio
     async def test_falls_back_to_list_endpoints_and_device_states(self, tool, tool_context, mock_ari_client):
@@ -184,6 +211,8 @@ class TestCheckExtensionStatusTool:
                 raise Exception("404 Not Found")
             if method == "GET" and resource == "deviceStates":
                 return [{"name": "SIP/6000", "state": "NOT_INUSE"}]
+            if method == "GET" and resource == "channels":
+                return []
             raise Exception(f"Unexpected ARI call: {method} {resource}")
 
         mock_ari_client.send_command = AsyncMock(side_effect=send_command_side_effect)
@@ -226,6 +255,8 @@ class TestCheckExtensionStatusTool:
                 return {"technology": "PJSIP", "resource": "2765", "state": "online", "channel_ids": []}
             if method == "GET" and resource == "deviceStates/PJSIP%2F2765":
                 return {"name": "PJSIP/2765", "state": "NOT_INUSE"}
+            if method == "GET" and resource == "channels":
+                return []
             raise Exception(f"Unexpected ARI call: {method} {resource}")
 
         mock_ari_client.send_command = AsyncMock(side_effect=send_command_side_effect)
