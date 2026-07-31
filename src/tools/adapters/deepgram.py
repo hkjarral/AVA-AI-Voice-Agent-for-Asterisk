@@ -228,7 +228,11 @@ class DeepgramToolAdapter:
             return
         
         # Build response per actual Deepgram spec
-        safe_result = sanitize_tool_result_for_json_string(result, max_bytes=12000)
+        safe_result = sanitize_tool_result_for_json_string(
+            result,
+            max_bytes=12000,
+            tool_name=function_name,
+        )
         response = {
             "type": "FunctionCallResponse",
             "id": function_call_id,

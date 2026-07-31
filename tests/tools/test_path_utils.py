@@ -379,6 +379,47 @@ class TestSanitizerPreservesData:
         # message should still be present
         assert "message" in sanitized
 
+    def test_check_extension_status_keeps_only_public_fields(self):
+        """check_extension_status should return a compact provider-agnostic payload."""
+        tool_result = {
+            "status": "success",
+            "target": "6000",
+            "extension": "6000",
+            "device_state_name": "SIP/6000",
+            "device_state": "INUSE",
+            "available": True,
+            "availability_source": "endpoint_state",
+            "endpoint_state": "online",
+            "tech": "SIP",
+            "resolution_source": "config.device_state_tech",
+            "extension_resolution_source": "config.key",
+            "device_state_id": "SIP/6000",
+            "destination_key": "support",
+            "destination_target": "6000",
+            "destination_type": "extension",
+            "state": "INUSE",
+        }
+
+        sanitized = sanitize_tool_result_for_json_string(tool_result, tool_name="check_extension_status")
+
+        assert sanitized["status"] == "success"
+        assert sanitized["target"] == "6000"
+        assert sanitized["extension"] == "6000"
+        assert sanitized["device_state_name"] == "SIP/6000"
+        assert sanitized["device_state"] == "INUSE"
+        assert sanitized["available"] is True
+        assert sanitized["availability_source"] == "endpoint_state"
+        assert sanitized["endpoint_state"] == "online"
+        assert sanitized["tech"] == "SIP"
+
+        assert "resolution_source" not in sanitized
+        assert "extension_resolution_source" not in sanitized
+        assert "device_state_id" not in sanitized
+        assert "destination_key" not in sanitized
+        assert "destination_target" not in sanitized
+        assert "destination_type" not in sanitized
+        assert "state" not in sanitized
+
     def test_multibyte_message_truncated_within_budget(self):
         """Multibyte text in message must not exceed max_bytes after truncation."""
         # Each emoji is 4 bytes in UTF-8

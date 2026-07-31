@@ -156,7 +156,7 @@ class GrokToolAdapter:
 
         try:
             raw_result = await tool.execute(parameters, exec_context)
-            sanitized = sanitize_tool_result_for_json_string(raw_result)
+            sanitized = sanitize_tool_result_for_json_string(raw_result, tool_name=function_name)
             # Tools can return non-dict payloads (str/list/etc.). Wrap so
             # the call_id / function_name attachment below is always safe
             # — previously this mutated `result` and would AttributeError
@@ -215,7 +215,11 @@ class GrokToolAdapter:
             return
 
         try:
-            safe_result = sanitize_tool_result_for_json_string(result, max_bytes=12000)
+            safe_result = sanitize_tool_result_for_json_string(
+                result,
+                max_bytes=12000,
+                tool_name=function_name,
+            )
             output_event = {
                 "type": "conversation.item.create",
                 "item": {

@@ -54,6 +54,7 @@ from ..audio import (
 )
 from ..config import GoogleProviderConfig
 from src.tools.telephony.hangup_policy import normalize_hangup_policy
+from src.tools.adapters.sanitize import sanitize_tool_result_for_json_string
 
 # Tool calling support
 from src.tools.registry import tool_registry
@@ -1192,22 +1193,6 @@ class GoogleLiveProvider(AIProviderInterface):
                     self._mark_ws_disconnected()
                 return False
 
-    def _safe_jsonable(self, obj: Any, *, depth: int = 0, max_depth: int = 4, max_items: int = 30) -> Any:
-        if depth >= max_depth:
-            return str(obj)
-        if obj is None or isinstance(obj, (str, int, float, bool)):
-            return obj
-        if isinstance(obj, dict):
-            out: Dict[str, Any] = {}
-            for idx, (k, v) in enumerate(obj.items()):
-                if idx >= max_items:
-                    break
-                out[str(k)] = self._safe_jsonable(v, depth=depth + 1, max_depth=max_depth, max_items=max_items)
-            return out
-        if isinstance(obj, (list, tuple)):
-            return [self._safe_jsonable(v, depth=depth + 1, max_depth=max_depth, max_items=max_items) for v in list(obj)[:max_items]]
-        return str(obj)
-
     def _build_tool_response_payload(self, tool_name: str, result: Any) -> Dict[str, Any]:
         """
         Google Live can return 1011 internal errors if toolResponse payloads are too large or contain
@@ -1216,40 +1201,39 @@ class GoogleLiveProvider(AIProviderInterface):
         For Vertex AI + hangup_call: include explicit instruction to speak the farewell,
         since Vertex AI models may not automatically generate audio after tool responses.
         """
-        if not isinstance(result, dict):
-            payload: Dict[str, Any] = {"status": "success", "message": str(result)}
-        else:
-            payload = {}
-            # Keep fields that affect conversation control.
-            for k in ("status", "message", "will_hangup", "transferred", "transfer_mode", "extension", "destination"):
-                if k in result:
-                    payload[k] = self._safe_jsonable(result.get(k))
-            # Always provide a message string (best-effort).
-            if "message" not in payload:
-                payload["message"] = str(result.get("message") or "")
-            
-            # For hangup_call on Vertex AI: add explicit instruction to speak farewell
-            use_vertex = getattr(self, '_vertex_active', getattr(self.config, 'use_vertex_ai', False))
-            if use_vertex and tool_name == "hangup_call" and result.get("will_hangup"):
-                farewell = result.get("message", "")
-                if farewell:
-                    payload["instruction"] = f"Please say this farewell to the caller now: {farewell}"
-            # Do NOT include raw MCP result blobs - they are commonly large/nested and cause
-            # Google Live to stutter when generating audio. The `message` field already contains
-            # the speech text extracted via speech_field/speech_template.
+        keep_keys = ("status", "message", "will_hangup", "transferred", "transfer_mode", "extension", "destination")
+        payload = sanitize_tool_result_for_json_string(
+            result,
+            max_bytes=self._tool_response_max_bytes,
+            keep_keys=keep_keys,
+            tool_name=tool_name,
+        )
 
-        # Cap size aggressively.
-        try:
-            encoded = json.dumps(payload, ensure_ascii=False)
-            if len(encoded.encode("utf-8")) <= self._tool_response_max_bytes:
-                return payload
-        except Exception:
-            pass
+        # Ensure a clear status phrase is always present for extension checks.
+        if (
+            tool_name == "check_extension_status"
+            and not str(payload.get("message") or "").strip()
+            and isinstance(result, dict)
+        ):
+            extension = str(result.get("extension") or result.get("target") or "").strip() or "extension"
+            avail = result.get("available")
+            device_state = str(result.get("device_state") or result.get("state") or "").strip()
+            if isinstance(avail, bool):
+                availability_text = "available" if avail else "in use"
+                suffix = f" ({device_state})" if device_state else ""
+                payload["message"] = f"Extension {extension} is {availability_text}{suffix}."
 
-        # If too large, fall back to status + truncated message only.
-        msg = str(payload.get("message") or "")
-        msg = msg[:800]
-        return {"status": payload.get("status", "success"), "message": msg}
+        # For hangup_call on Vertex AI: add explicit instruction to speak farewell
+        use_vertex = getattr(self, "_vertex_active", getattr(self.config, "use_vertex_ai", False))
+        if use_vertex and tool_name == "hangup_call" and result.get("will_hangup"):
+            farewell = result.get("message", "")
+            if farewell:
+                payload["instruction"] = f"Please say this farewell to the caller now: {farewell}"
+
+        # Do NOT include raw MCP result blobs - they are commonly large/nested and cause
+        # Google Live to stutter when generating audio. The `message` field already contains
+        # the speech text extracted via speech_field/speech_template.
+        return payload
 
     async def _send_greeting(self) -> None:
         """Send greeting by asking Gemini to speak it (validated pattern from Golden Baseline)."""

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`check_extension_status` now preserves full provider-compatible availability data** ([#577](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/577)): the tool now returns a stable `message` and retains key availability fields (`extension`, `device_state_name`, `device_state`, `available`, `availability_source`, `endpoint_state`, `tech`) through JSON sanitization for all tool adapters, while still filtering internal debug fields. It also cross-checks active ARI channels when device state reports `NOT_INUSE` but endpoint/channel activity is present, preventing false "available" signals during live transfers.
+
 ## [7.5.4] - 2026-07-30
 
 ### Fixed

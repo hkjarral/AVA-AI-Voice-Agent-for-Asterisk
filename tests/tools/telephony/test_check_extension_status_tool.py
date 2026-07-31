@@ -36,6 +36,7 @@ class TestCheckExtensionStatusTool:
         assert result["status"] == "success"
         assert result["device_state_id"] == "SIP/6000"
         assert result["available"] is True
+        assert result["message"] == "Extension 6000 is available (NOT_INUSE)."
 
         # Ensure URL-encoded slash
         call_args = mock_ari_client.send_command.call_args.kwargs
@@ -53,6 +54,7 @@ class TestCheckExtensionStatusTool:
         assert result["status"] == "success"
         assert result["device_state_id"] == "PJSIP/2765"
         assert result["available"] is False
+        assert result["message"] == "Extension 2765 is in use (INUSE)."
 
     @pytest.mark.asyncio
     async def test_device_state_id_override(self, tool, tool_context, mock_ari_client):
@@ -120,6 +122,48 @@ class TestCheckExtensionStatusTool:
         assert result["status"] == "success"
         assert result["availability_source"] == "endpoint_state"
         assert result["available"] is True
+
+    async def test_marks_extension_busy_when_active_channel_is_detected(self, tool, tool_context, mock_ari_client):
+        tool_context.config["tools"]["extensions"]["internal"]["6000"]["device_state_tech"] = "SIP"
+
+        async def send_command_side_effect(method, resource, data=None, params=None):
+            if method == "GET" and resource == "endpoints/SIP/6000":
+                return {"technology": "SIP", "resource": "6000", "state": "online", "channel_ids": []}
+            if method == "GET" and resource == "deviceStates/SIP%2F6000":
+                return {"name": "SIP/6000", "state": "NOT_INUSE"}
+            if method == "GET" and resource == "channels":
+                return [
+                    {"id": "SIP/6000-00000001", "name": "SIP/6000-00000001", "state": "Up"},
+                ]
+            raise Exception(f"Unexpected ARI call: {method} {resource}")
+
+        mock_ari_client.send_command = AsyncMock(side_effect=send_command_side_effect)
+
+        result = await tool.execute({"extension": "6000"}, tool_context)
+        assert result["status"] == "success"
+        assert result["available"] is False
+        assert result["availability_source"] == "device_state+endpoint_channels"
+        assert result["endpoint_channel_ids"] == ["SIP/6000-00000001"]
+
+    async def test_keeps_extension_available_if_active_channels_check_fails(self, tool, tool_context, mock_ari_client):
+        tool_context.config["tools"]["extensions"]["internal"]["6000"]["device_state_tech"] = "SIP"
+
+        async def send_command_side_effect(method, resource, data=None, params=None):
+            if method == "GET" and resource == "endpoints/SIP/6000":
+                return {"technology": "SIP", "resource": "6000", "state": "online", "channel_ids": []}
+            if method == "GET" and resource == "deviceStates/SIP%2F6000":
+                return {"name": "SIP/6000", "state": "NOT_INUSE"}
+            if method == "GET" and resource == "channels":
+                raise Exception("channels unavailable")
+            raise Exception(f"Unexpected ARI call: {method} {resource}")
+
+        mock_ari_client.send_command = AsyncMock(side_effect=send_command_side_effect)
+
+        result = await tool.execute({"extension": "6000"}, tool_context)
+        assert result["status"] == "success"
+        assert result["available"] is True
+        assert result["availability_source"] == "device_state"
+        assert result["endpoint_channel_ids"] == []
 
     @pytest.mark.asyncio
     async def test_falls_back_to_list_endpoints_and_device_states(self, tool, tool_context, mock_ari_client):

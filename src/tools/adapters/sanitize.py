@@ -1,7 +1,21 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Tuple
+
+
+TOOL_CHECK_EXTENSION_KEYS: Tuple[str, ...] = (
+    "status",
+    "message",
+    "target",
+    "extension",
+    "device_state_name",
+    "device_state",
+    "available",
+    "availability_source",
+    "endpoint_state",
+    "tech",
+)
 
 
 def _safe_jsonable(obj: Any, *, depth: int = 0, max_depth: int = 5, max_items: int = 50) -> Any:
@@ -26,13 +40,18 @@ def sanitize_tool_result_for_json_string(
     *,
     max_bytes: int = 12000,
     keep_keys: Tuple[str, ...] = ("status", "message", "data", "will_hangup", "transferred", "transfer_mode", "extension", "destination", "error"),
+    tool_name: str | None = None,
 ) -> Dict[str, Any]:
     """Return a JSON-serializable, size-capped tool result dict for providers that require JSON-string payloads."""
+    selected_keep_keys = keep_keys
+    if str(tool_name or "").strip() == "check_extension_status":
+        selected_keep_keys = TOOL_CHECK_EXTENSION_KEYS
+
     if not isinstance(result, dict):
         payload: Dict[str, Any] = {"status": "success", "message": str(result)}
     else:
         payload = {}
-        for k in keep_keys:
+        for k in selected_keep_keys:
             if k in result:
                 payload[k] = _safe_jsonable(result.get(k))
         if "message" not in payload:
@@ -76,4 +95,3 @@ def sanitize_tool_result_for_json_string(
             high = mid - 1
     payload["message"] = best
     return payload
-

@@ -192,7 +192,7 @@ class OpenAIToolAdapter:
         # Execute tool
         try:
             result = await tool.execute(parameters, exec_context)
-            sanitized = sanitize_tool_result_for_json_string(result)
+            sanitized = sanitize_tool_result_for_json_string(result, tool_name=function_name)
             logger.info(
                 "Tool executed",
                 call_id=context.get("call_id"),
@@ -263,7 +263,7 @@ class OpenAIToolAdapter:
         
         try:
             # Step 1: Send function_call_output
-            safe_result = sanitize_tool_result_for_json_string(result, max_bytes=12000)
+            safe_result = sanitize_tool_result_for_json_string(result, max_bytes=12000, tool_name=function_name)
             output_event = {
                 "type": "conversation.item.create",
                 "item": {

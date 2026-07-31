@@ -288,6 +288,75 @@ async def _list_endpoints(
     return [item for item in resp if isinstance(item, dict)]
 
 
+async def _list_channels(
+    *,
+    context: ToolExecutionContext,
+) -> List[Dict[str, Any]]:
+    if not context.ari_client:
+        return []
+    try:
+        resp = await context.ari_client.send_command(
+            method="GET",
+            resource="channels",
+        )
+    except Exception:
+        logger.debug("ARI channels list failed", exc_info=True)
+        return []
+    if not isinstance(resp, list):
+        return []
+    return [item for item in resp if isinstance(item, dict)]
+
+
+def _extension_matches_channel(
+    *,
+    channel: Dict[str, Any],
+    tech: str,
+    extension: str,
+) -> bool:
+    if not channel:
+        return False
+    if not tech or not extension:
+        return False
+    channel_name = str(channel.get("name", "") or "")
+    if channel_name.startswith(f"{tech}/{extension}"):
+        return True
+
+    # Fall back to connected/number when available; this covers some
+    # Local/forwarded channel name variations.
+    connected = channel.get("connected")
+    if isinstance(connected, dict):
+        connected_number = str(connected.get("number", "") or "").strip()
+        if connected_number and connected_number == extension:
+            return True
+    return False
+
+
+def _has_active_channels(
+    *,
+    channels: List[Dict[str, Any]],
+    tech: str,
+    extension: str,
+) -> List[str]:
+    if not channels:
+        return []
+    active: List[str] = []
+    for channel in channels:
+        if not isinstance(channel, dict):
+            continue
+        if not _extension_matches_channel(channel=channel, tech=tech, extension=extension):
+            continue
+        channel_id = str(channel.get("id", "") or "").strip()
+        if not channel_id:
+            continue
+        state = str(channel.get("state", "") or "").strip().upper()
+        if state and state not in {"DOWN"}:
+            active.append(channel_id)
+            continue
+        if not state:
+            active.append(channel_id)
+    return active
+
+
 class CheckExtensionStatusTool(Tool):
     @property
     def definition(self) -> ToolDefinition:
@@ -604,18 +673,44 @@ class CheckExtensionStatusTool(Tool):
 
         endpoint_state = ""
         endpoint_channel_ids: List[str] = []
+        warnings: List[str] = []
         if isinstance(endpoint_info, dict):
             endpoint_state = str(endpoint_info.get("state", "") or "").strip()
             endpoint_channel_ids = [str(x) for x in (endpoint_info.get("channel_ids") or []) if x is not None]
+            # If the endpoint is online but doesn't list channel IDs, cross-check
+            # active channels directly as a fallback.
+            if state_norm == "NOT_INUSE" and not endpoint_channel_ids and endpoint_state.lower() == "online":
+                endpoint_tech = used_tech
+                if not endpoint_tech and resolved_id and "/" in resolved_id:
+                    endpoint_tech = resolved_id.split("/", 1)[0]
+                active_channels = _has_active_channels(
+                    channels=await _list_channels(context=context),
+                    tech=endpoint_tech,
+                    extension=extension,
+                )
+                if active_channels:
+                    endpoint_channel_ids = active_channels
+                    warnings.append(
+                        "Device state reported as available, but active endpoint channel(s) were detected. "
+                        "Treating extension as busy."
+                    )
 
-        warnings: List[str] = []
         availability_source = ""
         if state_norm:
             # Conservative availability mapping:
             # - NOT_INUSE is clearly available.
             # - INUSE/BUSY/RINGING/UNAVAILABLE are not.
             available = state_norm == "NOT_INUSE"
-            availability_source = "device_state"
+            if state_norm == "NOT_INUSE" and endpoint_channel_ids:
+                available = False
+                availability_source = "device_state+endpoint_channels"
+                if not any("Treating extension as busy" in w for w in warnings):
+                    warnings.append(
+                        "Device state reports NOT_INUSE, but active endpoint channel(s) were detected. "
+                        "Treating extension as busy."
+                    )
+            else:
+                availability_source = "device_state"
         elif endpoint_state:
             # Endpoint state is weaker (online/offline). We treat "online + no channels" as available.
             available = endpoint_state.lower() == "online" and len(endpoint_channel_ids) == 0
@@ -630,6 +725,23 @@ class CheckExtensionStatusTool(Tool):
                 "device_state_error": device_state_error,
             }
 
+        # Always return an explicit availability message so downstream sanitizers
+        # still preserve a clear model-readable signal.
+        resolved_extension = extension or target
+        if state_norm:
+            availability_text = "available" if available else "in use"
+            availability_detail = str(state_norm or state)
+            availability_message = (
+                f"Extension {resolved_extension} is {availability_text} "
+                f"({availability_detail})."
+            )
+        else:
+            availability_text = "available" if available else "in use"
+            availability_message = (
+                f"Extension {resolved_extension} is {availability_text} "
+                f"based on endpoint state ({endpoint_state})."
+            )
+
         result = {
             "status": "success",
             "target": target,
@@ -641,6 +753,7 @@ class CheckExtensionStatusTool(Tool):
             "device_state": state_norm or state,
             "available": available,
             "availability_source": availability_source,
+            "message": availability_message,
         }
 
         if destination_source:
