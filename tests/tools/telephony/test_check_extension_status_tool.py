@@ -125,6 +125,7 @@ class TestCheckExtensionStatusTool:
         assert result["availability_source"] == "endpoint_state"
         assert result["available"] is True
 
+    @pytest.mark.asyncio
     async def test_marks_extension_busy_when_active_channel_is_detected(self, tool, tool_context, mock_ari_client):
         tool_context.config["tools"]["extensions"]["internal"]["6000"]["device_state_tech"] = "SIP"
 
@@ -149,6 +150,7 @@ class TestCheckExtensionStatusTool:
         assert result["message"] == "Extension 6000 is in use (active_endpoint_channels_detected)."
         assert "active endpoint channel(s)" in str(result.get("warnings", []))
 
+    @pytest.mark.asyncio
     async def test_does_not_match_prefixed_extension_in_active_channels(self, tool, tool_context, mock_ari_client):
         tool_context.config["tools"]["extensions"]["internal"].setdefault("600", {})["device_state_tech"] = "SIP"
 
@@ -171,7 +173,8 @@ class TestCheckExtensionStatusTool:
         assert result["availability_source"] == "device_state"
         assert result["endpoint_channel_ids"] == []
 
-    async def test_keeps_extension_available_if_active_channels_check_fails(self, tool, tool_context, mock_ari_client):
+    @pytest.mark.asyncio
+    async def test_marks_extension_unavailable_if_active_channels_check_fails(self, tool, tool_context, mock_ari_client):
         tool_context.config["tools"]["extensions"]["internal"]["6000"]["device_state_tech"] = "SIP"
 
         async def send_command_side_effect(method, resource, data=None, params=None):

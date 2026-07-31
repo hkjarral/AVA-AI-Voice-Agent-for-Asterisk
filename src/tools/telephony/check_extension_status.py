@@ -317,6 +317,7 @@ def _extension_matches_channel(
         return False
     if not tech or not extension:
         return False
+    tech = str(tech).strip().upper()
     channel_name = str(channel.get("name", "") or "")
     endpoint_name = f"{tech}/{extension}"
     if channel_name == endpoint_name or channel_name.startswith(f"{endpoint_name}-"):
