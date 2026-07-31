@@ -733,6 +733,31 @@ class CheckExtensionStatusTool(Tool):
             available = endpoint_state.lower() == "online" and len(endpoint_channel_ids) == 0
             availability_source = "endpoint_state"
             availability_reason = endpoint_state.lower() or "offline"
+            if available and used_tech:
+                channels = await _list_channels(context=context)
+                if channels is None:
+                    available = False
+                    availability_source = "endpoint_state+endpoint_channels_lookup_failed"
+                    availability_reason = "channel_lookup_failed"
+                    warnings.append(
+                        "Failed to verify active endpoint channels due to ARI lookup failure; "
+                        "treating extension as unavailable."
+                    )
+                else:
+                    active_channels = _has_active_channels(
+                        channels=channels,
+                        tech=used_tech,
+                        extension=extension,
+                    )
+                    if active_channels:
+                        endpoint_channel_ids = active_channels
+                        available = False
+                        availability_source = "endpoint_state+endpoint_channels"
+                        availability_reason = "active_endpoint_channels_detected"
+                        warnings.append(
+                            "Endpoint state reported as available, but active endpoint "
+                            "channel(s) were detected. Treating extension as busy."
+                        )
             warnings.append("Device state unavailable; availability inferred from endpoint state (may be less accurate).")
         else:
             return {

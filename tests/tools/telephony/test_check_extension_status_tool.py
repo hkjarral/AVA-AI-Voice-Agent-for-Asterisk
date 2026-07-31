@@ -116,6 +116,8 @@ class TestCheckExtensionStatusTool:
                 return {"technology": "PJSIP", "resource": "2765", "state": "online", "channel_ids": []}
             if method == "GET" and resource == "deviceStates/PJSIP%2F2765":
                 raise Exception("404 Not Found")
+            if method == "GET" and resource == "channels":
+                return []
             raise Exception(f"Unexpected ARI call: {method} {resource}")
 
         mock_ari_client.send_command = AsyncMock(side_effect=send_command_side_effect)
@@ -124,6 +126,53 @@ class TestCheckExtensionStatusTool:
         assert result["status"] == "success"
         assert result["availability_source"] == "endpoint_state"
         assert result["available"] is True
+
+    @pytest.mark.asyncio
+    async def test_marks_extension_busy_when_endpoint_state_is_online_and_active_channel_found(self, tool, tool_context, mock_ari_client):
+        tool_context.config["tools"]["extensions"]["internal"] = {}
+        tool_context.config["tools"]["check_extension_status"] = {"restrict_to_configured_extensions": False}
+
+        async def send_command_side_effect(method, resource, data=None, params=None):
+            if method == "GET" and resource == "endpoints/PJSIP/2765":
+                return {"technology": "PJSIP", "resource": "2765", "state": "online", "channel_ids": []}
+            if method == "GET" and resource == "deviceStates/PJSIP%2F2765":
+                raise Exception("404 Not Found")
+            if method == "GET" and resource == "channels":
+                return [
+                    {"id": "PJSIP/2765-00000001", "name": "PJSIP/2765-00000001", "state": "Up"},
+                ]
+            raise Exception(f"Unexpected ARI call: {method} {resource}")
+
+        mock_ari_client.send_command = AsyncMock(side_effect=send_command_side_effect)
+
+        result = await tool.execute({"extension": "2765"}, tool_context)
+        assert result["status"] == "success"
+        assert result["availability_source"] == "endpoint_state+endpoint_channels"
+        assert result["available"] is False
+        assert result["endpoint_channel_ids"] == ["PJSIP/2765-00000001"]
+        assert result["message"] == "Extension 2765 is in use (active_endpoint_channels_detected)."
+
+    @pytest.mark.asyncio
+    async def test_marks_extension_unavailable_when_endpoint_state_fallback_channel_lookup_fails(self, tool, tool_context, mock_ari_client):
+        tool_context.config["tools"]["extensions"]["internal"] = {}
+        tool_context.config["tools"]["check_extension_status"] = {"restrict_to_configured_extensions": False}
+
+        async def send_command_side_effect(method, resource, data=None, params=None):
+            if method == "GET" and resource == "endpoints/PJSIP/2765":
+                return {"technology": "PJSIP", "resource": "2765", "state": "online", "channel_ids": []}
+            if method == "GET" and resource == "deviceStates/PJSIP%2F2765":
+                raise Exception("404 Not Found")
+            if method == "GET" and resource == "channels":
+                raise Exception("channels unavailable")
+            raise Exception(f"Unexpected ARI call: {method} {resource}")
+
+        mock_ari_client.send_command = AsyncMock(side_effect=send_command_side_effect)
+
+        result = await tool.execute({"extension": "2765"}, tool_context)
+        assert result["status"] == "success"
+        assert result["availability_source"] == "endpoint_state+endpoint_channels_lookup_failed"
+        assert result["available"] is False
+        assert result["message"] == "Extension 2765 is in use (channel_lookup_failed)."
 
     @pytest.mark.asyncio
     async def test_marks_extension_busy_when_active_channel_is_detected(self, tool, tool_context, mock_ari_client):
