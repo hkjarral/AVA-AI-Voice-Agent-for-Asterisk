@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -57,7 +57,17 @@ describe('TransportPage audio profile guidance', () => {
     it('shows the bounded ARI keepalive controls', async () => {
         render(<TransportPage />);
 
-        expect(await screen.findByLabelText('ARI Ping Interval (seconds)')).toHaveValue(10);
-        expect(screen.getByLabelText('ARI Ping Timeout (seconds)')).toHaveValue(10);
+        const interval = await screen.findByLabelText('ARI Ping Interval (seconds)');
+        const timeout = screen.getByLabelText('ARI Ping Timeout (seconds)');
+
+        expect(interval).toHaveValue(10);
+        expect(timeout).toHaveValue(10);
+
+        fireEvent.change(interval, { target: { value: '99' } });
+        expect(interval).toHaveValue(60);
+        fireEvent.change(interval, { target: { value: '1' } });
+        expect(interval).toHaveValue(5);
+        fireEvent.change(timeout, { target: { value: '' } });
+        expect(timeout).toHaveValue(10);
     });
 });

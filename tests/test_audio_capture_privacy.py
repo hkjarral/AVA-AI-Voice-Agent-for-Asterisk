@@ -162,6 +162,29 @@ def test_runtime_path_rejection_disables_capture_without_retry(tmp_path, monkeyp
     assert attempts == 1
 
 
+def test_runtime_wave_open_failure_disables_capture_without_retry(tmp_path, monkeypatch):
+    manager = AudioCaptureManager(
+        base_dir=str(tmp_path / "captures"),
+        keep_files=True,
+        enabled=True,
+    )
+    attempts = 0
+
+    def fail_open(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise OSError("test file-open failure")
+
+    monkeypatch.setattr(capture_module.wave, "open", fail_open)
+
+    manager.append_pcm16("call-1", "caller_inbound", b"\x00\x00" * 80, 8000)
+    manager.append_pcm16("call-1", "caller_inbound", b"\x00\x00" * 80, 8000)
+
+    assert manager.enabled is False
+    assert manager._handles == {}
+    assert attempts == 1
+
+
 def test_capture_manager_defaults_fail_closed(tmp_path):
     root = tmp_path / "captures"
     manager = AudioCaptureManager(base_dir=str(root))

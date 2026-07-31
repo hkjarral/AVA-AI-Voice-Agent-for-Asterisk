@@ -86,10 +86,10 @@ class AudioCaptureManager:
                             pass
                         wf = self._open_handle(call_id, stream_name, sample_rate)
                         self._handles[key] = (wf, sample_rate)
-            except UnsafeDiagnosticPathError as exc:
-                # A path that becomes unsafe after initialization is a writer-wide
-                # privacy failure. Disable once, close any previously opened WAVs,
-                # and make later chunks strict no-ops instead of retrying per frame.
+            except (UnsafeDiagnosticPathError, OSError) as exc:
+                # An unsafe path or OS-level open failure is writer-wide. Disable
+                # once, close any previously opened WAVs, and make later chunks
+                # strict no-ops instead of retrying on every audio frame.
                 self.enabled = False
                 for open_handle, _rate in self._handles.values():
                     try:
@@ -98,7 +98,7 @@ class AudioCaptureManager:
                         pass
                 self._handles.clear()
                 logger.warning(
-                    "Audio capture path rejected; capture disabled",
+                    "Audio capture unavailable; capture disabled",
                     call_id=call_id,
                     stream_name=stream_name,
                     error=str(exc),

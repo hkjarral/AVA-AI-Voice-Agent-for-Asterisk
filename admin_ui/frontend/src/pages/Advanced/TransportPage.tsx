@@ -12,6 +12,12 @@ import { sanitizeConfigForSave } from '../../utils/configSanitizers';
 import { getCachedConfig, loadConfigYaml } from '../../utils/configCache';
 import { useRestartRequired } from '../../hooks/useRestartRequired';
 
+const normalizeAriPingSeconds = (rawValue: string): number => {
+    if (rawValue.trim() === '') return 10;
+    const parsed = Number(rawValue);
+    return Number.isFinite(parsed) ? Math.min(60, Math.max(5, parsed)) : 10;
+};
+
 type TransportConfig = Record<string, unknown> & {
     audio_transport?: string;
     asterisk?: {
@@ -282,7 +288,7 @@ const TransportPage = () => {
                                 updateSectionConfig(
                                     'asterisk',
                                     'ws_ping_interval_sec',
-                                    Number(e.target.value)
+                                    normalizeAriPingSeconds(e.target.value)
                                 )
                             }
                             tooltip="How often the engine probes an otherwise-idle ARI WebSocket. Lower values detect silent network loss sooner but increase sensitivity to event-loop stalls."
@@ -298,7 +304,7 @@ const TransportPage = () => {
                                 updateSectionConfig(
                                     'asterisk',
                                     'ws_ping_timeout_sec',
-                                    Number(e.target.value)
+                                    normalizeAriPingSeconds(e.target.value)
                                 )
                             }
                             tooltip="How long the engine waits for the ARI pong. The default interval plus timeout bounds silent-failure detection to approximately 20 seconds."
