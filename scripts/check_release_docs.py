@@ -41,6 +41,7 @@ def main() -> int:
 
     checks: list[tuple[str, str, str]] = [
         ("README.md", f"version-{latest}-blue", "version badge"),
+        ("admin_ui/backend/main.py", f'version="{latest}"', "OpenAPI release version"),
         (
             "README.md",
             f"docs/INSTALLATION.md#upgrade-to-v{latest_anchor}-existing-checkout",
