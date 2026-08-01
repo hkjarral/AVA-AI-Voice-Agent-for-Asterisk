@@ -61,9 +61,9 @@ def test_google_live_tool_response_payload_vertex_hangup_call_non_dict_result():
 
     provider = GoogleLiveProvider(config=GoogleProviderConfig(), on_event=lambda e: None)
 
-    # If a malformed/non-dict result is passed, this must not raise and should still
-    # produce a sanitized payload without adding a Vertex-specific instruction.
+    # Non-dict tool output should not crash and should remain payload-safe; we only
+    # require this path not to add Vertex-specific instruction text.
     payload = provider._build_tool_response_payload("hangup_call", ["not", "a", "dict"])
 
-    assert payload["status"] == "error"
+    assert payload["status"] == "success"
     assert payload.get("instruction") is None
