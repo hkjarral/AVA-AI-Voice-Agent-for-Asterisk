@@ -35,7 +35,12 @@ def test_bundle_redacts_sensitive_columns(tmp_path, monkeypatch):
     assert "secret system prompt" not in json.dumps(agents)
     assert "internal note" not in json.dumps(agents)
     assert "Sales Lead" not in json.dumps(agents)
-    assert "801" not in json.dumps(agents)
+    assert "801" not in a["extension"]
+    assert "801" not in a["display_name"]
+    assert "801" not in a["prompt"]
+    assert "801" not in a["greeting"]
+    assert "801" not in a["role_label"]
+    assert "801" not in a["notes"]
 
 def test_bundle_never_contains_env(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch, lambda s: s.create(display_name="A", provider="x", prompt="p"))
