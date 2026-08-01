@@ -771,19 +771,12 @@ class CheckExtensionStatusTool(Tool):
         # Always return an explicit availability message so downstream sanitizers
         # still preserve a clear model-readable signal.
         resolved_extension = extension or target
-        if state_norm:
-            availability_text = "available" if available else "in use"
-            availability_detail = str(availability_reason)
-            availability_message = (
-                f"Extension {resolved_extension} is {availability_text} "
-                f"({availability_detail})."
-            )
-        else:
-            availability_text = "available" if available else "in use"
-            availability_message = (
-                f"Extension {resolved_extension} is {availability_text} "
-                f"based on endpoint state ({endpoint_state})."
-            )
+        availability_text = "available" if available else "in use"
+        availability_detail = str(availability_reason)
+        availability_message = (
+            f"Extension {resolved_extension} is {availability_text} "
+            f"({availability_detail})."
+        )
 
         result = {
             "status": "success",
