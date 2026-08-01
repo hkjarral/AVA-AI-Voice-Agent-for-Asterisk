@@ -1603,6 +1603,9 @@ class ProviderTestRequest(BaseModel):
     name: str
     config: Dict[str, Any]
 
+class _LocalAIAuthenticationError(RuntimeError):
+    pass
+
 class SmtpTestRequest(BaseModel):
     to_email: str
     from_email: Optional[str] = None
@@ -1718,7 +1721,9 @@ async def test_provider_connection(request: ProviderTestRequest):
                                 auth_response.get("type") != "auth_response"
                                 or auth_response.get("status") != "ok"
                             ):
-                                raise RuntimeError("Local AI Server authentication failed")
+                                raise _LocalAIAuthenticationError(
+                                    "Local AI Server authentication failed"
+                                )
 
                         # Send status request to check models
                         await ws.send(json.dumps({"type": "status"}))
@@ -1729,6 +1734,8 @@ async def test_provider_connection(request: ProviderTestRequest):
                 try:
                     data = await _try_connect(ws_url)
                     effective_url = ws_url
+                except _LocalAIAuthenticationError:
+                    raise
                 except Exception as e:
                     alt = _fallback_ws_url(ws_url)
                     if alt != ws_url:

@@ -124,7 +124,9 @@ async def test_local_provider_requires_only_declared_capabilities(monkeypatch, t
 
 
 @pytest.mark.asyncio
-async def test_local_provider_stops_after_failed_auth(monkeypatch, tmp_path):
+async def test_local_provider_stops_after_failed_auth_without_host_fallback(
+    monkeypatch, tmp_path
+):
     sent_messages = []
     monkeypatch.setattr(config.settings, "ENV_PATH", str(tmp_path / ".env"))
     monkeypatch.setenv("LOCAL_WS_AUTH_TOKEN", "test-secret")
@@ -141,7 +143,7 @@ async def test_local_provider_stops_after_failed_auth(monkeypatch, tmp_path):
                 "type": "local",
                 "capabilities": ["stt"],
                 "auth_token": "${LOCAL_WS_AUTH_TOKEN:-}",
-                "ws_url": "ws://127.0.0.1:8765",
+                "ws_url": "ws://local_ai_server:8765",
             },
         )
     )
