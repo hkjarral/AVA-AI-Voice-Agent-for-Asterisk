@@ -1225,7 +1225,12 @@ class GoogleLiveProvider(AIProviderInterface):
 
         # For hangup_call on Vertex AI: add explicit instruction to speak farewell
         use_vertex = getattr(self, "_vertex_active", getattr(self.config, "use_vertex_ai", False))
-        if use_vertex and tool_name == "hangup_call" and result.get("will_hangup"):
+        if (
+            use_vertex
+            and tool_name == "hangup_call"
+            and isinstance(result, dict)
+            and result.get("will_hangup")
+        ):
             farewell = result.get("message", "")
             if farewell:
                 payload["instruction"] = f"Please say this farewell to the caller now: {farewell}"

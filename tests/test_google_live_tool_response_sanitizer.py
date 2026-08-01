@@ -52,3 +52,18 @@ def test_google_live_tool_response_payload_includes_extension_availability():
     assert payload["endpoint_state"] == "online"
     assert payload["tech"] == "SIP"
     assert payload["message"] == "Extension 6000 is in use (INUSE)."
+
+
+@pytest.mark.unit
+def test_google_live_tool_response_payload_vertex_hangup_call_non_dict_result():
+    from src.providers.google_live import GoogleLiveProvider
+    from src.config import GoogleProviderConfig
+
+    provider = GoogleLiveProvider(config=GoogleProviderConfig(), on_event=lambda e: None)
+
+    # If a malformed/non-dict result is passed, this must not raise and should still
+    # produce a sanitized payload without adding a Vertex-specific instruction.
+    payload = provider._build_tool_response_payload("hangup_call", ["not", "a", "dict"])
+
+    assert payload["status"] == "error"
+    assert payload.get("instruction") is None
