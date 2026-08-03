@@ -114,21 +114,21 @@ jobs:
         timeout: '30m'
 
     - name: Upload ai-engine results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v4
+      uses: github/codeql-action/upload-sarif@v4.37.4
       if: always()
       with:
         sarif_file: 'trivy-ai-engine.sarif'
         category: 'trivy-ai-engine'
 
     - name: Upload local-ai-server results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v4
+      uses: github/codeql-action/upload-sarif@v4.37.4
       if: always() && github.event_name != 'schedule'
       with:
         sarif_file: 'trivy-local-ai-server.sarif'
         category: 'trivy-local-ai-server'
 
     - name: Upload local-ai-server full results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v4
+      uses: github/codeql-action/upload-sarif@v4.37.4
       if: github.event_name == 'schedule'
       with:
         sarif_file: 'trivy-local-ai-server-full.sarif'
