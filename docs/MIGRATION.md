@@ -2,6 +2,27 @@
 
 This guide covers upgrading between major versions of Asterisk AI Voice Agent.
 
+## v7.5.4 to v7.5.5
+
+v7.5.5 is an in-place feature release with no database migration, Agent
+reassignment, provider credential change, or default Audio Profile change.
+
+After upgrading:
+
+1. Rebuild and recreate `admin_ui` and `ai_engine`.
+2. If you use `check_extension_status`, review the new global "State Value
+   Mapping" (Tools → Check Extension Status) and any per-extension
+   "Availability Signals" you want to configure (Live Agents → advanced
+   routing). Existing behavior is preserved by documented defaults; values
+   not explicitly listed as Free or Busy are treated as not available
+   (fail-closed) — confirm this matches your prior expectations if you relied
+   on undocumented device-state values resolving to "available."
+3. No action required for the collapsible sidebar or post-call webhook
+   variable changes — both are additive and backward compatible.
+
+Rollback uses the normal prior tagged images and the pre-update configuration
+backup. There is no database downgrade step.
+
 ## v7.5.3 to v7.5.4
 
 v7.5.4 is an in-place patch release with no database migration, Agent

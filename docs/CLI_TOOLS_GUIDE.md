@@ -151,7 +151,7 @@ Apply an update:
 
 ```bash
 agent update
-agent update --ref v7.5.4
+agent update --ref v7.5.5
 agent update --checkout --ref main
 agent update --rebuild auto
 agent update --rebuild none

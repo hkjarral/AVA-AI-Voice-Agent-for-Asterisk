@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-7.5.4-blue.svg)
+![Version](https://img.shields.io/badge/version-7.5.5-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -167,6 +167,37 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>v7.5.5 — Sidebar collapse, post-call webhook variables, and configurable extension availability</b></summary>
+
+v7.5.5 is an in-place feature release. It does not migrate databases, reassign
+Agents, or change Audio Profiles.
+
+- **Collapsible Admin UI sidebar** — the left navigation can collapse to an
+  icon-only rail, with hover tooltips and a persisted preference, reclaiming
+  space on smaller displays ([#596](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/596)).
+- **Pre-call variables now flow into post-call webhooks** — each pre-call
+  output variable is exposed as its own placeholder in webhook payload
+  templates, matching prompt and in-call tool behavior
+  ([#608](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/608)).
+- **Configurable extension availability mapping** — `check_extension_status`
+  now classifies multiple ARI device states per extension (including
+  operator-configured custom states for DND/away) via a configurable
+  free/busy/unavailable mapping, with a fail-closed default and new Admin UI
+  editors for per-extension and global state mapping
+  ([#577](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/577)).
+- **`check_extension_status` reliability fixes** — availability fields
+  survive JSON sanitization across all tool adapters, live-transfer channel
+  activity is cross-checked against stale device state, and an unmapped
+  `device_state_id` can no longer bypass `restrict_to_configured_extensions`
+  ([#577](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/577)).
+
+See the [v7.5.5 changelog](CHANGELOG.md#755---2026-08-08),
+[migration notes](docs/MIGRATION.md#v754-to-v755), and
+[validation matrix](docs/baselines/golden/v7.5.5-validation-matrix.md).
+
+</details>
+
+<details>
 <summary><b>v7.5.4 — Privacy-safe diagnostics and provider/update hardening</b></summary>
 
 v7.5.4 is an in-place reliability and privacy release. It does not migrate
@@ -369,7 +400,7 @@ voicemail mailboxes it should be allowed to use.**
   working.
 
 Before upgrading—especially from v7.3.0–v7.3.3—read the
-[current upgrade procedure](docs/INSTALLATION.md#upgrade-to-v754-existing-checkout)
+[current upgrade procedure](docs/INSTALLATION.md#upgrade-to-v755-existing-checkout)
 and [Contexts → Agents migration guide](docs/OPERATOR_MIGRATION.md).
 
 </details>

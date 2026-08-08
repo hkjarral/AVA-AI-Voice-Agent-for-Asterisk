@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.5.5] - 2026-08-08
+
 ### Added
 
 - **Collapsible left navigation sidebar** ([#596](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/596)): the Admin UI sidebar can now collapse to an icon-only rail via a toggle in its header, reclaiming horizontal space for configuration pages and long forms — useful on portrait or smaller displays. Collapsed items keep hover tooltips and screen-reader labels, and the collapsed/expanded preference persists across sessions in browser local storage.
@@ -2312,7 +2314,8 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 - **v4.0.0** (2025-10-29) - Modular pipeline architecture, production monitoring, golden baselines
 - **v3.0.0** (2025-09-16) - Modular pipeline architecture, file based playback
 
-[Unreleased]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.4...HEAD
+[Unreleased]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.5...HEAD
+[7.5.5]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.4...v7.5.5
 [7.5.4]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.3...v7.5.4
 [7.5.3]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.2...v7.5.3
 [7.5.2]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.1...v7.5.2
