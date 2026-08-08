@@ -409,3 +409,44 @@ class TestStateMapping:
     def test_case_insensitive(self):
         m = resolve_state_mapping(None)
         assert classify_device_state("not_inuse", m) == "free"
+
+
+from src.tools.telephony.check_extension_status import aggregate_availability
+
+class TestAggregateAvailability:
+    def test_all_free_is_available(self):
+        out = aggregate_availability([
+            {"id": "PJSIP/102", "role": "native", "state": "NOT_INUSE", "classification": "free"},
+            {"id": "Custom:DND102", "role": "custom", "state": "NOT_INUSE", "classification": "free", "status": "dnd"},
+        ])
+        assert out["available"] is True
+        assert out["availability_status"] == "available"
+
+    def test_native_inuse_is_in_call(self):
+        out = aggregate_availability([
+            {"id": "PJSIP/102", "role": "native", "state": "INUSE", "classification": "busy"},
+        ])
+        assert out["available"] is False
+        assert out["availability_status"] == "in_call"
+
+    def test_custom_dnd_busy_labels_dnd(self):
+        out = aggregate_availability([
+            {"id": "PJSIP/102", "role": "native", "state": "NOT_INUSE", "classification": "free"},
+            {"id": "Custom:DND102", "role": "custom", "state": "INUSE", "classification": "busy", "status": "dnd"},
+        ])
+        assert out["available"] is False
+        assert out["availability_status"] == "dnd"
+
+    def test_in_call_wins_over_dnd_by_priority(self):
+        out = aggregate_availability([
+            {"id": "PJSIP/102", "role": "native", "state": "INUSE", "classification": "busy"},
+            {"id": "Custom:DND102", "role": "custom", "state": "INUSE", "classification": "busy", "status": "dnd"},
+        ])
+        assert out["availability_status"] == "in_call"
+
+    def test_unavailable_when_only_unavailable(self):
+        out = aggregate_availability([
+            {"id": "PJSIP/102", "role": "native", "state": "UNAVAILABLE", "classification": "unavailable"},
+        ])
+        assert out["available"] is False
+        assert out["availability_status"] == "unavailable"

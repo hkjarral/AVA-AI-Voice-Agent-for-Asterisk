@@ -81,6 +81,30 @@ def classify_device_state(state: str, mapping: Dict[str, set]) -> str:
     return "unavailable"
 
 
+_STATUS_PRIORITY = ["in_call", "busy", "dnd", "ringing", "away", "on_hold", "unavailable", "unknown"]
+_NATIVE_BUSY_LABEL = {"INUSE": "in_call", "BUSY": "in_call", "RINGINUSE": "in_call",
+                      "RINGING": "ringing", "ONHOLD": "on_hold", "ACTIVE_CHANNELS": "in_call"}
+
+
+def _label_for(state_rec: dict) -> str:
+    cls = state_rec.get("classification")
+    if cls == "free":
+        return ""
+    if cls == "unavailable":
+        return "unavailable"
+    if state_rec.get("role") == "native":
+        return _NATIVE_BUSY_LABEL.get(str(state_rec.get("state", "")).strip().upper(), "busy")
+    return str(state_rec.get("status") or "").strip().lower() or "busy"
+
+
+def aggregate_availability(states: List[dict]) -> dict:
+    labels = [lbl for lbl in (_label_for(s) for s in states) if lbl]
+    if not labels:
+        return {"available": True, "availability_status": "available", "availability_reason": "available"}
+    top = min(labels, key=lambda l: _STATUS_PRIORITY.index(l) if l in _STATUS_PRIORITY else len(_STATUS_PRIORITY))
+    return {"available": False, "availability_status": top, "availability_reason": top}
+
+
 def _resolve_extension_entry(
     *,
     target: str,
