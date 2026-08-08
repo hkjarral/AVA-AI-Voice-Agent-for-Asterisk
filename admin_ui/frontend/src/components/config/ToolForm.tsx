@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { Plus, Trash2, Settings, Loader2 } from 'lucide-react';
+import { Plus, Trash2, Settings, Loader2, X } from 'lucide-react';
 import { FormInput, FormSwitch, FormSelect, FormLabel } from '../ui/FormComponents';
 import { Modal } from '../ui/Modal';
 import { EmailTemplateModal } from './EmailTemplateModal';
+import HelpTooltip from '../ui/HelpTooltip';
 
 interface ToolFormProps {
     config: any;
@@ -72,8 +73,16 @@ const hasLiveAgentExpertSettings = (ext: any) => {
     const aliases = Array.isArray(ext?.aliases)
         ? ext.aliases.map((item: any) => String(item || '').trim()).filter(Boolean)
         : [];
-    return actionType !== 'transfer' || deviceStateTech !== 'auto' || aliases.length > 0;
+    const deviceStates = Array.isArray(ext?.device_states) ? ext.device_states : [];
+    return actionType !== 'transfer' || deviceStateTech !== 'auto' || aliases.length > 0 || deviceStates.length > 0;
 };
+
+const DEVICE_STATE_STATUS_OPTIONS: { value: string; label: string }[] = [
+    { value: 'busy', label: 'Busy' },
+    { value: 'dnd', label: 'Do Not Disturb' },
+    { value: 'away', label: 'Away' },
+    { value: 'unavailable', label: 'Unavailable' },
+];
 
 const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, onSaveNow }: ToolFormProps) => {
     // Migrate calendar key references in all contexts' selected_calendars
@@ -2269,6 +2278,88 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                                     disabled={!showLiveAgentsExpert}
                                                 />
                                             </div>
+                                        </div>
+
+                                        {/* Availability signals (issue #577) */}
+                                        <div className="mt-4 pt-4 border-t border-border/50">
+                                            <div className="flex items-center gap-1.5 mb-2">
+                                                <label className="block text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Availability Signals</label>
+                                                <HelpTooltip content="Custom Asterisk device states (e.g. DND feature codes) that report this agent's availability, in addition to auto-detection." />
+                                            </div>
+                                            <p className="text-xs text-muted-foreground mb-3">
+                                                Auto (over ARI): native device state + active calls
+                                            </p>
+                                            <div className="space-y-2">
+                                                {(Array.isArray(ext.device_states) ? ext.device_states : []).map((ds: any, dsIdx: number) => (
+                                                    <div key={dsIdx} className="flex items-center gap-2">
+                                                        <input
+                                                            className="flex-1 border border-input rounded-md px-3 py-2 text-sm bg-background focus:ring-1 focus:ring-ring focus:outline-none transition-shadow disabled:cursor-not-allowed disabled:opacity-50"
+                                                            placeholder="e.g. Custom:DND102"
+                                                            value={ds?.id || ''}
+                                                            onChange={(e) => {
+                                                                const updated = { ...(config.extensions?.internal || {}) };
+                                                                const list = Array.isArray(ext.device_states) ? [...ext.device_states] : [];
+                                                                list[dsIdx] = { ...list[dsIdx], id: e.target.value };
+                                                                updated[key] = { ...ext, device_states: list };
+                                                                updateNestedConfig('extensions', 'internal', updated);
+                                                            }}
+                                                            title="Device state id (e.g. Custom:DND102)"
+                                                            disabled={!showLiveAgentsExpert}
+                                                        />
+                                                        <select
+                                                            aria-label="Status"
+                                                            className="border border-input rounded-md px-3 py-2 text-sm bg-background focus:ring-1 focus:ring-ring focus:outline-none transition-shadow disabled:cursor-not-allowed disabled:opacity-50"
+                                                            value={ds?.status || 'busy'}
+                                                            onChange={(e) => {
+                                                                const updated = { ...(config.extensions?.internal || {}) };
+                                                                const list = Array.isArray(ext.device_states) ? [...ext.device_states] : [];
+                                                                list[dsIdx] = { ...list[dsIdx], status: e.target.value };
+                                                                updated[key] = { ...ext, device_states: list };
+                                                                updateNestedConfig('extensions', 'internal', updated);
+                                                            }}
+                                                            title="Availability status reported by this device state"
+                                                            disabled={!showLiveAgentsExpert}
+                                                        >
+                                                            {DEVICE_STATE_STATUS_OPTIONS.map((opt) => (
+                                                                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                                            ))}
+                                                        </select>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                const updated = { ...(config.extensions?.internal || {}) };
+                                                                const list = (Array.isArray(ext.device_states) ? ext.device_states : []).filter((_: any, i: number) => i !== dsIdx);
+                                                                const nextExt = { ...ext };
+                                                                if (list.length > 0) {
+                                                                    nextExt.device_states = list;
+                                                                } else {
+                                                                    delete nextExt.device_states;
+                                                                }
+                                                                updated[key] = nextExt;
+                                                                updateNestedConfig('extensions', 'internal', updated);
+                                                            }}
+                                                            className="h-[38px] w-[38px] flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-md transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-50"
+                                                            title="Remove device state"
+                                                            disabled={!showLiveAgentsExpert}
+                                                        >
+                                                            <X className="w-4 h-4" />
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    const updated = { ...(config.extensions?.internal || {}) };
+                                                    const list = Array.isArray(ext.device_states) ? ext.device_states : [];
+                                                    updated[key] = { ...ext, device_states: [...list, { id: '', status: 'busy' }] };
+                                                    updateNestedConfig('extensions', 'internal', updated);
+                                                }}
+                                                className="mt-2 text-xs flex items-center bg-secondary px-2 py-1 rounded hover:bg-secondary/80 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                                                disabled={!showLiveAgentsExpert}
+                                            >
+                                                <Plus className="w-3 h-3 mr-1" /> Add custom state
+                                            </button>
                                         </div>
                                     </div>
                                 )}
