@@ -64,7 +64,7 @@ def resolve_state_mapping(cfg: Optional[dict]) -> Dict[str, set]:
     resolved: Dict[str, set] = {}
     for bucket, default in DEFAULT_STATE_MAPPING.items():
         values = cfg.get(bucket)
-        if isinstance(values, (list, tuple)) and values:
+        if isinstance(values, (list, tuple)):
             resolved[bucket] = {str(v).strip().upper() for v in values if str(v).strip()}
         else:
             resolved[bucket] = {v.upper() for v in default}
@@ -72,13 +72,24 @@ def resolve_state_mapping(cfg: Optional[dict]) -> Dict[str, set]:
 
 
 def classify_device_state(state: str, mapping: Dict[str, set]) -> str:
-    """Return 'free' | 'busy' | 'unavailable'. Unlisted values fail closed to 'unavailable'."""
+    """Return 'free' | 'busy' | 'unavailable'. Precedence is free -> busy -> unavailable;
+    unlisted values fail closed to 'unavailable'."""
     s = str(state or "").strip().upper()
     if s in mapping.get("free", set()):
         return "free"
     if s in mapping.get("busy", set()):
         return "busy"
+    if s in mapping.get("unavailable", set()):
+        return "unavailable"
     return "unavailable"
+
+
+def _classify_custom_device_state(state: str, mapping: Dict[str, set]) -> str:
+    """A CUSTOM device state is an opt-in "unavailable" signal, not a fail-closed one:
+    it only makes the extension unavailable when its raw value classifies as busy.
+    Free/unavailable/unknown/empty/invalid raw values are not actively blocking, so they
+    classify as 'free' here (unlike native states, which stay fail-closed)."""
+    return "busy" if classify_device_state(state, mapping) == "busy" else "free"
 
 
 _STATUS_PRIORITY = ["in_call", "busy", "dnd", "ringing", "away", "on_hold", "unavailable", "unknown"]
@@ -916,7 +927,7 @@ class CheckExtensionStatusTool(Tool):
                 "id": resolved_id,
                 "role": "custom",
                 "state": native_state,
-                "classification": classify_device_state(native_state, mapping),
+                "classification": _classify_custom_device_state(native_state, mapping),
                 "status": str(matching_configured.get("status", "") or "").strip(),
             }]
         else:
@@ -937,7 +948,7 @@ class CheckExtensionStatusTool(Tool):
                 "id": ds_id,
                 "role": "custom",
                 "state": ds_state_norm,
-                "classification": classify_device_state(ds_state_norm, mapping),
+                "classification": _classify_custom_device_state(ds_state_norm, mapping),
                 "status": ds_status,
             })
 
@@ -948,21 +959,24 @@ class CheckExtensionStatusTool(Tool):
         availability_status = aggregated["availability_status"]
         availability_reason_field = aggregated["availability_reason"]
 
+        # Always rebuild the message from the FINAL availability_status so it never
+        # contradicts `available`, whether or not custom device_states are configured.
+        status_messages = {
+            "available": f"Extension {resolved_extension} is available.",
+            "in_call": f"Extension {resolved_extension} is on a call.",
+            "dnd": f"Extension {resolved_extension} is on Do Not Disturb.",
+            "away": f"Extension {resolved_extension} is away.",
+            "on_hold": f"Extension {resolved_extension} is on hold.",
+            "ringing": f"Extension {resolved_extension} is ringing.",
+            "unavailable": f"Extension {resolved_extension} is unavailable.",
+            "busy": f"Extension {resolved_extension} is busy.",
+        }
+        availability_message = status_messages.get(
+            availability_status, f"Extension {resolved_extension} is unavailable."
+        )
+
         if has_custom_states:
             availability_source = "device_states_aggregate"
-            status_messages = {
-                "available": f"Extension {resolved_extension} is available.",
-                "in_call": f"Extension {resolved_extension} is on a call.",
-                "dnd": f"Extension {resolved_extension} is on Do Not Disturb.",
-                "away": f"Extension {resolved_extension} is away.",
-                "on_hold": f"Extension {resolved_extension} is on hold.",
-                "ringing": f"Extension {resolved_extension} is ringing.",
-                "unavailable": f"Extension {resolved_extension} is unavailable.",
-                "busy": f"Extension {resolved_extension} is busy.",
-            }
-            availability_message = status_messages.get(
-                availability_status, f"Extension {resolved_extension} is unavailable."
-            )
 
         result = {
             "status": "success",

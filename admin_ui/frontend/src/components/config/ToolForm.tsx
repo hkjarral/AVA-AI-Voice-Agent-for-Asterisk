@@ -1114,7 +1114,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
     const [showStateMappingAdvanced, setShowStateMappingAdvanced] = useState(false);
     const stateMappingBucketText = (bucket: CheckExtensionStateBucket) => {
         const configured = config.check_extension_status?.state_mapping?.[bucket];
-        const tokens = Array.isArray(configured) && configured.length > 0
+        const tokens = Array.isArray(configured)
             ? configured
             : DEFAULT_CHECK_EXTENSION_STATE_MAPPING[bucket];
         return tokens.join(' ');
@@ -1142,9 +1142,9 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
         const tokens = parseStateTokens(rawText);
         const current = config.check_extension_status?.state_mapping || {};
         const next: Record<CheckExtensionStateBucket, string[]> = {
-            free: Array.isArray(current.free) && current.free.length > 0 ? current.free : DEFAULT_CHECK_EXTENSION_STATE_MAPPING.free,
-            busy: Array.isArray(current.busy) && current.busy.length > 0 ? current.busy : DEFAULT_CHECK_EXTENSION_STATE_MAPPING.busy,
-            unavailable: Array.isArray(current.unavailable) && current.unavailable.length > 0 ? current.unavailable : DEFAULT_CHECK_EXTENSION_STATE_MAPPING.unavailable,
+            free: Array.isArray(current.free) ? current.free : DEFAULT_CHECK_EXTENSION_STATE_MAPPING.free,
+            busy: Array.isArray(current.busy) ? current.busy : DEFAULT_CHECK_EXTENSION_STATE_MAPPING.busy,
+            unavailable: Array.isArray(current.unavailable) ? current.unavailable : DEFAULT_CHECK_EXTENSION_STATE_MAPPING.unavailable,
         };
         next[bucket] = tokens.length > 0 ? tokens : DEFAULT_CHECK_EXTENSION_STATE_MAPPING[bucket];
         const selectedTokens = new Set(next[bucket]);

@@ -141,6 +141,37 @@ describe('ToolForm — global device-state value mapping (issue #577)', () => {
         expect(mapping.unavailable).toEqual(['UNAVAILABLE', 'INVALID', 'UNKNOWN']);
     });
 
+    it('keeps an explicitly-cleared bucket empty when another bucket is edited afterward (CodeRabbit round 2)', async () => {
+        const user = userEvent.setup();
+        const onChange = vi.fn();
+
+        render(<Harness onChange={onChange} />);
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+
+        await user.click(screen.getByRole('button', { name: /State Value Mapping/i }));
+
+        // Move NOT_INUSE out of Free by adding it to Busy; the dedup logic removes it
+        // from Free, leaving Free explicitly empty.
+        const busyInput = screen.getByLabelText('Busy');
+        await user.type(busyInput, ' NOT_INUSE');
+        await user.tab();
+
+        expect(screen.getByLabelText('Free')).toHaveValue('');
+        let lastCall = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+        expect(lastCall.check_extension_status.state_mapping.free).toEqual([]);
+
+        // Editing an unrelated bucket must not silently restore Free's default.
+        const unavailableInput = screen.getByLabelText('Not available');
+        await user.type(unavailableInput, ' FOO');
+        await user.tab();
+
+        expect(screen.getByLabelText('Free')).toHaveValue('');
+        lastCall = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+        expect(lastCall.check_extension_status.state_mapping.free).toEqual([]);
+    });
+
     it('resets the mapping to defaults and omits state_mapping from config', async () => {
         const user = userEvent.setup();
         const onChange = vi.fn();

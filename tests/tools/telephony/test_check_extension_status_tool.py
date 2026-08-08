@@ -72,7 +72,7 @@ class TestCheckExtensionStatusTool:
         assert result["status"] == "success"
         assert result["device_state_id"] == "SIP/6000"
         assert result["available"] is True
-        assert result["message"] == "Extension 6000 is available (NOT_INUSE)."
+        assert result["message"] == "Extension 6000 is available."
 
         # Ensure URL-encoded slash
         call_args = mock_ari_client.send_command.call_args.kwargs
@@ -90,7 +90,7 @@ class TestCheckExtensionStatusTool:
         assert result["status"] == "success"
         assert result["device_state_id"] == "PJSIP/2765"
         assert result["available"] is False
-        assert result["message"] == "Extension 2765 is in use (INUSE)."
+        assert result["message"] == "Extension 2765 is on a call."
 
     @pytest.mark.asyncio
     async def test_device_state_id_override(self, tool, tool_context, mock_ari_client):
@@ -186,7 +186,7 @@ class TestCheckExtensionStatusTool:
         assert result["availability_source"] == "endpoint_state+endpoint_channels"
         assert result["available"] is False
         assert result["endpoint_channel_ids"] == ["PJSIP/2765-00000001"]
-        assert result["message"] == "Extension 2765 is in use (active_endpoint_channels_detected)."
+        assert result["message"] == "Extension 2765 is on a call."
 
     @pytest.mark.asyncio
     async def test_marks_extension_unavailable_when_endpoint_state_fallback_channel_lookup_fails(self, tool, tool_context, mock_ari_client):
@@ -208,7 +208,7 @@ class TestCheckExtensionStatusTool:
         assert result["status"] == "success"
         assert result["availability_source"] == "endpoint_state+endpoint_channels_lookup_failed"
         assert result["available"] is False
-        assert result["message"] == "Extension 2765 is in use (channel_lookup_failed)."
+        assert result["message"] == "Extension 2765 is unavailable."
 
     @pytest.mark.asyncio
     async def test_marks_extension_busy_when_active_channel_is_detected(self, tool, tool_context, mock_ari_client):
@@ -232,7 +232,7 @@ class TestCheckExtensionStatusTool:
         assert result["available"] is False
         assert result["availability_source"] == "device_state+endpoint_channels"
         assert result["endpoint_channel_ids"] == ["SIP/6000-00000001"]
-        assert result["message"] == "Extension 6000 is in use (active_endpoint_channels_detected)."
+        assert result["message"] == "Extension 6000 is on a call."
         assert "active endpoint channel(s)" in str(result.get("warnings", []))
 
     @pytest.mark.asyncio
@@ -278,7 +278,7 @@ class TestCheckExtensionStatusTool:
         assert result["available"] is False
         assert result["availability_source"] == "device_state+endpoint_channels_lookup_failed"
         assert result["endpoint_channel_ids"] == []
-        assert result["message"] == "Extension 6000 is in use (channel_lookup_failed)."
+        assert result["message"] == "Extension 6000 is unavailable."
 
     @pytest.mark.asyncio
     async def test_falls_back_to_list_endpoints_and_device_states(self, tool, tool_context, mock_ari_client):
@@ -446,6 +446,24 @@ class TestStateMapping:
         m = resolve_state_mapping(None)
         assert classify_device_state("not_inuse", m) == "free"
 
+    def test_explicit_empty_bucket_is_authoritative(self):
+        # CodeRabbit round 2 (A): a present-but-empty bucket must NOT fall back to the
+        # default for that bucket -- only an absent/non-list key should fall back.
+        m = resolve_state_mapping({"free": []})
+        assert m["free"] == set()
+        assert m["unavailable"] == {"UNAVAILABLE", "INVALID", "UNKNOWN"}
+
+    def test_value_only_in_unavailable_bucket_classifies_unavailable(self):
+        # CodeRabbit round 2 (C): the "unavailable" bucket must be consulted explicitly,
+        # not merely rely on the fail-closed fallback.
+        m = resolve_state_mapping({"unavailable": ["CUSTOM_OFFLINE"]})
+        assert classify_device_state("CUSTOM_OFFLINE", m) == "unavailable"
+
+    def test_precedence_free_wins_over_busy_when_value_in_both(self):
+        # CodeRabbit round 2 (C): precedence is free > busy > unavailable.
+        m = resolve_state_mapping({"free": ["CUSTOM_STATE"], "busy": ["CUSTOM_STATE"]})
+        assert classify_device_state("CUSTOM_STATE", m) == "free"
+
 
 from src.tools.telephony.check_extension_status import aggregate_availability
 
@@ -574,3 +592,71 @@ class TestGuardrailCustomStates:
         matching = [s for s in out["device_states"] if s["id"] == "Custom:DND102"]
         assert len(matching) == 1
         assert matching[0]["role"] == "custom"
+
+
+class TestCustomStateFailOpen:
+    """CodeRabbit round 2 (D): a custom device state is an opt-in "unavailable" signal.
+    It must only make the extension unavailable when its raw value classifies as busy;
+    an unset/UNKNOWN/empty/invalid custom state must NOT block."""
+
+    @pytest.mark.asyncio
+    async def test_unset_custom_dnd_does_not_block_availability(self, tool_context_factory):
+        ctx = tool_context_factory(extensions={"102": {
+            "dial_string": "PJSIP/102", "transfer": True,
+            "device_states": [{"id": "Custom:DND102", "status": "dnd"}],
+        }})
+
+        async def sc(method, resource, data=None, params=None):
+            if "PJSIP" in resource and "channels" not in resource:
+                return {"name": "PJSIP/102", "state": "NOT_INUSE"}
+            if "Custom" in resource:
+                return {"name": "Custom:DND102", "state": "UNKNOWN"}
+            if resource == "channels":
+                return []
+            return {}
+
+        ctx.ari_client.send_command = AsyncMock(side_effect=sc)
+        out = await CheckExtensionStatusTool().execute({"extension": "102"}, ctx)
+        assert out["available"] is True
+        assert out["availability_status"] == "available"
+
+    @pytest.mark.asyncio
+    async def test_custom_dnd_busy_still_blocks_availability(self, tool_context_factory):
+        # Guard the happy path: an actively-set custom BUSY state still yields dnd.
+        ctx = tool_context_factory(extensions={"102": {
+            "dial_string": "PJSIP/102", "transfer": True,
+            "device_states": [{"id": "Custom:DND102", "status": "dnd"}],
+        }})
+
+        async def sc(method, resource, data=None, params=None):
+            if "PJSIP" in resource and "channels" not in resource:
+                return {"name": "PJSIP/102", "state": "NOT_INUSE"}
+            if "Custom" in resource:
+                return {"name": "Custom:DND102", "state": "BUSY"}
+            if resource == "channels":
+                return []
+            return {}
+
+        ctx.ari_client.send_command = AsyncMock(side_effect=sc)
+        out = await CheckExtensionStatusTool().execute({"extension": "102"}, ctx)
+        assert out["available"] is False
+        assert out["availability_status"] == "dnd"
+
+
+class TestMessageMatchesAggregatedStatus:
+    """CodeRabbit round 2 (E): availability_message must always reflect the FINAL
+    availability_status, even with no custom device_states (e.g., a state_mapping
+    override on native state alone)."""
+
+    @pytest.mark.asyncio
+    async def test_message_matches_status_when_native_state_remapped_to_busy(self, tool_context_factory):
+        ctx = tool_context_factory(
+            extensions={"102": {"dial_string": "PJSIP/102", "transfer": True}},
+            tool_cfg={"state_mapping": {"free": ["IDLE_STATE_NOT_USED"], "busy": ["NOT_INUSE"]}},
+        )
+        ctx.ari_client.send_command = AsyncMock(return_value={"name": "PJSIP/102", "state": "NOT_INUSE"})
+        out = await CheckExtensionStatusTool().execute({"extension": "102"}, ctx)
+        assert out["available"] is False
+        assert out["availability_status"] == "busy"
+        assert "available" not in out["message"].lower()
+        assert "busy" in out["message"].lower()

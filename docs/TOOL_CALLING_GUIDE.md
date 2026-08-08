@@ -285,12 +285,12 @@ AI: "Thank you for calling. Goodbye!"
 - Each raw device-state value is classified into a `free` / `busy` / `unavailable` bucket via the configurable `state_mapping` (see below), and the tool returns a labeled `availability_status` (`available`, `in_call`, `dnd`, `away`, `on_hold`, `ringing`, `unavailable`) plus an `availability_reason` and a full `device_states[]` breakdown of every value that was checked.
 
 **ARI limitation — device state, not presence**: Asterisk's ARI only exposes **device state** (`NOT_INUSE`, `INUSE`, `BUSY`, `RINGING`, `UNAVAILABLE`, etc.), not the AMI presence layer. There is no ARI-native way to read a "Do Not Disturb" or "Away" presence flag. To make DND/away visible to this tool, project it onto a **custom device state** that ARI can see:
-```
+```text
 ; Flip a custom devstate from the dialplan, a feature code, or a script:
 devstate change Custom:DND102 BUSY
 ```
 or expose it as a hint:
-```
+```text
 exten => 1000,hint,PJSIP/alice,CustomPresence:alice
 ```
 Then map that custom device state to the extension in `device_states` (below) with a `status` of `dnd` or `away`. AMI presence itself remains out of scope — only device states are read.
