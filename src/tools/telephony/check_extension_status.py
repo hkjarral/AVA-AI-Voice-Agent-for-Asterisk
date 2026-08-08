@@ -323,6 +323,36 @@ async def _list_device_states(
     return [item for item in resp if isinstance(item, dict)]
 
 
+async def _query_custom_device_state(
+    *,
+    context: ToolExecutionContext,
+    device_state_id: str,
+) -> str:
+    """Query a single (typically custom/tracking) device state id and return its raw state."""
+    encoded_id = quote(device_state_id, safe="")
+    resp: Optional[Dict[str, Any]] = None
+    try:
+        resp = await context.ari_client.send_command(
+            method="GET",
+            resource=f"deviceStates/{encoded_id}",
+        )
+    except Exception:
+        logger.debug(
+            "ARI custom device state query failed",
+            device_state_id=device_state_id,
+            exc_info=True,
+        )
+        resp = None
+    if not isinstance(resp, dict) or "state" not in resp:
+        for item in await _list_device_states(context=context):
+            if str(item.get("name", "") or "") == device_state_id:
+                resp = item
+                break
+    if isinstance(resp, dict):
+        return str(resp.get("state", "") or "")
+    return ""
+
+
 async def _list_endpoints(
     *,
     context: ToolExecutionContext,
@@ -832,6 +862,78 @@ class CheckExtensionStatusTool(Tool):
             f"({availability_detail})."
         )
 
+        # Resolve any additional (e.g., custom DND/away tracking) device states configured
+        # for this extension and aggregate them together with the native device state into
+        # a single, labeled availability decision (#577).
+        mapping = resolve_state_mapping(
+            context.get_config_value("tools.check_extension_status.state_mapping", {}) or {}
+        )
+
+        active_channels_sources = {"device_state+endpoint_channels", "endpoint_state+endpoint_channels"}
+        lookup_failed_sources = {
+            "device_state+endpoint_channels_lookup_failed",
+            "endpoint_state+endpoint_channels_lookup_failed",
+        }
+        if availability_source in active_channels_sources:
+            # The #595 active-channel cross-check flipped an apparently-free native state to
+            # busy; represent that explicitly so aggregation labels it "in_call".
+            native_state, native_classification = "ACTIVE_CHANNELS", "busy"
+        elif availability_source in lookup_failed_sources:
+            native_state, native_classification = (state_norm or "UNAVAILABLE"), "unavailable"
+        elif state_norm:
+            native_state, native_classification = state_norm, classify_device_state(state_norm, mapping)
+        else:
+            native_state = endpoint_state.strip().upper() if endpoint_state else ""
+            native_classification = "free" if available else "unavailable"
+
+        device_state_records: List[Dict[str, Any]] = [{
+            "id": resolved_id,
+            "role": "native",
+            "state": native_state,
+            "classification": native_classification,
+        }]
+
+        configured_device_states = ext_entry.get("device_states") if isinstance(ext_entry, dict) else None
+        if isinstance(configured_device_states, list):
+            for ds in configured_device_states:
+                if not isinstance(ds, dict):
+                    continue
+                ds_id = str(ds.get("id", "") or "").strip()
+                if not ds_id:
+                    continue
+                ds_status = str(ds.get("status", "") or "").strip()
+                ds_state_norm = (await _query_custom_device_state(context=context, device_state_id=ds_id)).strip().upper()
+                device_state_records.append({
+                    "id": ds_id,
+                    "role": "custom",
+                    "state": ds_state_norm,
+                    "classification": classify_device_state(ds_state_norm, mapping),
+                    "status": ds_status,
+                })
+
+        aggregated = aggregate_availability(device_state_records)
+        has_custom_states = any(r.get("role") == "custom" for r in device_state_records)
+
+        available = aggregated["available"]
+        availability_status = aggregated["availability_status"]
+        availability_reason_field = aggregated["availability_reason"]
+
+        if has_custom_states:
+            availability_source = "device_states_aggregate"
+            status_messages = {
+                "available": f"Extension {resolved_extension} is available.",
+                "in_call": f"Extension {resolved_extension} is on a call.",
+                "dnd": f"Extension {resolved_extension} is on Do Not Disturb.",
+                "away": f"Extension {resolved_extension} is away.",
+                "on_hold": f"Extension {resolved_extension} is on hold.",
+                "ringing": f"Extension {resolved_extension} is ringing.",
+                "unavailable": f"Extension {resolved_extension} is unavailable.",
+                "busy": f"Extension {resolved_extension} is busy.",
+            }
+            availability_message = status_messages.get(
+                availability_status, f"Extension {resolved_extension} is unavailable."
+            )
+
         result = {
             "status": "success",
             "target": target,
@@ -843,6 +945,9 @@ class CheckExtensionStatusTool(Tool):
             "device_state": state_norm or state,
             "available": available,
             "availability_source": availability_source,
+            "availability_status": availability_status,
+            "availability_reason": availability_reason_field,
+            "device_states": device_state_records,
             "message": availability_message,
         }
 

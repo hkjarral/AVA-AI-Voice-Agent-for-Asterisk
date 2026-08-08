@@ -5,7 +5,43 @@ Unit tests for CheckExtensionStatusTool (AAVA-53).
 import pytest
 from unittest.mock import AsyncMock
 
+from src.tools.context import ToolExecutionContext
 from src.tools.telephony.check_extension_status import CheckExtensionStatusTool
+
+
+@pytest.fixture
+def tool_context_factory():
+    """
+    Factory for building a standalone ToolExecutionContext with custom
+    tools.extensions.internal / tools.check_extension_status config, for tests
+    that need per-test extension/device_states setups (multi-state resolution).
+    Mirrors the shared tool_context/mock_ari_client fixtures in
+    tests/tools/conftest.py.
+    """
+
+    def _make(extensions=None, tool_cfg=None, transfer_cfg=None):
+        client = AsyncMock()
+        client.send_command = AsyncMock(return_value={})
+
+        session_store = AsyncMock()
+        session_store.get_by_call_id = AsyncMock(return_value=None)
+
+        config = {
+            "tools": {
+                "extensions": {"internal": extensions or {}},
+                "check_extension_status": tool_cfg or {},
+                "transfer": transfer_cfg or {},
+            }
+        }
+        return ToolExecutionContext(
+            ari_client=client,
+            session_store=session_store,
+            config=config,
+            call_id="test_call_multi_state",
+            caller_channel_id="PJSIP/caller-00000001",
+        )
+
+    return _make
 
 
 class TestCheckExtensionStatusTool:
@@ -450,3 +486,37 @@ class TestAggregateAvailability:
         ])
         assert out["available"] is False
         assert out["availability_status"] == "unavailable"
+
+
+class TestMultiStateExecute:
+    @pytest.fixture
+    def tool(self):
+        return CheckExtensionStatusTool()
+
+    @pytest.mark.asyncio
+    async def test_native_free_custom_dnd_busy_reports_dnd(self, tool_context_factory):
+        ctx = tool_context_factory(extensions={"102": {
+            "dial_string": "PJSIP/102", "transfer": True,
+            "device_states": [{"id": "Custom:DND102", "status": "dnd"}],
+        }})
+        async def sc(method, resource, data=None, params=None):
+            if "PJSIP" in resource and "channels" not in resource:
+                return {"name": "PJSIP/102", "state": "NOT_INUSE"}
+            if "Custom" in resource:
+                return {"name": "Custom:DND102", "state": "INUSE"}
+            if resource == "channels":
+                return []
+            return {}
+        ctx.ari_client.send_command = AsyncMock(side_effect=sc)
+        out = await CheckExtensionStatusTool().execute({"extension": "102"}, ctx)
+        assert out["available"] is False
+        assert out["availability_status"] == "dnd"
+        ids = {s["id"] for s in out["device_states"]}
+        assert "PJSIP/102" in ids and "Custom:DND102" in ids
+
+    @pytest.mark.asyncio
+    async def test_backcompat_single_state_unchanged(self, tool, tool_context, mock_ari_client):
+        mock_ari_client.send_command = AsyncMock(return_value={"name": "SIP/6000", "state": "NOT_INUSE"})
+        out = await tool.execute({"extension": "6000", "tech": "SIP"}, tool_context)
+        assert out["available"] is True
+        assert out["availability_status"] == "available"
