@@ -15,6 +15,9 @@ TOOL_CHECK_EXTENSION_KEYS: Tuple[str, ...] = (
     "availability_source",
     "endpoint_state",
     "tech",
+    "availability_status",
+    "availability_reason",
+    "device_states",
 )
 
 
