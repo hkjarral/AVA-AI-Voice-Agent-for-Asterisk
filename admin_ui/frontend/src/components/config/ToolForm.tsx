@@ -26,6 +26,8 @@ interface VoicemailMailboxConfig {
     extension?: string;
 }
 
+type DeviceStateRow = { id?: string; status?: string };
+
 const DEFAULT_ATTENDED_ANNOUNCEMENT_TEMPLATE =
     "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}.";
 const DEFAULT_ATTENDED_AI_BRIEFING_INTRO_TEMPLATE =
@@ -1150,7 +1152,8 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
             stateTokensEqual(next[b], DEFAULT_CHECK_EXTENSION_STATE_MAPPING[b])
         );
 
-        const { state_mapping: _omit, ...restCheckExtensionStatus } = config.check_extension_status || {};
+        const restCheckExtensionStatus = { ...(config.check_extension_status || {}) };
+        delete restCheckExtensionStatus.state_mapping;
         if (isDefault) {
             onChange({ ...config, check_extension_status: restCheckExtensionStatus });
         } else {
@@ -1162,7 +1165,8 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
     };
 
     const resetStateMappingToDefaults = () => {
-        const { state_mapping: _omit, ...restCheckExtensionStatus } = config.check_extension_status || {};
+        const restCheckExtensionStatus = { ...(config.check_extension_status || {}) };
+        delete restCheckExtensionStatus.state_mapping;
         onChange({ ...config, check_extension_status: restCheckExtensionStatus });
         setStateMappingFreeDraft(DEFAULT_CHECK_EXTENSION_STATE_MAPPING.free.join(' '));
         setStateMappingBusyDraft(DEFAULT_CHECK_EXTENSION_STATE_MAPPING.busy.join(' '));
@@ -2427,7 +2431,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                                 Auto (over ARI): native device state + active calls
                                             </p>
                                             <div className="space-y-2">
-                                                {(Array.isArray(ext.device_states) ? ext.device_states : []).map((ds: any, dsIdx: number) => (
+                                                {(Array.isArray(ext.device_states) ? ext.device_states : []).map((ds: DeviceStateRow, dsIdx: number) => (
                                                     <div key={dsIdx} className="flex items-center gap-2">
                                                         <input
                                                             className="flex-1 border border-input rounded-md px-3 py-2 text-sm bg-background focus:ring-1 focus:ring-ring focus:outline-none transition-shadow disabled:cursor-not-allowed disabled:opacity-50"
@@ -2465,7 +2469,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                                             type="button"
                                                             onClick={() => {
                                                                 const updated = { ...(config.extensions?.internal || {}) };
-                                                                const list = (Array.isArray(ext.device_states) ? ext.device_states : []).filter((_: any, i: number) => i !== dsIdx);
+                                                                const list = (Array.isArray(ext.device_states) ? ext.device_states : []).filter((_: DeviceStateRow, i: number) => i !== dsIdx);
                                                                 const nextExt = { ...ext };
                                                                 if (list.length > 0) {
                                                                     nextExt.device_states = list;

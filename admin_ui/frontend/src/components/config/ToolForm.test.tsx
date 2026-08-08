@@ -17,7 +17,20 @@ vi.mock('axios', () => ({
     },
 }));
 
-const baseConfig = () => ({
+type TestToolConfig = {
+    extensions?: {
+        internal?: Record<string, {
+            dial_string?: string;
+            transfer?: boolean;
+            device_states?: { id?: string; status?: string }[];
+        }>;
+    };
+    check_extension_status?: {
+        state_mapping?: { free?: string[]; busy?: string[]; unavailable?: string[] };
+    };
+};
+
+const baseConfig = (): TestToolConfig => ({
     extensions: {
         internal: {
             '102': {
@@ -32,8 +45,8 @@ const baseConfig = () => ({
 // harness mirrors what the real config page does — feed onChange's result
 // back in as the next config — so DOM assertions after an interaction see
 // the update, the same way they would in the app.
-const Harness = ({ onChange }: { onChange: (c: any) => void }) => {
-    const [config, setConfig] = useState<any>(baseConfig());
+const Harness = ({ onChange }: { onChange: (c: TestToolConfig) => void }) => {
+    const [config, setConfig] = useState<TestToolConfig>(baseConfig());
     return (
         <ToolForm
             config={config}
