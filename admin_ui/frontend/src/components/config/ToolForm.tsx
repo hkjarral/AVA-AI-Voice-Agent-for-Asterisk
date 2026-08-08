@@ -56,6 +56,33 @@ const DEFAULT_HANGUP_ASSISTANT_FAREWELL_MARKERS = [
     "take care",
 ];
 
+type CheckExtensionStateBucket = 'free' | 'busy' | 'unavailable';
+const DEFAULT_CHECK_EXTENSION_STATE_MAPPING: Record<CheckExtensionStateBucket, string[]> = {
+    free: ['NOT_INUSE'],
+    busy: ['INUSE', 'BUSY', 'RINGING', 'RINGINUSE', 'ONHOLD'],
+    unavailable: ['UNAVAILABLE', 'INVALID', 'UNKNOWN'],
+};
+
+// Space-or-comma separated device-state tokens -> uppercase, trimmed, de-duped list.
+const parseStateTokens = (value: string): string[] => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    (value || '')
+        .split(/[\s,]+/)
+        .map((token) => token.trim().toUpperCase())
+        .filter((token) => token.length > 0)
+        .forEach((token) => {
+            if (!seen.has(token)) {
+                seen.add(token);
+                out.push(token);
+            }
+        });
+    return out;
+};
+
+const stateTokensEqual = (a: string[], b: string[]) =>
+    a.length === b.length && a.every((token) => b.includes(token));
+
 const HANGUP_EXPERT_STORAGE_KEY = 'aava.ui.tools.hangupExpertSettings';
 
 const parseMarkerList = (value: string) =>
@@ -1081,6 +1108,67 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
     const [endCallMarkerDraft, setEndCallMarkerDraft] = useState<string>(endCallMarkerText);
     const [assistantFarewellMarkerDraft, setAssistantFarewellMarkerDraft] = useState<string>(assistantFarewellMarkerText);
 
+    // ─── Check Extension Status: device-state value mapping ───────────────
+    const [showStateMappingAdvanced, setShowStateMappingAdvanced] = useState(false);
+    const stateMappingBucketText = (bucket: CheckExtensionStateBucket) => {
+        const configured = config.check_extension_status?.state_mapping?.[bucket];
+        const tokens = Array.isArray(configured) && configured.length > 0
+            ? configured
+            : DEFAULT_CHECK_EXTENSION_STATE_MAPPING[bucket];
+        return tokens.join(' ');
+    };
+    const stateMappingFreeText = stateMappingBucketText('free');
+    const stateMappingBusyText = stateMappingBucketText('busy');
+    const stateMappingUnavailableText = stateMappingBucketText('unavailable');
+    const [stateMappingFreeDraft, setStateMappingFreeDraft] = useState<string>(stateMappingFreeText);
+    const [stateMappingBusyDraft, setStateMappingBusyDraft] = useState<string>(stateMappingBusyText);
+    const [stateMappingUnavailableDraft, setStateMappingUnavailableDraft] = useState<string>(stateMappingUnavailableText);
+
+    useEffect(() => {
+        setStateMappingFreeDraft(stateMappingFreeText);
+    }, [stateMappingFreeText]);
+
+    useEffect(() => {
+        setStateMappingBusyDraft(stateMappingBusyText);
+    }, [stateMappingBusyText]);
+
+    useEffect(() => {
+        setStateMappingUnavailableDraft(stateMappingUnavailableText);
+    }, [stateMappingUnavailableText]);
+
+    const commitStateMappingBucket = (bucket: CheckExtensionStateBucket, rawText: string) => {
+        const tokens = parseStateTokens(rawText);
+        const current = config.check_extension_status?.state_mapping || {};
+        const next: Record<CheckExtensionStateBucket, string[]> = {
+            free: Array.isArray(current.free) && current.free.length > 0 ? current.free : DEFAULT_CHECK_EXTENSION_STATE_MAPPING.free,
+            busy: Array.isArray(current.busy) && current.busy.length > 0 ? current.busy : DEFAULT_CHECK_EXTENSION_STATE_MAPPING.busy,
+            unavailable: Array.isArray(current.unavailable) && current.unavailable.length > 0 ? current.unavailable : DEFAULT_CHECK_EXTENSION_STATE_MAPPING.unavailable,
+        };
+        next[bucket] = tokens.length > 0 ? tokens : DEFAULT_CHECK_EXTENSION_STATE_MAPPING[bucket];
+
+        const isDefault = (['free', 'busy', 'unavailable'] as CheckExtensionStateBucket[]).every((b) =>
+            stateTokensEqual(next[b], DEFAULT_CHECK_EXTENSION_STATE_MAPPING[b])
+        );
+
+        const { state_mapping: _omit, ...restCheckExtensionStatus } = config.check_extension_status || {};
+        if (isDefault) {
+            onChange({ ...config, check_extension_status: restCheckExtensionStatus });
+        } else {
+            onChange({
+                ...config,
+                check_extension_status: { ...restCheckExtensionStatus, state_mapping: next },
+            });
+        }
+    };
+
+    const resetStateMappingToDefaults = () => {
+        const { state_mapping: _omit, ...restCheckExtensionStatus } = config.check_extension_status || {};
+        onChange({ ...config, check_extension_status: restCheckExtensionStatus });
+        setStateMappingFreeDraft(DEFAULT_CHECK_EXTENSION_STATE_MAPPING.free.join(' '));
+        setStateMappingBusyDraft(DEFAULT_CHECK_EXTENSION_STATE_MAPPING.busy.join(' '));
+        setStateMappingUnavailableDraft(DEFAULT_CHECK_EXTENSION_STATE_MAPPING.unavailable.join(' '));
+    };
+
     useEffect(() => {
         setEndCallMarkerDraft(endCallMarkerText);
     }, [endCallMarkerText]);
@@ -1695,6 +1783,55 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                             onChange={(e) => updateNestedConfig('check_extension_status', 'restrict_to_configured_extensions', e.target.checked)}
                             className="mb-0 border-0 p-0 bg-transparent"
                         />
+
+                        <div className="border-t border-border pt-3 mt-3">
+                            <button
+                                type="button"
+                                onClick={() => setShowStateMappingAdvanced(!showStateMappingAdvanced)}
+                                className="text-sm font-medium text-primary hover:underline"
+                            >
+                                {showStateMappingAdvanced ? 'Hide' : 'Show'} State Value Mapping
+                            </button>
+
+                            {showStateMappingAdvanced && (
+                                <div className="mt-4 space-y-4">
+                                    <p className="text-xs text-muted-foreground">
+                                        Maps raw Asterisk device-state values to Free / Busy / Not available. Any value not listed in Free or Busy is treated as not available.
+                                    </p>
+                                    <FormInput
+                                        label="Free"
+                                        tooltip="Space- or comma-separated Asterisk device-state values that mean the extension is free (default: NOT_INUSE)."
+                                        value={stateMappingFreeDraft}
+                                        onChange={(e) => setStateMappingFreeDraft(e.target.value)}
+                                        onBlur={() => commitStateMappingBucket('free', stateMappingFreeDraft)}
+                                        placeholder={DEFAULT_CHECK_EXTENSION_STATE_MAPPING.free.join(' ')}
+                                    />
+                                    <FormInput
+                                        label="Busy"
+                                        tooltip="Space- or comma-separated Asterisk device-state values that mean the extension is busy."
+                                        value={stateMappingBusyDraft}
+                                        onChange={(e) => setStateMappingBusyDraft(e.target.value)}
+                                        onBlur={() => commitStateMappingBucket('busy', stateMappingBusyDraft)}
+                                        placeholder={DEFAULT_CHECK_EXTENSION_STATE_MAPPING.busy.join(' ')}
+                                    />
+                                    <FormInput
+                                        label="Not available"
+                                        tooltip="Space- or comma-separated Asterisk device-state values that mean the extension is not available. Any value not listed anywhere also falls into this bucket (fail-closed)."
+                                        value={stateMappingUnavailableDraft}
+                                        onChange={(e) => setStateMappingUnavailableDraft(e.target.value)}
+                                        onBlur={() => commitStateMappingBucket('unavailable', stateMappingUnavailableDraft)}
+                                        placeholder={DEFAULT_CHECK_EXTENSION_STATE_MAPPING.unavailable.join(' ')}
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={resetStateMappingToDefaults}
+                                        className="text-xs text-muted-foreground hover:text-foreground underline"
+                                    >
+                                        Reset to defaults
+                                    </button>
+                                </div>
+                            )}
+                        </div>
                     </div>
                 </div>
 

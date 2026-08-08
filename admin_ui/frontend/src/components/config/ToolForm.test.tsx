@@ -88,3 +88,65 @@ describe('ToolForm — per-extension availability signals (issue #577)', () => {
         expect(screen.getByText(/Auto \(over ARI\)/i)).toBeInTheDocument();
     });
 });
+
+describe('ToolForm — global device-state value mapping (issue #577)', () => {
+    it('shows the default buckets in the state value mapping panel', async () => {
+        const user = userEvent.setup();
+        render(<ToolForm config={baseConfig()} onChange={vi.fn()} />);
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+
+        await user.click(screen.getByRole('button', { name: /State Value Mapping/i }));
+
+        expect(screen.getByLabelText('Free')).toHaveValue('NOT_INUSE');
+        expect(screen.getByLabelText('Busy')).toHaveValue('INUSE BUSY RINGING RINGINUSE ONHOLD');
+        expect(screen.getByLabelText('Not available')).toHaveValue('UNAVAILABLE INVALID UNKNOWN');
+    });
+
+    it('adds ONHOLD to the free bucket and reports it via onChange', async () => {
+        const user = userEvent.setup();
+        const onChange = vi.fn();
+
+        render(<Harness onChange={onChange} />);
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+
+        await user.click(screen.getByRole('button', { name: /State Value Mapping/i }));
+
+        const freeInput = screen.getByLabelText('Free');
+        await user.type(freeInput, ' ONHOLD');
+        await user.tab();
+
+        expect(onChange).toHaveBeenCalled();
+        const lastCall = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+        const mapping = lastCall.check_extension_status.state_mapping;
+        expect(mapping.free).toContain('ONHOLD');
+        expect(mapping.free).toContain('NOT_INUSE');
+        expect(mapping.busy).toEqual(['INUSE', 'BUSY', 'RINGING', 'RINGINUSE', 'ONHOLD']);
+        expect(mapping.unavailable).toEqual(['UNAVAILABLE', 'INVALID', 'UNKNOWN']);
+    });
+
+    it('resets the mapping to defaults and omits state_mapping from config', async () => {
+        const user = userEvent.setup();
+        const onChange = vi.fn();
+
+        render(<Harness onChange={onChange} />);
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+
+        await user.click(screen.getByRole('button', { name: /State Value Mapping/i }));
+
+        const freeInput = screen.getByLabelText('Free');
+        await user.type(freeInput, ' ONHOLD');
+        await user.tab();
+
+        await user.click(screen.getByRole('button', { name: /Reset to defaults/i }));
+
+        expect(screen.getByLabelText('Free')).toHaveValue('NOT_INUSE');
+        const lastCall = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+        expect(lastCall.check_extension_status?.state_mapping).toBeUndefined();
+    });
+});
