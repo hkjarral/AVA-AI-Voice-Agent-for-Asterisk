@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Pre-call variables are usable directly in post-call webhook bodies** ([#608](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/608)): each pre-call output variable (e.g. `{customer_name}`) is now exposed as its own placeholder in post-call webhook payload templates, matching how the prompt and in-call tool paths already surface them. Previously only the whole `{pre_call_results_json}` object was available, so individual placeholders rendered as literal text. Built-in payload variables always take precedence — a pre-call variable named like a built-in (e.g. `caller_number`) can never override it.
+
 ### Fixed
 
 - **`check_extension_status` now preserves full provider-compatible availability data** ([#577](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/577)): the tool now returns a stable `message` and retains key availability fields (`extension`, `device_state_name`, `device_state`, `available`, `availability_source`, `endpoint_state`, `tech`) through JSON sanitization for all tool adapters, while still filtering internal debug fields. It also cross-checks active ARI channels when device state reports `NOT_INUSE` but endpoint/channel activity is present, preventing false "available" signals during live transfers.

@@ -291,6 +291,35 @@ class TestPayloadBuilding:
         assert data["id"] == "call_xyz"
         assert data["phone"] == "+1555123456"
     
+    def test_pre_call_variable_substitution(self, context):
+        """Pre-call output variables resolve as individual placeholders (issue #608)."""
+        context.pre_call_results = {"va": "Acme Corp", "customer_name": "John Smith"}
+        config = WebhookConfig(
+            name="test",
+            payload_template='{"company": "{va}", "customer_name": "{customer_name}"}',
+        )
+        tool = GenericWebhookTool(config)
+
+        payload = tool._build_payload(context)
+        data = json.loads(payload)
+
+        assert data["company"] == "Acme Corp"
+        assert data["customer_name"] == "John Smith"
+
+    def test_pre_call_variable_does_not_override_builtin(self, context):
+        """A pre-call variable named like a built-in cannot override it."""
+        context.pre_call_results = {"caller_number": "999-SPOOF"}
+        config = WebhookConfig(
+            name="test",
+            payload_template='{"phone": "{caller_number}"}',
+        )
+        tool = GenericWebhookTool(config)
+
+        payload = tool._build_payload(context)
+        data = json.loads(payload)
+
+        assert data["phone"] == "+1555123456"
+
     def test_json_field_not_quoted(self, context):
         """Test that _json fields are not quoted."""
         config = WebhookConfig(

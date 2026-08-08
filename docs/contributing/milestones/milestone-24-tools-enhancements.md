@@ -211,8 +211,13 @@ These variables are available for prompt/greeting substitution and tool payloads
 | `{transcript_json}` | Full conversation history as JSON array |
 | `{summary}` | AI-generated call summary (if available) |
 | `{tool_calls_json}` | List of in-call tool executions as JSON |
-| `{pre_call_results_json}` | Data from pre-call tools as JSON |
+| `{pre_call_results_json}` | Data from pre-call tools as JSON (whole object) |
 | `{provider}` | Provider name used for the call |
+
+Each pre-call output variable is **also** exposed as its own placeholder (e.g.
+`{customer_name}`), so a post-call body can reference it directly:
+`"customer_name": "{customer_name}"`. A built-in variable always wins — a
+pre-call variable named like a built-in (e.g. `caller_number`) never overrides it.
 
 ### Existing Tool Architecture (Code Analysis)
 

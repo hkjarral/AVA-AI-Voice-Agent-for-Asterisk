@@ -255,6 +255,37 @@ class TestPostCallContext:
         assert payload["campaign_id"] == ""
         assert payload["lead_id"] == ""
 
+    def test_to_payload_dict_flattens_pre_call_results(self):
+        """Pre-call output variables are exposed as individual placeholders."""
+        ctx = PostCallContext(
+            call_id="call_123",
+            caller_number="+1234567890",
+            pre_call_results={"customer_name": "John Smith", "va": "Acme Corp"},
+        )
+
+        payload = ctx.to_payload_dict()
+
+        # Individual pre-call variables usable directly in webhook templates
+        assert payload["customer_name"] == "John Smith"
+        assert payload["va"] == "Acme Corp"
+        # Blob still present for backward compatibility
+        assert '"customer_name": "John Smith"' in payload["pre_call_results_json"]
+
+    def test_to_payload_dict_pre_call_does_not_override_builtins(self):
+        """A pre-call variable must not clobber a built-in payload key."""
+        ctx = PostCallContext(
+            call_id="call_123",
+            caller_number="+1234567890",
+            caller_name="Jane Doe",
+            pre_call_results={"caller_number": "999", "caller_name": "SPOOF"},
+        )
+
+        payload = ctx.to_payload_dict()
+
+        # Built-ins win over same-named pre-call variables
+        assert payload["caller_number"] == "+1234567890"
+        assert payload["caller_name"] == "Jane Doe"
+
 
 # --- PreCallTool Base Class Tests ---
 

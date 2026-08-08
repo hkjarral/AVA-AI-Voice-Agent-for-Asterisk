@@ -310,7 +310,7 @@ class PostCallContext:
             Dictionary with all call data for templating.
         """
         import json
-        return {
+        payload: Dict[str, Any] = {
             "call_id": self.call_id,
             "caller_number": self.caller_number,
             "called_number": self.called_number or "",
@@ -329,3 +329,11 @@ class PostCallContext:
             "campaign_id": self.campaign_id or "",
             "lead_id": self.lead_id or "",
         }
+        # Flatten pre-call enrichment variables into individual placeholders
+        # (e.g. {customer_name}) so post-call webhook bodies can reference them
+        # directly, mirroring how the prompt and in-call paths expose them.
+        # Built-in keys always win; a pre-call variable never clobbers them.
+        for key, value in (self.pre_call_results or {}).items():
+            if key not in payload:
+                payload[key] = str(value) if value else ""
+        return payload
