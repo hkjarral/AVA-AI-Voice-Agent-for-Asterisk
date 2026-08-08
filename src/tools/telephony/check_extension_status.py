@@ -51,6 +51,36 @@ def _parse_dial_string_tech(dial_string: str) -> Optional[str]:
     return tech
 
 
+DEFAULT_STATE_MAPPING: Dict[str, Tuple[str, ...]] = {
+    "free": ("NOT_INUSE",),
+    "busy": ("INUSE", "BUSY", "RINGING", "RINGINUSE", "ONHOLD"),
+    "unavailable": ("UNAVAILABLE", "INVALID", "UNKNOWN"),
+}
+
+
+def resolve_state_mapping(cfg: Optional[dict]) -> Dict[str, set]:
+    """Merge operator config over defaults; each bucket falls back to its default when absent."""
+    cfg = cfg if isinstance(cfg, dict) else {}
+    resolved: Dict[str, set] = {}
+    for bucket, default in DEFAULT_STATE_MAPPING.items():
+        values = cfg.get(bucket)
+        if isinstance(values, (list, tuple)) and values:
+            resolved[bucket] = {str(v).strip().upper() for v in values if str(v).strip()}
+        else:
+            resolved[bucket] = {v.upper() for v in default}
+    return resolved
+
+
+def classify_device_state(state: str, mapping: Dict[str, set]) -> str:
+    """Return 'free' | 'busy' | 'unavailable'. Unlisted values fail closed to 'unavailable'."""
+    s = str(state or "").strip().upper()
+    if s in mapping.get("free", set()):
+        return "free"
+    if s in mapping.get("busy", set()):
+        return "busy"
+    return "unavailable"
+
+
 def _resolve_extension_entry(
     *,
     target: str,

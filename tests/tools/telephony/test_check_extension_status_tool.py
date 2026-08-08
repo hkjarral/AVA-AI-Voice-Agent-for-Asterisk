@@ -383,3 +383,29 @@ class TestCheckExtensionStatusTool:
 
         assert result["status"] == "success"
         assert result["device_state_id"] == "PJSIP/2765"
+
+
+from src.tools.telephony.check_extension_status import (
+    resolve_state_mapping, classify_device_state,
+)
+
+class TestStateMapping:
+    def test_defaults_classify_canonical_values(self):
+        m = resolve_state_mapping(None)
+        assert classify_device_state("NOT_INUSE", m) == "free"
+        assert classify_device_state("INUSE", m) == "busy"
+        assert classify_device_state("ONHOLD", m) == "busy"
+        assert classify_device_state("UNAVAILABLE", m) == "unavailable"
+
+    def test_unknown_value_is_fail_closed_unavailable(self):
+        m = resolve_state_mapping(None)
+        assert classify_device_state("WEIRD_CUSTOM", m) == "unavailable"
+
+    def test_operator_override_moves_onhold_to_free(self):
+        m = resolve_state_mapping({"free": ["NOT_INUSE", "ONHOLD"]})
+        assert classify_device_state("ONHOLD", m) == "free"
+        assert classify_device_state("INUSE", m) == "busy"
+
+    def test_case_insensitive(self):
+        m = resolve_state_mapping(None)
+        assert classify_device_state("not_inuse", m) == "free"
