@@ -315,11 +315,23 @@ tools:
         dial_string: "PJSIP/2765"
         device_state_tech: "PJSIP"  # auto | PJSIP | SIP | IAX2 | DAHDI
         device_states:
-          - id: "Custom:DND102"
+          - id: "Custom:DND2765"
             status: "dnd"
-          - id: "Custom:Away102"
+          - id: "Custom:Away2765"
             status: "away"
 ```
+
+> **Use the full ARI device-state name, including the `Custom:` prefix.** The `id`
+> is looked up verbatim over ARI (`GET /deviceStates/{id}`). `Custom:DND2765` resolves;
+> a bare `DND2765` does not exist, returns `INVALID`, and — being fail-closed — would
+> report the extension **unavailable on every call**. Verify the exact name with
+> `asterisk -rx "devstate list" | grep -i dnd`.
+>
+> **FreePBX:** dialing the DND feature code (`*78`) flips `Custom:DND<ext>` to `BUSY`
+> (e.g. `*78` on 2765 → `Custom:DND2765 = BUSY`), so `id: "Custom:DND<ext>"` with
+> `status: dnd` is the value to configure. The native `PJSIP/<ext>` device state does
+> **not** reflect DND — it stays `NOT_INUSE` unless the endpoint is actually on a call —
+> which is why the custom state must be listed explicitly.
 
 **Tool output**:
 - Returns `device_state` and `available` (boolean) for backward compatibility, plus `availability_status`, `availability_reason`, and `device_states[]` (each entry's raw id, value, and resolved bucket/status).
