@@ -281,8 +281,32 @@ AI: "Thank you for calling. Goodbye!"
 - Queries ARI device states (`GET /ari/deviceStates/{deviceStateName}`), typically using `<TECH>/<EXT>`:
   - `PJSIP/2765`
   - `SIP/6000`
+- Also queries any operator-configured custom device states for that extension (see `device_states` below), so a single check can cover both the native SIP/PJSIP device and any custom devstate an operator projects onto it.
+- Each raw device-state value is classified into a `free` / `busy` / `unavailable` bucket via the configurable `state_mapping` (see below), and the tool returns a labeled `availability_status` (`available`, `in_call`, `dnd`, `away`, `on_hold`, `ringing`, `unavailable`) plus an `availability_reason` and a full `device_states[]` breakdown of every value that was checked.
 
-**Configuration (optional but recommended)**:
+**ARI limitation — device state, not presence**: Asterisk's ARI only exposes **device state** (`NOT_INUSE`, `INUSE`, `BUSY`, `RINGING`, `UNAVAILABLE`, etc.), not the AMI presence layer. There is no ARI-native way to read a "Do Not Disturb" or "Away" presence flag. To make DND/away visible to this tool, project it onto a **custom device state** that ARI can see:
+```
+; Flip a custom devstate from the dialplan, a feature code, or a script:
+devstate change Custom:DND102 BUSY
+```
+or expose it as a hint:
+```
+exten => 1000,hint,PJSIP/alice,CustomPresence:alice
+```
+Then map that custom device state to the extension in `device_states` (below) with a `status` of `dnd` or `away`. AMI presence itself remains out of scope — only device states are read.
+
+**Configuration — global state mapping (optional)**: `tools.check_extension_status.state_mapping` controls which raw device-state values count as free, busy, or unavailable. Values not listed in `free` or `busy` are treated as `unavailable` (fail-closed).
+```yaml
+tools:
+  check_extension_status:
+    restrict_to_configured_extensions: true
+    state_mapping:
+      free: ["NOT_INUSE"]
+      busy: ["INUSE", "BUSY", "RINGING", "RINGINUSE", "ONHOLD"]
+      unavailable: ["UNAVAILABLE", "INVALID", "UNKNOWN"]
+```
+
+**Configuration — per-extension device states (optional but recommended)**: in addition to the native `dial_string`/`device_state_tech` device, an extension can list additional device states to check (e.g. a custom DND devstate) and the `availability_status` label each should resolve to.
 ```yaml
 tools:
   extensions:
@@ -290,10 +314,15 @@ tools:
       "2765":
         dial_string: "PJSIP/2765"
         device_state_tech: "PJSIP"  # auto | PJSIP | SIP | IAX2 | DAHDI
+        device_states:
+          - id: "Custom:DND102"
+            status: "dnd"
+          - id: "Custom:Away102"
+            status: "away"
 ```
 
 **Tool output**:
-- Returns `device_state` and `available` (boolean).
+- Returns `device_state` and `available` (boolean) for backward compatibility, plus `availability_status`, `availability_reason`, and `device_states[]` (each entry's raw id, value, and resolved bucket/status).
 
 ### Business Tools
 
