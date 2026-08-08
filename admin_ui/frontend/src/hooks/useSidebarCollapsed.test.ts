@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 
 import { useSidebarCollapsed, SIDEBAR_COLLAPSED_KEY } from './useSidebarCollapsed';
@@ -7,6 +7,31 @@ import { useSidebarCollapsed, SIDEBAR_COLLAPSED_KEY } from './useSidebarCollapse
 describe('useSidebarCollapsed', () => {
     beforeEach(() => {
         localStorage.clear();
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it('falls back to expanded when localStorage.getItem throws', () => {
+        vi.spyOn(localStorage, 'getItem').mockImplementation(() => {
+            throw new Error('storage blocked');
+        });
+
+        const { result } = renderHook(() => useSidebarCollapsed());
+
+        expect(result.current.collapsed).toBe(false);
+    });
+
+    it('does not throw when localStorage.setItem fails', () => {
+        vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
+            throw new Error('quota exceeded');
+        });
+
+        const { result } = renderHook(() => useSidebarCollapsed());
+
+        expect(() => act(() => result.current.toggle())).not.toThrow();
+        expect(result.current.collapsed).toBe(true);
     });
 
     it('defaults to expanded when nothing is stored', () => {
