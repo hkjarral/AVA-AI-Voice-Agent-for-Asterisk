@@ -1165,4 +1165,10 @@ If you find this project useful, please also give it a ⭐️!
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=hkjarral/AVA-AI-Voice-Agent-for-Asterisk&type=date&legend=top-left)](https://www.star-history.com/#hkjarral/AVA-AI-Voice-Agent-for-Asterisk&type=date&legend=top-left)
+<a href="https://www.star-history.com/?repos=hkjarral%2FAVA-AI-Voice-Agent-for-Asterisk&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=hkjarral/AVA-AI-Voice-Agent-for-Asterisk&type=date&theme=dark&legend=top-left&sealed_token=OFUaTIQ_cHQIeI9JOUvCGWT1NhM4MLx-xr5TRZEdODgPVlh-fSiAKxhs6Oa328sldbZyjiYVOHXlxkkn02lMmVdoYXZdQRMWI72Dzjddo9VI67yQaZHOqg" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=hkjarral/AVA-AI-Voice-Agent-for-Asterisk&type=date&legend=top-left&sealed_token=OFUaTIQ_cHQIeI9JOUvCGWT1NhM4MLx-xr5TRZEdODgPVlh-fSiAKxhs6Oa328sldbZyjiYVOHXlxkkn02lMmVdoYXZdQRMWI72Dzjddo9VI67yQaZHOqg" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=hkjarral/AVA-AI-Voice-Agent-for-Asterisk&type=date&legend=top-left&sealed_token=OFUaTIQ_cHQIeI9JOUvCGWT1NhM4MLx-xr5TRZEdODgPVlh-fSiAKxhs6Oa328sldbZyjiYVOHXlxkkn02lMmVdoYXZdQRMWI72Dzjddo9VI67yQaZHOqg" />
+ </picture>
+</a>
