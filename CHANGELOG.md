@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Collapsible left navigation sidebar** ([#596](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/596)): the Admin UI sidebar can now collapse to an icon-only rail via a toggle in its header, reclaiming horizontal space for configuration pages and long forms — useful on portrait or smaller displays. Collapsed items keep hover tooltips and screen-reader labels, and the collapsed/expanded preference persists across sessions in browser local storage.
 - **Pre-call variables are usable directly in post-call webhook bodies** ([#608](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/608)): each pre-call output variable (e.g. `{customer_name}`) is now exposed as its own placeholder in post-call webhook payload templates, matching how the prompt and in-call tool paths already surface them. Previously only the whole `{pre_call_results_json}` object was available, so individual placeholders rendered as literal text. Built-in payload variables always take precedence — a pre-call variable named like a built-in (e.g. `caller_number`) can never override it.
 
 ### Fixed
