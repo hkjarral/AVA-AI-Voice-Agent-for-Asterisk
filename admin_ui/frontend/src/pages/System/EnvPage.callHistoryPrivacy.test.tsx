@@ -59,7 +59,7 @@ describe('EnvPage Call History privacy', () => {
         expect(screen.getByRole('option', { name: /Strict/ })).toBeInTheDocument();
         expect(screen.getByRole('option', { name: /Show routing/ })).toBeInTheDocument();
         expect(screen.getByRole('option', { name: /Off/ })).toBeInTheDocument();
-        expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+        await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled());
 
         fireEvent.change(select, { target: { value: 'off' } });
         expect(screen.getByText(/Redaction is off/)).toBeInTheDocument();

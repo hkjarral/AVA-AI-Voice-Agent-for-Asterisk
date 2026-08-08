@@ -37,8 +37,8 @@ Run these commands from your actual checkout path. Do not assume it is `/root/..
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 git status --short
-git diff --binary > ../aava-pre-v754-working-tree.patch
-git diff --binary --cached > ../aava-pre-v754-staged.patch
+git diff --binary > ../aava-pre-v755-working-tree.patch
+git diff --binary --cached > ../aava-pre-v755-staged.patch
 docker compose config --quiet
 ```
 
