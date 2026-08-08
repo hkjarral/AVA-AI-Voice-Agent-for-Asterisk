@@ -520,3 +520,28 @@ class TestMultiStateExecute:
         out = await tool.execute({"extension": "6000", "tech": "SIP"}, tool_context)
         assert out["available"] is True
         assert out["availability_status"] == "available"
+
+
+class TestGuardrailCustomStates:
+    @pytest.mark.asyncio
+    async def test_configured_custom_state_is_allowed(self, tool_context_factory):
+        ctx = tool_context_factory(
+            extensions={"102": {"dial_string": "PJSIP/102", "transfer": True,
+                                "device_states": [{"id": "Custom:DND102", "status": "dnd"}]}},
+            tool_cfg={"restrict_to_configured_extensions": True})
+        async def sc(method, resource, data=None, params=None):
+            if "Custom" in resource: return {"name": "Custom:DND102", "state": "NOT_INUSE"}
+            if resource == "channels": return []
+            return {"name": "PJSIP/102", "state": "NOT_INUSE"}
+        ctx.ari_client.send_command = AsyncMock(side_effect=sc)
+        out = await CheckExtensionStatusTool().execute({"extension": "102"}, ctx)
+        assert out.get("guardrail_blocked") is not True
+        assert out["available"] is True
+
+    @pytest.mark.asyncio
+    async def test_unconfigured_state_id_param_still_blocked(self, tool_context_factory):
+        ctx = tool_context_factory(
+            extensions={"102": {"dial_string": "PJSIP/102", "transfer": True}},
+            tool_cfg={"restrict_to_configured_extensions": True})
+        out = await CheckExtensionStatusTool().execute({"extension": "102", "device_state_id": "Custom:HACK"}, ctx)
+        assert out["guardrail_blocked"] is True

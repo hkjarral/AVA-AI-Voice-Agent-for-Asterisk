@@ -527,10 +527,21 @@ class CheckExtensionStatusTool(Tool):
         if restrict_to_configured:
             normalized_extension = str(extension or "").strip()
             extension_for_guardrail = normalized_extension
-            if device_state_id:
-                extracted_extension = _extract_extension_from_device_state_id(device_state_id)
-                if extracted_extension:
-                    extension_for_guardrail = extracted_extension
+            # A device_state_id param that matches one of the resolved extension's own
+            # configured custom device_states (#577) is treated as part of that extension's
+            # config, not an arbitrary caller-supplied state id.
+            configured_state_ids = {
+                str(ds.get("id", "") or "").strip()
+                for ds in (ext_entry.get("device_states") or [] if isinstance(ext_entry, dict) else [])
+                if isinstance(ds, dict)
+            } - {""}
+            is_configured_custom_state = bool(device_state_id) and device_state_id in configured_state_ids
+            if device_state_id and not is_configured_custom_state:
+                # An explicit device_state_id param must resolve to a configured extension
+                # via its "<TECH>/<extension>" shape (checked below); it must not silently
+                # fall back to the (unrelated) `extension` param's value, or an arbitrary
+                # device_state_id could ride along with a valid `extension` param.
+                extension_for_guardrail = _extract_extension_from_device_state_id(device_state_id)
 
             if not allowed_extensions:
                 logger.warning(
@@ -568,7 +579,7 @@ class CheckExtensionStatusTool(Tool):
                     "guardrail_blocked": True,
                     "allowed_extensions": allowed_extensions,
                 }
-            if device_state_id and not _looks_like_extension_number(extension_for_guardrail):
+            if device_state_id and not is_configured_custom_state and not _looks_like_extension_number(extension_for_guardrail):
                 logger.warning(
                     "Blocked status check for non-numeric device_state_id while configured-only guardrail is enabled",
                     call_id=context.call_id,
