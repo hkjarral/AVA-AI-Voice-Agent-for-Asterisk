@@ -28,8 +28,8 @@ import {
     CalendarClock,
     LogOut,
     Lock,
-    PanelLeftClose,
-    PanelLeftOpen
+    ChevronsLeft,
+    ChevronsRight
 } from 'lucide-react';
 import { useAuth } from '../../auth/AuthContext';
 import { KOFI_URL, SPONSORS_URL } from '../../config/donation';
@@ -107,7 +107,7 @@ const CollapseToggle = ({ collapsed, onToggle }: { collapsed: boolean, onToggle:
             title={label}
             className="p-2 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
         >
-            {collapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
+            {collapsed ? <ChevronsRight className="w-4 h-4" /> : <ChevronsLeft className="w-4 h-4" />}
         </button>
     );
 };
