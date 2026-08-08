@@ -78,7 +78,7 @@ describe('ToolForm — per-extension availability signals (issue #577)', () => {
         const idInput = screen.getByPlaceholderText(/Custom:DND102/i);
         await user.type(idInput, 'Custom:DND102');
 
-        const statusSelect = screen.getByLabelText('Status', { exact: true });
+        const statusSelect = screen.getByLabelText('Custom device state 1 status', { exact: true });
         await user.selectOptions(statusSelect, 'dnd');
 
         expect(onChange).toHaveBeenCalled();
@@ -137,7 +137,7 @@ describe('ToolForm — global device-state value mapping (issue #577)', () => {
         const mapping = lastCall.check_extension_status.state_mapping;
         expect(mapping.free).toContain('ONHOLD');
         expect(mapping.free).toContain('NOT_INUSE');
-        expect(mapping.busy).toEqual(['INUSE', 'BUSY', 'RINGING', 'RINGINUSE', 'ONHOLD']);
+        expect(mapping.busy).toEqual(['INUSE', 'BUSY', 'RINGING', 'RINGINUSE']);
         expect(mapping.unavailable).toEqual(['UNAVAILABLE', 'INVALID', 'UNKNOWN']);
     });
 

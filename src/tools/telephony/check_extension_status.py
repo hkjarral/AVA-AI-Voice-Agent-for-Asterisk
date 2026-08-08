@@ -101,7 +101,7 @@ def aggregate_availability(states: List[dict]) -> dict:
     labels = [lbl for lbl in (_label_for(s) for s in states) if lbl]
     if not labels:
         return {"available": True, "availability_status": "available", "availability_reason": "available"}
-    top = min(labels, key=lambda l: _STATUS_PRIORITY.index(l) if l in _STATUS_PRIORITY else len(_STATUS_PRIORITY))
+    top = min(labels, key=lambda label: _STATUS_PRIORITY.index(label) if label in _STATUS_PRIORITY else len(_STATUS_PRIORITY))
     return {"available": False, "availability_status": top, "availability_reason": top}
 
 
@@ -897,30 +897,49 @@ class CheckExtensionStatusTool(Tool):
             native_state = endpoint_state.strip().upper() if endpoint_state else ""
             native_classification = "free" if available else "unavailable"
 
-        device_state_records: List[Dict[str, Any]] = [{
-            "id": resolved_id,
-            "role": "native",
-            "state": native_state,
-            "classification": native_classification,
-        }]
-
         configured_device_states = ext_entry.get("device_states") if isinstance(ext_entry, dict) else None
-        if isinstance(configured_device_states, list):
-            for ds in configured_device_states:
-                if not isinstance(ds, dict):
-                    continue
-                ds_id = str(ds.get("id", "") or "").strip()
-                if not ds_id:
-                    continue
-                ds_status = str(ds.get("status", "") or "").strip()
-                ds_state_norm = (await _query_custom_device_state(context=context, device_state_id=ds_id)).strip().upper()
-                device_state_records.append({
-                    "id": ds_id,
-                    "role": "custom",
-                    "state": ds_state_norm,
-                    "classification": classify_device_state(ds_state_norm, mapping),
-                    "status": ds_status,
-                })
+        configured_custom_states = [
+            ds for ds in configured_device_states if isinstance(ds, dict)
+        ] if isinstance(configured_device_states, list) else []
+
+        # If resolved_id matches one of the extension's own configured custom device_states
+        # (the #577 guardrail carve-out), it is the SAME state as that entry -- represent it
+        # exactly once, as role="custom" with the entry's configured status, instead of also
+        # emitting a "native" record (which would mislabel a busy custom state, e.g. treat a
+        # DND state as an active call) and re-querying/duplicating it in the loop below (#600).
+        matching_configured = next(
+            (ds for ds in configured_custom_states if str(ds.get("id", "") or "").strip() == resolved_id),
+            None,
+        )
+        if matching_configured is not None:
+            device_state_records: List[Dict[str, Any]] = [{
+                "id": resolved_id,
+                "role": "custom",
+                "state": native_state,
+                "classification": classify_device_state(native_state, mapping),
+                "status": str(matching_configured.get("status", "") or "").strip(),
+            }]
+        else:
+            device_state_records = [{
+                "id": resolved_id,
+                "role": "native",
+                "state": native_state,
+                "classification": native_classification,
+            }]
+
+        for ds in configured_custom_states:
+            ds_id = str(ds.get("id", "") or "").strip()
+            if not ds_id or ds_id == resolved_id:
+                continue
+            ds_status = str(ds.get("status", "") or "").strip()
+            ds_state_norm = (await _query_custom_device_state(context=context, device_state_id=ds_id)).strip().upper()
+            device_state_records.append({
+                "id": ds_id,
+                "role": "custom",
+                "state": ds_state_norm,
+                "classification": classify_device_state(ds_state_norm, mapping),
+                "status": ds_status,
+            })
 
         aggregated = aggregate_availability(device_state_records)
         has_custom_states = any(r.get("role") == "custom" for r in device_state_records)

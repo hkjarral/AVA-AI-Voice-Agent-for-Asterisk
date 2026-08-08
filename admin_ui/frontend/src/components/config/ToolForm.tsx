@@ -1147,6 +1147,12 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
             unavailable: Array.isArray(current.unavailable) && current.unavailable.length > 0 ? current.unavailable : DEFAULT_CHECK_EXTENSION_STATE_MAPPING.unavailable,
         };
         next[bucket] = tokens.length > 0 ? tokens : DEFAULT_CHECK_EXTENSION_STATE_MAPPING[bucket];
+        const selectedTokens = new Set(next[bucket]);
+        (['free', 'busy', 'unavailable'] as CheckExtensionStateBucket[]).forEach((other) => {
+            if (other !== bucket) {
+                next[other] = next[other].filter((t) => !selectedTokens.has(t));
+            }
+        });
 
         const isDefault = (['free', 'busy', 'unavailable'] as CheckExtensionStateBucket[]).every((b) =>
             stateTokensEqual(next[b], DEFAULT_CHECK_EXTENSION_STATE_MAPPING[b])
@@ -2434,6 +2440,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                                 {(Array.isArray(ext.device_states) ? ext.device_states : []).map((ds: DeviceStateRow, dsIdx: number) => (
                                                     <div key={dsIdx} className="flex items-center gap-2">
                                                         <input
+                                                            aria-label={`Custom device state ${dsIdx + 1} identifier`}
                                                             className="flex-1 border border-input rounded-md px-3 py-2 text-sm bg-background focus:ring-1 focus:ring-ring focus:outline-none transition-shadow disabled:cursor-not-allowed disabled:opacity-50"
                                                             placeholder="e.g. Custom:DND102"
                                                             value={ds?.id || ''}
@@ -2448,7 +2455,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                                             disabled={!showLiveAgentsExpert}
                                                         />
                                                         <select
-                                                            aria-label="Status"
+                                                            aria-label={`Custom device state ${dsIdx + 1} status`}
                                                             className="border border-input rounded-md px-3 py-2 text-sm bg-background focus:ring-1 focus:ring-ring focus:outline-none transition-shadow disabled:cursor-not-allowed disabled:opacity-50"
                                                             value={ds?.status || 'busy'}
                                                             onChange={(e) => {
@@ -2467,6 +2474,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                                         </select>
                                                         <button
                                                             type="button"
+                                                            aria-label={`Remove custom device state ${dsIdx + 1}`}
                                                             onClick={() => {
                                                                 const updated = { ...(config.extensions?.internal || {}) };
                                                                 const list = (Array.isArray(ext.device_states) ? ext.device_states : []).filter((_: DeviceStateRow, i: number) => i !== dsIdx);

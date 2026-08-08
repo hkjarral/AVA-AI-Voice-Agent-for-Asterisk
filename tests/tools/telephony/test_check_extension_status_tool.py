@@ -530,8 +530,10 @@ class TestGuardrailCustomStates:
                                 "device_states": [{"id": "Custom:DND102", "status": "dnd"}]}},
             tool_cfg={"restrict_to_configured_extensions": True})
         async def sc(method, resource, data=None, params=None):
-            if "Custom" in resource: return {"name": "Custom:DND102", "state": "NOT_INUSE"}
-            if resource == "channels": return []
+            if "Custom" in resource:
+                return {"name": "Custom:DND102", "state": "NOT_INUSE"}
+            if resource == "channels":
+                return []
             return {"name": "PJSIP/102", "state": "NOT_INUSE"}
         ctx.ari_client.send_command = AsyncMock(side_effect=sc)
         out = await CheckExtensionStatusTool().execute({"extension": "102"}, ctx)
@@ -545,3 +547,30 @@ class TestGuardrailCustomStates:
             tool_cfg={"restrict_to_configured_extensions": True})
         out = await CheckExtensionStatusTool().execute({"extension": "102", "device_state_id": "Custom:HACK"}, ctx)
         assert out["guardrail_blocked"] is True
+
+    @pytest.mark.asyncio
+    async def test_configured_custom_state_id_param_dedups_and_labels_dnd(self, tool_context_factory):
+        # A device_state_id param that matches a configured custom device_states entry
+        # (#577 guardrail carve-out) must be represented exactly once, as role="custom"
+        # with the entry's configured status -- not also as a "native" record that
+        # mislabels a BUSY custom state as an active call (#600 dedup fix).
+        ctx = tool_context_factory(
+            extensions={"102": {"dial_string": "PJSIP/102", "transfer": True,
+                                "device_states": [{"id": "Custom:DND102", "status": "dnd"}]}},
+            tool_cfg={"restrict_to_configured_extensions": True})
+
+        async def sc(method, resource, data=None, params=None):
+            if "Custom" in resource:
+                return {"name": "Custom:DND102", "state": "BUSY"}
+            if resource == "channels":
+                return []
+            return {"name": "PJSIP/102", "state": "NOT_INUSE"}
+
+        ctx.ari_client.send_command = AsyncMock(side_effect=sc)
+        out = await CheckExtensionStatusTool().execute(
+            {"extension": "102", "device_state_id": "Custom:DND102"}, ctx)
+        assert out["availability_status"] == "dnd"
+        assert out["available"] is False
+        matching = [s for s in out["device_states"] if s["id"] == "Custom:DND102"]
+        assert len(matching) == 1
+        assert matching[0]["role"] == "custom"
