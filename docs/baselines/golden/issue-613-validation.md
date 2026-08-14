@@ -30,23 +30,24 @@ draft pull request.
 
 | Scenario | Call ID / evidence | Result |
 |---|---|---|
-| Local channel: variable present on `;1` and `;2` before answer | Calls `1786749996.733`, `1786750047.740`; archive `rca-20260814-232559` | PASS — direct and inherited variables observed before answer |
-| Direct PJSIP channel: originate variables present | Channel `1786750106.747`; archive `rca-20260814-232559` | PASS — variables observed; rejected endpoint never started AI |
-| HUMAN: Lead Context reaches Agent prompt and behavior | Call `1786749996.733`; archive `rca-20260814-232559` | PASS — distinct context reached the selected Agent and AudioSocket media completed |
+| Local channel: variable present on `;1` and `;2` before answer | Calls `1786749996.733`, `1786750842.748`; archives `rca-20260814-232559`, `rca-20260814-234236` | PASS — direct and inherited variables observed before answer; replacement build logs only redacted values |
+| Direct PJSIP channel: originate variables present | Calls `1786750106.747`, `1786750902.755`; archives `rca-20260814-232559`, `rca-20260814-234236` | PASS — rejected and answered lifecycles both preserved variables; replacement build logs only redacted values |
+| HUMAN: Lead Context reaches Agent prompt and behavior | Calls `1786749996.733`, `1786750842.748`, `1786750902.755`; campaign archives | PASS — distinct context reached the selected Agent, and replacement-build AudioSocket/media sessions completed |
 | MACHINE: AMD and voicemail outcome unchanged | Call `1786750047.740`; archive `rca-20260814-232559` | FAIL — live dialplan mapped `NOTSURE/TOOLONG-5000` to HUMAN; separate AMD policy/configuration finding |
 | Consent accepted, denied, and timeout | PENDING | PENDING |
-| AudioSocket UUID origination | Calls `1786749996.733`, `1786750047.740`; archive `rca-20260814-232559` | PASS — two accepts, media RX confirmations, and first outbound frames |
+| AudioSocket UUID origination | Calls `1786749996.733`, `1786750047.740`, `1786750842.748`, `1786750902.755`; campaign archives | PASS — four accepts, media RX confirmations, and first outbound frames across both candidates |
 | Unified predial transfer metadata and cleanup | PENDING | PENDING |
 | Nonempty context cannot be confirmed: no provider session starts | PENDING | PENDING |
 | Engine restart while ringing: durable context recovery or fail-closed rejection | PENDING | PENDING |
-| Post-test ARI/session/channel health | `runtime/health-after.json` in archive `rca-20260814-232559` | PASS — healthy, ARI connected, zero active calls/sessions/channels/timers |
+| Post-test ARI/session/channel health | `runtime/health-after.json` in archives `rca-20260814-232559`, `rca-20260814-234236` | PASS — healthy, ARI connected, zero active calls/sessions/channels/timers after both campaigns |
 
 ## Privacy and failure evidence
 
-- **RETEST REQUIRED:** candidate `e632de50` exposed the raw value through
-  `ChannelVarSet` and provider Settings logs. Unit coverage now redacts direct
-  and inherited variables plus the appended provider prompt block; confirm the
-  replacement deployment contains only `[lead context redacted]`.
+- **PASS:** candidate `e632de50` exposed the raw value through ChannelVarSet and
+  provider Settings logs. Replacement `5328448d` logs only
+  `[lead context redacted]` across 8 direct/inherited/fallback variable events
+  and both provider Settings payloads. None of the 3 distinct pre-fix raw
+  contexts appears anywhere in archive `rca-20260814-234236` evidence.
 - Confirm oversized context fails before ARI origination and records an
   actionable attempt/lead error.
 - Confirm an ambiguous write response with matching read-back continues, while
