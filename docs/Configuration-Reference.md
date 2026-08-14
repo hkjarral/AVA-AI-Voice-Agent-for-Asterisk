@@ -291,6 +291,21 @@ Outbound calling is implemented as an **engine-driven scheduler + SQLite + ARI o
 
 See `docs/contributing/milestones/milestone-22-outbound-campaign-dialer.md` for the full snippet and smoke test checklist.
 
+### Originate-time channel variables and lead context
+
+AAVA sends outbound channel variables in the ARI `POST /channels` JSON
+`variables` object. This includes Agent/provider routing, outbound correlation,
+FreePBX identity, AMD/consent controls, and the internal
+`AAVA_CUSTOM_VARS_JSON` lead-context value. Local-channel routes receive both
+ordinary and inherited variants so the metadata survives the `;1`/`;2`
+boundary.
+
+Lead `custom_vars` must serialize to at most 8,192 bytes. Nonempty context is
+reapplied and read back before the answered channel enters the AMD dialplan
+hop. A missing or mismatched value fails the attempt closed before provider
+startup. The value is intentionally excluded from logs; use attempt, campaign,
+lead, and channel identifiers when troubleshooting.
+
 ## VICIdial Remote Agents (Alpha)
 
 VICIdial Remote Agents are separate from AAVA's native Outbound Campaign Dialer. VICIdial owns

@@ -755,6 +755,9 @@ async def test_engine_originates_wideband_channel_from_call_profile():
     await Engine._originate_audiosocket_channel_hybrid(engine, "caller-channel")
 
     params = engine.ari_client.send_command.await_args.kwargs["params"]
+    data = engine.ari_client.send_command.await_args.kwargs["data"]
     assert params["endpoint"].startswith("AudioSocket/127.0.0.1:8090/")
     assert params["endpoint"].endswith("/c(slin16)")
+    assert "channelVars" not in params
+    assert data["variables"]["AUDIOSOCKET_UUID"]
     assert engine.pending_audiosocket_channels["audiosocket-channel"] == "caller-channel"

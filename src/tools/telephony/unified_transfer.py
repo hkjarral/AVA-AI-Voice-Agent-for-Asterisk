@@ -229,18 +229,20 @@ class UnifiedTransferTool(Tool):
             result = await context.ari_client.send_command(
                 method="POST",
                 resource="channels",
+                data={
+                    "variables": {
+                        "AGENT_ACTION": "predial_transfer",
+                        "AGENT_CALL_ID": context.call_id,
+                        "AGENT_TARGET": str(action.get("target") or ""),
+                        "AAVA_TRANSFER_DESTINATION_KEY": destination_key,
+                    }
+                },
                 params={
                     "endpoint": endpoint,
                     "app": app,
                     "appArgs": f"predial-transfer,{context.call_id},{destination_key}",
                     "callerId": self._caller_id_for_predial(context),
                     "timeout": dial_timeout_sec,
-                    "channelVars": {
-                        "AGENT_ACTION": "predial_transfer",
-                        "AGENT_CALL_ID": context.call_id,
-                        "AGENT_TARGET": str(action.get("target") or ""),
-                        "AAVA_TRANSFER_DESTINATION_KEY": destination_key,
-                    },
                 },
             )
         except Exception:

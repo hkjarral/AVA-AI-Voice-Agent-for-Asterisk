@@ -359,13 +359,6 @@ class ARIClient:
         """
         url = f"{self.http_url}/{resource}"
         
-        # Handle channelVars specially - they need to be in the JSON body, not query params
-        if params and "channelVars" in params:
-            channel_vars = params.pop("channelVars")
-            if data is None:
-                data = {}
-            data["channelVars"] = channel_vars
-        
         try:
             async with self.http_session.request(method, url, json=data, params=params) as response:
                 if response.status >= 400:
@@ -433,9 +426,8 @@ class ARIClient:
         if caller_id:
             # ARI uses the same callerId format as dialplan: "Name <Number>" or just "Number".
             params["callerId"] = str(caller_id)
-        if channel_vars:
-            params["channelVars"] = channel_vars
-        return await self.send_command("POST", "channels", params=params)
+        data = {"variables": dict(channel_vars)} if channel_vars else None
+        return await self.send_command("POST", "channels", data=data, params=params)
 
     async def continue_in_dialplan(
         self,
