@@ -93,6 +93,9 @@ See `docs/Configuration-Reference.md` for the full list and semantics. The most 
 - AAVA verifies nonempty context again after answer and before the AMD hop. If
   the exact value cannot be confirmed, the attempt fails closed with outcome
   `error`, the lead moves to `failed`, and no AI session is started.
+- If an engine restart clears in-memory state while a call is still ringing,
+  AAVA reloads the unfinished attempt and lead from SQLite. An answered call is
+  rejected if that authoritative metadata cannot be recovered.
 - Oversized or non-serializable context also fails before ARI origination. AAVA
   records an actionable error without logging the context value.
 

@@ -1546,6 +1546,64 @@ class OutboundStore:
 
         return await self._run(_sync)
 
+    async def get_active_attempt_runtime_context(
+        self,
+        attempt_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Recover authoritative lead context for an unfinished attempt."""
+        if not self._enabled or not str(attempt_id or "").strip():
+            return None
+
+        def _sync():
+            with self._lock:
+                conn = self._get_connection()
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT
+                            a.id AS attempt_id,
+                            a.campaign_id,
+                            a.lead_id,
+                            a.context,
+                            a.provider,
+                            a.ari_channel_id AS channel_id,
+                            l.phone_number,
+                            l.name AS lead_name,
+                            l.custom_vars_json,
+                            l.agent_routing_method
+                        FROM outbound_attempts a
+                        JOIN outbound_leads l ON l.id = a.lead_id
+                        WHERE a.id = ?
+                          AND a.ended_at_utc IS NULL
+                        LIMIT 1
+                        """,
+                        (str(attempt_id).strip(),),
+                    ).fetchone()
+                    if row is None:
+                        return None
+                    result = dict(row)
+                    raw_custom_vars = str(
+                        result.pop("custom_vars_json", "{}") or "{}"
+                    )
+                    try:
+                        custom_vars = json.loads(raw_custom_vars)
+                        if not isinstance(custom_vars, dict):
+                            raise ValueError("custom_vars must be a JSON object")
+                    except (TypeError, ValueError):
+                        custom_vars = {}
+                        result["custom_vars_valid"] = False
+                    else:
+                        result["custom_vars_valid"] = True
+                    result["custom_vars"] = custom_vars
+                    result["routing_method"] = _normalize_agent_routing_method(
+                        result.pop("agent_routing_method", None)
+                    )
+                    return result
+                finally:
+                    conn.close()
+
+        return await self._run(_sync)
+
     async def set_attempt_channel(self, attempt_id: str, channel_id: str) -> None:
         if not self._enabled:
             return

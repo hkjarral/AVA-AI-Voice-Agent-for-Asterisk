@@ -68,6 +68,70 @@ async def test_outbound_store_campaign_import_and_leasing(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_outbound_store_recovers_active_attempt_lead_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+
+    from src.core.outbound_store import OutboundStore
+
+    db_path = str(tmp_path / "call_history.db")
+    store = OutboundStore(db_path=db_path)
+    campaign = await store.create_campaign(
+        {
+            "name": "Restart Recovery",
+            "timezone": "UTC",
+            "default_context": "sales",
+        }
+    )
+    imported = await store.import_leads_csv(
+        campaign["id"],
+        (
+            'name,phone_number,agent,custom_vars\n'
+            'Alice,+15551230021,sales,"{\"\"task\"\":\"\"confirm\"\"}"\n'
+        ).encode("utf-8"),
+        known_agents=["sales"],
+    )
+    assert imported["accepted"] == 1
+    lead = (await store.list_leads(campaign["id"]))["leads"][0]
+    attempt_id = await store.create_attempt(
+        campaign["id"],
+        lead["id"],
+        context="sales",
+        provider="deepgram",
+    )
+
+    recovered = await store.get_active_attempt_runtime_context(attempt_id)
+
+    assert recovered == {
+        "attempt_id": attempt_id,
+        "campaign_id": campaign["id"],
+        "lead_id": lead["id"],
+        "context": "sales",
+        "provider": "deepgram",
+        "channel_id": None,
+        "phone_number": "+15551230021",
+        "lead_name": "Alice",
+        "custom_vars_valid": True,
+        "custom_vars": {"task": "confirm"},
+        "routing_method": "ai_agent",
+    }
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE outbound_leads SET custom_vars_json='not-json' WHERE id=?",
+            (lead["id"],),
+        )
+        conn.commit()
+    invalid = await store.get_active_attempt_runtime_context(attempt_id)
+    assert invalid is not None
+    assert invalid["lead_id"] == lead["id"]
+    assert invalid["custom_vars"] == {}
+    assert invalid["custom_vars_valid"] is False
+
+    await store.finish_attempt(attempt_id, outcome="error")
+    assert await store.get_active_attempt_runtime_context(attempt_id) is None
+
+
+@pytest.mark.asyncio
 async def test_outbound_store_prefers_agent_csv_header_and_accepts_context_alias(tmp_path, monkeypatch):
     monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
 

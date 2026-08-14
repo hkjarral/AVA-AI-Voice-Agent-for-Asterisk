@@ -1866,6 +1866,71 @@ class Engine:
             )
             return False
 
+    async def _reject_outbound_answered_attempt(
+        self,
+        channel_id: str,
+        attempt_id: str,
+        meta: Optional[Dict[str, Any]],
+        error_message: str,
+    ) -> None:
+        """Retain fail-closed ownership when answered metadata is unsafe."""
+        campaign_id = str((meta or {}).get("campaign_id") or "")
+        lead_id = str((meta or {}).get("lead_id") or "")
+        logger.error(
+            "Outbound call rejected before AMD/provider startup",
+            channel_id=channel_id,
+            attempt_id=attempt_id,
+            campaign_id=campaign_id,
+            lead_id=lead_id,
+            error=error_message,
+        )
+        if attempt_id:
+            try:
+                await self.outbound_store.finish_attempt(
+                    attempt_id,
+                    outcome="error",
+                    error_message=error_message,
+                )
+            except Exception:
+                logger.error(
+                    "Failed to persist outbound answered-call rejection",
+                    channel_id=channel_id,
+                    attempt_id=attempt_id,
+                    exc_info=True,
+                )
+        if lead_id:
+            try:
+                await self.outbound_store.set_lead_state(
+                    lead_id,
+                    state="failed",
+                    last_outcome="error",
+                )
+            except Exception:
+                pass
+        seen_outbound = getattr(self, "_seen_outbound_channels", None)
+        if seen_outbound is not None:
+            seen_outbound.add(channel_id)
+        if attempt_id:
+            self._outbound_attempt_meta_by_attempt_id.pop(attempt_id, None)
+            self._outbound_attempt_amd.pop(attempt_id, None)
+        self._outbound_attempt_meta_by_channel_id.pop(channel_id, None)
+        try:
+            hangup_ok = await self.ari_client.hangup_channel(channel_id)
+        except Exception:
+            hangup_ok = False
+            logger.error(
+                "Failed to hang up rejected outbound call",
+                channel_id=channel_id,
+                attempt_id=attempt_id,
+                exc_info=True,
+            )
+        if not hangup_ok:
+            logger.error(
+                "Rejected outbound hangup was not accepted",
+                channel_id=channel_id,
+                attempt_id=attempt_id,
+            )
+
     @staticmethod
     def _outbound_routing_channel_vars(
         agent_slug: str,
@@ -3080,20 +3145,62 @@ class Engine:
         meta = self._outbound_attempt_meta_by_attempt_id.get(attempt_id) if attempt_id else None
         logger.info("Outbound answered", channel_id=channel_id, attempt_id=attempt_id)
 
+        # A restart can clear in-memory maps while Asterisk still owns a
+        # ringing originate. Recover the unfinished attempt and lead before
+        # making any decision about mandatory custom_vars.
+        if not meta and attempt_id:
+            try:
+                meta = await self.outbound_store.get_active_attempt_runtime_context(
+                    attempt_id
+                )
+            except Exception:
+                logger.error(
+                    "Failed to recover outbound attempt metadata after answer",
+                    channel_id=channel_id,
+                    attempt_id=attempt_id,
+                    exc_info=True,
+                )
+            if meta:
+                logger.info(
+                    "Recovered outbound attempt metadata after answer",
+                    channel_id=channel_id,
+                    attempt_id=attempt_id,
+                    campaign_id=str(meta.get("campaign_id") or ""),
+                    lead_id=str(meta.get("lead_id") or ""),
+                )
+        if not meta:
+            await self._reject_outbound_answered_attempt(
+                channel_id,
+                attempt_id,
+                None,
+                "outbound attempt metadata unavailable after answer",
+            )
+            return
+        if meta.get("custom_vars_valid") is False:
+            await self._reject_outbound_answered_attempt(
+                channel_id,
+                attempt_id,
+                meta,
+                "outbound custom_vars metadata is invalid after answer",
+            )
+            return
+
         # Track for early-failure correlation (answer could race with mapping).
-        if meta:
-            meta = dict(meta)
-            meta["channel_id"] = channel_id
-            self._outbound_attempt_meta_by_attempt_id[attempt_id] = meta
-            self._outbound_attempt_meta_by_channel_id[channel_id] = meta
-            try:
-                await self.outbound_store.set_attempt_channel(attempt_id, channel_id)
-            except Exception:
-                pass
-            try:
-                await self.outbound_store.set_lead_state(str(meta.get("lead_id") or ""), state="amd_pending")
-            except Exception:
-                pass
+        meta = dict(meta)
+        meta["channel_id"] = channel_id
+        self._outbound_attempt_meta_by_attempt_id[attempt_id] = meta
+        self._outbound_attempt_meta_by_channel_id[channel_id] = meta
+        try:
+            await self.outbound_store.set_attempt_channel(attempt_id, channel_id)
+        except Exception:
+            pass
+        try:
+            await self.outbound_store.set_lead_state(
+                str(meta.get("lead_id") or ""),
+                state="amd_pending",
+            )
+        except Exception:
+            pass
 
         # Lead context is mandatory when supplied. Keep this confirmation
         # independent from the other best-effort safety-net writes below: a
@@ -3118,49 +3225,12 @@ class Engine:
                 error_message = (
                     "outbound custom_vars could not be confirmed after answer"
                 )
-                logger.error(
-                    "Outbound call rejected because lead context is unavailable",
-                    channel_id=channel_id,
-                    attempt_id=attempt_id,
-                    campaign_id=str(meta.get("campaign_id") or ""),
-                    lead_id=str(meta.get("lead_id") or ""),
+                await self._reject_outbound_answered_attempt(
+                    channel_id,
+                    attempt_id,
+                    meta,
+                    error_message,
                 )
-                try:
-                    await self.outbound_store.finish_attempt(
-                        attempt_id,
-                        outcome="error",
-                        error_message=error_message,
-                    )
-                except Exception:
-                    logger.error(
-                        "Failed to persist outbound custom_vars rejection",
-                        channel_id=channel_id,
-                        attempt_id=attempt_id,
-                        exc_info=True,
-                    )
-                try:
-                    await self.outbound_store.set_lead_state(
-                        str(meta.get("lead_id") or ""),
-                        state="failed",
-                        last_outcome="error",
-                    )
-                except Exception:
-                    pass
-                seen_outbound = getattr(self, "_seen_outbound_channels", None)
-                if seen_outbound is not None:
-                    seen_outbound.add(channel_id)
-                self._outbound_attempt_meta_by_attempt_id.pop(attempt_id, None)
-                self._outbound_attempt_meta_by_channel_id.pop(channel_id, None)
-                self._outbound_attempt_amd.pop(attempt_id, None)
-                try:
-                    await self.ari_client.hangup_channel(channel_id)
-                except Exception:
-                    logger.error(
-                        "Failed to hang up outbound call after custom_vars rejection",
-                        channel_id=channel_id,
-                        attempt_id=attempt_id,
-                        exc_info=True,
-                    )
                 return
 
         # Ensure correlation vars exist for the dialplan hop (FreePBX/local channels can drop vars).

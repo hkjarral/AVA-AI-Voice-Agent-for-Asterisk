@@ -36,6 +36,7 @@ def _engine(*, readback, custom_vars=None):
         set_attempt_channel=AsyncMock(),
         set_lead_state=AsyncMock(),
         get_campaign=AsyncMock(return_value={}),
+        get_active_attempt_runtime_context=AsyncMock(return_value=None),
         finish_attempt=AsyncMock(),
     )
     return engine
@@ -120,6 +121,83 @@ async def test_other_safety_write_failure_cannot_skip_custom_vars_confirmation()
         expected,
     )
     engine.ari_client.continue_in_dialplan.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_answered_call_recovers_custom_vars_after_in_memory_state_loss():
+    custom_vars = {"task": "confirm appointment"}
+    expected = Engine._serialize_outbound_custom_vars(custom_vars)
+    engine = _engine(readback={"value": expected}, custom_vars=custom_vars)
+    recovered = dict(engine._outbound_attempt_meta_by_attempt_id["attempt-1"])
+    engine._outbound_attempt_meta_by_attempt_id.clear()
+    engine._outbound_attempt_meta_by_channel_id.clear()
+    engine.outbound_store.get_active_attempt_runtime_context.return_value = recovered
+
+    await engine._handle_outbound_answered(
+        "channel-1",
+        {"id": "channel-1"},
+        ["outbound", "attempt-1"],
+    )
+
+    engine.outbound_store.get_active_attempt_runtime_context.assert_awaited_once_with(
+        "attempt-1"
+    )
+    engine.ari_client.send_command.assert_awaited_once()
+    engine.ari_client.continue_in_dialplan.assert_awaited_once()
+    assert engine._outbound_attempt_meta_by_attempt_id["attempt-1"][
+        "channel_id"
+    ] == "channel-1"
+
+
+@pytest.mark.asyncio
+async def test_answered_call_fails_closed_when_attempt_metadata_is_unrecoverable():
+    engine = _engine(readback={"status": 404})
+    engine._outbound_attempt_meta_by_attempt_id.clear()
+    engine._outbound_attempt_meta_by_channel_id.clear()
+
+    await engine._handle_outbound_answered(
+        "channel-1",
+        {"id": "channel-1"},
+        ["outbound", "attempt-1"],
+    )
+
+    engine.ari_client.continue_in_dialplan.assert_not_awaited()
+    engine.outbound_store.finish_attempt.assert_awaited_once_with(
+        "attempt-1",
+        outcome="error",
+        error_message="outbound attempt metadata unavailable after answer",
+    )
+    engine.ari_client.hangup_channel.assert_awaited_once_with("channel-1")
+    assert "channel-1" in engine._seen_outbound_channels
+
+
+@pytest.mark.asyncio
+async def test_answered_call_fails_closed_on_corrupt_durable_custom_vars():
+    engine = _engine(readback={"status": 404})
+    recovered = dict(engine._outbound_attempt_meta_by_attempt_id["attempt-1"])
+    recovered["custom_vars_valid"] = False
+    engine._outbound_attempt_meta_by_attempt_id.clear()
+    engine._outbound_attempt_meta_by_channel_id.clear()
+    engine.outbound_store.get_active_attempt_runtime_context.return_value = recovered
+
+    await engine._handle_outbound_answered(
+        "channel-1",
+        {"id": "channel-1"},
+        ["outbound", "attempt-1"],
+    )
+
+    engine.ari_client.continue_in_dialplan.assert_not_awaited()
+    engine.outbound_store.finish_attempt.assert_awaited_once_with(
+        "attempt-1",
+        outcome="error",
+        error_message="outbound custom_vars metadata is invalid after answer",
+    )
+    engine.outbound_store.set_lead_state.assert_awaited_once_with(
+        "lead-1",
+        state="failed",
+        last_outcome="error",
+    )
+    engine.ari_client.hangup_channel.assert_awaited_once_with("channel-1")
 
 
 @pytest.mark.asyncio

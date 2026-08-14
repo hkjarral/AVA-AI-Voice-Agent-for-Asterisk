@@ -18,9 +18,9 @@ draft pull request.
 | Gate | Result |
 |---|---|
 | ARI request-boundary tests | PASS — `tests/test_ari_client_originate.py` |
-| Outbound serialization and fail-closed lifecycle tests | PASS — `tests/test_outbound_custom_vars.py`, including unrelated-write isolation |
+| Outbound serialization and fail-closed lifecycle tests | PASS — `tests/test_outbound_custom_vars.py`, including unrelated-write isolation and restart recovery |
 | AudioSocket and unified predial-transfer regression tests | PASS — focused originate-variable assertions |
-| Full Python suite | PASS — 2,260 passed, 6 skipped, 1 deselected |
+| Full Python suite | PASS — 2,264 passed, 6 skipped, 1 deselected |
 | Admin backend suite | PASS — 543 passed |
 | Release docs and committed-secret guards | PASS |
 | Source compilation, shell syntax, and diff checks | PASS |
@@ -37,6 +37,7 @@ draft pull request.
 | AudioSocket UUID origination | PENDING | PENDING |
 | Unified predial transfer metadata and cleanup | PENDING | PENDING |
 | Nonempty context cannot be confirmed: no provider session starts | PENDING | PENDING |
+| Engine restart while ringing: durable context recovery or fail-closed rejection | PENDING | PENDING |
 | Post-test ARI/session/channel health | PENDING | PENDING |
 
 ## Privacy and failure evidence

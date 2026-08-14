@@ -303,8 +303,11 @@ boundary.
 Lead `custom_vars` must serialize to at most 8,192 bytes. Nonempty context is
 reapplied and read back before the answered channel enters the AMD dialplan
 hop. A missing or mismatched value fails the attempt closed before provider
-startup. The value is intentionally excluded from logs; use attempt, campaign,
-lead, and channel identifiers when troubleshooting.
+startup. If the engine restarts while an originate is still ringing, it
+recovers the unfinished attempt and lead from SQLite before applying the same
+gate; unavailable authoritative metadata also fails closed. The value is
+intentionally excluded from logs; use attempt, campaign, lead, and channel
+identifiers when troubleshooting.
 
 ## VICIdial Remote Agents (Alpha)
 
