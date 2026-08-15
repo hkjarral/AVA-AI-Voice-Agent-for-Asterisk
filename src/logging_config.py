@@ -138,9 +138,19 @@ def sanitize_secrets(logger, method_name, event_dict):
         """Recursively sanitize dictionary keys."""
         if not isinstance(d, dict):
             return d
+
+        # ChannelVarSet encodes the variable name and value as sibling fields,
+        # so a key-only secret matcher cannot identify lead context. Apply the
+        # pair-aware check at every nesting level and normalize inherited
+        # Asterisk variable prefixes before matching.
+        variable_name = str(d.get("variable") or "").lstrip("_").upper()
         
         sanitized = {}
         for key, value in d.items():
+            if variable_name == "AAVA_CUSTOM_VARS_JSON" and key == "value":
+                sanitized[key] = OUTBOUND_LEAD_CONTEXT_REDACTION
+                continue
+
             # Normalize key for comparison (remove separators, lowercase)
             key_normalized = str(key).lower().replace('_', '').replace('-', '')
             
@@ -159,14 +169,6 @@ def sanitize_secrets(logger, method_name, event_dict):
             else:
                 sanitized[key] = sanitize_value(value)
         return sanitized
-
-    # ChannelVarSet encodes the variable name and value as sibling fields, so a
-    # key-only secret matcher cannot identify lead context. Normalize inherited
-    # Asterisk variable prefixes before matching.
-    variable_name = str(event_dict.get("variable") or "").lstrip("_").upper()
-    if variable_name == "AAVA_CUSTOM_VARS_JSON" and "value" in event_dict:
-        event_dict = dict(event_dict)
-        event_dict["value"] = OUTBOUND_LEAD_CONTEXT_REDACTION
 
     # Sanitize the entire event_dict
     return sanitize_dict(event_dict)

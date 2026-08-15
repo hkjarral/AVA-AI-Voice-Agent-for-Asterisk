@@ -194,6 +194,24 @@ class TestLogSanitization:
         assert result["value"] == OUTBOUND_LEAD_CONTEXT_REDACTION
         assert raw_value not in str(result)
 
+    def test_redacts_nested_outbound_custom_vars_channel_events(self):
+        """Pair-aware lead-context redaction applies inside nested event data."""
+        raw_value = '{"account_id":"nested-sensitive-lead-value"}'
+        event_dict = {
+            "event": "ARI event received",
+            "payload": {
+                "event": "ChannelVarSet",
+                "variable": "__aava_custom_vars_json",
+                "value": raw_value,
+            },
+        }
+
+        result = sanitize_secrets(None, None, event_dict)
+
+        assert result["payload"]["value"] == OUTBOUND_LEAD_CONTEXT_REDACTION
+        assert raw_value not in str(result)
+        assert event_dict["payload"]["value"] == raw_value
+
     def test_preserves_ordinary_channel_variable_values(self):
         """Pair-aware redaction must not hide unrelated channel diagnostics."""
         event_dict = {

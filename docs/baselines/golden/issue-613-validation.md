@@ -21,7 +21,7 @@ changed paths require exact live or automated evidence rather than `PENDING`.
 | Outbound serialization and fail-closed lifecycle tests | PASS — `tests/test_outbound_custom_vars.py`, including unrelated-write isolation and restart recovery |
 | Lead-context log redaction tests | PASS — direct/inherited ChannelVarSet values and nested provider prompts |
 | AudioSocket and unified predial-transfer regression tests | PASS — focused originate-variable assertions |
-| Full Python suite | PASS — 2,272 passed, 7 skipped |
+| Full Python suite | PASS — 2,274 passed, 7 skipped |
 | Admin backend suite | PASS — 543 passed |
 | Release docs and committed-secret guards | PASS |
 | Source compilation, shell syntax, and diff checks | PASS |

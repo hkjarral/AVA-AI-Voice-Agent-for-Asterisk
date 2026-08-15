@@ -2001,27 +2001,32 @@ class Engine:
         ):
             retry_task.cancel()
 
-    def _schedule_outbound_forced_hangup_retry(
+    def _schedule_forced_hangup_retry_owner(
         self,
         *,
-        attempt_id: str,
+        task_store_attribute: str,
+        task_name_prefix: str,
+        log_subject: str,
+        log_context: Dict[str, Any],
+        attempt_log_field: str,
         channel_id: str,
+        on_accepted: Optional[Callable[[], None]] = None,
     ) -> None:
-        """Retry a rejected outbound hangup with one capped-backoff owner."""
-        tasks = getattr(self, "_outbound_forced_hangup_tasks", None)
+        """Own one capped-backoff ARI hangup retry task per channel."""
+        tasks = getattr(self, task_store_attribute, None)
         if tasks is None:
             tasks = {}
-            self._outbound_forced_hangup_tasks = tasks
+            setattr(self, task_store_attribute, tasks)
         previous = tasks.get(channel_id)
         if previous and not previous.done():
             return
 
         async def _retry() -> None:
             delay_seconds = 1.0
-            retry_attempt = 0
+            attempt = 0
             try:
                 while True:
-                    retry_attempt += 1
+                    attempt += 1
                     await asyncio.sleep(delay_seconds)
                     try:
                         accepted = bool(
@@ -2032,29 +2037,27 @@ class Engine:
                     except Exception:
                         accepted = False
                         logger.debug(
-                            "Forced outbound hangup retry raised",
-                            attempt_id=attempt_id,
+                            f"Forced {log_subject} hangup retry raised",
+                            **log_context,
                             channel_id=channel_id,
-                            retry_attempt=retry_attempt,
+                            **{attempt_log_field: attempt},
                             exc_info=True,
                         )
                     if accepted:
                         logger.info(
-                            "Forced outbound hangup retry completed",
-                            attempt_id=attempt_id,
+                            f"Forced {log_subject} hangup retry completed",
+                            **log_context,
                             channel_id=channel_id,
-                            retry_attempt=retry_attempt,
+                            **{attempt_log_field: attempt},
                         )
-                        self._release_outbound_rejection_ownership(
-                            attempt_id=attempt_id,
-                            channel_id=channel_id,
-                        )
+                        if on_accepted is not None:
+                            on_accepted()
                         return
                     logger.warning(
-                        "Forced outbound hangup retry was not accepted",
-                        attempt_id=attempt_id,
+                        f"Forced {log_subject} hangup retry was not accepted",
+                        **log_context,
                         channel_id=channel_id,
-                        retry_attempt=retry_attempt,
+                        **{attempt_log_field: attempt},
                         next_retry_seconds=min(delay_seconds * 2.0, 30.0),
                     )
                     delay_seconds = min(delay_seconds * 2.0, 30.0)
@@ -2065,9 +2068,29 @@ class Engine:
                     tasks.pop(channel_id, None)
 
         task = asyncio.create_task(
-            _retry(), name=f"outbound-forced-hangup-{channel_id}"
+            _retry(), name=f"{task_name_prefix}-{channel_id}"
         )
         tasks[channel_id] = task
+
+    def _schedule_outbound_forced_hangup_retry(
+        self,
+        *,
+        attempt_id: str,
+        channel_id: str,
+    ) -> None:
+        """Retry a rejected outbound hangup while retaining attempt ownership."""
+        self._schedule_forced_hangup_retry_owner(
+            task_store_attribute="_outbound_forced_hangup_tasks",
+            task_name_prefix="outbound-forced-hangup",
+            log_subject="outbound",
+            log_context={"attempt_id": attempt_id},
+            attempt_log_field="retry_attempt",
+            channel_id=channel_id,
+            on_accepted=lambda: self._release_outbound_rejection_ownership(
+                attempt_id=attempt_id,
+                channel_id=channel_id,
+            ),
+        )
 
     @staticmethod
     def _outbound_routing_channel_vars(
@@ -3358,7 +3381,13 @@ class Engine:
                 state="amd_pending",
             )
         except Exception:
-            pass
+            logger.warning(
+                "Failed to persist amd_pending lead state after answer",
+                channel_id=channel_id,
+                attempt_id=attempt_id,
+                lead_id=str(meta.get("lead_id") or ""),
+                exc_info=True,
+            )
 
         # Lead context is mandatory when supplied. Keep this confirmation
         # independent from the other best-effort safety-net writes below: a
@@ -5292,62 +5321,14 @@ class Engine:
         channel_id: str,
     ) -> None:
         """Keep ownership of a rejected VICIdial channel until ARI ends it."""
-        tasks = getattr(self, "_vicidial_forced_hangup_tasks", None)
-        if tasks is None:
-            tasks = {}
-            self._vicidial_forced_hangup_tasks = tasks
-        previous = tasks.get(channel_id)
-        if previous and not previous.done():
-            return
-
-        async def _retry() -> None:
-            delay_seconds = 1.0
-            attempt = 0
-            try:
-                while True:
-                    attempt += 1
-                    await asyncio.sleep(delay_seconds)
-                    try:
-                        accepted = bool(
-                            await self.ari_client.hangup_channel(channel_id)
-                        )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        accepted = False
-                        logger.debug(
-                            "Forced VICIdial hangup retry raised",
-                            call_id=call_id,
-                            channel_id=channel_id,
-                            attempt=attempt,
-                            exc_info=True,
-                        )
-                    if accepted:
-                        logger.info(
-                            "Forced VICIdial hangup retry completed",
-                            call_id=call_id,
-                            channel_id=channel_id,
-                            attempt=attempt,
-                        )
-                        return
-                    logger.warning(
-                        "Forced VICIdial hangup retry was not accepted",
-                        call_id=call_id,
-                        channel_id=channel_id,
-                        attempt=attempt,
-                        next_retry_seconds=min(delay_seconds * 2.0, 30.0),
-                    )
-                    delay_seconds = min(delay_seconds * 2.0, 30.0)
-            except asyncio.CancelledError:
-                return
-            finally:
-                if tasks.get(channel_id) is asyncio.current_task():
-                    tasks.pop(channel_id, None)
-
-        task = asyncio.create_task(
-            _retry(), name=f"vicidial-forced-hangup-{channel_id}"
+        self._schedule_forced_hangup_retry_owner(
+            task_store_attribute="_vicidial_forced_hangup_tasks",
+            task_name_prefix="vicidial-forced-hangup",
+            log_subject="VICIdial",
+            log_context={"call_id": call_id},
+            attempt_log_field="attempt",
+            channel_id=channel_id,
         )
-        tasks[channel_id] = task
 
     async def _finalize_vicidial_call(
         self,

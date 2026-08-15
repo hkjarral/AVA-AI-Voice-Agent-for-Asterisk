@@ -2,3 +2,5 @@
 pytest>=9.1.1
 pytest-asyncio>=1.4.0
 pytest-cov>=7.1.0
+# Repo-root tests import Admin wizard routes that use this runtime client.
+httpx==0.27.0

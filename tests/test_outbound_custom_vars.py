@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -266,6 +266,30 @@ async def test_outbound_answered_does_not_probe_when_custom_vars_are_empty():
     )
 
     engine.ari_client.send_command.assert_not_awaited()
+    engine.ari_client.continue_in_dialplan.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_outbound_answered_logs_amd_pending_persistence_failure():
+    engine = _engine(readback={"status": 404})
+    engine.outbound_store.set_lead_state.side_effect = RuntimeError(
+        "database unavailable"
+    )
+
+    with patch("src.engine.logger.warning") as warning:
+        await engine._handle_outbound_answered(
+            "channel-1",
+            {"id": "channel-1"},
+            ["outbound", "attempt-1"],
+        )
+
+    warning.assert_any_call(
+        "Failed to persist amd_pending lead state after answer",
+        channel_id="channel-1",
+        attempt_id="attempt-1",
+        lead_id="lead-1",
+        exc_info=True,
+    )
     engine.ari_client.continue_in_dialplan.assert_awaited_once()
 
 
