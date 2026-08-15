@@ -21,6 +21,12 @@ from logging.handlers import RotatingFileHandler
 # Context variable for correlation ID
 correlation_id_var = contextvars.ContextVar('correlation_id', default=None)
 
+# Shared with the provider-prompt producer so a heading change cannot silently
+# disable lead-context redaction in structured diagnostics.
+OUTBOUND_LEAD_CONTEXT_MARKER = "## Lead Context (read-only)"
+OUTBOUND_LEAD_CONTEXT_REDACTION = "[lead context redacted]"
+
+
 def get_correlation_id():
     """Get the current correlation ID."""
     return correlation_id_var.get()
@@ -82,18 +88,18 @@ def sanitize_secrets(logger, method_name, event_dict):
     # Outbound lead context is intentionally appended to provider prompts so the
     # model can use it, but it must not be copied into structured debug logs.
     # The block is always appended at the end of the prompt by the engine.
-    LEAD_CONTEXT_MARKER = "## Lead Context (read-only)"
-    LEAD_CONTEXT_REDACTION = "[lead context redacted]"
-
     def redact_lead_context(value):
         """Remove the appended per-lead context block from logged strings."""
         if not isinstance(value, str):
             return value
-        marker_index = value.find(LEAD_CONTEXT_MARKER)
+        marker_index = value.find(OUTBOUND_LEAD_CONTEXT_MARKER)
         if marker_index < 0:
             return value
         prefix = value[:marker_index]
-        return f"{prefix}{LEAD_CONTEXT_MARKER}\n{LEAD_CONTEXT_REDACTION}"
+        return (
+            f"{prefix}{OUTBOUND_LEAD_CONTEXT_MARKER}\n"
+            f"{OUTBOUND_LEAD_CONTEXT_REDACTION}"
+        )
     
     def redact_value(value):
         """Redact a sensitive value, preserving structure for debugging."""
@@ -160,7 +166,7 @@ def sanitize_secrets(logger, method_name, event_dict):
     variable_name = str(event_dict.get("variable") or "").lstrip("_").upper()
     if variable_name == "AAVA_CUSTOM_VARS_JSON" and "value" in event_dict:
         event_dict = dict(event_dict)
-        event_dict["value"] = LEAD_CONTEXT_REDACTION
+        event_dict["value"] = OUTBOUND_LEAD_CONTEXT_REDACTION
 
     # Sanitize the entire event_dict
     return sanitize_dict(event_dict)

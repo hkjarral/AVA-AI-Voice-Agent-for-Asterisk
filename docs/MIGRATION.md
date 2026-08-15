@@ -31,8 +31,10 @@ database migration, Agent reassignment, or configuration rewrite.
 After upgrading to a release that includes #613:
 
 1. Rebuild and recreate `ai_engine` before resuming AAVA-managed campaigns.
-2. Run one supervised HUMAN call with a distinctive, non-sensitive
-   `custom_vars` value and confirm the resulting Lead Context reaches the Agent.
+2. Run one supervised HUMAN call with a distinctive, non-sensitive value such
+   as `"validation_token":"issue613-7f3a"`. Ask the Agent to repeat that field
+   and compare its response exactly with the supplied token; a general behavior
+   change is not sufficient delivery evidence.
 3. FreePBX operators should verify the configured outbound identity, route, and
    caller ID. `AMPUSER`, `FROMEXTEN`, inherited caller-ID values, `AI_AGENT`, and
    `AI_PROVIDER` are now applied at ARI origination as originally intended.

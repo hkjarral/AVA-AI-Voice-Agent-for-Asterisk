@@ -106,9 +106,12 @@ Use a local extension (e.g., `2765`) and an external number (E.164) to validate:
 - Consent enabled: press `1` to accept → AI connects; press `2` → call ends; no input → `consent_timeout`.
 - Voicemail enabled: let it ring out or go to voicemail → voicemail drop plays; attempt outcome recorded.
 - HUMAN path: correct Agent/provider chosen; tools (e.g., `hangup_call`) work.
-- Lead context: add a distinctive non-sensitive `task`, confirm it appears in
-  the Agent's behavior, and confirm the attempt fails rather than calling
-  without context when `AAVA_CUSTOM_VARS_JSON` cannot be restored.
+- Lead context: add a distinctive non-sensitive value such as
+  `"validation_token":"issue613-7f3a"`, ask the Agent to repeat that field,
+  and compare the returned value exactly with the supplied token rather than
+  accepting a general behavior change as proof. Also confirm the attempt fails
+  rather than calling without context when `AAVA_CUSTOM_VARS_JSON` cannot be
+  restored.
 
 ## Where to Look When Something Breaks
 

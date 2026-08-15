@@ -714,15 +714,25 @@ the Agent does not receive a `## Lead Context` block, or the attempt ends with
 
    ```bash
    asterisk -rx "core show channels concise" | grep 'Local/'
-   asterisk -rx "core show channel <local-channel>;1" | grep AAVA_CUSTOM_VARS_JSON
-   asterisk -rx "core show channel <local-channel>;2" | grep AAVA_CUSTOM_VARS_JSON
+   for half in 1 2; do
+     if asterisk -rx "core show channel <local-channel>;$half" \
+       | grep -q 'AAVA_CUSTOM_VARS_JSON'; then
+       echo "Local channel ;$half: AAVA_CUSTOM_VARS_JSON present"
+     else
+       echo "Local channel ;$half: AAVA_CUSTOM_VARS_JSON missing"
+     fi
+   done
    ```
+
+   Keep this check presence-only. Printing the variable would expose the lead
+   context in the terminal and any retained RCA transcript.
 
 3. After answer, check for the sanitized confirmation or rejection markers:
 
    ```bash
    docker compose -p asterisk-ai-voice-agent logs ai_engine 2>&1 \
-     | grep -E 'Outbound custom_vars|lead context is unavailable'
+     | grep -Ei \
+       'outbound custom_vars could not be confirmed after answer|outbound attempt metadata unavailable after answer|outbound custom_vars metadata is invalid after answer'
    ```
 
 4. If the lead failed before dialing, reduce `custom_vars` below the 8,192-byte

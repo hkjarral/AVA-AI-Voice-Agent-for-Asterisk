@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -24,6 +25,7 @@ def _engine(*, readback, custom_vars=None):
         "channel-1": engine._outbound_attempt_meta_by_attempt_id["attempt-1"]
     }
     engine._outbound_attempt_amd = {}
+    engine._outbound_forced_hangup_tasks = {}
     engine._seen_outbound_channels = set()
     engine._set_outbound_agent_channel_vars = AsyncMock()
     engine.ari_client = SimpleNamespace(
@@ -96,6 +98,29 @@ async def test_outbound_answered_reapplies_and_confirms_custom_vars_before_amd()
     engine.ari_client.continue_in_dialplan.assert_awaited_once()
     engine.outbound_store.finish_attempt.assert_not_awaited()
     engine.ari_client.hangup_channel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_answered_channel_remap_drops_stale_originated_channel_owner():
+    custom_vars = {"task": "confirm appointment"}
+    expected = Engine._serialize_outbound_custom_vars(custom_vars)
+    engine = _engine(readback={"value": expected}, custom_vars=custom_vars)
+    meta = engine._outbound_attempt_meta_by_attempt_id["attempt-1"]
+    meta["channel_id"] = "originated-channel"
+    engine._outbound_attempt_meta_by_channel_id = {
+        "originated-channel": meta,
+    }
+
+    await engine._handle_outbound_answered(
+        "answered-channel",
+        {"id": "answered-channel"},
+        ["outbound", "attempt-1"],
+    )
+
+    assert "originated-channel" not in engine._outbound_attempt_meta_by_channel_id
+    assert engine._outbound_attempt_meta_by_channel_id["answered-channel"][
+        "channel_id"
+    ] == "answered-channel"
 
 
 @pytest.mark.asyncio
@@ -260,6 +285,93 @@ async def test_custom_vars_rejection_remains_fail_closed_when_persistence_fails(
 
     engine.ari_client.continue_in_dialplan.assert_not_awaited()
     engine.ari_client.hangup_channel.assert_awaited_once_with("channel-1")
+
+
+@pytest.mark.asyncio
+async def test_rejected_outbound_hangup_retains_owner_until_retry_is_accepted(
+    monkeypatch,
+):
+    engine = _engine(
+        readback={"status": 404},
+        custom_vars={"task": "confirm appointment"},
+    )
+    engine.ari_client.hangup_channel.side_effect = [False, False, True]
+    retry_started = asyncio.Event()
+    allow_retry = asyncio.Event()
+
+    async def controlled_sleep(_seconds):
+        retry_started.set()
+        await allow_retry.wait()
+
+    monkeypatch.setattr("src.engine.asyncio.sleep", controlled_sleep)
+
+    await engine._handle_outbound_answered(
+        "channel-1",
+        {"id": "channel-1"},
+        ["outbound", "attempt-1"],
+    )
+    await retry_started.wait()
+
+    assert "attempt-1" in engine._outbound_attempt_meta_by_attempt_id
+    assert "channel-1" in engine._outbound_attempt_meta_by_channel_id
+    assert len(engine._outbound_forced_hangup_tasks) == 1
+
+    # Re-scheduling the same channel must retain the existing single owner.
+    existing_task = engine._outbound_forced_hangup_tasks["channel-1"]
+    engine._schedule_outbound_forced_hangup_retry(
+        attempt_id="attempt-1",
+        channel_id="channel-1",
+    )
+    assert engine._outbound_forced_hangup_tasks["channel-1"] is existing_task
+
+    allow_retry.set()
+    await existing_task
+
+    assert engine.ari_client.hangup_channel.await_count == 3
+    assert engine._outbound_attempt_meta_by_attempt_id == {}
+    assert engine._outbound_attempt_meta_by_channel_id == {}
+    assert engine._outbound_forced_hangup_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_destroyed_rejected_channel_cancels_retry_without_overwriting_error(
+    monkeypatch,
+):
+    engine = _engine(
+        readback={"status": 404},
+        custom_vars={"task": "confirm appointment"},
+    )
+    engine.ari_client.hangup_channel.return_value = False
+    retry_started = asyncio.Event()
+    keep_retry_waiting = asyncio.Event()
+
+    async def controlled_sleep(_seconds):
+        retry_started.set()
+        await keep_retry_waiting.wait()
+
+    monkeypatch.setattr("src.engine.asyncio.sleep", controlled_sleep)
+
+    await engine._handle_outbound_answered(
+        "channel-1",
+        {"id": "channel-1"},
+        ["outbound", "attempt-1"],
+    )
+    await retry_started.wait()
+    retry_task = engine._outbound_forced_hangup_tasks["channel-1"]
+
+    await engine._handle_outbound_channel_destroyed(
+        {"channel": {"id": "channel-1"}, "cause_txt": "Unknown"}
+    )
+    await retry_task
+
+    engine.outbound_store.finish_attempt.assert_awaited_once_with(
+        "attempt-1",
+        outcome="error",
+        error_message="outbound custom_vars could not be confirmed after answer",
+    )
+    assert engine._outbound_attempt_meta_by_attempt_id == {}
+    assert engine._outbound_attempt_meta_by_channel_id == {}
+    assert engine._outbound_forced_hangup_tasks == {}
 
 
 @pytest.mark.asyncio
