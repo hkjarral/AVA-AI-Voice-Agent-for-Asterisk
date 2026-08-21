@@ -20723,13 +20723,20 @@ class Engine:
         orchestrator = getattr(self, "pipeline_orchestrator", None)
         if orchestrator is None:
             return None
-        from src.post_call_summary import PostCallSummaryService
+        try:
+            from src.post_call_summary import PostCallSummaryService
 
-        service = getattr(self, "_post_call_summary_service", None)
-        if service is None or getattr(service, "_orchestrator", None) is not orchestrator:
-            service = PostCallSummaryService(orchestrator)
-            self._post_call_summary_service = service
-        return service.generate
+            service = getattr(self, "_post_call_summary_service", None)
+            if service is None or getattr(service, "_orchestrator", None) is not orchestrator:
+                service = PostCallSummaryService(orchestrator)
+                self._post_call_summary_service = service
+            return service.generate
+        except Exception:
+            logger.error(
+                "Failed to build post-call summary generator; summaries disabled for this call",
+                exc_info=True,
+            )
+            return None
 
     def _compute_nat_warnings(self) -> list:
         """Compute NAT/network configuration warnings for /health endpoint."""

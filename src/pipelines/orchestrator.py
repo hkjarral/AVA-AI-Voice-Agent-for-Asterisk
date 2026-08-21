@@ -465,6 +465,10 @@ class PipelineOrchestrator:
             raise PipelineOrchestratorError(
                 f"Summary provider '{component_key}' is not an LLM component"
             )
+        if self._provider_explicitly_disabled(component_key):
+            raise PipelineOrchestratorError(
+                f"Summary provider '{component_key}' is disabled"
+            )
         factory = self._resolve_factory(component_key)
         if getattr(factory, _PLACEHOLDER_FACTORY_ATTR, None):
             raise PipelineOrchestratorError(
@@ -500,6 +504,20 @@ class PipelineOrchestrator:
             return text.strip(), self._configured_llm_model(component_key)
         finally:
             await self._shutdown_component(component, call_id)
+
+    def _provider_explicitly_disabled(self, component_key: str) -> bool:
+        providers = getattr(self.config, "providers", {}) or {}
+        if not isinstance(providers, dict):
+            return False
+        for key in (component_key, _extract_provider(component_key)):
+            if not key or key not in providers:
+                continue
+            provider_cfg = providers.get(key)
+            if isinstance(provider_cfg, dict):
+                return provider_cfg.get("enabled") is False
+            if getattr(provider_cfg, "enabled", None) is False:
+                return True
+        return False
 
     def _configured_llm_model(self, component_key: str) -> str:
         providers = getattr(self.config, "providers", {}) or {}
@@ -774,21 +792,27 @@ class PipelineOrchestrator:
         # Ollama LLM adapter - for self-hosted local LLMs
         # Read config from providers.ollama_llm in YAML if available
         ollama_provider_config = {}
+        ollama_enabled = True
         providers = getattr(self.config, "providers", {}) or {}
         if isinstance(providers, dict) and "ollama_llm" in providers:
             ollama_cfg = providers.get("ollama_llm", {})
-            if isinstance(ollama_cfg, dict) and ollama_cfg.get("enabled", True) is not False:
-                ollama_provider_config = dict(ollama_cfg)
-        
-        ollama_llm_factory = self._make_ollama_llm_factory(ollama_provider_config)
-        self.register_factory("ollama_llm", ollama_llm_factory)
-        configured_url = ollama_provider_config.get("base_url", "http://localhost:11434")
-        logger.info(
-            "Ollama LLM adapter registered",
-            llm_factory="ollama_llm",
-            configured_endpoint=configured_url,
-            note="Self-hosted LLM with optional tool calling",
-        )
+            if isinstance(ollama_cfg, dict):
+                ollama_enabled = ollama_cfg.get("enabled", True) is not False
+                if ollama_enabled:
+                    ollama_provider_config = dict(ollama_cfg)
+
+        if ollama_enabled:
+            ollama_llm_factory = self._make_ollama_llm_factory(ollama_provider_config)
+            self.register_factory("ollama_llm", ollama_llm_factory)
+            configured_url = ollama_provider_config.get("base_url", "http://localhost:11434")
+            logger.info(
+                "Ollama LLM adapter registered",
+                llm_factory="ollama_llm",
+                configured_endpoint=configured_url,
+                note="Self-hosted LLM with optional tool calling",
+            )
+        else:
+            logger.debug("Ollama LLM adapter disabled by provider configuration")
 
         self._register_configured_llm_factories()
 
@@ -1207,6 +1231,11 @@ class PipelineOrchestrator:
         raw_config = providers.get("google")
         if not raw_config:
             return None
+        if (
+            isinstance(raw_config, dict) and raw_config.get("enabled") is False
+        ) or getattr(raw_config, "enabled", None) is False:
+            logger.debug("Google pipeline adapters disabled by provider configuration")
+            return None
         if isinstance(raw_config, (GoogleProviderConfig, dict)):
             try:
                 payload = (
@@ -1457,6 +1486,10 @@ class PipelineOrchestrator:
         )
         merged: Dict[str, Any] = {}
 
+        if isinstance(raw, dict) and raw.get("enabled") is False:
+            logger.debug("Telnyx LLM adapter disabled by provider configuration")
+            return None
+
         if isinstance(raw, TelnyxLLMProviderConfig):
             merged.update(raw.model_dump())
         elif isinstance(raw, dict):
@@ -1508,6 +1541,10 @@ class PipelineOrchestrator:
         providers = getattr(self.config, "providers", {}) or {}
         raw = providers.get("minimax_llm") or providers.get("minimax")
         merged: Dict[str, Any] = {}
+
+        if isinstance(raw, dict) and raw.get("enabled") is False:
+            logger.debug("MiniMax LLM adapter disabled by provider configuration")
+            return None
 
         if isinstance(raw, MiniMaxLLMProviderConfig):
             merged.update(raw.model_dump())

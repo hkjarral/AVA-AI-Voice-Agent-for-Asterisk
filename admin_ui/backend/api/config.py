@@ -565,6 +565,9 @@ _SAFE_BASE_URLS: dict[str, str] = {
     "api.openai.com": "https://api.openai.com/v1",
     "api.groq.com": "https://api.groq.com/openai/v1",
     "openrouter.ai": "https://openrouter.ai/api/v1",
+    "api.deepseek.com": "https://api.deepseek.com/v1",
+    "api.minimax.io": "https://api.minimax.io/v1",
+    "api.minimaxi.com": "https://api.minimaxi.com/v1",
     "api.anthropic.com": "https://api.anthropic.com/v1",
     "api.deepgram.com": "https://api.deepgram.com/v1",
     "api.elevenlabs.io": "https://api.elevenlabs.io/v1",
@@ -3157,24 +3160,24 @@ async def verify_provider_credentials(provider_key: str):
 
     _merged, provider_cfg, kind = _get_provider_block(provider_key)
     helpers = _provider_instances_module()
+    legacy_env_names = {
+        "openai_realtime": ("OPENAI_API_KEY",),
+        "openai": (f"{provider_key.rsplit('_llm', 1)[0].upper()}_API_KEY", "OPENAI_API_KEY"),
+        "deepgram": ("DEEPGRAM_API_KEY",),
+        "google_live": ("GOOGLE_API_KEY",),
+        "google": ("GOOGLE_API_KEY",),
+        "telnyx": ("TELNYX_API_KEY",),
+        "telenyx": ("TELNYX_API_KEY",),
+        "minimax": ("MINIMAX_API_KEY",),
+        "elevenlabs_agent": ("ELEVENLABS_API_KEY",),
+        "grok": ("XAI_API_KEY",),
+    }.get(kind, ())
     api_key = helpers["resolve_secret_value"](
         provider_cfg,
         file_field="api_key_file",
         env_field="api_key_env",
         inline_field="api_key",
-        legacy_env_names=(
-            ("OPENAI_API_KEY",)
-            if kind == "openai_realtime"
-            else ("DEEPGRAM_API_KEY",)
-            if kind == "deepgram"
-            else ("GOOGLE_API_KEY",)
-            if kind == "google_live"
-            else ("ELEVENLABS_API_KEY",)
-            if kind == "elevenlabs_agent"
-            else ("XAI_API_KEY",)
-            if kind == "grok"
-            else ()
-        ),
+        legacy_env_names=legacy_env_names,
     )
     try:
         if kind == "google_live" and provider_cfg.get("credentials_path"):
@@ -3252,6 +3255,45 @@ async def verify_provider_credentials(provider_key: str):
             if resp.status_code >= 400:
                 raise HTTPException(status_code=400, detail="xAI API key verification failed")
             return {"status": "success", "message": "xAI API key verified"}
+        if kind == "google":
+            if not api_key:
+                raise HTTPException(status_code=400, detail="Google API key is not configured")
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    params={"key": api_key},
+                )
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=400, detail="Google API key verification failed")
+            return {"status": "success", "message": "Google API key verified"}
+        if kind in {"openai", "telnyx", "telenyx", "minimax"}:
+            if not api_key:
+                raise HTTPException(status_code=400, detail=f"{kind} API key is not configured")
+            if api_key.lower() == "not-needed":
+                return {
+                    "status": "success",
+                    "message": "No-auth provider credential configuration accepted",
+                }
+            if kind == "openai":
+                configured_base = provider_cfg.get("chat_base_url") or provider_cfg.get("base_url") or ""
+                base_url = _safe_base_url(str(configured_base), "https://api.openai.com/v1")
+                label = "OpenAI-compatible"
+            elif kind in {"telnyx", "telenyx"}:
+                configured_base = provider_cfg.get("chat_base_url") or provider_cfg.get("base_url") or ""
+                base_url = _safe_base_url(str(configured_base), "https://api.telnyx.com/v2/ai")
+                label = "Telnyx"
+            else:
+                configured_base = provider_cfg.get("chat_base_url") or provider_cfg.get("base_url") or ""
+                base_url = _safe_base_url(str(configured_base), "https://api.minimax.io/v1")
+                label = "MiniMax"
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    f"{base_url}/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=400, detail=f"{label} API key verification failed")
+            return {"status": "success", "message": f"{label} API key verified"}
     except HTTPException:
         raise
     except Exception as exc:

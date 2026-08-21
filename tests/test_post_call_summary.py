@@ -1,8 +1,10 @@
 import asyncio
+from unittest.mock import patch
 
 import pytest
 
 from src.config import AppConfig, OpenAIProviderConfig
+from src.engine import Engine
 from src.pipelines.base import LLMComponent, LLMResponse
 from src.pipelines.orchestrator import PipelineOrchestrator, PipelineOrchestratorError
 from src.post_call_summary import PostCallSummaryService
@@ -83,6 +85,50 @@ async def test_unknown_explicit_provider_fails_without_fallback():
             max_words=50,
             timeout_sec=1,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "component_key,providers",
+    [
+        ("ollama_llm", {"ollama_llm": {"type": "ollama", "enabled": False}}),
+        (
+            "google_llm",
+            {"google": {"enabled": False, "api_key": "test-key"}},
+        ),
+        (
+            "telnyx_llm",
+            {"telnyx": {"enabled": False, "api_key": "test-key"}},
+        ),
+        (
+            "minimax_llm",
+            {"minimax": {"enabled": False, "api_key": "test-key"}},
+        ),
+    ],
+)
+async def test_disabled_summary_provider_is_rejected(component_key, providers):
+    orchestrator = PipelineOrchestrator(_app_config(providers))
+
+    with pytest.raises(PipelineOrchestratorError, match="disabled"):
+        await orchestrator.generate_once(
+            component_key=component_key,
+            call_id="summary:disabled",
+            transcript="user: private transcript",
+            system_prompt="Summarize.",
+            max_words=50,
+            timeout_sec=1,
+        )
+
+
+def test_summary_service_construction_failure_is_fail_open():
+    engine = Engine.__new__(Engine)
+    engine.pipeline_orchestrator = object()
+
+    with patch(
+        "src.post_call_summary.PostCallSummaryService",
+        side_effect=RuntimeError("construction failed"),
+    ):
+        assert engine._post_call_summary_generator() is None
 
 
 def test_configured_model_supports_typed_configs_and_adapter_defaults():

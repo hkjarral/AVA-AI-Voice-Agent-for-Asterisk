@@ -1,7 +1,9 @@
 import json
 import os
 
+import httpx
 import pytest
+from fastapi import HTTPException
 
 from api import config as config_api
 from api import tools as tools_api
@@ -139,3 +141,105 @@ def test_inline_secret_migration_ignores_no_auth_sentinel(monkeypatch):
     assert config_api._migrate_inline_provider_secrets(config) is False
     assert config["providers"]["native_llm"]["api_key"] == "not-needed"
     assert writes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_key,provider_cfg,expected_url",
+    [
+        (
+            "openai_llm",
+            {"type": "openai", "chat_base_url": "https://api.openai.com/v1"},
+            "https://api.openai.com/v1/models",
+        ),
+        (
+            "google_llm",
+            {"type": "google"},
+            "https://generativelanguage.googleapis.com/v1beta/models",
+        ),
+        (
+            "telnyx_llm",
+            {"type": "telnyx", "chat_base_url": "https://api.telnyx.com/v2/ai"},
+            "https://api.telnyx.com/v2/ai/models",
+        ),
+        (
+            "telenyx_llm",
+            {"type": "telenyx", "chat_base_url": "https://api.telnyx.com/v2/ai"},
+            "https://api.telnyx.com/v2/ai/models",
+        ),
+        (
+            "minimax_llm",
+            {"type": "minimax", "chat_base_url": "https://api.minimax.io/v1"},
+            "https://api.minimax.io/v1/models",
+        ),
+    ],
+)
+async def test_modular_provider_credentials_verify_success(
+    monkeypatch, provider_key, provider_cfg, expected_url
+):
+    calls = []
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return type("Response", (), {"status_code": 200})()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(
+        config_api,
+        "_read_merged_config_dict",
+        lambda: {"providers": {provider_key: {**provider_cfg, "api_key": "test-secret"}}},
+    )
+
+    response = await config_api.verify_provider_credentials(provider_key)
+
+    assert response["status"] == "success"
+    assert calls[0][0] == expected_url
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_type", ["openai", "google", "telnyx", "telenyx", "minimax"])
+async def test_modular_provider_credentials_verify_failure(monkeypatch, provider_type):
+    provider_key = f"{provider_type}_llm"
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, _url, **_kwargs):
+            return type("Response", (), {"status_code": 401})()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(
+        config_api,
+        "_read_merged_config_dict",
+        lambda: {
+            "providers": {
+                provider_key: {
+                    "type": provider_type,
+                    "api_key": "bad-secret",
+                }
+            }
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await config_api.verify_provider_credentials(provider_key)
+
+    assert exc_info.value.status_code == 400
+    assert "verification failed" in str(exc_info.value.detail).lower()
