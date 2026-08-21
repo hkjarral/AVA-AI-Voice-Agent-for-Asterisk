@@ -42,6 +42,11 @@ class SessionContext:
     allowed_tools: List[str] = field(default_factory=list)
     tool_schemas: List[Dict[str, Any]] = field(default_factory=list)
     tool_policy: str = "auto"
+    # Effective end-call markers supplied by the engine for this call. ``None``
+    # preserves the legacy server defaults for older clients.
+    hangup_end_call_markers: Optional[List[str]] = None
+    hangup_marker_source: str = "global"
+    hangup_marker_digest: Optional[str] = None
     # `call_id` of the most recent `tool_context` message that populated the
     # three fields above. Used to detect cross-call leakage on long-lived
     # WebSocket sessions: when a different `call_id` arrives, the server

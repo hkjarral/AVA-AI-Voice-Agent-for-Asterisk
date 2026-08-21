@@ -286,6 +286,15 @@ class TestProtocolContractSchema:
         stt_props = defs["StatusResponse"]["properties"]["models"]["properties"]["stt"]["properties"]
         assert "language" in stt_props
 
+    def test_status_response_advertises_session_hangup_markers(self):
+        pc = self._load_pc()
+        status = pc.PROTOCOL_SCHEMA["$defs"]["StatusResponse"]
+        assert "capabilities" in status["required"]
+        marker_capability = status["properties"]["capabilities"]["properties"][
+            "session_hangup_markers"
+        ]
+        assert marker_capability == {"const": True}
+
 
 # ---------------------------------------------------------------------------
 # Admin UI SwitchModelRequest + payload builder tests

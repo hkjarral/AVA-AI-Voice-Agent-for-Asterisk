@@ -6,12 +6,17 @@ def test_roundtrip(tmp_path):
     store = AgentsStore(db_path=str(tmp_path / "agents.db"))
     store.create(display_name="Sales", provider="p", prompt="sys", greeting="hi",
                  extra_json='{"pipeline":"local_hybrid"}',
-                 tool_configs_json='{"transfer":{"destination_policy":"none","destination_keys":[]}}')
+                 tool_configs_json='{"transfer":{"destination_policy":"none","destination_keys":[]}}',
+                 hangup_policy_json='{"strategy":"extend","end_call":["да","нет"]}')
     out = export_yaml(store)
     doc = yaml.safe_load(out)
     assert doc["contexts"]["sales"]["prompt"] == "sys"
     assert doc["contexts"]["sales"]["pipeline"] == "local_hybrid"
     assert doc["contexts"]["sales"]["tool_configs"]["transfer"]["destination_policy"] == "none"
+    assert doc["contexts"]["sales"]["hangup_policy"] == {
+        "strategy": "extend",
+        "end_call": ["да", "нет"],
+    }
 
 
 def test_malformed_json_fields_skipped_not_crashed(tmp_path):

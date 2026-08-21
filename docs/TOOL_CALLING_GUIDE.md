@@ -1015,6 +1015,9 @@ tools:
     enabled: true
     require_confirmation: false        # Don't ask "shall I hang up?"
     farewell_message: "Thank you for calling. Goodbye!"
+    # Global end-of-call intent markers remain the default for every Agent.
+    # Agents can inherit, extend, or replace them in:
+    # Admin UI → Agents → Edit Agent → Tools → Hangup Guardrail.
   
   # ----------------------------------------------------------------------------
   # LEAVE_VOICEMAIL - Send caller to voicemail

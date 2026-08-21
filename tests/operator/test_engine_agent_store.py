@@ -26,6 +26,44 @@ def test_resolve_builds_context_config(db):
     assert cc.pipeline == "local_hybrid" and cc.pre_call_tools == ["enrich"]
     assert cc.connection_audio == "tone:ring"
 
+
+def test_resolve_reads_optional_hangup_policy_column(db):
+    c = sqlite3.connect(db)
+    c.execute("ALTER TABLE agents ADD COLUMN hangup_policy_json TEXT")
+    c.execute(
+        "UPDATE agents SET hangup_policy_json=? WHERE slug='sales'",
+        (json.dumps({"strategy": "extend", "end_call": ["да", "нет"]}),),
+    )
+    c.commit()
+    c.close()
+    assert EngineAgentStore(db_path=db).resolve("sales").hangup_policy == {
+        "strategy": "extend",
+        "end_call": ["да", "нет"],
+    }
+
+
+def test_corrupt_hangup_policy_json_fails_closed(db):
+    c = sqlite3.connect(db)
+    c.execute("ALTER TABLE agents ADD COLUMN hangup_policy_json TEXT")
+    c.execute("UPDATE agents SET hangup_policy_json='{bad' WHERE slug='sales'")
+    c.commit()
+    c.close()
+    with pytest.raises(AgentStoreReadError):
+        EngineAgentStore(db_path=db).resolve("sales")
+
+
+def test_invalid_hangup_policy_semantics_fail_closed(db):
+    c = sqlite3.connect(db)
+    c.execute("ALTER TABLE agents ADD COLUMN hangup_policy_json TEXT")
+    c.execute(
+        "UPDATE agents SET hangup_policy_json=? WHERE slug='sales'",
+        (json.dumps({"strategy": "replace", "end_call": []}),),
+    )
+    c.commit()
+    c.close()
+    with pytest.raises(AgentStoreReadError):
+        EngineAgentStore(db_path=db).resolve("sales")
+
 def test_resolve_unknown_returns_none(db):
     assert EngineAgentStore(db_path=db).resolve("nope") is None
 

@@ -3,6 +3,37 @@ import { describe, expect, it } from 'vitest';
 import { parseAgentConfig, serializeAgentConfig } from './agentToolConfig';
 
 
+describe('per-agent hangup marker policy', () => {
+    it('round-trips an extend policy through the first-class column', () => {
+        const state = parseAgentConfig({
+            provider: 'local',
+            hangup_policy_json: JSON.stringify({ strategy: 'extend', end_call: ['да', 'нет'] }),
+        });
+        expect(state.hangupMarkerStrategy).toBe('extend');
+        expect(state.hangupEndCallMarkers).toEqual(['да', 'нет']);
+        expect(JSON.parse(serializeAgentConfig(state).hangup_policy_json || '{}')).toEqual({
+            strategy: 'extend', end_call: ['да', 'нет'],
+        });
+    });
+
+    it('omits inherited markers for backward compatibility', () => {
+        const state = parseAgentConfig({ provider: 'local' });
+        expect(state.hangupMarkerStrategy).toBe('inherit');
+        expect(state.hangupEndCallMarkers).toEqual([]);
+        expect(serializeAgentConfig(state).hangup_policy_json).toBeNull();
+    });
+
+    it('trims, de-duplicates, and removes blank marker rows before saving', () => {
+        const state = parseAgentConfig({ provider: 'local' });
+        state.hangupMarkerStrategy = 'replace';
+        state.hangupEndCallMarkers = [' да ', '', 'нет', 'да'];
+        expect(JSON.parse(serializeAgentConfig(state).hangup_policy_json || '{}')).toEqual({
+            strategy: 'replace', end_call: ['да', 'нет'],
+        });
+    });
+});
+
+
 describe('per-agent no-input configuration', () => {
     it('round-trips no_input overrides without clobbering unknown extra fields', () => {
         const state = parseAgentConfig({

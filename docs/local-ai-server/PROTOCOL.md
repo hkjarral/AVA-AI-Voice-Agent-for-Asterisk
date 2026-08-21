@@ -340,6 +340,11 @@ Request:
     { "name": "hangup_call", "parameters": { "type": "object", "properties": { "farewell_message": { "type": "string" } } } }
   ],
   "tool_policy": "auto",
+  "hangup_policy": {
+    "markers": { "end_call": ["goodbye", "да", "нет"] }
+  },
+  "hangup_marker_source": "agent_extend",
+  "hangup_marker_digest": "0123456789abcdef",
   "protocol_version": 2
 }
 ```
@@ -348,6 +353,9 @@ Notes:
 
 - `tool_policy` valid values: `"auto"`, `"strict"`, `"compatible"`, `"off"`.
 - Sending `tool_context` more than once per call is allowed and replaces the prior state.
+- `hangup_policy.markers.end_call` is the effective, normalized list captured by the engine for this call. The Local AI Server binds it to `call_id`; a different call clears the previous list before processing.
+- `hangup_marker_source` and `hangup_marker_digest` are diagnostic metadata. The server recomputes the digest from the accepted markers rather than trusting the client value.
+- Invalid marker payloads disable `hangup_call` for that call. Full Local clients check `status_response.capabilities.session_hangup_markers` before sending a non-default list and fail call setup against older servers.
 
 ---
 
@@ -492,6 +500,7 @@ Response:
 {
   "type": "status_response",
   "status": "ok",
+  "capabilities": { "session_hangup_markers": true },
   "stt_backend": "vosk|kroko|sherpa|faster_whisper|whisper_cpp",
   "tts_backend": "piper|kokoro|melotts|silero",
   "models": {
@@ -549,6 +558,7 @@ Notes:
 
 - `models.stt.device` and `models.stt.compute_type` are only emitted for the `faster_whisper` backend (otherwise `null`).
 - `config.enable_filler_audio` and `config.llm_streaming_tts_overlap` reflect runtime-only flags that can be flipped via `switch_model` `runtime_config` without reloading STT/LLM/TTS.
+- `capabilities.session_hangup_markers=true` means this server accepts effective call-scoped end-of-call markers in `tool_context` and isolates them by `call_id`.
 
 Schema:
 

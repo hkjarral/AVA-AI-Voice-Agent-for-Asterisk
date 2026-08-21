@@ -8,6 +8,10 @@ import json, logging, os, re, sqlite3
 from contextlib import closing
 from typing import Optional
 from src.core.transport_orchestrator import ContextConfig
+from src.tools.telephony.hangup_policy import (
+    HangupPolicyConfigError,
+    normalize_agent_hangup_policy,
+)
 
 logger = logging.getLogger(__name__)
 DB_DEFAULT = "/app/data/operator/agents.db"
@@ -127,12 +131,27 @@ class EngineAgentStore:
         email_from = r["email_from"] if "email_from" in cols else None
         email_enabled_raw = r["email_enabled"] if "email_enabled" in cols else None
         email_enabled = None if email_enabled_raw is None else bool(email_enabled_raw)
+        try:
+            hangup_policy = normalize_agent_hangup_policy(
+                json.loads(r["hangup_policy_json"])
+                if "hangup_policy_json" in cols and r["hangup_policy_json"]
+                else None
+            )
+            hangup_policy = hangup_policy or None
+        except (json.JSONDecodeError, TypeError, HangupPolicyConfigError) as exc:
+            logger.error(
+                "agents.db hangup policy parse failed for name=%s (%s); Agent routing will fail closed",
+                name,
+                exc,
+            )
+            raise AgentStoreReadError(str(exc)) from exc
         return ContextConfig(
             prompt=r["prompt"], greeting=r["greeting"], profile=r["audio_profile"],
             provider=r["provider"],
             voice=r["voice"] if "voice" in cols else None,
             tools=tools,
             tool_configs=tool_configs,
+            hangup_policy=hangup_policy,
             email_recipient=email_recipient,
             email_from=email_from,
             email_enabled=email_enabled,

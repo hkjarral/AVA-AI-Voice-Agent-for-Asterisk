@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -415,6 +416,52 @@ def test_local_tool_policy_can_be_overridden_in_config():
     provider = LocalProvider(LocalProviderConfig(tool_call_policy="strict"), on_event=on_event)
     provider._tool_capability = {"level": "none"}
     assert provider._resolve_tool_policy() == "strict"
+
+
+@pytest.mark.asyncio
+async def test_full_local_fails_closed_when_server_cannot_accept_custom_markers():
+    provider = LocalProvider(LocalProviderConfig(mode="full"), on_event=None)
+    provider._request_status = AsyncMock(return_value={"capabilities": {}})
+    provider._apply_system_prompt = AsyncMock(return_value=True)
+    provider._send_tool_context = AsyncMock(return_value=True)
+
+    with pytest.raises(RuntimeError, match="call-scoped hangup markers"):
+        await provider._prime_runtime_status_and_context(
+            context={
+                "prompt": "p",
+                "hangup_policy": {
+                    "markers": {"end_call": ["goodbye", "да", "нет"]}
+                },
+                "hangup_marker_source": "agent_extend",
+            },
+            call_id="call-old-server",
+        )
+
+
+@pytest.mark.asyncio
+async def test_tool_context_sends_effective_call_scoped_markers():
+    provider = LocalProvider(LocalProviderConfig(mode="full"), on_event=None)
+    provider.websocket = _FakeWebSocket([])
+    provider._allowed_tools = {"hangup_call"}
+    provider._hangup_policy = {
+        "mode": "normal",
+        "enforce_transcript_offer": True,
+        "block_during_contact_capture": True,
+        "markers": {
+            "end_call": ["да", "нет"],
+            "assistant_farewell": ["goodbye"],
+            "affirmative": ["yes"],
+            "negative": ["no"],
+        },
+    }
+    provider._hangup_marker_source = "agent_replace"
+    provider._hangup_marker_digest = "0123456789abcdef"
+
+    assert await provider._send_tool_context(call_id="call-russian") is True
+    payload = json.loads(provider.websocket.sent[-1])
+    assert payload["hangup_policy"]["markers"]["end_call"] == ["да", "нет"]
+    assert payload["hangup_marker_source"] == "agent_replace"
+    assert payload["hangup_marker_digest"] == "0123456789abcdef"
 
 
 @pytest.mark.asyncio

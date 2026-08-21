@@ -22,6 +22,8 @@ export interface AgentToolState {
     backgroundMusic: string;          // extra.background_music
     connectionAudio: string;          // extra.connection_audio (Asterisk media URI)
     noInput: Record<string, unknown>; // extra.no_input per-agent policy overrides
+    hangupMarkerStrategy: 'inherit' | 'extend' | 'replace';
+    hangupEndCallMarkers: string[];
     extraPassthrough: Record<string, unknown>; // extra keys we do not own (+ object-form in_call_http_tools)
     mcpJsonRaw: string;               // mcp_json preserved verbatim — NOTE: no runtime effect, MCP is configured globally not per-agent (audit LOW-T2)
     transferDestinationPolicy: ResourcePolicy;
@@ -101,11 +103,16 @@ export interface AgentLike {
     mcp_json?: string;
     extra_json?: string;
     tool_configs_json?: string;
+    hangup_policy_json?: string;
 }
 
 export function parseAgentConfig(agent: AgentLike | null | undefined): AgentToolState {
     const extra = safeParseObject(agent?.extra_json);
     const toolConfigs = safeParseObject(agent?.tool_configs_json);
+    const hangupPolicy = safeParseObject(agent?.hangup_policy_json);
+    const rawHangupStrategy = asString(hangupPolicy['strategy']);
+    const hangupMarkerStrategy = rawHangupStrategy === 'extend' || rawHangupStrategy === 'replace'
+        ? rawHangupStrategy : 'inherit';
     const transferConfig = asObject(toolConfigs['transfer']);
     const rawTransferPolicy = asString(transferConfig['destination_policy']);
     const transferDestinationPolicy = parsePolicy(rawTransferPolicy);
@@ -148,6 +155,9 @@ export function parseAgentConfig(agent: AgentLike | null | undefined): AgentTool
         backgroundMusic: asString(extra['background_music']),
         connectionAudio: asString(extra['connection_audio']),
         noInput: asObject(extra['no_input']),
+        hangupMarkerStrategy,
+        hangupEndCallMarkers: hangupMarkerStrategy === 'inherit'
+            ? [] : asStrArray(hangupPolicy['end_call']),
         extraPassthrough: passthrough,
         mcpJsonRaw: agent?.mcp_json || '',
         transferDestinationPolicy,
@@ -171,6 +181,7 @@ export interface SerializedAgentConfig {
     mcp_json: string | null;
     extra_json: string | null;
     tool_configs_json: string | null;
+    hangup_policy_json: string | null;
 }
 
 export function serializeAgentConfig(state: AgentToolState): SerializedAgentConfig {
@@ -231,6 +242,10 @@ export function serializeAgentConfig(state: AgentToolState): SerializedAgentConf
         mcp_json: state.mcpJsonRaw.trim() || null,
         extra_json: Object.keys(extra).length ? JSON.stringify(extra) : null,
         tool_configs_json: Object.keys(toolConfigs).length ? JSON.stringify(toolConfigs) : null,
+        hangup_policy_json: state.hangupMarkerStrategy === 'inherit' ? null : JSON.stringify({
+            strategy: state.hangupMarkerStrategy,
+            end_call: [...new Set(state.hangupEndCallMarkers.map((marker) => marker.trim()).filter(Boolean))],
+        }),
     };
 }
 

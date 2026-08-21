@@ -9,6 +9,7 @@ An **agent** is the v1a evolution of a "context": a named configuration bundle t
 - **Voice** — per-agent voice override (v7.3.0+): pick a voice for this agent, or leave empty to use the provider's default voice. Multiple agents can share one provider, each with its own voice. See [Voice Selection](VOICE_SELECTION.md)
 - **Audio profile** — telephony format / sample-rate profile (e.g. `telephony_ulaw_8k`)
 - **Tools** — optional callable tools plus per-agent resource policies for transfer destinations, Google calendars, Microsoft calendar accounts, and voicemail mailboxes. Global configuration owns inventory and hard disables; an agent can only narrow it.
+- **Hangup intent markers** — optional per-Agent end-of-call phrases that inherit, extend, or replace the global `hangup_call` markers for newly started calls.
 
 Agents are managed in the Admin UI **Agents** tab and stored in `agents.db`. v7.4 removes Contexts from navigation and runtime routing. Visiting the old `/contexts` URL shows a one-time migration notice and then opens Agents.
 
@@ -109,6 +110,28 @@ Empty or stale selections fail closed. Existing single-calendar/account installa
 The same effective snapshot governs provider schemas, prompt guidance, execution, deferred transfer, and audit metadata. A global disabled tool always wins. Tool names and Call History records remain unchanged (`google_calendar`, `microsoft_calendar`, and `leave_voicemail`), so existing tool-usage filters and aggregation remain compatible.
 
 **Tools → Save & Apply** builds an isolated generation for built-ins and managed HTTP tools. New calls capture the new generation; active calls keep their previous registry and configuration until they end. Build/validation failure leaves the previous generation running. Python code, environment/credential changes, provider/VAD changes, and MCP process configuration still require an engine restart.
+
+### Per-Agent hangup intent markers
+
+Under **Agents → Edit Agent → Tools → Hangup Guardrail**, choose how the Agent recognizes caller end-of-call intent:
+
+- **Inherit global markers** is the backward-compatible default.
+- **Extend global markers** adds Agent-specific phrases, such as localized confirmations, while preserving the global list.
+- **Replace global markers** uses only the Agent list. At least one marker is required.
+
+Enter one normalized phrase per line. Very short or single-word markers can match ordinary conversation, so the UI warns about them; use distinctive phrases where possible and test both expected and false-positive utterances. Saving an Agent affects new calls only. Active calls keep the effective marker snapshot they started with.
+
+The Agent row stores this nullable first-class value in `hangup_policy_json`. Legacy YAML imports may use the equivalent form:
+
+```yaml
+hangup_policy:
+  strategy: extend
+  end_call:
+    - да
+    - нет
+```
+
+Global enable/disable and execution settings still belong to **Tools → Hang Up Call**. A per-Agent marker policy does not enable a globally disabled tool.
 
 ---
 

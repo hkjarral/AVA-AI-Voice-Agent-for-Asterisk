@@ -87,3 +87,24 @@ def test_relative_agents_db_path_yields_nonempty_dirname():
     op_dir = os.path.dirname(agents_db)
     assert op_dir, "abspath() must yield a non-empty parent dir for a bare filename"
     assert os.path.basename(agents_db) == "agents.db"
+
+
+def test_migration_promotes_and_normalizes_agent_hangup_policy(tmp_path):
+    yaml_path = _write_yaml(tmp_path, {
+        "Russian Confirmations": {
+            "provider": "local",
+            "prompt": "Confirm the appointment",
+            "hangup_policy": {
+                "strategy": "extend",
+                "end_call": [" Да ", "нет", "да"],
+            },
+        }
+    })
+    store = AgentsStore(db_path=str(tmp_path / "agents.db"))
+
+    assert run_migration(store, yaml_path, str(tmp_path / "contexts"))["imported"] == 1
+    row = store.get_by_slug("russian_confirmations")
+    assert _yaml.safe_load(row["hangup_policy_json"]) == {
+        "strategy": "extend",
+        "end_call": ["да", "нет"],
+    }

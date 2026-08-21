@@ -152,6 +152,9 @@ def build_status_response(server) -> Dict[str, Any]:
     return {
         "type": "status_response",
         "status": "ok",
+        "capabilities": {
+            "session_hangup_markers": True,
+        },
         "stt_backend": server.stt_backend,
         "tts_backend": server.tts_backend,
         "models": {

@@ -100,6 +100,7 @@ class CallSession:
     tool_generation_id: Optional[int] = None
     tool_config_hash: Optional[str] = None
     tool_policy: Dict[str, Any] = field(default_factory=dict)
+    hangup_marker_policy: Dict[str, Any] = field(default_factory=dict)
     
     # Conversation tracking for email tools
     conversation_history: List[Dict[str, Any]] = field(default_factory=list)

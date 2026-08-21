@@ -89,6 +89,7 @@ from .utils.voice_catalog import known_voice_map
 from src.pipelines.base import LLMResponse
 from src.tools.telephony.hangup_policy import (
     DEFAULT_HANGUP_MARKERS,
+    resolve_effective_hangup_policy,
     resolve_hangup_policy,
     text_contains_end_call_intent,
     text_is_short_polite_closing,
@@ -4153,7 +4154,9 @@ class Engine:
                         logger.error(f"Failed to build GoogleProviderConfig for {name}: {e}", exc_info=True)
                         continue
 
-                    hangup_policy = resolve_hangup_policy(getattr(self.config, "tools", None))
+                    hangup_policy = resolve_hangup_policy(
+                        getattr(self.config, "tools", None)
+                    )
                     provider = GoogleLiveProvider(
                         google_cfg,
                         self.on_provider_event,
@@ -13784,7 +13787,9 @@ class Engine:
                 # Guardrail: local LLMs can hallucinate terminal tool calls (especially hangup_call).
                 # Require explicit end-of-call intent in the *user's* transcript before honoring hangup_call.
                 if tool_calls and any((tc.get("name") or "").strip() == "hangup_call" for tc in tool_calls):
-                    hangup_policy = resolve_hangup_policy(getattr(self.config, "tools", None))
+                    hangup_policy = resolve_hangup_policy(
+                        (self._tool_config_for_session(session).get("tools") or {})
+                    )
                     policy_mode = str(hangup_policy.get("mode") or "normal").strip().lower()
                     if policy_mode != "relaxed":
                         end_markers = (hangup_policy.get("markers") or {}).get("end_call", [])
@@ -15530,7 +15535,9 @@ class Engine:
                                 # Jump to tool execution (reuse serial path's tool handling)
                                 # by setting response_text and tool_calls, then breaking out
                             else:
-                                tools_cfg = getattr(self.config, "tools", {}) or {}
+                                tools_cfg = (
+                                    self._tool_config_for_session(session).get("tools") or {}
+                                )
                                 if self._is_pipeline_farewell_without_tool(
                                     transcript_text,
                                     response_text,
@@ -15642,7 +15649,9 @@ class Engine:
                     llm_adapter_key = getattr(getattr(pipeline, "llm_adapter", None), "component_key", None)
                     guardrail_cfg = (llm_options or {}).get("hangup_call_guardrail")
                     guardrail_mode_override = (llm_options or {}).get("hangup_call_guardrail_mode")
-                    hangup_policy = resolve_hangup_policy(getattr(self.config, "tools", None))
+                    hangup_policy = resolve_hangup_policy(
+                        (self._tool_config_for_session(session).get("tools") or {})
+                    )
                     policy_mode = str(hangup_policy.get("mode") or "normal").strip().lower()
                     mode_override = str(guardrail_mode_override or "").strip().lower()
                     effective_mode = mode_override if mode_override in ("relaxed", "normal", "strict") else policy_mode
@@ -15915,7 +15924,9 @@ class Engine:
                                     logger.error("Pipeline playback exception", call_id=call_id, exc_info=True)
 
                     if response_text and not tool_calls:
-                        tools_cfg = getattr(self.config, "tools", {}) or {}
+                        tools_cfg = (
+                            self._tool_config_for_session(session).get("tools") or {}
+                        )
                         if self._is_pipeline_farewell_without_tool(
                             transcript_text,
                             response_text,
@@ -17684,6 +17695,19 @@ class Engine:
 
         agent_policy = getattr(context_config, "tool_configs", None) if context_config else None
         effective = generation.for_agent(agent_policy)
+        agent_hangup_policy = (
+            getattr(context_config, "hangup_policy", None) if context_config else None
+        )
+        resolved_hangup = resolve_effective_hangup_policy(
+            (effective.config.get("tools") or {}),
+            agent_hangup_policy,
+        )
+        tools_cfg = effective.config.setdefault("tools", {})
+        hangup_cfg = tools_cfg.setdefault("hangup_call", {})
+        if not isinstance(hangup_cfg, dict):
+            hangup_cfg = {}
+            tools_cfg["hangup_call"] = hangup_cfg
+        hangup_cfg["policy"] = resolved_hangup["policy"]
         registry = generation.registry
         inline_http = getattr(context_config, "in_call_http_tools", None) if context_config else None
         if isinstance(inline_http, dict) and inline_http:
@@ -17711,7 +17735,14 @@ class Engine:
                 for scope, keys in effective.stale_resource_keys.items()
                 if keys
             },
+            "hangup_markers": {
+                "source": resolved_hangup["source"],
+                "strategy": resolved_hangup["strategy"],
+                "count": resolved_hangup["marker_count"],
+                "digest": resolved_hangup["marker_digest"],
+            },
         }
+        session.hangup_marker_policy = dict(session.tool_policy["hangup_markers"])
         self._overlay_vicidial_tool_runtime(session)
         stale_resource_keys = {
             scope: list(keys)
@@ -17733,6 +17764,9 @@ class Engine:
             generation_id=generation.generation_id,
             config_hash=generation.config_hash,
             resource_policies=effective.policies,
+            hangup_marker_source=resolved_hangup["source"],
+            hangup_marker_count=resolved_hangup["marker_count"],
+            hangup_marker_digest=resolved_hangup["marker_digest"],
             effective_resource_keys={
                 scope: list(keys)
                 for scope, keys in effective.effective_resource_keys.items()
@@ -19278,6 +19312,23 @@ class Engine:
                     )
                 except Exception as e:
                     logger.warning(f"Failed to inject tool context: {e}", call_id=call_id)
+
+            # Hangup markers are resolved into the call's immutable tool config
+            # before provider startup. Call-owned providers may consume the
+            # effective policy directly; Full Local also forwards it to the
+            # Local AI Server as call-scoped tool context.
+            effective_hangup_policy = resolve_hangup_policy(
+                (self._tool_config_for_session(session).get("tools") or {})
+            )
+            if hasattr(provider, "_hangup_policy"):
+                provider._hangup_policy = effective_hangup_policy
+            if isinstance(provider, LocalProvider):
+                marker_meta = dict(getattr(session, "hangup_marker_policy", {}) or {})
+                provider_context["hangup_policy"] = effective_hangup_policy
+                provider_context["hangup_marker_source"] = marker_meta.get(
+                    "source", "global"
+                )
+                provider_context["hangup_marker_digest"] = marker_meta.get("digest")
 
             await provider.start_session(call_id, context=provider_context if provider_context else None)
             logger.info("Provider session started", call_id=call_id, provider=provider_name)

@@ -28,6 +28,10 @@ def test_import_is_atomic_complete_and_collision_safe(tmp_path):
                         "destination_keys": ["support"],
                     }
                 },
+                "hangup_policy": {
+                    "strategy": "extend",
+                    "end_call": [" Да ", "нет", "да"],
+                },
                 "pipeline": "custom",
                 "tool_overrides": {
                     "google_calendar": {"selected_calendars": ["sales-calendar"]},
@@ -48,6 +52,10 @@ def test_import_is_atomic_complete_and_collision_safe(tmp_path):
         first = next(row for row in rows if row["display_name"] == "Sales-East")
         assert json.loads(first["tools_json"]) == ["blind_transfer"]
         assert json.loads(first["tool_configs_json"])["transfer"]["destination_keys"] == ["support"]
+        assert json.loads(first["hangup_policy_json"]) == {
+            "strategy": "extend",
+            "end_call": ["да", "нет"],
+        }
         policies = json.loads(first["tool_configs_json"])
         assert policies["google_calendar"] == {
             "calendar_policy": "selected",

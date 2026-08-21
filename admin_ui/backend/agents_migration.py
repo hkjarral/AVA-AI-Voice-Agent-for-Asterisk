@@ -28,6 +28,10 @@ from src.tools.runtime_config import (
     dump_agent_tool_configs,
     merge_legacy_tool_overrides,
 )
+from src.tools.telephony.hangup_policy import (
+    HangupPolicyConfigError,
+    dump_agent_hangup_policy,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -207,7 +211,8 @@ MIGRATION_VERSION = 1
 # into extra_json (which EngineAgentStore does NOT read for email dispatch).
 _FIRST_CLASS = {
     "provider", "voice", "greeting", "prompt", "audio_profile", "profile", "tools",
-    "tool_configs", "tool_overrides", "email_recipient", "email_from", "email_enabled",
+    "tool_configs", "tool_overrides", "hangup_policy",
+    "email_recipient", "email_from", "email_enabled",
 }
 
 
@@ -276,7 +281,8 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
             tool_configs_json = dump_agent_tool_configs(
                 _migrated_tool_configs(ctx)
             )
-        except ToolConfigPolicyError as exc:
+            hangup_policy_json = dump_agent_hangup_policy(ctx.get("hangup_policy"))
+        except (ToolConfigPolicyError, HangupPolicyConfigError) as exc:
             skipped.append((key, f"invalid tool configuration: {exc}"))
             continue
         extra = {k: v for k, v in ctx.items() if k not in _FIRST_CLASS}
@@ -314,6 +320,7 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
             prompt,
             json.dumps(ctx["tools"]) if ctx.get("tools") else None,
             tool_configs_json,
+            hangup_policy_json,
             ctx.get("profile") or ctx.get("audio_profile"),
             json.dumps(extra) if extra else None,
             1 if key == "default" else 0,  # is_default
@@ -329,10 +336,10 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
         for r in rows:
             store.conn.execute(
                 """INSERT INTO agents (id, slug, display_name, provider, voice, greeting,
-                   prompt, tools_json, tool_configs_json, audio_profile, extra_json, is_operator_managed,
+                   prompt, tools_json, tool_configs_json, hangup_policy_json, audio_profile, extra_json, is_operator_managed,
                    is_active, is_default, source_file, created_at, updated_at,
                    email_recipient, email_from, email_enabled)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,0,1,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,1,?,?,?,?,?,?,?)""",
                 r,
             )
         store.conn.execute(

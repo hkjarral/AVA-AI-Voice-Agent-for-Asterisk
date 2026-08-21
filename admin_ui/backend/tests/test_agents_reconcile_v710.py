@@ -108,6 +108,49 @@ def test_reconcile_records_promptless_skip(env):
     assert ["noprompt", "missing prompt"] in r.json()["skipped"]
 
 
+def test_reconcile_imports_agent_hangup_policy(env):
+    client, yaml_path = env
+    _write_yaml(yaml_path, {
+        "Russian": {
+            "provider": "local",
+            "prompt": "Confirm the appointment",
+            "hangup_policy": {
+                "strategy": "extend",
+                "end_call": [" Да ", "нет", "да"],
+            },
+        },
+    })
+
+    response = client.post("/api/agents-migration/reconcile")
+
+    assert response.status_code == 200, response.text
+    stored = client.get("/api/agents/russian").json()
+    assert json.loads(stored["hangup_policy_json"]) == {
+        "strategy": "extend",
+        "end_call": ["да", "нет"],
+    }
+
+
+def test_reconcile_skips_invalid_agent_hangup_policy(env):
+    client, yaml_path = env
+    _write_yaml(yaml_path, {
+        "Broken Markers": {
+            "provider": "local",
+            "prompt": "p",
+            "hangup_policy": {"strategy": "replace", "end_call": []},
+        },
+    })
+
+    response = client.post("/api/agents-migration/reconcile")
+
+    assert response.status_code == 200, response.text
+    assert client.get("/api/agents/broken_markers").status_code == 404
+    assert response.json()["skipped"] == [[
+        "broken_markers",
+        "invalid tool configuration: replace requires at least one end_call marker",
+    ]]
+
+
 def test_reconcile_imports_pipeline_context(env):
     # A context with no monolithic provider but a pipeline passes _engine_ok and
     # imports (pipeline is an arbitrary key -> extra_json).

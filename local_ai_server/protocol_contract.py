@@ -88,10 +88,18 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
         },
         "StatusResponse": {
             "type": "object",
-            "required": ["type", "status", "stt_backend", "tts_backend", "models", "kroko", "kokoro", "config"],
+            "required": ["type", "status", "capabilities", "stt_backend", "tts_backend", "models", "kroko", "kokoro", "config"],
             "properties": {
                 "type": {"const": "status_response"},
                 "status": {"type": "string"},
+                "capabilities": {
+                    "type": "object",
+                    "required": ["session_hangup_markers"],
+                    "properties": {
+                        "session_hangup_markers": {"const": True},
+                    },
+                    "additionalProperties": True,
+                },
                 "stt_backend": {"type": "string"},
                 "tts_backend": {"type": "string"},
                 "models": {
@@ -376,6 +384,27 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
                 "allowed_tools": {"type": "array", "items": {"type": "string"}},
                 "tools": {"type": "array", "items": {"type": "object"}},
                 "tool_policy": {"enum": ["auto", "strict", "compatible", "off"]},
+                "hangup_policy": {
+                    "type": "object",
+                    "required": ["markers"],
+                    "properties": {
+                        "markers": {
+                            "type": "object",
+                            "required": ["end_call"],
+                            "properties": {
+                                "end_call": {
+                                    "type": "array",
+                                    "maxItems": 100,
+                                    "items": {"type": "string", "minLength": 1, "maxLength": 160},
+                                }
+                            },
+                            "additionalProperties": True,
+                        }
+                    },
+                    "additionalProperties": True,
+                },
+                "hangup_marker_source": {"type": "string"},
+                "hangup_marker_digest": {"type": ["string", "null"]},
                 "protocol_version": {"type": "integer"},
             },
             "additionalProperties": True,

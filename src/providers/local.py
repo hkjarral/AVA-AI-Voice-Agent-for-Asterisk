@@ -18,6 +18,10 @@ from ..audio.resampler import resample_audio
 from .base import AIProviderInterface, ProviderCapabilities, ProviderCapabilitiesMixin
 from ..tools.parser import parse_response_with_tools, validate_tool_call, has_tool_intent_markers
 from ..tools.execution_history import stable_tool_call_id
+from ..tools.telephony.hangup_policy import (
+    normalize_hangup_policy,
+    text_contains_end_call_intent,
+)
 
 logger = get_logger(__name__)
 
@@ -100,6 +104,9 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         self._tool_capability: Dict[str, Any] = {"level": "unknown", "source": "init"}
         # Effective per-call policy: strict | compatible | off
         self._effective_tool_policy: str = "compatible"
+        self._hangup_policy: Dict[str, Any] = normalize_hangup_policy({})
+        self._hangup_marker_source: str = "global"
+        self._hangup_marker_digest: Optional[str] = None
         # Feature flag: structured tool gateway for full-local provider only.
         self._tool_gateway_enabled: bool = bool(getattr(config, "tool_gateway_enabled", True))
 
@@ -632,28 +639,11 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 tool_path=tool_path,
             )
 
-    _END_CALL_MARKERS = (
-        "no transcript", "no transcript needed", "don't send a transcript",
-        "no thanks", "no thank you", "thank you", "thanks",
-        "that's all", "nothing else", "end call", "hang up",
-        "goodbye", "bye", "have a good day", "have a great day",
-        "take care", "talk to you later",
-    )
-
     def _user_has_end_call_intent(self, call_id: Optional[str]) -> bool:
         """Check if the last user transcript signals end-of-call intent."""
         user_text = (self._last_user_transcript_by_call.get(call_id or "", "") or "").strip().lower()
-        if not user_text:
-            return False
-        for marker in self._END_CALL_MARKERS:
-            m = marker.lower()
-            if " " in m:
-                if m in user_text:
-                    return True
-            else:
-                if re.search(rf"(?:^|\b){re.escape(m)}(?:\b|$)", user_text):
-                    return True
-        return False
+        markers = (self._hangup_policy.get("markers") or {}).get("end_call", [])
+        return text_contains_end_call_intent(user_text, markers)
 
     async def _process_llm_text_fallback(
         self,
@@ -1359,6 +1349,21 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         - Prompt sync is required because ai-engine contexts hold the system prompt, while local-ai-server
           owns the local LLM prompt used in full mode.
         """
+        supplied_hangup_policy = (
+            context.get("hangup_policy") if isinstance(context, dict) else None
+        )
+        self._hangup_policy = normalize_hangup_policy(supplied_hangup_policy or {})
+        self._hangup_marker_source = str(
+            (context.get("hangup_marker_source") if isinstance(context, dict) else None)
+            or "global"
+        ).strip()
+        self._hangup_marker_digest = (
+            str(context.get("hangup_marker_digest") or "").strip()
+            if isinstance(context, dict)
+            else None
+        ) or None
+
+        status = None
         try:
             status = await self._request_status(timeout_sec=float(self.connect_timeout) or 2.0)
             if isinstance(status, dict):
@@ -1376,6 +1381,22 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                     pass
         except Exception:
             logger.debug("Local AI Server status probe failed", call_id=call_id, exc_info=True)
+
+        default_end_markers = (
+            normalize_hangup_policy({}).get("markers") or {}
+        ).get("end_call", [])
+        effective_end_markers = (
+            self._hangup_policy.get("markers") or {}
+        ).get("end_call", [])
+        requires_session_markers = list(effective_end_markers) != list(default_end_markers)
+        supports_session_markers = bool(
+            ((status or {}).get("capabilities") or {}).get("session_hangup_markers")
+        )
+        if self._mode == "full" and requires_session_markers and not supports_session_markers:
+            raise RuntimeError(
+                "Local AI Server does not support call-scoped hangup markers; "
+                "upgrade/rebuild local_ai_server before using this Agent override"
+            )
 
         # Apply system prompt from context (if provided).
         prompt = ""
@@ -1595,6 +1616,9 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             "allowed_tools": sorted(self._allowed_tools),
             "tools": list(self._allowed_tool_schemas or []),
             "tool_policy": self._effective_tool_policy,
+            "hangup_policy": self._hangup_policy,
+            "hangup_marker_source": self._hangup_marker_source,
+            "hangup_marker_digest": self._hangup_marker_digest,
         }
         try:
             await self.websocket.send(json.dumps(payload, default=str))
@@ -1603,6 +1627,11 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 call_id=call_id,
                 allowed_tools=sorted(self._allowed_tools),
                 policy=self._effective_tool_policy,
+                hangup_marker_source=self._hangup_marker_source,
+                hangup_marker_count=len(
+                    (self._hangup_policy.get("markers") or {}).get("end_call", [])
+                ),
+                hangup_marker_digest=self._hangup_marker_digest,
             )
             return True
         except Exception:

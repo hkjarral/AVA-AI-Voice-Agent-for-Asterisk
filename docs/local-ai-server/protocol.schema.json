@@ -165,6 +165,7 @@
       "required": [
         "type",
         "status",
+        "capabilities",
         "stt_backend",
         "tts_backend",
         "models",
@@ -178,6 +179,18 @@
         },
         "status": {
           "type": "string"
+        },
+        "capabilities": {
+          "type": "object",
+          "required": [
+            "session_hangup_markers"
+          ],
+          "properties": {
+            "session_hangup_markers": {
+              "const": true
+            }
+          },
+          "additionalProperties": true
         },
         "stt_backend": {
           "type": "string"
@@ -895,6 +908,42 @@
             "strict",
             "compatible",
             "off"
+          ]
+        },
+        "hangup_policy": {
+          "type": "object",
+          "required": [
+            "markers"
+          ],
+          "properties": {
+            "markers": {
+              "type": "object",
+              "required": [
+                "end_call"
+              ],
+              "properties": {
+                "end_call": {
+                  "type": "array",
+                  "maxItems": 100,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  }
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "hangup_marker_source": {
+          "type": "string"
+        },
+        "hangup_marker_digest": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "protocol_version": {

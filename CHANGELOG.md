@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Agent-scoped hangup intent markers:** Agents can inherit, extend, or replace the global `hangup_call` end-of-call markers from the Admin UI. New calls capture an immutable effective marker policy, and Full Local sends it as call-scoped tool context with capability negotiation so reused sessions cannot leak markers between Agents and older Local AI Server builds fail closed instead of silently ignoring an override.
+
 ### Fixed
 
 - **Outbound campaign lead context now reaches the selected Agent and fails closed when unavailable** ([#613](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/613)): ARI channel creation now sends originate-time values in the documented JSON `variables` object instead of the ignored `channelVars` member, restoring outbound routing, FreePBX identity, AudioSocket, predial-transfer, and campaign metadata. Nonempty lead `custom_vars` use bounded canonical JSON, are reapplied and read back before the AMD hop, and terminate the attempt without starting an AI session if their exact value cannot be confirmed. Answered calls recover unfinished attempt/lead metadata from SQLite after an engine restart and fail closed when that authoritative state is unavailable. Diagnostics record identifiers and byte counts without logging lead context. Broader verification of all correlation/AMD/consent safety-net writes is tracked in [#614](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/614).

@@ -27,6 +27,10 @@ from src.tools.runtime_config import (
     merge_legacy_tool_overrides,
     normalize_agent_tool_configs,
 )
+from src.tools.telephony.hangup_policy import (
+    HangupPolicyConfigError,
+    dump_agent_hangup_policy,
+)
 
 
 DB_DEFAULT = "/app/data/operator/agents.db"
@@ -38,7 +42,8 @@ _BUNDLED_DEMO_DESCRIPTION = (
 _SLUG_RE = re.compile(r"[^a-z0-9_]+")
 _FIRST_CLASS = {
     "provider", "voice", "greeting", "prompt", "audio_profile", "profile",
-    "tools", "tool_configs", "tool_overrides", "email_recipient", "email_from", "email_enabled",
+    "tools", "tool_configs", "tool_overrides", "hangup_policy",
+    "email_recipient", "email_from", "email_enabled",
     "extension", "role_label",
 }
 
@@ -47,6 +52,7 @@ CREATE TABLE agents (
     id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL,
     extension TEXT, role_label TEXT, provider TEXT NOT NULL, voice TEXT,
     greeting TEXT, prompt TEXT NOT NULL, tools_json TEXT, tool_configs_json TEXT,
+    hangup_policy_json TEXT,
     mcp_json TEXT, audio_profile TEXT, extra_json TEXT,
     is_operator_managed INTEGER NOT NULL DEFAULT 1,
     is_active INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0,
@@ -477,7 +483,10 @@ def ensure_legacy_contexts_imported(
                 tool_configs = merge_legacy_tool_overrides(
                     context.get("tool_configs"), context.get("tool_overrides")
                 )
-            except ValueError as exc:
+                hangup_policy_json = dump_agent_hangup_policy(
+                    context.get("hangup_policy")
+                )
+            except (ValueError, HangupPolicyConfigError) as exc:
                 errors.append(f"{original_name}: {exc}")
                 continue
             base = _slugify(str(original_name)) or "agent"
@@ -493,7 +502,7 @@ def ensure_legacy_contexts_imported(
                 context.get("role_label"), context.get("provider") or "", context.get("voice"),
                 context.get("greeting"), prompt, json.dumps(context.get("tools")) if context.get("tools") is not None else None,
                 json.dumps(tool_configs, sort_keys=True) if tool_configs else None,
-                None, context.get("audio_profile") or context.get("profile"),
+                hangup_policy_json, None, context.get("audio_profile") or context.get("profile"),
                 json.dumps(extra) if extra else None, 0, 1, 0, "legacy YAML Context",
                 now, now, "Imported automatically during the v7.4 Agent migration",
                 context.get("email_recipient"), context.get("email_from"),
@@ -515,10 +524,10 @@ def ensure_legacy_contexts_imported(
                 connection.executemany(
                     """INSERT INTO agents (
                        id,slug,display_name,extension,role_label,provider,voice,greeting,prompt,
-                       tools_json,tool_configs_json,mcp_json,audio_profile,extra_json,
+                       tools_json,tool_configs_json,hangup_policy_json,mcp_json,audio_profile,extra_json,
                        is_operator_managed,is_active,is_default,source_file,created_at,updated_at,
                        notes,email_recipient,email_from,email_enabled
-                       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     rows,
                 )
                 connection.execute(

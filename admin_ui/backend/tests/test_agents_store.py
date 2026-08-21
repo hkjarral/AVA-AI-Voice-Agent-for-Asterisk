@@ -8,7 +8,7 @@ def store(tmp_path):
 def test_schema_created_with_wal(store):
     assert store.conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     cols = {r[1] for r in store.conn.execute("PRAGMA table_info(agents)")}
-    assert {"slug", "extra_json", "tool_configs_json", "is_operator_managed", "is_default", "source_file"} <= cols
+    assert {"slug", "extra_json", "tool_configs_json", "hangup_policy_json", "is_operator_managed", "is_default", "source_file"} <= cols
 
 
 def test_additive_migration_adds_tool_configs_column(tmp_path):
@@ -26,6 +26,7 @@ def test_additive_migration_adds_tool_configs_column(tmp_path):
     migrated = AgentsStore(db_path=str(db))
     cols = {r[1] for r in migrated.conn.execute("PRAGMA table_info(agents)")}
     assert "tool_configs_json" in cols
+    assert "hangup_policy_json" in cols
 
 def test_slugify():
     assert slugify("Maria - Vendas") == "maria_vendas"
@@ -45,6 +46,19 @@ def test_tool_configs_roundtrip(store):
     assert row["tool_configs_json"] == raw
     updated = store.update("scoped", tool_configs_json=None)
     assert updated["tool_configs_json"] is None
+
+
+def test_hangup_policy_roundtrip(store):
+    raw = '{"end_call":["да","нет"],"strategy":"extend"}'
+    row = store.create(
+        display_name="Russian Confirmation",
+        provider="local",
+        prompt="p",
+        hangup_policy_json=raw,
+    )
+    assert row["hangup_policy_json"] == raw
+    updated = store.update("russian_confirmation", hangup_policy_json=None)
+    assert updated["hangup_policy_json"] is None
 
 
 def test_existing_extra_calendar_bindings_are_promoted(tmp_path):

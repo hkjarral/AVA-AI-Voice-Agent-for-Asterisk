@@ -79,6 +79,7 @@ class ContextConfig:
     pipeline: Optional[str] = None  # Pipeline name for modular STT/LLM/TTS (e.g., local_hybrid)
     tools: Optional[list] = None  # In-call tool names for function calling
     tool_configs: Optional[Dict[str, Any]] = None  # v7.4 per-agent tool-scope policies
+    hangup_policy: Optional[Dict[str, Any]] = None  # Per-agent end-call marker override
     background_music: Optional[str] = None  # MOH class name for background music during calls
     connection_audio: Optional[str] = None  # Caller-only ARI media while provider/pipeline connects
     

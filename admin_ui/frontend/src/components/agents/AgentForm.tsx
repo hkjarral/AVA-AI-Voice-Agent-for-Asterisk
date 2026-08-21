@@ -37,6 +37,7 @@ export interface Agent {
     mcp_json?: string;
     extra_json?: string;
     tool_configs_json?: string;
+    hangup_policy_json?: string;
     notes?: string;
     email_recipient?: string;
     email_from?: string;
@@ -325,6 +326,12 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
         if (!toolState.provider && !toolState.pipeline) {
             toast.error('Choose an AI engine (a provider or a pipeline)'); return;
         }
+        if (
+            toolState.hangupMarkerStrategy !== 'inherit'
+            && !toolState.hangupEndCallMarkers.some((marker) => marker.trim())
+        ) {
+            toast.error('Add at least one end-call marker or select Inherit global'); return;
+        }
 
         const cfg = serializeAgentConfig(toolState);
         // Don't persist a voice the selected engine can't use: if the voice
@@ -349,6 +356,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                 mcp_json: cfg.mcp_json,
                 extra_json: cfg.extra_json,
                 tool_configs_json: cfg.tool_configs_json,
+                hangup_policy_json: cfg.hangup_policy_json,
                 email_recipient: emailRecipient || null,
                 email_from: emailFrom || null,
                 // Tri-state: '' means inherit — send explicit null (PATCH clears the column),
@@ -856,6 +864,64 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     microsoftAccounts={microsoftAccounts}
                     voicemailMailboxes={voicemailMailboxes}
                 />
+
+                <details className="mt-4 border border-border rounded-lg bg-card/50">
+                    <summary className="cursor-pointer px-3 py-3 text-sm font-medium">
+                        Hangup Guardrail Markers
+                    </summary>
+                    <div className="px-3 pb-3 pt-3 space-y-3 border-t border-border">
+                        <p className="text-xs text-muted-foreground">
+                            Configure end-call phrases for this Agent. The effective list is captured
+                            when a new call starts and is sent to Full Local as call-scoped state.
+                        </p>
+                        <FormSelect
+                            id="agent-hangup-marker-strategy"
+                            label="Marker Policy"
+                            options={[
+                                { value: 'inherit', label: 'Inherit global markers' },
+                                { value: 'extend', label: 'Extend global markers' },
+                                { value: 'replace', label: 'Replace global markers' },
+                            ]}
+                            value={toolState.hangupMarkerStrategy}
+                            onChange={(e) => setToolState((state) => ({
+                                ...state,
+                                hangupMarkerStrategy: e.target.value as AgentToolState['hangupMarkerStrategy'],
+                                hangupEndCallMarkers: e.target.value === 'inherit'
+                                    ? [] : state.hangupEndCallMarkers,
+                            }))}
+                            tooltip="Inherit keeps the global list. Extend adds Agent-specific phrases. Replace makes this Agent's list authoritative."
+                        />
+                        {toolState.hangupMarkerStrategy !== 'inherit' && (
+                            <div>
+                                <FormLabel
+                                    htmlFor="agent-hangup-end-call-markers"
+                                    tooltip="One literal phrase per line. Matching is case-insensitive."
+                                >
+                                    End-Call Markers
+                                </FormLabel>
+                                <textarea
+                                    id="agent-hangup-end-call-markers"
+                                    value={toolState.hangupEndCallMarkers.join('\n')}
+                                    onChange={(e) => setToolState((state) => ({
+                                        ...state,
+                                        hangupEndCallMarkers: e.target.value.split('\n'),
+                                    }))}
+                                    rows={6}
+                                    placeholder={'да\nнет\nдо свидания'}
+                                    className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
+                                />
+                                {toolState.hangupEndCallMarkers.some((marker) =>
+                                    marker.trim() && marker.trim().split(/\s+/).length === 1
+                                ) && (
+                                    <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                                        Single-word markers such as “yes”, “no”, “да”, or “нет” are broad.
+                                        Use them only for Agents whose workflow treats that answer as terminal.
+                                    </p>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </details>
             </div>
         </Modal>
     );

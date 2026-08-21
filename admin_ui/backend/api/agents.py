@@ -22,6 +22,10 @@ from src.tools.runtime_config import (
     dump_agent_tool_configs,
     merge_legacy_tool_overrides,
 )
+from src.tools.telephony.hangup_policy import (
+    HangupPolicyConfigError,
+    dump_agent_hangup_policy,
+)
 
 
 def _validate_optional_email(v):
@@ -77,6 +81,7 @@ class AgentIn(BaseModel):
     audio_profile: str | None = None
     tools_json: str | None = None
     tool_configs_json: str | None = None
+    hangup_policy_json: str | None = None
     # NOTE: not read at runtime — MCP is configured globally, not per-agent (audit LOW-T2). Stored/round-tripped only.
     mcp_json: str | None = None
     extra_json: str | None = None
@@ -96,6 +101,14 @@ class AgentIn(BaseModel):
         except ToolConfigPolicyError as exc:
             raise ValueError(str(exc)) from exc
 
+    @field_validator("hangup_policy_json")
+    @classmethod
+    def _check_hangup_policy(cls, value):
+        try:
+            return dump_agent_hangup_policy(value)
+        except HangupPolicyConfigError as exc:
+            raise ValueError(str(exc)) from exc
+
 class AgentPatch(BaseModel):
     display_name: str | None = None
     provider: str | None = None
@@ -107,6 +120,7 @@ class AgentPatch(BaseModel):
     audio_profile: str | None = None
     tools_json: str | None = None
     tool_configs_json: str | None = None
+    hangup_policy_json: str | None = None
     # NOTE: not read at runtime — MCP is configured globally, not per-agent (audit LOW-T2). Stored/round-tripped only.
     mcp_json: str | None = None
     extra_json: str | None = None
@@ -127,6 +141,14 @@ class AgentPatch(BaseModel):
         except ToolConfigPolicyError as exc:
             raise ValueError(str(exc)) from exc
 
+    @field_validator("hangup_policy_json")
+    @classmethod
+    def _check_hangup_policy(cls, value):
+        try:
+            return dump_agent_hangup_policy(value)
+        except HangupPolicyConfigError as exc:
+            raise ValueError(str(exc)) from exc
+
 class AgentOut(BaseModel):
     """Full agent row as stored in agents.db. Declares every column so attaching this
     as a response_model never drops a field (wire-compatible with the raw rows we
@@ -143,6 +165,7 @@ class AgentOut(BaseModel):
     prompt: str
     tools_json: str | None = None
     tool_configs_json: str | None = None
+    hangup_policy_json: str | None = None
     # NOTE: not read at runtime — MCP is configured globally, not per-agent (audit LOW-T2). Stored/round-tripped only.
     mcp_json: str | None = None
     audio_profile: str | None = None
@@ -560,7 +583,7 @@ def migration_ack():
 _RECONCILE_FIRST_CLASS = {
     "provider", "prompt", "voice", "greeting", "extension", "role_label", "notes",
     "email_recipient", "email_from", "email_enabled", "tools", "audio_profile",
-    "profile", "tool_configs", "tool_overrides",
+    "profile", "tool_configs", "tool_overrides", "hangup_policy",
 }
 
 
@@ -587,6 +610,7 @@ def _context_to_agent_fields(ctx: dict) -> dict:
                 ctx.get("tool_configs"), ctx.get("tool_overrides")
             )
         ),
+        "hangup_policy_json": dump_agent_hangup_policy(ctx.get("hangup_policy")),
         "audio_profile": ctx.get("profile") or ctx.get("audio_profile"),
         "extra_json": json.dumps(extra) if extra else None,
     }
@@ -619,9 +643,13 @@ def migration_reconcile():
     seen_slugs = {a["slug"] for a in store.list_all()}
     for key, ctx in merged.items():
         src = ctx.pop("_source_file", None)
-        fields = _context_to_agent_fields(ctx)
         existing = existing_by_name.get(key)
         slug_key = existing["slug"] if existing else slugify(key)
+        try:
+            fields = _context_to_agent_fields(ctx)
+        except (ToolConfigPolicyError, HangupPolicyConfigError) as exc:
+            skipped.append((slug_key, f"invalid tool configuration: {exc}"))
+            continue
         if not fields["prompt"]:
             skipped.append((slug_key, "missing prompt"))
             continue

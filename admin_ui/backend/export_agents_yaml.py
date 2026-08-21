@@ -41,6 +41,9 @@ def export_yaml(store: AgentsStore) -> str:
         tool_configs = _safe_json(a.get("tool_configs_json"))
         if tool_configs is not None:
             ctx["tool_configs"] = tool_configs
+        hangup_policy = _safe_json(a.get("hangup_policy_json"))
+        if hangup_policy is not None:
+            ctx["hangup_policy"] = hangup_policy
         contexts[a["slug"]] = ctx
     return yaml.safe_dump({"contexts": contexts}, sort_keys=True)
 

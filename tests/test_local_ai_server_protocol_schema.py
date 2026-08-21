@@ -66,6 +66,11 @@ def test_tool_context_full_payload_validates():
             }
         ],
         "tool_policy": "auto",
+        "hangup_policy": {
+            "markers": {"end_call": ["goodbye", "да", "нет"]},
+        },
+        "hangup_marker_source": "agent_extend",
+        "hangup_marker_digest": "0123456789abcdef",
         "protocol_version": 2,
     })
 
@@ -91,6 +96,15 @@ def test_tool_context_with_invalid_tool_policy_rejected():
         validate_payload({
             "type": "tool_context",
             "tool_policy": "not-a-real-policy",
+        })
+
+
+@requires_jsonschema
+def test_tool_context_with_incomplete_hangup_policy_rejected():
+    with pytest.raises(jsonschema.ValidationError):
+        validate_payload({
+            "type": "tool_context",
+            "hangup_policy": {"markers": {}},
         })
 
 
