@@ -108,6 +108,15 @@ def test_tool_context_with_incomplete_hangup_policy_rejected():
         })
 
 
+@requires_jsonschema
+def test_tool_context_with_empty_end_call_markers_rejected():
+    with pytest.raises(jsonschema.ValidationError):
+        validate_payload({
+            "type": "tool_context",
+            "hangup_policy": {"markers": {"end_call": []}},
+        })
+
+
 # --- ToolResult ---
 
 

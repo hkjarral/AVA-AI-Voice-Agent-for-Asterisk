@@ -924,6 +924,7 @@
               "properties": {
                 "end_call": {
                   "type": "array",
+                  "minItems": 1,
                   "maxItems": 100,
                   "items": {
                     "type": "string",

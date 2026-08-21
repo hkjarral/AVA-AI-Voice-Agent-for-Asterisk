@@ -28,6 +28,37 @@ def test_additive_migration_adds_tool_configs_column(tmp_path):
     assert "tool_configs_json" in cols
     assert "hangup_policy_json" in cols
 
+
+def test_additive_migration_fails_closed_when_required_column_cannot_be_added():
+    import sqlite3
+
+    existing = {
+        "email_recipient", "email_from", "email_enabled", "tool_configs_json"
+    }
+
+    class Cursor:
+        def fetchall(self):
+            return [(index, name) for index, name in enumerate(sorted(existing))]
+
+    class FailingConnection:
+        def execute(self, sql):
+            if sql.startswith("PRAGMA table_info"):
+                return Cursor()
+            if "ADD COLUMN hangup_policy_json" in sql:
+                raise sqlite3.OperationalError("read only")
+            return Cursor()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    uninitialized = object.__new__(AgentsStore)
+    uninitialized.conn = FailingConnection()
+    with pytest.raises(RuntimeError, match="missing columns: hangup_policy_json"):
+        uninitialized._ensure_schema_sync()
+
 def test_slugify():
     assert slugify("Maria - Vendas") == "maria_vendas"
     assert slugify("Demo Deepgram!") == "demo_deepgram"

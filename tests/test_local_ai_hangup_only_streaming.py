@@ -116,6 +116,24 @@ async def test_invalid_session_marker_policy_disables_hangup_call():
 
 
 @pytest.mark.asyncio
+async def test_empty_session_marker_policy_disables_hangup_call():
+    server, session = _server_and_session([])
+    await server._handle_tool_context(
+        None,
+        session,
+        {
+            "type": "tool_context",
+            "call_id": "empty-policy",
+            "allowed_tools": ["hangup_call", "request_transcript"],
+            "hangup_policy": {"markers": {"end_call": []}},
+        },
+    )
+    assert session.hangup_marker_source == "invalid"
+    assert session.hangup_end_call_markers == []
+    assert session.allowed_tools == ["request_transcript"]
+
+
+@pytest.mark.asyncio
 async def test_call_id_mismatch_clears_stale_session_markers_without_new_context():
     server, session = _server_and_session([])
     await server._handle_tool_context(
@@ -141,3 +159,33 @@ async def test_call_id_mismatch_clears_stale_session_markers_without_new_context
     assert session.hangup_end_call_markers is None
     assert session.hangup_marker_source == "global"
     assert session.hangup_marker_digest is None
+
+
+@pytest.mark.asyncio
+async def test_audio_call_id_mismatch_clears_stale_session_markers_without_new_context():
+    server, session = _server_and_session([])
+    await server._handle_tool_context(
+        None,
+        session,
+        {
+            "type": "tool_context",
+            "call_id": "russian-call",
+            "allowed_tools": ["hangup_call"],
+            "hangup_policy": {"markers": {"end_call": ["да", "нет"]}},
+        },
+    )
+
+    await server._handle_audio_payload(
+        None,
+        session,
+        {"type": "audio", "call_id": "english-call", "mode": "stt", "data": ""},
+    )
+
+    assert session.call_id == "english-call"
+    assert session.allowed_tools == []
+    assert session.tool_schemas == []
+    assert session.tool_policy == "auto"
+    assert session.hangup_end_call_markers is None
+    assert session.hangup_marker_source == "global"
+    assert session.hangup_marker_digest is None
+    assert session.tool_context_call_id is None

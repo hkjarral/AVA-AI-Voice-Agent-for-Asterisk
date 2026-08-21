@@ -394,6 +394,7 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
                             "properties": {
                                 "end_call": {
                                     "type": "array",
+                                    "minItems": 1,
                                     "maxItems": 100,
                                     "items": {"type": "string", "minLength": 1, "maxLength": 160},
                                 }

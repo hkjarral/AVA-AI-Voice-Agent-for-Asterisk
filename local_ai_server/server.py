@@ -4619,6 +4619,8 @@ class LocalAIServer:
         raw_markers = markers_cfg.get("end_call")
         if not isinstance(raw_markers, list):
             raise ValueError("hangup_policy.markers.end_call must be an array")
+        if not raw_markers:
+            raise ValueError("hangup_policy.markers.end_call must not be empty")
         if len(raw_markers) > _MAX_SESSION_END_CALL_MARKERS:
             raise ValueError("too many session end-call markers")
         normalized: List[str] = []
@@ -4981,8 +4983,7 @@ class LocalAIServer:
         data: Dict[str, Any],
     ) -> None:
         call_id = data.get("call_id")
-        if call_id:
-            session.call_id = call_id
+        self._bind_session_call_id(session, call_id)
         session.allowed_tools = self._extract_allowed_tool_names(data)
         session.tool_schemas = data.get("tools") if isinstance(data.get("tools"), list) else []
         session.tool_policy = self._normalize_tool_policy(data.get("tool_policy"))
@@ -5041,6 +5042,26 @@ class LocalAIServer:
             ),
             session.hangup_marker_digest,
         )
+
+    @staticmethod
+    def _bind_session_call_id(session: SessionContext, call_id: Any) -> None:
+        """Bind a call-bearing message and clear stale call-scoped tool state."""
+        cached_call_id = getattr(session, "tool_context_call_id", None)
+        if cached_call_id and call_id and cached_call_id != call_id:
+            logging.warning(
+                "🧩 TOOL CONTEXT - call_id mismatch (cached=%s incoming=%s); clearing stale cache",
+                cached_call_id,
+                call_id,
+            )
+            session.allowed_tools = []
+            session.tool_schemas = []
+            session.tool_policy = "auto"
+            session.hangup_end_call_markers = None
+            session.hangup_marker_source = "global"
+            session.hangup_marker_digest = None
+            session.tool_context_call_id = None
+        if call_id:
+            session.call_id = call_id
 
     async def _build_llm_tool_response_payload(
         self,
@@ -5213,30 +5234,7 @@ class LocalAIServer:
     ) -> None:
         request_id = str(data.get("request_id") or "").strip()
         call_id = data.get("call_id")
-        if call_id:
-            session.call_id = call_id
-        # Cross-call leakage guard: a long-lived WebSocket session can serve
-        # multiple calls. The cached `tool_context` (allowed_tools / schemas /
-        # policy) is bound to the call_id that created it; if a different
-        # call_id arrives without sending a fresh `tool_context`, drop the
-        # stale cache so we don't authorize tools the new call wasn't given.
-        # The request will then fall through with an empty allowlist
-        # (effectively rejecting tool calls until a `tool_context` is sent
-        # for this call). Per CodeRabbit review of PR #384 comment 3214130571.
-        cached_ctx_call_id = getattr(session, "tool_context_call_id", None)
-        if cached_ctx_call_id and call_id and cached_ctx_call_id != call_id:
-            logging.warning(
-                "🧩 TOOL CONTEXT - call_id mismatch (cached=%s incoming=%s); clearing stale cache",
-                cached_ctx_call_id,
-                call_id,
-            )
-            session.allowed_tools = []
-            session.tool_schemas = []
-            session.tool_policy = "auto"
-            session.hangup_end_call_markers = None
-            session.hangup_marker_source = "global"
-            session.hangup_marker_digest = None
-            session.tool_context_call_id = None
+        self._bind_session_call_id(session, call_id)
         text = str(data.get("text") or "")
         # When the request omits tool metadata, pass None so
         # `_build_llm_tool_response_payload` can fall back to whatever was
@@ -5270,8 +5268,7 @@ class LocalAIServer:
         data: Dict[str, Any],
     ) -> None:
         call_id = data.get("call_id")
-        if call_id:
-            session.call_id = call_id
+        self._bind_session_call_id(session, call_id)
         request_id = str(data.get("request_id") or "").strip() or None
         tool_name = str(data.get("tool_name") or data.get("function_call_id") or "tool").strip()
         result = data.get("result") if isinstance(data.get("result"), dict) else {"value": data.get("result")}
@@ -6241,8 +6238,7 @@ class LocalAIServer:
         mode = self._normalize_mode(data.get("mode"), session)
         request_id = data.get("request_id")
         call_id = data.get("call_id")
-        if call_id:
-            session.call_id = call_id
+        self._bind_session_call_id(session, call_id)
         
         if DEBUG_AUDIO_FLOW:
             logging.debug(
@@ -6421,8 +6417,7 @@ class LocalAIServer:
 
         request_id = data.get("request_id")
         call_id = data.get("call_id")
-        if call_id:
-            session.call_id = call_id
+        self._bind_session_call_id(session, call_id)
 
         generation = self._start_output_generation(session)
 
@@ -6492,8 +6487,7 @@ class LocalAIServer:
         mode = self._normalize_mode(data.get("mode"), session)
         request_id = data.get("request_id")
         call_id = data.get("call_id")
-        if call_id:
-            session.call_id = call_id
+        self._bind_session_call_id(session, call_id)
 
         generation = self._start_output_generation(session)
 

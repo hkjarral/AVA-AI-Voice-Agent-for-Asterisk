@@ -64,6 +64,7 @@ def test_agent_hangup_policy_dump_is_stable_and_inherit_is_null():
         {"strategy": "replace", "end_call": [""]},
         {"strategy": "extend", "end_call": [123]},
         {"strategy": "extend", "end_call": ["x"], "unknown": True},
+        {1: "not-a-string-key"},
     ],
 )
 def test_invalid_agent_hangup_policy_is_rejected(value):

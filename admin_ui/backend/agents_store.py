@@ -77,11 +77,14 @@ class AgentsStore:
         except OSError: pass
 
     def _ensure_schema_sync(self):
-        """Best-effort additive migrations for existing installs.
+        """Apply additive migrations for existing installs and verify them.
 
         SQLite has limited ALTER TABLE support; we only add nullable columns
-        when missing — never drop or rename. Safe on populated production DBs.
+        when missing — never drop or rename. A partially migrated store must
+        fail during initialization instead of serving requests whose writes
+        reference columns that do not exist.
         """
+        migration_error = None
         try:
             existing = {str(r[1]) for r in
                         self.conn.execute("PRAGMA table_info(agents)").fetchall()}
@@ -96,8 +99,21 @@ class AgentsStore:
                     self.conn.execute("ALTER TABLE agents ADD COLUMN tool_configs_json TEXT")
                 if "hangup_policy_json" not in existing:
                     self.conn.execute("ALTER TABLE agents ADD COLUMN hangup_policy_json TEXT")
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as exc:
+            migration_error = exc
+
+        required = {
+            "email_recipient", "email_from", "email_enabled",
+            "tool_configs_json", "hangup_policy_json",
+        }
+        actual = {
+            str(r[1]) for r in self.conn.execute("PRAGMA table_info(agents)").fetchall()
+        }
+        missing = sorted(required - actual)
+        if missing:
+            raise RuntimeError(
+                f"agents schema migration incomplete; missing columns: {', '.join(missing)}"
+            ) from migration_error
 
     def upgrade_legacy_resource_policies(self) -> int:
         """Idempotently promote legacy calendar selections into tool_configs_json.

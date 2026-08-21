@@ -187,6 +187,8 @@ def normalize_agent_hangup_policy(value: Any) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise HangupPolicyConfigError("hangup policy must be a JSON object")
 
+    if any(not isinstance(key, str) for key in value):
+        raise HangupPolicyConfigError("hangup policy field names must be strings")
     unknown = sorted(set(value) - {"strategy", "end_call"})
     if unknown:
         raise HangupPolicyConfigError(
