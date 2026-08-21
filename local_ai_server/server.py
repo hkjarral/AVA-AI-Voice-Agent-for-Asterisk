@@ -8,6 +8,7 @@ import base64
 import contextlib
 import contextvars
 import hashlib
+import hmac
 import io
 import json
 import logging
@@ -4579,9 +4580,10 @@ class LocalAIServer:
         # Do not turn quoted/metalinguistic uses of farewell words into an
         # irreversible hangup.  Weak phone STT commonly produces phrases such
         # as "reply with the word goodbye" while the caller is correcting the
-        # agent.  Explicit commands ("hang up", "end call") remain terminal.
+        # agent. Explicit English commands remain terminal only for the legacy
+        # global policy; a call-scoped replacement list is authoritative.
         explicit_commands = ("hang up", "end call")
-        if any(command in t for command in explicit_commands):
+        if markers is None and any(command in t for command in explicit_commands):
             return True
         meta_patterns = (
             r"\b(?:say|saying|said|repeat|reply|respond|answer)\b.{0,32}\b(?:goodbye|bye|thanks|thank you)\b",
@@ -5005,6 +5007,20 @@ class LocalAIServer:
                     separators=(",", ":"),
                 ).encode("utf-8")
             ).hexdigest()[:16]
+            if "hangup_policy" in data:
+                requested_version = data.get("protocol_version")
+                if requested_version != PROTOCOL_VERSION:
+                    raise ValueError(
+                        "call-scoped hangup policy requires protocol_version "
+                        f"{PROTOCOL_VERSION}"
+                    )
+                supplied_digest = str(
+                    data.get("hangup_marker_digest") or ""
+                ).strip()
+                if not supplied_digest or not hmac.compare_digest(
+                    supplied_digest, session.hangup_marker_digest
+                ):
+                    raise ValueError("hangup marker digest mismatch")
         except (TypeError, ValueError) as exc:
             # Explicit malformed policy must never fall back to permissive
             # server defaults. Remove the irreversible tool from this call.

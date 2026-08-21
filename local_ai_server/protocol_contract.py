@@ -378,6 +378,14 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
         "ToolContext": {
             "type": "object",
             "required": ["type"],
+            "allOf": [
+                {
+                    "if": {"required": ["hangup_policy"]},
+                    "then": {
+                        "required": ["protocol_version", "hangup_marker_digest"]
+                    },
+                }
+            ],
             "properties": {
                 "type": {"const": "tool_context"},
                 "call_id": {"type": "string"},
@@ -405,7 +413,10 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
                     "additionalProperties": True,
                 },
                 "hangup_marker_source": {"type": "string"},
-                "hangup_marker_digest": {"type": ["string", "null"]},
+                "hangup_marker_digest": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{16}$",
+                },
                 "protocol_version": {"type": "integer"},
             },
             "additionalProperties": True,

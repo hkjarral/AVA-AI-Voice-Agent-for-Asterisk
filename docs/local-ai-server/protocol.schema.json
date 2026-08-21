@@ -883,6 +883,21 @@
       "required": [
         "type"
       ],
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "hangup_policy"
+            ]
+          },
+          "then": {
+            "required": [
+              "protocol_version",
+              "hangup_marker_digest"
+            ]
+          }
+        }
+      ],
       "properties": {
         "type": {
           "const": "tool_context"
@@ -942,10 +957,8 @@
           "type": "string"
         },
         "hangup_marker_digest": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
         },
         "protocol_version": {
           "type": "integer"

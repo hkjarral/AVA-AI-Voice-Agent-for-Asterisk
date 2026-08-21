@@ -292,6 +292,39 @@ def test_existing_early_v740_rows_promote_calendar_bindings(tmp_path):
     ] == 0
 
 
+def test_engine_startup_adds_hangup_policy_column_to_existing_store(tmp_path):
+    database = tmp_path / "agents.db"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE agents (
+                id TEXT PRIMARY KEY,
+                slug TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                tool_configs_json TEXT,
+                extra_json TEXT
+            );
+            INSERT INTO agents (
+                id, slug, display_name, provider, prompt
+            ) VALUES ('1', 'existing', 'Existing', 'local', 'Keep me');
+            """
+        )
+
+    result = ensure_legacy_contexts_imported({}, db_path=str(database))
+
+    assert result["already_configured"] is True
+    with sqlite3.connect(database) as connection:
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(agents)")
+        }
+        assert "hangup_policy_json" in columns
+        assert connection.execute(
+            "SELECT slug, prompt, hangup_policy_json FROM agents"
+        ).fetchall() == [("existing", "Keep me", None)]
+
+
 def test_invalid_legacy_context_fails_without_creating_database(tmp_path):
     database = tmp_path / "agents.db"
     with pytest.raises(LegacyAgentMigrationError, match="expected mapping"):

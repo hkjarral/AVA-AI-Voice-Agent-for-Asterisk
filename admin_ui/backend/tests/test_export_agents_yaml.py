@@ -1,6 +1,8 @@
+import pytest
 import yaml
 from agents_store import AgentsStore
 from export_agents_yaml import export_yaml
+from src.tools.telephony.hangup_policy import HangupPolicyConfigError
 
 def test_roundtrip(tmp_path):
     store = AgentsStore(db_path=str(tmp_path / "agents.db"))
@@ -32,6 +34,19 @@ def test_malformed_json_fields_skipped_not_crashed(tmp_path):
     assert "bad" in doc["contexts"]
     # Malformed fields are simply absent (skipped), not raised
     assert "tools" not in doc["contexts"]["bad"]
+
+
+def test_malformed_hangup_policy_aborts_lossy_export(tmp_path):
+    store = AgentsStore(db_path=str(tmp_path / "agents.db"))
+    store.create(
+        display_name="Unsafe",
+        provider="p",
+        prompt="bad policy",
+        hangup_policy_json="{broken",
+    )
+
+    with pytest.raises(HangupPolicyConfigError, match="valid JSON"):
+        export_yaml(store)
 
 
 def test_canonical_tool_configs_win_over_stale_extra_payload(tmp_path):

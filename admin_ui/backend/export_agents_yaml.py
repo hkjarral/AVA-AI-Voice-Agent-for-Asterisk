@@ -2,6 +2,15 @@
 Usage: docker exec admin_ui python -m export_agents_yaml > contexts-recovered.yaml"""
 import json, sys, yaml
 from agents_store import AgentsStore
+import settings
+
+
+if settings.PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, settings.PROJECT_ROOT)
+from src.tools.telephony.hangup_policy import (
+    HangupPolicyConfigError,
+    dump_agent_hangup_policy,
+)
 
 
 def _safe_json(raw):
@@ -41,9 +50,19 @@ def export_yaml(store: AgentsStore) -> str:
         tool_configs = _safe_json(a.get("tool_configs_json"))
         if tool_configs is not None:
             ctx["tool_configs"] = tool_configs
-        hangup_policy = _safe_json(a.get("hangup_policy_json"))
-        if hangup_policy is not None:
-            ctx["hangup_policy"] = hangup_policy
+        raw_hangup_policy = a.get("hangup_policy_json")
+        if raw_hangup_policy:
+            # Unlike optional diagnostic fields, this policy controls an
+            # irreversible call action. Refuse a lossy disaster-recovery
+            # export instead of silently converting corrupt data to inherit.
+            try:
+                canonical = dump_agent_hangup_policy(raw_hangup_policy)
+            except HangupPolicyConfigError as exc:
+                raise HangupPolicyConfigError(
+                    f"Agent {a['slug']!r} has an invalid hangup policy: {exc}"
+                ) from exc
+            if canonical is not None:
+                ctx["hangup_policy"] = json.loads(canonical)
         contexts[a["slug"]] = ctx
     return yaml.safe_dump({"contexts": contexts}, sort_keys=True)
 

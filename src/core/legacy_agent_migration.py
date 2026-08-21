@@ -348,6 +348,36 @@ def _prepare_existing_database_for_replace(db_path: str) -> None:
             pass
 
 
+def _upgrade_existing_agent_schema(db_path: str) -> bool:
+    """Add call-safety columns when Engine starts before the Admin UI."""
+    if not os.path.exists(db_path):
+        return False
+    try:
+        connection = sqlite3.connect(db_path, timeout=5.0)
+        try:
+            table_exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agents'"
+            ).fetchone()
+            if not table_exists:
+                return False
+            columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(agents)")
+            }
+            if "hangup_policy_json" in columns:
+                return False
+            with connection:
+                connection.execute(
+                    "ALTER TABLE agents ADD COLUMN hangup_policy_json TEXT"
+                )
+            return True
+        finally:
+            connection.close()
+    except sqlite3.Error as exc:
+        raise LegacyAgentMigrationError(
+            f"existing agents.db schema upgrade failed: {exc}"
+        ) from exc
+
+
 def _upgrade_existing_resource_policies(db_path: str) -> int:
     """Promote calendar bindings left in extra_json by early v7.4 builds.
 
@@ -433,6 +463,9 @@ def ensure_legacy_contexts_imported(
     os.makedirs(parent, exist_ok=True)
 
     with _migration_lock(target):
+        # The Engine may be the first service to open an older Agent store.
+        # Ensure it gets the same additive safety column as Admin startup.
+        _upgrade_existing_agent_schema(target)
         # The durable migration marker wins even if the operator later deletes
         # every Agent. Legacy YAML remains on disk for rollback diagnostics and
         # must not resurrect deleted Agents on the next engine restart.

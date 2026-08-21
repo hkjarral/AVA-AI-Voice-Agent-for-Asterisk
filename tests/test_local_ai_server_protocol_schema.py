@@ -70,7 +70,7 @@ def test_tool_context_full_payload_validates():
             "markers": {"end_call": ["goodbye", "да", "нет"]},
         },
         "hangup_marker_source": "agent_extend",
-        "hangup_marker_digest": "0123456789abcdef",
+        "hangup_marker_digest": "1a6c689923e0cb01",
         "protocol_version": 2,
     })
 
@@ -115,6 +115,23 @@ def test_tool_context_with_empty_end_call_markers_rejected():
             "type": "tool_context",
             "hangup_policy": {"markers": {"end_call": []}},
         })
+
+
+@requires_jsonschema
+@pytest.mark.parametrize(
+    "missing_field", ["protocol_version", "hangup_marker_digest"]
+)
+def test_tool_context_scoped_policy_requires_version_and_digest(missing_field):
+    payload = {
+        "type": "tool_context",
+        "hangup_policy": {"markers": {"end_call": ["да"]}},
+        "protocol_version": 2,
+        "hangup_marker_digest": "0123456789abcdef",
+    }
+    payload.pop(missing_field)
+
+    with pytest.raises(jsonschema.ValidationError):
+        validate_payload(payload)
 
 
 # --- ToolResult ---
