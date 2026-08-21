@@ -107,3 +107,24 @@ def test_managed_tool_accepts_provider_prompt_and_timeout():
         summary_prompt="Summarize in {max_words} words; return JSON like {{\"summary\": \"...\"}}.",
     )
     assert model.summary_provider == "deepseek_llm"
+
+
+def test_inline_secret_migration_ignores_no_auth_sentinel(monkeypatch):
+    writes = []
+    monkeypatch.setattr(
+        config_api,
+        "_write_provider_secret",
+        lambda *args: writes.append(args),
+    )
+    config = {
+        "providers": {
+            "native_llm": {
+                "type": "openai",
+                "api_key": "not-needed",
+            }
+        }
+    }
+
+    assert config_api._migrate_inline_provider_secrets(config) is False
+    assert config["providers"]["native_llm"]["api_key"] == "not-needed"
+    assert writes == []

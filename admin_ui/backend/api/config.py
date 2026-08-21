@@ -2841,6 +2841,12 @@ def _migrate_inline_provider_secrets(config_data: Dict[str, Any]) -> bool:
             value = provider_cfg.get(inline_field)
             if not isinstance(value, str) or not value.strip() or value.strip().startswith("${"):
                 continue
+            # OpenAI-compatible endpoints that do not authenticate commonly use
+            # this documented sentinel.  It is configuration, not a credential,
+            # and moving it to /secrets would make unrelated config writes fail
+            # in environments where managed secret storage is unavailable.
+            if inline_field == "api_key" and value.strip().lower() == "not-needed":
+                continue
             if not _credential_allowed_for_kind(kind, credential_name):
                 continue
             path = _provider_secret_path(str(provider_key), credential_name)

@@ -87,6 +87,9 @@ API_PROBES = {
     "https://generativelanguage.googleapis.com/v1beta": (
         "https://generativelanguage.googleapis.com/v1beta/models"
     ),
+    "https://generativelanguage.googleapis.com/v1": (
+        "https://generativelanguage.googleapis.com/v1/models"
+    ),
     "https://graph.microsoft.com/v1.0": "https://graph.microsoft.com/v1.0/$metadata",
     "https://openrouter.ai/api/v1": "https://openrouter.ai/api/v1/models",
 }
