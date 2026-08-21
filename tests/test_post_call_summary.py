@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from src.config import AppConfig
+from src.config import AppConfig, OpenAIProviderConfig
 from src.pipelines.base import LLMComponent, LLMResponse
 from src.pipelines.orchestrator import PipelineOrchestrator, PipelineOrchestratorError
 from src.post_call_summary import PostCallSummaryService
@@ -37,6 +37,13 @@ class _RecordingLLM(LLMComponent):
 
     async def stop(self):
         self.events.append("stop")
+
+
+class _SlowRecordingLLM(_RecordingLLM):
+    async def generate(self, call_id, transcript, context, options):
+        self.events.append(("generate", transcript, context, options))
+        await asyncio.sleep(0.05)
+        return LLMResponse(text="late")
 
 
 @pytest.mark.asyncio
@@ -78,6 +85,18 @@ async def test_unknown_explicit_provider_fails_without_fallback():
         )
 
 
+def test_configured_model_supports_typed_configs_and_adapter_defaults():
+    typed = PipelineOrchestrator(_app_config({
+        "openai_llm": OpenAIProviderConfig(api_key="test-key", chat_model="gpt-5-mini"),
+    }))
+    assert typed._configured_llm_model("openai_llm") == "gpt-5-mini"
+
+    defaulted = PipelineOrchestrator(_app_config({
+        "deepseek_llm": {"type": "openai", "api_key": "test-key"},
+    }))
+    assert defaulted._configured_llm_model("deepseek_llm") == "gpt-4o-mini"
+
+
 @pytest.mark.asyncio
 async def test_summary_service_timeout_returns_safe_diagnostics():
     class _SlowOrchestrator:
@@ -96,3 +115,24 @@ async def test_summary_service_timeout_returns_safe_diagnostics():
     assert result.text == ""
     assert result.status == "timeout"
     assert result.error_code == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_summary_timeout_still_closes_one_shot_component():
+    events = []
+    orchestrator = PipelineOrchestrator(
+        _app_config({"slow_llm": {"type": "unsupported"}}),
+        registry={"slow_llm": lambda key, options: _SlowRecordingLLM(key, events)},
+    )
+
+    result = await PostCallSummaryService(orchestrator).generate(
+        provider="slow_llm",
+        call_id="call-4",
+        conversation_history=[{"role": "user", "content": "hello"}],
+        system_prompt="Summarize.",
+        max_words=50,
+        timeout_ms=1,
+    )
+
+    assert result.status == "timeout"
+    assert events[-2:] == [("close", "post-call-summary:call-4"), "stop"]

@@ -52,7 +52,7 @@ const LLM_SUBTYPES: ProviderSubtype[] = [
     yamlType: 'google',
     fields: [
       { key: 'llm_base_url', label: 'Generative Language API URL', type: 'text', required: true, default: 'https://generativelanguage.googleapis.com/v1', placeholder: 'https://generativelanguage.googleapis.com/v1' },
-      { key: 'llm_model', label: 'Model', type: 'combobox', required: true, default: 'gemini-2.5-flash', suggestions: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'] },
+      { key: 'llm_model', label: 'Model', type: 'combobox', required: true, default: 'gemini-2.5-flash', suggestions: ['gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-2.5-pro'] },
       { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.7 },
       { key: 'max_output_tokens', label: 'Max Output Tokens', type: 'number', required: false, default: 200 },
       { key: 'timeout_sec', label: 'Timeout (sec)', type: 'number', required: false, default: 30 },

@@ -139,7 +139,7 @@ class GenericWebhookTool(PostCallTool):
             "call_duration": {call_duration},
             "call_outcome": "{call_outcome}",
             "transcript": {transcript_json},
-            "summary": "{summary}",
+            "summary": {summary_json},
             "context": "{context_name}",
             "provider": "{provider}",
             "timestamp": "{call_end_time}"
@@ -270,22 +270,34 @@ class GenericWebhookTool(PostCallTool):
                             "summary_error_code": "generator_unavailable",
                         }
                     else:
-                        result = await generator(
-                            provider=self.config.summary_provider,
-                            call_id=call_id,
-                            conversation_history=context.conversation_history,
-                            system_prompt=self._resolve_summary_prompt(self.config.summary_max_words),
-                            max_words=self.config.summary_max_words,
-                            timeout_ms=self.config.summary_timeout_ms,
-                        )
-                        request_context.summary = result.text
-                        summary_diagnostics = {
-                            "summary_provider": result.provider,
-                            "summary_model": result.model,
-                            "summary_status": result.status,
-                            "summary_duration_ms": result.duration_ms,
-                            "summary_error_code": result.error_code,
-                        }
+                        try:
+                            result = await generator(
+                                provider=self.config.summary_provider,
+                                call_id=call_id,
+                                conversation_history=context.conversation_history,
+                                system_prompt=self._resolve_summary_prompt(self.config.summary_max_words),
+                                max_words=self.config.summary_max_words,
+                                timeout_ms=self.config.summary_timeout_ms,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Summary generator raised (%s); continuing webhook delivery",
+                                type(exc).__name__,
+                            )
+                            summary_diagnostics = {
+                                "summary_provider": self.config.summary_provider,
+                                "summary_status": "error",
+                                "summary_error_code": "generator_exception",
+                            }
+                        else:
+                            request_context.summary = result.text
+                            summary_diagnostics = {
+                                "summary_provider": result.provider,
+                                "summary_model": result.model,
+                                "summary_status": result.status,
+                                "summary_duration_ms": result.duration_ms,
+                                "summary_error_code": result.error_code,
+                            }
                 else:
                     # Backward compatibility for existing configurations.
                     request_context.summary = await self._generate_summary(context)

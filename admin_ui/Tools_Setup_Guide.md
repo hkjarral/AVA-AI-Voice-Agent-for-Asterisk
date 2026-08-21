@@ -240,7 +240,7 @@ Enter your JSON payload template in the **Payload Template** field:
   "caller_name": "{caller_name}",
   "duration_seconds": {call_duration},
   "outcome": "{call_outcome}",
-  "summary": "{summary}",
+  "summary": {summary_json},
   "summary_json": {summary_json},
   "transcript": {transcript_json},
   "pre_call_results": {pre_call_results_json},

@@ -677,7 +677,7 @@ tools:
         "call_duration": {call_duration},
         "call_outcome": "{call_outcome}",
         "transcript": {transcript_json},
-        "summary": "{summary}",
+        "summary": {summary_json},
         "context": "{context_name}",
         "provider": "{provider}",
         "timestamp": "{call_end_time}"
@@ -743,7 +743,7 @@ tools:
   #       "caller_name": "{caller_name}",
   #       "call_duration": {call_duration},
   #       "call_outcome": "{call_outcome}",
-  #       "summary": "{summary}",
+  #       "summary": {summary_json},
   #       "context": "{context_name}",
   #       "provider": "{provider}",
   #       "timestamp": "{call_end_time}"

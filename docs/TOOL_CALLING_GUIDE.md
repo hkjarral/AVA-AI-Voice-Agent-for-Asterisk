@@ -720,7 +720,7 @@ tools:
         "start_time": "{call_start_time}",
         "end_time": "{call_end_time}",
         "transcript": {transcript_json},
-        "summary": "{summary}",
+        "summary": {summary_json},
         "summary_json": {summary_json}
       }
 ```
@@ -744,7 +744,7 @@ tools:
     payload_template: |
       {
         "phone": "{caller_number}",
-        "summary": "{summary}",
+        "summary": {summary_json},
         "summary_json": {summary_json},
         "transcript": {transcript_json}
       }

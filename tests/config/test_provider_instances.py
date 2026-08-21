@@ -7,12 +7,38 @@ import pytest
 from src.config.normalization import ConfigValidationError, normalize_pipelines, validate_providers
 from src.config.provider_instances import (
     ProviderInstanceError,
+    credential_provider_kind,
     read_secret_file,
     read_secret_file_for_provider,
+    resolve_secret_value,
     safe_secret_path,
     write_secret_file_bytes,
     provider_kind,
 )
+
+
+def test_credential_provider_kind_infers_standard_modular_llm_key():
+    assert credential_provider_kind("openai_llm", {}) == "openai"
+    assert credential_provider_kind("minimax_llm", {}) == "minimax"
+    assert credential_provider_kind("telnyx", {}) == "telnyx"
+    assert credential_provider_kind("custom_llm", {}) is None
+    assert credential_provider_kind("openai_llm", {"type": "unsupported"}) is None
+
+
+def test_secret_file_failure_falls_back_to_configured_environment(tmp_path, monkeypatch):
+    missing = tmp_path / "missing-api-key"
+    monkeypatch.setenv("FALLBACK_PROVIDER_KEY", "from-environment")
+
+    assert resolve_secret_value(
+        {
+            "api_key_file": str(missing),
+            "api_key_env": "FALLBACK_PROVIDER_KEY",
+            "api_key": "from-inline",
+        },
+        file_field="api_key_file",
+        env_field="api_key_env",
+        inline_field="api_key",
+    ) == "from-environment"
 
 
 def test_provider_kind_uses_type_for_duplicate_full_agent_instances():

@@ -74,7 +74,7 @@ const DEFAULT_WEBHOOK_PAYLOAD = `{
   "call_duration": {call_duration},
   "call_outcome": "{call_outcome}",
   "transcript": {transcript_json},
-  "summary": "{summary}",
+  "summary": {summary_json},
   "context": "{context_name}",
   "provider": "{provider}",
   "timestamp": "{call_end_time}"
@@ -302,18 +302,32 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
             return;
         }
         if (phase === 'post_call' && committedToolForm.generate_summary) {
+            const originalTool =
+                editingTool && editingTool !== 'new_tool'
+                    ? (config[editingTool] as HTTPToolConfig | undefined)
+                    : undefined;
+            const legacySummaryUnchanged =
+                originalTool?.generate_summary === true &&
+                !originalTool.summary_provider &&
+                originalTool.generate_summary === committedToolForm.generate_summary &&
+                originalTool.summary_max_words === committedToolForm.summary_max_words &&
+                originalTool.summary_timeout_ms === committedToolForm.summary_timeout_ms &&
+                originalTool.summary_prompt === committedToolForm.summary_prompt;
             const selected = summaryProviders.find(
                 provider => provider.key === committedToolForm.summary_provider
             );
-            if (!committedToolForm.summary_provider) {
+            if (!committedToolForm.summary_provider && !legacySummaryUnchanged) {
                 toast.error('Select a configured summary provider');
                 return;
             }
-            if (!selected?.ready) {
+            if (committedToolForm.summary_provider && !selected?.ready) {
                 toast.error('Configure credentials for the selected summary provider first');
                 return;
             }
-            if (!String(committedToolForm.summary_prompt || '').trim()) {
+            if (
+                committedToolForm.summary_provider &&
+                !String(committedToolForm.summary_prompt || '').trim()
+            ) {
                 toast.error('Summary prompt cannot be empty');
                 return;
             }
@@ -602,6 +616,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                             <div className="flex items-center gap-1">
                                 <button
                                     onClick={() => handleEditTool(key, tool)}
+                                    aria-label={`Edit ${key}`}
                                     className="p-1.5 hover:bg-background rounded text-muted-foreground hover:text-foreground"
                                 >
                                     <Settings className="w-4 h-4" />

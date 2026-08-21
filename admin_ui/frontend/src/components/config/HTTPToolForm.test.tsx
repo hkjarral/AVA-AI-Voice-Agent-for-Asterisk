@@ -115,6 +115,7 @@ describe('HTTPToolForm editor colors', () => {
         const payload = screen.getByRole('dialog').querySelector('textarea');
         expect(payload).not.toBeNull();
         expectThemeAwareControl(payload!);
+        expect((payload as HTMLTextAreaElement).value).toContain('"summary": {summary_json}');
     });
 
     it('surfaces configured LLM selection, timeout, and editable prompt', async () => {
@@ -151,5 +152,61 @@ describe('HTTPToolForm editor colors', () => {
         expect(prompt).toHaveValue('Return a {max_words}-word CRM note.');
         fireEvent.click(screen.getByRole('button', { name: 'Reset to recommended' }));
         expect((prompt as HTMLTextAreaElement).value).toContain("caller's main request");
+    });
+
+    it('allows unrelated saves for an unchanged legacy summary configuration', () => {
+        const onChange = vi.fn();
+        const legacyConfig = {
+            legacy_hook: {
+                kind: 'generic_webhook',
+                phase: 'post_call',
+                enabled: true,
+                is_global: true,
+                url: 'https://hooks.example.com/original',
+                method: 'POST',
+                generate_summary: true,
+                summary_max_words: 100,
+                summary_timeout_ms: 15000,
+                summary_prompt: 'Summarize in {max_words} words.',
+            },
+        };
+        render(<HTTPToolForm config={legacyConfig} onChange={onChange} phase="post_call" />);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit legacy_hook' }));
+        fireEvent.change(screen.getByLabelText('URL'), {
+            target: { value: 'https://hooks.example.com/updated' },
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        expect(onChange).toHaveBeenCalledOnce();
+        expect(onChange.mock.calls[0][0].legacy_hook.url).toBe(
+            'https://hooks.example.com/updated'
+        );
+        expect(onChange.mock.calls[0][0].legacy_hook.summary_provider).toBeUndefined();
+    });
+
+    it('requires a provider when legacy summary settings are changed', () => {
+        const onChange = vi.fn();
+        const legacyConfig = {
+            legacy_hook: {
+                kind: 'generic_webhook',
+                phase: 'post_call',
+                enabled: true,
+                is_global: true,
+                url: 'https://hooks.example.com/original',
+                method: 'POST',
+                generate_summary: true,
+                summary_max_words: 100,
+                summary_timeout_ms: 15000,
+                summary_prompt: 'Summarize in {max_words} words.',
+            },
+        };
+        render(<HTTPToolForm config={legacyConfig} onChange={onChange} phase="post_call" />);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit legacy_hook' }));
+        fireEvent.change(screen.getByLabelText('Max Summary Words'), { target: { value: '120' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        expect(onChange).not.toHaveBeenCalled();
     });
 });

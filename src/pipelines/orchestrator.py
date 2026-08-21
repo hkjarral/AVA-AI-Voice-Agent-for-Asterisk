@@ -503,17 +503,44 @@ class PipelineOrchestrator:
 
     def _configured_llm_model(self, component_key: str) -> str:
         providers = getattr(self.config, "providers", {}) or {}
-        provider_cfg = providers.get(component_key)
-        if not isinstance(provider_cfg, dict):
-            provider_cfg = providers.get(_extract_provider(component_key))
+        provider_cfg: Any = None
+        for key in (component_key, _extract_provider(component_key)):
+            if key and providers.get(key) is not None:
+                provider_cfg = providers.get(key)
+                break
+
         if isinstance(provider_cfg, dict):
-            return str(
-                provider_cfg.get("chat_model")
-                or provider_cfg.get("llm_model")
-                or provider_cfg.get("model")
-                or ""
-            )
-        return ""
+            payload = provider_cfg
+        else:
+            dump = getattr(provider_cfg, "model_dump", None)
+            payload = dump() if callable(dump) else {}
+
+        configured = payload.get("chat_model") or payload.get("llm_model") or payload.get("model")
+        if configured:
+            return str(configured)
+
+        if isinstance(provider_cfg, OpenAIProviderConfig):
+            kind = "openai"
+        elif isinstance(provider_cfg, GoogleProviderConfig):
+            kind = "google"
+        elif isinstance(provider_cfg, TelnyxLLMProviderConfig):
+            kind = "telnyx"
+        elif isinstance(provider_cfg, MiniMaxLLMProviderConfig):
+            kind = "minimax"
+        elif isinstance(provider_cfg, LocalProviderConfig):
+            kind = "local"
+        else:
+            kind = str(payload.get("type") or _extract_provider(component_key) or "").lower()
+
+        defaults = {
+            "openai": OpenAIProviderConfig().chat_model,
+            "google": GoogleProviderConfig().llm_model,
+            "telnyx": TelnyxLLMProviderConfig().chat_model,
+            "telenyx": TelnyxLLMProviderConfig().chat_model,
+            "minimax": MiniMaxLLMProviderConfig().chat_model,
+            "ollama": "llama3.2",
+        }
+        return defaults.get(kind, "")
 
     def register_factory(self, component_key: str, factory: ComponentFactory) -> None:
         self._registry[component_key] = factory
@@ -1422,7 +1449,12 @@ class PipelineOrchestrator:
 
     def _hydrate_telnyx_llm_config(self) -> Optional[TelnyxLLMProviderConfig]:
         providers = getattr(self.config, "providers", {}) or {}
-        raw = providers.get("telnyx_llm") or providers.get("telenyx_llm") or providers.get("telnyx")
+        raw = (
+            providers.get("telnyx_llm")
+            or providers.get("telenyx_llm")
+            or providers.get("telnyx")
+            or providers.get("telenyx")
+        )
         merged: Dict[str, Any] = {}
 
         if isinstance(raw, TelnyxLLMProviderConfig):

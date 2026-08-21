@@ -458,7 +458,12 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
                                         label={`${selectedSubtype.label} API Key`}
                                         placeholder="Paste provider API key"
                                         envVarFallback={`${String(config.name || selectedSubtype.yamlType).replace(/_llm$/i, '').toUpperCase()}_API_KEY`}
-                                        inlineValue={config.api_key}
+                                        inlineValue={
+                                            config.api_key ||
+                                            (config.api_key_env
+                                                ? `\${${config.api_key_env}}`
+                                                : undefined)
+                                        }
                                         helpText={
                                             selectedSubtype.yamlType === 'openai'
                                                 ? 'For a trusted self-hosted endpoint with no authentication, save the literal value “not-needed”.'

@@ -177,6 +177,7 @@ async def test_append_then_update_post_call_tool(tmp_path, monkeypatch):
     assert entry["summary_provider"] == "deepseek_llm"
     assert entry["summary_model"] == "deepseek-chat"
     assert entry["summary_status"] == "ok"
+    assert entry["summary_duration_ms"] == 123.4
     # Original fields survive the merge.
     assert entry["started_at"] == started
     assert entry["attempt"] == 1

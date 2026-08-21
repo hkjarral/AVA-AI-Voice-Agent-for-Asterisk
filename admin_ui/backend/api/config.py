@@ -1692,10 +1692,7 @@ async def test_provider_connection(request: ProviderTestRequest):
                 if resolved_key:
                     provider_config["api_key"] = resolved_key
             except Exception:
-                logger.warning(
-                    "Provider connection test could not resolve managed API key",
-                    extra={"provider": provider_name},
-                )
+                logger.warning("Provider connection test could not resolve managed API key")
         
         # ============================================================
         # LOCAL PROVIDER - test connection to local_ai_server
@@ -1815,7 +1812,12 @@ async def test_provider_connection(request: ProviderTestRequest):
         is_telnyx = provider_type in ('telnyx', 'telenyx') or ('telnyx' in provider_name) or host == 'api.telnyx.com'
         if is_telnyx:
             base_url = _safe_base_url(chat_base_url, 'https://api.telnyx.com/v2/ai')
-            api_key = get_env_key('TELNYX_API_KEY') or os.getenv('TELNYX_API_KEY') or ''
+            api_key = (
+                str(provider_config.get('api_key') or '').strip()
+                or get_env_key('TELNYX_API_KEY')
+                or os.getenv('TELNYX_API_KEY')
+                or ''
+            )
             if not api_key:
                 return {"success": False, "message": "TELNYX_API_KEY not set in .env"}
 
@@ -2954,7 +2956,7 @@ async def get_llm_provider_options():
         if key.endswith("_llm"):
             component_key = key
             kind = str(provider_cfg.get("type") or key.rsplit("_llm", 1)[0]).lower()
-        elif key in {"openai", "google", "local"}:
+        elif key in {"openai", "google", "local", "telnyx", "telenyx", "minimax"}:
             component_key = f"{key}_llm"
             kind = str(provider_cfg.get("type") or key).lower()
         else:

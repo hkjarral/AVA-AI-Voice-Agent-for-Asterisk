@@ -33,6 +33,14 @@ async def test_llm_options_are_secret_safe_and_report_readiness(monkeypatch):
                     "type": "ollama",
                     "model": "qwen3",
                 },
+                "telnyx": {
+                    "name": "Telnyx AI",
+                    "api_key": "telnyx-secret",
+                },
+                "minimax": {
+                    "name": "MiniMax",
+                    "api_key": "minimax-secret",
+                },
                 "disabled_llm": {"type": "openai", "enabled": False, "api_key": "hidden"},
             }
         },
@@ -45,6 +53,8 @@ async def test_llm_options_are_secret_safe_and_report_readiness(monkeypatch):
     assert by_key["deepseek_llm"]["model"] == "deepseek-chat"
     assert by_key["claude_llm"]["ready"] is False
     assert by_key["ollama_llm"]["ready"] is True
+    assert by_key["telnyx_llm"]["ready"] is True
+    assert by_key["minimax_llm"]["ready"] is True
     assert "disabled_llm" not in by_key
     assert "super-secret" not in json.dumps(response)
 
@@ -82,6 +92,7 @@ async def test_modular_llm_api_key_upload_uses_owner_only_file(tmp_path, monkeyp
         ("summary_timeout_ms", 999),
         ("summary_provider", "not-an-llm"),
         ("summary_prompt", "Use {transcript} directly"),
+        ("summary_prompt", "Use {} words"),
     ],
 )
 def test_managed_tool_rejects_invalid_summary_settings(field, value):
