@@ -1675,6 +1675,27 @@ async def test_provider_connection(request: ProviderTestRequest):
         # Apply substitution to the config
         provider_config = substitute_env_vars(request.config)
         provider_name = request.name.lower()
+        # Saved provider instances may keep credentials in owner-only files.
+        # Resolve the key in memory for this verification request without ever
+        # returning it to the browser or writing it back into YAML.
+        if provider_config.get("api_key_file") or provider_config.get("api_key_env"):
+            try:
+                helpers = _provider_instances_module()
+                kind = str(provider_config.get("type") or provider_name.rsplit("_llm", 1)[0]).lower()
+                resolved_key = helpers["resolve_secret_value"](
+                    provider_config,
+                    file_field="api_key_file",
+                    env_field="api_key_env",
+                    inline_field="api_key",
+                    legacy_env_names=_llm_legacy_env_names(provider_name, kind),
+                )
+                if resolved_key:
+                    provider_config["api_key"] = resolved_key
+            except Exception:
+                logger.warning(
+                    "Provider connection test could not resolve managed API key",
+                    extra={"provider": provider_name},
+                )
         
         # ============================================================
         # LOCAL PROVIDER - test connection to local_ai_server
@@ -2614,7 +2635,9 @@ def _provider_instances_module():
         API_KEY_COMPATIBLE_KINDS,
         CREDENTIAL_NAME_TO_FIELD,
         FULL_AGENT_KINDS,
+        MODULAR_LLM_KINDS,
         ProviderInstanceError,
+        credential_provider_kind,
         provider_kind,
         resolve_secret_value,
         safe_secret_path,
@@ -2625,7 +2648,9 @@ def _provider_instances_module():
         "api_key_kinds": API_KEY_COMPATIBLE_KINDS,
         "credential_fields": CREDENTIAL_NAME_TO_FIELD,
         "full_agent_kinds": FULL_AGENT_KINDS,
+        "modular_llm_kinds": MODULAR_LLM_KINDS,
         "ProviderInstanceError": ProviderInstanceError,
+        "credential_provider_kind": credential_provider_kind,
         "provider_kind": provider_kind,
         "resolve_secret_value": resolve_secret_value,
         "safe_secret_path": safe_secret_path,
@@ -2646,9 +2671,12 @@ def _get_provider_block(provider_key: str) -> tuple[Dict[str, Any], Dict[str, An
     provider_cfg = providers.get(provider_key)
     if not isinstance(provider_cfg, dict):
         raise HTTPException(status_code=404, detail=f"Provider '{provider_key}' not found")
-    kind = helpers["provider_kind"](provider_key, provider_cfg)
-    if kind not in helpers["full_agent_kinds"]:
-        raise HTTPException(status_code=400, detail=f"Provider '{provider_key}' is not a full-agent provider")
+    kind = helpers["credential_provider_kind"](provider_key, provider_cfg)
+    if kind is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provider '{provider_key}' does not support managed credentials",
+        )
     return merged, provider_cfg, kind
 
 
@@ -2805,7 +2833,7 @@ def _migrate_inline_provider_secrets(config_data: Dict[str, Any]) -> bool:
     for provider_key, provider_cfg in providers.items():
         if not isinstance(provider_cfg, dict):
             continue
-        kind = helpers["provider_kind"](provider_key, provider_cfg)
+        kind = helpers["credential_provider_kind"](provider_key, provider_cfg)
         for inline_field, credential_name, file_field in (
             ("api_key", "api-key", "api_key_file"),
             ("agent_id", "agent-id", "agent_id_file"),
@@ -2865,6 +2893,99 @@ def _credential_metadata(provider_key: str, credential_name: str) -> Dict[str, A
         except Exception:
             meta["error"] = "Failed to read credentials metadata"
     return meta
+
+
+def _llm_legacy_env_names(provider_key: str, kind: str) -> tuple[str, ...]:
+    prefix = provider_key.rsplit("_llm", 1)[0].upper()
+    names = [f"{prefix}_API_KEY"]
+    canonical = {
+        "openai": "OPENAI_API_KEY",
+        "google": "GOOGLE_API_KEY",
+        "telnyx": "TELNYX_API_KEY",
+        "telenyx": "TELNYX_API_KEY",
+        "minimax": "MINIMAX_API_KEY",
+    }.get(kind)
+    if canonical and canonical not in names:
+        names.append(canonical)
+    return tuple(names)
+
+
+def _summary_provider_api_key_configured(
+    provider_key: str, provider_cfg: Dict[str, Any], kind: str
+) -> bool:
+    """Resolve readiness without treating an unresolved ``${ENV}`` as a key."""
+    helpers = _provider_instances_module()
+    config_for_resolution = dict(provider_cfg)
+    inline = str(config_for_resolution.get("api_key") or "").strip()
+    env_ref = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}", inline)
+    if env_ref:
+        config_for_resolution["api_key"] = ""
+        config_for_resolution.setdefault("api_key_env", env_ref.group(1))
+    return bool(
+        helpers["resolve_secret_value"](
+            config_for_resolution,
+            file_field="api_key_file",
+            env_field="api_key_env",
+            inline_field="api_key",
+            legacy_env_names=_llm_legacy_env_names(provider_key, kind),
+        )
+    )
+
+
+@router.get("/providers/llm-options")
+async def get_llm_provider_options():
+    """Return a secret-safe catalog for post-call summary selection."""
+    merged = _read_merged_config_dict()
+    providers = merged.get("providers") if isinstance(merged.get("providers"), dict) else {}
+    helpers = _provider_instances_module()
+    options: list[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for provider_key, provider_cfg in providers.items():
+        if not isinstance(provider_cfg, dict) or provider_cfg.get("enabled") is False:
+            continue
+        key = str(provider_key)
+        if key.endswith("_llm"):
+            component_key = key
+            kind = str(provider_cfg.get("type") or key.rsplit("_llm", 1)[0]).lower()
+        elif key in {"openai", "google", "local"}:
+            component_key = f"{key}_llm"
+            kind = str(provider_cfg.get("type") or key).lower()
+        else:
+            continue
+        if component_key in seen or kind not in helpers["modular_llm_kinds"]:
+            continue
+        seen.add(component_key)
+
+        credential_required = kind in helpers["api_key_kinds"]
+        credential_configured = True
+        if credential_required:
+            credential_configured = _summary_provider_api_key_configured(
+                component_key, provider_cfg, kind
+            )
+        if kind == "google" and not credential_configured:
+            credential_configured = bool(
+                provider_cfg.get("credentials_path")
+                or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            )
+
+        options.append(
+            {
+                "key": component_key,
+                "label": str(provider_cfg.get("display_name") or provider_cfg.get("name") or component_key),
+                "type": kind,
+                "model": str(
+                    provider_cfg.get("chat_model")
+                    or provider_cfg.get("llm_model")
+                    or provider_cfg.get("model")
+                    or ""
+                ),
+                "credential_required": credential_required,
+                "credential_configured": credential_configured,
+                "ready": credential_configured,
+            }
+        )
+    return {"providers": sorted(options, key=lambda item: item["label"].lower())}
 
 
 @router.get("/providers/{provider_key}/credentials")

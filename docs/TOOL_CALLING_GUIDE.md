@@ -734,8 +734,13 @@ tools:
     enabled: true
     is_global: true
     url: "https://api.crm.com/calls"
-    generate_summary: true        # Generate AI summary using OpenAI
-    summary_max_words: 100        # Limit summary length
+    generate_summary: true
+    summary_provider: deepseek_llm # Enabled providers.<name> modular LLM key
+    summary_max_words: 100
+    summary_timeout_ms: 15000
+    summary_prompt: |-
+      Write a factual CRM note in {max_words} words or less. Include the
+      caller's request, commitments, and final outcome.
     payload_template: |
       {
         "phone": "{caller_number}",
@@ -745,7 +750,11 @@ tools:
       }
 ```
 
-When `generate_summary: true`, the tool uses OpenAI to create a concise summary of the conversation before sending the webhook.
+When `generate_summary: true`, the tool invokes the exact configured `summary_provider` before sending the webhook. The transcript is passed as user content and `summary_prompt` is passed as the system instruction; `{max_words}` is the only supported prompt placeholder. If the selected provider is disabled, missing credentials, times out, or fails, the webhook still runs with an empty `{summary}` and records summary diagnostics in Call History. It never falls back to another provider, which prevents unintended transcript egress.
+
+Provider API keys are configured under **Admin UI → Providers**, not on the webhook. Cloud modular LLMs support provider-scoped key uploads stored as owner-only files. Provider/credential changes require an AI Engine restart; tool prompt, provider selection, word-limit, and timeout changes hot-reload for new calls.
+
+Existing webhook definitions that enable summaries but omit `summary_provider` keep the legacy `OPENAI_API_KEY` with `gpt-4o-mini` behavior for backward compatibility. Set an explicit provider to use the configurable path.
 
 **Payload Variables**:
 

@@ -49,6 +49,31 @@ describe('PhaseToolGroup', () => {
         expect(screen.getAllByText('HTTP 502')).toHaveLength(2);
         expect(screen.getByText('error')).toBeInTheDocument();
     });
+
+    it('renders post-call summary provider diagnostics', () => {
+        render(
+            <PhaseToolGroup
+                phase="post_call"
+                entries={[{
+                    name: 'crm_webhook',
+                    phase: 'post_call',
+                    status: 'ok',
+                    http_status: 204,
+                    summary_provider: 'deepseek_llm',
+                    summary_model: 'deepseek-chat',
+                    summary_status: 'timeout',
+                    summary_duration_ms: 15001,
+                    summary_error_code: 'timeout',
+                }]}
+            />,
+        );
+
+        expect(screen.getByText('AI summary')).toBeInTheDocument();
+        expect(screen.getByText('Provider: deepseek_llm')).toBeInTheDocument();
+        expect(screen.getByText('Model: deepseek-chat')).toBeInTheDocument();
+        expect(screen.getByText('Status: timeout')).toBeInTheDocument();
+        expect(screen.getByText('Error: timeout')).toBeInTheDocument();
+    });
 });
 
 describe('InCallToolGroup', () => {

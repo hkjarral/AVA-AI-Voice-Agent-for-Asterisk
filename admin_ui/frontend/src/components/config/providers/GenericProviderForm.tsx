@@ -8,6 +8,7 @@ import { GOOGLE_LIVE_MODEL_OPTIONS } from '../../../utils/googleLiveModels';
 import { MODULAR_SUBTYPES, inferSubtype } from '../../../config/modularProviderSubtypes';
 import type { ProviderSubtype, Capability as SubtypeCapability } from '../../../config/modularProviderSubtypes';
 import ModularSubtypeForm from './ModularSubtypeForm';
+import ProviderCredentialsCard from './ProviderCredentialsCard';
 
 interface GenericProviderFormProps {
     config: any;
@@ -99,7 +100,7 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
     // Initialize custom fields from config on mount
     useEffect(() => {
         const initialFields: { key: string; value: string }[] = [];
-        const knownKeys = ['name', 'type', 'base_url', 'base_url_stt', 'base_url_tts', 'base_url_llm', 'capabilities', 'enabled'];
+        const knownKeys = ['name', 'type', 'base_url', 'base_url_stt', 'base_url_tts', 'base_url_llm', 'capabilities', 'enabled', 'api_key', 'api_key_file', 'api_key_env'];
 
         Object.entries(config).forEach(([key, value]) => {
             if (!knownKeys.includes(key) && typeof value !== 'object') {
@@ -130,7 +131,7 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
     }, [config.type, config.capabilities]);
 
     const getBaseConfig = () => {
-        const knownKeys = ['name', 'type', 'base_url', 'base_url_stt', 'base_url_tts', 'base_url_llm', 'capabilities', 'enabled'];
+        const knownKeys = ['name', 'type', 'base_url', 'base_url_stt', 'base_url_tts', 'base_url_llm', 'capabilities', 'enabled', 'api_key', 'api_key_file', 'api_key_env'];
         const base: any = {};
         knownKeys.forEach(key => {
             if (config[key] !== undefined) {
@@ -444,11 +445,33 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
                         />
 
                         {selectedSubtype && (
-                            <ModularSubtypeForm
-                                subtype={selectedSubtype}
-                                config={config}
-                                onChange={handleSubtypeFieldChange}
-                            />
+                            <div className="space-y-4">
+                                <ModularSubtypeForm
+                                    subtype={selectedSubtype}
+                                    config={config}
+                                    onChange={handleSubtypeFieldChange}
+                                />
+                                {cap === 'llm' && ['openai', 'google', 'telnyx', 'telenyx', 'minimax'].includes(selectedSubtype.yamlType) && (
+                                    <ProviderCredentialsCard
+                                        providerKey={isNew ? undefined : config.name}
+                                        credentialType="api-key"
+                                        label={`${selectedSubtype.label} API Key`}
+                                        placeholder="Paste provider API key"
+                                        envVarFallback={`${String(config.name || selectedSubtype.yamlType).replace(/_llm$/i, '').toUpperCase()}_API_KEY`}
+                                        inlineValue={config.api_key}
+                                        helpText={
+                                            selectedSubtype.yamlType === 'openai'
+                                                ? 'For a trusted self-hosted endpoint with no authentication, save the literal value “not-needed”.'
+                                                : 'The key is stored in an owner-only provider-scoped file and is never written into webhook configuration.'
+                                        }
+                                        onConfigPatch={(patch) => {
+                                            const next = { ...config, ...patch };
+                                            Object.keys(next).forEach((key) => next[key] === undefined && delete next[key]);
+                                            onChange(next);
+                                        }}
+                                    />
+                                )}
+                            </div>
                         )}
 
                         {!selectedSubtype && subtypes.length > 0 && (

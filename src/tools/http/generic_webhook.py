@@ -5,6 +5,7 @@ Sends call data to external systems after call ends (fire-and-forget).
 """
 
 import asyncio
+import copy
 import os
 import re
 import json
@@ -56,6 +57,12 @@ from src.tools.http.debug_trace import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_SUMMARY_PROMPT_TEMPLATE = (
+    "You are a call summarizer. Summarize the following phone conversation in "
+    "{max_words} words or less. Focus on the caller's main request, key "
+    "information exchanged, and the outcome. Be concise and factual."
+)
+
 try:
     import openai  # type: ignore
 except ImportError:  # pragma: no cover
@@ -84,7 +91,11 @@ class WebhookConfig:
     
     # Summary generation (optional - uses LLM to summarize transcript)
     generate_summary: bool = False
+    # Explicit configured modular LLM component (for example deepseek_llm).
+    # When omitted, the legacy OPENAI_API_KEY/gpt-4o-mini behavior is retained.
+    summary_provider: Optional[str] = None
     summary_max_words: int = 100
+    summary_timeout_ms: int = 15000
     # Custom system prompt template for the summarizer. If set, ``{max_words}``
     # is interpolated; otherwise a sensible default (caller-perspective recap)
     # is used. Useful for branding or perspective changes (e.g. "We discussed…"
@@ -144,7 +155,7 @@ class GenericWebhookTool(PostCallTool):
             category=ToolCategory.BUSINESS,
             phase=ToolPhase.POST_CALL,
             is_global=config.is_global,
-            timeout_ms=config.timeout_ms,
+            timeout_ms=config.timeout_ms + (config.summary_timeout_ms if config.generate_summary else 0),
         )
         # Diagnostics for call-history tracking — populated at every exit path of
         # execute() and keyed by ``call_id``. The tool registry holds a single
@@ -178,6 +189,7 @@ class GenericWebhookTool(PostCallTool):
         http_status: Optional[int] = None,
         body_text: str = "",
         error_message: Optional[str] = None,
+        summary_diagnostics: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Store execution diagnostics for ``call_id`` in ``self._last_results``."""
         max_chars = _resolve_body_max_chars(self.config.response_body_max_chars)
@@ -203,6 +215,7 @@ class GenericWebhookTool(PostCallTool):
             "started_at": started_iso,
             "finished_at": finished_iso,
             "duration_ms": duration_ms,
+            **(summary_diagnostics or {}),
         }
 
     async def execute(self, context: PostCallContext) -> None:
@@ -216,6 +229,7 @@ class GenericWebhookTool(PostCallTool):
         started = time.monotonic()
         # Diagnostics keyed by call_id (no shared instance state across calls).
         call_id = getattr(context, "call_id", None) or ""
+        summary_diagnostics: Dict[str, Any] = {}
 
         if not self.config.enabled:
             logger.debug(f"Webhook tool disabled: {self.config.name}")
@@ -240,14 +254,54 @@ class GenericWebhookTool(PostCallTool):
             return
 
         try:
-            # Generate summary if requested and not already present
+            # Each webhook gets its own context copy. Post-call tools execute
+            # concurrently, so mutating the shared context would let one
+            # webhook's provider/prompt leak into a sibling webhook payload.
+            request_context = copy.copy(context)
+
+            # Generate summary if requested and not already present.
             if self.config.generate_summary and not context.summary:
-                context.summary = await self._generate_summary(context)
+                if self.config.summary_provider:
+                    generator = getattr(context, "summary_generator", None)
+                    if generator is None:
+                        summary_diagnostics = {
+                            "summary_provider": self.config.summary_provider,
+                            "summary_status": "error",
+                            "summary_error_code": "generator_unavailable",
+                        }
+                    else:
+                        result = await generator(
+                            provider=self.config.summary_provider,
+                            call_id=call_id,
+                            conversation_history=context.conversation_history,
+                            system_prompt=self._resolve_summary_prompt(self.config.summary_max_words),
+                            max_words=self.config.summary_max_words,
+                            timeout_ms=self.config.summary_timeout_ms,
+                        )
+                        request_context.summary = result.text
+                        summary_diagnostics = {
+                            "summary_provider": result.provider,
+                            "summary_model": result.model,
+                            "summary_status": result.status,
+                            "summary_duration_ms": result.duration_ms,
+                            "summary_error_code": result.error_code,
+                        }
+                else:
+                    # Backward compatibility for existing configurations.
+                    request_context.summary = await self._generate_summary(context)
+                    summary_diagnostics = {
+                        "summary_provider": "legacy_openai",
+                        "summary_model": "gpt-4o-mini",
+                        "summary_status": "ok" if request_context.summary else "error",
+                    }
+            elif context.summary:
+                request_context.summary = context.summary
+                summary_diagnostics = {"summary_status": "existing"}
             
             # Build request
-            url = self._substitute_variables(self.config.url, context)
+            url = self._substitute_variables(self.config.url, request_context)
             headers = {
-                k: self._substitute_variables(v, context)
+                k: self._substitute_variables(v, request_context)
                 for k, v in self.config.headers.items()
             }
             
@@ -262,10 +316,10 @@ class GenericWebhookTool(PostCallTool):
             payload = None
             if body_capable:
                 if self.config.payload_template:
-                    payload = self._build_payload(context)
+                    payload = self._build_payload(request_context)
                 else:
                     # Default payload using context's to_payload_dict
-                    payload = json.dumps(context.to_payload_dict())
+                    payload = json.dumps(request_context.to_payload_dict())
 
             if debug_enabled(logger):
                 used_brace = extract_used_brace_vars(
@@ -278,7 +332,7 @@ class GenericWebhookTool(PostCallTool):
                     *(self.config.headers or {}).values(),
                     self.config.payload_template,
                 )
-                values = context.to_payload_dict()
+                values = request_context.to_payload_dict()
                 logger.debug(
                     "[HTTP_TOOL_TRACE] request_resolved post_call tool=%s method=%s url=%s headers=%s payload=%s vars=%s call_id=%s",
                     self.config.name,
@@ -332,6 +386,7 @@ class GenericWebhookTool(PostCallTool):
                             started_monotonic=started,
                             http_status=status,
                             body_text=body_text,
+                            summary_diagnostics=summary_diagnostics,
                         )
                     else:
                         # Log but don't fail (fire-and-forget)
@@ -357,6 +412,7 @@ class GenericWebhookTool(PostCallTool):
                             http_status=status,
                             body_text=body_text,
                             error_message=f"HTTP {status}",
+                            summary_diagnostics=summary_diagnostics,
                         )
 
         except (asyncio.TimeoutError, aiohttp.ServerTimeoutError) as e:
@@ -369,6 +425,7 @@ class GenericWebhookTool(PostCallTool):
                 started_iso=started_iso,
                 started_monotonic=started,
                 error_message=f"{e.__class__.__name__}: {e}",
+                summary_diagnostics=summary_diagnostics,
             )
         except aiohttp.ClientError as e:
             logger.warning(f"Webhook request failed: {self.config.name} error={e}")
@@ -378,6 +435,7 @@ class GenericWebhookTool(PostCallTool):
                 started_iso=started_iso,
                 started_monotonic=started,
                 error_message=f"{e.__class__.__name__}: {e}",
+                summary_diagnostics=summary_diagnostics,
             )
         except Exception as e:
             logger.error(f"Webhook unexpected error: {self.config.name} error={e}", exc_info=True)
@@ -387,6 +445,7 @@ class GenericWebhookTool(PostCallTool):
                 started_iso=started_iso,
                 started_monotonic=started,
                 error_message=f"{e.__class__.__name__}: {e}",
+                summary_diagnostics=summary_diagnostics,
             )
     
     def _build_payload(self, context: PostCallContext) -> str:
@@ -474,12 +533,7 @@ class GenericWebhookTool(PostCallTool):
         """Build the summarizer system prompt, falling back to the default if a
         custom ``summary_prompt`` raises (literal braces, unknown placeholders).
         """
-        default_prompt = (
-            f"You are a call summarizer. Summarize the following phone "
-            f"conversation in {max_words} words or less. Focus on: the "
-            f"caller's main request, key information exchanged, and the "
-            f"outcome. Be concise and factual."
-        )
+        default_prompt = DEFAULT_SUMMARY_PROMPT_TEMPLATE.format(max_words=max_words)
         custom = self.config.summary_prompt
         if not custom:
             return default_prompt
@@ -579,7 +633,9 @@ def create_webhook_tool(name: str, config_dict: Dict[str, Any]) -> GenericWebhoo
         payload_template=config_dict.get('payload_template'),
         content_type=config_dict.get('content_type', 'application/json'),
         generate_summary=config_dict.get('generate_summary', False),
+        summary_provider=config_dict.get('summary_provider'),
         summary_max_words=config_dict.get('summary_max_words', 100),
+        summary_timeout_ms=config_dict.get('summary_timeout_ms', 15000),
         summary_prompt=config_dict.get('summary_prompt'),
         response_body_max_chars=config_dict.get('response_body_max_chars'),
     )

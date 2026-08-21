@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Configured LLMs for post-call summaries** ([#618](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/618)): Post-call webhooks can select any enabled modular LLM component, including OpenAI-compatible DeepSeek/Claude gateways, Gemini, Ollama, Local, Telnyx, and MiniMax. The Admin UI exposes provider, model readiness, timeout, word limit, and an editable per-webhook prompt. Modular cloud LLM credentials use the same provider-scoped owner-only secret files as full-agent providers; webhook definitions store only the provider reference. Explicit selections fail closed without sending transcripts to a fallback provider, while legacy webhooks without `summary_provider` retain the existing `OPENAI_API_KEY`/`gpt-4o-mini` behavior.
 - **Agent-scoped hangup intent markers:** Agents can inherit, extend, or replace the global `hangup_call` end-of-call markers from the Admin UI. New calls capture an immutable effective marker policy, and Full Local sends it as call-scoped tool context with capability negotiation so reused sessions cannot leak markers between Agents and older Local AI Server builds fail closed instead of silently ignoring an override.
 
 ### Fixed

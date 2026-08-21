@@ -54,7 +54,16 @@ API_KEY_COMPATIBLE_KINDS = frozenset(
         "google_live",
         "elevenlabs_agent",
         "grok",
+        "openai",
+        "google",
+        "telnyx",
+        "telenyx",
+        "minimax",
     }
+)
+
+MODULAR_LLM_KINDS = frozenset(
+    {"openai", "google", "ollama", "local", "telnyx", "telenyx", "minimax"}
 )
 
 CREDENTIAL_NAME_TO_FIELD = {
@@ -90,6 +99,17 @@ def provider_kind(provider_key: str, provider_cfg: Any) -> Optional[str]:
     if provider_key in FULL_AGENT_KINDS:
         return provider_key
     return None
+
+
+def credential_provider_kind(provider_key: str, provider_cfg: Any) -> Optional[str]:
+    """Return the credential implementation kind for full or modular providers."""
+    kind = provider_kind(provider_key, provider_cfg)
+    if kind:
+        return kind
+    if not str(provider_key).endswith("_llm") or not isinstance(provider_cfg, Mapping):
+        return None
+    raw_type = str(provider_cfg.get("type") or "").strip().lower()
+    return raw_type if raw_type in MODULAR_LLM_KINDS else None
 
 
 def is_full_agent_provider(provider_key: str, provider_cfg: Any) -> bool:

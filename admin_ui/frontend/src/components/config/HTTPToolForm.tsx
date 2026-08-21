@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '../../hooks/useConfirmDialog';
@@ -55,6 +55,9 @@ interface HTTPToolConfig {
     hold_audio_threshold_ms?: number;
     generate_summary?: boolean;
     summary_max_words?: number;
+    summary_provider?: string;
+    summary_timeout_ms?: number;
+    summary_prompt?: string;
     // In-call specific fields
     description?: string;
     parameters?: ToolParameter[];
@@ -71,10 +74,23 @@ const DEFAULT_WEBHOOK_PAYLOAD = `{
   "call_duration": {call_duration},
   "call_outcome": "{call_outcome}",
   "transcript": {transcript_json},
+  "summary": "{summary}",
   "context": "{context_name}",
   "provider": "{provider}",
   "timestamp": "{call_end_time}"
 }`;
+
+const DEFAULT_SUMMARY_PROMPT = `You are a call summarizer. Summarize the following phone conversation in {max_words} words or less. Focus on the caller's main request, key information exchanged, and the outcome. Be concise and factual.`;
+
+interface SummaryProviderOption {
+    key: string;
+    label: string;
+    type: string;
+    model: string;
+    credential_required: boolean;
+    credential_configured: boolean;
+    ready: boolean;
+}
 
 interface TestResult {
     success: boolean;
@@ -118,6 +134,28 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
     const [outputVarPath, setOutputVarPath] = useState('');
     const [queryParamKey, setQueryParamKey] = useState('');
     const [queryParamValue, setQueryParamValue] = useState('');
+    const [summaryProviders, setSummaryProviders] = useState<SummaryProviderOption[]>([]);
+    const [summaryProvidersLoading, setSummaryProvidersLoading] = useState(false);
+
+    useEffect(() => {
+        if (phase !== 'post_call') return;
+        let cancelled = false;
+        setSummaryProvidersLoading(true);
+        axios
+            .get('/api/config/providers/llm-options')
+            .then(response => {
+                if (!cancelled) setSummaryProviders(response.data?.providers || []);
+            })
+            .catch(() => {
+                if (!cancelled) setSummaryProviders([]);
+            })
+            .finally(() => {
+                if (!cancelled) setSummaryProvidersLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [phase]);
 
     // Test functionality state
     const [testValues, setTestValues] = useState<Record<string, string>>(DEFAULT_TEST_VALUES);
@@ -221,6 +259,10 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
             query_params: {},
             output_variables: {},
             payload_template: phase === 'post_call' ? DEFAULT_WEBHOOK_PAYLOAD : undefined,
+            generate_summary: phase === 'post_call' ? false : undefined,
+            summary_max_words: phase === 'post_call' ? 100 : undefined,
+            summary_timeout_ms: phase === 'post_call' ? 15000 : undefined,
+            summary_prompt: phase === 'post_call' ? DEFAULT_SUMMARY_PROMPT : undefined,
             // In-call specific fields
             description: phase === 'in_call' ? '' : undefined,
             parameters: phase === 'in_call' ? [] : undefined,
@@ -258,6 +300,23 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
         if (!committedToolForm.url) {
             toast.error('Please enter a URL');
             return;
+        }
+        if (phase === 'post_call' && committedToolForm.generate_summary) {
+            const selected = summaryProviders.find(
+                provider => provider.key === committedToolForm.summary_provider
+            );
+            if (!committedToolForm.summary_provider) {
+                toast.error('Select a configured summary provider');
+                return;
+            }
+            if (!selected?.ready) {
+                toast.error('Configure credentials for the selected summary provider first');
+                return;
+            }
+            if (!String(committedToolForm.summary_prompt || '').trim()) {
+                toast.error('Summary prompt cannot be empty');
+                return;
+            }
         }
 
         const { key, ...data } = committedToolForm;
@@ -1543,7 +1602,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                             <div className="border border-border rounded-lg p-3 bg-card/30">
                                 <FormSwitch
                                     label="Generate AI Summary"
-                                    description="Use OpenAI to generate a concise summary instead of sending full transcript. Requires OPENAI_API_KEY."
+                                    description="Generate the {summary} value with one of your configured LLM providers. The webhook is still sent if summarization fails."
                                     checked={toolForm.generate_summary ?? false}
                                     onChange={e =>
                                         setToolForm({
@@ -1553,19 +1612,96 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                     }
                                 />
                                 {toolForm.generate_summary && (
-                                    <div className="mt-3">
-                                        <FormInput
-                                            label="Max Summary Words"
-                                            type="number"
-                                            value={toolForm.summary_max_words || 100}
+                                    <div className="mt-4 space-y-3">
+                                        <FormSelect
+                                            label="Summary Provider"
+                                            value={toolForm.summary_provider || ''}
                                             onChange={e =>
-                                                setToolForm({
-                                                    ...toolForm,
-                                                    summary_max_words: parseInt(e.target.value),
-                                                })
+                                                setToolForm({ ...toolForm, summary_provider: e.target.value })
                                             }
-                                            tooltip="Maximum words for the generated summary"
+                                            options={[
+                                                {
+                                                    value: '',
+                                                    label: summaryProvidersLoading
+                                                        ? 'Loading configured LLMs...'
+                                                        : 'Select a configured LLM...',
+                                                },
+                                                ...summaryProviders.map(provider => ({
+                                                    value: provider.key,
+                                                    label: `${provider.label}${provider.model ? ` — ${provider.model}` : ''}${provider.ready ? '' : ' — credential required'}`,
+                                                })),
+                                            ]}
+                                            tooltip="Only this configured provider receives the transcript. Missing credentials never trigger fallback to another provider."
                                         />
+                                        {summaryProviders.length === 0 && !summaryProvidersLoading && (
+                                            <p className="text-xs text-amber-700 dark:text-amber-400">
+                                                No configured LLM providers are available.{' '}
+                                                <a className="underline" href="/providers">Configure one on the Providers page.</a>
+                                            </p>
+                                        )}
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <FormInput
+                                                label="Max Summary Words"
+                                                type="number"
+                                                min={10}
+                                                max={1000}
+                                                value={toolForm.summary_max_words || 100}
+                                                onChange={e =>
+                                                    setToolForm({
+                                                        ...toolForm,
+                                                        summary_max_words: parseInt(e.target.value),
+                                                    })
+                                                }
+                                                tooltip="Maximum words requested from the selected LLM"
+                                            />
+                                            <FormInput
+                                                label="Summary Timeout (ms)"
+                                                type="number"
+                                                min={1000}
+                                                max={120000}
+                                                value={toolForm.summary_timeout_ms || 15000}
+                                                onChange={e =>
+                                                    setToolForm({
+                                                        ...toolForm,
+                                                        summary_timeout_ms: parseInt(e.target.value),
+                                                    })
+                                                }
+                                                tooltip="Independent LLM timeout; the webhook request starts afterward"
+                                            />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <FormLabel htmlFor="post-call-summary-prompt" tooltip="Use {max_words} to insert the configured word limit. The transcript is passed separately as untrusted user content.">
+                                                    Summary Prompt
+                                                </FormLabel>
+                                                <button
+                                                    type="button"
+                                                    className="text-xs text-primary hover:underline"
+                                                    onClick={() =>
+                                                        setToolForm({
+                                                            ...toolForm,
+                                                            summary_prompt: DEFAULT_SUMMARY_PROMPT,
+                                                        })
+                                                    }
+                                                >
+                                                    Reset to recommended
+                                                </button>
+                                            </div>
+                                            <textarea
+                                                id="post-call-summary-prompt"
+                                                className={`${editorTextareaClass} min-h-[140px]`}
+                                                value={toolForm.summary_prompt ?? DEFAULT_SUMMARY_PROMPT}
+                                                onChange={e =>
+                                                    setToolForm({
+                                                        ...toolForm,
+                                                        summary_prompt: e.target.value,
+                                                    })
+                                                }
+                                            />
+                                            <p className="text-xs text-muted-foreground">
+                                                Supported placeholder: <code>{'{max_words}'}</code>. Provider credentials are managed on the Providers page and are never stored in this webhook.
+                                            </p>
+                                        </div>
                                     </div>
                                 )}
                             </div>

@@ -20548,6 +20548,7 @@ class Engine:
                 campaign_id=getattr(session, 'outbound_campaign_id', None),
                 lead_id=getattr(session, 'outbound_lead_id', None),
                 config=self._tool_config_for_session(session),
+                summary_generator=self._post_call_summary_generator(),
             )
             
             # Capture execution metadata in call_records.post_call_tool_calls
@@ -20618,7 +20619,18 @@ class Engine:
                         tool_reported = last.get("status")
                         if tool_reported in ("skipped", "error", "timeout"):
                             status = tool_reported
-                        for k in ("http_status", "response_summary", "started_at", "finished_at", "duration_ms"):
+                        for k in (
+                            "http_status",
+                            "response_summary",
+                            "started_at",
+                            "finished_at",
+                            "duration_ms",
+                            "summary_provider",
+                            "summary_model",
+                            "summary_status",
+                            "summary_duration_ms",
+                            "summary_error_code",
+                        ):
                             if last.get(k) is not None:
                                 tool_extra[k] = last[k]
                         if last.get("error_message") and not error_message:
@@ -20645,6 +20657,11 @@ class Engine:
                                 "finished_at": tool_extra.get("finished_at") or finished_at_iso,
                                 "http_status": tool_extra.get("http_status"),
                                 "response_summary": tool_extra.get("response_summary"),
+                                "summary_provider": tool_extra.get("summary_provider"),
+                                "summary_model": tool_extra.get("summary_model"),
+                                "summary_status": tool_extra.get("summary_status"),
+                                "summary_duration_ms": tool_extra.get("summary_duration_ms"),
+                                "summary_error_code": tool_extra.get("summary_error_code"),
                                 "error_message": error_message,
                                 "attempt": 1,
                             },
@@ -20700,6 +20717,19 @@ class Engine:
                         call_id=call_id,
                         error=str(e),
                         exc_info=True)
+
+    def _post_call_summary_generator(self):
+        """Return the provider-backed summary callback for post-call contexts."""
+        orchestrator = getattr(self, "pipeline_orchestrator", None)
+        if orchestrator is None:
+            return None
+        from src.post_call_summary import PostCallSummaryService
+
+        service = getattr(self, "_post_call_summary_service", None)
+        if service is None or getattr(service, "_orchestrator", None) is not orchestrator:
+            service = PostCallSummaryService(orchestrator)
+            self._post_call_summary_service = service
+        return service.generate
 
     def _compute_nat_warnings(self) -> list:
         """Compute NAT/network configuration warnings for /health endpoint."""

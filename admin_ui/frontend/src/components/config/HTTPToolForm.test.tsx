@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
+import axios from 'axios';
 import HTTPToolForm from './HTTPToolForm';
 
 vi.mock('../../auth/AuthContext', () => ({
@@ -10,6 +11,13 @@ vi.mock('../../auth/AuthContext', () => ({
 
 vi.mock('../../hooks/useConfirmDialog', () => ({
     useConfirmDialog: () => ({ confirm: vi.fn() }),
+}));
+
+vi.mock('axios', () => ({
+    default: {
+        get: vi.fn().mockResolvedValue({ data: { providers: [] } }),
+        post: vi.fn(),
+    },
 }));
 
 const renderForm = (phase: 'pre_call' | 'in_call' | 'post_call') =>
@@ -107,5 +115,41 @@ describe('HTTPToolForm editor colors', () => {
         const payload = screen.getByRole('dialog').querySelector('textarea');
         expect(payload).not.toBeNull();
         expectThemeAwareControl(payload!);
+    });
+
+    it('surfaces configured LLM selection, timeout, and editable prompt', async () => {
+        vi.mocked(axios.get).mockResolvedValueOnce({
+            data: {
+                providers: [
+                    {
+                        key: 'deepseek_llm',
+                        label: 'DeepSeek',
+                        type: 'openai',
+                        model: 'deepseek-chat',
+                        credential_required: true,
+                        credential_configured: true,
+                        ready: true,
+                    },
+                ],
+            },
+        });
+        renderForm('post_call');
+        fireEvent.click(screen.getByRole('button', { name: 'Add Webhook' }));
+        fireEvent.click(screen.getByLabelText('Generate AI Summary'));
+
+        await waitFor(() =>
+            expect(screen.getByLabelText('Summary Provider')).toHaveTextContent(
+                'DeepSeek — deepseek-chat'
+            )
+        );
+        expect(screen.getByLabelText('Max Summary Words')).toHaveValue(100);
+        expect(screen.getByLabelText('Summary Timeout (ms)')).toHaveValue(15000);
+        const prompt = screen.getByLabelText('Summary Prompt');
+        expect((prompt as HTMLTextAreaElement).value).toContain('{max_words}');
+
+        fireEvent.change(prompt, { target: { value: 'Return a {max_words}-word CRM note.' } });
+        expect(prompt).toHaveValue('Return a {max_words}-word CRM note.');
+        fireEvent.click(screen.getByRole('button', { name: 'Reset to recommended' }));
+        expect((prompt as HTMLTextAreaElement).value).toContain("caller's main request");
     });
 });

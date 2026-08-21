@@ -301,6 +301,9 @@ class PostCallContext:
     
     # System access
     config: Any = None
+    # Internal service callback used by post-call tools. It is deliberately
+    # excluded from ``to_payload_dict`` so no runtime object leaks to webhooks.
+    summary_generator: Optional[Callable[..., Any]] = None
     
     def to_payload_dict(self) -> Dict[str, Any]:
         """

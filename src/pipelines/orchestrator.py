@@ -31,7 +31,8 @@ from ..config import (
     TelnyxLLMProviderConfig,
 )
 from ..logging_config import get_logger
-from .base import Component, STTComponent, LLMComponent, TTSComponent
+from ..config.provider_instances import resolve_secret_value
+from .base import Component, STTComponent, LLMComponent, LLMResponse, TTSComponent
 from .deepgram import DeepgramSTTAdapter, DeepgramTTSAdapter
 from .deepgram_flux import DeepgramFluxSTTAdapter
 from .elevenlabs import ElevenLabsTTSAdapter
@@ -444,6 +445,76 @@ class PipelineOrchestrator:
         for adapter in (resolution.stt_adapter, resolution.llm_adapter, resolution.tts_adapter):
             await self._shutdown_component(adapter, call_id)
 
+    async def generate_once(
+        self,
+        *,
+        component_key: str,
+        call_id: str,
+        transcript: str,
+        system_prompt: str,
+        max_words: int,
+        timeout_sec: float,
+    ) -> tuple[str, str]:
+        """Generate text with one explicitly selected configured LLM.
+
+        The component is isolated from live call pipeline state and is always
+        closed. Unknown, disabled, or credential-less components fail instead
+        of resolving to the wildcard placeholder or another provider.
+        """
+        if _extract_role(component_key) != "llm":
+            raise PipelineOrchestratorError(
+                f"Summary provider '{component_key}' is not an LLM component"
+            )
+        factory = self._resolve_factory(component_key)
+        if getattr(factory, _PLACEHOLDER_FACTORY_ATTR, None):
+            raise PipelineOrchestratorError(
+                f"Summary provider '{component_key}' is unavailable or not configured"
+            )
+
+        max_tokens = max(64, min(4096, int(max_words) * 3))
+        options: Dict[str, Any] = {
+            "tools": [],
+            "temperature": 0.3,
+            "max_tokens": max_tokens,
+            "max_output_tokens": max_tokens,
+            "timeout_sec": timeout_sec,
+            "response_timeout_sec": timeout_sec,
+            "request_timeout_sec": timeout_sec,
+        }
+        component = self._build_component(component_key, options)
+        if not isinstance(component, LLMComponent):
+            raise PipelineOrchestratorError(
+                f"Summary provider '{component_key}' did not resolve to an LLM"
+            )
+
+        try:
+            await component.start()
+            await component.open_call(call_id, options)
+            response = await component.generate(
+                call_id,
+                transcript,
+                {"system_prompt": system_prompt, "prior_messages": []},
+                options,
+            )
+            text = response.text if isinstance(response, LLMResponse) else str(response or "")
+            return text.strip(), self._configured_llm_model(component_key)
+        finally:
+            await self._shutdown_component(component, call_id)
+
+    def _configured_llm_model(self, component_key: str) -> str:
+        providers = getattr(self.config, "providers", {}) or {}
+        provider_cfg = providers.get(component_key)
+        if not isinstance(provider_cfg, dict):
+            provider_cfg = providers.get(_extract_provider(component_key))
+        if isinstance(provider_cfg, dict):
+            return str(
+                provider_cfg.get("chat_model")
+                or provider_cfg.get("llm_model")
+                or provider_cfg.get("model")
+                or ""
+            )
+        return ""
+
     def register_factory(self, component_key: str, factory: ComponentFactory) -> None:
         self._registry[component_key] = factory
 
@@ -692,7 +763,7 @@ class PipelineOrchestrator:
             note="Self-hosted LLM with optional tool calling",
         )
 
-        self._register_openai_compatible_llm_factories()
+        self._register_configured_llm_factories()
 
         # Azure STT adapters
         if self._azure_stt_provider_config:
@@ -738,7 +809,8 @@ class PipelineOrchestrator:
             logger.debug("Azure TTS pipeline adapter not registered - API key unavailable or config missing")
 
 
-    def _register_openai_compatible_llm_factories(self) -> None:
+    def _register_configured_llm_factories(self) -> None:
+        """Register every supported modular ``*_llm`` provider by its YAML key."""
         providers = getattr(self.config, "providers", {}) or {}
         if not isinstance(providers, dict):
             return
@@ -752,25 +824,81 @@ class PipelineOrchestrator:
                 continue
             if role != "llm":
                 continue
-            if str(cfg.get("type", "")).lower() != "openai":
-                continue
             if cfg.get("enabled") is False:
                 continue
-
+            provider_type = str(cfg.get("type", "")).strip().lower()
             provider_prefix = _extract_provider(str(name))
             if not provider_prefix:
                 continue
 
             payload = dict(cfg)
-            # Prefer config-expanded api_key; fallback to environment variable named after provider key
-            payload["api_key"] = cfg.get("api_key") or os.getenv(f"{provider_prefix.upper()}_API_KEY")
             try:
-                provider_cfg = OpenAIProviderConfig(**payload)
+                if provider_type == "openai":
+                    payload["api_key"] = resolve_secret_value(
+                        payload,
+                        file_field="api_key_file",
+                        env_field="api_key_env",
+                        inline_field="api_key",
+                        legacy_env_names=(f"{provider_prefix.upper()}_API_KEY",),
+                    )
+                    if not payload["api_key"]:
+                        continue
+                    factory = self._make_openai_llm_factory(OpenAIProviderConfig(**payload))
+                elif provider_type == "ollama":
+                    factory = self._make_ollama_llm_factory(payload)
+                elif provider_type == "local":
+                    local_cfg = self._hydrate_local_config(payload, component_key=str(name))
+                    if local_cfg is None:
+                        continue
+                    factory = self._make_local_llm_factory(local_cfg)
+                elif provider_type == "google":
+                    payload["api_key"] = resolve_secret_value(
+                        payload,
+                        file_field="api_key_file",
+                        env_field="api_key_env",
+                        inline_field="api_key",
+                        legacy_env_names=(f"{provider_prefix.upper()}_API_KEY", "GOOGLE_API_KEY"),
+                    )
+                    if not (
+                        payload["api_key"]
+                        or payload.get("credentials_path")
+                        or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+                    ):
+                        continue
+                    factory = self._make_google_llm_factory(GoogleProviderConfig(**payload))
+                elif provider_type in {"telnyx", "telenyx"}:
+                    payload["api_key"] = resolve_secret_value(
+                        payload,
+                        file_field="api_key_file",
+                        env_field="api_key_env",
+                        inline_field="api_key",
+                        legacy_env_names=(f"{provider_prefix.upper()}_API_KEY", "TELNYX_API_KEY"),
+                    )
+                    if not payload["api_key"]:
+                        continue
+                    factory = self._make_telnyx_llm_factory(TelnyxLLMProviderConfig(**payload))
+                elif provider_type == "minimax":
+                    payload["api_key"] = resolve_secret_value(
+                        payload,
+                        file_field="api_key_file",
+                        env_field="api_key_env",
+                        inline_field="api_key",
+                        legacy_env_names=(f"{provider_prefix.upper()}_API_KEY", "MINIMAX_API_KEY"),
+                    )
+                    if not payload["api_key"]:
+                        continue
+                    factory = self._make_minimax_llm_factory(MiniMaxLLMProviderConfig(**payload))
+                else:
+                    continue
             except Exception:
+                logger.warning(
+                    "Failed to register configured modular LLM",
+                    component=str(name),
+                    provider_type=provider_type,
+                    exc_info=True,
+                )
                 continue
-
-            llm_factory = self._make_openai_llm_factory(provider_cfg)
-            self.register_factory(str(name), llm_factory)
+            self.register_factory(str(name), factory)
 
     def _make_ollama_llm_factory(self, provider_config: Dict[str, Any]) -> ComponentFactory:
         """Create factory for Ollama LLM adapter (self-hosted local models)."""
@@ -1052,11 +1180,21 @@ class PipelineOrchestrator:
         raw_config = providers.get("google")
         if not raw_config:
             return None
-        if isinstance(raw_config, GoogleProviderConfig):
-            config = raw_config
-        elif isinstance(raw_config, dict):
+        if isinstance(raw_config, (GoogleProviderConfig, dict)):
             try:
-                config = GoogleProviderConfig(**raw_config)
+                payload = (
+                    raw_config.model_dump()
+                    if isinstance(raw_config, GoogleProviderConfig)
+                    else dict(raw_config)
+                )
+                payload["api_key"] = resolve_secret_value(
+                    payload,
+                    file_field="api_key_file",
+                    env_field="api_key_env",
+                    inline_field="api_key",
+                    legacy_env_names=("GOOGLE_API_KEY",),
+                )
+                config = GoogleProviderConfig(**payload)
             except Exception as exc:
                 logger.warning(
                     "Failed to hydrate Google provider config for pipelines",
@@ -1229,6 +1367,15 @@ class PipelineOrchestrator:
         if not merged:
             return None
 
+        provider_prefix = _extract_provider(component_key) or "openai"
+        merged["api_key"] = resolve_secret_value(
+            merged,
+            file_field="api_key_file",
+            env_field="api_key_env",
+            inline_field="api_key",
+            legacy_env_names=(f"{provider_prefix.upper()}_API_KEY",),
+        )
+
         try:
             config = OpenAIProviderConfig(**merged)
         except Exception as exc:
@@ -1302,6 +1449,13 @@ class PipelineOrchestrator:
             return None
 
         merged.setdefault("chat_base_url", "https://api.telnyx.com/v2/ai")
+        merged["api_key"] = resolve_secret_value(
+            merged,
+            file_field="api_key_file",
+            env_field="api_key_env",
+            inline_field="api_key",
+            legacy_env_names=("TELNYX_API_KEY",),
+        )
 
         try:
             config = TelnyxLLMProviderConfig(**merged)
@@ -1345,6 +1499,13 @@ class PipelineOrchestrator:
             return None
 
         merged.setdefault("chat_base_url", "https://api.minimax.io/v1")
+        merged["api_key"] = resolve_secret_value(
+            merged,
+            file_field="api_key_file",
+            env_field="api_key_env",
+            inline_field="api_key",
+            legacy_env_names=("MINIMAX_API_KEY",),
+        )
 
         try:
             config = MiniMaxLLMProviderConfig(**merged)

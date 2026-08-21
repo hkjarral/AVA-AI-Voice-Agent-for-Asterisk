@@ -16,6 +16,7 @@ import time
 import ipaddress
 import socket
 import yaml
+from string import Formatter
 from urllib.parse import urlparse, urljoin
 from settings import get_setting
 from . import config as config_api
@@ -944,7 +945,10 @@ _PASSTHROUGH_FIELDS = (
     "hold_audio_file",
     "hold_audio_threshold_ms",
     "generate_summary",
+    "summary_provider",
     "summary_max_words",
+    "summary_timeout_ms",
+    "summary_prompt",
     "description",
     "return_raw_json",
     "error_message",
@@ -1016,7 +1020,10 @@ class ManagedToolWrite(BaseModel):
     hold_audio_file: Optional[str] = None
     hold_audio_threshold_ms: Optional[int] = None
     generate_summary: Optional[bool] = None
+    summary_provider: Optional[str] = None
     summary_max_words: Optional[int] = None
+    summary_timeout_ms: Optional[int] = None
+    summary_prompt: Optional[str] = None
     description: Optional[str] = None
     parameters: Optional[List[ManagedToolParameter]] = None
     return_raw_json: Optional[bool] = None
@@ -1037,6 +1044,45 @@ class ManagedToolWrite(BaseModel):
     def validate_timeout(cls, value: Optional[int]) -> Optional[int]:
         return _validate_managed_tool_timeout(value)
 
+    @field_validator("summary_max_words")
+    @classmethod
+    def validate_summary_words(cls, value: Optional[int]) -> Optional[int]:
+        if value is not None and not 10 <= value <= 1000:
+            raise ValueError("summary_max_words must be between 10 and 1000")
+        return value
+
+    @field_validator("summary_timeout_ms")
+    @classmethod
+    def validate_summary_timeout(cls, value: Optional[int]) -> Optional[int]:
+        if value is not None and not 1000 <= value <= 120000:
+            raise ValueError("summary_timeout_ms must be between 1000 and 120000")
+        return value
+
+    @field_validator("summary_provider")
+    @classmethod
+    def validate_summary_provider(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}_llm", normalized):
+            raise ValueError("summary_provider must reference a configured *_llm component")
+        return normalized
+
+    @field_validator("summary_prompt")
+    @classmethod
+    def validate_summary_prompt(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if not value.strip() or len(value) > 8000:
+            raise ValueError("summary_prompt must be between 1 and 8000 characters")
+        try:
+            fields = {name for _, name, _, _ in Formatter().parse(value) if name}
+        except ValueError as exc:
+            raise ValueError("summary_prompt contains invalid braces") from exc
+        if fields - {"max_words"}:
+            raise ValueError("summary_prompt only supports the {max_words} placeholder")
+        return value
+
 
 class ManagedToolPatch(BaseModel):
     """Body for partial update (PATCH). All fields optional."""
@@ -1055,7 +1101,10 @@ class ManagedToolPatch(BaseModel):
     hold_audio_file: Optional[str] = None
     hold_audio_threshold_ms: Optional[int] = None
     generate_summary: Optional[bool] = None
+    summary_provider: Optional[str] = None
     summary_max_words: Optional[int] = None
+    summary_timeout_ms: Optional[int] = None
+    summary_prompt: Optional[str] = None
     description: Optional[str] = None
     parameters: Optional[List[ManagedToolParameter]] = None
     return_raw_json: Optional[bool] = None
@@ -1077,6 +1126,26 @@ class ManagedToolPatch(BaseModel):
     @classmethod
     def validate_timeout(cls, value: Optional[int]) -> Optional[int]:
         return _validate_managed_tool_timeout(value)
+
+    @field_validator("summary_max_words")
+    @classmethod
+    def validate_summary_words(cls, value: Optional[int]) -> Optional[int]:
+        return ManagedToolWrite.validate_summary_words(value)
+
+    @field_validator("summary_timeout_ms")
+    @classmethod
+    def validate_summary_timeout(cls, value: Optional[int]) -> Optional[int]:
+        return ManagedToolWrite.validate_summary_timeout(value)
+
+    @field_validator("summary_provider")
+    @classmethod
+    def validate_summary_provider(cls, value: Optional[str]) -> Optional[str]:
+        return ManagedToolWrite.validate_summary_provider(value)
+
+    @field_validator("summary_prompt")
+    @classmethod
+    def validate_summary_prompt(cls, value: Optional[str]) -> Optional[str]:
+        return ManagedToolWrite.validate_summary_prompt(value)
 
     @model_validator(mode="after")
     def reject_null_required_fields(self):
