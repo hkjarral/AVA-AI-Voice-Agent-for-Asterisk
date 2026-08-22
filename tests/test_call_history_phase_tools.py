@@ -155,7 +155,16 @@ async def test_append_then_update_post_call_tool(tmp_path, monkeypatch):
         "post_call",
         "wh",
         started,
-        {"status": "ok", "http_status": 200, "duration_ms": 312.5, "finished_at": "x"},
+        {
+            "status": "ok",
+            "http_status": 200,
+            "duration_ms": 312.5,
+            "finished_at": "x",
+            "summary_provider": "deepseek_llm",
+            "summary_model": "deepseek-chat",
+            "summary_status": "ok",
+            "summary_duration_ms": 123.4,
+        },
     )
     assert updated is True
 
@@ -165,6 +174,10 @@ async def test_append_then_update_post_call_tool(tmp_path, monkeypatch):
     assert entry["status"] == "ok"
     assert entry["http_status"] == 200
     assert entry["duration_ms"] == 312.5
+    assert entry["summary_provider"] == "deepseek_llm"
+    assert entry["summary_model"] == "deepseek-chat"
+    assert entry["summary_status"] == "ok"
+    assert entry["summary_duration_ms"] == 123.4
     # Original fields survive the merge.
     assert entry["started_at"] == started
     assert entry["attempt"] == 1

@@ -173,7 +173,7 @@ FormInput.displayName = 'FormInput';
 interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
     label?: string;
     tooltip?: string;
-    options: { value: string; label: string }[];
+    options: { value: string; label: string; disabled?: boolean }[];
     error?: string;
 }
 
@@ -203,7 +203,7 @@ export const FormSelect = React.forwardRef<HTMLSelectElement, SelectProps>(
                         {...props}
                     >
                         {options.map(opt => (
-                            <option key={opt.value} value={opt.value}>
+                            <option key={opt.value} value={opt.value} disabled={opt.disabled}>
                                 {opt.label}
                             </option>
                         ))}

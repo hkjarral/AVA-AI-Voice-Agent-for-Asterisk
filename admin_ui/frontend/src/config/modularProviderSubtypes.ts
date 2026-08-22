@@ -40,10 +40,35 @@ const LLM_SUBTYPES: ProviderSubtype[] = [
     fields: [
       { key: 'chat_base_url', label: 'Chat API Base URL', type: 'text', required: true, placeholder: 'http://10.44.0.5:8080/v1', default: 'https://api.openai.com/v1' },
       { key: 'chat_model', label: 'Model', type: 'combobox', required: true, placeholder: 'mlx-community/Qwen3-8B-4bit', suggestions: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'] },
-      { key: 'api_key', label: 'API Key', type: 'password', required: false, placeholder: 'not-needed (for self-hosted)', default: 'not-needed', tooltip: 'Use "not-needed" for self-hosted endpoints or ${ENV_VAR} for env references' },
       { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.7 },
       { key: 'max_tokens', label: 'Max Tokens', type: 'number', required: false, default: 200 },
       { key: 'response_timeout_sec', label: 'Response Timeout (sec)', type: 'number', required: false, default: 15, tooltip: 'Max wait time for LLM response. Increase for complex prompts or slow endpoints.' },
+    ],
+  },
+  {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    description: 'DeepSeek cloud models through the official OpenAI-compatible API',
+    yamlType: 'openai',
+    fields: [
+      { key: 'chat_base_url', label: 'Chat API Base URL', type: 'text', required: true, placeholder: 'https://api.deepseek.com', default: 'https://api.deepseek.com' },
+      { key: 'chat_model', label: 'Model', type: 'combobox', required: true, default: 'deepseek-v4-flash', suggestions: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
+      { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.3 },
+      { key: 'max_tokens', label: 'Max Tokens', type: 'number', required: false, default: 200 },
+      { key: 'response_timeout_sec', label: 'Response Timeout (sec)', type: 'number', required: false, default: 30, tooltip: 'Max wait time for a DeepSeek response.' },
+    ],
+  },
+  {
+    id: 'google',
+    label: 'Google Gemini',
+    description: 'Google Generative Language API (Gemini models)',
+    yamlType: 'google',
+    fields: [
+      { key: 'llm_base_url', label: 'Generative Language API URL', type: 'text', required: true, default: 'https://generativelanguage.googleapis.com/v1', placeholder: 'https://generativelanguage.googleapis.com/v1' },
+      { key: 'llm_model', label: 'Model', type: 'combobox', required: true, default: 'gemini-2.5-flash', suggestions: ['gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-2.5-pro'] },
+      { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.7 },
+      { key: 'max_output_tokens', label: 'Max Output Tokens', type: 'number', required: false, default: 200 },
+      { key: 'timeout_sec', label: 'Timeout (sec)', type: 'number', required: false, default: 30 },
     ],
   },
   {
@@ -68,7 +93,6 @@ const LLM_SUBTYPES: ProviderSubtype[] = [
     fields: [
       { key: 'chat_base_url', label: 'API Base URL', type: 'text', required: true, default: 'https://api.telnyx.com/v2/ai', placeholder: 'https://api.telnyx.com/v2/ai' },
       { key: 'chat_model', label: 'Model', type: 'combobox', required: true, placeholder: 'Qwen/Qwen3-235B-A22B', suggestions: ['Qwen/Qwen3-235B-A22B', 'meta-llama/Meta-Llama-3.1-70B-Instruct', 'meta-llama/Meta-Llama-3.1-8B-Instruct'] },
-      { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${TELNYX_API_KEY}' },
       { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.7 },
       { key: 'max_tokens', label: 'Max Tokens', type: 'number', required: false, default: 200 },
       { key: 'response_timeout_sec', label: 'Response Timeout (sec)', type: 'number', required: false, default: 30 },
@@ -82,7 +106,6 @@ const LLM_SUBTYPES: ProviderSubtype[] = [
     fields: [
       { key: 'chat_base_url', label: 'API Base URL', type: 'text', required: true, default: 'https://api.minimax.io/v1', placeholder: 'https://api.minimax.io/v1' },
       { key: 'chat_model', label: 'Model', type: 'combobox', required: true, suggestions: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'] },
-      { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${MINIMAX_API_KEY}' },
       { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.7 },
       { key: 'response_timeout_sec', label: 'Response Timeout (sec)', type: 'number', required: false, default: 30 },
     ],
@@ -165,7 +188,6 @@ const OUTPUT_RESAMPLER_FIELD: SubtypeField = {
   suggestions: ['inherit', 'linear', 'bandlimited'],
   tooltip: 'inherit uses the Agent Audio Profile; linear preserves current behavior; bandlimited removes out-of-band energy before 16/24 kHz audio is reduced to 8 kHz telephony.',
 };
-
 const TTS_SUBTYPES: ProviderSubtype[] = [
   {
     id: 'openai',
@@ -296,5 +318,11 @@ export const inferSubtype = (config: any): ProviderSubtype | undefined => {
   if (!cap || !MODULAR_SUBTYPES[cap as Capability]) return undefined;
   const yamlType = (config?.type || '').toLowerCase();
   if (!yamlType) return undefined;
+  if (cap === 'llm' && yamlType === 'openai') {
+    const baseUrl = String(config?.chat_base_url || config?.base_url || '').toLowerCase();
+    if (baseUrl.includes('api.deepseek.com')) {
+      return MODULAR_SUBTYPES.llm.find(s => s.id === 'deepseek');
+    }
+  }
   return findSubtype(cap as Capability, yamlType);
 };

@@ -565,6 +565,9 @@ _SAFE_BASE_URLS: dict[str, str] = {
     "api.openai.com": "https://api.openai.com/v1",
     "api.groq.com": "https://api.groq.com/openai/v1",
     "openrouter.ai": "https://openrouter.ai/api/v1",
+    "api.deepseek.com": "https://api.deepseek.com/v1",
+    "api.minimax.io": "https://api.minimax.io/v1",
+    "api.minimaxi.com": "https://api.minimaxi.com/v1",
     "api.anthropic.com": "https://api.anthropic.com/v1",
     "api.deepgram.com": "https://api.deepgram.com/v1",
     "api.elevenlabs.io": "https://api.elevenlabs.io/v1",
@@ -1675,6 +1678,24 @@ async def test_provider_connection(request: ProviderTestRequest):
         # Apply substitution to the config
         provider_config = substitute_env_vars(request.config)
         provider_name = request.name.lower()
+        # Saved provider instances may keep credentials in owner-only files.
+        # Resolve the key in memory for this verification request without ever
+        # returning it to the browser or writing it back into YAML.
+        if provider_config.get("api_key_file") or provider_config.get("api_key_env"):
+            try:
+                helpers = _provider_instances_module()
+                kind = str(provider_config.get("type") or provider_name.rsplit("_llm", 1)[0]).lower()
+                resolved_key = helpers["resolve_secret_value"](
+                    provider_config,
+                    file_field="api_key_file",
+                    env_field="api_key_env",
+                    inline_field="api_key",
+                    legacy_env_names=_llm_legacy_env_names(provider_name, kind),
+                )
+                if resolved_key:
+                    provider_config["api_key"] = resolved_key
+            except Exception:
+                logger.warning("Provider connection test could not resolve managed API key")
         
         # ============================================================
         # LOCAL PROVIDER - test connection to local_ai_server
@@ -1794,7 +1815,12 @@ async def test_provider_connection(request: ProviderTestRequest):
         is_telnyx = provider_type in ('telnyx', 'telenyx') or ('telnyx' in provider_name) or host == 'api.telnyx.com'
         if is_telnyx:
             base_url = _safe_base_url(chat_base_url, 'https://api.telnyx.com/v2/ai')
-            api_key = get_env_key('TELNYX_API_KEY') or os.getenv('TELNYX_API_KEY') or ''
+            api_key = (
+                str(provider_config.get('api_key') or '').strip()
+                or get_env_key('TELNYX_API_KEY')
+                or os.getenv('TELNYX_API_KEY')
+                or ''
+            )
             if not api_key:
                 return {"success": False, "message": "TELNYX_API_KEY not set in .env"}
 
@@ -2614,7 +2640,9 @@ def _provider_instances_module():
         API_KEY_COMPATIBLE_KINDS,
         CREDENTIAL_NAME_TO_FIELD,
         FULL_AGENT_KINDS,
+        MODULAR_LLM_KINDS,
         ProviderInstanceError,
+        credential_provider_kind,
         provider_kind,
         resolve_secret_value,
         safe_secret_path,
@@ -2625,7 +2653,9 @@ def _provider_instances_module():
         "api_key_kinds": API_KEY_COMPATIBLE_KINDS,
         "credential_fields": CREDENTIAL_NAME_TO_FIELD,
         "full_agent_kinds": FULL_AGENT_KINDS,
+        "modular_llm_kinds": MODULAR_LLM_KINDS,
         "ProviderInstanceError": ProviderInstanceError,
+        "credential_provider_kind": credential_provider_kind,
         "provider_kind": provider_kind,
         "resolve_secret_value": resolve_secret_value,
         "safe_secret_path": safe_secret_path,
@@ -2646,9 +2676,12 @@ def _get_provider_block(provider_key: str) -> tuple[Dict[str, Any], Dict[str, An
     provider_cfg = providers.get(provider_key)
     if not isinstance(provider_cfg, dict):
         raise HTTPException(status_code=404, detail=f"Provider '{provider_key}' not found")
-    kind = helpers["provider_kind"](provider_key, provider_cfg)
-    if kind not in helpers["full_agent_kinds"]:
-        raise HTTPException(status_code=400, detail=f"Provider '{provider_key}' is not a full-agent provider")
+    kind = helpers["credential_provider_kind"](provider_key, provider_cfg)
+    if kind is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provider '{provider_key}' does not support managed credentials",
+        )
     return merged, provider_cfg, kind
 
 
@@ -2805,13 +2838,19 @@ def _migrate_inline_provider_secrets(config_data: Dict[str, Any]) -> bool:
     for provider_key, provider_cfg in providers.items():
         if not isinstance(provider_cfg, dict):
             continue
-        kind = helpers["provider_kind"](provider_key, provider_cfg)
+        kind = helpers["credential_provider_kind"](provider_key, provider_cfg)
         for inline_field, credential_name, file_field in (
             ("api_key", "api-key", "api_key_file"),
             ("agent_id", "agent-id", "agent_id_file"),
         ):
             value = provider_cfg.get(inline_field)
             if not isinstance(value, str) or not value.strip() or value.strip().startswith("${"):
+                continue
+            # OpenAI-compatible endpoints that do not authenticate commonly use
+            # this documented sentinel.  It is configuration, not a credential,
+            # and moving it to /secrets would make unrelated config writes fail
+            # in environments where managed secret storage is unavailable.
+            if inline_field == "api_key" and value.strip().lower() == "not-needed":
                 continue
             if not _credential_allowed_for_kind(kind, credential_name):
                 continue
@@ -2865,6 +2904,132 @@ def _credential_metadata(provider_key: str, credential_name: str) -> Dict[str, A
         except Exception:
             meta["error"] = "Failed to read credentials metadata"
     return meta
+
+
+def _llm_legacy_env_names(provider_key: str, kind: str) -> tuple[str, ...]:
+    prefix = provider_key.rsplit("_llm", 1)[0].upper()
+    names = [f"{prefix}_API_KEY"]
+    canonical = {
+        "google": "GOOGLE_API_KEY",
+        "telnyx": "TELNYX_API_KEY",
+        "telenyx": "TELNYX_API_KEY",
+        "minimax": "MINIMAX_API_KEY",
+    }.get(kind)
+    if canonical and canonical not in names:
+        names.append(canonical)
+    return tuple(names)
+
+
+def _summary_provider_api_key_configured(
+    provider_key: str, provider_cfg: Dict[str, Any], kind: str
+) -> bool:
+    """Resolve readiness without treating an unresolved ``${ENV}`` as a key."""
+    helpers = _provider_instances_module()
+    config_for_resolution = dict(provider_cfg)
+    inline = str(config_for_resolution.get("api_key") or "").strip()
+    env_ref = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}", inline)
+    if env_ref:
+        config_for_resolution["api_key"] = ""
+        config_for_resolution.setdefault("api_key_env", env_ref.group(1))
+    resolved = str(
+        helpers["resolve_secret_value"](
+            config_for_resolution,
+            file_field="api_key_file",
+            env_field="api_key_env",
+            inline_field="api_key",
+            legacy_env_names=_llm_legacy_env_names(provider_key, kind),
+        )
+        or ""
+    )
+    # ``not-needed`` is supported only by OpenAI-compatible endpoints that
+    # intentionally run without authentication. Vendor APIs always require a
+    # real credential and must not be advertised as ready with this sentinel.
+    if resolved.strip().lower() == "not-needed" and kind != "openai":
+        return False
+    return bool(resolved.strip())
+
+
+@router.get("/providers/llm-options")
+async def get_llm_provider_options():
+    """Return a secret-safe catalog for post-call summary selection."""
+    merged = _read_merged_config_dict()
+    providers = merged.get("providers") if isinstance(merged.get("providers"), dict) else {}
+    helpers = _provider_instances_module()
+    options: list[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for provider_key, provider_cfg in providers.items():
+        if not isinstance(provider_cfg, dict):
+            continue
+        key = str(provider_key)
+        if key.endswith("_llm"):
+            component_key = key
+            kind = str(provider_cfg.get("type") or key.rsplit("_llm", 1)[0]).lower()
+        elif key in {"openai", "google", "local", "telnyx", "telenyx", "minimax"}:
+            component_key = f"{key}_llm"
+            kind = str(provider_cfg.get("type") or key).lower()
+        else:
+            continue
+        if component_key in seen or kind not in helpers["modular_llm_kinds"]:
+            continue
+        seen.add(component_key)
+        enabled = provider_cfg.get("enabled") is not False
+
+        credential_required = kind in helpers["api_key_kinds"]
+        credential_configured = True
+        if credential_required:
+            credential_configured = _summary_provider_api_key_configured(
+                component_key, provider_cfg, kind
+            )
+        if kind == "google" and not credential_configured:
+            credential_configured = bool(
+                provider_cfg.get("credentials_path")
+                or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            )
+
+        options.append(
+            {
+                "key": component_key,
+                "label": str(provider_cfg.get("display_name") or provider_cfg.get("name") or component_key),
+                "type": kind,
+                "model": str(
+                    provider_cfg.get("chat_model")
+                    or provider_cfg.get("llm_model")
+                    or provider_cfg.get("model")
+                    or ""
+                ),
+                "enabled": enabled,
+                "credential_required": credential_required,
+                "credential_configured": credential_configured,
+                "ready": enabled and credential_configured,
+                "readiness": (
+                    "disabled"
+                    if not enabled
+                    else "ready"
+                    if credential_configured
+                    else "credential_missing"
+                ),
+            }
+        )
+    legacy_credential_configured = bool(str(os.getenv("OPENAI_API_KEY") or "").strip())
+    return {
+        "providers": sorted(options, key=lambda item: item["label"].lower()),
+        # Existing post-call webhooks without summary_provider use this exact
+        # OpenAI path.  Returning its secret-safe readiness lets upgraded UIs
+        # display the effective selection instead of a misleading blank field.
+        "legacy_provider": {
+            "key": "",
+            "label": "OpenAI (legacy default)",
+            "type": "openai",
+            "model": "gpt-4o-mini",
+            "enabled": True,
+            "credential_required": True,
+            "credential_configured": legacy_credential_configured,
+            "ready": legacy_credential_configured,
+            "readiness": "ready" if legacy_credential_configured else "credential_missing",
+            "legacy": True,
+        },
+    }
 
 
 @router.get("/providers/{provider_key}/credentials")
@@ -3028,24 +3193,24 @@ async def verify_provider_credentials(provider_key: str):
 
     _merged, provider_cfg, kind = _get_provider_block(provider_key)
     helpers = _provider_instances_module()
+    legacy_env_names = {
+        "openai_realtime": ("OPENAI_API_KEY",),
+        "openai": (f"{provider_key.rsplit('_llm', 1)[0].upper()}_API_KEY", "OPENAI_API_KEY"),
+        "deepgram": ("DEEPGRAM_API_KEY",),
+        "google_live": ("GOOGLE_API_KEY",),
+        "google": ("GOOGLE_API_KEY",),
+        "telnyx": ("TELNYX_API_KEY",),
+        "telenyx": ("TELNYX_API_KEY",),
+        "minimax": ("MINIMAX_API_KEY",),
+        "elevenlabs_agent": ("ELEVENLABS_API_KEY",),
+        "grok": ("XAI_API_KEY",),
+    }.get(kind, ())
     api_key = helpers["resolve_secret_value"](
         provider_cfg,
         file_field="api_key_file",
         env_field="api_key_env",
         inline_field="api_key",
-        legacy_env_names=(
-            ("OPENAI_API_KEY",)
-            if kind == "openai_realtime"
-            else ("DEEPGRAM_API_KEY",)
-            if kind == "deepgram"
-            else ("GOOGLE_API_KEY",)
-            if kind == "google_live"
-            else ("ELEVENLABS_API_KEY",)
-            if kind == "elevenlabs_agent"
-            else ("XAI_API_KEY",)
-            if kind == "grok"
-            else ()
-        ),
+        legacy_env_names=legacy_env_names,
     )
     try:
         if kind == "google_live" and provider_cfg.get("credentials_path"):
@@ -3123,6 +3288,59 @@ async def verify_provider_credentials(provider_key: str):
             if resp.status_code >= 400:
                 raise HTTPException(status_code=400, detail="xAI API key verification failed")
             return {"status": "success", "message": "xAI API key verified"}
+        if kind == "google":
+            if not api_key:
+                raise HTTPException(status_code=400, detail="Google API key is not configured")
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    params={"key": api_key},
+                )
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=400, detail="Google API key verification failed")
+            return {"status": "success", "message": "Google API key verified"}
+        if kind in {"openai", "telnyx", "telenyx", "minimax"}:
+            if not api_key:
+                raise HTTPException(status_code=400, detail=f"{kind} API key is not configured")
+            if api_key.lower() == "not-needed":
+                if kind != "openai":
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"{kind} API key is not configured",
+                    )
+                return {
+                    "status": "success",
+                    "message": "No-auth provider credential configuration accepted",
+                }
+            if kind == "openai":
+                configured_base = provider_cfg.get("chat_base_url") or provider_cfg.get("base_url") or ""
+                fallback_base = "https://api.openai.com/v1"
+                label = "OpenAI-compatible"
+            elif kind in {"telnyx", "telenyx"}:
+                configured_base = provider_cfg.get("chat_base_url") or provider_cfg.get("base_url") or ""
+                fallback_base = "https://api.telnyx.com/v2/ai"
+                label = "Telnyx"
+            else:
+                configured_base = provider_cfg.get("chat_base_url") or provider_cfg.get("base_url") or ""
+                fallback_base = "https://api.minimax.io/v1"
+                label = "MiniMax"
+            if configured_base:
+                base_url = _safe_base_url(str(configured_base), "")
+                if not base_url or _url_host(base_url) != _url_host(str(configured_base)):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"{label} verification URL is not allowlisted",
+                    )
+            else:
+                base_url = fallback_base
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    f"{base_url}/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=400, detail=f"{label} API key verification failed")
+            return {"status": "success", "message": f"{label} API key verified"}
     except HTTPException:
         raise
     except Exception as exc:

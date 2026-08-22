@@ -15,6 +15,7 @@ from src.tools.http.generic_webhook import (
 )
 from src.tools.context import PostCallContext
 from src.tools.base import ToolPhase, ToolCategory
+from src.post_call_summary import SummaryGenerationResult
 
 
 # --- WebhookConfig Tests ---
@@ -377,6 +378,15 @@ class TestPayloadBuilding:
         assert data["transcript"] == context.conversation_history
         assert data["summary"] == "Customer called about billing question."
         assert data["summary_json"] == "Customer called about billing question."
+
+    def test_summary_json_handles_quotes_and_newlines(self, context):
+        context.summary = 'Caller said "please call back".\nAgent agreed.'
+        tool = GenericWebhookTool(WebhookConfig(
+            name="test",
+            payload_template='{"summary": {summary_json}}',
+        ))
+
+        assert json.loads(tool._build_payload(context))["summary"] == context.summary
     
     def test_all_context_fields_available(self, context):
         """Test that all PostCallContext fields are available for substitution."""
@@ -569,6 +579,120 @@ class TestSummaryGeneration:
             summary = await tool._generate_summary(context_with_history)
             assert summary == ""
 
+    @pytest.mark.asyncio
+    async def test_configured_provider_summary_is_isolated_and_reported(self, context_with_history):
+        config = WebhookConfig(
+            name="provider_summary",
+            url="https://webhook.example.com/summary",
+            generate_summary=True,
+            summary_provider="deepseek_llm",
+            summary_timeout_ms=9000,
+            summary_prompt="Keep it under {max_words} words.",
+            payload_template='{"summary":"{summary}"}',
+        )
+        tool = GenericWebhookTool(config)
+        context_with_history.summary_generator = AsyncMock(
+            return_value=SummaryGenerationResult(
+                text="Caller disputed a bill.",
+                provider="deepseek_llm",
+                model="deepseek-chat",
+                status="ok",
+                duration_ms=12.5,
+            )
+        )
+
+        response = AsyncMock(status=204)
+        response.text = AsyncMock(return_value="")
+        request_cm = AsyncMock()
+        request_cm.__aenter__ = AsyncMock(return_value=response)
+        request_cm.__aexit__ = AsyncMock(return_value=None)
+        session = AsyncMock()
+        session.request = MagicMock(return_value=request_cm)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=session_cm):
+            await tool.execute(context_with_history)
+
+        assert context_with_history.summary is None
+        assert json.loads(session.request.call_args.kwargs["data"])["summary"] == "Caller disputed a bill."
+        context_with_history.summary_generator.assert_awaited_once_with(
+            provider="deepseek_llm",
+            call_id="call_summary_test",
+            conversation_history=context_with_history.conversation_history,
+            system_prompt="Keep it under 100 words.",
+            max_words=100,
+            timeout_ms=9000,
+        )
+        diagnostics = tool.get_last_result("call_summary_test")
+        assert diagnostics["summary_provider"] == "deepseek_llm"
+        assert diagnostics["summary_model"] == "deepseek-chat"
+        assert diagnostics["summary_status"] == "ok"
+        assert diagnostics["summary_duration_ms"] == 12.5
+
+    @pytest.mark.asyncio
+    async def test_explicit_provider_never_falls_back_to_legacy_openai(self, context_with_history):
+        tool = GenericWebhookTool(WebhookConfig(
+            name="provider_summary",
+            url="https://webhook.example.com/summary",
+            generate_summary=True,
+            summary_provider="missing_llm",
+            payload_template='{"summary":"{summary}"}',
+        ))
+        context_with_history.summary_generator = None
+
+        response = AsyncMock(status=204)
+        response.text = AsyncMock(return_value="")
+        request_cm = AsyncMock()
+        request_cm.__aenter__ = AsyncMock(return_value=response)
+        request_cm.__aexit__ = AsyncMock(return_value=None)
+        session = AsyncMock()
+        session.request = MagicMock(return_value=request_cm)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(tool, "_generate_summary", AsyncMock()) as legacy, patch(
+            "aiohttp.ClientSession", return_value=session_cm
+        ):
+            await tool.execute(context_with_history)
+
+        legacy.assert_not_awaited()
+        assert json.loads(session.request.call_args.kwargs["data"])["summary"] == ""
+        diagnostics = tool.get_last_result("call_summary_test")
+        assert diagnostics["summary_error_code"] == "generator_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_summary_generator_exception_does_not_drop_webhook(self, context_with_history):
+        tool = GenericWebhookTool(WebhookConfig(
+            name="provider_summary",
+            url="https://webhook.example.com/summary",
+            generate_summary=True,
+            summary_provider="deepseek_llm",
+            payload_template='{"summary": {summary_json}}',
+        ))
+        context_with_history.summary_generator = AsyncMock(side_effect=RuntimeError("secret detail"))
+
+        response = AsyncMock(status=204)
+        response.text = AsyncMock(return_value="")
+        request_cm = AsyncMock()
+        request_cm.__aenter__ = AsyncMock(return_value=response)
+        request_cm.__aexit__ = AsyncMock(return_value=None)
+        session = AsyncMock()
+        session.request = MagicMock(return_value=request_cm)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=session_cm):
+            await tool.execute(context_with_history)
+
+        assert json.loads(session.request.call_args.kwargs["data"])["summary"] == ""
+        diagnostics = tool.get_last_result("call_summary_test")
+        assert diagnostics["summary_status"] == "error"
+        assert diagnostics["summary_error_code"] == "generator_exception"
+
 
 # --- Factory Function Tests ---
 
@@ -596,7 +720,10 @@ class TestCreateWebhookTool:
             "payload_template": '{"id": "{call_id}"}',
             "content_type": "application/json",
             "generate_summary": True,
+            "summary_provider": "deepseek_llm",
             "summary_max_words": 75,
+            "summary_timeout_ms": 20000,
+            "summary_prompt": "Summarize in {max_words} words.",
         }
         
         tool = create_webhook_tool("full_webhook", config_dict)
@@ -607,6 +734,9 @@ class TestCreateWebhookTool:
         assert tool.config.url == "https://webhook.example.com/call"
         assert tool.config.generate_summary is True
         assert tool.config.summary_max_words == 75
+        assert tool.config.summary_provider == "deepseek_llm"
+        assert tool.config.summary_timeout_ms == 20000
+        assert tool.config.summary_prompt == "Summarize in {max_words} words."
 
 
 # --- Default Payload Tests ---

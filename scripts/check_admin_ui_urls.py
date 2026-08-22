@@ -61,6 +61,7 @@ API_HOSTS = {
     "api.elevenlabs.io",
     "api.groq.com",
     "api.minimax.io",
+    "api.minimaxi.com",
     "api.openai.com",
     "api.telnyx.com",
     "api.x.ai",
@@ -81,11 +82,15 @@ API_PROBES = {
     "https://api.elevenlabs.io/v1": "https://api.elevenlabs.io/v1/voices",
     "https://api.groq.com/openai/v1": "https://api.groq.com/openai/v1/models",
     "https://api.minimax.io/v1": "https://api.minimax.io/v1/chat/completions",
+    "https://api.minimaxi.com/v1": "https://api.minimaxi.com/v1/models",
     "https://api.openai.com/v1": "https://api.openai.com/v1/models",
     "https://api.telnyx.com/v2/ai": "https://api.telnyx.com/v2/ai/chat/completions",
     "https://api.x.ai/v1": "https://api.x.ai/v1/models",
     "https://generativelanguage.googleapis.com/v1beta": (
         "https://generativelanguage.googleapis.com/v1beta/models"
+    ),
+    "https://generativelanguage.googleapis.com/v1": (
+        "https://generativelanguage.googleapis.com/v1/models"
     ),
     "https://graph.microsoft.com/v1.0": "https://graph.microsoft.com/v1.0/$metadata",
     "https://openrouter.ai/api/v1": "https://openrouter.ai/api/v1/models",

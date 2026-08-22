@@ -147,6 +147,51 @@ def test_post_call_webhook(client):
     assert r.json()["config"]["method"] == "POST"
 
 
+def test_post_call_rejects_unavailable_explicit_summary_provider(client, monkeypatch):
+    async def fake_options():
+        return {
+            "providers": [
+                {"key": "deepseek_llm", "ready": False},
+            ]
+        }
+
+    monkeypatch.setattr(config_api, "get_llm_provider_options", fake_options)
+    response = client.post("/api/tools/managed", json={
+        "name": "post_hook",
+        "phase": "post_call",
+        "url": "https://hooks.example.com/x",
+        "generate_summary": True,
+        "summary_provider": "deepseek_llm",
+        "summary_prompt": "Summarize in {max_words} words.",
+    })
+
+    assert response.status_code == 422
+    assert "no usable credentials" in response.json()["detail"]
+    assert "post_hook" not in client.cfg_state["cfg"]["tools"]
+
+
+def test_post_call_accepts_ready_explicit_summary_provider(client, monkeypatch):
+    async def fake_options():
+        return {
+            "providers": [
+                {"key": "deepseek_llm", "ready": True},
+            ]
+        }
+
+    monkeypatch.setattr(config_api, "get_llm_provider_options", fake_options)
+    response = client.post("/api/tools/managed", json={
+        "name": "post_hook",
+        "phase": "post_call",
+        "url": "https://hooks.example.com/x",
+        "generate_summary": True,
+        "summary_provider": "deepseek_llm",
+        "summary_prompt": "Summarize in {max_words} words.",
+    })
+
+    assert response.status_code == 201, response.text
+    assert response.json()["config"]["summary_provider"] == "deepseek_llm"
+
+
 def test_bodyless_methods_clear_hidden_request_templates(client):
     created = client.post("/api/tools/managed", json={
         "name": "legacy_get", "phase": "pre_call",

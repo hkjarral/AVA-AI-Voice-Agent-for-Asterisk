@@ -328,4 +328,39 @@ describe('ProvidersPage OpenAI Realtime save contract', () => {
             output_sample_rate_hz: 24000,
         });
     });
+
+    it('offers and serializes the DeepSeek modular LLM template', async () => {
+        mocks.config = { providers: {} };
+
+        render(
+            <MemoryRouter>
+                <ProvidersPage />
+            </MemoryRouter>,
+        );
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Add Provider Templates' }));
+        const dialog = await screen.findByRole('dialog', { name: 'Add Provider Templates' });
+        fireEvent.click(within(dialog).getByRole('checkbox', { name: /DeepSeek LLM/i }));
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Add Selected' }));
+
+        await waitFor(() => {
+            expect(axios.post).toHaveBeenCalledWith(
+                '/api/config/yaml',
+                expect.objectContaining({ content: expect.any(String) }),
+            );
+        });
+        const saveCall = vi.mocked(axios.post).mock.calls.find(([url]) => url === '/api/config/yaml');
+        const body = saveCall?.[1] as { content: string };
+        const saved = yaml.load(body.content) as {
+            providers: Record<string, Record<string, unknown>>;
+        };
+        expect(saved.providers.deepseek_llm).toMatchObject({
+            enabled: false,
+            type: 'openai',
+            capabilities: ['llm'],
+            chat_base_url: 'https://api.deepseek.com',
+            api_key_env: 'DEEPSEEK_API_KEY',
+            chat_model: 'deepseek-v4-flash',
+        });
+    });
 });

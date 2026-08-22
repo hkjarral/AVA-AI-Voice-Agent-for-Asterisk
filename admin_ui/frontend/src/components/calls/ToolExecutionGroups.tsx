@@ -14,6 +14,11 @@ export interface PhaseToolCall {
     duration_ms?: number | null;
     http_status?: number | null;
     response_summary?: string | null;
+    summary_provider?: string | null;
+    summary_model?: string | null;
+    summary_status?: 'ok' | 'error' | 'timeout' | 'skipped' | 'existing' | null;
+    summary_duration_ms?: number | null;
+    summary_error_code?: string | null;
     output_variables?: Record<string, string> | null;
     error_message?: string | null;
     attempt?: number | null;
@@ -83,6 +88,22 @@ export const PhaseToolGroup = ({ phase, entries }: { phase: Exclude<ToolPhase, '
                         </div>
                         {entry.error_message && (
                             <div className="mt-2 text-xs text-red-500/90 break-words">{entry.error_message}</div>
+                        )}
+                        {entry.summary_status && (
+                            <div className="mt-2 rounded bg-background/50 p-2 text-xs">
+                                <div className="font-medium">AI summary</div>
+                                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
+                                    <span>Status: {entry.summary_status}</span>
+                                    {entry.summary_provider && <span>Provider: {entry.summary_provider}</span>}
+                                    {entry.summary_model && <span>Model: {entry.summary_model}</span>}
+                                    {typeof entry.summary_duration_ms === 'number' && (
+                                        <span>{Math.round(entry.summary_duration_ms)}ms</span>
+                                    )}
+                                    {entry.summary_error_code && (
+                                        <span className="text-red-500/90">Error: {entry.summary_error_code}</span>
+                                    )}
+                                </div>
+                            </div>
                         )}
                         {entry.response_summary && (
                             <pre className="mt-2 text-xs bg-background/50 rounded p-2 overflow-x-auto whitespace-pre-wrap break-words">

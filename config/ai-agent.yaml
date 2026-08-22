@@ -102,7 +102,7 @@ pipelines:
       llm:
         base_url: https://api.groq.com/openai/v1
         max_tokens: 200
-        model: llama-3.3-70b-versatile
+        model: openai/gpt-oss-120b
         temperature: 0.7
       stt:
         chunk_ms: 160
@@ -369,7 +369,7 @@ providers:
       - llm
     api_key: ${GROQ_API_KEY}
     chat_base_url: https://api.groq.com/openai/v1
-    chat_model: llama-3.3-70b-versatile
+    chat_model: openai/gpt-oss-120b
     enabled: false
     response_timeout_sec: 10
     temperature: 0.7
@@ -677,6 +677,7 @@ tools:
         "call_duration": {call_duration},
         "call_outcome": "{call_outcome}",
         "transcript": {transcript_json},
+        "summary": {summary_json},
         "context": "{context_name}",
         "provider": "{provider}",
         "timestamp": "{call_end_time}"
@@ -699,6 +700,14 @@ tools:
         "content": "Call completed\\nContext: {context_name}\\nCaller: {caller_number} ({caller_name})\\nDuration: {call_duration}s\\nOutcome: {call_outcome}\\nProvider: {provider}\\n\\nSummary: {summary}"
       }
     generate_summary: true
+    # Select any enabled modular providers.<name> key ending in _llm.
+    # Credentials belong to the provider and can be uploaded in Admin UI → Providers.
+    # summary_provider: openai_llm
+    summary_max_words: 100
+    summary_timeout_ms: 15000
+    summary_prompt: >-
+      Summarize the phone conversation in {max_words} words or less. Focus on
+      the caller's request, key information exchanged, and the outcome.
 
   # Example: Discord webhook - posts call summary to a Discord channel
   # discord_webhook:
@@ -734,7 +743,7 @@ tools:
   #       "caller_name": "{caller_name}",
   #       "call_duration": {call_duration},
   #       "call_outcome": "{call_outcome}",
-  #       "summary": "{summary}",
+  #       "summary": {summary_json},
   #       "context": "{context_name}",
   #       "provider": "{provider}",
   #       "timestamp": "{call_end_time}"

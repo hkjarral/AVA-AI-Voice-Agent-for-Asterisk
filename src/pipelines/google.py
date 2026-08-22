@@ -443,9 +443,9 @@ class GoogleLLMAdapter(LLMComponent):
     def _build_payload(self, transcript: str, context: Dict[str, Any], merged: Dict[str, Any]) -> Dict[str, Any]:
         contents = context.get("google_contents")
         if not contents:
-            # Get system instruction to prepend to first message
-            system_instruction = merged.get("system_instruction") or context.get("system_prompt")
-            contents = self._coalesce_contents(transcript, context, system_instruction)
+            contents = self._coalesce_contents(transcript, context)
+
+        system_instruction = merged.get("system_instruction") or context.get("system_prompt")
 
         generation_config = {
             "temperature": merged["temperature"],
@@ -462,12 +462,17 @@ class GoogleLLMAdapter(LLMComponent):
             "generationConfig": generation_config,
         }
 
+        if system_instruction:
+            payload["systemInstruction"] = {
+                "parts": [{"text": str(system_instruction)}],
+            }
+
         if merged.get("safety_settings"):
             payload["safetySettings"] = merged["safety_settings"]
 
         return payload
 
-    def _coalesce_contents(self, transcript: str, context: Dict[str, Any], system_instruction: Optional[str] = None) -> list[Dict[str, Any]]:
+    def _coalesce_contents(self, transcript: str, context: Dict[str, Any]) -> list[Dict[str, Any]]:
         contents: list[Dict[str, Any]] = []
         prior_messages = context.get("prior_messages") or []
 
@@ -479,12 +484,9 @@ class GoogleLLMAdapter(LLMComponent):
             normalized_role = "model" if role in ("assistant", "model") else "user"
             contents.append({"role": normalized_role, "parts": [{"text": text or ""}]})
 
-        # Build the user message, prepending system instruction if provided
+        # Keep user content separate from Gemini's systemInstruction channel.
         user_text = transcript or ""
-        if system_instruction and not prior_messages:
-            # Only prepend system instruction to first user message in conversation
-            user_text = f"{system_instruction}\n\n{user_text}" if user_text else system_instruction
-        
+
         if user_text or not contents:
             contents.append({"role": "user", "parts": [{"text": user_text}]})
 

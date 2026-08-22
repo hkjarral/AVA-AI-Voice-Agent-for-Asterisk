@@ -262,6 +262,8 @@ class DeepgramProviderConfig(BaseModel):
 class OpenAIProviderConfig(BaseModel):
     """# Milestone7: Canonical defaults for OpenAI pipeline adapters."""
     api_key: Optional[str] = None
+    api_key_file: Optional[str] = None
+    api_key_env: Optional[str] = None
     organization: Optional[str] = None
     project: Optional[str] = None
     tools_enabled: bool = Field(default=True)
@@ -315,6 +317,8 @@ class TelnyxLLMProviderConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     api_key: Optional[str] = None
+    api_key_file: Optional[str] = None
+    api_key_env: Optional[str] = None
     api_key_ref: Optional[str] = None
 
     chat_base_url: str = Field(default="https://api.telnyx.com/v2/ai")
@@ -343,6 +347,8 @@ class MiniMaxLLMProviderConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     api_key: Optional[str] = None
+    api_key_file: Optional[str] = None
+    api_key_env: Optional[str] = None
 
     chat_base_url: str = Field(default="https://api.minimax.io/v1")
     chat_model: str = Field(default="MiniMax-M3")

@@ -2,6 +2,7 @@ import pytest
 
 from src.config import AppConfig
 from src.pipelines.orchestrator import PipelineOrchestrator, PipelineOrchestratorError
+from src.pipelines.openai import OpenAILLMAdapter
 
 
 def _config(providers, *, stt="local_stt", llm="local_llm", tts="local_tts"):
@@ -88,3 +89,27 @@ def test_openai_component_blocks_do_not_overwrite_each_other():
 
     with pytest.raises(PipelineOrchestratorError, match="openai_llm"):
         orchestrator._validate_pipeline_entry("test", orchestrator.config.pipelines["test"])
+
+
+def test_custom_openai_compatible_llm_reads_provider_scoped_key_file(tmp_path):
+    key_file = tmp_path / "deepseek-key"
+    key_file.write_text("deepseek-secret")
+    orchestrator = PipelineOrchestrator(
+        _config(
+            {
+                "deepseek_llm": {
+                    "type": "openai",
+                    "enabled": True,
+                    "api_key_file": str(key_file),
+                    "chat_base_url": "https://api.deepseek.com/v1",
+                    "chat_model": "deepseek-chat",
+                }
+            },
+            llm="deepseek_llm",
+        )
+    )
+
+    adapter = orchestrator._build_component("deepseek_llm", {})
+    assert isinstance(adapter, OpenAILLMAdapter)
+    assert adapter._provider_defaults.api_key == "deepseek-secret"
+    assert adapter._provider_defaults.chat_model == "deepseek-chat"

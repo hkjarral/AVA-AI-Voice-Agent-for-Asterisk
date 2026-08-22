@@ -70,6 +70,9 @@ def test_classification_and_stable_api_probes() -> None:
     assert probe_url_for("https://api.openai.com/v1/") == (
         "https://api.openai.com/v1/models"
     )
+    assert probe_url_for("https://generativelanguage.googleapis.com/v1") == (
+        "https://generativelanguage.googleapis.com/v1/models"
+    )
     assert probe_url_for("https://docs.example.org/page#section") == (
         "https://docs.example.org/page"
     )

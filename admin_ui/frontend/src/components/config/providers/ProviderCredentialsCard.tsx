@@ -6,7 +6,7 @@ import { useConfirmDialog } from '../../../hooks/useConfirmDialog';
 import { Link } from 'react-router-dom';
 
 /**
- * Shared credential management card for full-agent providers.
+ * Shared credential management card for full-agent and modular LLM providers.
  *
  * Wraps the existing admin backend endpoints:
  *   GET    /api/config/providers/{key}/credentials
