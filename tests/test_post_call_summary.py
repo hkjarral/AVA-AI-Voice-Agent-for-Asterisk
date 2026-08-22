@@ -75,6 +75,8 @@ async def test_generate_once_uses_explicit_component_and_closes_it():
     assert generate[3]["system_prompt"] == "Summarize safely."
     assert generate[3]["instructions"] == "Summarize safely."
     assert generate[3]["tools"] == []
+    assert generate[3]["max_tokens"] == 256
+    assert generate[3]["max_output_tokens"] == 256
     assert events[-2:] == [("close", "summary:1"), "stop"]
 
 

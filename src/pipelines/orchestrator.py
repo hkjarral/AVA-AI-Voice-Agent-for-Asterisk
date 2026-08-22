@@ -479,7 +479,11 @@ class PipelineOrchestrator:
                 f"Summary provider '{component_key}' is unavailable or not configured"
             )
 
-        max_tokens = max(64, min(4096, int(max_words) * 3))
+        # Reasoning-capable OpenAI-compatible models may consume completion
+        # tokens internally before emitting visible summary text. Keep a
+        # modest floor so low word limits do not produce an empty response;
+        # the requested word cap remains explicit in the summary prompt.
+        max_tokens = max(256, min(4096, int(max_words) * 3))
         options: Dict[str, Any] = {
             "tools": [],
             # Adapters compose runtime options before request context. Pass the
