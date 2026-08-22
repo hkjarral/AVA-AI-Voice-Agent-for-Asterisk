@@ -106,6 +106,30 @@ async def test_deepseek_readiness_does_not_inherit_openai_api_key(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_key_required_provider_sentinel_is_not_ready(monkeypatch):
+    monkeypatch.setattr(
+        config_api,
+        "_read_merged_config_dict",
+        lambda: {
+            "providers": {
+                "native_llm": {"type": "openai", "api_key": "not-needed"},
+                "telnyx_llm": {"type": "telnyx", "api_key": "not-needed"},
+                "minimax_llm": {"type": "minimax", "api_key": "not-needed"},
+            }
+        },
+    )
+
+    response = await config_api.get_llm_provider_options()
+    by_key = {item["key"]: item for item in response["providers"]}
+
+    assert by_key["native_llm"]["ready"] is True
+    assert by_key["telnyx_llm"]["credential_configured"] is False
+    assert by_key["telnyx_llm"]["ready"] is False
+    assert by_key["minimax_llm"]["credential_configured"] is False
+    assert by_key["minimax_llm"]["ready"] is False
+
+
+@pytest.mark.asyncio
 async def test_modular_llm_api_key_upload_uses_owner_only_file(tmp_path, monkeypatch):
     monkeypatch.setattr(config_api, "PROVIDER_SECRETS_ROOT", str(tmp_path))
     monkeypatch.setattr(
@@ -287,3 +311,72 @@ async def test_modular_provider_credentials_verify_failure(monkeypatch, provider
 
     assert exc_info.value.status_code == 400
     assert "verification failed" in str(exc_info.value.detail).lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_type", ["telnyx", "telenyx", "minimax"])
+async def test_key_required_provider_rejects_no_auth_sentinel(monkeypatch, provider_type):
+    provider_key = f"{provider_type}_llm"
+    monkeypatch.setattr(
+        config_api,
+        "_read_merged_config_dict",
+        lambda: {
+            "providers": {
+                provider_key: {
+                    "type": provider_type,
+                    "api_key": "not-needed",
+                }
+            }
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await config_api.verify_provider_credentials(provider_key)
+
+    assert exc_info.value.status_code == 400
+    assert "not configured" in str(exc_info.value.detail).lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_type", ["openai", "telnyx", "minimax"])
+async def test_modular_verification_rejects_unallowlisted_configured_host(
+    monkeypatch, provider_type
+):
+    provider_key = f"{provider_type}_llm"
+    calls = []
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return type("Response", (), {"status_code": 200})()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(
+        config_api,
+        "_read_merged_config_dict",
+        lambda: {
+            "providers": {
+                provider_key: {
+                    "type": provider_type,
+                    "api_key": "provider-secret",
+                    "chat_base_url": "https://untrusted.example/v1",
+                }
+            }
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await config_api.verify_provider_credentials(provider_key)
+
+    assert exc_info.value.status_code == 400
+    assert "not allowlisted" in str(exc_info.value.detail).lower()
+    assert calls == []

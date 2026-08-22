@@ -156,9 +156,10 @@ async def test_google_llm_adapter_generate(monkeypatch):
     request = fake_session.requests[0]
     assert request["params"]["key"] == "test-google-key"
     assert request["json"]["generationConfig"]["temperature"] == 0.2
-    assert request["json"]["contents"][0]["parts"][0]["text"] == (
-        f"{summary_prompt}\n\nhello there"
-    )
+    assert request["json"]["systemInstruction"] == {
+        "parts": [{"text": summary_prompt}],
+    }
+    assert request["json"]["contents"][0]["parts"][0]["text"] == "hello there"
 
 
 @pytest.mark.asyncio

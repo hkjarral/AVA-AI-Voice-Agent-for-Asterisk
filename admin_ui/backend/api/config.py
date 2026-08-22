@@ -2931,7 +2931,7 @@ def _summary_provider_api_key_configured(
     if env_ref:
         config_for_resolution["api_key"] = ""
         config_for_resolution.setdefault("api_key_env", env_ref.group(1))
-    return bool(
+    resolved = str(
         helpers["resolve_secret_value"](
             config_for_resolution,
             file_field="api_key_file",
@@ -2939,7 +2939,14 @@ def _summary_provider_api_key_configured(
             inline_field="api_key",
             legacy_env_names=_llm_legacy_env_names(provider_key, kind),
         )
+        or ""
     )
+    # ``not-needed`` is supported only by OpenAI-compatible endpoints that
+    # intentionally run without authentication. Vendor APIs always require a
+    # real credential and must not be advertised as ready with this sentinel.
+    if resolved.strip().lower() == "not-needed" and kind != "openai":
+        return False
+    return bool(resolved.strip())
 
 
 @router.get("/providers/llm-options")
@@ -3296,22 +3303,36 @@ async def verify_provider_credentials(provider_key: str):
             if not api_key:
                 raise HTTPException(status_code=400, detail=f"{kind} API key is not configured")
             if api_key.lower() == "not-needed":
+                if kind != "openai":
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"{kind} API key is not configured",
+                    )
                 return {
                     "status": "success",
                     "message": "No-auth provider credential configuration accepted",
                 }
             if kind == "openai":
                 configured_base = provider_cfg.get("chat_base_url") or provider_cfg.get("base_url") or ""
-                base_url = _safe_base_url(str(configured_base), "https://api.openai.com/v1")
+                fallback_base = "https://api.openai.com/v1"
                 label = "OpenAI-compatible"
             elif kind in {"telnyx", "telenyx"}:
                 configured_base = provider_cfg.get("chat_base_url") or provider_cfg.get("base_url") or ""
-                base_url = _safe_base_url(str(configured_base), "https://api.telnyx.com/v2/ai")
+                fallback_base = "https://api.telnyx.com/v2/ai"
                 label = "Telnyx"
             else:
                 configured_base = provider_cfg.get("chat_base_url") or provider_cfg.get("base_url") or ""
-                base_url = _safe_base_url(str(configured_base), "https://api.minimax.io/v1")
+                fallback_base = "https://api.minimax.io/v1"
                 label = "MiniMax"
+            if configured_base:
+                base_url = _safe_base_url(str(configured_base), "")
+                if not base_url or _url_host(base_url) != _url_host(str(configured_base)):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"{label} verification URL is not allowlisted",
+                    )
+            else:
+                base_url = fallback_base
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(
                     f"{base_url}/models",
