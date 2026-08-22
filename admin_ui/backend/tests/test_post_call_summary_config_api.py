@@ -11,6 +11,7 @@ from api import tools as tools_api
 
 @pytest.mark.asyncio
 async def test_llm_options_are_secret_safe_and_report_readiness(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "legacy-openai-secret")
     monkeypatch.setattr(
         config_api,
         "_read_merged_config_dict",
@@ -57,8 +58,51 @@ async def test_llm_options_are_secret_safe_and_report_readiness(monkeypatch):
     assert by_key["ollama_llm"]["ready"] is True
     assert by_key["telnyx_llm"]["ready"] is True
     assert by_key["minimax_llm"]["ready"] is True
-    assert "disabled_llm" not in by_key
+    assert by_key["disabled_llm"]["enabled"] is False
+    assert by_key["disabled_llm"]["credential_configured"] is True
+    assert by_key["disabled_llm"]["ready"] is False
+    assert by_key["disabled_llm"]["readiness"] == "disabled"
+    assert response["legacy_provider"] == {
+        "key": "",
+        "label": "OpenAI (legacy default)",
+        "type": "openai",
+        "model": "gpt-4o-mini",
+        "enabled": True,
+        "credential_required": True,
+        "credential_configured": True,
+        "ready": True,
+        "readiness": "ready",
+        "legacy": True,
+    }
     assert "super-secret" not in json.dumps(response)
+    assert "legacy-openai-secret" not in json.dumps(response)
+
+
+@pytest.mark.asyncio
+async def test_deepseek_readiness_does_not_inherit_openai_api_key(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-only-secret")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr(
+        config_api,
+        "_read_merged_config_dict",
+        lambda: {
+            "providers": {
+                "deepseek_llm": {
+                    "type": "openai",
+                    "enabled": True,
+                    "chat_model": "deepseek-v4-flash",
+                    "chat_base_url": "https://api.deepseek.com",
+                }
+            }
+        },
+    )
+
+    response = await config_api.get_llm_provider_options()
+
+    assert response["providers"][0]["key"] == "deepseek_llm"
+    assert response["providers"][0]["credential_configured"] is False
+    assert response["providers"][0]["ready"] is False
+    assert response["legacy_provider"]["ready"] is True
 
 
 @pytest.mark.asyncio

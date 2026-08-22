@@ -2910,7 +2910,6 @@ def _llm_legacy_env_names(provider_key: str, kind: str) -> tuple[str, ...]:
     prefix = provider_key.rsplit("_llm", 1)[0].upper()
     names = [f"{prefix}_API_KEY"]
     canonical = {
-        "openai": "OPENAI_API_KEY",
         "google": "GOOGLE_API_KEY",
         "telnyx": "TELNYX_API_KEY",
         "telenyx": "TELNYX_API_KEY",
@@ -2953,7 +2952,7 @@ async def get_llm_provider_options():
     seen: set[str] = set()
 
     for provider_key, provider_cfg in providers.items():
-        if not isinstance(provider_cfg, dict) or provider_cfg.get("enabled") is False:
+        if not isinstance(provider_cfg, dict):
             continue
         key = str(provider_key)
         if key.endswith("_llm"):
@@ -2967,6 +2966,7 @@ async def get_llm_provider_options():
         if component_key in seen or kind not in helpers["modular_llm_kinds"]:
             continue
         seen.add(component_key)
+        enabled = provider_cfg.get("enabled") is not False
 
         credential_required = kind in helpers["api_key_kinds"]
         credential_configured = True
@@ -2991,12 +2991,38 @@ async def get_llm_provider_options():
                     or provider_cfg.get("model")
                     or ""
                 ),
+                "enabled": enabled,
                 "credential_required": credential_required,
                 "credential_configured": credential_configured,
-                "ready": credential_configured,
+                "ready": enabled and credential_configured,
+                "readiness": (
+                    "disabled"
+                    if not enabled
+                    else "ready"
+                    if credential_configured
+                    else "credential_missing"
+                ),
             }
         )
-    return {"providers": sorted(options, key=lambda item: item["label"].lower())}
+    legacy_credential_configured = bool(str(os.getenv("OPENAI_API_KEY") or "").strip())
+    return {
+        "providers": sorted(options, key=lambda item: item["label"].lower()),
+        # Existing post-call webhooks without summary_provider use this exact
+        # OpenAI path.  Returning its secret-safe readiness lets upgraded UIs
+        # display the effective selection instead of a misleading blank field.
+        "legacy_provider": {
+            "key": "",
+            "label": "OpenAI (legacy default)",
+            "type": "openai",
+            "model": "gpt-4o-mini",
+            "enabled": True,
+            "credential_required": True,
+            "credential_configured": legacy_credential_configured,
+            "ready": legacy_credential_configured,
+            "readiness": "ready" if legacy_credential_configured else "credential_missing",
+            "legacy": True,
+        },
+    }
 
 
 @router.get("/providers/{provider_key}/credentials")

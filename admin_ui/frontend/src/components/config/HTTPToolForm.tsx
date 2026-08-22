@@ -87,9 +87,12 @@ interface SummaryProviderOption {
     label: string;
     type: string;
     model: string;
+    enabled: boolean;
     credential_required: boolean;
     credential_configured: boolean;
     ready: boolean;
+    readiness: 'ready' | 'disabled' | 'credential_missing';
+    legacy?: boolean;
 }
 
 interface TestResult {
@@ -135,6 +138,8 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
     const [queryParamKey, setQueryParamKey] = useState('');
     const [queryParamValue, setQueryParamValue] = useState('');
     const [summaryProviders, setSummaryProviders] = useState<SummaryProviderOption[]>([]);
+    const [legacySummaryProvider, setLegacySummaryProvider] =
+        useState<SummaryProviderOption | null>(null);
     const [summaryProvidersLoading, setSummaryProvidersLoading] = useState(false);
 
     useEffect(() => {
@@ -144,10 +149,16 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
         axios
             .get('/api/config/providers/llm-options')
             .then(response => {
-                if (!cancelled) setSummaryProviders(response.data?.providers || []);
+                if (!cancelled) {
+                    setSummaryProviders(response.data?.providers || []);
+                    setLegacySummaryProvider(response.data?.legacy_provider || null);
+                }
             })
             .catch(() => {
-                if (!cancelled) setSummaryProviders([]);
+                if (!cancelled) {
+                    setSummaryProviders([]);
+                    setLegacySummaryProvider(null);
+                }
             })
             .finally(() => {
                 if (!cancelled) setSummaryProvidersLoading(false);
@@ -313,11 +324,22 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                 originalTool.summary_max_words === committedToolForm.summary_max_words &&
                 originalTool.summary_timeout_ms === committedToolForm.summary_timeout_ms &&
                 originalTool.summary_prompt === committedToolForm.summary_prompt;
+            const isLegacySummary =
+                originalTool?.generate_summary === true && !originalTool.summary_provider;
             const selected = summaryProviders.find(
                 provider => provider.key === committedToolForm.summary_provider
             );
-            if (!committedToolForm.summary_provider && !legacySummaryUnchanged) {
+            if (!committedToolForm.summary_provider && !isLegacySummary) {
                 toast.error('Select a configured summary provider');
+                return;
+            }
+            if (
+                !committedToolForm.summary_provider &&
+                isLegacySummary &&
+                !legacySummaryProvider?.ready &&
+                !legacySummaryUnchanged
+            ) {
+                toast.error('Configure OPENAI_API_KEY for the legacy summary provider first');
                 return;
             }
             if (committedToolForm.summary_provider && !selected?.ready) {
@@ -343,6 +365,26 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
         updated[key] = data;
         onChange(updated);
         closeEditor();
+    };
+
+    const originalEditingTool =
+        editingTool && editingTool !== 'new_tool'
+            ? (config[editingTool] as HTTPToolConfig | undefined)
+            : undefined;
+    const isLegacySummarySelection = Boolean(
+        originalEditingTool?.generate_summary && !originalEditingTool.summary_provider
+    );
+    const selectedSummaryProvider = toolForm.summary_provider
+        ? summaryProviders.find(provider => provider.key === toolForm.summary_provider)
+        : isLegacySummarySelection
+          ? legacySummaryProvider
+          : null;
+
+    const summaryProviderLabel = (provider: SummaryProviderOption) => {
+        const identity = `${provider.label}${provider.model ? ` — ${provider.model}` : ''}`;
+        if (provider.enabled === false) return `${identity} — disabled`;
+        if (!provider.credential_configured) return `${identity} — API key missing`;
+        return `${identity} — ready`;
     };
 
     const handleDeleteTool = async (key: string) => {
@@ -1632,28 +1674,85 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                             label="Summary Provider"
                                             value={toolForm.summary_provider || ''}
                                             onChange={e =>
-                                                setToolForm({ ...toolForm, summary_provider: e.target.value })
+                                                setToolForm({
+                                                    ...toolForm,
+                                                    summary_provider: e.target.value,
+                                                })
                                             }
                                             options={[
                                                 {
                                                     value: '',
-                                                    label: summaryProvidersLoading
-                                                        ? 'Loading configured LLMs...'
-                                                        : 'Select a configured LLM...',
+                                                    label:
+                                                        isLegacySummarySelection &&
+                                                        legacySummaryProvider
+                                                            ? summaryProviderLabel(
+                                                                  legacySummaryProvider
+                                                              )
+                                                            : summaryProvidersLoading
+                                                              ? 'Loading configured LLMs...'
+                                                              : 'Select a configured LLM...',
                                                 },
                                                 ...summaryProviders.map(provider => ({
                                                     value: provider.key,
-                                                    label: `${provider.label}${provider.model ? ` — ${provider.model}` : ''}${provider.ready ? '' : ' — credential required'}`,
+                                                    label: summaryProviderLabel(provider),
+                                                    disabled: provider.enabled === false,
                                                 })),
                                             ]}
                                             tooltip="Only this configured provider receives the transcript. Missing credentials never trigger fallback to another provider."
                                         />
-                                        {summaryProviders.length === 0 && !summaryProvidersLoading && (
-                                            <p className="text-xs text-amber-700 dark:text-amber-400">
-                                                No configured LLM providers are available.{' '}
-                                                <a className="underline" href="/providers">Configure one on the Providers page.</a>
-                                            </p>
+                                        {selectedSummaryProvider && (
+                                            <div
+                                                role="status"
+                                                className={`flex items-start gap-2 rounded-md border p-3 text-xs ${
+                                                    selectedSummaryProvider.ready
+                                                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                                                        : 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                                                }`}
+                                            >
+                                                {selectedSummaryProvider.ready ? (
+                                                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                                                ) : (
+                                                    <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                                                )}
+                                                <div>
+                                                    <p className="font-medium">
+                                                        {selectedSummaryProvider.ready
+                                                            ? selectedSummaryProvider.credential_required
+                                                                ? 'API key configured — provider is ready'
+                                                                : 'Provider is ready — no API key required'
+                                                            : selectedSummaryProvider.enabled ===
+                                                                false
+                                                              ? 'Provider is disabled'
+                                                              : 'API key is not configured'}
+                                                    </p>
+                                                    <p className="mt-0.5 opacity-90">
+                                                        {selectedSummaryProvider.legacy
+                                                            ? 'This existing webhook will continue using OPENAI_API_KEY and gpt-4o-mini until you choose another provider.'
+                                                            : selectedSummaryProvider.ready
+                                                              ? `Summaries will use ${selectedSummaryProvider.label}${selectedSummaryProvider.model ? ` (${selectedSummaryProvider.model})` : ''}.`
+                                                              : 'Open the Providers page to enable this provider or configure its credential.'}
+                                                    </p>
+                                                    {!selectedSummaryProvider.ready && (
+                                                        <a
+                                                            className="mt-1 inline-block underline"
+                                                            href="/providers"
+                                                        >
+                                                            Open Providers
+                                                        </a>
+                                                    )}
+                                                </div>
+                                            </div>
                                         )}
+                                        {summaryProviders.length === 0 &&
+                                            !summaryProvidersLoading &&
+                                            !isLegacySummarySelection && (
+                                                <p className="text-xs text-amber-700 dark:text-amber-400">
+                                                    No configured LLM providers are available.{' '}
+                                                    <a className="underline" href="/providers">
+                                                        Configure one on the Providers page.
+                                                    </a>
+                                                </p>
+                                            )}
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                             <FormInput
                                                 label="Max Summary Words"
@@ -1678,7 +1777,9 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                                 onChange={e =>
                                                     setToolForm({
                                                         ...toolForm,
-                                                        summary_timeout_ms: parseInt(e.target.value),
+                                                        summary_timeout_ms: parseInt(
+                                                            e.target.value
+                                                        ),
                                                     })
                                                 }
                                                 tooltip="Independent LLM timeout; the webhook request starts afterward"
@@ -1686,7 +1787,10 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                         </div>
                                         <div className="space-y-2">
                                             <div className="flex items-center justify-between gap-3">
-                                                <FormLabel htmlFor="post-call-summary-prompt" tooltip="Use {max_words} to insert the configured word limit. The transcript is passed separately as untrusted user content.">
+                                                <FormLabel
+                                                    htmlFor="post-call-summary-prompt"
+                                                    tooltip="Use {max_words} to insert the configured word limit. The transcript is passed separately as untrusted user content."
+                                                >
                                                     Summary Prompt
                                                 </FormLabel>
                                                 <button
@@ -1705,7 +1809,10 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                             <textarea
                                                 id="post-call-summary-prompt"
                                                 className={`${editorTextareaClass} min-h-[140px]`}
-                                                value={toolForm.summary_prompt ?? DEFAULT_SUMMARY_PROMPT}
+                                                value={
+                                                    toolForm.summary_prompt ??
+                                                    DEFAULT_SUMMARY_PROMPT
+                                                }
                                                 onChange={e =>
                                                     setToolForm({
                                                         ...toolForm,
@@ -1714,7 +1821,9 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                                 }
                                             />
                                             <p className="text-xs text-muted-foreground">
-                                                Supported placeholder: <code>{'{max_words}'}</code>. Provider credentials are managed on the Providers page and are never stored in this webhook.
+                                                Supported placeholder: <code>{'{max_words}'}</code>.
+                                                Provider credentials are managed on the Providers
+                                                page and are never stored in this webhook.
                                             </p>
                                         </div>
                                     </div>

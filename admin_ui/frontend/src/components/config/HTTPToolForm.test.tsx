@@ -62,9 +62,9 @@ describe('HTTPToolForm editor colors', () => {
         fireEvent.change(screen.getByLabelText('Method'), { target: { value: 'GET' } });
         expect(screen.queryByDisplayValue('{"stale":true}')).not.toBeInTheDocument();
         fireEvent.change(screen.getByLabelText('Method'), { target: { value: 'POST' } });
-        expect(screen.getByPlaceholderText(
-            '{"phone": "{caller_number}", "context": "{context_name}"}'
-        )).toHaveValue('');
+        expect(
+            screen.getByPlaceholderText('{"phone": "{caller_number}", "context": "{context_name}"}')
+        ).toHaveValue('');
     });
 
     it('preserves a configured body when switching from POST to DELETE', () => {
@@ -127,9 +127,11 @@ describe('HTTPToolForm editor colors', () => {
                         label: 'DeepSeek',
                         type: 'openai',
                         model: 'deepseek-chat',
+                        enabled: true,
                         credential_required: true,
                         credential_configured: true,
                         ready: true,
+                        readiness: 'ready',
                     },
                 ],
             },
@@ -140,7 +142,7 @@ describe('HTTPToolForm editor colors', () => {
 
         await waitFor(() =>
             expect(screen.getByLabelText('Summary Provider')).toHaveTextContent(
-                'DeepSeek — deepseek-chat'
+                'DeepSeek — deepseek-chat — ready'
             )
         );
         expect(screen.getByLabelText('Max Summary Words')).toHaveValue(100);
@@ -152,6 +154,112 @@ describe('HTTPToolForm editor colors', () => {
         expect(prompt).toHaveValue('Return a {max_words}-word CRM note.');
         fireEvent.click(screen.getByRole('button', { name: 'Reset to recommended' }));
         expect((prompt as HTMLTextAreaElement).value).toContain("caller's main request");
+    });
+
+    it('shows the effective legacy OpenAI provider and verifies its API key', async () => {
+        vi.mocked(axios.get).mockResolvedValueOnce({
+            data: {
+                providers: [],
+                legacy_provider: {
+                    key: '',
+                    label: 'OpenAI (legacy default)',
+                    type: 'openai',
+                    model: 'gpt-4o-mini',
+                    enabled: true,
+                    credential_required: true,
+                    credential_configured: true,
+                    ready: true,
+                    readiness: 'ready',
+                    legacy: true,
+                },
+            },
+        });
+        const onChange = vi.fn();
+        const legacyConfig = {
+            legacy_hook: {
+                kind: 'generic_webhook',
+                phase: 'post_call',
+                enabled: true,
+                is_global: true,
+                url: 'https://hooks.example.com/original',
+                method: 'POST',
+                generate_summary: true,
+                summary_max_words: 100,
+                summary_timeout_ms: 15000,
+                summary_prompt: 'Summarize in {max_words} words.',
+            },
+        };
+        render(<HTTPToolForm config={legacyConfig} onChange={onChange} phase="post_call" />);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit legacy_hook' }));
+        await waitFor(() =>
+            expect(screen.getByLabelText('Summary Provider')).toHaveTextContent(
+                'OpenAI (legacy default) — gpt-4o-mini — ready'
+            )
+        );
+        expect(screen.getByRole('status')).toHaveTextContent(
+            'API key configured — provider is ready'
+        );
+        expect(screen.getByRole('status')).toHaveTextContent('OPENAI_API_KEY');
+
+        fireEvent.change(screen.getByLabelText('Summary Prompt'), {
+            target: { value: 'Create a {max_words}-word CRM summary.' },
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        expect(onChange).toHaveBeenCalledOnce();
+        expect(onChange.mock.calls[0][0].legacy_hook.summary_prompt).toBe(
+            'Create a {max_words}-word CRM summary.'
+        );
+        expect(onChange.mock.calls[0][0].legacy_hook.summary_provider).toBeUndefined();
+    });
+
+    it('shows a missing API key immediately and blocks the broken selection', async () => {
+        vi.mocked(axios.get).mockResolvedValueOnce({
+            data: {
+                providers: [
+                    {
+                        key: 'deepseek_llm',
+                        label: 'DeepSeek',
+                        type: 'openai',
+                        model: 'deepseek-v4-flash',
+                        enabled: true,
+                        credential_required: true,
+                        credential_configured: false,
+                        ready: false,
+                        readiness: 'credential_missing',
+                    },
+                ],
+            },
+        });
+        const onChange = vi.fn();
+        const config = {
+            summary_hook: {
+                kind: 'generic_webhook',
+                phase: 'post_call',
+                enabled: true,
+                is_global: true,
+                url: 'https://hooks.example.com/post-call',
+                method: 'POST',
+                generate_summary: true,
+                summary_provider: 'deepseek_llm',
+                summary_max_words: 100,
+                summary_timeout_ms: 15000,
+                summary_prompt: 'Summarize in {max_words} words.',
+            },
+        };
+        render(<HTTPToolForm config={config} onChange={onChange} phase="post_call" />);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit summary_hook' }));
+        await waitFor(() =>
+            expect(screen.getByRole('status')).toHaveTextContent('API key is not configured')
+        );
+        expect(screen.getByLabelText('Summary Provider')).toHaveTextContent(
+            'DeepSeek — deepseek-v4-flash — API key missing'
+        );
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        expect(onChange).not.toHaveBeenCalled();
     });
 
     it('allows unrelated saves for an unchanged legacy summary configuration', () => {
@@ -179,9 +287,7 @@ describe('HTTPToolForm editor colors', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
         expect(onChange).toHaveBeenCalledOnce();
-        expect(onChange.mock.calls[0][0].legacy_hook.url).toBe(
-            'https://hooks.example.com/updated'
-        );
+        expect(onChange.mock.calls[0][0].legacy_hook.url).toBe('https://hooks.example.com/updated');
         expect(onChange.mock.calls[0][0].legacy_hook.summary_provider).toBeUndefined();
     });
 

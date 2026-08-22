@@ -46,6 +46,19 @@ const LLM_SUBTYPES: ProviderSubtype[] = [
     ],
   },
   {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    description: 'DeepSeek cloud models through the official OpenAI-compatible API',
+    yamlType: 'openai',
+    fields: [
+      { key: 'chat_base_url', label: 'Chat API Base URL', type: 'text', required: true, placeholder: 'https://api.deepseek.com', default: 'https://api.deepseek.com' },
+      { key: 'chat_model', label: 'Model', type: 'combobox', required: true, default: 'deepseek-v4-flash', suggestions: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
+      { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.3 },
+      { key: 'max_tokens', label: 'Max Tokens', type: 'number', required: false, default: 200 },
+      { key: 'response_timeout_sec', label: 'Response Timeout (sec)', type: 'number', required: false, default: 30, tooltip: 'Max wait time for a DeepSeek response.' },
+    ],
+  },
+  {
     id: 'google',
     label: 'Google Gemini',
     description: 'Google Generative Language API (Gemini models)',
@@ -175,7 +188,6 @@ const OUTPUT_RESAMPLER_FIELD: SubtypeField = {
   suggestions: ['inherit', 'linear', 'bandlimited'],
   tooltip: 'inherit uses the Agent Audio Profile; linear preserves current behavior; bandlimited removes out-of-band energy before 16/24 kHz audio is reduced to 8 kHz telephony.',
 };
-
 const TTS_SUBTYPES: ProviderSubtype[] = [
   {
     id: 'openai',
@@ -306,5 +318,11 @@ export const inferSubtype = (config: any): ProviderSubtype | undefined => {
   if (!cap || !MODULAR_SUBTYPES[cap as Capability]) return undefined;
   const yamlType = (config?.type || '').toLowerCase();
   if (!yamlType) return undefined;
+  if (cap === 'llm' && yamlType === 'openai') {
+    const baseUrl = String(config?.chat_base_url || config?.base_url || '').toLowerCase();
+    if (baseUrl.includes('api.deepseek.com')) {
+      return MODULAR_SUBTYPES.llm.find(s => s.id === 'deepseek');
+    }
+  }
   return findSubtype(cap as Capability, yamlType);
 };

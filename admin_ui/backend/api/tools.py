@@ -1428,6 +1428,11 @@ async def _validate_summary_provider_selection(doc: Dict[str, Any]) -> None:
             status_code=422,
             detail=f"Summary provider '{provider_key}' is not configured or enabled",
         )
+    if not selected.get("enabled", True):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Summary provider '{provider_key}' is disabled",
+        )
     if not selected.get("ready"):
         raise HTTPException(
             status_code=422,
