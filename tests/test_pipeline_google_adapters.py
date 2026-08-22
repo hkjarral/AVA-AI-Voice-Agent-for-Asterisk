@@ -140,17 +140,25 @@ async def test_google_llm_adapter_generate(monkeypatch):
     )
 
     await adapter.start()
+    summary_prompt = "Summarize the call. Do not use the agent persona."
     reply = await adapter.generate(
         "call-1",
         "hello there",
-        {"system_prompt": "You are friendly."},
-        {"temperature": 0.2},
+        {"system_prompt": summary_prompt},
+        {
+            "temperature": 0.2,
+            "system_prompt": summary_prompt,
+            "instructions": summary_prompt,
+        },
     )
     assert reply.text == "response from gemini"
 
     request = fake_session.requests[0]
     assert request["params"]["key"] == "test-google-key"
     assert request["json"]["generationConfig"]["temperature"] == 0.2
+    assert request["json"]["contents"][0]["parts"][0]["text"] == (
+        f"{summary_prompt}\n\nhello there"
+    )
 
 
 @pytest.mark.asyncio

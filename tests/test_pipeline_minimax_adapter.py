@@ -153,12 +153,19 @@ async def test_minimax_llm_chat_completion():
     )
 
     await adapter.start()
-    response = await adapter.generate("call-1", "hello", {"system_prompt": "Be helpful."}, {})
+    summary_prompt = "Summarize the call. Do not use the agent persona."
+    response = await adapter.generate(
+        "call-1",
+        "hello",
+        {"system_prompt": summary_prompt},
+        {"system_prompt": summary_prompt, "instructions": summary_prompt},
+    )
     assert response.text == "Hello! How can I help?"
     assert response.tool_calls == []
 
     request = fake_session.requests[0]
     assert request["json"]["model"] == "MiniMax-M3"
+    assert request["json"]["messages"][0] == {"role": "system", "content": summary_prompt}
     assert request["url"] == "https://api.minimax.io/v1/chat/completions"
     assert request["headers"]["Authorization"] == "Bearer test-minimax-key"
 

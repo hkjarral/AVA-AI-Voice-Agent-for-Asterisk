@@ -131,7 +131,7 @@ providers:
     type: openai
     api_key: ${GROQ_API_KEY}
     chat_base_url: https://api.groq.com/openai/v1
-    chat_model: llama-3.3-70b-versatile
+    chat_model: openai/gpt-oss-120b
     tools_enabled: false
 
   groq_stt:

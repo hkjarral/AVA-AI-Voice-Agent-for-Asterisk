@@ -102,7 +102,7 @@ pipelines:
       llm:
         base_url: https://api.groq.com/openai/v1
         max_tokens: 200
-        model: llama-3.3-70b-versatile
+        model: openai/gpt-oss-120b
         temperature: 0.7
       stt:
         chunk_ms: 160
@@ -369,7 +369,7 @@ providers:
       - llm
     api_key: ${GROQ_API_KEY}
     chat_base_url: https://api.groq.com/openai/v1
-    chat_model: llama-3.3-70b-versatile
+    chat_model: openai/gpt-oss-120b
     enabled: false
     response_timeout_sec: 10
     temperature: 0.7

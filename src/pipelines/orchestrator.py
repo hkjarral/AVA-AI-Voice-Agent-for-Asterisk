@@ -455,11 +455,15 @@ class PipelineOrchestrator:
         max_words: int,
         timeout_sec: float,
     ) -> tuple[str, str]:
-        """Generate text with one explicitly selected configured LLM.
+        """Run an isolated text-generation job with one configured LLM.
 
-        The component is isolated from live call pipeline state and is always
-        closed. Unknown, disabled, or credential-less components fail instead
-        of resolving to the wildcard placeholder or another provider.
+        Provider configuration supplies only the selected component's
+        credentials, endpoint, and model.  The job owns its prompt, tools,
+        sampling, token, and timeout settings; it must never inherit the live
+        agent persona.  The component is isolated from live call pipeline state
+        and is always closed. Unknown, disabled, or credential-less components
+        fail instead of resolving to the wildcard placeholder or another
+        provider.
         """
         if _extract_role(component_key) != "llm":
             raise PipelineOrchestratorError(
@@ -478,6 +482,11 @@ class PipelineOrchestrator:
         max_tokens = max(64, min(4096, int(max_words) * 3))
         options: Dict[str, Any] = {
             "tools": [],
+            # Adapters compose runtime options before request context. Pass the
+            # job prompt through both supported prompt keys so provider/global
+            # agent defaults cannot shadow the post-call summary instructions.
+            "system_prompt": system_prompt,
+            "instructions": system_prompt,
             "temperature": 0.3,
             "max_tokens": max_tokens,
             "max_output_tokens": max_tokens,
@@ -497,7 +506,10 @@ class PipelineOrchestrator:
             response = await component.generate(
                 call_id,
                 transcript,
-                {"system_prompt": system_prompt, "prior_messages": []},
+                {
+                    "system_prompt": system_prompt,
+                    "prior_messages": [],
+                },
                 options,
             )
             text = response.text if isinstance(response, LLMResponse) else str(response or "")

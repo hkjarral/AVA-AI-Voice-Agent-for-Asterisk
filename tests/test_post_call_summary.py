@@ -67,8 +67,13 @@ async def test_generate_once_uses_explicit_component_and_closes_it():
 
     assert text == "Concise result"
     assert model == "chosen-model"
+    opened = next(event for event in events if isinstance(event, tuple) and event[0] == "open")
     generate = next(event for event in events if isinstance(event, tuple) and event[0] == "generate")
+    assert opened[2]["system_prompt"] == "Summarize safely."
+    assert opened[2]["instructions"] == "Summarize safely."
     assert generate[2]["system_prompt"] == "Summarize safely."
+    assert generate[3]["system_prompt"] == "Summarize safely."
+    assert generate[3]["instructions"] == "Summarize safely."
     assert generate[3]["tools"] == []
     assert events[-2:] == [("close", "summary:1"), "stop"]
 
