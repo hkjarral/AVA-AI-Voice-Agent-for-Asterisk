@@ -365,6 +365,17 @@ const ProvidersPage: React.FC = () => {
                 temperature: 0.7,
                 response_timeout_sec: 30.0,
             },
+            deepseek_llm: {
+                enabled: false,
+                type: 'openai',
+                capabilities: ['llm'],
+                chat_base_url: 'https://api.deepseek.com',
+                api_key_env: 'DEEPSEEK_API_KEY',
+                chat_model: 'deepseek-v4-flash',
+                temperature: 0.3,
+                max_tokens: 200,
+                response_timeout_sec: 30.0,
+            },
             azure_stt: {
                 enabled: false,
                 type: 'azure',
@@ -1676,6 +1687,23 @@ const ProvidersPage: React.FC = () => {
                                             <li>Default model: <code>Qwen/Qwen3-235B-A22B</code></li>
                                             <li>Pay per token (~$0.40 / 1M input)</li>
                                             <li>Requires <code>TELNYX_API_KEY</code></li>
+                                        </ul>
+                                    </>
+                                ),
+                            },
+                            {
+                                id: 'deepseek_llm',
+                                name: 'DeepSeek LLM',
+                                desc: 'DeepSeek V4 via the official OpenAI-compatible API',
+                                doc: 'https://api-docs.deepseek.com/quick_start/pricing/',
+                                tooltip: (
+                                    <>
+                                        <strong>DeepSeek LLM</strong> — modular LLM slot for post-call summaries and pipelines.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>Official OpenAI-compatible <code>/chat/completions</code> endpoint</li>
+                                            <li>Default model: <code>deepseek-v4-flash</code></li>
+                                            <li>Also supports <code>deepseek-v4-pro</code></li>
+                                            <li>Requires <code>DEEPSEEK_API_KEY</code></li>
                                         </ul>
                                     </>
                                 ),
