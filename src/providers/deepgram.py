@@ -20,6 +20,7 @@ from ..audio.resampler import (
 )
 from ..config import LLMConfig
 from .base import AIProviderInterface, ProviderCapabilities
+from ..config.audio_baselines import provider_audio_capabilities
 
 # Tool calling support
 from src.tools.registry import tool_registry
@@ -629,11 +630,9 @@ class DeepgramProvider(AIProviderInterface):
     # P1: Static capability hints for orchestrator
     def get_capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
-            # Audio format capabilities
-            input_encodings=["mulaw", "linear16"],
-            input_sample_rates_hz=[8000, 16000],
-            output_encodings=["linear16", "mulaw"],
-            output_sample_rates_hz=[16000, 24000, 8000],
+            # Audio format capabilities come from the canonical registry shared
+            # with the Admin UI audio-alignment view (src/config/audio_baselines).
+            **provider_audio_capabilities("deepgram"),
             preferred_chunk_ms=20,
             can_negotiate=True,  # Uses SettingsApplied ACK for runtime negotiation
             # Provider type and audio processing capabilities
@@ -641,10 +640,6 @@ class DeepgramProvider(AIProviderInterface):
             has_native_vad=True,  # Deepgram Voice Agent has built-in VAD
             has_native_barge_in=True,  # Handles interruptions internally
             requires_continuous_audio=True,  # Needs continuous audio for VAD
-            wideband_input_encoding="linear16",
-            wideband_input_sample_rate_hz=16000,
-            wideband_output_encoding="linear16",
-            wideband_output_sample_rate_hz=16000,
         )
     
     def parse_ack(self, event_data: Dict[str, Any]) -> Optional[ProviderCapabilities]:

@@ -37,6 +37,7 @@ from structlog import get_logger
 from prometheus_client import Gauge, Info
 
 from .base import AIProviderInterface, ProviderCapabilities
+from ..config.audio_baselines import provider_audio_capabilities
 from ..audio import (
     convert_pcm16le_to_target_format,
     mulaw_to_pcm16le,
@@ -341,12 +342,9 @@ class GrokProvider(AIProviderInterface):
     # P1: Static capability hints for Transport Orchestrator
     def get_capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
-            # Audio format capabilities
-            input_encodings=["ulaw", "linear16"],
-            input_sample_rates_hz=[8000, 16000, 24000],
-            # Output depends on session.update and downstream target; we advertise both
-            output_encodings=["mulaw", "pcm16"],
-            output_sample_rates_hz=[8000, 16000, 24000],
+            # Audio format capabilities come from the canonical registry shared
+            # with the Admin UI audio-alignment view (src/config/audio_baselines).
+            **provider_audio_capabilities("grok"),
             preferred_chunk_ms=20,
             can_negotiate=False,  # Uses static session.update config, not runtime ACK
             # Provider type and audio processing capabilities
@@ -355,10 +353,6 @@ class GrokProvider(AIProviderInterface):
             has_native_barge_in=True,  # Handles interruptions via cancel_response
             has_native_aec=False,  # AEC only available on client-side WebRTC paths, not server-side WebSocket
             requires_continuous_audio=True,  # Needs continuous audio for server-side VAD
-            wideband_input_encoding="linear16",
-            wideband_input_sample_rate_hz=16000,
-            wideband_output_encoding="pcm16",
-            wideband_output_sample_rate_hz=16000,
         )
     
     def parse_ack(self, event_data: Dict[str, Any]) -> Optional[ProviderCapabilities]:

@@ -127,6 +127,84 @@ PROVIDER_AUDIO_EXTRA_FIELDS: Mapping[str, frozenset[str]] = {
 }
 
 
+# Declared audio-format capabilities of each full-agent adapter — the single
+# source for both the runtime ProviderCapabilities (each adapter's
+# get_capabilities() builds from this) and the Admin UI audio-alignment view.
+# Keys match ProviderCapabilities field names so adapters can splat them.
+# Non-format behavior flags (VAD, barge-in, negotiation) stay in the adapters.
+PROVIDER_AUDIO_CAPABILITIES: Mapping[str, Mapping[str, Any]] = {
+    "deepgram": {
+        "input_encodings": ["mulaw", "linear16"],
+        "input_sample_rates_hz": [8000, 16000],
+        "output_encodings": ["linear16", "mulaw"],
+        "output_sample_rates_hz": [16000, 24000, 8000],
+        "wideband_input_encoding": "linear16",
+        "wideband_input_sample_rate_hz": 16000,
+        "wideband_output_encoding": "linear16",
+        "wideband_output_sample_rate_hz": 16000,
+    },
+    "openai_realtime": {
+        "input_encodings": ["ulaw", "linear16"],
+        "input_sample_rates_hz": [24000, 16000, 8000],
+        "output_encodings": ["mulaw", "pcm16"],
+        "output_sample_rates_hz": [8000, 24000],
+        "wideband_input_encoding": "linear16",
+        "wideband_input_sample_rate_hz": 24000,
+        "wideband_output_encoding": "pcm16",
+        "wideband_output_sample_rate_hz": 24000,
+    },
+    "google_live": {
+        "input_encodings": ["pcm16"],
+        "input_sample_rates_hz": [16000],
+        "output_encodings": ["pcm16"],
+        "output_sample_rates_hz": [24000],
+        "wideband_input_encoding": "pcm16",
+        "wideband_input_sample_rate_hz": 16000,
+        "wideband_output_encoding": "pcm16",
+        "wideband_output_sample_rate_hz": 24000,
+    },
+    "grok": {
+        "input_encodings": ["ulaw", "linear16"],
+        "input_sample_rates_hz": [8000, 16000, 24000],
+        "output_encodings": ["mulaw", "pcm16"],
+        "output_sample_rates_hz": [8000, 16000, 24000],
+        "wideband_input_encoding": "linear16",
+        "wideband_input_sample_rate_hz": 16000,
+        "wideband_output_encoding": "pcm16",
+        "wideband_output_sample_rate_hz": 16000,
+    },
+    "elevenlabs_agent": {
+        "input_encodings": ["linear16", "pcm16", "ulaw", "alaw"],
+        "input_sample_rates_hz": [8000, 16000],
+        "output_encodings": ["linear16", "pcm16"],
+        # ElevenLabs agents can be configured for pcm_8000 … pcm_44100 output
+        # on the dashboard; advertising the full PCM set keeps an operator's
+        # configured rate (e.g. 8000) from being renegotiated to 16000.
+        "output_sample_rates_hz": [8000, 16000, 22050, 24000, 44100],
+        "wideband_input_encoding": "pcm16",
+        "wideband_input_sample_rate_hz": 16000,
+        "wideband_output_encoding": "pcm16",
+        "wideband_output_sample_rate_hz": 16000,
+    },
+    "local": {
+        "input_encodings": ["pcm16"],
+        "input_sample_rates_hz": [16000],
+        "output_encodings": ["ulaw", "linear16"],
+        "output_sample_rates_hz": [8000, 16000],
+        "wideband_input_encoding": "pcm16",
+        "wideband_input_sample_rate_hz": 16000,
+        "wideband_output_encoding": "linear16",
+        "wideband_output_sample_rate_hz": 16000,
+    },
+}
+
+
+def provider_audio_capabilities(kind: str) -> dict[str, Any] | None:
+    """Return an isolated copy of the declared format capabilities for ``kind``."""
+    capabilities = PROVIDER_AUDIO_CAPABILITIES.get(str(kind))
+    return deepcopy(dict(capabilities)) if capabilities is not None else None
+
+
 BUILTIN_PROFILE_BASELINES: Mapping[str, Mapping[str, Any]] = {
     "openai_realtime_24k": {
         "output_resampler": "linear",
