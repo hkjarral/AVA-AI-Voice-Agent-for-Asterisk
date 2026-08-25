@@ -47,6 +47,56 @@ _KINDS_WITH_PROVIDER_INPUT = frozenset(
 )
 
 
+# Codecs the ExternalMedia RTP server can actually decode and stamp
+# (see src/rtp_server.py _decode_payload/_payload_type_byte).
+RTP_SUPPORTED_CODECS = frozenset({"ulaw", "alaw", "slin16"})
+
+
+def resolve_external_media_codec(config: Mapping[str, Any]) -> Dict[str, Any]:
+    """Resolve the process-wide ExternalMedia RTP codec.
+
+    ExternalMedia runs ONE RTP codec per engine process, so it follows the
+    default audio profile's ``transport_out`` — the same ownership model as
+    the AudioSocket wire. The legacy ``external_media.codec`` YAML key remains
+    the fallback for configs predating Audio Profiles and for profile
+    encodings the RTP server cannot carry (e.g. ``slin``). Returns
+    ``{"codec", "source"}`` where source is ``profile:<name>``,
+    ``external_media.codec`` or ``builtin-default``.
+    """
+    profiles_cfg = config.get("profiles")
+    profiles = profiles_cfg if isinstance(profiles_cfg, Mapping) else {}
+    configured_default = profiles.get("default")
+    default_name = (
+        configured_default.strip()
+        if isinstance(configured_default, str) and configured_default.strip()
+        else "telephony_ulaw_8k"
+    )
+    profile = profiles.get(default_name)
+    if isinstance(profile, Mapping):
+        transport_out = profile.get("transport_out")
+        declared = (
+            str(transport_out.get("encoding") or "").strip().lower()
+            if isinstance(transport_out, Mapping)
+            else ""
+        )
+        if declared in MULAW_TOKENS:
+            codec = "ulaw"
+        elif declared in ALAW_TOKENS:
+            codec = "alaw"
+        elif declared in {"slin16", "linear16", "pcm16"}:
+            codec = "slin16"
+        else:
+            codec = None
+        if codec in RTP_SUPPORTED_CODECS:
+            return {"codec": codec, "source": f"profile:{default_name}"}
+    external_media = config.get("external_media")
+    external_media = external_media if isinstance(external_media, Mapping) else {}
+    legacy = str(external_media.get("codec") or "").strip().lower()
+    if legacy in RTP_SUPPORTED_CODECS:
+        return {"codec": legacy, "source": "external_media.codec"}
+    return {"codec": "ulaw", "source": "builtin-default"}
+
+
 def normalize_encoding(value: Any) -> str:
     token = str(value or "").strip().lower()
     if token in MULAW_TOKENS:
@@ -404,21 +454,39 @@ def _collect_chain_findings(
             agent=agent, profile=profile_name,
         ))
 
-    # 2) ExternalMedia: the RTP channel is created with external_media.codec —
-    #    it must agree with the profile's wire leg.
+    # 2) ExternalMedia: one process-wide RTP codec, derived from the default
+    #    profile's transport_out — every Agent's profile must agree with it.
     if audio_transport == "externalmedia":
-        external_media = config.get("external_media")
-        external_media = external_media if isinstance(external_media, Mapping) else {}
-        rtp_codec = str(external_media.get("codec") or "ulaw")
+        resolution = resolve_external_media_codec(config)
+        rtp_codec = resolution["codec"]
         if normalize_encoding(rtp_codec) != normalize_encoding(wire_out["encoding"]):
             findings.append(_finding(
                 "warning", "rtp_codec_profile_mismatch",
-                f"external_media.codec={rtp_codec} ≠ profile '{profile_name}' transport_out={wire_out['encoding']}",
-                "ExternalMedia creates the RTP channel with external_media.codec, "
-                "while the profile declares a different wire encoding. Align them "
-                "(Audio Transport → Codec vs Audio Profiles → Transport Output) or "
-                "audio on this leg will be misdecoded.",
+                f"RTP codec {rtp_codec} ({resolution['source']}) ≠ profile "
+                f"'{profile_name}' transport_out={wire_out['encoding']}",
+                "ExternalMedia runs one process-wide RTP codec, derived from the "
+                "default audio profile's Transport Output. This Agent's profile "
+                "declares a different wire encoding, so audio on its calls will "
+                "be misdecoded. Give it the same transport encoding as the "
+                "default profile (or make its profile the default).",
                 agent=agent, profile=profile_name,
+            ))
+        external_media = config.get("external_media")
+        external_media = external_media if isinstance(external_media, Mapping) else {}
+        legacy_codec = str(external_media.get("codec") or "").strip().lower()
+        if (
+            legacy_codec
+            and resolution["source"].startswith("profile:")
+            and normalize_encoding(legacy_codec) != normalize_encoding(rtp_codec)
+        ):
+            findings.append(_finding(
+                "info", "external_media_codec_legacy",
+                f"external_media.codec={legacy_codec} is superseded by the default profile",
+                f"The RTP codec is now derived from the default audio profile "
+                f"({rtp_codec}, {resolution['source']}); the YAML value is a "
+                "legacy fallback used only when no profile resolves. Remove it "
+                "to silence this notice. An engine restart applies codec changes.",
+                profile=profile_name,
             ))
         if int(wire_out.get("sample_rate_hz") or 0) > 8000:
             findings.append(_finding(

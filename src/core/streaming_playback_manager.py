@@ -1044,8 +1044,8 @@ class StreamingPlaybackManager:
                                     tgt_fmt,
                                     int(self.sample_rate),
                                 )
-                            src_bps = 1 if self._is_mulaw(src_enc) else 2
-                            tgt_bps = 1 if self._is_mulaw(tgt_fmt) else 2
+                            src_bps = 1 if self._is_mulaw(src_enc) or self._is_alaw(src_enc) else 2
+                            tgt_bps = 1 if self._is_mulaw(tgt_fmt) or self._is_alaw(tgt_fmt) else 2
                             try:
                                 ratio = (tgt_bps / float(max(1, src_bps))) * (float(tgt_rate) / float(max(1, src_rate)))
                                 egress_bytes = int(max(1, round(len(chunk) * max(0.5, ratio))))
@@ -1304,7 +1304,11 @@ class StreamingPlaybackManager:
 
         if sentinel_seen:
             if pending:
-                filler_byte = b"\xFF" if self._is_mulaw(target_fmt) else b"\x00"
+                filler_byte = (
+                b"\xFF" if self._is_mulaw(target_fmt)
+                else b"\xD5" if self._is_alaw(target_fmt)
+                else b"\x00"
+            )
                 padded = pending + (filler_byte * max(0, frame_size - len(pending)))
                 self.frame_remainders[call_id] = b""
                 return await self._emit_frame(
@@ -1346,7 +1350,11 @@ class StreamingPlaybackManager:
                         return "wait"
             except Exception:
                 pass
-            filler_byte = b"\xFF" if self._is_mulaw(target_fmt) else b"\x00"
+            filler_byte = (
+                b"\xFF" if self._is_mulaw(target_fmt)
+                else b"\xD5" if self._is_alaw(target_fmt)
+                else b"\x00"
+            )
             if pending:
                 pending_len = len(pending)
                 frame = pending + (filler_byte * max(0, frame_size - pending_len))
@@ -3129,7 +3137,7 @@ class StreamingPlaybackManager:
                     fallback_sample_rate=sample_rate,
                     stream_info_keys=list(info.keys()) if info else [],
                 )
-        bytes_per_sample = 1 if self._is_mulaw(fmt) else 2
+        bytes_per_sample = 1 if self._is_mulaw(fmt) or self._is_alaw(fmt) else 2
         chunk_size_ms = self.chunk_size_ms
         if call_id and call_id in self.active_streams:
             try:
@@ -3937,7 +3945,7 @@ class StreamingPlaybackManager:
                             or self._canonicalize_encoding(self.audiosocket_format)
                             or "ulaw"
                         )
-                        bps = 1 if self._is_mulaw(fmt) else 2
+                        bps = 1 if self._is_mulaw(fmt) or self._is_alaw(fmt) else 2
                         try:
                             sr_candidate = int(info.get('target_sample_rate', 0) or 0)
                         except Exception:

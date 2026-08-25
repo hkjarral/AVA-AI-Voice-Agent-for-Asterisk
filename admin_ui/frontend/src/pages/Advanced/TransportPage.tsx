@@ -503,82 +503,23 @@ const TransportPage = () => {
 
                             <div className="border-t border-border my-4"></div>
 
-                            <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
-                                Asterisk-side Configuration
-                            </h4>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <FormSelect
-                                    label="Codec"
-                                    value={externalMediaConfig.codec || 'ulaw'}
-                                    onChange={e =>
-                                        updateSectionConfig(
-                                            'external_media',
-                                            'codec',
-                                            e.target.value
-                                        )
-                                    }
-                                    options={[
-                                        { value: 'ulaw', label: 'μ-law (8kHz)' },
-                                        { value: 'alaw', label: 'A-law (8kHz)' },
-                                        { value: 'slin', label: 'SLIN (8kHz)' },
-                                        { value: 'slin16', label: 'SLIN16 (16kHz)' },
-                                    ]}
-                                    description="Codec Asterisk sends/receives."
-                                />
-                                <FormSelect
-                                    label="Direction"
-                                    value={externalMediaConfig.direction || 'both'}
-                                    onChange={e =>
-                                        updateSectionConfig(
-                                            'external_media',
-                                            'direction',
-                                            e.target.value
-                                        )
-                                    }
-                                    options={[
-                                        { value: 'both', label: 'Both' },
-                                        { value: 'sendonly', label: 'Send Only' },
-                                        { value: 'recvonly', label: 'Receive Only' },
-                                    ]}
-                                />
-                            </div>
-
-                            <div className="border-t border-border my-4"></div>
-
-                            <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
-                                Engine-side Configuration
-                            </h4>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <FormSelect
-                                    label="Internal Format"
-                                    value={externalMediaConfig.format || 'slin16'}
-                                    onChange={e =>
-                                        updateSectionConfig(
-                                            'external_media',
-                                            'format',
-                                            e.target.value
-                                        )
-                                    }
-                                    options={[
-                                        { value: 'slin', label: 'SLIN (8kHz)' },
-                                        { value: 'slin16', label: 'SLIN16 (16kHz)' },
-                                        { value: 'ulaw', label: 'μ-law (8kHz)' },
-                                    ]}
-                                    description="Engine internal format. Pipelines typically expect 16kHz PCM16 (slin16)."
-                                />
-                                <FormInput
-                                    label="Sample Rate (Hz)"
-                                    type="number"
-                                    value={externalMediaConfig.sample_rate || 16000}
-                                    onChange={e =>
-                                        updateSectionConfig(
-                                            'external_media',
-                                            'sample_rate',
-                                            parseInt(e.target.value)
-                                        )
-                                    }
-                                    tooltip="Auto-inferred from format if not set."
-                                />
+                            <div className="rounded-lg border border-border bg-muted/40 p-4">
+                                <h4 className="text-sm font-medium mb-1">
+                                    Wire codec — owned by the Audio Profile
+                                </h4>
+                                <p className="text-sm text-muted-foreground">
+                                    The RTP codec Asterisk sends and receives is derived from the
+                                    default Audio Profile&apos;s Transport Output — edit it on the{' '}
+                                    <a href="/profiles" className="text-primary underline">
+                                        Audio Profiles
+                                    </a>{' '}
+                                    page (an engine restart applies codec changes). The engine-side
+                                    resample format is managed automatically. Legacy{' '}
+                                    <code>external_media.codec</code> / <code>format</code> /{' '}
+                                    <code>sample_rate</code> / <code>direction</code> YAML keys
+                                    remain honored as fallbacks for configs predating Audio
+                                    Profiles.
+                                </p>
                             </div>
 
                             <div className="border border-amber-300/40 rounded-lg p-4 bg-amber-500/5">

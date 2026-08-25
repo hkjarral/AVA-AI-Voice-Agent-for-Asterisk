@@ -1038,7 +1038,13 @@ class Engine:
                 
                 rtp_host = self.config.external_media.rtp_host
                 rtp_port = int(getattr(self.config.external_media, "rtp_port", 0) or 18080)
-                codec = getattr(self.config.external_media, "codec", "ulaw")
+                codec_resolution = self._resolve_external_media_codec()
+                codec = codec_resolution["codec"]
+                logger.info(
+                    "ExternalMedia RTP codec resolved",
+                    codec=codec,
+                    source=codec_resolution["source"],
+                )
                 format = getattr(self.config.external_media, "format", "slin16")
                 sample_rate = getattr(self.config.external_media, "sample_rate", None)
                 
@@ -4405,6 +4411,25 @@ class Engine:
                           channel_id=channel_id, 
                           channel_name=channel_name)
 
+    def _resolve_external_media_codec(self) -> Dict[str, Any]:
+        """Resolve the process-wide ExternalMedia RTP codec.
+
+        The default audio profile's transport_out owns the RTP wire codec
+        (same ownership as the AudioSocket wire); the legacy
+        external_media.codec YAML key remains the fallback for configs
+        predating Audio Profiles. Shared with the Admin UI alignment view.
+        """
+        from src.config.audio_alignment import resolve_external_media_codec
+
+        return resolve_external_media_codec({
+            "profiles": getattr(self.config, "profiles", None) or {},
+            "external_media": {
+                "codec": getattr(self.config.external_media, "codec", None)
+                if self.config.external_media
+                else None
+            },
+        })
+
     async def _start_external_media_channel(self, caller_channel_id: str) -> Optional[str]:
         """Allocate RTP resources and originate the ExternalMedia channel via ARI."""
         if not self.config.external_media:
@@ -4432,7 +4457,11 @@ class Engine:
         # Prevent Asterisk from trying to send RTP to 0.0.0.0 (invalid destination)
         if advertise_host in ("0.0.0.0", "::"):
             advertise_host = "127.0.0.1"
-        codec = getattr(self.config.external_media, "codec", "ulaw")
+        codec = (
+            getattr(self.rtp_server, "codec", None)
+            if self.rtp_server is not None
+            else None
+        ) or self._resolve_external_media_codec()["codec"]
         direction = getattr(self.config.external_media, "direction", "both")
         external_host = f"{advertise_host}:{port}"
 

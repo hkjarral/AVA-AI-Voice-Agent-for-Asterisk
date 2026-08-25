@@ -3,20 +3,6 @@ import { Info, Mic } from 'lucide-react';
 import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 import HelpTooltip from '../../ui/HelpTooltip';
 import OutputResamplerField from './OutputResamplerField';
-import ProviderAudioFormatSection from './ProviderAudioFormatSection';
-
-// Mirror of the canonical elevenlabs_agent audio baseline
-// (src/config/audio_baselines.py). Used only until the server copy loads.
-const ELEVENLABS_AGENT_AUDIO_BASELINE = {
-    input_encoding: 'ulaw',
-    input_sample_rate_hz: 8000,
-    provider_input_encoding: 'pcm16',
-    provider_input_sample_rate_hz: 16000,
-    output_encoding: 'pcm16',
-    output_sample_rate_hz: 16000,
-    target_encoding: 'ulaw',
-    target_sample_rate_hz: 8000,
-};
 
 interface ElevenLabsProviderFormProps {
     config: any;
@@ -336,58 +322,84 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                 </div>
             </div>
 
-            <ProviderAudioFormatSection
-                kind="elevenlabs_agent"
-                config={config}
-                onPatch={(patch) => onChange(patch)}
-                fallbackBaseline={ELEVENLABS_AGENT_AUDIO_BASELINE}
-                title="Audio Format"
-                pairs={[
-                    {
-                        encodingField: 'input_encoding',
-                        rateField: 'input_sample_rate_hz',
-                        encodingLabel: 'Asterisk Input Encoding',
-                        rateLabel: 'Asterisk Input Sample Rate (Hz)',
-                        wireFacing: true,
-                        encodingTooltip:
-                            'Encoding of caller audio arriving from Asterisk. Derived from the Agent\'s audio profile at call setup — edit the wire contract on the Audio Profile.',
-                        rateTooltip:
-                            'Sample rate of caller audio arriving from Asterisk. Derived from the Agent\'s audio profile at call setup; G.711 codecs are locked to 8000 Hz.',
-                    },
-                    {
-                        encodingField: 'provider_input_encoding',
-                        rateField: 'provider_input_sample_rate_hz',
-                        encodingLabel: 'ElevenLabs Input Encoding',
-                        rateLabel: 'ElevenLabs Input Sample Rate (Hz)',
-                        encodingTooltip:
-                            'Provider-native format sent to the ElevenLabs Conversational Agent after engine conversion. Must match the agent\'s "User input audio format" on the ElevenLabs dashboard.',
-                        rateTooltip:
-                            'Provider-native PCM rate sent to ElevenLabs (baseline 16000 Hz; 8000 Hz also supported). Must match the dashboard agent audio settings.',
-                    },
-                    {
-                        encodingField: 'output_encoding',
-                        rateField: 'output_sample_rate_hz',
-                        encodingLabel: 'ElevenLabs Output Encoding',
-                        rateLabel: 'Output Sample Rate (Hz)',
-                        encodingTooltip:
-                            'Format of the synthesized audio ElevenLabs returns. Must match the agent\'s "TTS output format" on the ElevenLabs dashboard (e.g. pcm_16000 → PCM16 @ 16000).',
-                        rateTooltip:
-                            'Sample rate of the audio ElevenLabs returns. Set 8000 here when the dashboard agent uses pcm_8000 — the value is honored as configured, not renegotiated.',
-                    },
-                    {
-                        encodingField: 'target_encoding',
-                        rateField: 'target_sample_rate_hz',
-                        encodingLabel: 'Asterisk Output Encoding',
-                        rateLabel: 'Asterisk Output Sample Rate (Hz)',
-                        wireFacing: true,
-                        encodingTooltip:
-                            'Telephony format the engine converts provider audio into. Derived from the Agent\'s audio profile at call setup (a companded profile rides the AudioSocket slin carrier) — edit the wire contract on the Audio Profile.',
-                        rateTooltip:
-                            'Telephony output sample rate. Derived from the Agent\'s audio profile at call setup; G.711 codecs are locked to 8000 Hz.',
-                    },
-                ]}
-            />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                    <div className="flex items-center gap-1.5">
+                        <label className="text-sm font-medium">Asterisk Input Sample Rate (Hz)</label>
+                        <HelpTooltip
+                            content={
+                                <>
+                                    <strong>Asterisk Input Sample Rate</strong> — sample rate of caller audio arriving from Asterisk.
+                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                        <li><strong>8000 Hz</strong> — shipped baseline for μ-law telephony.</li>
+                                        <li>This describes the wire-facing input. The engine separately converts it to ElevenLabs' provider-native format below.</li>
+                                    </ul>
+                                </>
+                            }
+                        />
+                    </div>
+                    <input
+                        type="number"
+                        className="w-full p-2 rounded border border-input bg-background"
+                        value={config.input_sample_rate_hz || 8000}
+                        onChange={(e) => handleChange('input_sample_rate_hz', parseInt(e.target.value))}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                        Asterisk-facing caller audio. Standard telephony uses 8000 Hz.
+                    </p>
+                </div>
+                <div className="space-y-2">
+                    <div className="flex items-center gap-1.5">
+                        <label className="text-sm font-medium">ElevenLabs Input Sample Rate (Hz)</label>
+                        <HelpTooltip
+                            content={
+                                <>
+                                    <strong>ElevenLabs Input Sample Rate</strong> — provider-native PCM rate sent to the ElevenLabs Conversational Agent after engine conversion.
+                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                        <li><strong>16000 Hz</strong> — shipped and recommended provider-native rate.</li>
+                                        <li>This is independent of the 8 kHz Asterisk input above.</li>
+                                    </ul>
+                                </>
+                            }
+                        />
+                    </div>
+                    <input
+                        type="number"
+                        className="w-full p-2 rounded border border-input bg-background"
+                        value={config.provider_input_sample_rate_hz || 16000}
+                        onChange={(e) => handleChange('provider_input_sample_rate_hz', parseInt(e.target.value))}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                        Provider-native PCM input sent to ElevenLabs. Baseline: 16000 Hz.
+                    </p>
+                </div>
+                <div className="space-y-2">
+                    <div className="flex items-center gap-1.5">
+                        <label className="text-sm font-medium">Output Sample Rate (Hz)</label>
+                        <HelpTooltip
+                            content={
+                                <>
+                                    <strong>Output Sample Rate</strong> — sample rate of synthesized audio returned from ElevenLabs.
+                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                        <li><strong>8000 Hz</strong> — native telephony rate (μ-law @ 8 kHz); least transcoding, lowest bandwidth, slightly lower fidelity.</li>
+                                        <li><strong>16000 Hz</strong> — good balance; resampled to 8 kHz by Asterisk for the SIP leg.</li>
+                                        <li><strong>22050 Hz</strong> or higher — best quality, but extra resampling overhead for a phone call.</li>
+                                    </ul>
+                                    For voice calls, 16000 Hz is the typical sweet spot.
+                                </>
+                            }
+                        />
+                    </div>
+                    <input
+                        type="number"
+                        className="w-full p-2 rounded border border-input bg-background"
+                        value={config.output_sample_rate_hz || 16000}
+                        onChange={(e) => handleChange('output_sample_rate_hz', parseInt(e.target.value))}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                        TTS output sample rate. 16000 Hz or 22050 Hz typical.
+                    </p>
+                </div>
                 <div className="md:col-span-2">
                     <OutputResamplerField
                         value={config.output_resampler}

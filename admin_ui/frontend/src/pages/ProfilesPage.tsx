@@ -1040,6 +1040,15 @@ const ProfilesPage = () => {
                             </label>
                         </div>
                         {profileForm.transport_in != null && (
+                            <div className="mb-3 rounded-md border border-sky-300/40 bg-sky-500/5 px-3 py-2 text-xs text-muted-foreground">
+                                Advisory on AudioSocket: the inbound format is announced in every
+                                frame, so this setting never changes decoding there. It takes
+                                effect as the declared inbound expectation for RTP (ExternalMedia)
+                                decode fallbacks and diagnostics — leave it off unless the inbound
+                                leg genuinely differs.
+                            </div>
+                        )}
+                        {profileForm.transport_in != null && (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <FormSelect
                                     label="Encoding"

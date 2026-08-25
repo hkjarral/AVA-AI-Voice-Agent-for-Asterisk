@@ -1977,8 +1977,10 @@ class GoogleLiveProvider(AIProviderInterface):
 
             # Convert to target format (from config: ulaw/linear16/pcm16)
             target_encoding = self.config.target_encoding.lower()
-            if target_encoding in ("ulaw", "mulaw", "g711_ulaw"):
+            if target_encoding in ("ulaw", "mulaw", "g711_ulaw", "mu-law"):
                 output_audio = convert_pcm16le_to_target_format(pcm16_target, "mulaw")
+            elif target_encoding in ("alaw", "a-law", "g711_alaw"):
+                output_audio = convert_pcm16le_to_target_format(pcm16_target, "alaw")
             else:
                 # PCM16/linear16 - no conversion needed
                 output_audio = pcm16_target

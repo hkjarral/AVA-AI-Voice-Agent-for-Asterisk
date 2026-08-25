@@ -1267,7 +1267,11 @@ class AppConfig(BaseModel):
             return self
 
         default_profile = self.profiles.get("default")
-        if isinstance(default_profile, str) and default_profile not in self.profiles:
+        if isinstance(default_profile, str) and not isinstance(
+            self.profiles.get(default_profile), dict
+        ):
+            # A missing key and a null/scalar body are the same failure: every
+            # consumer skips non-dict profiles, so the default never resolves.
             raise ValueError(
                 f"profiles.default references missing profile {default_profile!r}"
             )
