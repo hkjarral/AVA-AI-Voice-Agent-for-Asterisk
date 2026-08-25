@@ -15,6 +15,7 @@ import { useRestartRequired } from '../hooks/useRestartRequired';
 import { localAIStatusFromLiveSnapshot } from '../utils/liveStatus';
 import AudioResetButton from '../components/config/AudioResetButton';
 import AudioEnvironmentOverrideWarning from '../components/config/AudioEnvironmentOverrideWarning';
+import AudioAlignmentPanel from '../components/config/AudioAlignmentPanel';
 
 // Provider Forms
 import GenericProviderForm from '../components/config/providers/GenericProviderForm';
@@ -55,6 +56,7 @@ const ProvidersPage: React.FC = () => {
     const [localAIStatus, setLocalAIStatus] = useState<any>(null);
     const [providerHealth, setProviderHealth] = useState<Record<string, { status: string; total: number; failures: number; summary: string }>>({});
     const [providerHealthUnavailable, setProviderHealthUnavailable] = useState(false);
+    const [alignmentRefreshKey, setAlignmentRefreshKey] = useState(0);
 
     useEffect(() => {
         // Cache-first: seed from the shared cache (no flash on revisit). The write
@@ -115,6 +117,7 @@ const ProvidersPage: React.FC = () => {
     };
 
     const handleProviderAudioResetComplete = async (resetProvider: string) => {
+        setAlignmentRefreshKey((current) => current + 1);
         const refreshed = await fetchConfig(true);
         await refetch();
         if (refreshed && editingProviderRef.current === resetProvider) {
@@ -180,6 +183,7 @@ const ProvidersPage: React.FC = () => {
             const sanitized = sanitizeConfigForSave(normalized);
             await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
             setConfig(sanitized);
+            setAlignmentRefreshKey((current) => current + 1);
             await refetch();
         } catch (err) {
             console.error('Failed to save config', err);
@@ -913,6 +917,7 @@ const ProvidersPage: React.FC = () => {
             )}
 
             <AudioEnvironmentOverrideWarning />
+            <AudioAlignmentPanel refreshKey={alignmentRefreshKey} />
 
             <div className="flex justify-between items-center">
                 <div>

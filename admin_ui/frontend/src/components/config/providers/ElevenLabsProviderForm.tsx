@@ -348,10 +348,11 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                         rateField: 'input_sample_rate_hz',
                         encodingLabel: 'Asterisk Input Encoding',
                         rateLabel: 'Asterisk Input Sample Rate (Hz)',
+                        wireFacing: true,
                         encodingTooltip:
-                            'Encoding of caller audio arriving from Asterisk. μ-law is the shipped telephony baseline; select A-law for A-law trunks.',
+                            'Encoding of caller audio arriving from Asterisk. Derived from the Agent\'s audio profile at call setup — edit the wire contract on the Audio Profile.',
                         rateTooltip:
-                            'Sample rate of caller audio arriving from Asterisk. G.711 codecs are locked to 8000 Hz. The engine separately converts to the ElevenLabs provider-native format.',
+                            'Sample rate of caller audio arriving from Asterisk. Derived from the Agent\'s audio profile at call setup; G.711 codecs are locked to 8000 Hz.',
                     },
                     {
                         encodingField: 'provider_input_encoding',
@@ -378,10 +379,11 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                         rateField: 'target_sample_rate_hz',
                         encodingLabel: 'Asterisk Output Encoding',
                         rateLabel: 'Asterisk Output Sample Rate (Hz)',
+                        wireFacing: true,
                         encodingTooltip:
-                            'Telephony format the engine converts provider audio into before sending it to Asterisk. Should match the call leg codec (μ-law or A-law for G.711).',
+                            'Telephony format the engine converts provider audio into. Derived from the Agent\'s audio profile at call setup (a companded profile rides the AudioSocket slin carrier) — edit the wire contract on the Audio Profile.',
                         rateTooltip:
-                            'Telephony output sample rate. G.711 codecs are locked to 8000 Hz.',
+                            'Telephony output sample rate. Derived from the Agent\'s audio profile at call setup; G.711 codecs are locked to 8000 Hz.',
                     },
                 ]}
             />

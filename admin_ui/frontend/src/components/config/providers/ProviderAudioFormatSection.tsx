@@ -19,13 +19,6 @@ type BaselineMap = Record<string, ProviderAudioBaseline>;
 let cachedBaselines: BaselineMap | null = null;
 let inflightBaselines: Promise<BaselineMap | null> | null = null;
 
-// Test-only: the baseline cache is module-scoped, so unit tests that vary the
-// server payload must be able to clear it between renders.
-export const __resetProviderAudioBaselinesCacheForTests = () => {
-    cachedBaselines = null;
-    inflightBaselines = null;
-};
-
 export const fetchProviderAudioBaselines = async (): Promise<BaselineMap | null> => {
     if (cachedBaselines) return cachedBaselines;
     if (!inflightBaselines) {
@@ -87,6 +80,12 @@ type FieldPair = {
     rateLabel: string;
     encodingTooltip?: string;
     rateTooltip?: string;
+    /**
+     * Wire-facing pair: the engine derives these values from the Agent's audio
+     * profile at call setup, so the stored value is only a legacy fallback.
+     * Rendered with a note steering edits to the Audio Profile instead.
+     */
+    wireFacing?: boolean;
 };
 
 interface ProviderAudioFormatSectionProps {
@@ -185,7 +184,13 @@ const ProviderAudioFormatSection: React.FC<ProviderAudioFormatSectionProps> = ({
                                     options={encodingOptions(baseline[pair.encodingField], config[pair.encodingField])}
                                     tooltip={pair.encodingTooltip}
                                 />
-                                {encodingOverridden && (
+                                {pair.wireFacing && (
+                                    <p className="text-xs text-muted-foreground -mt-3 mb-2">
+                                        Wire-facing — the Agent's audio profile decides this at call
+                                        setup; the value here is only a fallback.
+                                    </p>
+                                )}
+                                {encodingOverridden && !pair.wireFacing && (
                                     <p className="text-xs text-muted-foreground -mt-3 mb-2">
                                         Overrides default: {String(baseline[pair.encodingField] ?? '—')}
                                     </p>

@@ -17310,6 +17310,9 @@ class Engine:
             
             # Note: TransportCard will be emitted by legacy code path
             
+            # One line per call describing the entire effective media chain and
+            # where each leg came from: the audio profile owns the wire, the
+            # provider card owns only its native boundary.
             logger.info(
                 "Audio profile resolved and applied",
                 call_id=session.call_id,
@@ -17317,6 +17320,19 @@ class Engine:
                 provider=provider_name,
                 context=transport.context,
                 wire_format=f"{transport.wire_encoding}@{transport.wire_sample_rate}Hz",
+                wire_in_format=(
+                    f"{transport.wire_in_encoding}@{transport.wire_in_sample_rate}Hz"
+                    if getattr(transport, "wire_in_encoding", None)
+                    else f"{transport.wire_encoding}@{transport.wire_sample_rate}Hz"
+                ),
+                provider_input=(
+                    f"{transport.provider_input_encoding}@{transport.provider_input_sample_rate}Hz"
+                ),
+                provider_output=(
+                    f"{transport.provider_output_encoding}@{transport.provider_output_sample_rate}Hz"
+                ),
+                internal_rate_hz=transport.internal_rate,
+                chain_sources="wire=profile, provider_boundary=provider-config∩capabilities",
             )
             
         except Exception as exc:

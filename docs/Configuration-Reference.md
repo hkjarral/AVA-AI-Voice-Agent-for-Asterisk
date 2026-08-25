@@ -138,6 +138,27 @@ or unreadable. There is no live YAML persona fallback in v7.4.
 
 Audio profiles control the call’s negotiated sample rates/encodings (telephony wire format, provider input/output format, and internal pacing). They are defined under `profiles:` in `config/ai-agent.yaml`.
 
+#### Audio format resolution — single source of truth
+
+Each leg of the media path has exactly one owner; everything else is derived
+per call at setup:
+
+| Leg | Owner (edit point) | Notes |
+| --- | --- | --- |
+| Asterisk wire (in/out) | Audio Profile → `transport_out` / `transport_in` | On AudioSocket, companded selections (μ-law/A-law) ride the lossless `slin@8000` signed-linear carrier; Asterisk transcodes to the trunk codec. On ExternalMedia the RTP channel uses `external_media.codec`, which must agree with the profile. |
+| Internal processing rate | Audio Profile → `internal_rate_hz` | |
+| Provider API boundary | Provider card → `provider_input_*` / `output_*` | Constrained by the adapter's declared capabilities; must match the provider-side (dashboard) audio settings. For pipeline Agents the profile's `provider_pref` is the preference instead. |
+| Wire-facing provider fields (`input_encoding`, `input_sample_rate_hz`, `target_encoding`, `target_sample_rate_hz`) | Derived — not an edit point | The engine overwrites them per call from the resolved profile (`session.provider_overrides`); YAML values are legacy fallbacks only. |
+
+The Admin UI shows an **Audio alignment** panel (Audio Profiles and Providers
+pages, backed by `GET /api/config/audio/alignment`) with the effective
+per-Agent chain and findings whenever a stored value disagrees with what a
+call will actually use — e.g. a provider `target_encoding` that the profile
+overrides, a provider rate outside the adapter's supported set, or an
+`external_media.codec` that contradicts the profile's wire leg. The per-call
+log line `Audio profile resolved and applied` records the same chain at call
+setup.
+
 Profile audio pairs are validated at load/save time: G.711 codecs (`ulaw`,
 `mulaw`, `alaw`) are fixed at 8000 Hz and `slin`/`slin16` at 8000/16000 Hz — a
 mismatched pair is rejected instead of breaking the stream mid-call. The Admin
