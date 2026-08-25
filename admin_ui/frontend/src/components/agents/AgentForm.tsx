@@ -18,6 +18,7 @@ import {
 import { PromptToolHighlight } from '../ui/PromptToolHighlight';
 import { canonicalToolName, type ToolStatus } from '../../utils/promptTools';
 import { voiceControlState, type ProviderVoiceMeta } from '../../utils/agentVoice';
+import AgentAudioPathPreview from './AgentAudioPathPreview';
 
 export interface Agent {
     slug: string;
@@ -599,7 +600,12 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     options={profileOptions}
                     value={audioProfile}
                     onChange={(e) => setAudioProfile(e.target.value)}
-                    tooltip="Audio codec/transport profile. Leave blank to use the system default."
+                    tooltip="Selects which audio profile defines this Agent's wire codecs and rates — the Agent itself carries no audio format settings. Leave blank to inherit profiles.default. The preview below shows the exact path a call will use."
+                />
+                <AgentAudioPathPreview
+                    profile={audioProfile || undefined}
+                    provider={toolState.provider || undefined}
+                    pipeline={toolState.pipeline || undefined}
                 />
 
                 <div className="grid grid-cols-2 gap-4">

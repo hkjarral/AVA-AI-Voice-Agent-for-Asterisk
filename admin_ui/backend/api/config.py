@@ -1215,14 +1215,24 @@ def _read_agents_for_audio_alignment() -> list[Dict[str, Any]]:
 
 
 @router.get("/audio/alignment")
-async def get_audio_alignment():
+async def get_audio_alignment(
+    profile: Optional[str] = None,
+    provider: Optional[str] = None,
+    pipeline: Optional[str] = None,
+    preview: bool = False,
+):
     """Effective per-Agent audio chains plus misalignment findings.
 
     The audio profile is the single edit point for the wire contract; provider
     cards own only the provider-native boundary. This endpoint mirrors the
-    engine's per-call resolution so the UI can explain what a call will
-    actually use (e.g. a companded profile riding the AudioSocket slin
+    engine's per-call resolution so the UI can show what a call will actually
+    put on each leg (e.g. a companded profile riding the AudioSocket slin
     carrier) and flag values that the resolution overrides or renegotiates.
+
+    Pass ``preview=true`` (optionally with ``profile``/``provider``/
+    ``pipeline`` overrides) to resolve a single hypothetical Agent instead of
+    the stored Agent roster — used by the Agent editor to show the resulting
+    audio path live while the operator is still choosing a profile.
     """
     project_root = getattr(settings, "PROJECT_ROOT", None)
     if project_root and project_root not in sys.path:
@@ -1230,7 +1240,17 @@ async def get_audio_alignment():
     from src.config.audio_alignment import evaluate_audio_alignment
 
     merged = _read_merged_config_dict()
-    agents = await asyncio.to_thread(_read_agents_for_audio_alignment)
+    if preview or profile or provider or pipeline:
+        agents: list[Dict[str, Any]] = [{
+            "slug": None,
+            "display_name": "Preview",
+            "provider": (provider or "").strip() or None,
+            "audio_profile": (profile or "").strip() or None,
+            "pipeline": (pipeline or "").strip() or None,
+            "is_default": False,
+        }]
+    else:
+        agents = await asyncio.to_thread(_read_agents_for_audio_alignment)
     return evaluate_audio_alignment(merged, agents)
 
 
