@@ -249,7 +249,8 @@ def _resolve_chain(
     findings: List[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
     agent_name = str(agent.get("display_name") or agent.get("slug") or "default")
-    profile_name = str(agent.get("audio_profile") or "").strip() or default_profile_name
+    explicit_profile = str(agent.get("audio_profile") or "").strip()
+    profile_name = explicit_profile or default_profile_name
     profile = profiles.get(profile_name)
     if not isinstance(profile, Mapping):
         findings.append(_finding(
@@ -320,6 +321,10 @@ def _resolve_chain(
         "agent_slug": agent.get("slug"),
         "is_default_agent": bool(agent.get("is_default")),
         "profile": profile_name,
+        # Whether the Agent selected the profile itself or inherited
+        # profiles.default — Agents only point at a profile, they never carry
+        # audio format settings of their own.
+        "profile_source": "agent" if explicit_profile else "default",
         "provider": provider_key or None,
         "provider_kind": kind,
         "pipeline": pipeline_name or None,
@@ -329,6 +334,7 @@ def _resolve_chain(
         "wire_in": wire["in"],
         "provider_boundary": negotiated,
         "internal_rate_hz": profile.get("internal_rate_hz", 8000),
+        "output_resampler": profile.get("output_resampler", "linear"),
     }
 
     _collect_chain_findings(

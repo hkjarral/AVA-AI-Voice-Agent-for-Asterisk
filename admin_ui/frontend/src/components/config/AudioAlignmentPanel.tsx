@@ -1,16 +1,17 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { AlertCircle, AlertTriangle, ChevronDown, ChevronRight, Info } from 'lucide-react';
+import AudioPathDiagram, { AudioPathChain } from './AudioPathDiagram';
 
 /**
  * Audio alignment panel — the "one truth" view of the media path.
  *
- * The audio profile is the single edit point for the Asterisk wire contract;
- * provider cards own only the provider-native API boundary. This panel shows
- * the effective per-Agent chain the engine will resolve at call setup and
- * flags values that the resolution overrides or renegotiates (for example a
- * companded profile riding the AudioSocket slin carrier, or a provider rate
- * outside the adapter's supported set).
+ * Shows, per Agent, the exact audio path a call will use (Asterisk wire →
+ * engine → provider API, both directions, with the owner of every value) and
+ * flags stored settings that the per-call resolution overrides or
+ * renegotiates. The audio profile is the single edit point for the Asterisk
+ * wire; provider cards own only the provider-native boundary; Agents merely
+ * select a profile.
  */
 
 type AlignmentFinding = {
@@ -22,44 +23,11 @@ type AlignmentFinding = {
     agents?: string[];
 };
 
-type WireLeg = {
-    encoding: string;
-    sample_rate_hz: number;
-    carrier?: boolean;
-    declared_encoding?: string;
-    declared?: boolean;
-};
-
-type AlignmentChain = {
-    agent: string;
-    profile: string;
-    provider?: string | null;
-    pipeline?: string | null;
-    boundary_source: string;
-    wire_out: WireLeg;
-    wire_in: WireLeg;
-    provider_boundary: {
-        input_encoding: string;
-        input_sample_rate_hz: number;
-        output_encoding: string;
-        output_sample_rate_hz: number;
-    };
-    internal_rate_hz: number;
-};
-
 type AlignmentReport = {
     audio_transport: string;
     default_profile: string;
-    chains: AlignmentChain[];
+    chains: AudioPathChain[];
     findings: AlignmentFinding[];
-};
-
-const legLabel = (leg: WireLeg): string => {
-    const base = `${leg.encoding}@${leg.sample_rate_hz}`;
-    if (leg.carrier && leg.declared_encoding && leg.declared_encoding !== leg.encoding) {
-        return `${base} (carrier of ${leg.declared_encoding})`;
-    }
-    return base;
 };
 
 const severityStyles: Record<AlignmentFinding['severity'], { box: string; icon: JSX.Element }> = {
@@ -77,6 +45,8 @@ const severityStyles: Record<AlignmentFinding['severity'], { box: string; icon: 
     },
 };
 
+const VISIBLE_CHAINS = 3;
+
 interface AudioAlignmentPanelProps {
     /** Bump to re-fetch after a config save/reset. */
     refreshKey?: number;
@@ -84,7 +54,8 @@ interface AudioAlignmentPanelProps {
 
 const AudioAlignmentPanel: React.FC<AudioAlignmentPanelProps> = ({ refreshKey = 0 }) => {
     const [report, setReport] = useState<AlignmentReport | null>(null);
-    const [showChains, setShowChains] = useState(false);
+    const [showAllChains, setShowAllChains] = useState(false);
+    const [showFindings, setShowFindings] = useState(true);
 
     useEffect(() => {
         let mounted = true;
@@ -116,15 +87,17 @@ const AudioAlignmentPanel: React.FC<AudioAlignmentPanelProps> = ({ refreshKey = 
         { error: 0, warning: 0, info: 0 } as Record<AlignmentFinding['severity'], number>,
     );
 
+    const chains = showAllChains ? report.chains : report.chains.slice(0, VISIBLE_CHAINS);
+    const hiddenChains = report.chains.length - chains.length;
+
     return (
         <div className="rounded-lg border border-border bg-card/40 p-4 space-y-3">
             <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div>
-                    <div className="text-sm font-semibold">Audio alignment</div>
+                    <div className="text-sm font-semibold">Audio path — what actually goes on the wire</div>
                     <p className="text-xs text-muted-foreground mt-0.5">
-                        The audio profile is the single edit point for the Asterisk wire; provider
-                        cards own only the provider-native boundary. Resolved per call — transport:{' '}
-                        <code>{report.audio_transport}</code>.
+                        Resolved per call. The audio profile owns the Asterisk wire; the provider card
+                        owns only the provider API boundary; Agents just select a profile.
                     </p>
                 </div>
                 <div className="flex items-center gap-2 text-xs">
@@ -146,87 +119,81 @@ const AudioAlignmentPanel: React.FC<AudioAlignmentPanelProps> = ({ refreshKey = 
                 </div>
             </div>
 
-            {report.findings.length > 0 && (
+            {chains.length > 0 && (
                 <div className="space-y-2">
-                    {report.findings.map((finding, index) => {
-                        const style = severityStyles[finding.severity] || severityStyles.info;
-                        const agents = finding.agents?.filter(Boolean) || [];
-                        return (
-                            <div
-                                key={`${finding.code}-${index}`}
-                                className={`flex items-start gap-2 rounded-md border p-3 text-sm ${style.box}`}
-                            >
-                                {style.icon}
-                                <div className="min-w-0">
-                                    <div className="font-medium break-words">{finding.title}</div>
-                                    <p className="text-xs mt-1 opacity-90 break-words">{finding.detail}</p>
-                                    {agents.length > 0 && (
-                                        <div className="flex flex-wrap gap-1 mt-1.5">
-                                            {agents.map((agent) => (
-                                                <span
-                                                    key={agent}
-                                                    className="px-1.5 py-0.5 rounded bg-background/60 text-[11px] font-medium"
-                                                >
-                                                    {agent}
-                                                </span>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
+                    {chains.map((chain) => (
+                        <div
+                            key={`${chain.agent}-${chain.profile}`}
+                            className="rounded-md border border-border/70 bg-card px-3 py-2"
+                        >
+                            <div className="text-xs font-medium mb-1">
+                                {chain.agent}
+                                <span className="text-muted-foreground font-normal">
+                                    {' '}· profile <code>{chain.profile}</code>
+                                    {chain.profile_source === 'agent'
+                                        ? ' (set on Agent)'
+                                        : ' (profiles.default)'}
+                                </span>
                             </div>
-                        );
-                    })}
+                            <AudioPathDiagram chain={chain} />
+                        </div>
+                    ))}
+                    {hiddenChains > 0 && (
+                        <button
+                            type="button"
+                            onClick={() => setShowAllChains(true)}
+                            className="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                            Show {hiddenChains} more Agent{hiddenChains === 1 ? '' : 's'}…
+                        </button>
+                    )}
                 </div>
             )}
 
-            {report.chains.length > 0 && (
+            {report.findings.length > 0 && (
                 <div>
                     <button
                         type="button"
-                        onClick={() => setShowChains((current) => !current)}
+                        onClick={() => setShowFindings((current) => !current)}
                         className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
                     >
-                        {showChains ? (
+                        {showFindings ? (
                             <ChevronDown className="w-3.5 h-3.5" />
                         ) : (
                             <ChevronRight className="w-3.5 h-3.5" />
                         )}
-                        Effective audio chains ({report.chains.length})
+                        Findings ({report.findings.length})
                     </button>
-                    {showChains && (
-                        <div className="mt-2 overflow-x-auto">
-                            <table className="w-full text-xs">
-                                <thead>
-                                    <tr className="text-left text-muted-foreground border-b border-border">
-                                        <th className="py-1.5 pr-3 font-medium">Agent</th>
-                                        <th className="py-1.5 pr-3 font-medium">Profile</th>
-                                        <th className="py-1.5 pr-3 font-medium">Asterisk wire (in / out)</th>
-                                        <th className="py-1.5 pr-3 font-medium">Provider boundary (in / out)</th>
-                                        <th className="py-1.5 font-medium">Internal</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="font-mono">
-                                    {report.chains.map((chain) => (
-                                        <tr key={`${chain.agent}-${chain.profile}`} className="border-b border-border/50">
-                                            <td className="py-1.5 pr-3 font-sans">{chain.agent}</td>
-                                            <td className="py-1.5 pr-3">{chain.profile}</td>
-                                            <td className="py-1.5 pr-3">
-                                                {legLabel(chain.wire_in)} / {legLabel(chain.wire_out)}
-                                            </td>
-                                            <td className="py-1.5 pr-3">
-                                                {chain.provider_boundary.input_encoding}@
-                                                {chain.provider_boundary.input_sample_rate_hz} /{' '}
-                                                {chain.provider_boundary.output_encoding}@
-                                                {chain.provider_boundary.output_sample_rate_hz}
-                                                <span className="font-sans text-muted-foreground">
-                                                    {' '}· {chain.provider || chain.pipeline || '—'}
-                                                </span>
-                                            </td>
-                                            <td className="py-1.5">{chain.internal_rate_hz} Hz</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                    {showFindings && (
+                        <div className="space-y-2 mt-2">
+                            {report.findings.map((finding, index) => {
+                                const style = severityStyles[finding.severity] || severityStyles.info;
+                                const agents = finding.agents?.filter(Boolean) || [];
+                                return (
+                                    <div
+                                        key={`${finding.code}-${index}`}
+                                        className={`flex items-start gap-2 rounded-md border p-3 text-sm ${style.box}`}
+                                    >
+                                        {style.icon}
+                                        <div className="min-w-0">
+                                            <div className="font-medium break-words">{finding.title}</div>
+                                            <p className="text-xs mt-1 opacity-90 break-words">{finding.detail}</p>
+                                            {agents.length > 0 && (
+                                                <div className="flex flex-wrap gap-1 mt-1.5">
+                                                    {agents.map((agent) => (
+                                                        <span
+                                                            key={agent}
+                                                            className="px-1.5 py-0.5 rounded bg-background/60 text-[11px] font-medium"
+                                                        >
+                                                            {agent}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
                         </div>
                     )}
                 </div>
