@@ -993,7 +993,9 @@ const ProfilesPage = () => {
                     <div>
                         <h4 className="font-semibold mb-3">Transport Output</h4>
                         <p className="text-xs text-muted-foreground mb-3">
-                            Audio this profile sends to Asterisk.
+                            Audio this profile sends to Asterisk over AudioSocket. On the
+                            ExternalMedia (RTP) transport the wire codec comes from the Audio
+                            Transport settings instead — one codec for all profiles.
                         </p>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <FormSelect
@@ -1039,6 +1041,14 @@ const ProfilesPage = () => {
                                 <div className="w-9 h-5 bg-muted peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-ring rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-background after:border-border after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
                             </label>
                         </div>
+                        {profileForm.transport_in != null && (
+                            <div className="mb-3 rounded-md border border-sky-300/40 bg-sky-500/5 px-3 py-2 text-xs text-muted-foreground">
+                                Advisory only: AudioSocket announces the inbound format in every
+                                frame, and ExternalMedia (RTP) uses the Audio Transport codec for
+                                both directions. This declared leg feeds diagnostics — leave it
+                                off unless the inbound leg genuinely differs.
+                            </div>
+                        )}
                         {profileForm.transport_in != null && (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <FormSelect

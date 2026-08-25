@@ -145,7 +145,7 @@ per call at setup:
 
 | Leg | Owner (edit point) | Notes |
 | --- | --- | --- |
-| Asterisk wire (in/out) | Audio Profile → `transport_out` / `transport_in` | On AudioSocket, companded selections (μ-law/A-law) ride the lossless `slin@8000` signed-linear carrier; Asterisk transcodes to the trunk codec. On ExternalMedia the RTP channel uses `external_media.codec`, which must agree with the profile. |
+| Asterisk wire (in/out) | Audio Profile → `transport_out` / `transport_in` | On AudioSocket, companded selections (μ-law/A-law) ride the lossless `slin@8000` signed-linear carrier; Asterisk transcodes to the trunk codec. On ExternalMedia the wire is owned by the Audio Transport RTP settings instead: `external_media.codec` — one codec, both directions, shared by every profile and Agent. |
 | Internal processing rate | Audio Profile → `internal_rate_hz` | |
 | Provider API boundary | Provider card → `provider_input_*` / `output_*` | Constrained by the adapter's declared capabilities; must match the provider-side (dashboard) audio settings. For pipeline Agents the profile's `provider_pref` is the preference instead. |
 | Wire-facing provider fields (`input_encoding`, `input_sample_rate_hz`, `target_encoding`, `target_sample_rate_hz`) | Derived — not an edit point | The engine overwrites them per call from the resolved profile (`session.provider_overrides`); YAML values are legacy fallbacks only. |
@@ -156,8 +156,8 @@ one diagram per Agent — Asterisk ═ transport wire ═ AI Engine ═ provider
 Provider (monolithic or pipeline, with the pipeline's STT/TTS components) —
 plus findings whenever a stored value disagrees with what a call will actually
 use — e.g. a provider `target_encoding` that the profile overrides, a provider
-rate outside the adapter's supported set, or an `external_media.codec` that
-contradicts the profile's wire leg. The Agent editor renders the same diagram
+rate outside the adapter's supported set, or a profile whose transport legs
+are ignored because the ExternalMedia RTP settings own the wire. The Agent editor renders the same diagram
 live under its Audio Profile selector, and the per-call log line `Audio
 profile resolved and applied` records the same chain at call setup.
 
@@ -415,7 +415,8 @@ contains configuration and verification evidence, but never the referenced API p
 - external_media.advertise_host: Address Asterisk sends RTP to (optional; defaults to `external_media.rtp_host`). Use for NAT/VPN.
 - external_media.rtp_port: Port for inbound RTP.
 - external_media.port_range: Optional range (`start:end`) for dynamic per-call RTP allocation; defaults to `rtp_port`.
-- external_media.codec: Asterisk RTP wire codec. The supported release baseline is `ulaw` at 8 kHz with `telephony_ulaw_8k` or `telephony_enhanced_8k`. `slin16`/16 kHz RTP is not supported; use AudioSocket with `wideband_pcm_16k` instead.
+- external_media.codec: Asterisk RTP wire codec, BOTH directions, one codec shared by every profile and Agent (audio-profile Transport Output/Input apply to AudioSocket only; engine restart applies changes). Supported: `ulaw`, `alaw`, `slin16`. The release baseline is `ulaw`/`alaw` at 8 kHz; `slin16`/16 kHz RTP is outside the supported baseline — use AudioSocket with `wideband_pcm_16k` instead.
+- external_media.sample_rate: engine-side transit rate — inbound RTP is decoded to PCM16 and resampled to this rate for the engine (default 16000, inferred from `external_media.format` when unset). Set it to the provider's native rate (8000 Hz for G.711 providers) to avoid an extra resample round trip; editable on the Audio Transport page (the page also keeps `external_media.format` coherent: `slin` at 8 kHz, `slin16` at 16 kHz). The Audio Path view shows the effective transit rate on the AI Engine node.
 - external_media.direction: `both` | `sendonly` | `recvonly`.
 - external_media.lock_remote_endpoint: When true (default), **do not** accept mid-call changes to the inbound RTP source `(ip,port)` for that call.
 - external_media.allowed_remote_hosts: Optional list of **IP addresses** allowed as inbound RTP sources. When set, packets from other sources are dropped (recommended when the RTP source IP is stable).

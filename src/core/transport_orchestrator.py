@@ -22,7 +22,7 @@ from typing import Dict, Any, Optional, List, Union
 from structlog import get_logger
 
 from ..providers.base import ProviderCapabilities
-from ..config.audio_alignment import resolve_wire_leg
+from ..config.audio_alignment import resolve_external_media_wire, resolve_wire_leg
 
 logger = get_logger(__name__)
 
@@ -236,6 +236,8 @@ class TransportOrchestrator:
         audiosocket_config = config.get('audiosocket', {})
         self.audiosocket_format = audiosocket_config.get('format', 'slin16') if audiosocket_config else 'slin16'
         self.audiosocket_sample_rate = audiosocket_config.get('sample_rate', None) if audiosocket_config else None
+        external_media_config = config.get('external_media')
+        self.external_media_config = external_media_config if isinstance(external_media_config, dict) else {}
         
         # If no profiles defined, synthesize from legacy config
         if not self.profiles:
@@ -509,38 +511,37 @@ class TransportOrchestrator:
                      RTP always uses profile.transport_out.
         Provider format: try profile preference, fallback to provider's supported formats.
         """
-        # Wire legs resolve through the shared resolver also used by the Admin
-        # UI alignment view (src/config/audio_alignment.resolve_wire_leg):
-        # AudioSocket signed-linear profiles select their matching wire type,
-        # companded profiles ride the 8 kHz signed-linear compatibility
-        # carrier, and anything else keeps the global AudioSocket fallback;
-        # RTP uses profile.transport_out as-is.
+        # Wire legs resolve through the shared resolvers also used by the
+        # Admin UI alignment view (src/config/audio_alignment). AudioSocket:
+        # the profile owns the wire — signed-linear profiles select their
+        # matching wire type, companded profiles ride the 8 kHz signed-linear
+        # compatibility carrier, anything else keeps the global AudioSocket
+        # fallback. ExternalMedia: the Audio Transport RTP settings own the
+        # wire — one codec, both directions, identical for every profile.
         if self.audio_transport == "audiosocket":
-            fallback_enc, fallback_rate = self.audiosocket_format, self.audiosocket_sample_rate
-        else:
-            fallback_enc, fallback_rate = "slin", 8000
-        out_leg = resolve_wire_leg(
-            profile.transport_out if isinstance(profile.transport_out, dict) else {},
-            audio_transport=self.audio_transport,
-            fallback_encoding=fallback_enc,
-            fallback_rate=fallback_rate,
-        )
-        wire_enc, wire_rate = out_leg["encoding"], out_leg["sample_rate_hz"]
-
-        # Inbound wire leg: mirrors the outbound wire unless the profile
-        # declares an explicit transport_in. AudioSocket runtime decode remains
-        # governed by the per-frame TLV header; RTP decode remains governed by
-        # the codec the ExternalMedia channel was created with. These resolved
-        # values are the declared expectation used for fallbacks/diagnostics.
-        wire_in_enc, wire_in_rate = wire_enc, wire_rate
-        if isinstance(profile.transport_in, dict) and profile.transport_in:
-            in_leg = resolve_wire_leg(
-                profile.transport_in,
-                audio_transport=self.audio_transport,
-                fallback_encoding=wire_enc,
-                fallback_rate=wire_rate,
+            out_leg = resolve_wire_leg(
+                profile.transport_out if isinstance(profile.transport_out, dict) else {},
+                fallback_encoding=self.audiosocket_format,
+                fallback_rate=self.audiosocket_sample_rate,
             )
-            wire_in_enc, wire_in_rate = in_leg["encoding"], in_leg["sample_rate_hz"]
+            wire_enc, wire_rate = out_leg["encoding"], out_leg["sample_rate_hz"]
+
+            # Inbound wire leg: mirrors the outbound wire unless the profile
+            # declares an explicit transport_in. AudioSocket runtime decode
+            # remains governed by the per-frame TLV header; these resolved
+            # values are the declared expectation used for diagnostics.
+            wire_in_enc, wire_in_rate = wire_enc, wire_rate
+            if isinstance(profile.transport_in, dict) and profile.transport_in:
+                in_leg = resolve_wire_leg(
+                    profile.transport_in,
+                    fallback_encoding=wire_enc,
+                    fallback_rate=wire_rate,
+                )
+                wire_in_enc, wire_in_rate = in_leg["encoding"], in_leg["sample_rate_hz"]
+        else:
+            em_wire = resolve_external_media_wire(getattr(self, 'external_media_config', None))
+            wire_enc, wire_rate = em_wire["encoding"], em_wire["sample_rate_hz"]
+            wire_in_enc, wire_in_rate = wire_enc, wire_rate
 
         # Read the provider's configured requirements. Compatibility profiles
         # retain these values exactly. An explicitly selected wideband linear

@@ -82,10 +82,15 @@ def _assert_in_use_audio_profiles_unchanged(
         if old_profiles.get(name) != new_profiles.get(name)
     }
     if allow_in_use_changes:
-        # Edits to a profile body that still exists are confirmed-safe;
+        # Edits to a profile body that still resolves are confirmed-safe;
         # deletions stay guarded because the Agent reference would dangle.
+        # A body that is not a mapping (null/string/list) never loads —
+        # every consumer skips non-dict profiles — so it is a deletion in
+        # effect, not an edit, whatever the key says.
         changed_profiles = {
-            name for name in changed_profiles if name not in new_profiles
+            name
+            for name in changed_profiles
+            if not isinstance(new_profiles.get(name), dict)
         }
     if trusted_profile_reset is not None:
         reset_name, expected_body = trusted_profile_reset
@@ -1266,24 +1271,6 @@ async def get_audio_alignment(
     else:
         agents = await asyncio.to_thread(_read_agents_for_audio_alignment)
     return evaluate_audio_alignment(merged, agents)
-
-
-@router.get("/providers/audio/baselines")
-async def get_provider_audio_baselines():
-    """Expose canonical provider audio baselines, keyed by provider kind.
-
-    The Admin UI renders these as the displayed (editable) defaults for
-    provider audio-format fields; values equal to the baseline are kept out
-    of the persisted YAML so the canonical registry stays the single source
-    of truth.
-    """
-    helpers = _audio_baseline_helpers()
-    return {
-        "provider_baselines": {
-            str(kind): dict(baseline)
-            for kind, baseline in helpers["provider_baselines"].items()
-        }
-    }
 
 
 @router.post("/profiles/{profile_name}/audio/reset")

@@ -6,8 +6,9 @@
  *
  *   [ Asterisk ] ══ transport wire ══ [ AI Engine ] ══ provider API ══ [ Provider ]
  *
- * The wire hop comes from the audio profile (the single edit point for the
- * Asterisk leg); the provider hop comes from the provider card intersected
+ * The wire hop comes from the audio profile on AudioSocket, or from the
+ * Audio Transport RTP settings on ExternalMedia (one codec, both directions,
+ * shared by all Agents); the provider hop comes from the provider card intersected
  * with the adapter's capabilities (or the profile's provider_pref for
  * pipeline Agents). Agents only *select* a profile — they carry no audio
  * format settings of their own.
@@ -19,6 +20,9 @@ export type AudioPathWireLeg = {
     carrier?: boolean;
     declared_encoding?: string;
     declared?: boolean;
+    // 'profile' (AudioSocket) or 'external_media' (RTP settings, one codec
+    // shared by every Agent and profile).
+    source?: string;
 };
 
 export type AudioPathChain = {
@@ -42,6 +46,9 @@ export type AudioPathChain = {
     };
     internal_rate_hz: number;
     output_resampler?: string;
+    // ExternalMedia only: rate inbound RTP is resampled to for the engine
+    // (external_media.sample_rate; one value for the whole process).
+    rtp_transit_rate_hz?: number | null;
 };
 
 const legFormat = (leg: AudioPathWireLeg): string => `${leg.encoding}@${leg.sample_rate_hz}`;
@@ -116,9 +123,11 @@ const AudioPathDiagram: React.FC<{ chain: AudioPathChain }> = ({ chain }) => {
             : 'pipeline'
         : chain.provider_kind || 'provider';
 
-    const wireSource = `profile ${chain.profile} · ${
-        chain.profile_source === 'agent' ? 'set on Agent' : 'profiles.default'
-    }`;
+    const wireSource = chain.wire_out.source === 'external_media'
+        ? 'Audio Transport (RTP settings) · shared by all Agents'
+        : `profile ${chain.profile} · ${
+            chain.profile_source === 'agent' ? 'set on Agent' : 'profiles.default'
+        }`;
 
     return (
         <div className="overflow-x-auto">
@@ -136,7 +145,13 @@ const AudioPathDiagram: React.FC<{ chain: AudioPathChain }> = ({ chain }) => {
                 />
                 <Node
                     title="AI Engine"
-                    subtitle={`${chain.internal_rate_hz} Hz internal\n${chain.output_resampler || 'linear'} resampler`}
+                    subtitle={[
+                        `${chain.internal_rate_hz} Hz internal`,
+                        `${chain.output_resampler || 'linear'} resampler`,
+                        chain.rtp_transit_rate_hz
+                            ? `RTP transit ${chain.rtp_transit_rate_hz} Hz`
+                            : null,
+                    ].filter(Boolean).join('\n')}
                 />
                 <Hop
                     label="provider API"

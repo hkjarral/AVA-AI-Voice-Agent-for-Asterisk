@@ -504,11 +504,11 @@ const TransportPage = () => {
                             <div className="border-t border-border my-4"></div>
 
                             <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
-                                Asterisk-side Configuration
+                                RTP Wire Format
                             </h4>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <FormSelect
-                                    label="Codec"
+                                    label="Codec (both directions)"
                                     value={externalMediaConfig.codec || 'ulaw'}
                                     onChange={e =>
                                         updateSectionConfig(
@@ -518,12 +518,22 @@ const TransportPage = () => {
                                         )
                                     }
                                     options={[
-                                        { value: 'ulaw', label: 'μ-law (8kHz)' },
-                                        { value: 'alaw', label: 'A-law (8kHz)' },
-                                        { value: 'slin', label: 'SLIN (8kHz)' },
-                                        { value: 'slin16', label: 'SLIN16 (16kHz)' },
+                                        { value: 'ulaw', label: 'μ-law (G.711) — 8000 Hz' },
+                                        { value: 'alaw', label: 'A-law (G.711) — 8000 Hz' },
+                                        { value: 'slin16', label: 'SLIN16 (PCM16) — 16000 Hz' },
                                     ]}
-                                    description="Codec Asterisk sends/receives."
+                                    description="Codec Asterisk sends AND receives on the RTP leg. One codec, shared by every Agent and Audio Profile. Engine restart applies changes."
+                                />
+                                <FormInput
+                                    label="Wire Sample Rate (Hz)"
+                                    type="number"
+                                    disabled
+                                    value={
+                                        (externalMediaConfig.codec || 'ulaw') === 'slin16'
+                                            ? 16000
+                                            : 8000
+                                    }
+                                    tooltip="Fixed by the codec: G.711 (μ-law/A-law) = 8000 Hz, SLIN16 = 16000 Hz."
                                 />
                                 <FormSelect
                                     label="Direction"
@@ -540,8 +550,14 @@ const TransportPage = () => {
                                         { value: 'sendonly', label: 'Send Only' },
                                         { value: 'recvonly', label: 'Receive Only' },
                                     ]}
+                                    description="Media direction of the ExternalMedia channel. Both is the normal two-way call."
                                 />
                             </div>
+                            <p className="text-xs text-muted-foreground">
+                                On ExternalMedia these RTP settings own the wire format for all
+                                profiles and Agents — the Audio Profile&apos;s Transport Output
+                                applies to AudioSocket only.
+                            </p>
 
                             <div className="border-t border-border my-4"></div>
 
@@ -550,34 +566,27 @@ const TransportPage = () => {
                             </h4>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <FormSelect
-                                    label="Internal Format"
-                                    value={externalMediaConfig.format || 'slin16'}
-                                    onChange={e =>
+                                    label="Internal Sample Rate (Hz)"
+                                    value={String(
+                                        externalMediaConfig.sample_rate
+                                        ?? ((externalMediaConfig.format || 'slin16') === 'slin'
+                                            ? 8000
+                                            : 16000)
+                                    )}
+                                    onChange={e => {
+                                        const rate = parseInt(e.target.value, 10);
+                                        updateSectionConfig('external_media', 'sample_rate', rate);
                                         updateSectionConfig(
                                             'external_media',
                                             'format',
-                                            e.target.value
-                                        )
-                                    }
+                                            rate >= 16000 ? 'slin16' : 'slin'
+                                        );
+                                    }}
                                     options={[
-                                        { value: 'slin', label: 'SLIN (8kHz)' },
-                                        { value: 'slin16', label: 'SLIN16 (16kHz)' },
-                                        { value: 'ulaw', label: 'μ-law (8kHz)' },
+                                        { value: '8000', label: '8000 Hz — PCM16 (slin), no resample for G.711' },
+                                        { value: '16000', label: '16000 Hz — PCM16 (slin16), pipeline default' },
                                     ]}
-                                    description="Engine internal format. Pipelines typically expect 16kHz PCM16 (slin16)."
-                                />
-                                <FormInput
-                                    label="Sample Rate (Hz)"
-                                    type="number"
-                                    value={externalMediaConfig.sample_rate || 16000}
-                                    onChange={e =>
-                                        updateSectionConfig(
-                                            'external_media',
-                                            'sample_rate',
-                                            parseInt(e.target.value)
-                                        )
-                                    }
-                                    tooltip="Auto-inferred from format if not set."
+                                    description="Rate inbound RTP audio is resampled to for the engine. Match your provider's native rate (8000 Hz for G.711 providers like Grok/Deepgram telephony) to avoid an extra resample round trip; 16000 Hz suits pipeline STT."
                                 />
                             </div>
 
