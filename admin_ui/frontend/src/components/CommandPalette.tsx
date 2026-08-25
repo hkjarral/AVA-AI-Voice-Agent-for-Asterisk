@@ -23,6 +23,7 @@ import {
     Phone,
     CalendarClock,
     Search,
+    Cable,
 } from 'lucide-react';
 
 type PageEntry = {
@@ -41,6 +42,7 @@ const pages: PageEntry[] = [
     { label: 'Providers', path: '/providers', icon: Server, group: 'Core Configuration', keywords: ['api', 'openai', 'google'] },
     { label: 'Pipelines', path: '/pipelines', icon: Workflow, group: 'Core Configuration', keywords: ['flow'] },
     { label: 'Audio Profiles', path: '/profiles', icon: Sliders, group: 'Core Configuration', keywords: ['audio', 'voice'] },
+    { label: 'Audio Path', path: '/audio-path', icon: Cable, group: 'Core Configuration', keywords: ['wire', 'codec', 'alignment', 'chain'] },
     { label: 'Tools', path: '/tools', icon: Wrench, group: 'Core Configuration', keywords: ['function'] },
     { label: 'MCP', path: '/mcp', icon: Plug, group: 'Core Configuration', keywords: ['model context'] },
     { label: 'Voice Activity Detection', path: '/vad', icon: Activity, group: 'Advanced', keywords: ['vad', 'silence'] },

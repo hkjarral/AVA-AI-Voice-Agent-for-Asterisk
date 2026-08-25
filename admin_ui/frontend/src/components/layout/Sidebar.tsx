@@ -29,7 +29,8 @@ import {
     LogOut,
     Lock,
     ChevronsLeft,
-    ChevronsRight
+    ChevronsRight,
+    Cable
 } from 'lucide-react';
 import { useAuth } from '../../auth/AuthContext';
 import { KOFI_URL, SPONSORS_URL } from '../../config/donation';
@@ -155,6 +156,7 @@ const Sidebar = () => {
                         <SidebarItem to="/providers" icon={Server} label="Providers" />
                         <SidebarItem to="/pipelines" icon={Workflow} label="Pipelines" />
                         <SidebarItem to="/profiles" icon={Sliders} label="Audio Profiles" />
+                        <SidebarItem to="/audio-path" icon={Cable} label="Audio Path" />
                         <SidebarItem to="/tools" icon={Wrench} label="Tools" />
                         <SidebarItem to="/mcp" icon={Plug} label="MCP" />
                     </SidebarGroup>
