@@ -1853,17 +1853,17 @@ class StreamingPlaybackManager:
                     logger.debug("Fast-path tap capture failed", call_id=call_id, exc_info=True)
                 return ulaw_bytes
             
-            # NEW: Fast path for μ-law → PCM16 (AudioSocket requires PCM16)
+            # NEW: Fast path for companded (μ-law/A-law) → PCM16 (AudioSocket requires PCM16)
             # Just decode, skip attack/normalize/limiter/encode
             if (
-                self._is_mulaw(src_encoding_raw)
+                (self._is_mulaw(src_encoding_raw) or self._is_alaw(src_encoding_raw))
                 and target_fmt in ("slin", "slin16", "linear16", "pcm16")
                 and src_rate == target_rate
             ):
                 self._resample_states[call_id] = None
                 try:
                     logger.info(
-                        "🎯 μ-law → PCM16 FAST PATH - Simple decode only",
+                        "🎯 companded → PCM16 FAST PATH - Simple decode only",
                         call_id=call_id,
                         chunk_bytes=len(chunk),
                         source=src_encoding_raw,
@@ -1872,9 +1872,13 @@ class StreamingPlaybackManager:
                     )
                 except Exception:
                     pass
-                # Simple decode: mulaw → PCM16
+                # Simple decode: companded → PCM16
                 try:
-                    pcm16_bytes = mulaw_to_pcm16le(chunk)
+                    pcm16_bytes = (
+                        audioop.alaw2lin(chunk, 2)
+                        if self._is_alaw(src_encoding_raw)
+                        else mulaw_to_pcm16le(chunk)
+                    )
                     # Deterministic normalization on fast-path when enabled
                     try:
                         if self.normalizer_enabled and self.normalizer_target_rms > 0 and pcm16_bytes:
@@ -2005,8 +2009,12 @@ class StreamingPlaybackManager:
             resample_state = self._resample_states.get(call_id)
 
             # Convert source to PCM16 for resampling/format conversion when needed
-            if self._is_mulaw(src_encoding_raw):
-                working = mulaw_to_pcm16le(working)
+            if self._is_mulaw(src_encoding_raw) or self._is_alaw(src_encoding_raw):
+                working = (
+                    audioop.alaw2lin(working, 2)
+                    if self._is_alaw(src_encoding_raw)
+                    else mulaw_to_pcm16le(working)
+                )
                 working, _ = self._remove_dc_from_pcm16(
                     call_id,
                     working,

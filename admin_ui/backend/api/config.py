@@ -3,6 +3,7 @@ import yaml
 from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode, SequenceNode, ScalarNode
 import errno
+import json
 import os
 import re
 import asyncio
@@ -1157,6 +1158,80 @@ async def get_profile_audio_baselines():
     """List profile names backed by canonical shipped audio baselines."""
     helpers = _audio_baseline_helpers()
     return {"built_in_profiles": sorted(helpers["profile_baselines"])}
+
+
+def _read_agents_for_audio_alignment() -> list[Dict[str, Any]]:
+    """Read the Agent rows the alignment evaluator needs (read-only, tolerant).
+
+    A missing store is an empty first run; an unreadable one degrades to an
+    empty list so the alignment endpoint still reports config-level findings
+    (this endpoint is advisory — persistence guards stay strict elsewhere).
+    """
+    db_path = Path(
+        os.getenv("AGENTS_DB_PATH", "/app/data/operator/agents.db")
+    ).expanduser()
+    if not db_path.exists():
+        return []
+    try:
+        db_uri = db_path.resolve().as_uri() + "?mode=ro"
+        with sqlite3.connect(db_uri, uri=True) as conn:
+            try:
+                rows = conn.execute(
+                    "SELECT slug, display_name, provider, audio_profile, "
+                    "extra_json, is_default FROM agents WHERE is_active = 1"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                # Older schema: fall back to the columns the in-use profile
+                # guard already relies on.
+                rows = [
+                    (slug, display_name, None, audio_profile, None, 0)
+                    for slug, display_name, audio_profile in conn.execute(
+                        "SELECT slug, display_name, audio_profile FROM agents"
+                    ).fetchall()
+                ]
+    except (OSError, sqlite3.Error):
+        logger.warning("Agent store unavailable for audio alignment", exc_info=True)
+        return []
+
+    agents: list[Dict[str, Any]] = []
+    for slug, display_name, provider, audio_profile, extra_json, is_default in rows:
+        pipeline = None
+        if extra_json:
+            try:
+                extra = json.loads(extra_json)
+                if isinstance(extra, dict):
+                    pipeline = extra.get("pipeline")
+            except (TypeError, ValueError):
+                pipeline = None
+        agents.append({
+            "slug": slug,
+            "display_name": display_name,
+            "provider": provider,
+            "audio_profile": audio_profile,
+            "pipeline": pipeline,
+            "is_default": bool(is_default),
+        })
+    return agents
+
+
+@router.get("/audio/alignment")
+async def get_audio_alignment():
+    """Effective per-Agent audio chains plus misalignment findings.
+
+    The audio profile is the single edit point for the wire contract; provider
+    cards own only the provider-native boundary. This endpoint mirrors the
+    engine's per-call resolution so the UI can explain what a call will
+    actually use (e.g. a companded profile riding the AudioSocket slin
+    carrier) and flag values that the resolution overrides or renegotiates.
+    """
+    project_root = getattr(settings, "PROJECT_ROOT", None)
+    if project_root and project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from src.config.audio_alignment import evaluate_audio_alignment
+
+    merged = _read_merged_config_dict()
+    agents = await asyncio.to_thread(_read_agents_for_audio_alignment)
+    return evaluate_audio_alignment(merged, agents)
 
 
 @router.get("/providers/audio/baselines")
