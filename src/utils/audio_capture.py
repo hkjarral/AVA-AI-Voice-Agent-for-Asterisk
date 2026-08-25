@@ -134,6 +134,9 @@ class AudioCaptureManager:
             if encoding in ("ulaw", "mulaw", "g711_ulaw", "mu-law"):
                 pcm16 = audioop.ulaw2lin(payload, 2)
                 rate = sample_rate or 8000
+            elif encoding in ("alaw", "a-law", "g711_alaw"):
+                pcm16 = audioop.alaw2lin(payload, 2)
+                rate = sample_rate or 8000
             elif encoding in ("slin16", "linear16", "pcm16"):
                 pcm16 = payload
                 rate = sample_rate or 16000

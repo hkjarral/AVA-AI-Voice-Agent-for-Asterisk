@@ -19,6 +19,43 @@ type ApplyState = {
     applyMethod: 'hot_reload' | 'restart';
 };
 
+// G.711 companded codecs are locked to 8 kHz — any other rate breaks the
+// stream at call time, so the rate inputs are locked whenever one is selected.
+const G711_FIXED_RATES: Record<string, number> = {
+    ulaw: 8000,
+    mulaw: 8000,
+    'mu-law': 8000,
+    alaw: 8000,
+    'a-law': 8000,
+};
+
+// Asterisk wire encodings all carry a fixed sample rate (slin=8k, slin16=16k).
+const TRANSPORT_FIXED_RATES: Record<string, number> = {
+    ...G711_FIXED_RATES,
+    slin: 8000,
+    slin16: 16000,
+};
+
+const PROVIDER_ENCODING_OPTIONS = [
+    { value: 'mulaw', label: 'μ-law — G.711, 8 kHz' },
+    { value: 'alaw', label: 'A-law — G.711, 8 kHz' },
+    { value: 'pcm16', label: 'PCM16' },
+    { value: 'linear16', label: 'Linear16' },
+];
+
+const TRANSPORT_ENCODING_OPTIONS = [
+    { value: 'ulaw', label: 'μ-law — G.711, 8 kHz' },
+    { value: 'alaw', label: 'A-law — G.711, 8 kHz' },
+    { value: 'slin', label: 'SLIN — PCM16, 8 kHz' },
+    { value: 'slin16', label: 'SLIN16 — PCM16, 16 kHz' },
+];
+
+const fixedProviderRate = (encoding: string | undefined): number | undefined =>
+    G711_FIXED_RATES[(encoding || '').toLowerCase()];
+
+const fixedTransportRate = (encoding: string | undefined): number | undefined =>
+    TRANSPORT_FIXED_RATES[(encoding || '').toLowerCase()];
+
 const mergeApplyRecommendation = (
     current: ApplyState,
     method: 'none' | 'hot_reload' | 'restart',
@@ -127,18 +164,47 @@ const ProfilesPage = () => {
         }
     };
 
-    const saveConfig = async (newConfig: any) => {
+    const saveConfig = async (
+        newConfig: any,
+        options: { allowInUseProfiles?: boolean } = {},
+    ): Promise<boolean> => {
         try {
             const sanitized = sanitizeConfigForSave(newConfig);
-            const response = await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
+            const payload: Record<string, unknown> = { content: yaml.dump(sanitized) };
+            if (options.allowInUseProfiles) {
+                payload.allow_in_use_profile_changes = true;
+            }
+            const response = await axios.post('/api/config/yaml', payload);
             const method = (response.data?.recommended_apply_method || 'restart') as 'hot_reload' | 'restart';
             setApplyState((current) => mergeApplyRecommendation(current, method));
             setConfig(sanitized);
             return true;
         } catch (err) {
+            const status = (err as any)?.response?.status;
+            const detail = (err as any)?.response?.data?.detail;
+            // The backend guards audio profiles referenced by Agents with a 409.
+            // Profiles are parsed once at call start, so editing one is safe for
+            // active calls — offer a confirmed retry instead of a dead end.
+            if (
+                status === 409
+                && !options.allowInUseProfiles
+                && typeof detail === 'string'
+                && detail.includes('audio profile configuration used by an Agent')
+            ) {
+                const confirmed = await confirm({
+                    title: 'Profile is in use — save anyway?',
+                    description: `${detail}\n\nAudio profiles are read once at call start: active calls keep the settings they connected with, and new calls pick up this change after you apply it.`,
+                    confirmText: 'Save Anyway',
+                    variant: 'default',
+                });
+                if (confirmed) {
+                    return saveConfig(newConfig, { allowInUseProfiles: true });
+                }
+                return false;
+            }
             console.error('Failed to save config', err);
             toast.error('Failed to save configuration', {
-                description: (err as any)?.response?.data?.detail || (err as Error)?.message,
+                description: detail || (err as Error)?.message,
             });
             return false;
         }
@@ -234,30 +300,58 @@ const ProfilesPage = () => {
 			toast.error(`Profile '${profileKey}' already exists`);
 			return;
 		}
-		if (!isNewProfile) {
-			if (agentsLoading || agentsLoadFailed) {
-				toast.error('Cannot safely modify this profile', {
-					description: 'Agent usage could not be verified. Reload the page and try again.',
-				});
-				return;
-			}
+		// Editing an in-use profile is allowed with explicit confirmation:
+		// audio profiles are parsed once at call setup, so active calls keep
+		// the settings they connected with and only new calls change after
+		// apply. When Agent usage is known client-side, confirm up front;
+		// otherwise the backend 409 guard triggers the same confirmation.
+		let allowInUseProfiles = false;
+		if (!isNewProfile && !agentsLoading && !agentsLoadFailed) {
 			const agentsUsing = getAgentsUsingProfile(profileKey);
 			const currentProfile = config.profiles?.[profileKey] || {};
 			if (agentsUsing.length > 0 && JSON.stringify(profileForm) !== JSON.stringify(currentProfile)) {
-				toast.error(`Cannot modify '${profileKey}' while it is in use`, {
-					description: `Clone the profile, move Agent${agentsUsing.length === 1 ? '' : 's'} ${agentsUsing.join(', ')} to the clone, then edit it.`,
+				const confirmed = await confirm({
+					title: `Update in-use profile "${profileKey}"?`,
+					description: `Used by Agent${agentsUsing.length === 1 ? '' : 's'}: ${agentsUsing.join(', ')}.\n\nAudio profiles are read once at call start — active calls keep the audio settings they connected with. New calls use the updated profile after you apply the change (hot reload or restart).`,
+					confirmText: 'Save Changes',
+					variant: 'default',
 				});
-				return;
+				if (!confirmed) return;
+				allowInUseProfiles = true;
 			}
+		}
+
+		// Normalize fixed-rate pairs at the save boundary so a stale value from
+		// hand-edited YAML (e.g. mulaw@16000) cannot survive behind the locked
+		// rate input the dialog displays.
+		const normalizedForm: any = { ...profileForm };
+		(['transport_out', 'transport_in'] as const).forEach((section) => {
+			const transport = normalizedForm[section];
+			if (transport && typeof transport === 'object') {
+				const locked = fixedTransportRate(transport.encoding);
+				if (locked !== undefined && transport.sample_rate_hz !== locked) {
+					normalizedForm[section] = { ...transport, sample_rate_hz: locked };
+				}
+			}
+		});
+		if (normalizedForm.provider_pref && typeof normalizedForm.provider_pref === 'object') {
+			const pref = { ...normalizedForm.provider_pref };
+			(['input', 'output'] as const).forEach((direction) => {
+				const locked = fixedProviderRate(pref[`${direction}_encoding`]);
+				if (locked !== undefined && pref[`${direction}_sample_rate_hz`] !== locked) {
+					pref[`${direction}_sample_rate_hz`] = locked;
+				}
+			});
+			normalizedForm.provider_pref = pref;
 		}
 
 		const newConfig = {
 			...config,
 			profiles: { ...(config.profiles || {}) },
 		};
-		
-		newConfig.profiles[profileKey] = profileForm;
-		if (!await saveConfig(newConfig)) return;
+
+		newConfig.profiles[profileKey] = normalizedForm;
+		if (!await saveConfig(newConfig, { allowInUseProfiles })) return;
 		setEditingProfile(null);
 		setIsNewProfile(false);
 		setNewProfileName('');
@@ -286,6 +380,54 @@ const ProfilesPage = () => {
                 ...profileForm[section],
                 [field]: value
             }
+        });
+    };
+
+    // Provider-preference encodings: selecting a G.711 codec locks the paired
+    // sample rate to 8000 in the same update so an invalid pair can never be
+    // saved (the backend rejects e.g. mulaw@16000 outright).
+    const updateProviderPrefEncoding = (direction: 'input' | 'output', encoding: string) => {
+        setProfileForm((current: any) => {
+            const pref = { ...(current.provider_pref || {}) };
+            pref[`${direction}_encoding`] = encoding;
+            const locked = fixedProviderRate(encoding);
+            if (locked !== undefined) {
+                pref[`${direction}_sample_rate_hz`] = locked;
+            }
+            return { ...current, provider_pref: pref };
+        });
+    };
+
+    // Transport encodings all have fixed wire rates; keep the stored rate in
+    // lockstep with the selected encoding.
+    const updateTransportEncoding = (section: 'transport_out' | 'transport_in', encoding: string) => {
+        setProfileForm((current: any) => {
+            const transport = { ...(current[section] || {}) };
+            transport.encoding = encoding;
+            const locked = fixedTransportRate(encoding);
+            if (locked !== undefined) {
+                transport.sample_rate_hz = locked;
+            }
+            return { ...current, [section]: transport };
+        });
+    };
+
+    const toggleTransportIn = (enabled: boolean) => {
+        setProfileForm((current: any) => {
+            const next = { ...current };
+            if (enabled) {
+                const outEncoding = current.transport_out?.encoding || 'ulaw';
+                next.transport_in = {
+                    encoding: outEncoding,
+                    sample_rate_hz:
+                        fixedTransportRate(outEncoding)
+                        ?? current.transport_out?.sample_rate_hz
+                        ?? 8000,
+                };
+            } else {
+                delete next.transport_in;
+            }
+            return next;
         });
     };
 
@@ -643,6 +785,12 @@ const ProfilesPage = () => {
                                         <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block">Transport Out</span>
                                         <p className="text-foreground font-mono">{profile.transport_out?.encoding || 'slin'}</p>
                                     </div>
+                                    {profile.transport_in?.encoding && (
+                                        <div className="bg-secondary/30 p-2 rounded-md">
+                                            <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block">Transport In</span>
+                                            <p className="text-foreground font-mono">{profile.transport_in.encoding}</p>
+                                        </div>
+                                    )}
                                     <div className="bg-secondary/30 p-2 rounded-md">
                                         <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block">Downsampling</span>
                                         <p className="text-foreground font-mono">
@@ -795,42 +943,48 @@ const ProfilesPage = () => {
                     {/* Provider Preferences */}
                     <div>
                         <h4 className="font-semibold mb-3">Provider Preferences</h4>
+                        <p className="text-xs text-muted-foreground mb-3">
+                            Pipeline Agents only. An Agent on a monolithic provider takes its boundary from that
+                            provider (Providers → Audio format), so these values are ignored for it.
+                        </p>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <FormSelect
                                 label="Input Encoding"
                                 value={profileForm.provider_pref?.input_encoding || 'mulaw'}
-                                onChange={(e) => updateNestedField('provider_pref', 'input_encoding', e.target.value)}
-                                options={[
-                                    { value: 'mulaw', label: 'μ-law' },
-                                    { value: 'pcm16', label: 'PCM16' },
-                                    { value: 'linear16', label: 'Linear16' }
-                                ]}
-                                tooltip="Audio encoding sent TO the provider (STT/realtime). Match the provider's preferred format to avoid extra resampling: mulaw for PSTN-grade telephony, pcm16/linear16 for wideband cloud APIs."
+                                onChange={(e) => updateProviderPrefEncoding('input', e.target.value)}
+                                options={PROVIDER_ENCODING_OPTIONS}
+                                tooltip="Audio encoding sent TO the provider (STT/realtime). Match the provider's preferred format to avoid extra resampling: mulaw/alaw for PSTN-grade telephony, pcm16/linear16 for wideband cloud APIs."
                             />
                             <FormInput
                                 label="Input Sample Rate (Hz)"
                                 type="number"
-                                value={profileForm.provider_pref?.input_sample_rate_hz || 8000}
+                                disabled={fixedProviderRate(profileForm.provider_pref?.input_encoding || 'mulaw') !== undefined}
+                                value={
+                                    fixedProviderRate(profileForm.provider_pref?.input_encoding || 'mulaw')
+                                    ?? profileForm.provider_pref?.input_sample_rate_hz
+                                    ?? 8000
+                                }
                                 onChange={(e) => updateNestedField('provider_pref', 'input_sample_rate_hz', parseInt(e.target.value))}
-                                tooltip="Sample rate of the audio sent to the provider. Common values: 8000 (telephony), 16000 (wideband), 24000 (OpenAI Realtime)."
+                                tooltip="Sample rate of the audio sent to the provider. G.711 codecs (μ-law/A-law) are locked to 8000 Hz — any other rate breaks the stream. PCM formats commonly use 8000, 16000, or 24000."
                             />
                             <FormSelect
                                 label="Output Encoding"
                                 value={profileForm.provider_pref?.output_encoding || 'mulaw'}
-                                onChange={(e) => updateNestedField('provider_pref', 'output_encoding', e.target.value)}
-                                options={[
-                                    { value: 'mulaw', label: 'μ-law' },
-                                    { value: 'pcm16', label: 'PCM16' },
-                                    { value: 'linear16', label: 'Linear16' }
-                                ]}
+                                onChange={(e) => updateProviderPrefEncoding('output', e.target.value)}
+                                options={PROVIDER_ENCODING_OPTIONS}
                                 tooltip="Audio encoding the provider returns (TTS output). Match the format the provider natively produces to avoid a transcoding step."
                             />
                             <FormInput
                                 label="Output Sample Rate (Hz)"
                                 type="number"
-                                value={profileForm.provider_pref?.output_sample_rate_hz || 8000}
+                                disabled={fixedProviderRate(profileForm.provider_pref?.output_encoding || 'mulaw') !== undefined}
+                                value={
+                                    fixedProviderRate(profileForm.provider_pref?.output_encoding || 'mulaw')
+                                    ?? profileForm.provider_pref?.output_sample_rate_hz
+                                    ?? 8000
+                                }
                                 onChange={(e) => updateNestedField('provider_pref', 'output_sample_rate_hz', parseInt(e.target.value))}
-                                tooltip="Sample rate of the audio the provider returns. Will be resampled down to transport_out rate before going to Asterisk."
+                                tooltip="Sample rate of the audio the provider returns. Locked to 8000 Hz for G.711 codecs. PCM output is resampled down to the transport rate before going to Asterisk."
                             />
                         </div>
                     </div>
@@ -838,26 +992,76 @@ const ProfilesPage = () => {
                     {/* Transport Output */}
                     <div>
                         <h4 className="font-semibold mb-3">Transport Output</h4>
+                        <p className="text-xs text-muted-foreground mb-3">
+                            Audio this profile sends to Asterisk.
+                        </p>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <FormSelect
                                 label="Encoding"
                                 value={profileForm.transport_out?.encoding || 'slin'}
-                                onChange={(e) => updateNestedField('transport_out', 'encoding', e.target.value)}
-                                options={[
-                                    { value: 'slin', label: 'SLIN (8kHz)' },
-                                    { value: 'slin16', label: 'SLIN16 (16kHz)' },
-                                    { value: 'ulaw', label: 'μ-law' }
-                                ]}
-                                tooltip="Encoding written to the selected Asterisk media transport. SLIN16 wideband is supported through AudioSocket; ExternalMedia RTP uses the 8 kHz telephony profiles."
+                                onChange={(e) => updateTransportEncoding('transport_out', e.target.value)}
+                                options={TRANSPORT_ENCODING_OPTIONS}
+                                tooltip="Encoding written to the selected Asterisk media transport. SLIN16 wideband is supported through AudioSocket; ExternalMedia RTP uses the 8 kHz telephony profiles. Companded profiles (μ-law/A-law) ride the AudioSocket signed-linear carrier automatically."
                             />
                             <FormInput
                                 label="Sample Rate (Hz)"
                                 type="number"
-                                value={profileForm.transport_out?.sample_rate_hz || 8000}
+                                disabled
+                                value={
+                                    fixedTransportRate(profileForm.transport_out?.encoding || 'slin')
+                                    ?? profileForm.transport_out?.sample_rate_hz
+                                    ?? 8000
+                                }
                                 onChange={(e) => updateNestedField('transport_out', 'sample_rate_hz', parseInt(e.target.value))}
-                                tooltip="Sample rate of the audio frames sent to Asterisk. Must match the encoding above (slin=8000, slin16=16000, ulaw=8000)."
+                                tooltip="Fixed by the encoding above (ulaw/alaw/slin = 8000 Hz, slin16 = 16000 Hz). A mismatched pair would break the stream, so this field follows the encoding."
                             />
                         </div>
+                    </div>
+
+                    {/* Transport Input (optional asymmetric inbound leg) */}
+                    <div>
+                        <div className="flex items-center justify-between gap-4 mb-3">
+                            <div>
+                                <h4 className="font-semibold">Transport Input</h4>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                    Audio Asterisk sends this profile. A telephony leg carries the same codec both
+                                    ways, so leave this off unless the inbound side really differs.
+                                </p>
+                            </div>
+                            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                                <input
+                                    type="checkbox"
+                                    aria-label="Set Transport Input separately"
+                                    className="sr-only peer"
+                                    checked={profileForm.transport_in != null}
+                                    onChange={(e) => toggleTransportIn(e.target.checked)}
+                                />
+                                <div className="w-9 h-5 bg-muted peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-ring rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-background after:border-border after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
+                            </label>
+                        </div>
+                        {profileForm.transport_in != null && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <FormSelect
+                                    label="Encoding"
+                                    value={profileForm.transport_in?.encoding || 'ulaw'}
+                                    onChange={(e) => updateTransportEncoding('transport_in', e.target.value)}
+                                    options={TRANSPORT_ENCODING_OPTIONS}
+                                    tooltip="Encoding Asterisk sends toward the engine. AudioSocket announces the actual format per frame, so this is a declared expectation used for RTP decode fallbacks and diagnostics."
+                                />
+                                <FormInput
+                                    label="Sample Rate (Hz)"
+                                    type="number"
+                                    disabled
+                                    value={
+                                        fixedTransportRate(profileForm.transport_in?.encoding || 'ulaw')
+                                        ?? profileForm.transport_in?.sample_rate_hz
+                                        ?? 8000
+                                    }
+                                    onChange={(e) => updateNestedField('transport_in', 'sample_rate_hz', parseInt(e.target.value))}
+                                    tooltip="Fixed by the encoding (ulaw/alaw/slin = 8000 Hz, slin16 = 16000 Hz)."
+                                />
+                            </div>
+                        )}
                     </div>
                 </div>
             </Modal>

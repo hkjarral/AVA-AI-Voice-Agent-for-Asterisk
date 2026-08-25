@@ -1320,6 +1320,7 @@ class AppConfig(BaseModel):
                     raw_profile.get("output_resampler"),
                 )
             validate_pair(profile_name, "transport_out", raw_profile.get("transport_out"))
+            validate_pair(profile_name, "transport_in", raw_profile.get("transport_in"))
             provider_pref = raw_profile.get("provider_pref")
             if isinstance(provider_pref, dict):
                 validate_pair(

@@ -10111,9 +10111,19 @@ class Engine:
                     profile_fmt = frame_format
                     profile_rate = frame_rate
                 else:
-                    # For RTP: use transport profile (negotiated codec)
-                    profile_fmt = session.transport_profile.format or "ulaw"
-                    profile_rate = session.transport_profile.sample_rate or 8000
+                    # For RTP: prefer the resolved inbound wire leg, then the
+                    # legacy transport-profile fields (negotiated codec)
+                    tp = session.transport_profile
+                    profile_fmt = (
+                        getattr(tp, "wire_in_encoding", None)
+                        or getattr(tp, "format", None)
+                        or "ulaw"
+                    )
+                    profile_rate = (
+                        getattr(tp, "wire_in_sample_rate", None)
+                        or getattr(tp, "sample_rate", None)
+                        or 8000
+                    )
             except Exception:
                 # Safe fallback based on transport type
                 if self.config.audio_transport == "audiosocket":
@@ -17843,6 +17853,9 @@ class Engine:
             "g711_ulaw": "ulaw",
             "g711ulaw": "ulaw",
             "g711-ula": "ulaw",
+            "a-law": "alaw",
+            "g711_alaw": "alaw",
+            "g711alaw": "alaw",
             # Note: "slin" (8kHz PCM) and "slin16" (16kHz PCM) are distinct formats
             "slin": "slin",
             "slin12": "slin16",
@@ -17910,6 +17923,9 @@ class Engine:
         try:
             if canonical in ("ulaw", "mulaw", "g711_ulaw", "mu-law"):
                 pcm = audioop.ulaw2lin(audio_bytes, 2)
+                rate = 8000
+            elif canonical in ("alaw", "a-law", "g711_alaw"):
+                pcm = audioop.alaw2lin(audio_bytes, 2)
                 rate = 8000
             else:
                 if swap_needed:
@@ -18083,7 +18099,8 @@ class Engine:
             
             return pcm_bytes, "slin16", pcm_rate
 
-        if expected_enc in ("ulaw", "mulaw", "g711_ulaw", "mu-law"):
+        if expected_enc in ("ulaw", "mulaw", "g711_ulaw", "mu-law", "alaw", "a-law", "g711_alaw"):
+            is_alaw = expected_enc in ("alaw", "a-law", "g711_alaw")
             if expected_rate <= 0:
                 expected_rate = 8000
             working = pcm_bytes
@@ -18095,10 +18112,12 @@ class Engine:
                 except Exception:
                     working = pcm_bytes
             try:
-                encoded = audioop.lin2ulaw(working, 2)
+                encoded = (
+                    audioop.lin2alaw(working, 2) if is_alaw else audioop.lin2ulaw(working, 2)
+                )
             except Exception:
                 encoded = b""
-            return encoded, "ulaw", expected_rate
+            return encoded, ("alaw" if is_alaw else "ulaw"), expected_rate
 
         # Fallback: return PCM as-is
         return pcm_bytes, "slin16", pcm_rate

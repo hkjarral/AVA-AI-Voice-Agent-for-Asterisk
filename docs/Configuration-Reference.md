@@ -138,6 +138,25 @@ or unreadable. There is no live YAML persona fallback in v7.4.
 
 Audio profiles control the call’s negotiated sample rates/encodings (telephony wire format, provider input/output format, and internal pacing). They are defined under `profiles:` in `config/ai-agent.yaml`.
 
+Profile audio pairs are validated at load/save time: G.711 codecs (`ulaw`,
+`mulaw`, `alaw`) are fixed at 8000 Hz and `slin`/`slin16` at 8000/16000 Hz — a
+mismatched pair is rejected instead of breaking the stream mid-call. The Admin
+UI locks the rate fields accordingly. A-law is accepted alongside μ-law for
+`provider_pref` encodings, `transport_out`, and the ExternalMedia codec.
+
+`profiles.<name>.transport_in` is an optional asymmetric inbound leg
+(`encoding` + `sample_rate_hz`, same fixed-rate rules). When omitted, the
+inbound leg mirrors `transport_out`, which is the telephony norm. AudioSocket
+announces the actual inbound format per frame, so `transport_in` acts as the
+declared expectation used for RTP decode fallbacks and diagnostics — set it
+only when the inbound side genuinely differs from the outbound side.
+
+Audio profiles are parsed once at call setup and never change mid-call. The
+Admin UI therefore allows editing a profile that Agents are using after an
+explicit confirmation: active calls keep the settings they connected with, and
+new calls pick up the change after apply (hot reload or restart). Deleting a
+profile that is still assigned to an Agent remains blocked.
+
 The shipped `telephony_ulaw_8k` profile retains compatibility downsampling.
 `telephony_enhanced_8k` is an opt-in profile with the same stable 8 kHz wire
 contract plus alias-safe provider-output downsampling. It reduces sibilant hiss
@@ -365,7 +384,7 @@ contains configuration and verification evidence, but never the referenced API p
 - audiosocket.host: Bind address for AudioSocket listener.
 - audiosocket.advertise_host: Address Asterisk connects to (optional; defaults to `audiosocket.host`). Use for NAT/VPN.
 - audiosocket.port: TCP port.
-- audiosocket.format: fallback wire format for legacy/companded profiles. Shipped YAML uses `slin` (16-bit signed linear @ 8 kHz), the validated compatibility default. Signed-linear Audio Profiles override this per call: `wideband_pcm_16k` selects `slin16` without changing the global value. Keep the fallback at `slin`; select wideband on the Agent or with `AI_AUDIO_PROFILE` rather than changing it globally.
+- audiosocket.format: legacy fallback only — the audio profile is the source of truth for the wire format (`profiles.<name>.transport_out`, resolved per call; companded profiles ride the signed-linear carrier automatically). This value is used only when a call resolves no valid profile wire format (e.g. configs predating Audio Profiles). It is intentionally not exposed in the Admin UI Transport page; keep it at `slin` if present, and select wideband on the Agent or with `AI_AUDIO_PROFILE` rather than changing it globally.
 
 ## ExternalMedia
 
