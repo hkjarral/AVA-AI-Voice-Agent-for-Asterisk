@@ -66,8 +66,15 @@ const AudioAlignmentPanel: React.FC<AudioAlignmentPanelProps> = ({ refreshKey = 
                     setReport(response.data);
                 }
             })
-            .catch(() => {
-                // Advisory panel: stay silent when the endpoint is unavailable.
+            .catch((err) => {
+                // Advisory panel: render nothing, but leave a diagnosable trace —
+                // a 404 means the Admin backend predates the endpoint, a 503
+                // means the shared src/ tree is missing from the deploy.
+                console.warn(
+                    '[audio-alignment] panel hidden — endpoint unavailable',
+                    err?.response?.status ?? err?.message,
+                    err?.response?.data?.detail,
+                );
                 if (mounted) setReport(null);
             });
         return () => {

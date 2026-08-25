@@ -54,8 +54,12 @@ const AgentAudioPathPreview: React.FC<AgentAudioPathPreviewProps> = ({
                             : [],
                     );
                 })
-                .catch(() => {
-                    // Advisory preview: stay silent when the endpoint is unavailable.
+                .catch((err) => {
+                    // Advisory preview: render nothing, but leave a diagnosable trace.
+                    console.warn(
+                        '[audio-alignment] agent preview hidden — endpoint unavailable',
+                        err?.response?.status ?? err?.message,
+                    );
                     if (mounted) setChain(null);
                 });
         }, 250);
