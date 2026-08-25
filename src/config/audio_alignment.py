@@ -51,50 +51,42 @@ _KINDS_WITH_PROVIDER_INPUT = frozenset(
 # (see src/rtp_server.py _decode_payload/_payload_type_byte).
 RTP_SUPPORTED_CODECS = frozenset({"ulaw", "alaw", "slin16"})
 
+# Wire rate is fixed by the RTP codec: G.711 is 8 kHz, slin16 is 16 kHz.
+_RTP_CODEC_RATES = {"ulaw": 8000, "alaw": 8000, "slin16": 16000}
 
-def resolve_external_media_codec(config: Mapping[str, Any]) -> Dict[str, Any]:
-    """Resolve the process-wide ExternalMedia RTP codec.
 
-    ExternalMedia runs ONE RTP codec per engine process, so it follows the
-    default audio profile's ``transport_out`` — the same ownership model as
-    the AudioSocket wire. The legacy ``external_media.codec`` YAML key remains
-    the fallback for configs predating Audio Profiles and for profile
-    encodings the RTP server cannot carry (e.g. ``slin``). Returns
-    ``{"codec", "source"}`` where source is ``profile:<name>``,
-    ``external_media.codec`` or ``builtin-default``.
+def resolve_external_media_wire(external_media: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Resolve the process-wide ExternalMedia RTP wire contract.
+
+    ExternalMedia runs ONE RTP codec per engine process, in BOTH directions,
+    shared by every Agent and profile: ``external_media.codec`` owns it (the
+    Audio Transport page). Audio-profile transport legs govern the AudioSocket
+    wire only. Returns ``{"codec", "encoding", "sample_rate_hz", "source",
+    "configured"}`` — ``configured`` echoes the raw YAML token so callers can
+    flag unsupported values; source is ``external_media.codec`` or
+    ``builtin-default``.
     """
-    profiles_cfg = config.get("profiles")
-    profiles = profiles_cfg if isinstance(profiles_cfg, Mapping) else {}
-    configured_default = profiles.get("default")
-    default_name = (
-        configured_default.strip()
-        if isinstance(configured_default, str) and configured_default.strip()
-        else "telephony_ulaw_8k"
-    )
-    profile = profiles.get(default_name)
-    if isinstance(profile, Mapping):
-        transport_out = profile.get("transport_out")
-        declared = (
-            str(transport_out.get("encoding") or "").strip().lower()
-            if isinstance(transport_out, Mapping)
-            else ""
-        )
-        if declared in MULAW_TOKENS:
-            codec = "ulaw"
-        elif declared in ALAW_TOKENS:
-            codec = "alaw"
-        elif declared in {"slin16", "linear16", "pcm16"}:
-            codec = "slin16"
-        else:
-            codec = None
-        if codec in RTP_SUPPORTED_CODECS:
-            return {"codec": codec, "source": f"profile:{default_name}"}
-    external_media = config.get("external_media")
-    external_media = external_media if isinstance(external_media, Mapping) else {}
-    legacy = str(external_media.get("codec") or "").strip().lower()
-    if legacy in RTP_SUPPORTED_CODECS:
-        return {"codec": legacy, "source": "external_media.codec"}
-    return {"codec": "ulaw", "source": "builtin-default"}
+    em = external_media if isinstance(external_media, Mapping) else {}
+    raw = str(em.get("codec") or "").strip().lower()
+    if raw in MULAW_TOKENS:
+        codec = "ulaw"
+    elif raw in ALAW_TOKENS:
+        codec = "alaw"
+    elif raw in {"slin16", "linear16", "pcm16"}:
+        codec = "slin16"
+    else:
+        codec = ""
+    if codec in RTP_SUPPORTED_CODECS:
+        source = "external_media.codec"
+    else:
+        codec, source = "ulaw", "builtin-default"
+    return {
+        "codec": codec,
+        "encoding": codec,
+        "sample_rate_hz": _RTP_CODEC_RATES[codec],
+        "source": source,
+        "configured": raw,
+    }
 
 
 def normalize_encoding(value: Any) -> str:
@@ -127,43 +119,36 @@ def _finding(
 def resolve_wire_leg(
     declared: Mapping[str, Any],
     *,
-    audio_transport: str,
     fallback_encoding: str = "slin",
     fallback_rate: Optional[int] = 8000,
 ) -> Dict[str, Any]:
-    """Resolve one Asterisk wire leg from a declared ``{encoding, sample_rate_hz}``.
+    """Resolve one AudioSocket wire leg from a declared ``{encoding, sample_rate_hz}``.
 
     This is the per-call resolution TransportOrchestrator applies — the runtime
     calls this same function, so the Admin UI alignment view cannot drift from
     what actually goes on the wire. AudioSocket legs are signed-linear: valid
     declarations normalize to their canonical slin format; companded
     declarations ride the lossless slin@8000 compatibility carrier (Asterisk
-    owns the trunk codec); anything else keeps the caller's fallback. RTP legs
-    pass the declared values through over the fallback.
+    owns the trunk codec); anything else keeps the caller's fallback. The
+    ExternalMedia wire never comes from profile legs — see
+    ``resolve_external_media_wire``.
     """
     declared_enc = str(declared.get("encoding") or "").strip().lower()
     declared_rate = declared.get("sample_rate_hz")
     carrier = False
-    if audio_transport == "audiosocket":
-        try:
-            enc, rate = normalize_slin_format(
-                declared_enc,
-                int(declared_rate) if declared_rate is not None else None,
-            )
-        except (TypeError, ValueError):
-            if declared_enc in COMPANDED_TOKENS:
-                enc, rate, carrier = "slin", 8000, True
-            else:
-                enc, rate = fallback_encoding, fallback_rate
-                if not rate:
-                    token = str(enc or "").strip().lower()
-                    rate = 16000 if token in {"slin16", "linear16", "pcm16"} else 8000
-    else:
-        enc = declared_enc or fallback_encoding
-        try:
-            rate = int(declared_rate) if declared_rate is not None else fallback_rate
-        except (TypeError, ValueError):
-            rate = fallback_rate
+    try:
+        enc, rate = normalize_slin_format(
+            declared_enc,
+            int(declared_rate) if declared_rate is not None else None,
+        )
+    except (TypeError, ValueError):
+        if declared_enc in COMPANDED_TOKENS:
+            enc, rate, carrier = "slin", 8000, True
+        else:
+            enc, rate = fallback_encoding, fallback_rate
+            if not rate:
+                token = str(enc or "").strip().lower()
+                rate = 16000 if token in {"slin16", "linear16", "pcm16"} else 8000
     return {
         "encoding": enc,
         "sample_rate_hz": rate,
@@ -175,24 +160,44 @@ def resolve_wire_leg(
 def resolve_wire_contract(
     profile: Mapping[str, Any],
     audio_transport: str,
+    external_media: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Resolve both wire legs of a profile exactly like the runtime does."""
+    """Resolve both wire legs exactly like the runtime does.
+
+    AudioSocket: the profile owns the wire (``transport_out`` /
+    ``transport_in``). ExternalMedia: the Audio Transport RTP settings own it —
+    one codec, both directions, identical for every profile and Agent.
+    """
+    if audio_transport != "audiosocket":
+        wire = resolve_external_media_wire(external_media)
+        leg = {
+            "encoding": wire["encoding"],
+            "sample_rate_hz": wire["sample_rate_hz"],
+            "carrier": False,
+            "declared_encoding": wire["codec"],
+            "source": "external_media",
+        }
+        out_leg = dict(leg)
+        in_leg = dict(leg)
+        in_leg["declared"] = False
+        return {"out": out_leg, "in": in_leg}
+
     transport_out = profile.get("transport_out")
     out_leg = resolve_wire_leg(
         transport_out if isinstance(transport_out, Mapping) else {},
-        audio_transport=audio_transport,
     )
+    out_leg["source"] = "profile"
     transport_in = profile.get("transport_in")
     if isinstance(transport_in, Mapping) and transport_in:
         # An explicit inbound leg falls back to the resolved outbound leg,
         # mirroring TransportOrchestrator._negotiate_formats.
         in_leg = resolve_wire_leg(
             transport_in,
-            audio_transport=audio_transport,
             fallback_encoding=str(out_leg["encoding"]),
             fallback_rate=out_leg["sample_rate_hz"],
         )
         in_leg["declared"] = True
+        in_leg["source"] = "profile"
     else:
         in_leg = dict(out_leg)
         in_leg["declared"] = False
@@ -283,7 +288,9 @@ def _resolve_chain(
         return None
 
     audio_transport = str(config.get("audio_transport") or "audiosocket")
-    wire = resolve_wire_contract(profile, audio_transport)
+    wire = resolve_wire_contract(
+        profile, audio_transport, config.get("external_media")
+    )
 
     providers = config.get("providers") if isinstance(config.get("providers"), Mapping) else {}
     pipelines = config.get("pipelines") if isinstance(config.get("pipelines"), Mapping) else {}
@@ -454,47 +461,47 @@ def _collect_chain_findings(
             agent=agent, profile=profile_name,
         ))
 
-    # 2) ExternalMedia: one process-wide RTP codec, derived from the default
-    #    profile's transport_out — every Agent's profile must agree with it.
+    # 2) ExternalMedia: the Audio Transport RTP settings own the wire — one
+    #    codec, both directions, identical for every profile and Agent.
     if audio_transport == "externalmedia":
-        resolution = resolve_external_media_codec(config)
-        rtp_codec = resolution["codec"]
-        if normalize_encoding(rtp_codec) != normalize_encoding(wire_out["encoding"]):
+        em_wire = resolve_external_media_wire(config.get("external_media"))
+        rtp_codec = em_wire["codec"]
+        if em_wire["configured"] and em_wire["source"] == "builtin-default":
             findings.append(_finding(
-                "warning", "rtp_codec_profile_mismatch",
-                f"RTP codec {rtp_codec} ({resolution['source']}) ≠ profile "
-                f"'{profile_name}' transport_out={wire_out['encoding']}",
-                "ExternalMedia runs one process-wide RTP codec, derived from the "
-                "default audio profile's Transport Output. This Agent's profile "
-                "declares a different wire encoding, so audio on its calls will "
-                "be misdecoded. Give it the same transport encoding as the "
-                "default profile (or make its profile the default).",
-                agent=agent, profile=profile_name,
+                "warning", "rtp_codec_unsupported",
+                f"external_media.codec={em_wire['configured']} is not a supported RTP codec",
+                "The RTP server can carry ulaw, alaw, and slin16. The configured "
+                f"value falls back to {rtp_codec}@{em_wire['sample_rate_hz']}. "
+                "Pick a supported codec on the Audio Transport page.",
             ))
-        external_media = config.get("external_media")
-        external_media = external_media if isinstance(external_media, Mapping) else {}
-        legacy_codec = str(external_media.get("codec") or "").strip().lower()
+        transport_out = profile.get("transport_out")
+        declared_out = (
+            str(transport_out.get("encoding") or "").strip().lower()
+            if isinstance(transport_out, Mapping)
+            else ""
+        )
+        profile_declares_in = bool(profile.get("transport_in"))
         if (
-            legacy_codec
-            and resolution["source"].startswith("profile:")
-            and normalize_encoding(legacy_codec) != normalize_encoding(rtp_codec)
-        ):
+            declared_out
+            and normalize_encoding(declared_out) != normalize_encoding(rtp_codec)
+        ) or profile_declares_in:
             findings.append(_finding(
-                "info", "external_media_codec_legacy",
-                f"external_media.codec={legacy_codec} is superseded by the default profile",
-                f"The RTP codec is now derived from the default audio profile "
-                f"({rtp_codec}, {resolution['source']}); the YAML value is a "
-                "legacy fallback used only when no profile resolves. Remove it "
-                "to silence this notice. An engine restart applies codec changes.",
-                profile=profile_name,
+                "info", "profile_transport_ignored_on_rtp",
+                f"'{profile_name}' transport settings do not apply on ExternalMedia",
+                "ExternalMedia runs one process-wide RTP codec from the Audio "
+                f"Transport settings ({rtp_codec}@{em_wire['sample_rate_hz']}, "
+                "both directions, shared by every Agent). The profile's "
+                "Transport Output/Input govern the AudioSocket wire only; the "
+                "profile still owns the internal rate and provider preferences.",
+                agent=agent, profile=profile_name,
             ))
         if int(wire_out.get("sample_rate_hz") or 0) > 8000:
             findings.append(_finding(
-                "error", "wideband_rtp_unsupported",
-                f"Profile '{profile_name}' is wideband but audio_transport is ExternalMedia",
-                "ExternalMedia RTP supports the 8 kHz telephony profiles only; "
-                "wideband (slin16) requires AudioSocket.",
-                agent=agent, profile=profile_name,
+                "warning", "wideband_rtp_unsupported",
+                "external_media.codec=slin16 selects 16 kHz RTP",
+                "16 kHz RTP is outside the supported release baseline "
+                "(ulaw/alaw at 8 kHz). For wideband audio use AudioSocket with "
+                "a wideband profile instead.",
             ))
 
     # 3) Declared asymmetric inbound leg on AudioSocket is advisory.

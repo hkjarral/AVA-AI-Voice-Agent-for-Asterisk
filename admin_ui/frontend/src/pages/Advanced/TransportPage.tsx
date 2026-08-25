@@ -503,24 +503,63 @@ const TransportPage = () => {
 
                             <div className="border-t border-border my-4"></div>
 
-                            <div className="rounded-lg border border-border bg-muted/40 p-4">
-                                <h4 className="text-sm font-medium mb-1">
-                                    Wire codec — owned by the Audio Profile
-                                </h4>
-                                <p className="text-sm text-muted-foreground">
-                                    The RTP codec Asterisk sends and receives is derived from the
-                                    default Audio Profile&apos;s Transport Output — edit it on the{' '}
-                                    <a href="/profiles" className="text-primary underline">
-                                        Audio Profiles
-                                    </a>{' '}
-                                    page (an engine restart applies codec changes). The engine-side
-                                    resample format is managed automatically. Legacy{' '}
-                                    <code>external_media.codec</code> / <code>format</code> /{' '}
-                                    <code>sample_rate</code> / <code>direction</code> YAML keys
-                                    remain honored as fallbacks for configs predating Audio
-                                    Profiles.
-                                </p>
+                            <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                                RTP Wire Format
+                            </h4>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <FormSelect
+                                    label="Codec (both directions)"
+                                    value={externalMediaConfig.codec || 'ulaw'}
+                                    onChange={e =>
+                                        updateSectionConfig(
+                                            'external_media',
+                                            'codec',
+                                            e.target.value
+                                        )
+                                    }
+                                    options={[
+                                        { value: 'ulaw', label: 'μ-law (G.711) — 8000 Hz' },
+                                        { value: 'alaw', label: 'A-law (G.711) — 8000 Hz' },
+                                        { value: 'slin16', label: 'SLIN16 (PCM16) — 16000 Hz' },
+                                    ]}
+                                    description="Codec Asterisk sends AND receives on the RTP leg. One codec, shared by every Agent and Audio Profile. Engine restart applies changes."
+                                />
+                                <FormInput
+                                    label="Wire Sample Rate (Hz)"
+                                    type="number"
+                                    disabled
+                                    value={
+                                        (externalMediaConfig.codec || 'ulaw') === 'slin16'
+                                            ? 16000
+                                            : 8000
+                                    }
+                                    tooltip="Fixed by the codec: G.711 (μ-law/A-law) = 8000 Hz, SLIN16 = 16000 Hz."
+                                />
+                                <FormSelect
+                                    label="Direction"
+                                    value={externalMediaConfig.direction || 'both'}
+                                    onChange={e =>
+                                        updateSectionConfig(
+                                            'external_media',
+                                            'direction',
+                                            e.target.value
+                                        )
+                                    }
+                                    options={[
+                                        { value: 'both', label: 'Both' },
+                                        { value: 'sendonly', label: 'Send Only' },
+                                        { value: 'recvonly', label: 'Receive Only' },
+                                    ]}
+                                    description="Media direction of the ExternalMedia channel. Both is the normal two-way call."
+                                />
                             </div>
+                            <p className="text-xs text-muted-foreground">
+                                On ExternalMedia these RTP settings own the wire format for all
+                                profiles and Agents — the Audio Profile&apos;s Transport Output
+                                applies to AudioSocket only. The engine-side resample format
+                                (<code>external_media.format</code>/<code>sample_rate</code>) is
+                                managed automatically.
+                            </p>
 
                             <div className="border border-amber-300/40 rounded-lg p-4 bg-amber-500/5">
                                 <FormSwitch
