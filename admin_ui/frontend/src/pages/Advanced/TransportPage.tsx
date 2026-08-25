@@ -178,6 +178,23 @@ const TransportPage = () => {
         setConfig({ ...config, [field]: value });
     };
 
+    const updateSectionFields = (section: string, patch: Record<string, unknown>) => {
+        setConfig(prev => {
+            const currentSection = (prev as Record<string, unknown>)[section];
+            const sectionConfig =
+                currentSection && typeof currentSection === 'object'
+                    ? (currentSection as Record<string, unknown>)
+                    : {};
+            return {
+                ...prev,
+                [section]: {
+                    ...sectionConfig,
+                    ...patch,
+                },
+            } as TransportConfig;
+        });
+    };
+
     const updateSectionConfig = (section: string, field: string, value: unknown) => {
         const currentSection = config[section];
         const sectionConfig =
@@ -535,28 +552,14 @@ const TransportPage = () => {
                                     }
                                     tooltip="Fixed by the codec: G.711 (μ-law/A-law) = 8000 Hz, SLIN16 = 16000 Hz."
                                 />
-                                <FormSelect
-                                    label="Direction"
-                                    value={externalMediaConfig.direction || 'both'}
-                                    onChange={e =>
-                                        updateSectionConfig(
-                                            'external_media',
-                                            'direction',
-                                            e.target.value
-                                        )
-                                    }
-                                    options={[
-                                        { value: 'both', label: 'Both' },
-                                        { value: 'sendonly', label: 'Send Only' },
-                                        { value: 'recvonly', label: 'Receive Only' },
-                                    ]}
-                                    description="Media direction of the ExternalMedia channel. Both is the normal two-way call."
-                                />
                             </div>
                             <p className="text-xs text-muted-foreground">
                                 On ExternalMedia these RTP settings own the wire format for all
                                 profiles and Agents — the Audio Profile&apos;s Transport Output
-                                applies to AudioSocket only.
+                                applies to AudioSocket only. The channel&apos;s media direction is
+                                always two-way for a voice agent; the expert
+                                <code> external_media.direction</code> YAML key (default{' '}
+                                <code>both</code>) exists for one-way monitoring setups only.
                             </p>
 
                             <div className="border-t border-border my-4"></div>
@@ -575,12 +578,10 @@ const TransportPage = () => {
                                     )}
                                     onChange={e => {
                                         const rate = parseInt(e.target.value, 10);
-                                        updateSectionConfig('external_media', 'sample_rate', rate);
-                                        updateSectionConfig(
-                                            'external_media',
-                                            'format',
-                                            rate >= 16000 ? 'slin16' : 'slin'
-                                        );
+                                        updateSectionFields('external_media', {
+                                            sample_rate: rate,
+                                            format: rate >= 16000 ? 'slin16' : 'slin',
+                                        });
                                     }}
                                     options={[
                                         { value: '8000', label: '8000 Hz — PCM16 (slin), no resample for G.711' },
