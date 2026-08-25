@@ -556,10 +556,39 @@ const TransportPage = () => {
                             <p className="text-xs text-muted-foreground">
                                 On ExternalMedia these RTP settings own the wire format for all
                                 profiles and Agents — the Audio Profile&apos;s Transport Output
-                                applies to AudioSocket only. The engine-side resample format
-                                (<code>external_media.format</code>/<code>sample_rate</code>) is
-                                managed automatically.
+                                applies to AudioSocket only.
                             </p>
+
+                            <div className="border-t border-border my-4"></div>
+
+                            <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                                Engine-side Configuration
+                            </h4>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <FormSelect
+                                    label="Internal Sample Rate (Hz)"
+                                    value={String(
+                                        externalMediaConfig.sample_rate
+                                        ?? ((externalMediaConfig.format || 'slin16') === 'slin'
+                                            ? 8000
+                                            : 16000)
+                                    )}
+                                    onChange={e => {
+                                        const rate = parseInt(e.target.value, 10);
+                                        updateSectionConfig('external_media', 'sample_rate', rate);
+                                        updateSectionConfig(
+                                            'external_media',
+                                            'format',
+                                            rate >= 16000 ? 'slin16' : 'slin'
+                                        );
+                                    }}
+                                    options={[
+                                        { value: '8000', label: '8000 Hz — PCM16 (slin), no resample for G.711' },
+                                        { value: '16000', label: '16000 Hz — PCM16 (slin16), pipeline default' },
+                                    ]}
+                                    description="Rate inbound RTP audio is resampled to for the engine. Match your provider's native rate (8000 Hz for G.711 providers like Grok/Deepgram telephony) to avoid an extra resample round trip; 16000 Hz suits pipeline STT."
+                                />
+                            </div>
 
                             <div className="border border-amber-300/40 rounded-lg p-4 bg-amber-500/5">
                                 <FormSwitch

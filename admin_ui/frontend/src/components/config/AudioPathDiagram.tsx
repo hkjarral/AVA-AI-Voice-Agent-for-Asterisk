@@ -46,6 +46,9 @@ export type AudioPathChain = {
     };
     internal_rate_hz: number;
     output_resampler?: string;
+    // ExternalMedia only: rate inbound RTP is resampled to for the engine
+    // (external_media.sample_rate; one value for the whole process).
+    rtp_transit_rate_hz?: number | null;
 };
 
 const legFormat = (leg: AudioPathWireLeg): string => `${leg.encoding}@${leg.sample_rate_hz}`;
@@ -142,7 +145,13 @@ const AudioPathDiagram: React.FC<{ chain: AudioPathChain }> = ({ chain }) => {
                 />
                 <Node
                     title="AI Engine"
-                    subtitle={`${chain.internal_rate_hz} Hz internal\n${chain.output_resampler || 'linear'} resampler`}
+                    subtitle={[
+                        `${chain.internal_rate_hz} Hz internal`,
+                        `${chain.output_resampler || 'linear'} resampler`,
+                        chain.rtp_transit_rate_hz
+                            ? `RTP transit ${chain.rtp_transit_rate_hz} Hz`
+                            : null,
+                    ].filter(Boolean).join('\n')}
                 />
                 <Hop
                     label="provider API"

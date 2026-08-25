@@ -89,6 +89,31 @@ def resolve_external_media_wire(external_media: Optional[Mapping[str, Any]]) -> 
     }
 
 
+def resolve_external_media_transit_rate(
+    external_media: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Resolve the engine-side RTP transit rate for ExternalMedia.
+
+    Inbound RTP is decoded to PCM16 and resampled to this rate before it
+    reaches the engine (``src/rtp_server.py``). ``external_media.sample_rate``
+    owns it; when unset it is inferred from ``external_media.format``
+    (slin16-family → 16000, otherwise 8000) exactly like the engine does.
+    Setting it to the provider's native rate (e.g. 8000 for G.711 providers)
+    removes an avoidable resample round trip.
+    """
+    em = external_media if isinstance(external_media, Mapping) else {}
+    fmt = str(em.get("format") or "slin16").strip().lower()
+    raw_rate = em.get("sample_rate")
+    try:
+        rate = int(raw_rate) if raw_rate else 0
+    except (TypeError, ValueError):
+        rate = 0
+    if rate > 0:
+        return {"sample_rate_hz": rate, "source": "external_media.sample_rate"}
+    inferred = 16000 if fmt in ("slin16", "linear16", "pcm16") else 8000
+    return {"sample_rate_hz": inferred, "source": f"format:{fmt}"}
+
+
 def normalize_encoding(value: Any) -> str:
     token = str(value or "").strip().lower()
     if token in MULAW_TOKENS:
@@ -412,6 +437,11 @@ def _resolve_chain(
         "audio_transport": audio_transport,
         "wire_out": wire["out"],
         "wire_in": wire["in"],
+        "rtp_transit_rate_hz": (
+            resolve_external_media_transit_rate(config.get("external_media"))["sample_rate_hz"]
+            if audio_transport == "externalmedia"
+            else None
+        ),
         "provider_boundary": negotiated,
         "internal_rate_hz": profile.get("internal_rate_hz", 8000),
         "output_resampler": profile.get("output_resampler", "linear"),

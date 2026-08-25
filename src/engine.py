@@ -1040,16 +1040,14 @@ class Engine:
                 rtp_port = int(getattr(self.config.external_media, "rtp_port", 0) or 18080)
                 codec = getattr(self.config.external_media, "codec", "ulaw")
                 format = getattr(self.config.external_media, "format", "slin16")
-                sample_rate = getattr(self.config.external_media, "sample_rate", None)
-                
-                # Infer sample_rate from format if not explicitly set
-                if not sample_rate:
-                    if format in ("slin16", "linear16", "pcm16"):
-                        sample_rate = 16000
-                    elif format in ("slin", "linear"):
-                        sample_rate = 8000
-                    else:  # ulaw, alaw
-                        sample_rate = 8000
+                # Transit rate resolves through the same helper the Admin UI
+                # alignment view uses (external_media.sample_rate, inferred
+                # from external_media.format when unset).
+                from src.config.audio_alignment import resolve_external_media_transit_rate
+                sample_rate = resolve_external_media_transit_rate({
+                    "format": format,
+                    "sample_rate": getattr(self.config.external_media, "sample_rate", None),
+                })["sample_rate_hz"]
                 
                 
                 port_range = self._parse_port_range(
