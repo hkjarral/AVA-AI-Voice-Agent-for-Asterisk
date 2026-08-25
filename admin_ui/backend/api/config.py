@@ -1237,7 +1237,21 @@ async def get_audio_alignment(
     project_root = getattr(settings, "PROJECT_ROOT", None)
     if project_root and project_root not in sys.path:
         sys.path.insert(0, project_root)
-    from src.config.audio_alignment import evaluate_audio_alignment
+    try:
+        from src.config.audio_alignment import evaluate_audio_alignment
+    except ImportError as exc:
+        # The shared src/ tree reaches the Admin container via the project
+        # volume mount; a deploy without it (or an out-of-date checkout that
+        # predates this module) should say so instead of silently hiding the
+        # panel.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "audio alignment module unavailable: "
+                f"{exc}. Expected {project_root}/src/config/audio_alignment.py "
+                "(project volume mount) from a checkout containing this feature."
+            ),
+        ) from exc
 
     merged = _read_merged_config_dict()
     if preview or profile or provider or pipeline:

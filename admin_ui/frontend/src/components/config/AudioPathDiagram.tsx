@@ -23,11 +23,13 @@ export type AudioPathWireLeg = {
 
 export type AudioPathChain = {
     agent: string;
+    agent_slug?: string | null;
     profile: string;
     profile_source?: 'agent' | 'default';
     provider?: string | null;
     provider_kind?: string | null;
     pipeline?: string | null;
+    pipeline_components?: { stt?: string; llm?: string; tts?: string } | null;
     boundary_source: string;
     audio_transport: string;
     wire_out: AudioPathWireLeg;
@@ -102,8 +104,16 @@ const AudioPathDiagram: React.FC<{ chain: AudioPathChain }> = ({ chain }) => {
                 : 'profile provider_pref (pipeline)';
 
     const providerTitle = chain.provider || chain.pipeline || '—';
+    // Pipelines are the audio-relevant composition: STT hears the caller,
+    // TTS speaks back (the LLM leg carries no audio).
+    const pipelineAudioParts = [
+        chain.pipeline_components?.stt ? `stt ${chain.pipeline_components.stt}` : null,
+        chain.pipeline_components?.tts ? `tts ${chain.pipeline_components.tts}` : null,
+    ].filter(Boolean);
     const providerSubtitle = chain.pipeline && !chain.provider
-        ? 'pipeline'
+        ? pipelineAudioParts.length > 0
+            ? `pipeline\n${pipelineAudioParts.join(' · ')}`
+            : 'pipeline'
         : chain.provider_kind || 'provider';
 
     const wireSource = `profile ${chain.profile} · ${

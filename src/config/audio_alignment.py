@@ -265,17 +265,62 @@ def _resolve_chain(
     audio_transport = str(config.get("audio_transport") or "audiosocket")
     wire = resolve_wire_contract(profile, audio_transport)
 
-    provider_key = str(agent.get("provider") or "").strip() or str(
-        config.get("default_provider") or ""
-    )
     providers = config.get("providers") if isinstance(config.get("providers"), Mapping) else {}
-    provider_cfg = providers.get(provider_key)
+    pipelines = config.get("pipelines") if isinstance(config.get("pipelines"), Mapping) else {}
+
+    # An Agent selects EITHER a monolithic provider OR a modular pipeline
+    # (the editor clears one when the other is chosen). A pipeline Agent's
+    # provider column is empty, and its boundary comes from the profile's
+    # provider_pref — never from default_provider.
+    provider_key = str(agent.get("provider") or "").strip()
+    pipeline_name = str(agent.get("pipeline") or "").strip()
+    if provider_key and provider_key not in providers and provider_key in pipelines:
+        # Robustness: a name that only exists under pipelines: is a pipeline,
+        # whichever column it arrived in.
+        pipeline_name, provider_key = provider_key, ""
+    if not provider_key and not pipeline_name:
+        # System default, mirroring full_agent_default(): a full-agent
+        # default_provider wins, otherwise the active pipeline runs.
+        default_provider = str(config.get("default_provider") or "").strip()
+        default_cfg = providers.get(default_provider)
+        default_kind = (
+            provider_kind(default_provider, default_cfg)
+            if isinstance(default_cfg, Mapping)
+            else None
+        )
+        if default_kind in FULL_AGENT_KINDS:
+            provider_key = default_provider
+        elif default_provider in pipelines:
+            pipeline_name = default_provider
+        else:
+            pipeline_name = str(config.get("active_pipeline") or "").strip()
+
+    provider_cfg = providers.get(provider_key) if provider_key else None
     provider_cfg = provider_cfg if isinstance(provider_cfg, Mapping) else {}
     kind = provider_kind(provider_key, provider_cfg) if provider_key else None
     is_full_agent = bool(kind and kind in FULL_AGENT_KINDS)
-    pipeline_name = str(agent.get("pipeline") or "").strip() or (
-        str(config.get("active_pipeline") or "") if not is_full_agent else ""
-    )
+    if pipeline_name and not is_full_agent:
+        provider_key = ""
+        provider_cfg = {}
+        kind = None
+
+    pipeline_components: Optional[Dict[str, str]] = None
+    if pipeline_name:
+        entry = pipelines.get(pipeline_name)
+        if isinstance(entry, str):
+            pipeline_components = {"stt": entry, "llm": entry, "tts": entry}
+        elif isinstance(entry, Mapping):
+            pipeline_components = {
+                role: str(entry.get(role) or "") for role in ("stt", "llm", "tts")
+            }
+        else:
+            findings.append(_finding(
+                "error", "pipeline_missing",
+                f"Pipeline '{pipeline_name}' not found",
+                f"Agent '{agent_name}' selects pipeline '{pipeline_name}', which is "
+                "not defined under pipelines: — calls for this Agent fail closed.",
+                agent=agent_name, profile=profile_name,
+            ))
 
     provider_pref = profile.get("provider_pref")
     provider_pref = provider_pref if isinstance(provider_pref, Mapping) else {}
@@ -328,6 +373,7 @@ def _resolve_chain(
         "provider": provider_key or None,
         "provider_kind": kind,
         "pipeline": pipeline_name or None,
+        "pipeline_components": pipeline_components,
         "boundary_source": boundary_source,
         "audio_transport": audio_transport,
         "wire_out": wire["out"],

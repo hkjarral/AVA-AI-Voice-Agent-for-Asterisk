@@ -150,14 +150,16 @@ per call at setup:
 | Provider API boundary | Provider card → `provider_input_*` / `output_*` | Constrained by the adapter's declared capabilities; must match the provider-side (dashboard) audio settings. For pipeline Agents the profile's `provider_pref` is the preference instead. |
 | Wire-facing provider fields (`input_encoding`, `input_sample_rate_hz`, `target_encoding`, `target_sample_rate_hz`) | Derived — not an edit point | The engine overwrites them per call from the resolved profile (`session.provider_overrides`); YAML values are legacy fallbacks only. |
 
-The Admin UI shows an **Audio alignment** panel (Audio Profiles and Providers
-pages, backed by `GET /api/config/audio/alignment`) with the effective
-per-Agent chain and findings whenever a stored value disagrees with what a
-call will actually use — e.g. a provider `target_encoding` that the profile
-overrides, a provider rate outside the adapter's supported set, or an
-`external_media.codec` that contradicts the profile's wire leg. The per-call
-log line `Audio profile resolved and applied` records the same chain at call
-setup.
+The Admin UI shows the resolved paths on the dedicated **Audio Path** page
+(Core Configuration → Audio Path, backed by `GET /api/config/audio/alignment`):
+one diagram per Agent — Asterisk ═ transport wire ═ AI Engine ═ provider API ═
+Provider (monolithic or pipeline, with the pipeline's STT/TTS components) —
+plus findings whenever a stored value disagrees with what a call will actually
+use — e.g. a provider `target_encoding` that the profile overrides, a provider
+rate outside the adapter's supported set, or an `external_media.codec` that
+contradicts the profile's wire leg. The Agent editor renders the same diagram
+live under its Audio Profile selector, and the per-call log line `Audio
+profile resolved and applied` records the same chain at call setup.
 
 Profile audio pairs are validated at load/save time: G.711 codecs (`ulaw`,
 `mulaw`, `alaw`) are fixed at 8000 Hz and `slin`/`slin16` at 8000/16000 Hz — a

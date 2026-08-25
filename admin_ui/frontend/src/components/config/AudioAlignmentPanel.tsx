@@ -45,8 +45,6 @@ const severityStyles: Record<AlignmentFinding['severity'], { box: string; icon: 
     },
 };
 
-const VISIBLE_CHAINS = 3;
-
 interface AudioAlignmentPanelProps {
     /** Bump to re-fetch after a config save/reset. */
     refreshKey?: number;
@@ -54,7 +52,6 @@ interface AudioAlignmentPanelProps {
 
 const AudioAlignmentPanel: React.FC<AudioAlignmentPanelProps> = ({ refreshKey = 0 }) => {
     const [report, setReport] = useState<AlignmentReport | null>(null);
-    const [showAllChains, setShowAllChains] = useState(false);
     const [showFindings, setShowFindings] = useState(true);
 
     useEffect(() => {
@@ -66,8 +63,15 @@ const AudioAlignmentPanel: React.FC<AudioAlignmentPanelProps> = ({ refreshKey = 
                     setReport(response.data);
                 }
             })
-            .catch(() => {
-                // Advisory panel: stay silent when the endpoint is unavailable.
+            .catch((err) => {
+                // Advisory panel: render nothing, but leave a diagnosable trace —
+                // a 404 means the Admin backend predates the endpoint, a 503
+                // means the shared src/ tree is missing from the deploy.
+                console.warn(
+                    '[audio-alignment] panel hidden — endpoint unavailable',
+                    err?.response?.status ?? err?.message,
+                    err?.response?.data?.detail,
+                );
                 if (mounted) setReport(null);
             });
         return () => {
@@ -87,8 +91,7 @@ const AudioAlignmentPanel: React.FC<AudioAlignmentPanelProps> = ({ refreshKey = 
         { error: 0, warning: 0, info: 0 } as Record<AlignmentFinding['severity'], number>,
     );
 
-    const chains = showAllChains ? report.chains : report.chains.slice(0, VISIBLE_CHAINS);
-    const hiddenChains = report.chains.length - chains.length;
+    const chains = report.chains;
 
     return (
         <div className="rounded-lg border border-border bg-card/40 p-4 space-y-3">
@@ -123,7 +126,7 @@ const AudioAlignmentPanel: React.FC<AudioAlignmentPanelProps> = ({ refreshKey = 
                 <div className="space-y-2">
                     {chains.map((chain) => (
                         <div
-                            key={`${chain.agent}-${chain.profile}`}
+                            key={`${chain.agent_slug || chain.agent}-${chain.profile}`}
                             className="rounded-md border border-border/70 bg-card px-3 py-2"
                         >
                             <div className="text-xs font-medium mb-1">
@@ -138,15 +141,6 @@ const AudioAlignmentPanel: React.FC<AudioAlignmentPanelProps> = ({ refreshKey = 
                             <AudioPathDiagram chain={chain} />
                         </div>
                     ))}
-                    {hiddenChains > 0 && (
-                        <button
-                            type="button"
-                            onClick={() => setShowAllChains(true)}
-                            className="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-                        >
-                            Show {hiddenChains} more Agent{hiddenChains === 1 ? '' : 's'}…
-                        </button>
-                    )}
                 </div>
             )}
 

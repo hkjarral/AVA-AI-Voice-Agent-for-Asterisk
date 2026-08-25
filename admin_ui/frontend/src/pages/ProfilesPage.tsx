@@ -13,7 +13,6 @@ import { FormInput, FormSelect } from '../components/ui/FormComponents';
 import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
 import AudioResetButton, { AudioResetResponse } from '../components/config/AudioResetButton';
 import AudioEnvironmentOverrideWarning from '../components/config/AudioEnvironmentOverrideWarning';
-import AudioAlignmentPanel from '../components/config/AudioAlignmentPanel';
 
 type ApplyState = {
     pendingApply: boolean;
@@ -86,7 +85,6 @@ const ProfilesPage = () => {
     });
     const { pendingApply, applyMethod } = applyState;
     const [builtInAudioProfiles, setBuiltInAudioProfiles] = useState<ReadonlySet<string> | null>(null);
-    const [alignmentRefreshKey, setAlignmentRefreshKey] = useState(0);
 
     useEffect(() => {
         fetchConfig();
@@ -160,7 +158,6 @@ const ProfilesPage = () => {
     const handleProfileAudioResetComplete = async (profileName: string, response: AudioResetResponse) => {
         const method = response?.recommended_apply_method || 'restart';
         setApplyState((current) => mergeApplyRecommendation(current, method));
-        setAlignmentRefreshKey((current) => current + 1);
         const refreshed = await fetchConfig(true);
         if (refreshed && editingProfile === profileName) {
             setProfileForm({ ...(refreshed.profiles?.[profileName] || {}) });
@@ -181,7 +178,6 @@ const ProfilesPage = () => {
             const method = (response.data?.recommended_apply_method || 'restart') as 'hot_reload' | 'restart';
             setApplyState((current) => mergeApplyRecommendation(current, method));
             setConfig(sanitized);
-            setAlignmentRefreshKey((current) => current + 1);
             return true;
         } catch (err) {
             const status = (err as any)?.response?.status;
@@ -643,7 +639,6 @@ const ProfilesPage = () => {
                 </div>
             )}
             <AudioEnvironmentOverrideWarning />
-            <AudioAlignmentPanel refreshKey={alignmentRefreshKey} />
 			<div className="flex justify-between items-center">
 				<div>
 					<h1 className="text-3xl font-bold tracking-tight">Audio Profiles</h1>
