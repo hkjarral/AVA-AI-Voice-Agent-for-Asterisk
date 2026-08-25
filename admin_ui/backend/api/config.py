@@ -52,6 +52,7 @@ def _assert_in_use_audio_profiles_unchanged(
     new_config: Dict[str, Any],
     *,
     trusted_profile_reset: Optional[tuple[str, Dict[str, Any]]] = None,
+    allow_in_use_changes: bool = False,
 ) -> None:
     """Fail closed before mutating a profile referenced by an Agent.
 
@@ -60,6 +61,14 @@ def _assert_in_use_audio_profiles_unchanged(
     existing database without creating or migrating it; a missing database is
     an empty first-run store, while an unreadable existing database makes a
     profile mutation unsafe.
+
+    ``allow_in_use_changes`` is the operator-confirmed override: audio
+    profiles are parsed once at call setup, so editing an in-use profile is
+    safe for active calls (they keep the values they started with) and only
+    affects new calls after the config is applied. The override deliberately
+    does NOT cover deleting a referenced profile or re-pointing
+    ``profiles.default`` away from inherited Agents — those leave Agents
+    referencing a profile that no longer resolves, which fails calls closed.
     """
     old_profiles = old_config.get("profiles") or {}
     new_profiles = new_config.get("profiles") or {}
@@ -71,6 +80,12 @@ def _assert_in_use_audio_profiles_unchanged(
         for name in (set(old_profiles) | set(new_profiles)) - {"default"}
         if old_profiles.get(name) != new_profiles.get(name)
     }
+    if allow_in_use_changes:
+        # Edits to a profile body that still exists are confirmed-safe;
+        # deletions stay guarded because the Agent reference would dangle.
+        changed_profiles = {
+            name for name in changed_profiles if name not in new_profiles
+        }
     if trusted_profile_reset is not None:
         reset_name, expected_body = trusted_profile_reset
         # This exception is deliberately value-bound.  Callers cannot bypass
@@ -164,6 +179,19 @@ def _assert_in_use_audio_profiles_unchanged(
             f"{profile}: {', '.join(sorted(names))}"
             for profile, names in sorted(references.items())
         )
+        if allow_in_use_changes:
+            # The confirmed override already passed body edits through, so
+            # whatever remains is a deletion or a profiles.default re-point —
+            # both would leave Agents pointing at a profile that no longer
+            # resolves for them.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot remove an audio profile (or re-point profiles.default) "
+                    f"still assigned to an Agent ({detail}). "
+                    "Move those Agents to another profile first."
+                ),
+            )
         raise HTTPException(
             status_code=409,
             detail=(
@@ -602,6 +630,11 @@ def _rotate_backups(base_path: str) -> None:
 
 class ConfigUpdate(BaseModel):
     content: str
+    # Operator-confirmed override: permit editing audio profiles that are
+    # referenced by Agents. Profiles are parsed once at call setup, so this
+    # never disturbs active calls; deletions of referenced profiles remain
+    # blocked regardless. Set only after an explicit confirmation dialog.
+    allow_in_use_profile_changes: bool = False
 
 @contextmanager
 def _temporary_dotenv(path: str, defaults: Dict[str, str] | None = None):
@@ -866,6 +899,7 @@ def persist_config_content(
     content: str,
     *,
     trusted_profile_reset: Optional[tuple[str, Dict[str, Any]]] = None,
+    allow_in_use_profile_changes: bool = False,
 ) -> dict:
     """
     Validate and persist a full merged ai-agent config (YAML string).
@@ -876,12 +910,17 @@ def persist_config_content(
     local override file. Returns the apply-plan payload describing whether a
     hot reload or restart is needed.
 
+    ``allow_in_use_profile_changes`` carries an explicit operator confirmation
+    that editing an audio profile referenced by an Agent is intended; see
+    ``_assert_in_use_audio_profiles_unchanged`` for exactly what it unlocks.
+
     Raises ``HTTPException`` on validation failure (propagated to the caller).
     """
     with _CONFIG_UPDATE_LOCK:
         return _persist_config_content_locked(
             content,
             trusted_profile_reset=trusted_profile_reset,
+            allow_in_use_profile_changes=allow_in_use_profile_changes,
         )
 
 
@@ -889,6 +928,7 @@ def _persist_config_content_locked(
     content: str,
     *,
     trusted_profile_reset: Optional[tuple[str, Dict[str, Any]]] = None,
+    allow_in_use_profile_changes: bool = False,
 ) -> dict:
     """Persist a complete config while the shared update lock is held."""
     # MED-E1: reject malformed tool email addresses (422) on EVERY persistence
@@ -935,6 +975,7 @@ def _persist_config_content_locked(
         old_merged,
         new_parsed,
         trusted_profile_reset=trusted_profile_reset,
+        allow_in_use_changes=allow_in_use_profile_changes,
     )
 
     # Convert desired merged config into a minimal local override (supports deletions).
@@ -1118,6 +1159,24 @@ async def get_profile_audio_baselines():
     return {"built_in_profiles": sorted(helpers["profile_baselines"])}
 
 
+@router.get("/providers/audio/baselines")
+async def get_provider_audio_baselines():
+    """Expose canonical provider audio baselines, keyed by provider kind.
+
+    The Admin UI renders these as the displayed (editable) defaults for
+    provider audio-format fields; values equal to the baseline are kept out
+    of the persisted YAML so the canonical registry stays the single source
+    of truth.
+    """
+    helpers = _audio_baseline_helpers()
+    return {
+        "provider_baselines": {
+            str(kind): dict(baseline)
+            for kind, baseline in helpers["provider_baselines"].items()
+        }
+    }
+
+
 @router.post("/profiles/{profile_name}/audio/reset")
 async def reset_profile_audio(profile_name: str):
     """Restore an existing profile to its built-in or telephony baseline."""
@@ -1208,7 +1267,12 @@ async def update_yaml_config(update: ConfigUpdate):
         # Persist via the shared helper (also used by the structured tools CRUD
         # API). MED-E1 email validation now lives inside persist_config_content
         # so every persistence path enforces it (not just this endpoint).
-        result = await asyncio.to_thread(persist_config_content, update.content)
+        result = await asyncio.to_thread(
+            lambda: persist_config_content(
+                update.content,
+                allow_in_use_profile_changes=update.allow_in_use_profile_changes,
+            )
+        )
         return await reconcile_apply_result_with_engine_state(result)
     except HTTPException:
         raise

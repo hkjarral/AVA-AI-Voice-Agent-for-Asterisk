@@ -12,6 +12,11 @@ import { enforceOpenAIRealtimeGaAudioContract } from '../../../utils/providerAud
 vi.mock('../../../hooks/useConfirmDialog', () => ({
     useConfirmDialog: () => ({ confirm: vi.fn() }),
 }));
+// The provider audio-format section fetches server baselines; return an empty
+// payload so these tests exercise the deterministic fallback values.
+vi.mock('axios', () => ({
+    default: { get: vi.fn().mockResolvedValue({ data: {} }) },
+}));
 
 const controlBesideLabel = (label: string): HTMLInputElement | HTMLSelectElement => {
     const labelNode = screen.getByText(label, { selector: 'label' });

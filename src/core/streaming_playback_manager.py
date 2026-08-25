@@ -356,6 +356,9 @@ class StreamingPlaybackManager:
             "mulaw": "ulaw",
             "g711_ulaw": "ulaw",
             "g711ulaw": "ulaw",
+            "a-law": "alaw",
+            "g711_alaw": "alaw",
+            "g711alaw": "alaw",
             "linear16": "slin16",
             "pcm16": "slin16",
             # "slin": "slin16",  # REMOVED: slin should remain slin (8kHz PCM16)
@@ -369,6 +372,11 @@ class StreamingPlaybackManager:
     def _is_mulaw(value: Optional[str]) -> bool:
         canonical = StreamingPlaybackManager._canonicalize_encoding(value)
         return canonical in {"ulaw", "mulaw", "g711_ulaw", "mu-law"}
+
+    @staticmethod
+    def _is_alaw(value: Optional[str]) -> bool:
+        canonical = StreamingPlaybackManager._canonicalize_encoding(value)
+        return canonical in {"alaw", "a-law", "g711_alaw"}
 
     def _ensure_call_tap_buffers(self, call_id: str, sample_rate: int) -> None:
         if not getattr(self, "diag_enable_taps", False):
@@ -399,6 +407,8 @@ class StreamingPlaybackManager:
         canonical = StreamingPlaybackManager._canonicalize_encoding(fmt)
         if canonical in {"ulaw", "mulaw", "g711_ulaw", "mu-law"}:
             return 8000
+        if canonical in {"alaw", "a-law", "g711_alaw"}:
+            return 8000  # G.711 A-law is fixed at 8 kHz
         if canonical == "slin":
             return 8000  # slin is always 8kHz PCM16
         if canonical in {"slin16", "linear16", "pcm16"}:
@@ -752,6 +762,12 @@ class StreamingPlaybackManager:
             pcm_transport = self._canonicalize_encoding(transport_format)
             if mulaw_transport:
                 resolved_target_format = "ulaw"
+                resolved_target_rate = 8000
+            elif self._is_alaw(transport_format):
+                # G.711 A-law rides the same fixed 8 kHz companded leg as μ-law.
+                # ExternalMedia providers emit target-encoded audio themselves;
+                # this keeps the stream metadata truthful for diagnostics.
+                resolved_target_format = "alaw"
                 resolved_target_rate = 8000
             elif pcm_transport in {"slin16", "linear16", "pcm16"}:
                 resolved_target_format = "slin16"

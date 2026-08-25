@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => ({
             format: 'slin16',
             sample_rate: 16000,
         },
-    },
+    } as Record<string, unknown>,
 }));
 
 vi.mock('sonner', () => ({
@@ -52,6 +52,25 @@ describe('TransportPage audio profile guidance', () => {
         expect(screen.getByText('telephony_enhanced_8k')).toBeInTheDocument();
         expect(screen.getByText('wideband_pcm_16k')).toBeInTheDocument();
         expect(screen.getByText(/AudioSocket-only/i)).toBeInTheDocument();
+    });
+
+    it('has no transport-level Format control for AudioSocket — the audio profile owns the wire format', async () => {
+        const originalTransport = mocks.config.audio_transport;
+        mocks.config.audio_transport = 'audiosocket';
+        mocks.config.audiosocket = { host: '127.0.0.1', port: 8090, format: 'slin' };
+        try {
+            render(<TransportPage />);
+
+            expect(await screen.findByText('AudioSocket Settings')).toBeInTheDocument();
+            expect(screen.getByLabelText('Port')).toBeInTheDocument();
+            expect(screen.queryByLabelText('Format')).not.toBeInTheDocument();
+            expect(
+                screen.getByText('Wire format comes from the audio profile')
+            ).toBeInTheDocument();
+        } finally {
+            mocks.config.audio_transport = originalTransport;
+            delete mocks.config.audiosocket;
+        }
     });
 
     it('shows the bounded ARI keepalive controls', async () => {

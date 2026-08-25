@@ -142,10 +142,14 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
     def get_capabilities(self) -> ProviderCapabilities:
         """Return static capability hints for the orchestrator."""
         return ProviderCapabilities(
-            input_encodings=["linear16", "pcm16", "ulaw"],
+            input_encodings=["linear16", "pcm16", "ulaw", "alaw"],
             input_sample_rates_hz=[8000, 16000],
             output_encodings=["linear16", "pcm16"],
-            output_sample_rates_hz=[16000, 22050],
+            # ElevenLabs agents can be configured for pcm_8000 … pcm_44100
+            # output on the dashboard. Advertise the full PCM set so an
+            # operator-configured output_sample_rate_hz (e.g. 8000) is
+            # honored instead of being negotiated back to 16000.
+            output_sample_rates_hz=[8000, 16000, 22050, 24000, 44100],
             preferred_chunk_ms=20,
             can_negotiate=False,
             is_full_agent=True,

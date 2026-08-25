@@ -537,6 +537,8 @@ class RTPServer:
         value = (codec or "ulaw").lower()
         if value in ("mulaw", "g711_ulaw", "mu-law"):
             return "ulaw"
+        if value in ("a-law", "g711_alaw"):
+            return "alaw"
         if value in ("slin16", "linear16", "pcm16"):
             return "slin16"
         return value
@@ -544,6 +546,8 @@ class RTPServer:
     def _decode_payload(self, payload: bytes) -> bytes:
         if self.codec == "ulaw":
             return audioop.ulaw2lin(payload, 2)
+        if self.codec == "alaw":
+            return audioop.alaw2lin(payload, 2)
         if self.codec == "slin16":
             return payload
         raise ValueError(f"Unsupported codec '{self.codec}'")
@@ -556,6 +560,8 @@ class RTPServer:
     def _payload_type_byte(self) -> int:
         if self.codec == "ulaw":
             return 0
+        if self.codec == "alaw":
+            return 8  # static payload type for PCMA
         if self.codec == "slin16":
             return 11  # static payload type for L16/1 channel
         return 0

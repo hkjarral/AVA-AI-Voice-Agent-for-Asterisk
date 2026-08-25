@@ -376,14 +376,20 @@ const TransportPage = () => {
                                     }
                                     tooltip="TCP port for AudioSocket connections (default: 8090)."
                                 />
-                                <FormInput
-                                    label="Format"
-                                    value={audiosocketConfig.format || 'slin'}
-                                    onChange={e =>
-                                        updateSectionConfig('audiosocket', 'format', e.target.value)
-                                    }
-                                    tooltip="Audio format (e.g., slin, ulaw)"
-                                />
+                            </div>
+
+                            <div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
+                                <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+                                <div>
+                                    <p className="font-medium">Wire format comes from the audio profile</p>
+                                    <p className="mt-1">
+                                        The AudioSocket wire format is defined per Agent by its audio
+                                        profile (Audio Profiles → Transport Output) and announced
+                                        per-frame on the wire — there is no separate transport-level
+                                        format setting. Companded profiles (μ-law/A-law) ride the
+                                        signed-linear carrier automatically.
+                                    </p>
+                                </div>
                             </div>
                         </div>
                     </ConfigCard>

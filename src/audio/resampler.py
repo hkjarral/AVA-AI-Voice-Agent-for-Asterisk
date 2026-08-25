@@ -254,13 +254,15 @@ def convert_pcm16le_to_target_format(pcm_bytes: bytes, target_format: str) -> by
     """
     Convert PCM16 little-endian audio into the target encoding.
 
-    Currently supports μ-law and PCM16 (no-op for PCM targets).
+    Currently supports μ-law, A-law, and PCM16 (no-op for PCM targets).
     """
     if not pcm_bytes:
         return b""
 
     fmt = (target_format or "").lower()
-    if fmt in ("ulaw", "mulaw", "mu-law"):
+    if fmt in ("ulaw", "mulaw", "mu-law", "g711_ulaw"):
         return pcm16le_to_mulaw(pcm_bytes)
+    if fmt in ("alaw", "a-law", "g711_alaw"):
+        return audioop.lin2alaw(pcm_bytes, _PCM_SAMPLE_WIDTH)
     # Default: assume PCM target
     return pcm_bytes
