@@ -16,6 +16,7 @@ import audioop
 from ..config import LocalProviderConfig
 from ..audio.resampler import resample_audio
 from .base import AIProviderInterface, ProviderCapabilities, ProviderCapabilitiesMixin
+from ..config.audio_baselines import provider_audio_capabilities
 from ..tools.parser import parse_response_with_tools, validate_tool_call, has_tool_intent_markers
 from ..tools.execution_history import stable_tool_call_id
 from ..tools.telephony.hangup_policy import (
@@ -901,16 +902,11 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
 
     def get_capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
-            input_encodings=["pcm16"],
-            input_sample_rates_hz=[16000],
-            output_encodings=["ulaw", "linear16"],
-            output_sample_rates_hz=[8000, 16000],
+            # Audio format capabilities come from the canonical registry shared
+            # with the Admin UI audio-alignment view (src/config/audio_baselines).
+            **provider_audio_capabilities("local"),
             is_full_agent=True,
             requires_continuous_audio=True,
-            wideband_input_encoding="pcm16",
-            wideband_input_sample_rate_hz=16000,
-            wideband_output_encoding="linear16",
-            wideband_output_sample_rate_hz=16000,
         )
 
     def is_ready(self) -> bool:

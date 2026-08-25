@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **The audio profile is the single source of truth for the AudioSocket wire format:** the Audio Transport page no longer exposes the `audiosocket.format` field, which the per-call profile resolution had already superseded; the page now points to Audio Profiles → Transport Output instead. The YAML key remains accepted as a legacy fallback for configs predating Audio Profiles.
+- **One provider capability registry, one wire resolver — no parallel alignment tables:** each full-agent adapter's declared audio formats now live once in `PROVIDER_AUDIO_CAPABILITIES` (`src/config/audio_baselines.py`); the adapters' `get_capabilities()` build their `ProviderCapabilities` from it and the audio-alignment view reads the same registry, replacing the hand-maintained mirror it previously carried. Likewise, `TransportOrchestrator._negotiate_formats` and the alignment view now resolve the Asterisk wire legs through one shared `resolve_wire_leg()` (`src/config/audio_alignment.py`) instead of two parallel implementations, so what the Audio Path page shows is computed by the code the call actually runs — a change to either can no longer drift from the other.
 
 ### Fixed
 

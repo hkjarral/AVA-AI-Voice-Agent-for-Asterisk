@@ -45,6 +45,7 @@ from structlog import get_logger
 from prometheus_client import Gauge, Counter
 
 from .base import AIProviderInterface, ProviderCapabilities
+from ..config.audio_baselines import provider_audio_capabilities
 from ..utils.voice_catalog import known_voice_map
 from ..audio import (
     convert_pcm16le_to_target_format,
@@ -712,11 +713,9 @@ class GoogleLiveProvider(AIProviderInterface):
     def get_capabilities() -> Optional[ProviderCapabilities]:
         """Return capabilities of Google Live provider for transport orchestration."""
         return ProviderCapabilities(
-            # Audio format capabilities
-            input_encodings=["pcm16"],
-            input_sample_rates_hz=[16000],  # Gemini's native input boundary
-            output_encodings=["pcm16"],
-            output_sample_rates_hz=[24000],  # Gemini Live output is fixed at 24 kHz
+            # Audio format capabilities come from the canonical registry shared
+            # with the Admin UI audio-alignment view (src/config/audio_baselines).
+            **provider_audio_capabilities("google_live"),
             preferred_chunk_ms=20,  # 20ms chunks for smooth streaming
             can_negotiate=True,  # Can adapt to different formats
             # Provider type and audio processing capabilities
@@ -724,10 +723,6 @@ class GoogleLiveProvider(AIProviderInterface):
             has_native_vad=True,  # Gemini Live has built-in Voice Activity Detection
             has_native_barge_in=True,  # Handles interruptions automatically
             requires_continuous_audio=True,  # Needs continuous audio stream for VAD
-            wideband_input_encoding="pcm16",
-            wideband_input_sample_rate_hz=16000,
-            wideband_output_encoding="pcm16",
-            wideband_output_sample_rate_hz=24000,
         )
     
     @property

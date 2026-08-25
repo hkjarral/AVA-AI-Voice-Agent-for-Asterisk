@@ -19,8 +19,9 @@ importing provider adapters — so the Admin UI backend can show the effective
 chain per Agent and flag misalignments *before* a call, instead of operators
 discovering them from call logs.
 
-``PROVIDER_STATIC_CAPABILITIES`` mirrors each adapter's ``get_capabilities()``.
-Keep it in sync when an adapter's declared formats change.
+Provider format capabilities come from ``PROVIDER_AUDIO_CAPABILITIES``
+(``src/config/audio_baselines.py``) — the same registry each adapter's
+``get_capabilities()`` builds from — so runtime and alignment can never drift.
 """
 
 from __future__ import annotations
@@ -28,61 +29,15 @@ from __future__ import annotations
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from src.audio.audiosocket_protocol import normalize_slin_format
-from src.config.audio_baselines import PROVIDER_AUDIO_BASELINES
+from src.config.audio_baselines import (
+    PROVIDER_AUDIO_BASELINES,
+    PROVIDER_AUDIO_CAPABILITIES,
+)
 from src.config.provider_instances import FULL_AGENT_KINDS, provider_kind
 
 MULAW_TOKENS = frozenset({"ulaw", "mulaw", "mu-law", "g711_ulaw", "g711ulaw"})
 ALAW_TOKENS = frozenset({"alaw", "a-law", "g711_alaw", "g711alaw"})
 COMPANDED_TOKENS = MULAW_TOKENS | ALAW_TOKENS
-
-# Mirror of each full-agent adapter's get_capabilities(). The Admin UI backend
-# cannot import the adapters (their modules pull websocket/client stacks), so
-# alignment findings use this table; the engine itself keeps using the live
-# adapter values.
-PROVIDER_STATIC_CAPABILITIES: Mapping[str, Mapping[str, Any]] = {
-    "deepgram": {
-        "input_encodings": ["mulaw", "linear16"],
-        "input_sample_rates_hz": [8000, 16000],
-        "output_encodings": ["linear16", "mulaw"],
-        "output_sample_rates_hz": [16000, 24000, 8000],
-        "wideband": ("linear16", 16000, "linear16", 16000),
-    },
-    "openai_realtime": {
-        "input_encodings": ["ulaw", "linear16"],
-        "input_sample_rates_hz": [24000, 16000, 8000],
-        "output_encodings": ["mulaw", "pcm16"],
-        "output_sample_rates_hz": [8000, 24000],
-        "wideband": ("linear16", 24000, "pcm16", 24000),
-    },
-    "google_live": {
-        "input_encodings": ["pcm16"],
-        "input_sample_rates_hz": [16000],
-        "output_encodings": ["pcm16"],
-        "output_sample_rates_hz": [24000],
-        "wideband": ("pcm16", 16000, "pcm16", 24000),
-    },
-    "grok": {
-        "input_encodings": ["ulaw", "linear16"],
-        "input_sample_rates_hz": [8000, 16000, 24000],
-        "output_encodings": ["mulaw", "pcm16"],
-        "output_sample_rates_hz": [8000, 16000, 24000],
-        "wideband": ("linear16", 16000, "pcm16", 16000),
-    },
-    "elevenlabs_agent": {
-        "input_encodings": ["linear16", "pcm16", "ulaw", "alaw"],
-        "input_sample_rates_hz": [8000, 16000],
-        "output_encodings": ["linear16", "pcm16"],
-        "output_sample_rates_hz": [8000, 16000, 22050, 24000, 44100],
-        "wideband": ("pcm16", 16000, "pcm16", 16000),
-    },
-    "local": {
-        "input_encodings": ["pcm16"],
-        "input_sample_rates_hz": [16000],
-        "output_encodings": ["ulaw", "linear16"],
-        "output_sample_rates_hz": [8000, 16000],
-        "wideband": ("pcm16", 16000, "linear16", 16000),
-    },
-}
 
 # Kinds whose adapter config declares a distinct provider_input_* boundary.
 # For them input_encoding/input_sample_rate_hz are wire-facing (derived per
@@ -119,59 +74,74 @@ def _finding(
     }
 
 
+def resolve_wire_leg(
+    declared: Mapping[str, Any],
+    *,
+    audio_transport: str,
+    fallback_encoding: str = "slin",
+    fallback_rate: Optional[int] = 8000,
+) -> Dict[str, Any]:
+    """Resolve one Asterisk wire leg from a declared ``{encoding, sample_rate_hz}``.
+
+    This is the per-call resolution TransportOrchestrator applies — the runtime
+    calls this same function, so the Admin UI alignment view cannot drift from
+    what actually goes on the wire. AudioSocket legs are signed-linear: valid
+    declarations normalize to their canonical slin format; companded
+    declarations ride the lossless slin@8000 compatibility carrier (Asterisk
+    owns the trunk codec); anything else keeps the caller's fallback. RTP legs
+    pass the declared values through over the fallback.
+    """
+    declared_enc = str(declared.get("encoding") or "").strip().lower()
+    declared_rate = declared.get("sample_rate_hz")
+    carrier = False
+    if audio_transport == "audiosocket":
+        try:
+            enc, rate = normalize_slin_format(
+                declared_enc,
+                int(declared_rate) if declared_rate is not None else None,
+            )
+        except (TypeError, ValueError):
+            if declared_enc in COMPANDED_TOKENS:
+                enc, rate, carrier = "slin", 8000, True
+            else:
+                enc, rate = fallback_encoding, fallback_rate
+                if not rate:
+                    token = str(enc or "").strip().lower()
+                    rate = 16000 if token in {"slin16", "linear16", "pcm16"} else 8000
+    else:
+        enc = declared_enc or fallback_encoding
+        try:
+            rate = int(declared_rate) if declared_rate is not None else fallback_rate
+        except (TypeError, ValueError):
+            rate = fallback_rate
+    return {
+        "encoding": enc,
+        "sample_rate_hz": rate,
+        "carrier": carrier,
+        "declared_encoding": declared_enc or str(enc or ""),
+    }
+
+
 def resolve_wire_contract(
     profile: Mapping[str, Any],
     audio_transport: str,
 ) -> Dict[str, Any]:
-    """Resolve the wire legs exactly like TransportOrchestrator does per call."""
-
-    def _leg(declared: Mapping[str, Any]) -> Dict[str, Any]:
-        declared_enc = str(declared.get("encoding") or "").strip().lower()
-        declared_rate = declared.get("sample_rate_hz")
-        if audio_transport == "audiosocket":
-            try:
-                enc, rate = normalize_slin_format(
-                    declared_enc,
-                    int(declared_rate) if declared_rate is not None else None,
-                )
-                return {
-                    "encoding": enc,
-                    "sample_rate_hz": rate,
-                    "carrier": False,
-                    "declared_encoding": declared_enc or enc,
-                }
-            except (TypeError, ValueError):
-                if declared_enc in COMPANDED_TOKENS:
-                    # Companded selections ride the 8 kHz signed-linear
-                    # compatibility carrier; Asterisk owns the trunk codec.
-                    return {
-                        "encoding": "slin",
-                        "sample_rate_hz": 8000,
-                        "carrier": True,
-                        "declared_encoding": declared_enc,
-                    }
-                return {
-                    "encoding": "slin",
-                    "sample_rate_hz": 8000,
-                    "carrier": False,
-                    "declared_encoding": declared_enc or "slin",
-                }
-        try:
-            rate = int(declared_rate) if declared_rate is not None else 8000
-        except (TypeError, ValueError):
-            rate = 8000
-        return {
-            "encoding": declared_enc or "slin",
-            "sample_rate_hz": rate,
-            "carrier": False,
-            "declared_encoding": declared_enc or "slin",
-        }
-
+    """Resolve both wire legs of a profile exactly like the runtime does."""
     transport_out = profile.get("transport_out")
-    out_leg = _leg(transport_out if isinstance(transport_out, Mapping) else {})
+    out_leg = resolve_wire_leg(
+        transport_out if isinstance(transport_out, Mapping) else {},
+        audio_transport=audio_transport,
+    )
     transport_in = profile.get("transport_in")
     if isinstance(transport_in, Mapping) and transport_in:
-        in_leg = _leg(transport_in)
+        # An explicit inbound leg falls back to the resolved outbound leg,
+        # mirroring TransportOrchestrator._negotiate_formats.
+        in_leg = resolve_wire_leg(
+            transport_in,
+            audio_transport=audio_transport,
+            fallback_encoding=str(out_leg["encoding"]),
+            fallback_rate=out_leg["sample_rate_hz"],
+        )
         in_leg["declared"] = True
     else:
         in_leg = dict(out_leg)
@@ -326,23 +296,30 @@ def _resolve_chain(
     provider_pref = provider_pref if isinstance(provider_pref, Mapping) else {}
     prefs = _provider_boundary_preferences(kind or "", provider_cfg, provider_pref)
 
-    caps = PROVIDER_STATIC_CAPABILITIES.get(kind or "")
+    caps = PROVIDER_AUDIO_CAPABILITIES.get(kind or "")
     negotiated = dict(prefs)
     boundary_source = "provider" if is_full_agent else "profile"
     if caps:
-        wideband = caps.get("wideband")
         wideband_selected = (
             audio_transport == "audiosocket"
             and normalize_encoding(wire["out"]["encoding"]) == "linear16"
             and int(wire["out"]["sample_rate_hz"] or 0) >= 16000
-            and wideband is not None
+            and all(
+                caps.get(key) is not None
+                for key in (
+                    "wideband_input_encoding",
+                    "wideband_input_sample_rate_hz",
+                    "wideband_output_encoding",
+                    "wideband_output_sample_rate_hz",
+                )
+            )
         )
         if wideband_selected:
             negotiated = {
-                "input_encoding": wideband[0],
-                "input_sample_rate_hz": wideband[1],
-                "output_encoding": wideband[2],
-                "output_sample_rate_hz": wideband[3],
+                "input_encoding": caps["wideband_input_encoding"],
+                "input_sample_rate_hz": caps["wideband_input_sample_rate_hz"],
+                "output_encoding": caps["wideband_output_encoding"],
+                "output_sample_rate_hz": caps["wideband_output_sample_rate_hz"],
             }
             boundary_source = "provider-wideband-capability"
         else:

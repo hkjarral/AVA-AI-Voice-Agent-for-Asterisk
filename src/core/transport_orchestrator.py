@@ -22,7 +22,7 @@ from typing import Dict, Any, Optional, List, Union
 from structlog import get_logger
 
 from ..providers.base import ProviderCapabilities
-from ..audio.audiosocket_protocol import normalize_slin_format
+from ..config.audio_alignment import resolve_wire_leg
 
 logger = get_logger(__name__)
 
@@ -509,43 +509,23 @@ class TransportOrchestrator:
                      RTP always uses profile.transport_out.
         Provider format: try profile preference, fallback to provider's supported formats.
         """
-        # CRITICAL: Wire format depends on transport type
+        # Wire legs resolve through the shared resolver also used by the Admin
+        # UI alignment view (src/config/audio_alignment.resolve_wire_leg):
+        # AudioSocket signed-linear profiles select their matching wire type,
+        # companded profiles ride the 8 kHz signed-linear compatibility
+        # carrier, and anything else keeps the global AudioSocket fallback;
+        # RTP uses profile.transport_out as-is.
         if self.audio_transport == "audiosocket":
-            # AudioSocket message types represent signed-linear sample rates.
-            # A signed-linear profile selects its matching wire type. Companded
-            # profiles use the 8 kHz signed-linear compatibility carrier; they
-            # must never inherit a process-wide slin16 setting from another call.
-            wire_enc = self.audiosocket_format
-            wire_rate = self.audiosocket_sample_rate
-            profile_wire_enc = profile.transport_out.get('encoding', '')
-            profile_wire_rate = profile.transport_out.get('sample_rate_hz')
-            try:
-                wire_enc, wire_rate = normalize_slin_format(
-                    profile_wire_enc,
-                    int(profile_wire_rate) if profile_wire_rate is not None else None,
-                )
-            except (TypeError, ValueError):
-                profile_encoding = str(profile_wire_enc or "").strip().lower()
-                if profile_encoding in {
-                    "ulaw", "mulaw", "mu-law", "g711_ulaw",
-                    "alaw", "a-law", "g711_alaw",
-                }:
-                    wire_enc, wire_rate = "slin", 8000
-            if not wire_rate:
-                # Infer rate from format: slin=8kHz, slin16=16kHz
-                wire_enc_lower = wire_enc.lower().strip()
-                if wire_enc_lower in ('slin', 'linear', 'pcm'):
-                    wire_rate = 8000
-                elif wire_enc_lower in ('slin16', 'linear16', 'pcm16'):
-                    wire_rate = 16000
-                elif wire_enc_lower in ('ulaw', 'mulaw', 'g711_ulaw'):
-                    wire_rate = 8000
-                else:
-                    wire_rate = 8000
+            fallback_enc, fallback_rate = self.audiosocket_format, self.audiosocket_sample_rate
         else:
-            # RTP: use profile's transport_out (negotiated codec)
-            wire_enc = profile.transport_out.get('encoding', 'slin')
-            wire_rate = profile.transport_out.get('sample_rate_hz', 8000)
+            fallback_enc, fallback_rate = "slin", 8000
+        out_leg = resolve_wire_leg(
+            profile.transport_out if isinstance(profile.transport_out, dict) else {},
+            audio_transport=self.audio_transport,
+            fallback_encoding=fallback_enc,
+            fallback_rate=fallback_rate,
+        )
+        wire_enc, wire_rate = out_leg["encoding"], out_leg["sample_rate_hz"]
 
         # Inbound wire leg: mirrors the outbound wire unless the profile
         # declares an explicit transport_in. AudioSocket runtime decode remains
@@ -554,32 +534,13 @@ class TransportOrchestrator:
         # values are the declared expectation used for fallbacks/diagnostics.
         wire_in_enc, wire_in_rate = wire_enc, wire_rate
         if isinstance(profile.transport_in, dict) and profile.transport_in:
-            declared_in_enc = profile.transport_in.get('encoding')
-            declared_in_rate = profile.transport_in.get('sample_rate_hz')
-            if self.audio_transport == "audiosocket":
-                # AudioSocket frames are signed-linear; companded selections
-                # ride the 8 kHz signed-linear compatibility carrier exactly
-                # like transport_out does above.
-                try:
-                    wire_in_enc, wire_in_rate = normalize_slin_format(
-                        declared_in_enc,
-                        int(declared_in_rate) if declared_in_rate is not None else None,
-                    )
-                except (TypeError, ValueError):
-                    declared_token = str(declared_in_enc or "").strip().lower()
-                    if declared_token in {
-                        "ulaw", "mulaw", "mu-law", "g711_ulaw",
-                        "alaw", "a-law", "g711_alaw",
-                    }:
-                        wire_in_enc, wire_in_rate = "slin", 8000
-            else:
-                wire_in_enc = declared_in_enc or wire_enc
-                try:
-                    wire_in_rate = (
-                        int(declared_in_rate) if declared_in_rate is not None else wire_rate
-                    )
-                except (TypeError, ValueError):
-                    wire_in_rate = wire_rate
+            in_leg = resolve_wire_leg(
+                profile.transport_in,
+                audio_transport=self.audio_transport,
+                fallback_encoding=wire_enc,
+                fallback_rate=wire_rate,
+            )
+            wire_in_enc, wire_in_rate = in_leg["encoding"], in_leg["sample_rate_hz"]
 
         # Read the provider's configured requirements. Compatibility profiles
         # retain these values exactly. An explicitly selected wideband linear
