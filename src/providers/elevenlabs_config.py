@@ -46,11 +46,16 @@ class ElevenLabsAgentConfig:
     agent_id_env: str = ""
     display_name: str = ""
     customer: str = ""
-    
+    # Instance key echoed into YAML by the Admin UI provider editor.
+    name: str = ""
+
     # Provider type
     type: str = "full"
     enabled: bool = True
     capabilities: List[str] = field(default_factory=lambda: ["stt", "llm", "tts"])
+    # Provider-specific farewell hangup delay (overrides global), matching the
+    # field every other provider config model declares.
+    farewell_hangup_delay_sec: Optional[float] = None
     
     # Audio input configuration (from Asterisk)
     input_encoding: str = "ulaw"  # μ-law from telephony
@@ -101,9 +106,11 @@ class ElevenLabsAgentConfig:
             agent_id_env=data.get("agent_id_env", ""),
             display_name=data.get("display_name", ""),
             customer=data.get("customer", ""),
+            name=data.get("name", ""),
             type=data.get("type", "full"),
             enabled=data.get("enabled", True),
             capabilities=data.get("capabilities", ["stt", "llm", "tts"]),
+            farewell_hangup_delay_sec=data.get("farewell_hangup_delay_sec"),
             input_encoding=data.get("input_encoding", "ulaw"),
             input_sample_rate_hz=data.get("input_sample_rate_hz", 8000),
             provider_input_encoding=data.get("provider_input_encoding", "pcm16"),

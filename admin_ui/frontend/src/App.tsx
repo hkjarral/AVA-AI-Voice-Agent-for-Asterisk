@@ -20,6 +20,7 @@ import AgentsPage from './pages/AgentsPage';
 import MigrationStatusPage from './pages/MigrationStatusPage';
 import LegacyContextsRedirect from './pages/LegacyContextsRedirect';
 import ProfilesPage from './pages/ProfilesPage';
+import AudioPathPage from './pages/AudioPathPage';
 import ToolsPage from './pages/ToolsPage';
 import MCPPage from './pages/MCPPage';
 
@@ -164,6 +165,7 @@ function App() {
                                             <Route path="/agents/migration" element={<MigrationStatusPage />} />
                                             <Route path="/contexts" element={<LegacyContextsRedirect />} />
                                             <Route path="/profiles" element={<ProfilesPage />} />
+                                            <Route path="/audio-path" element={<AudioPathPage />} />
                                             <Route path="/tools" element={<ToolsPage />} />
                                             <Route path="/mcp" element={<MCPPage />} />
 

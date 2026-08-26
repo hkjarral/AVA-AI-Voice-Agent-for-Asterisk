@@ -25,6 +25,7 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from .base import AIProviderInterface, ProviderCapabilities, ProviderCapabilitiesMixin
+from ..config.audio_baselines import provider_audio_capabilities
 from .elevenlabs_config import ElevenLabsAgentConfig
 
 logger = logging.getLogger(__name__)
@@ -142,20 +143,15 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
     def get_capabilities(self) -> ProviderCapabilities:
         """Return static capability hints for the orchestrator."""
         return ProviderCapabilities(
-            input_encodings=["linear16", "pcm16", "ulaw"],
-            input_sample_rates_hz=[8000, 16000],
-            output_encodings=["linear16", "pcm16"],
-            output_sample_rates_hz=[16000, 22050],
+            # Audio format capabilities come from the canonical registry shared
+            # with the Admin UI audio-alignment view (src/config/audio_baselines).
+            **provider_audio_capabilities("elevenlabs_agent"),
             preferred_chunk_ms=20,
             can_negotiate=False,
             is_full_agent=True,
             has_native_vad=True,
             has_native_barge_in=True,
             requires_continuous_audio=True,
-            wideband_input_encoding="pcm16",
-            wideband_input_sample_rate_hz=16000,
-            wideband_output_encoding="pcm16",
-            wideband_output_sample_rate_hz=16000,
         )
     
     async def start_session(

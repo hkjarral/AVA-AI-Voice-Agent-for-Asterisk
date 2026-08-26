@@ -3,6 +3,7 @@ import yaml
 from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode, SequenceNode, ScalarNode
 import errno
+import json
 import os
 import re
 import asyncio
@@ -52,6 +53,7 @@ def _assert_in_use_audio_profiles_unchanged(
     new_config: Dict[str, Any],
     *,
     trusted_profile_reset: Optional[tuple[str, Dict[str, Any]]] = None,
+    allow_in_use_changes: bool = False,
 ) -> None:
     """Fail closed before mutating a profile referenced by an Agent.
 
@@ -60,6 +62,14 @@ def _assert_in_use_audio_profiles_unchanged(
     existing database without creating or migrating it; a missing database is
     an empty first-run store, while an unreadable existing database makes a
     profile mutation unsafe.
+
+    ``allow_in_use_changes`` is the operator-confirmed override: audio
+    profiles are parsed once at call setup, so editing an in-use profile is
+    safe for active calls (they keep the values they started with) and only
+    affects new calls after the config is applied. The override deliberately
+    does NOT cover deleting a referenced profile or re-pointing
+    ``profiles.default`` away from inherited Agents — those leave Agents
+    referencing a profile that no longer resolves, which fails calls closed.
     """
     old_profiles = old_config.get("profiles") or {}
     new_profiles = new_config.get("profiles") or {}
@@ -71,6 +81,17 @@ def _assert_in_use_audio_profiles_unchanged(
         for name in (set(old_profiles) | set(new_profiles)) - {"default"}
         if old_profiles.get(name) != new_profiles.get(name)
     }
+    if allow_in_use_changes:
+        # Edits to a profile body that still resolves are confirmed-safe;
+        # deletions stay guarded because the Agent reference would dangle.
+        # A body that is not a mapping (null/string/list) never loads —
+        # every consumer skips non-dict profiles — so it is a deletion in
+        # effect, not an edit, whatever the key says.
+        changed_profiles = {
+            name
+            for name in changed_profiles
+            if not isinstance(new_profiles.get(name), dict)
+        }
     if trusted_profile_reset is not None:
         reset_name, expected_body = trusted_profile_reset
         # This exception is deliberately value-bound.  Callers cannot bypass
@@ -164,6 +185,19 @@ def _assert_in_use_audio_profiles_unchanged(
             f"{profile}: {', '.join(sorted(names))}"
             for profile, names in sorted(references.items())
         )
+        if allow_in_use_changes:
+            # The confirmed override already passed body edits through, so
+            # whatever remains is a deletion or a profiles.default re-point —
+            # both would leave Agents pointing at a profile that no longer
+            # resolves for them.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot remove an audio profile (or re-point profiles.default) "
+                    f"still assigned to an Agent ({detail}). "
+                    "Move those Agents to another profile first."
+                ),
+            )
         raise HTTPException(
             status_code=409,
             detail=(
@@ -602,6 +636,11 @@ def _rotate_backups(base_path: str) -> None:
 
 class ConfigUpdate(BaseModel):
     content: str
+    # Operator-confirmed override: permit editing audio profiles that are
+    # referenced by Agents. Profiles are parsed once at call setup, so this
+    # never disturbs active calls; deletions of referenced profiles remain
+    # blocked regardless. Set only after an explicit confirmation dialog.
+    allow_in_use_profile_changes: bool = False
 
 @contextmanager
 def _temporary_dotenv(path: str, defaults: Dict[str, str] | None = None):
@@ -866,6 +905,7 @@ def persist_config_content(
     content: str,
     *,
     trusted_profile_reset: Optional[tuple[str, Dict[str, Any]]] = None,
+    allow_in_use_profile_changes: bool = False,
 ) -> dict:
     """
     Validate and persist a full merged ai-agent config (YAML string).
@@ -876,12 +916,17 @@ def persist_config_content(
     local override file. Returns the apply-plan payload describing whether a
     hot reload or restart is needed.
 
+    ``allow_in_use_profile_changes`` carries an explicit operator confirmation
+    that editing an audio profile referenced by an Agent is intended; see
+    ``_assert_in_use_audio_profiles_unchanged`` for exactly what it unlocks.
+
     Raises ``HTTPException`` on validation failure (propagated to the caller).
     """
     with _CONFIG_UPDATE_LOCK:
         return _persist_config_content_locked(
             content,
             trusted_profile_reset=trusted_profile_reset,
+            allow_in_use_profile_changes=allow_in_use_profile_changes,
         )
 
 
@@ -889,6 +934,7 @@ def _persist_config_content_locked(
     content: str,
     *,
     trusted_profile_reset: Optional[tuple[str, Dict[str, Any]]] = None,
+    allow_in_use_profile_changes: bool = False,
 ) -> dict:
     """Persist a complete config while the shared update lock is held."""
     # MED-E1: reject malformed tool email addresses (422) on EVERY persistence
@@ -935,6 +981,7 @@ def _persist_config_content_locked(
         old_merged,
         new_parsed,
         trusted_profile_reset=trusted_profile_reset,
+        allow_in_use_changes=allow_in_use_profile_changes,
     )
 
     # Convert desired merged config into a minimal local override (supports deletions).
@@ -1118,6 +1165,114 @@ async def get_profile_audio_baselines():
     return {"built_in_profiles": sorted(helpers["profile_baselines"])}
 
 
+def _read_agents_for_audio_alignment() -> list[Dict[str, Any]]:
+    """Read the Agent rows the alignment evaluator needs (read-only, tolerant).
+
+    A missing store is an empty first run; an unreadable one degrades to an
+    empty list so the alignment endpoint still reports config-level findings
+    (this endpoint is advisory — persistence guards stay strict elsewhere).
+    """
+    db_path = Path(
+        os.getenv("AGENTS_DB_PATH", "/app/data/operator/agents.db")
+    ).expanduser()
+    if not db_path.exists():
+        return []
+    try:
+        db_uri = db_path.resolve().as_uri() + "?mode=ro"
+        with sqlite3.connect(db_uri, uri=True) as conn:
+            try:
+                rows = conn.execute(
+                    "SELECT slug, display_name, provider, audio_profile, "
+                    "extra_json, is_default FROM agents WHERE is_active = 1"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                # Older schema: fall back to the columns the in-use profile
+                # guard already relies on.
+                rows = [
+                    (slug, display_name, None, audio_profile, None, 0)
+                    for slug, display_name, audio_profile in conn.execute(
+                        "SELECT slug, display_name, audio_profile FROM agents"
+                    ).fetchall()
+                ]
+    except (OSError, sqlite3.Error):
+        logger.warning("Agent store unavailable for audio alignment", exc_info=True)
+        return []
+
+    agents: list[Dict[str, Any]] = []
+    for slug, display_name, provider, audio_profile, extra_json, is_default in rows:
+        pipeline = None
+        if extra_json:
+            try:
+                extra = json.loads(extra_json)
+                if isinstance(extra, dict):
+                    pipeline = extra.get("pipeline")
+            except (TypeError, ValueError):
+                pipeline = None
+        agents.append({
+            "slug": slug,
+            "display_name": display_name,
+            "provider": provider,
+            "audio_profile": audio_profile,
+            "pipeline": pipeline,
+            "is_default": bool(is_default),
+        })
+    return agents
+
+
+@router.get("/audio/alignment")
+async def get_audio_alignment(
+    profile: Optional[str] = None,
+    provider: Optional[str] = None,
+    pipeline: Optional[str] = None,
+    preview: bool = False,
+):
+    """Effective per-Agent audio chains plus misalignment findings.
+
+    The audio profile is the single edit point for the wire contract; provider
+    cards own only the provider-native boundary. This endpoint mirrors the
+    engine's per-call resolution so the UI can show what a call will actually
+    put on each leg (e.g. a companded profile riding the AudioSocket slin
+    carrier) and flag values that the resolution overrides or renegotiates.
+
+    Pass ``preview=true`` (optionally with ``profile``/``provider``/
+    ``pipeline`` overrides) to resolve a single hypothetical Agent instead of
+    the stored Agent roster — used by the Agent editor to show the resulting
+    audio path live while the operator is still choosing a profile.
+    """
+    project_root = getattr(settings, "PROJECT_ROOT", None)
+    if project_root and project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    try:
+        from src.config.audio_alignment import evaluate_audio_alignment
+    except ImportError as exc:
+        # The shared src/ tree reaches the Admin container via the project
+        # volume mount; a deploy without it (or an out-of-date checkout that
+        # predates this module) should say so instead of silently hiding the
+        # panel.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "audio alignment module unavailable: "
+                f"{exc}. Expected {project_root}/src/config/audio_alignment.py "
+                "(project volume mount) from a checkout containing this feature."
+            ),
+        ) from exc
+
+    merged = _read_merged_config_dict()
+    if preview or profile or provider or pipeline:
+        agents: list[Dict[str, Any]] = [{
+            "slug": None,
+            "display_name": "Preview",
+            "provider": (provider or "").strip() or None,
+            "audio_profile": (profile or "").strip() or None,
+            "pipeline": (pipeline or "").strip() or None,
+            "is_default": False,
+        }]
+    else:
+        agents = await asyncio.to_thread(_read_agents_for_audio_alignment)
+    return evaluate_audio_alignment(merged, agents)
+
+
 @router.post("/profiles/{profile_name}/audio/reset")
 async def reset_profile_audio(profile_name: str):
     """Restore an existing profile to its built-in or telephony baseline."""
@@ -1208,7 +1363,12 @@ async def update_yaml_config(update: ConfigUpdate):
         # Persist via the shared helper (also used by the structured tools CRUD
         # API). MED-E1 email validation now lives inside persist_config_content
         # so every persistence path enforces it (not just this endpoint).
-        result = await asyncio.to_thread(persist_config_content, update.content)
+        result = await asyncio.to_thread(
+            lambda: persist_config_content(
+                update.content,
+                allow_in_use_profile_changes=update.allow_in_use_profile_changes,
+            )
+        )
         return await reconcile_apply_result_with_engine_state(result)
     except HTTPException:
         raise

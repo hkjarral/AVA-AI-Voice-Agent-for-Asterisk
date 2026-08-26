@@ -1040,16 +1040,14 @@ class Engine:
                 rtp_port = int(getattr(self.config.external_media, "rtp_port", 0) or 18080)
                 codec = getattr(self.config.external_media, "codec", "ulaw")
                 format = getattr(self.config.external_media, "format", "slin16")
-                sample_rate = getattr(self.config.external_media, "sample_rate", None)
-                
-                # Infer sample_rate from format if not explicitly set
-                if not sample_rate:
-                    if format in ("slin16", "linear16", "pcm16"):
-                        sample_rate = 16000
-                    elif format in ("slin", "linear"):
-                        sample_rate = 8000
-                    else:  # ulaw, alaw
-                        sample_rate = 8000
+                # Transit rate resolves through the same helper the Admin UI
+                # alignment view uses (external_media.sample_rate, inferred
+                # from external_media.format when unset).
+                from src.config.audio_alignment import resolve_external_media_transit_rate
+                sample_rate = resolve_external_media_transit_rate({
+                    "format": format,
+                    "sample_rate": getattr(self.config.external_media, "sample_rate", None),
+                })["sample_rate_hz"]
                 
                 
                 port_range = self._parse_port_range(
@@ -10111,9 +10109,19 @@ class Engine:
                     profile_fmt = frame_format
                     profile_rate = frame_rate
                 else:
-                    # For RTP: use transport profile (negotiated codec)
-                    profile_fmt = session.transport_profile.format or "ulaw"
-                    profile_rate = session.transport_profile.sample_rate or 8000
+                    # For RTP: prefer the resolved inbound wire leg, then the
+                    # legacy transport-profile fields (negotiated codec)
+                    tp = session.transport_profile
+                    profile_fmt = (
+                        getattr(tp, "wire_in_encoding", None)
+                        or getattr(tp, "format", None)
+                        or "ulaw"
+                    )
+                    profile_rate = (
+                        getattr(tp, "wire_in_sample_rate", None)
+                        or getattr(tp, "sample_rate", None)
+                        or 8000
+                    )
             except Exception:
                 # Safe fallback based on transport type
                 if self.config.audio_transport == "audiosocket":
@@ -17300,6 +17308,9 @@ class Engine:
             
             # Note: TransportCard will be emitted by legacy code path
             
+            # One line per call describing the entire effective media chain and
+            # where each leg came from: the audio profile owns the wire, the
+            # provider card owns only its native boundary.
             logger.info(
                 "Audio profile resolved and applied",
                 call_id=session.call_id,
@@ -17307,6 +17318,19 @@ class Engine:
                 provider=provider_name,
                 context=transport.context,
                 wire_format=f"{transport.wire_encoding}@{transport.wire_sample_rate}Hz",
+                wire_in_format=(
+                    f"{transport.wire_in_encoding}@{transport.wire_in_sample_rate}Hz"
+                    if getattr(transport, "wire_in_encoding", None)
+                    else f"{transport.wire_encoding}@{transport.wire_sample_rate}Hz"
+                ),
+                provider_input=(
+                    f"{transport.provider_input_encoding}@{transport.provider_input_sample_rate}Hz"
+                ),
+                provider_output=(
+                    f"{transport.provider_output_encoding}@{transport.provider_output_sample_rate}Hz"
+                ),
+                internal_rate_hz=transport.internal_rate,
+                chain_sources="wire=profile, provider_boundary=provider-config∩capabilities",
             )
             
         except Exception as exc:
@@ -17843,6 +17867,9 @@ class Engine:
             "g711_ulaw": "ulaw",
             "g711ulaw": "ulaw",
             "g711-ula": "ulaw",
+            "a-law": "alaw",
+            "g711_alaw": "alaw",
+            "g711alaw": "alaw",
             # Note: "slin" (8kHz PCM) and "slin16" (16kHz PCM) are distinct formats
             "slin": "slin",
             "slin12": "slin16",
@@ -17910,6 +17937,9 @@ class Engine:
         try:
             if canonical in ("ulaw", "mulaw", "g711_ulaw", "mu-law"):
                 pcm = audioop.ulaw2lin(audio_bytes, 2)
+                rate = 8000
+            elif canonical in ("alaw", "a-law", "g711_alaw"):
+                pcm = audioop.alaw2lin(audio_bytes, 2)
                 rate = 8000
             else:
                 if swap_needed:
@@ -18083,7 +18113,8 @@ class Engine:
             
             return pcm_bytes, "slin16", pcm_rate
 
-        if expected_enc in ("ulaw", "mulaw", "g711_ulaw", "mu-law"):
+        if expected_enc in ("ulaw", "mulaw", "g711_ulaw", "mu-law", "alaw", "a-law", "g711_alaw"):
+            is_alaw = expected_enc in ("alaw", "a-law", "g711_alaw")
             if expected_rate <= 0:
                 expected_rate = 8000
             working = pcm_bytes
@@ -18095,10 +18126,12 @@ class Engine:
                 except Exception:
                     working = pcm_bytes
             try:
-                encoded = audioop.lin2ulaw(working, 2)
+                encoded = (
+                    audioop.lin2alaw(working, 2) if is_alaw else audioop.lin2ulaw(working, 2)
+                )
             except Exception:
                 encoded = b""
-            return encoded, "ulaw", expected_rate
+            return encoded, ("alaw" if is_alaw else "ulaw"), expected_rate
 
         # Fallback: return PCM as-is
         return pcm_bytes, "slin16", pcm_rate

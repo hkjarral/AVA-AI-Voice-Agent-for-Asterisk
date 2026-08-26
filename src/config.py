@@ -1267,7 +1267,11 @@ class AppConfig(BaseModel):
             return self
 
         default_profile = self.profiles.get("default")
-        if isinstance(default_profile, str) and default_profile not in self.profiles:
+        if isinstance(default_profile, str) and not isinstance(
+            self.profiles.get(default_profile), dict
+        ):
+            # A missing key and a null/scalar body are the same failure: every
+            # consumer skips non-dict profiles, so the default never resolves.
             raise ValueError(
                 f"profiles.default references missing profile {default_profile!r}"
             )
@@ -1320,6 +1324,7 @@ class AppConfig(BaseModel):
                     raw_profile.get("output_resampler"),
                 )
             validate_pair(profile_name, "transport_out", raw_profile.get("transport_out"))
+            validate_pair(profile_name, "transport_in", raw_profile.get("transport_in"))
             provider_pref = raw_profile.get("provider_pref")
             if isinstance(provider_pref, dict):
                 validate_pair(

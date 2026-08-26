@@ -22,7 +22,7 @@ from typing import Dict, Any, Optional, List, Union
 from structlog import get_logger
 
 from ..providers.base import ProviderCapabilities
-from ..audio.audiosocket_protocol import normalize_slin_format
+from ..config.audio_alignment import resolve_external_media_wire, resolve_wire_leg
 
 logger = get_logger(__name__)
 
@@ -66,6 +66,9 @@ class AudioProfile:
     chunk_ms: str | int = "auto"
     idle_cutoff_ms: int = 1200
     talk_detect_talking_threshold: Optional[int] = None
+    # Optional asymmetric inbound leg (audio Asterisk sends us). When absent
+    # the inbound leg mirrors transport_out, which is the telephony norm.
+    transport_in: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -198,6 +201,12 @@ class TransportProfile:
     context: Optional[str] = None
     remediation: Optional[str] = None
     talk_detect_talking_threshold: Optional[int] = None
+    # Inbound wire leg (audio Asterisk sends us). Mirrors the outbound wire
+    # unless the profile declares an explicit transport_in. AudioSocket decode
+    # still trusts the per-frame TLV header; these are the declared expectation
+    # used for RTP decode fallbacks and diagnostics.
+    wire_in_encoding: Optional[str] = None
+    wire_in_sample_rate: Optional[int] = None
 
 
 class TransportOrchestrator:
@@ -227,6 +236,8 @@ class TransportOrchestrator:
         audiosocket_config = config.get('audiosocket', {})
         self.audiosocket_format = audiosocket_config.get('format', 'slin16') if audiosocket_config else 'slin16'
         self.audiosocket_sample_rate = audiosocket_config.get('sample_rate', None) if audiosocket_config else None
+        external_media_config = config.get('external_media')
+        self.external_media_config = external_media_config if isinstance(external_media_config, dict) else {}
         
         # If no profiles defined, synthesize from legacy config
         if not self.profiles:
@@ -246,6 +257,7 @@ class TransportOrchestrator:
                 continue
             
             try:
+                transport_in = profile_dict.get('transport_in')
                 profiles[name] = AudioProfile(
                     name=name,
                     internal_rate_hz=profile_dict.get('internal_rate_hz', 8000),
@@ -257,6 +269,7 @@ class TransportOrchestrator:
                     talk_detect_talking_threshold=profile_dict.get(
                         'talk_detect_talking_threshold'
                     ),
+                    transport_in=transport_in if isinstance(transport_in, dict) else None,
                 )
                 logger.debug("Loaded audio profile", name=name, profile=profiles[name])
             except Exception as exc:
@@ -498,44 +511,38 @@ class TransportOrchestrator:
                      RTP always uses profile.transport_out.
         Provider format: try profile preference, fallback to provider's supported formats.
         """
-        # CRITICAL: Wire format depends on transport type
+        # Wire legs resolve through the shared resolvers also used by the
+        # Admin UI alignment view (src/config/audio_alignment). AudioSocket:
+        # the profile owns the wire — signed-linear profiles select their
+        # matching wire type, companded profiles ride the 8 kHz signed-linear
+        # compatibility carrier, anything else keeps the global AudioSocket
+        # fallback. ExternalMedia: the Audio Transport RTP settings own the
+        # wire — one codec, both directions, identical for every profile.
         if self.audio_transport == "audiosocket":
-            # AudioSocket message types represent signed-linear sample rates.
-            # A signed-linear profile selects its matching wire type. Companded
-            # profiles use the 8 kHz signed-linear compatibility carrier; they
-            # must never inherit a process-wide slin16 setting from another call.
-            wire_enc = self.audiosocket_format
-            wire_rate = self.audiosocket_sample_rate
-            profile_wire_enc = profile.transport_out.get('encoding', '')
-            profile_wire_rate = profile.transport_out.get('sample_rate_hz')
-            try:
-                wire_enc, wire_rate = normalize_slin_format(
-                    profile_wire_enc,
-                    int(profile_wire_rate) if profile_wire_rate is not None else None,
+            out_leg = resolve_wire_leg(
+                profile.transport_out if isinstance(profile.transport_out, dict) else {},
+                fallback_encoding=self.audiosocket_format,
+                fallback_rate=self.audiosocket_sample_rate,
+            )
+            wire_enc, wire_rate = out_leg["encoding"], out_leg["sample_rate_hz"]
+
+            # Inbound wire leg: mirrors the outbound wire unless the profile
+            # declares an explicit transport_in. AudioSocket runtime decode
+            # remains governed by the per-frame TLV header; these resolved
+            # values are the declared expectation used for diagnostics.
+            wire_in_enc, wire_in_rate = wire_enc, wire_rate
+            if isinstance(profile.transport_in, dict) and profile.transport_in:
+                in_leg = resolve_wire_leg(
+                    profile.transport_in,
+                    fallback_encoding=wire_enc,
+                    fallback_rate=wire_rate,
                 )
-            except (TypeError, ValueError):
-                profile_encoding = str(profile_wire_enc or "").strip().lower()
-                if profile_encoding in {
-                    "ulaw", "mulaw", "mu-law", "g711_ulaw",
-                    "alaw", "a-law", "g711_alaw",
-                }:
-                    wire_enc, wire_rate = "slin", 8000
-            if not wire_rate:
-                # Infer rate from format: slin=8kHz, slin16=16kHz
-                wire_enc_lower = wire_enc.lower().strip()
-                if wire_enc_lower in ('slin', 'linear', 'pcm'):
-                    wire_rate = 8000
-                elif wire_enc_lower in ('slin16', 'linear16', 'pcm16'):
-                    wire_rate = 16000
-                elif wire_enc_lower in ('ulaw', 'mulaw', 'g711_ulaw'):
-                    wire_rate = 8000
-                else:
-                    wire_rate = 8000
+                wire_in_enc, wire_in_rate = in_leg["encoding"], in_leg["sample_rate_hz"]
         else:
-            # RTP: use profile's transport_out (negotiated codec)
-            wire_enc = profile.transport_out.get('encoding', 'slin')
-            wire_rate = profile.transport_out.get('sample_rate_hz', 8000)
-        
+            em_wire = resolve_external_media_wire(getattr(self, 'external_media_config', None))
+            wire_enc, wire_rate = em_wire["encoding"], em_wire["sample_rate_hz"]
+            wire_in_enc, wire_in_rate = wire_enc, wire_rate
+
         # Read the provider's configured requirements. Compatibility profiles
         # retain these values exactly. An explicitly selected wideband linear
         # profile may replace them below with the provider's declared native
@@ -655,6 +662,8 @@ class TransportOrchestrator:
             output_resampler_source=f"profile:{profile.name}",
             context=context_name,  # Propagate context for greeting/prompt injection
             talk_detect_talking_threshold=profile.talk_detect_talking_threshold,
+            wire_in_encoding=wire_in_enc,
+            wire_in_sample_rate=wire_in_rate,
         )
         
         logger.debug(
@@ -736,6 +745,11 @@ class TransportOrchestrator:
             'ulaw': 'mulaw',
             'g711_ulaw': 'mulaw',
             'g711ulaw': 'mulaw',
+            'mu-law': 'mulaw',
+            'alaw': 'alaw',
+            'a-law': 'alaw',
+            'g711_alaw': 'alaw',
+            'g711alaw': 'alaw',
         }
         return norm_map.get(encoding.lower(), encoding.lower())
     

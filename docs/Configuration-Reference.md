@@ -138,6 +138,48 @@ or unreadable. There is no live YAML persona fallback in v7.4.
 
 Audio profiles control the call’s negotiated sample rates/encodings (telephony wire format, provider input/output format, and internal pacing). They are defined under `profiles:` in `config/ai-agent.yaml`.
 
+#### Audio format resolution — single source of truth
+
+Each leg of the media path has exactly one owner; everything else is derived
+per call at setup:
+
+| Leg | Owner (edit point) | Notes |
+| --- | --- | --- |
+| Asterisk wire (in/out) | Audio Profile → `transport_out` / `transport_in` | On AudioSocket, companded selections (μ-law/A-law) ride the lossless `slin@8000` signed-linear carrier; Asterisk transcodes to the trunk codec. On ExternalMedia the wire is owned by the Audio Transport RTP settings instead: `external_media.codec` — one codec, both directions, shared by every profile and Agent. |
+| Internal processing rate | Audio Profile → `internal_rate_hz` | |
+| Provider API boundary | Provider card → `provider_input_*` / `output_*` | Constrained by the adapter's declared capabilities; must match the provider-side (dashboard) audio settings. For pipeline Agents the profile's `provider_pref` is the preference instead. |
+| Wire-facing provider fields (`input_encoding`, `input_sample_rate_hz`, `target_encoding`, `target_sample_rate_hz`) | Derived — not an edit point | The engine overwrites them per call from the resolved profile (`session.provider_overrides`); YAML values are legacy fallbacks only. |
+
+The Admin UI shows the resolved paths on the dedicated **Audio Path** page
+(Core Configuration → Audio Path, backed by `GET /api/config/audio/alignment`):
+one diagram per Agent — Asterisk ═ transport wire ═ AI Engine ═ provider API ═
+Provider (monolithic or pipeline, with the pipeline's STT/TTS components) —
+plus findings whenever a stored value disagrees with what a call will actually
+use — e.g. a provider `target_encoding` that the profile overrides, a provider
+rate outside the adapter's supported set, or a profile whose transport legs
+are ignored because the ExternalMedia RTP settings own the wire. The Agent editor renders the same diagram
+live under its Audio Profile selector, and the per-call log line `Audio
+profile resolved and applied` records the same chain at call setup.
+
+Profile audio pairs are validated at load/save time: G.711 codecs (`ulaw`,
+`mulaw`, `alaw`) are fixed at 8000 Hz and `slin`/`slin16` at 8000/16000 Hz — a
+mismatched pair is rejected instead of breaking the stream mid-call. The Admin
+UI locks the rate fields accordingly. A-law is accepted alongside μ-law for
+`provider_pref` encodings, `transport_out`, and the ExternalMedia codec.
+
+`profiles.<name>.transport_in` is an optional asymmetric inbound leg
+(`encoding` + `sample_rate_hz`, same fixed-rate rules). When omitted, the
+inbound leg mirrors `transport_out`, which is the telephony norm. AudioSocket
+announces the actual inbound format per frame, so `transport_in` acts as the
+declared expectation used for RTP decode fallbacks and diagnostics — set it
+only when the inbound side genuinely differs from the outbound side.
+
+Audio profiles are parsed once at call setup and never change mid-call. The
+Admin UI therefore allows editing a profile that Agents are using after an
+explicit confirmation: active calls keep the settings they connected with, and
+new calls pick up the change after apply (hot reload or restart). Deleting a
+profile that is still assigned to an Agent remains blocked.
+
 The shipped `telephony_ulaw_8k` profile retains compatibility downsampling.
 `telephony_enhanced_8k` is an opt-in profile with the same stable 8 kHz wire
 contract plus alias-safe provider-output downsampling. It reduces sibilant hiss
@@ -365,7 +407,7 @@ contains configuration and verification evidence, but never the referenced API p
 - audiosocket.host: Bind address for AudioSocket listener.
 - audiosocket.advertise_host: Address Asterisk connects to (optional; defaults to `audiosocket.host`). Use for NAT/VPN.
 - audiosocket.port: TCP port.
-- audiosocket.format: fallback wire format for legacy/companded profiles. Shipped YAML uses `slin` (16-bit signed linear @ 8 kHz), the validated compatibility default. Signed-linear Audio Profiles override this per call: `wideband_pcm_16k` selects `slin16` without changing the global value. Keep the fallback at `slin`; select wideband on the Agent or with `AI_AUDIO_PROFILE` rather than changing it globally.
+- audiosocket.format: legacy fallback only — the audio profile is the source of truth for the wire format (`profiles.<name>.transport_out`, resolved per call; companded profiles ride the signed-linear carrier automatically). This value is used only when a call resolves no valid profile wire format (e.g. configs predating Audio Profiles). It is intentionally not exposed in the Admin UI Transport page; keep it at `slin` if present, and select wideband on the Agent or with `AI_AUDIO_PROFILE` rather than changing it globally.
 
 ## ExternalMedia
 
@@ -373,8 +415,9 @@ contains configuration and verification evidence, but never the referenced API p
 - external_media.advertise_host: Address Asterisk sends RTP to (optional; defaults to `external_media.rtp_host`). Use for NAT/VPN.
 - external_media.rtp_port: Port for inbound RTP.
 - external_media.port_range: Optional range (`start:end`) for dynamic per-call RTP allocation; defaults to `rtp_port`.
-- external_media.codec: Asterisk RTP wire codec. The supported release baseline is `ulaw` at 8 kHz with `telephony_ulaw_8k` or `telephony_enhanced_8k`. `slin16`/16 kHz RTP is not supported; use AudioSocket with `wideband_pcm_16k` instead.
-- external_media.direction: `both` | `sendonly` | `recvonly`.
+- external_media.codec: Asterisk RTP wire codec, BOTH directions, one codec shared by every profile and Agent (audio-profile Transport Output/Input apply to AudioSocket only; engine restart applies changes). Supported: `ulaw`, `alaw`, `slin16`. The release baseline is `ulaw`/`alaw` at 8 kHz; `slin16`/16 kHz RTP is outside the supported baseline — use AudioSocket with `wideband_pcm_16k` instead.
+- external_media.sample_rate: engine-side transit rate — inbound RTP is decoded to PCM16 and resampled to this rate for the engine (default 16000, inferred from `external_media.format` when unset). Set it to the provider's native rate (8000 Hz for G.711 providers) to avoid an extra resample round trip; editable on the Audio Transport page (the page also keeps `external_media.format` coherent: `slin` at 8 kHz, `slin16` at 16 kHz). The Audio Path view shows the effective transit rate on the AI Engine node.
+- external_media.direction: expert YAML key, default `both` (two-way media — the only mode a voice agent works in). `sendonly`/`recvonly` are one-way monitoring modes that leave the agent mute or deaf; not exposed in the Admin UI.
 - external_media.lock_remote_endpoint: When true (default), **do not** accept mid-call changes to the inbound RTP source `(ip,port)` for that call.
 - external_media.allowed_remote_hosts: Optional list of **IP addresses** allowed as inbound RTP sources. When set, packets from other sources are dropped (recommended when the RTP source IP is stable).
   - Note: if `asterisk.host` is an IP literal, the engine may default `allowed_remote_hosts` to `[asterisk.host]` unless explicitly configured.

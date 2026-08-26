@@ -356,6 +356,9 @@ class StreamingPlaybackManager:
             "mulaw": "ulaw",
             "g711_ulaw": "ulaw",
             "g711ulaw": "ulaw",
+            "a-law": "alaw",
+            "g711_alaw": "alaw",
+            "g711alaw": "alaw",
             "linear16": "slin16",
             "pcm16": "slin16",
             # "slin": "slin16",  # REMOVED: slin should remain slin (8kHz PCM16)
@@ -369,6 +372,11 @@ class StreamingPlaybackManager:
     def _is_mulaw(value: Optional[str]) -> bool:
         canonical = StreamingPlaybackManager._canonicalize_encoding(value)
         return canonical in {"ulaw", "mulaw", "g711_ulaw", "mu-law"}
+
+    @staticmethod
+    def _is_alaw(value: Optional[str]) -> bool:
+        canonical = StreamingPlaybackManager._canonicalize_encoding(value)
+        return canonical in {"alaw", "a-law", "g711_alaw"}
 
     def _ensure_call_tap_buffers(self, call_id: str, sample_rate: int) -> None:
         if not getattr(self, "diag_enable_taps", False):
@@ -399,6 +407,8 @@ class StreamingPlaybackManager:
         canonical = StreamingPlaybackManager._canonicalize_encoding(fmt)
         if canonical in {"ulaw", "mulaw", "g711_ulaw", "mu-law"}:
             return 8000
+        if canonical in {"alaw", "a-law", "g711_alaw"}:
+            return 8000  # G.711 A-law is fixed at 8 kHz
         if canonical == "slin":
             return 8000  # slin is always 8kHz PCM16
         if canonical in {"slin16", "linear16", "pcm16"}:
@@ -753,6 +763,12 @@ class StreamingPlaybackManager:
             if mulaw_transport:
                 resolved_target_format = "ulaw"
                 resolved_target_rate = 8000
+            elif self._is_alaw(transport_format):
+                # G.711 A-law rides the same fixed 8 kHz companded leg as μ-law.
+                # ExternalMedia providers emit target-encoded audio themselves;
+                # this keeps the stream metadata truthful for diagnostics.
+                resolved_target_format = "alaw"
+                resolved_target_rate = 8000
             elif pcm_transport in {"slin16", "linear16", "pcm16"}:
                 resolved_target_format = "slin16"
                 # CRITICAL FIX: slin16 means 16kHz PCM16, NOT 8kHz!
@@ -1028,8 +1044,8 @@ class StreamingPlaybackManager:
                                     tgt_fmt,
                                     int(self.sample_rate),
                                 )
-                            src_bps = 1 if self._is_mulaw(src_enc) else 2
-                            tgt_bps = 1 if self._is_mulaw(tgt_fmt) else 2
+                            src_bps = 1 if self._is_mulaw(src_enc) or self._is_alaw(src_enc) else 2
+                            tgt_bps = 1 if self._is_mulaw(tgt_fmt) or self._is_alaw(tgt_fmt) else 2
                             try:
                                 ratio = (tgt_bps / float(max(1, src_bps))) * (float(tgt_rate) / float(max(1, src_rate)))
                                 egress_bytes = int(max(1, round(len(chunk) * max(0.5, ratio))))
@@ -1288,7 +1304,11 @@ class StreamingPlaybackManager:
 
         if sentinel_seen:
             if pending:
-                filler_byte = b"\xFF" if self._is_mulaw(target_fmt) else b"\x00"
+                filler_byte = (
+                b"\xFF" if self._is_mulaw(target_fmt)
+                else b"\xD5" if self._is_alaw(target_fmt)
+                else b"\x00"
+            )
                 padded = pending + (filler_byte * max(0, frame_size - len(pending)))
                 self.frame_remainders[call_id] = b""
                 return await self._emit_frame(
@@ -1330,7 +1350,11 @@ class StreamingPlaybackManager:
                         return "wait"
             except Exception:
                 pass
-            filler_byte = b"\xFF" if self._is_mulaw(target_fmt) else b"\x00"
+            filler_byte = (
+                b"\xFF" if self._is_mulaw(target_fmt)
+                else b"\xD5" if self._is_alaw(target_fmt)
+                else b"\x00"
+            )
             if pending:
                 pending_len = len(pending)
                 frame = pending + (filler_byte * max(0, frame_size - pending_len))
@@ -1837,17 +1861,17 @@ class StreamingPlaybackManager:
                     logger.debug("Fast-path tap capture failed", call_id=call_id, exc_info=True)
                 return ulaw_bytes
             
-            # NEW: Fast path for μ-law → PCM16 (AudioSocket requires PCM16)
+            # NEW: Fast path for companded (μ-law/A-law) → PCM16 (AudioSocket requires PCM16)
             # Just decode, skip attack/normalize/limiter/encode
             if (
-                self._is_mulaw(src_encoding_raw)
+                (self._is_mulaw(src_encoding_raw) or self._is_alaw(src_encoding_raw))
                 and target_fmt in ("slin", "slin16", "linear16", "pcm16")
                 and src_rate == target_rate
             ):
                 self._resample_states[call_id] = None
                 try:
                     logger.info(
-                        "🎯 μ-law → PCM16 FAST PATH - Simple decode only",
+                        "🎯 companded → PCM16 FAST PATH - Simple decode only",
                         call_id=call_id,
                         chunk_bytes=len(chunk),
                         source=src_encoding_raw,
@@ -1856,9 +1880,13 @@ class StreamingPlaybackManager:
                     )
                 except Exception:
                     pass
-                # Simple decode: mulaw → PCM16
+                # Simple decode: companded → PCM16
                 try:
-                    pcm16_bytes = mulaw_to_pcm16le(chunk)
+                    pcm16_bytes = (
+                        audioop.alaw2lin(chunk, 2)
+                        if self._is_alaw(src_encoding_raw)
+                        else mulaw_to_pcm16le(chunk)
+                    )
                     # Deterministic normalization on fast-path when enabled
                     try:
                         if self.normalizer_enabled and self.normalizer_target_rms > 0 and pcm16_bytes:
@@ -1989,8 +2017,12 @@ class StreamingPlaybackManager:
             resample_state = self._resample_states.get(call_id)
 
             # Convert source to PCM16 for resampling/format conversion when needed
-            if self._is_mulaw(src_encoding_raw):
-                working = mulaw_to_pcm16le(working)
+            if self._is_mulaw(src_encoding_raw) or self._is_alaw(src_encoding_raw):
+                working = (
+                    audioop.alaw2lin(working, 2)
+                    if self._is_alaw(src_encoding_raw)
+                    else mulaw_to_pcm16le(working)
+                )
                 working, _ = self._remove_dc_from_pcm16(
                     call_id,
                     working,
@@ -3105,7 +3137,7 @@ class StreamingPlaybackManager:
                     fallback_sample_rate=sample_rate,
                     stream_info_keys=list(info.keys()) if info else [],
                 )
-        bytes_per_sample = 1 if self._is_mulaw(fmt) else 2
+        bytes_per_sample = 1 if self._is_mulaw(fmt) or self._is_alaw(fmt) else 2
         chunk_size_ms = self.chunk_size_ms
         if call_id and call_id in self.active_streams:
             try:
@@ -3913,7 +3945,7 @@ class StreamingPlaybackManager:
                             or self._canonicalize_encoding(self.audiosocket_format)
                             or "ulaw"
                         )
-                        bps = 1 if self._is_mulaw(fmt) else 2
+                        bps = 1 if self._is_mulaw(fmt) or self._is_alaw(fmt) else 2
                         try:
                             sr_candidate = int(info.get('target_sample_rate', 0) or 0)
                         except Exception:
