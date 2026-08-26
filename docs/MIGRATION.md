@@ -23,7 +23,7 @@ operator configuration and SQLite data. Then:
 3. Existing post-call webhooks that generate summaries without a
    `summary_provider` retain the legacy `OPENAI_API_KEY` and `gpt-4o-mini`
    behavior. An explicitly selected modular LLM must be enabled and ready; a
-   summary failure never falls back to another transcript destination, while
+   summary failure never falls back to another provider, while
    the webhook still runs with an empty `{summary}`.
 4. If you use outbound lead `custom_vars`, keep the canonical serialized JSON
    at or below 8,192 bytes and exclude credentials. The engine now confirms
@@ -42,8 +42,12 @@ the configured outbound identity, route, and caller ID after the upgrade.
 
 Rollback uses the prior tagged images and the pre-update configuration backup;
 there is no database downgrade. Pause campaigns before rollback so in-flight
-calls stay on one engine version. Restore the configuration backup as well if
-you added v7.5.6-only Agent hangup or webhook summary settings.
+calls stay on one engine version. Rollback now aborts before service changes
+when the updater cannot verify the active-call count; restore AI Engine health
+and retry. `AAVA_UPDATE_FORCE_ACTIVE_CALLS=true` is an emergency override that
+may interrupt calls and must be used only after independently confirming that
+continuation is safer than waiting. Restore the configuration backup as well
+if you added v7.5.6-only Agent hangup or webhook summary settings.
 
 ## v7.5.4 to v7.5.5
 

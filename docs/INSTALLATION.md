@@ -255,13 +255,19 @@ only the services that were running before the update:
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 docker compose config --quiet
-docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate ai_engine admin_ui
-
-# Only when Local AI was already in use before the update:
-docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate local_ai_server
+AAVA_RUNNING_SERVICES="$(docker compose -p asterisk-ai-voice-agent ps --services --status running)" || exit 1
+AAVA_RECOVERY_SERVICES=(ai_engine admin_ui)
+if printf '%s\n' "${AAVA_RUNNING_SERVICES}" | grep -Fxq local_ai_server; then
+  AAVA_RECOVERY_SERVICES+=(local_ai_server)
+fi
+docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate "${AAVA_RECOVERY_SERVICES[@]}"
+unset AAVA_RUNNING_SERVICES AAVA_RECOVERY_SERVICES
 
 agent check
 ```
+
+This recreates `local_ai_server` in the same operation when it was running,
+while preserving an absent or intentionally stopped optional Local AI service.
 
 This manual recovery is required because a retry at the target Git commit may have no
 remaining source diff from which to reconstruct the failed Docker action plan.

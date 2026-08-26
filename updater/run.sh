@@ -309,15 +309,15 @@ guard_rollback_active_calls() {
   set -e
 
   if [ "${rc}" -ne 0 ]; then
-    echo "WARN: unable to check active calls before rollback service changes: ${output}" >&2
-    return 0
+    echo "ERR: unable to check active calls before rollback service changes: ${output}; retry when the AI Engine is reachable or set AAVA_UPDATE_FORCE_ACTIVE_CALLS=true to override" >&2
+    return 1
   fi
 
   local active_calls
   active_calls="$(printf '%s\n' "${output}" | tail -n 1 | tr -d '[:space:]')"
   if ! [[ "${active_calls}" =~ ^[0-9]+$ ]]; then
-    echo "WARN: unable to parse active-call count before rollback service changes: ${output}" >&2
-    return 0
+    echo "ERR: unable to parse active-call count before rollback service changes: ${output}; retry after correcting the health response or set AAVA_UPDATE_FORCE_ACTIVE_CALLS=true to override" >&2
+    return 1
   fi
 
   if [ "${active_calls}" -gt 0 ]; then

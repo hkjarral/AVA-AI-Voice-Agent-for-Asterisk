@@ -186,8 +186,9 @@ databases, reassign Agents, or change Audio Profiles.
 - **Post-call summaries can use configured modular LLMs** — each webhook can
   select an enabled LLM provider and configure its model readiness, timeout,
   word limit, and prompt. Explicit selections never fall back to another
-  transcript destination; existing webhooks retain the legacy OpenAI behavior
-  until configured ([#618](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/618)).
+  provider; summary failures leave `{summary}` empty while webhook delivery
+  continues. Existing webhooks retain the legacy OpenAI behavior until
+  configured ([#618](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/618)).
 - **Summary prompts stay isolated from the live Agent persona** — provider
   adapters receive the webhook's summary instructions as authoritative job
   context, and the default Groq LLM moves to `openai/gpt-oss-120b`.

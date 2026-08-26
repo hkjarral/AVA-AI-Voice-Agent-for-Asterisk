@@ -28,6 +28,29 @@ def test_active_call_probe_keeps_stdin_open_for_embedded_python() -> None:
     assert "docker exec -i ai_engine python3 - <<'PY'" in runner
 
 
+def test_rollback_active_call_probe_failures_abort_without_override() -> None:
+    """Rollback must not recreate services when active-call state is unknown."""
+    runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
+    start = runner.index("guard_rollback_active_calls() {\n")
+    end = runner.index("\n}\n\ninstall_agent_if_needed()", start)
+    guard = runner[start:end]
+
+    probe_failure_start = guard.index('if [ "${rc}" -ne 0 ]; then')
+    probe_failure_end = guard.index("\n  fi", probe_failure_start)
+    probe_failure = guard[probe_failure_start:probe_failure_end]
+    parse_failure_start = guard.index(
+        'if ! [[ "${active_calls}" =~ ^[0-9]+$ ]]; then'
+    )
+    parse_failure_end = guard.index("\n  fi", parse_failure_start)
+    parse_failure = guard[parse_failure_start:parse_failure_end]
+
+    assert 'if is_truthy "${FORCE_ACTIVE_CALLS}"; then' in guard
+    assert "AAVA_UPDATE_FORCE_ACTIVE_CALLS=true" in probe_failure
+    assert "AAVA_UPDATE_FORCE_ACTIVE_CALLS=true" in parse_failure
+    assert "return 1" in probe_failure
+    assert "return 1" in parse_failure
+
+
 def test_updater_drops_to_the_project_owner_before_writing() -> None:
     runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
     dockerfile = (ROOT / "updater" / "Dockerfile").read_text(encoding="utf-8")
