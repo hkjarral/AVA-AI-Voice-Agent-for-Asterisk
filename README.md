@@ -18,6 +18,8 @@
 
 The most powerful, flexible open-source AI voice agent for Asterisk/FreePBX. Featuring a **modular pipeline architecture** that lets you mix and match STT, LLM, and TTS providers, plus **6 production-ready golden baselines** validated for enterprise deployment.
 
+> **Managing multiple PBXs or customer installations?** [Explore AVA Operator](https://operator.agent6789.com/?utm_source=github&utm_medium=readme&utm_campaign=ava_operator_preview&utm_content=core_readme) — the commercial multi-installation management layer built around AVA Core, currently available as an early-access preview. AVA Core remains MIT-licensed, free, and fully functional on its own.
+
 [Quick Start](#-quick-start) • [Features](#-features) • [Roadmap](docs/ROADMAP.md) • [Demo](#-demo) • [Docs](docs/README.md) • [Community](#-community)
 
 </div>
@@ -38,6 +40,7 @@ The most powerful, flexible open-source AI voice agent for Asterisk/FreePBX. Fea
 - [📊 Requirements](#-requirements)
 - [🗺️ Documentation](#-documentation)
 - [🤝 Contributing](#-contributing)
+- [AVA Operator](#ava-operator)
 - [💬 Community](#-community)
 - [📝 License](#-license)
 
@@ -1184,6 +1187,14 @@ Then load **[AVA.mdc](AVA.mdc)** into your AI coding assistant (Claude, Cursor, 
 </table>
 
 See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full list — contributions are recognized there, in release notes, and on Discord.
+
+---
+
+## AVA Operator
+
+AVA Operator helps MSPs and operators manage AI voice across multiple Asterisk and FreePBX installations from one console. It builds on AVA Core while remaining a separate commercial product.
+
+[Explore the early-access preview →](https://operator.agent6789.com/?utm_source=github&utm_medium=readme&utm_campaign=ava_operator_preview&utm_content=core_readme)
 
 ---
 
