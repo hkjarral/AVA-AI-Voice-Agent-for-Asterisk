@@ -7,10 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.5.6] - 2026-08-26
+
 ### Added
 
 - **Configured LLMs for post-call summaries** ([#618](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/618)): Post-call webhooks can select any enabled modular LLM component, including OpenAI-compatible DeepSeek/Claude gateways, Gemini, Ollama, Local, Telnyx, and MiniMax. The Admin UI exposes provider, model readiness, timeout, word limit, and an editable per-webhook prompt. Modular cloud LLM credentials use the same provider-scoped owner-only secret files as full-agent providers; webhook definitions store only the provider reference. Explicit selections fail closed without sending transcripts to a fallback provider, while legacy webhooks without `summary_provider` retain the existing `OPENAI_API_KEY`/`gpt-4o-mini` behavior.
-- **Agent-scoped hangup intent markers:** Agents can inherit, extend, or replace the global `hangup_call` end-of-call markers from the Admin UI. New calls capture an immutable effective marker policy, and Full Local sends it as call-scoped tool context with capability negotiation so reused sessions cannot leak markers between Agents and older Local AI Server builds fail closed instead of silently ignoring an override.
+- **Agent-scoped hangup intent markers** ([#619](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/619)): Agents can inherit, extend, or replace the global `hangup_call` end-of-call markers from the Admin UI. New calls capture an immutable effective marker policy, and Full Local sends it as call-scoped tool context with capability negotiation so reused sessions cannot leak markers between Agents and older Local AI Server builds fail closed instead of silently ignoring an override.
 
 ### Fixed
 
@@ -2324,7 +2326,8 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 - **v4.0.0** (2025-10-29) - Modular pipeline architecture, production monitoring, golden baselines
 - **v3.0.0** (2025-09-16) - Modular pipeline architecture, file based playback
 
-[Unreleased]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.5...HEAD
+[Unreleased]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.6...HEAD
+[7.5.6]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.5...v7.5.6
 [7.5.5]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.4...v7.5.5
 [7.5.4]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.3...v7.5.4
 [7.5.3]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.2...v7.5.3

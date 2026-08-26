@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-7.5.5-blue.svg)
+![Version](https://img.shields.io/badge/version-7.5.6-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -167,6 +167,38 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>v7.5.6 — Safer outbound context, Agent hangup policies, and configured summary LLMs</b></summary>
+
+v7.5.6 is an in-place feature and reliability release. It does not migrate
+databases, reassign Agents, or change Audio Profiles.
+
+- **Outbound lead context is delivered or the call fails closed** — ARI
+  origination now uses its documented `variables` object, restoring routing,
+  identity, AudioSocket, AMD/consent, and campaign metadata. Nonempty lead
+  `custom_vars` is bounded, confirmed before provider startup, recovered after
+  an engine restart, and redacted from diagnostics
+  ([#613](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/613)).
+- **Hangup intent markers can be scoped per Agent** — each Agent can inherit,
+  extend, or replace the global end-of-call phrases. New calls capture an
+  immutable policy, and Full Local negotiates call-scoped support so older
+  servers and malformed overrides fail closed
+  ([#619](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/619)).
+- **Post-call summaries can use configured modular LLMs** — each webhook can
+  select an enabled LLM provider and configure its model readiness, timeout,
+  word limit, and prompt. Explicit selections never fall back to another
+  transcript destination; existing webhooks retain the legacy OpenAI behavior
+  until configured ([#618](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/618)).
+- **Summary prompts stay isolated from the live Agent persona** — provider
+  adapters receive the webhook's summary instructions as authoritative job
+  context, and the default Groq LLM moves to `openai/gpt-oss-120b`.
+
+See the [v7.5.6 changelog](CHANGELOG.md#756---2026-08-26),
+[migration notes](docs/MIGRATION.md#v755-to-v756), and
+[validation matrix](docs/baselines/golden/v7.5.6-validation-matrix.md).
+
+</details>
+
+<details>
 <summary><b>v7.5.5 — Sidebar collapse, post-call webhook variables, and configurable extension availability</b></summary>
 
 v7.5.5 is an in-place feature release. It does not migrate databases, reassign
@@ -400,7 +432,7 @@ voicemail mailboxes it should be allowed to use.**
   working.
 
 Before upgrading—especially from v7.3.0–v7.3.3—read the
-[current upgrade procedure](docs/INSTALLATION.md#upgrade-to-v755-existing-checkout)
+[current upgrade procedure](docs/INSTALLATION.md#upgrade-to-v756-existing-checkout)
 and [Contexts → Agents migration guide](docs/OPERATOR_MIGRATION.md).
 
 </details>

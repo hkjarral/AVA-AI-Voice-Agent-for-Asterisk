@@ -232,4 +232,4 @@ Longer-term goals that will shape the project's direction:
 
 ---
 
-**Last Updated**: August 2026 | **Latest Stable**: v7.5.5 | **Next**: Unreleased
+**Last Updated**: August 2026 | **Latest Stable**: v7.5.6 | **Next**: Unreleased
