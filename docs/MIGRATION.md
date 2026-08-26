@@ -12,10 +12,12 @@ policy fields, and adds optional configured-LLM fields to post-call webhooks.
 Before upgrading, pause AAVA-managed outbound campaigns and back up the normal
 operator configuration and SQLite data. Then:
 
-1. Rebuild and recreate `admin_ui`, `ai_engine`, and `local_ai_server` together.
-   Full Local calls with a non-default Agent hangup policy require the matching
-   Local AI Server capability; mixed versions fail call setup instead of
-   silently discarding the override.
+1. Rebuild and recreate `admin_ui` and `ai_engine`. Rebuild and recreate
+   `local_ai_server` in the same maintenance window only when this deployment
+   uses the bundled Local AI service; leave it absent or stopped on remote-only
+   and split-server deployments. Full Local calls with a non-default Agent
+   hangup policy require a matching Local AI Server version; mixed versions
+   fail call setup instead of silently discarding the override.
 2. Existing Agents continue to inherit the global `hangup_call` markers. To
    opt in, configure an Agent's Hangup Guardrail to extend or replace those
    markers. Each new call captures its effective list; active calls do not

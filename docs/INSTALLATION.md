@@ -40,6 +40,11 @@ git status --short
 git diff --binary > ../aava-pre-v756-working-tree.patch
 git diff --binary --cached > ../aava-pre-v756-staged.patch
 docker compose config --quiet
+if ! docker compose -p asterisk-ai-voice-agent ps --services --status running \
+  > ../aava-pre-v756-running-services.txt; then
+  docker compose -p asterisk-ai-voice-agent ps --services \
+    > ../aava-pre-v756-running-services.txt || exit 1
+fi
 ```
 
 Back up at least:
@@ -255,19 +260,28 @@ only the services that were running before the update:
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 docker compose config --quiet
-AAVA_RUNNING_SERVICES="$(docker compose -p asterisk-ai-voice-agent ps --services --status running)" || exit 1
-AAVA_RECOVERY_SERVICES=(ai_engine admin_ui)
-if printf '%s\n' "${AAVA_RUNNING_SERVICES}" | grep -Fxq local_ai_server; then
-  AAVA_RECOVERY_SERVICES+=(local_ai_server)
+AAVA_RUNNING_SERVICES_FILE=../aava-pre-v756-running-services.txt
+test -f "${AAVA_RUNNING_SERVICES_FILE}" || exit 1
+AAVA_RECOVERY_SERVICES=()
+for AAVA_SERVICE in ai_engine admin_ui local_ai_server; do
+  if grep -Fxq "${AAVA_SERVICE}" "${AAVA_RUNNING_SERVICES_FILE}"; then
+    AAVA_RECOVERY_SERVICES+=("${AAVA_SERVICE}")
+  fi
+done
+if [ "${#AAVA_RECOVERY_SERVICES[@]}" -gt 0 ]; then
+  docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate "${AAVA_RECOVERY_SERVICES[@]}"
+else
+  echo "No pre-update AAVA application services were running; leaving them stopped."
 fi
-docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate "${AAVA_RECOVERY_SERVICES[@]}"
-unset AAVA_RUNNING_SERVICES AAVA_RECOVERY_SERVICES
+unset AAVA_RUNNING_SERVICES_FILE AAVA_RECOVERY_SERVICES AAVA_SERVICE
 
 agent check
 ```
 
-This recreates `local_ai_server` in the same operation when it was running,
-while preserving an absent or intentionally stopped optional Local AI service.
+This uses the service list captured before the update, so a service stopped or
+removed by the failed operation is still recovered. It recreates
+`local_ai_server` only when it was previously running, preserving an absent or
+intentionally stopped optional Local AI service.
 
 This manual recovery is required because a retry at the target Git commit may have no
 remaining source diff from which to reconstruct the failed Docker action plan.

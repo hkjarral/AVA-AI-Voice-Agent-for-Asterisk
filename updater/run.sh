@@ -207,6 +207,11 @@ compose_existing_services() {
     || docker compose ps --services 2>/dev/null
 }
 
+compose_running_services() {
+  docker compose ps --services --status running 2>/dev/null \
+    || docker compose ps --services 2>/dev/null
+}
+
 ensure_dirs() {
   mkdir -p "${JOBS_DIR}" "${BIN_DIR}"
 }
@@ -540,6 +545,20 @@ run_update() {
   pre_update_branch="aava-pre-update-${JOB_ID}"
   git -c safe.directory="${PROJECT_ROOT}" branch -f "${pre_update_branch}" HEAD >/dev/null 2>&1 || true
 
+  # Capture desired runtime state before the update can stop or remove a
+  # container. Rollback must not infer this state from a partially updated
+  # stack because a previously running optional service may then be absent.
+  if ! pre_update_running_services="$(compose_running_services)"; then
+    echo "ERR: could not discover running Compose services before update" >&2
+    JOB_FINISHED_AT="$(now_iso)"
+    export JOB_FINISHED_AT
+    write_job_state "failed" "2"
+    prune_job_logs || true
+    exit 2
+  fi
+  pre_update_running_services_json="$(printf '%s\n' "${pre_update_running_services}" \
+    | jq -Rsc 'split("\n") | map(select(length > 0)) | unique')"
+
   # Capture a plan snapshot for history/summary (best-effort).
   plan_json=""
   if [ -x "${BUILTIN_AGENT}" ]; then
@@ -560,6 +579,7 @@ run_update() {
     --arg pre_update_branch "${pre_update_branch}" \
     --arg pre_update_sha "${pre_sha}" \
     --arg pre_update_ref "${pre_branch}" \
+    --argjson pre_update_running_services "${pre_update_running_services_json}" \
     --arg plan_raw "${plan_json}" \
     '{
       type: $type,
@@ -572,6 +592,7 @@ run_update() {
       pre_update_branch: $pre_update_branch,
       pre_update_sha: (if ($pre_update_sha|length) == 0 then null else $pre_update_sha end),
       pre_update_ref: (if ($pre_update_ref|length) == 0 then null else $pre_update_ref end),
+      pre_update_running_services: $pre_update_running_services,
       plan: (try ($plan_raw | fromjson) catch null)
     }')"
 
@@ -673,6 +694,12 @@ run_rollback() {
   pre_branch="$(jq -r '.pre_update_branch // empty' "${src_state}" 2>/dev/null || true)"
   backup_rel="$(jq -r '.backup_dir_rel // empty' "${src_state}" 2>/dev/null || true)"
   src_include_ui="$(jq -r '.include_ui // empty' "${src_state}" 2>/dev/null || true)"
+  has_pre_update_running_services=false
+  pre_update_running_services_json='[]'
+  if jq -e '.pre_update_running_services | type == "array"' "${src_state}" >/dev/null 2>&1; then
+    has_pre_update_running_services=true
+    pre_update_running_services_json="$(jq -c '.pre_update_running_services | map(tostring) | unique' "${src_state}")"
+  fi
 
   if [ -z "${pre_branch}" ] || [ -z "${backup_rel}" ]; then
     echo "ERR: source job missing rollback metadata (pre_update_branch/backup_dir_rel)" >&2
@@ -692,7 +719,8 @@ run_rollback() {
     prune_job_logs || true
     exit 2
   fi
-  if grep -Fxq "local_ai_server" <<<"${rollback_existing_services}"; then
+  if grep -Fxq "local_ai_server" <<<"${rollback_existing_services}" \
+    || jq -e 'index("local_ai_server") != null' <<<"${pre_update_running_services_json}" >/dev/null; then
     rollback_default_rebuild+=("local_ai_server")
   fi
   if [ "${include_ui_effective}" = "true" ]; then
@@ -721,6 +749,7 @@ run_rollback() {
     --arg backup_dir_rel "${backup_rel}" \
     --arg pre_update_branch "${pre_branch}" \
     --arg include_ui "${include_ui_effective}" \
+    --argjson pre_update_running_services "${pre_update_running_services_json}" \
     --argjson plan "${plan_patch}" \
     '{
       type: $type,
@@ -729,6 +758,7 @@ run_rollback() {
       backup_dir_rel: $backup_dir_rel,
       pre_update_branch: $pre_update_branch,
       include_ui: ($include_ui == "true"),
+      pre_update_running_services: $pre_update_running_services,
       plan: $plan
     }')"
 
@@ -753,6 +783,27 @@ run_rollback() {
     mapfile -t rebuild_services < <(jq -r '.services_rebuild[]?' <<<"${plan_patch}" 2>/dev/null || true)
     mapfile -t restart_services < <(jq -r '.services_restart[]?' <<<"${plan_patch}" 2>/dev/null || true)
     compose_changed="$(jq -r '.compose_changed // false' <<<"${plan_patch}" 2>/dev/null || echo false)"
+
+    recovery_running_svcs=()
+    if [ "${has_pre_update_running_services}" = "true" ]; then
+      mapfile -t recovery_running_svcs < <(jq -r '.[]' <<<"${pre_update_running_services_json}")
+    else
+      # Compatibility for jobs created before the snapshot field existed.
+      if ! running_services_snapshot="$(compose_running_services)"; then
+        echo "ERR: could not discover running Compose services during rollback" >&2
+        exit 1
+      fi
+      if [ -n "${running_services_snapshot}" ]; then
+        mapfile -t recovery_running_svcs <<<"${running_services_snapshot}"
+      fi
+    fi
+    if [ "${include_ui_effective}" != "true" ]; then
+      mapfile -t recovery_running_svcs < <(printf '%s\n' "${recovery_running_svcs[@]}" \
+        | awk 'NF && $0 != "admin_ui" && !seen[$0]++')
+    else
+      mapfile -t recovery_running_svcs < <(printf '%s\n' "${recovery_running_svcs[@]}" \
+        | awk 'NF && !seen[$0]++')
+    fi
 
     if [ "${#rebuild_services[@]}" -eq 0 ] && [ "${#restart_services[@]}" -eq 0 ]; then
       echo "==> No service impact found in source plan; defaulting rollback targets to ${rollback_default_rebuild[*]}" >&2
@@ -819,22 +870,13 @@ run_rollback() {
     fi
 
     if [ "${compose_changed}" = "true" ]; then
-      # Scope --no-build to services that are already running to avoid "no such image" failures
-      # for services the operator never built (e.g. local_ai_server on non-Local-AI deployments).
-      if ! running_services_snapshot="$(docker compose ps --services --status running 2>/dev/null \
-        || docker compose ps --services 2>/dev/null)"; then
-        echo "ERR: could not discover running Compose services during rollback" >&2
-        exit 1
-      fi
-      running_svcs=()
-      if [ -n "${running_services_snapshot}" ]; then
-        mapfile -t running_svcs <<<"${running_services_snapshot}"
-      fi
-      targets=("${running_svcs[@]}")
-      # Add rebuild/restart targets only if they are already running.
+      # Reconcile the services that were running before the update. A partial
+      # failure may have stopped or removed one, so current state is not
+      # authoritative here.
+      targets=("${recovery_running_svcs[@]}")
       for svc in "${rebuild_services[@]}" "${restart_services[@]}"; do
         [[ -z "${svc}" ]] && continue
-        for r in "${running_svcs[@]}"; do
+        for r in "${recovery_running_svcs[@]}"; do
           if [ "${svc}" = "${r}" ]; then
             targets+=("${svc}")
             break
@@ -852,23 +894,14 @@ run_rollback() {
       fi
     fi
 
-    # Preserve runtime state: running services may be recreated, while any
+    # Preserve pre-update runtime state: running services may be recreated, while any
     # existing-but-stopped rebuild target gets an image-only rebuild. Never use
-    # compose up for a service that was stopped before rollback.
-    if ! running_services_snapshot="$(docker compose ps --services --status running 2>/dev/null \
-      || docker compose ps --services 2>/dev/null)"; then
-      echo "ERR: could not discover running Compose services during rollback" >&2
-      exit 1
-    fi
+    # compose up for a service that was stopped before the update.
     if ! existing_services_snapshot="$(compose_existing_services)"; then
       echo "ERR: could not discover existing Compose services during rollback" >&2
       exit 1
     fi
-    running_svcs_now=()
     existing_svcs_now=()
-    if [ -n "${running_services_snapshot}" ]; then
-      mapfile -t running_svcs_now <<<"${running_services_snapshot}"
-    fi
     if [ -n "${existing_services_snapshot}" ]; then
       mapfile -t existing_svcs_now <<<"${existing_services_snapshot}"
     fi
@@ -876,7 +909,7 @@ run_rollback() {
     build_only_services=()
     for svc in "${rebuild_services[@]}"; do
       eligible=false
-      for r in "${running_svcs_now[@]}"; do
+      for r in "${recovery_running_svcs[@]}"; do
         if [ "${svc}" = "${r}" ]; then
           eligible=true
           break
@@ -897,7 +930,7 @@ run_rollback() {
 
     mapfile -t restart_services < <(
       for svc in "${restart_services[@]}"; do
-        for r in "${running_svcs_now[@]}"; do
+        for r in "${recovery_running_svcs[@]}"; do
           if [ "${svc}" = "${r}" ]; then
             printf '%s\n' "${svc}"
             break

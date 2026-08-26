@@ -22,6 +22,14 @@ def _run_rollback_body(runner: str) -> str:
     return runner[start:end]
 
 
+def _run_update_body(runner: str) -> str:
+    start_marker = "run_update() {\n"
+    end_marker = "\n}\n\nrun_rollback() {"
+    start = runner.index(start_marker) + len(start_marker)
+    end = runner.index(end_marker, start)
+    return runner[start:end]
+
+
 def test_active_call_probe_keeps_stdin_open_for_embedded_python() -> None:
     runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
 
@@ -275,13 +283,32 @@ def test_existing_service_probe_falls_back_without_the_all_flag() -> None:
     assert "docker compose ps --services -a" not in helper
 
 
+def test_partial_update_rollback_uses_pre_update_running_service_snapshot() -> None:
+    """A stopped/removed service must remain a recovery target after failure."""
+    runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
+    update = _run_update_body(runner)
+    rollback = _run_rollback_body(runner)
+
+    capture = 'pre_update_running_services="$(compose_running_services)"'
+    update_command = '"${BUILTIN_AGENT}" update -v'
+    assert capture in update
+    assert "pre_update_running_services: $pre_update_running_services" in update
+    assert update.index(capture) < update.index(update_command)
+
+    assert 'has_pre_update_running_services=true' in rollback
+    assert "mapfile -t recovery_running_svcs" in rollback
+    assert 'targets=("${recovery_running_svcs[@]}")' in rollback
+    assert 'for r in "${recovery_running_svcs[@]}"; do' in rollback
+    assert 'running_svcs_now' not in rollback
+
+
 def test_rollback_snapshots_existing_services_before_matching_local_ai() -> None:
     runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
     rollback = _run_rollback_body(runner)
 
     snapshot = 'if ! rollback_existing_services="$(compose_existing_services)"; then'
     snapshot_match = (
-        'if grep -Fxq "local_ai_server" <<<"${rollback_existing_services}"; then'
+        'if grep -Fxq "local_ai_server" <<<"${rollback_existing_services}" \\'
     )
     assert snapshot in rollback
     assert snapshot_match in rollback
@@ -294,7 +321,7 @@ def test_rollback_service_discovery_failures_cannot_report_success() -> None:
     rollback = _run_rollback_body(runner)
 
     assert 'compose_existing_services || true' not in rollback
-    assert 'if ! running_services_snapshot="$(docker compose ps --services --status running' in rollback
+    assert 'if ! running_services_snapshot="$(compose_running_services)"; then' in rollback
     assert 'if ! existing_services_snapshot="$(compose_existing_services)"; then' in rollback
     assert "could not discover existing Compose services before rollback" in rollback
     assert "could not discover running Compose services during rollback" in rollback
