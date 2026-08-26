@@ -2,6 +2,55 @@
 
 This guide covers upgrading between major versions of Asterisk AI Voice Agent.
 
+## v7.5.5 to v7.5.6
+
+v7.5.6 is an in-place feature and reliability release with no database
+migration, Agent reassignment, provider credential rewrite, or default Audio
+Profile change. It changes outbound call setup, adds optional Agent hangup
+policy fields, and adds optional configured-LLM fields to post-call webhooks.
+
+Before upgrading, pause AAVA-managed outbound campaigns and back up the normal
+operator configuration and SQLite data. Then:
+
+1. Rebuild and recreate `admin_ui` and `ai_engine`. Rebuild and recreate
+   `local_ai_server` in the same maintenance window only when this deployment
+   uses the bundled Local AI service; leave it absent or stopped on remote-only
+   and split-server deployments. Full Local calls with a non-default Agent
+   hangup policy require a matching Local AI Server version; mixed versions
+   fail call setup instead of silently discarding the override.
+2. Existing Agents continue to inherit the global `hangup_call` markers. To
+   opt in, configure an Agent's Hangup Guardrail to extend or replace those
+   markers. Each new call captures its effective list; active calls do not
+   change when the Agent is edited.
+3. Existing post-call webhooks that generate summaries without a
+   `summary_provider` retain the legacy `OPENAI_API_KEY` and `gpt-4o-mini`
+   behavior. An explicitly selected modular LLM must be enabled and ready; a
+   summary failure never falls back to another provider, while
+   the webhook still runs with an empty `{summary}`.
+4. If you use outbound lead `custom_vars`, keep the canonical serialized JSON
+   at or below 8,192 bytes and exclude credentials. The engine now confirms
+   the exact context after answer and before AMD; missing, corrupt, oversized,
+   or unconfirmed nonempty context fails the attempt before an AI session
+   starts.
+5. Run a supervised outbound HUMAN call with a distinctive, non-sensitive
+   context value and confirm the selected Agent receives it exactly. Also test
+   each configured summary provider and each Agent hangup-policy strategy used
+   in production before resuming traffic.
+
+The originate-variable correction also restores the documented outbound
+identity, routing, AudioSocket, predial-transfer, AMD, consent, and campaign
+metadata sent through ARI's `variables` object. FreePBX operators should verify
+the configured outbound identity, route, and caller ID after the upgrade.
+
+Rollback uses the prior tagged images and the pre-update configuration backup;
+there is no database downgrade. Pause campaigns before rollback so in-flight
+calls stay on one engine version. Rollback now aborts before service changes
+when the updater cannot verify the active-call count; restore AI Engine health
+and retry. `AAVA_UPDATE_FORCE_ACTIVE_CALLS=true` is an emergency override that
+may interrupt calls and must be used only after independently confirming that
+continuation is safer than waiting. Restore the configuration backup as well
+if you added v7.5.6-only Agent hangup or webhook summary settings.
+
 ## v7.5.4 to v7.5.5
 
 v7.5.5 is an in-place feature release with no database migration, Agent
@@ -22,29 +71,6 @@ After upgrading:
 
 Rollback uses the normal prior tagged images and the pre-update configuration
 backup. There is no database downgrade step.
-
-## Outbound `custom_vars` compatibility note (#613)
-
-The outbound `custom_vars` correction is an in-place call-path fix with no
-database migration, Agent reassignment, or configuration rewrite.
-
-After upgrading to a release that includes #613:
-
-1. Rebuild and recreate `ai_engine` before resuming AAVA-managed campaigns.
-2. Run one supervised HUMAN call with a distinctive, non-sensitive value such
-   as `"validation_token":"issue613-7f3a"`. Ask the Agent to repeat that field
-   and compare its response exactly with the supplied token; a general behavior
-   change is not sufficient delivery evidence.
-3. FreePBX operators should verify the configured outbound identity, route, and
-   caller ID. `AMPUSER`, `FROMEXTEN`, inherited caller-ID values, `AI_AGENT`, and
-   `AI_PROVIDER` are now applied at ARI origination as originally intended.
-4. Ensure existing lead context is no larger than 8,192 serialized bytes and
-   does not contain credentials or secrets. Invalid or unconfirmed nonempty
-   context now fails the attempt instead of allowing an incomplete AI call.
-
-Rollback uses the prior application image; there is no database downgrade.
-Pause running campaigns before rollback so in-flight calls stay on one engine
-version.
 
 ## v7.5.3 to v7.5.4
 

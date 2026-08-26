@@ -15,7 +15,7 @@ It is self-contained: everything an external contributor's assistant needs is ei
 this file or in the committed docs it links to. If this file ever contradicts the code or
 the docs, trust the code, then the docs — and please open an issue so we can fix it here.
 
-> Last verified against: **v7.5.5 candidate** (2026-08). Freshness is
+> Last verified against: **v7.5.6 candidate** (2026-08). Freshness is
 > checked as part of the release checklist (`docs/RELEASE_CHECKLIST.md`).
 
 ## What This Project Is
@@ -64,13 +64,14 @@ Use these terms consistently and tie every change back to them:
 - **Agents (v7.4 source of truth)**: the only runtime persona/routing model. Agents live in
   `agents.db` (managed via the Admin UI Agents page, CRUD in
   `admin_ui/backend/agents_store.py`), carry prompt, greeting, provider/pipeline
-  selection, tools, audio profile, and per-agent email settings. At call time the engine
+  selection, tools, audio profile, per-agent email settings, and an optional hangup-marker
+  policy. At call time the engine
   resolves the agent via `src/core/agent_store.py` into a `ContextConfig`
   (`src/core/transport_orchestrator.py`). Legacy YAML `contexts` are validated and
   atomically imported only when the Agent store is empty; there is no live YAML persona
   fallback. See `docs/AGENTS.md`.
 - **ContextConfig**: the legacy-named runtime contract between `agents.db` and providers —
-  prompt, greeting, provider/pipeline, tools, audio profile, email
+  prompt, greeting, provider/pipeline, tools, audio profile, email, and hangup-policy
   overrides. Extending per-agent behavior means extending ContextConfig and threading the
   field through `provider_context` in `src/engine.py` (the per-agent email fields are the
   reference example of this pattern).
@@ -82,6 +83,12 @@ Use these terms consistently and tie every change back to them:
   active provider/pipeline voice, and terminal hangup must go through the engine's shared
   caller-audio drain path so both AudioSocket and ExternalMedia/RTP finish playback first.
   Do not add provider-owned competing silence hangups.
+- **Hangup intent ownership (v7.5.6+)**: the engine snapshots each new call's effective
+  global + Agent `hangup_call` markers and owns terminal farewell/drain/cleanup. Agent
+  policies inherit, extend, or replace the global list. Full Local sends the effective
+  list as call-scoped tool context only after capability negotiation; unsupported,
+  malformed, or cross-call marker state fails closed. See `docs/AGENTS.md` and
+  `docs/local-ai-server/PROTOCOL.md`.
 - **Playback & gating**: `PlaybackManager` / `StreamingPlaybackManager` produce downstream
   audio; `ConversationCoordinator` and `AudioGatingManager` control capture, gating, and
   barge-in.
@@ -115,11 +122,19 @@ Use these terms consistently and tie every change back to them:
   Agents can narrow transfer destinations, Google calendars, Microsoft accounts/calendars,
   and voicemail mailboxes. New calls capture an immutable tool generation; **Save & Apply**
   publishes a validated generation without disturbing active calls or the last good build.
+  Post-call webhooks can select an enabled modular LLM for summary generation. The selected
+  provider receives the webhook's isolated summary prompt and transcript job, never the live
+  Agent persona; explicit selections fail closed without provider fallback while the webhook
+  still runs with an empty summary.
 - **Per-call overrides**: channel variables `AI_AGENT` (preferred — routes by agent slug,
   slug-first lookup), `AI_PROVIDER`, and `AI_AUDIO_PROFILE` override defaults per call.
   `AI_CONTEXT` is the legacy equivalent of `AI_AGENT` (display-name lookup) and keeps
   working, but new dialplans should use `AI_AGENT`
   (see `docs/Configuration-Reference.md`).
+- **Outbound lead context (v7.5.6+)**: ARI originate metadata belongs in the documented
+  JSON `variables` object. Nonempty `AAVA_CUSTOM_VARS_JSON` is bounded canonical JSON and
+  must be reapplied and confirmed exactly before AMD/provider startup; unavailable or
+  corrupt authoritative state fails the call closed. Never log lead-context values.
 - **Live status & call history**: push-based live-status hub feeds the Admin UI dashboard;
   call history persists to SQLite (`src/core/call_history.py`).
 

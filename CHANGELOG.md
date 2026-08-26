@@ -7,13 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.5.6] - 2026-08-26
+
 ### Added
 
 - **Configured LLMs for post-call summaries** ([#618](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/618)): Post-call webhooks can select any enabled modular LLM component, including OpenAI-compatible DeepSeek/Claude gateways, Gemini, Ollama, Local, Telnyx, and MiniMax. The Admin UI exposes provider, model readiness, timeout, word limit, and an editable per-webhook prompt. Modular cloud LLM credentials use the same provider-scoped owner-only secret files as full-agent providers; webhook definitions store only the provider reference. Explicit selections fail closed without sending transcripts to a fallback provider, while legacy webhooks without `summary_provider` retain the existing `OPENAI_API_KEY`/`gpt-4o-mini` behavior.
-- **Agent-scoped hangup intent markers:** Agents can inherit, extend, or replace the global `hangup_call` end-of-call markers from the Admin UI. New calls capture an immutable effective marker policy, and Full Local sends it as call-scoped tool context with capability negotiation so reused sessions cannot leak markers between Agents and older Local AI Server builds fail closed instead of silently ignoring an override.
+- **Agent-scoped hangup intent markers** ([#619](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/619)): Agents can inherit, extend, or replace the global `hangup_call` end-of-call markers from the Admin UI. New calls capture an immutable effective marker policy, and Full Local sends it as call-scoped tool context with capability negotiation so reused sessions cannot leak markers between Agents and older Local AI Server builds fail closed instead of silently ignoring an override.
 
 ### Fixed
 
+- **Updater rollback preserves pre-update service state and fails closed when active-call state is unknown:** Update jobs now record the running Compose services before any update action, and rollback reuses that snapshot so a partial failure cannot leave a previously running optional Local AI service omitted. Services that were absent or stopped remain absent or stopped. Rollback service changes also stop when the AI Engine active-call probe fails or returns an invalid count; operators must restore the probe and retry, or explicitly set `AAVA_UPDATE_FORCE_ACTIVE_CALLS=true` as an emergency override that may interrupt calls.
 - **Post-call summaries keep their own prompt and provider job context** ([#618](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/618)): The selectable-provider path now passes the webhook's summary instructions as authoritative runtime options so OpenAI, Telnyx, Gemini, MiniMax, Groq, and other adapters cannot replace them with the live agent persona. The shipped Groq LLM default also moves from the retired `llama-3.3-70b-versatile` model to Groq's recommended `openai/gpt-oss-120b` replacement.
 - **Outbound campaign lead context now reaches the selected Agent and fails closed when unavailable** ([#613](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/613)): ARI channel creation now sends originate-time values in the documented JSON `variables` object instead of the ignored `channelVars` member, restoring outbound routing, FreePBX identity, AudioSocket, predial-transfer, and campaign metadata. Nonempty lead `custom_vars` use bounded canonical JSON, are reapplied and read back before the AMD hop, and terminate the attempt without starting an AI session if their exact value cannot be confirmed. Answered calls recover unfinished attempt/lead metadata from SQLite after an engine restart and fail closed when that authoritative state is unavailable. Diagnostics record identifiers and byte counts without logging lead context. Broader verification of all correlation/AMD/consent safety-net writes is tracked in [#614](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/614).
 
@@ -2324,7 +2327,8 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 - **v4.0.0** (2025-10-29) - Modular pipeline architecture, production monitoring, golden baselines
 - **v3.0.0** (2025-09-16) - Modular pipeline architecture, file based playback
 
-[Unreleased]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.5...HEAD
+[Unreleased]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.6...HEAD
+[7.5.6]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.5...v7.5.6
 [7.5.5]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.4...v7.5.5
 [7.5.4]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.3...v7.5.4
 [7.5.3]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.2...v7.5.3

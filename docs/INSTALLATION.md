@@ -1,15 +1,15 @@
 # Asterisk AI Voice Agent - Installation and Upgrade Guide (v7.5)
 
-This guide covers fresh installations and the supported upgrade path to v7.5.5.
+This guide covers fresh installations and the supported upgrade path to v7.5.6.
 For release-specific behavior changes, also read the
-[v7.5.5 migration notes](MIGRATION.md#v754-to-v755). Operators upgrading from
+[v7.5.6 migration notes](MIGRATION.md#v755-to-v756). Operators upgrading from
 v7.3.x or earlier must also follow the [v7.4 Agent migration](MIGRATION.md#v73x-to-v740).
 
 ## Three Setup Paths
 
 Choose the path that best fits your experience level:
 
-## Upgrade to v7.5.5 (Existing Checkout)
+## Upgrade to v7.5.6 (Existing Checkout)
 
 This section is for operators upgrading an existing repo checkout (not a fresh install).
 
@@ -37,9 +37,14 @@ Run these commands from your actual checkout path. Do not assume it is `/root/..
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 git status --short
-git diff --binary > ../aava-pre-v755-working-tree.patch
-git diff --binary --cached > ../aava-pre-v755-staged.patch
+git diff --binary > ../aava-pre-v756-working-tree.patch
+git diff --binary --cached > ../aava-pre-v756-staged.patch
 docker compose config --quiet
+if ! docker compose -p asterisk-ai-voice-agent ps --services --status running \
+  > ../aava-pre-v756-running-services.txt; then
+  docker compose -p asterisk-ai-voice-agent ps --services \
+    > ../aava-pre-v756-running-services.txt || exit 1
+fi
 ```
 
 Back up at least:
@@ -72,7 +77,7 @@ Preferred CLI path:
 
 ```bash
 git fetch origin --prune --tags
-agent update --ref v7.5.5 --include-ui --local-changes=retain
+agent update --ref v7.5.6 --include-ui --local-changes=retain
 ```
 
 Replace `retain` with your explicit `overwrite` or `abort` decision. In an interactive
@@ -103,7 +108,7 @@ Run the host recovery script from an SSH shell on the AAVA server. This path doe
 depend on the failing Admin UI planner container:
 
 ```bash
-AAVA_RECOVERY_REF=v7.5.5
+AAVA_RECOVERY_REF=v7.5.6
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -139,7 +144,7 @@ terminal:
 For non-interactive recovery, pass the decision explicitly:
 
 ```bash
-AAVA_RECOVERY_REF=v7.5.5
+AAVA_RECOVERY_REF=v7.5.6
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -154,7 +159,7 @@ Use `overwrite` only when the operator accepts that tracked local code changes w
 discarded:
 
 ```bash
-AAVA_RECOVERY_REF=v7.5.5
+AAVA_RECOVERY_REF=v7.5.6
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -248,20 +253,35 @@ explicit policy. Never use `git reset --hard` as generic upgrade advice.
 
 Do not treat a second update run as proof that the containers were updated. If the first
 job reached **Fast-forwarding code** and then failed during Docker Compose, the checkout may
-already be at v7.5.5 while the old containers are still running. Save the failed job log and
+already be at v7.5.6 while the old containers are still running. Save the failed job log and
 either use its **Rollback** action or, after fixing the reported Compose/build error, reconcile
 only the services that were running before the update:
 
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 docker compose config --quiet
-docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate ai_engine admin_ui
-
-# Only when Local AI was already in use before the update:
-docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate local_ai_server
+AAVA_RUNNING_SERVICES_FILE=../aava-pre-v756-running-services.txt
+test -f "${AAVA_RUNNING_SERVICES_FILE}" || exit 1
+AAVA_RECOVERY_SERVICES=()
+for AAVA_SERVICE in ai_engine admin_ui local_ai_server; do
+  if grep -Fxq "${AAVA_SERVICE}" "${AAVA_RUNNING_SERVICES_FILE}"; then
+    AAVA_RECOVERY_SERVICES+=("${AAVA_SERVICE}")
+  fi
+done
+if [ "${#AAVA_RECOVERY_SERVICES[@]}" -gt 0 ]; then
+  docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate "${AAVA_RECOVERY_SERVICES[@]}"
+else
+  echo "No pre-update AAVA application services were running; leaving them stopped."
+fi
+unset AAVA_RUNNING_SERVICES_FILE AAVA_RECOVERY_SERVICES AAVA_SERVICE
 
 agent check
 ```
+
+This uses the service list captured before the update, so a service stopped or
+removed by the failed operation is still recovered. It recreates
+`local_ai_server` only when it was previously running, preserving an absent or
+intentionally stopped optional Local AI service.
 
 This manual recovery is required because a retry at the target Git commit may have no
 remaining source diff from which to reconstruct the failed Docker action plan.
