@@ -150,6 +150,23 @@ def test_pre_call_metadata_policy_round_trip_and_validation(client):
     assert orphan.status_code == 422
     assert "not a configured output variable" in orphan.json()["detail"]
 
+    empty_outputs = client.patch("/api/tools/managed/crm_metadata", json={
+        "output_variables": {},
+    })
+    assert empty_outputs.status_code == 422
+    assert "not a configured output variable" in empty_outputs.json()["detail"]
+
+    unknown_policy_key = client.post("/api/tools/managed", json={
+        "name": "typo_metadata", "phase": "pre_call",
+        "url": "https://api.example.com/lookup",
+        "output_variables": {"customer_tier": "contact.tier"},
+        "call_metadata_fields": {
+            "customer_tier": {"persist": True, "max_lenght": 64},
+        },
+    })
+    assert unknown_policy_key.status_code == 422
+    assert "Extra inputs are not permitted" in unknown_policy_key.text
+
     reserved = client.post("/api/tools/managed", json={
         "name": "unsafe_metadata", "phase": "pre_call",
         "url": "https://api.example.com/lookup",

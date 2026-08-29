@@ -76,7 +76,7 @@ describe('CallHistoryPage deep links', () => {
         vi.clearAllMocks();
         vi.mocked(axios.get).mockImplementation(async url => {
             if (url === '/api/calls') {
-                return { data: { calls: [], total: 0, total_pages: 1 } };
+                return { data: { calls: [callDetail], total: 51, total_pages: 2 } };
             }
             if (url === '/api/calls/stats') return { data: null };
             if (url === '/api/calls/redaction-policy') {
@@ -223,6 +223,34 @@ describe('CallHistoryPage deep links', () => {
                     call_metadata_value: 'gold',
                 },
             });
+        });
+    });
+
+    it('resets to the first page when a metadata filter changes', async () => {
+        render(
+            <MemoryRouter initialEntries={['/history']}>
+                <CallHistoryPage />
+            </MemoryRouter>
+        );
+
+        const pageLabel = await screen.findByText('Page 1 of 2');
+        const pagination = pageLabel.parentElement;
+        const buttons = pagination?.querySelectorAll('button');
+        expect(buttons).toHaveLength(2);
+        fireEvent.click(buttons![1]);
+        expect(await screen.findByText('Page 2 of 2')).toBeInTheDocument();
+
+        fireEvent.click(screen.getByTitle('Filters'));
+        fireEvent.change(screen.getByLabelText('Metadata Field'), {
+            target: { value: 'customer_tier' },
+        });
+
+        expect(await screen.findByText('Page 1 of 2')).toBeInTheDocument();
+        await waitFor(() => {
+            const callsRequest = vi.mocked(axios.get).mock.calls
+                .filter(([url]) => url === '/api/calls')
+                .slice(-1)[0];
+            expect(callsRequest?.[1]).toMatchObject({ params: { page: 1 } });
         });
     });
 });

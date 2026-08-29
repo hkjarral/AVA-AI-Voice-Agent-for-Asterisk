@@ -31,6 +31,17 @@ def test_call_metadata_policy_is_opt_in_and_rejects_authoritative_or_secret_fiel
             {"access_token": {"persist": True}},
             output_variables={"access_token": "auth.token"},
         )
+    for credential_field in ("customerAccessToken", "crmPassword"):
+        with pytest.raises(CallMetadataValidationError, match="credential-related"):
+            normalize_call_metadata_policy(
+                {credential_field: {"persist": True}},
+                output_variables={credential_field: "contact.value"},
+            )
+    with pytest.raises(CallMetadataValidationError, match="not a configured output variable"):
+        normalize_call_metadata_policy(
+            {"customer_tier": {"persist": True}},
+            output_variables={},
+        )
 
 
 def test_update_tool_schema_contains_only_call_local_correctable_fields():
@@ -131,6 +142,38 @@ def test_post_call_payload_keeps_initial_snapshot_and_uses_final_effective_value
     assert payload["customer_tier"] == "gold"
     assert '"customer_tier": "silver"' in payload["pre_call_results_json"]
     assert '"customer_tier": "gold"' in payload["call_metadata_json"]
+
+
+def test_post_call_context_preserves_existing_positional_field_order():
+    from src.tools.context import PostCallContext
+
+    summary_generator = object()
+    context = PostCallContext(
+        "post-call",
+        "1001",
+        None,
+        None,
+        "support",
+        "deepgram",
+        "inbound",
+        12,
+        "completed",
+        None,
+        None,
+        [],
+        None,
+        [],
+        {},
+        "campaign-1",
+        "lead-1",
+        {"tools": {}},
+        summary_generator,
+    )
+
+    assert context.campaign_id == "campaign-1"
+    assert context.config == {"tools": {}}
+    assert context.summary_generator is summary_generator
+    assert context.call_metadata == {}
 
 
 def test_prompt_substitution_uses_final_metadata_without_overriding_builtins():

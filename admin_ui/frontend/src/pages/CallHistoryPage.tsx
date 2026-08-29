@@ -961,7 +961,10 @@ const CallHistoryPage = () => {
                                 id="call-metadata-key"
                                 type="text"
                                 value={filters.call_metadata_key}
-                                onChange={(e) => setFilters({ ...filters, call_metadata_key: e.target.value })}
+                                onChange={(e) => {
+                                    setFilters({ ...filters, call_metadata_key: e.target.value });
+                                    setPage(1);
+                                }}
                                 placeholder="e.g. customer_tier"
                                 className="w-full mt-1 px-3 py-2 bg-background border rounded-lg text-sm font-mono"
                             />
@@ -972,7 +975,10 @@ const CallHistoryPage = () => {
                                 id="call-metadata-value"
                                 type="text"
                                 value={filters.call_metadata_value}
-                                onChange={(e) => setFilters({ ...filters, call_metadata_value: e.target.value })}
+                                onChange={(e) => {
+                                    setFilters({ ...filters, call_metadata_value: e.target.value });
+                                    setPage(1);
+                                }}
                                 placeholder="Exact value"
                                 className="w-full mt-1 px-3 py-2 bg-background border rounded-lg text-sm"
                             />

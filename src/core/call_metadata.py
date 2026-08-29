@@ -74,7 +74,12 @@ def validate_call_metadata_key(key: Any) -> str:
         raise CallMetadataValidationError(
             f"'{normalized}' is reserved for authoritative call state"
         )
-    if _CREDENTIAL_RE.search(normalized):
+    # Split camel/Pascal-case boundaries before checking credential tokens so
+    # names such as ``customerAccessToken`` and ``crmPassword`` receive the
+    # same treatment as their snake_case equivalents.
+    credential_key = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", normalized)
+    credential_key = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", credential_key)
+    if _CREDENTIAL_RE.search(credential_key):
         raise CallMetadataValidationError(
             f"'{normalized}' looks credential-related and cannot be persisted"
         )
@@ -100,7 +105,7 @@ def normalize_call_metadata_policy(
     result: Dict[str, Dict[str, Any]] = {}
     for raw_key, raw_policy in raw.items():
         key = validate_call_metadata_key(raw_key)
-        if known_outputs and key not in known_outputs:
+        if output_variables is not None and key not in known_outputs:
             raise CallMetadataValidationError(
                 f"call metadata field '{key}' is not a configured output variable"
             )

@@ -294,7 +294,6 @@ class PostCallContext:
     # Tool execution data
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)  # In-call tool executions
     pre_call_results: Dict[str, str] = field(default_factory=dict)  # Data from pre-call tools
-    call_metadata: Dict[str, str] = field(default_factory=dict)  # Final effective selected values
     
     # Outbound-specific
     campaign_id: Optional[str] = None
@@ -305,6 +304,9 @@ class PostCallContext:
     # Internal service callback used by post-call tools. It is deliberately
     # excluded from ``to_payload_dict`` so no runtime object leaks to webhooks.
     summary_generator: Optional[Callable[..., Any]] = None
+    # Appended to preserve the positional constructor contract of all existing
+    # fields while exposing final selected values to post-call tools.
+    call_metadata: Dict[str, str] = field(default_factory=dict)
     
     def to_payload_dict(self) -> Dict[str, Any]:
         """

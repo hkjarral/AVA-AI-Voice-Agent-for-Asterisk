@@ -4,7 +4,7 @@ Tools API endpoints for testing HTTP tools before saving.
 import asyncio
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Dict, Any, Optional, List, Literal
 import httpx
 import json
@@ -1005,6 +1005,8 @@ class ManagedToolParameter(BaseModel):
 
 
 class ManagedCallMetadataField(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     persist: bool = False
     correctable: bool = False
     description: str = ""
