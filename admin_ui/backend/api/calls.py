@@ -50,8 +50,11 @@ _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 def _csv_safe_cell(value: Any) -> Any:
     """Prevent spreadsheet applications from evaluating untrusted CSV cells."""
-    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r")):
-        return f"'{value}"
+    if isinstance(value, str):
+        starts_with_control = value.startswith(("\t", "\r", "\n"))
+        starts_with_formula = value.lstrip().startswith(("=", "+", "-", "@"))
+        if starts_with_control or starts_with_formula:
+            return f"'{value}"
     return value
 
 
