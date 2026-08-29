@@ -1964,9 +1964,9 @@ async def test_provider_connection(request: ProviderTestRequest):
                 
         elif 'google_live' in provider_config or ('llm_model' in provider_config and 'gemini' in provider_config.get('llm_model', '')):
             # Google Live
-            api_key = get_env_key('GOOGLE_API_KEY')
+            api_key = provider_config.get('api_key') or get_env_key('GOOGLE_API_KEY')
             if not api_key:
-                return {"success": False, "message": "GOOGLE_API_KEY not set in .env file"}
+                return {"success": False, "message": "No Google API key configured (checked api_key_file/api_key_env and GOOGLE_API_KEY in .env)"}
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}",
