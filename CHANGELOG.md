@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in call metadata persistence and call-local correction** ([#625](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/625), [#627](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/627)): individual pre-call HTTP lookup outputs can be selected for bounded, non-authoritative persistence in Call History, exposed to prompts and post-call webhooks, filtered by exact field/value, and included in CSV/JSON exports. Fields explicitly marked correctable can be changed during the active call only when the Agent is separately granted `update_call_metadata`; corrections preserve the original pre-call snapshot and never write back to the CRM or mutate caller identity, routing, consent/DNC, transfer, disposition, provider, or external-dialer state. The Admin UI adds per-output persistence/correction controls plus metadata provenance in Call History. Existing databases receive two additive SQLite columns automatically; existing records remain valid with empty metadata, and disabling the policy stops future persistence without removing historical values.
+
 ## [7.5.6] - 2026-08-26
 
 ### Added
