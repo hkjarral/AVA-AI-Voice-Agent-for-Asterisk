@@ -31,6 +31,48 @@ const expectThemeAwareControl = (control: HTMLElement) => {
 };
 
 describe('HTTPToolForm editor colors', () => {
+    it('keeps persistence opt-in and saves the per-output correction policy', () => {
+        const onChange = vi.fn();
+        render(
+            <HTTPToolForm
+                phase="pre_call"
+                onChange={onChange}
+                config={{
+                    crm_lookup: {
+                        kind: 'generic_http_lookup',
+                        phase: 'pre_call',
+                        enabled: true,
+                        is_global: false,
+                        url: 'https://crm.example.com/contact',
+                        method: 'GET',
+                        headers: {},
+                        output_variables: { customer_tier: 'contact.tier' },
+                    },
+                }}
+            />
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit crm_lookup' }));
+        const persist = screen.getByRole('checkbox', { name: 'Persist in Call History' });
+        const correct = screen.getByRole('checkbox', { name: 'Allow Agent to correct' });
+        expect(persist).not.toBeChecked();
+        expect(correct).toBeDisabled();
+
+        fireEvent.click(persist);
+        expect(correct).toBeEnabled();
+        fireEvent.click(correct);
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        expect(onChange).toHaveBeenCalledOnce();
+        expect(onChange.mock.calls[0][0].crm_lookup.call_metadata_fields).toEqual({
+            customer_tier: {
+                persist: true,
+                correctable: true,
+                max_length: 1024,
+            },
+        });
+    });
+
     it('styles pre-call header, query, output, and body controls for dark mode', () => {
         renderForm('pre_call');
         fireEvent.click(screen.getByRole('button', { name: 'Add Lookup' }));

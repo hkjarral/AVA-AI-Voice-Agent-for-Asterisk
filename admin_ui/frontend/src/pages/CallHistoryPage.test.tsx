@@ -51,6 +51,14 @@ const callDetail = {
         session: { agent_user: '9001' },
         events: [],
     },
+    call_metadata: { customer_tier: 'gold' },
+    call_metadata_updates: [
+        {
+            field: 'customer_tier',
+            source: 'agent_correction',
+            updated_at: '2026-07-19T21:16:45+00:00',
+        },
+    ],
 };
 
 const LocationProbe = () => {
@@ -183,5 +191,38 @@ describe('CallHistoryPage deep links', () => {
         expect(screen.getByTestId('full-location')).toHaveTextContent(
             '/env?section=call-history#system'
         );
+    });
+
+    it('shows final metadata provenance and applies an exact-match filter', async () => {
+        render(
+            <MemoryRouter initialEntries={['/history?id=record-1']}>
+                <CallHistoryPage />
+            </MemoryRouter>
+        );
+
+        expect(await screen.findByText('Call Metadata')).toBeInTheDocument();
+        expect(screen.getByText('customer_tier')).toBeInTheDocument();
+        expect(screen.getByText('gold')).toBeInTheDocument();
+        expect(screen.getByText('Updated during call')).toBeInTheDocument();
+
+        fireEvent.click(screen.getByTitle('Filters'));
+        fireEvent.change(screen.getByLabelText('Metadata Field'), {
+            target: { value: 'customer_tier' },
+        });
+        fireEvent.change(screen.getByLabelText('Metadata Value (exact)'), {
+            target: { value: 'gold' },
+        });
+
+        await waitFor(() => {
+            const callsRequest = vi.mocked(axios.get).mock.calls
+                .filter(([url]) => url === '/api/calls')
+                .slice(-1)[0];
+            expect(callsRequest?.[1]).toMatchObject({
+                params: {
+                    call_metadata_key: 'customer_tier',
+                    call_metadata_value: 'gold',
+                },
+            });
+        });
     });
 });

@@ -68,6 +68,8 @@ Per-call debugging and analytics:
 - Searchable list of all calls with timestamps, duration, and provider
 - Full conversation transcripts
 - Tool call history with parameters and results
+- Opt-in call metadata with pre-call/updated-during-call provenance badges
+- Exact call metadata field/value filtering and CSV/JSON export
 - Call quality metrics
 - A distinct **No input timeout** outcome for calls ended by the inactivity policy
 

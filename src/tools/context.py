@@ -294,6 +294,7 @@ class PostCallContext:
     # Tool execution data
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)  # In-call tool executions
     pre_call_results: Dict[str, str] = field(default_factory=dict)  # Data from pre-call tools
+    call_metadata: Dict[str, str] = field(default_factory=dict)  # Final effective selected values
     
     # Outbound-specific
     campaign_id: Optional[str] = None
@@ -329,6 +330,7 @@ class PostCallContext:
             "summary": self.summary or "",
             "tool_calls_json": json.dumps(self.tool_calls),
             "pre_call_results_json": json.dumps(self.pre_call_results),
+            "call_metadata_json": json.dumps(self.call_metadata),
             "campaign_id": self.campaign_id or "",
             "lead_id": self.lead_id or "",
         }
@@ -339,4 +341,17 @@ class PostCallContext:
         for key, value in (self.pre_call_results or {}).items():
             if key not in payload:
                 payload[key] = str(value) if value else ""
+        # Corrected metadata becomes the effective value for individual custom
+        # placeholders. Built-ins above always retain precedence, while
+        # pre_call_results_json remains the immutable initial lookup snapshot.
+        built_in_keys = {
+            "call_id", "caller_number", "called_number", "caller_name",
+            "context_name", "provider", "call_direction", "call_duration",
+            "call_outcome", "call_start_time", "call_end_time", "transcript_json",
+            "summary", "tool_calls_json", "pre_call_results_json",
+            "call_metadata_json", "campaign_id", "lead_id",
+        }
+        for key, value in (self.call_metadata or {}).items():
+            if key not in built_in_keys:
+                payload[key] = str(value) if value is not None else ""
         return payload

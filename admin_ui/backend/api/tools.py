@@ -913,6 +913,7 @@ BUILTIN_RESERVED_TOOL_NAMES = frozenset({
     "transfer", "attended_transfer", "cancel_transfer", "hangup_call",
     "leave_voicemail", "check_extension_status",
     "send_email_summary", "request_transcript",
+    "update_call_metadata",
     "google_calendar", "microsoft_calendar",
     # Engine-registered tool names the AI calls (may differ from config keys).
     "transfer_call", "transfer_to_queue", "live_agent_transfer",
@@ -942,6 +943,7 @@ _PASSTHROUGH_FIELDS = (
     "body_template",
     "payload_template",
     "output_variables",
+    "call_metadata_fields",
     "hold_audio_file",
     "hold_audio_threshold_ms",
     "generate_summary",
@@ -1002,6 +1004,23 @@ class ManagedToolParameter(BaseModel):
     required: bool = False
 
 
+class ManagedCallMetadataField(BaseModel):
+    persist: bool = False
+    correctable: bool = False
+    description: str = ""
+    max_length: int = 1024
+
+    @model_validator(mode="after")
+    def validate_policy(self):
+        if self.correctable and not self.persist:
+            raise ValueError("correctable requires persist=true")
+        if len(self.description) > 240:
+            raise ValueError("description must be 240 characters or fewer")
+        if not 1 <= self.max_length <= 1024:
+            raise ValueError("max_length must be between 1 and 1024")
+        return self
+
+
 class ManagedToolWrite(BaseModel):
     """Body for create (POST) and full replace (PUT)."""
     name: Optional[str] = None  # required for POST; taken from path on PUT
@@ -1017,6 +1036,7 @@ class ManagedToolWrite(BaseModel):
     body_template: Optional[str] = None
     payload_template: Optional[str] = None
     output_variables: Optional[Dict[str, str]] = None
+    call_metadata_fields: Optional[Dict[str, ManagedCallMetadataField]] = None
     hold_audio_file: Optional[str] = None
     hold_audio_threshold_ms: Optional[int] = None
     generate_summary: Optional[bool] = None
@@ -1098,6 +1118,7 @@ class ManagedToolPatch(BaseModel):
     body_template: Optional[str] = None
     payload_template: Optional[str] = None
     output_variables: Optional[Dict[str, str]] = None
+    call_metadata_fields: Optional[Dict[str, ManagedCallMetadataField]] = None
     hold_audio_file: Optional[str] = None
     hold_audio_threshold_ms: Optional[int] = None
     generate_summary: Optional[bool] = None
@@ -1343,6 +1364,19 @@ def _build_tool_doc(data: Dict[str, Any], phase: str) -> Dict[str, Any]:
         doc["parameters"] = [
             p if isinstance(p, dict) else p.model_dump() for p in params
         ]
+    raw_metadata_fields = doc.get("call_metadata_fields")
+    if raw_metadata_fields is not None:
+        if phase != "pre_call":
+            raise HTTPException(status_code=422, detail="call_metadata_fields is only valid for pre-call tools")
+        from src.core.call_metadata import CallMetadataValidationError, normalize_call_metadata_policy
+
+        try:
+            doc["call_metadata_fields"] = normalize_call_metadata_policy(
+                raw_metadata_fields,
+                output_variables=doc.get("output_variables") or {},
+            )
+        except CallMetadataValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     return doc
 
 
@@ -1539,6 +1573,20 @@ async def patch_managed_tool(name: str, body: ManagedToolPatch):
     if merged["method"] not in _BODY_CAPABLE_HTTP_METHODS:
         merged.pop("body_template", None)
         merged.pop("payload_template", None)
+
+    raw_metadata_fields = merged.get("call_metadata_fields")
+    if raw_metadata_fields is not None:
+        if new_phase != "pre_call":
+            raise HTTPException(status_code=422, detail="call_metadata_fields is only valid for pre-call tools")
+        from src.core.call_metadata import CallMetadataValidationError, normalize_call_metadata_policy
+
+        try:
+            merged["call_metadata_fields"] = normalize_call_metadata_policy(
+                raw_metadata_fields,
+                output_variables=merged.get("output_variables") or {},
+            )
+        except CallMetadataValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     await _validate_summary_provider_selection(merged)
 

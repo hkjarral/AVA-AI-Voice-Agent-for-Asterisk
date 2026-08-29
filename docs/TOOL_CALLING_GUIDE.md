@@ -428,7 +428,26 @@ tools:
       customer_name: "contacts[0].firstName"
       customer_email: "contacts[0].email"
       account_type: "contacts[0].customFields.account_type"
+    call_metadata_fields:
+      account_type:
+        persist: true
+        correctable: true
+        description: "Caller-confirmed account type"
+        max_length: 64
 ```
+
+`output_variables` remain prompt-only by default. Under **Tools → Pre-Call HTTP
+Lookups**, enable **Persist in Call History** on an individual output to copy it
+into the bounded `call_metadata` object. Enable **Allow Agent to correct** only
+when the value is safe for the caller to correct, then explicitly assign the
+built-in `update_call_metadata` tool to the Agent. The correction tool is not
+global and is absent from a live call unless that call has at least one selected,
+correctable field.
+
+Call metadata is intentionally non-authoritative: reserved caller, routing,
+consent/DNC, transfer, disposition, provider, and credential-like names are
+rejected. Values are scalar and bounded. Corrections apply only to the active
+call; they do not write back to the CRM or affect another call.
 
 **Variable Substitution**:
 
@@ -590,8 +609,9 @@ contexts:
 In-call HTTP tools have access to three types of variables:
 
 1. **Context variables** (auto-injected): `{caller_number}`, `{called_number}`, `{call_id}`, etc.
-2. **Pre-call variables** (from pre-call HTTP lookups): `{customer_id}`, `{customer_name}`, etc.
-3. **AI parameters** (provided at runtime): Whatever the AI passes when invoking the tool
+2. **Effective call metadata**, when selected: corrected values such as `{customer_id}`
+3. **Pre-call variables** (from pre-call HTTP lookups): `{customer_id}`, `{customer_name}`, etc.
+4. **AI parameters** (provided at runtime): Whatever the AI passes when invoking the tool
 
 This means you can use data fetched by pre-call tools in your in-call tool requests. For example, if a pre-call lookup fetches `customer_id`, you can use `{customer_id}` in the in-call tool's body template.
 
@@ -768,6 +788,13 @@ Existing webhook definitions that enable summaries but omit `summary_provider` k
 | `{provider}` | string | AI provider (deepgram, openai_realtime, etc.) |
 | `{call_direction}` | string | "inbound" or "outbound" |
 | `{call_duration}` | number | Duration in seconds |
+| `{pre_call_results_json}` | JSON string | Original pre-call lookup snapshot; never rewritten by corrections |
+| `{call_metadata_json}` | JSON string | Final selected metadata values after any in-call corrections |
+
+Individual selected metadata fields are also available by name. Their final
+value overrides the same custom pre-call placeholder, while built-in call fields
+always win. Call History supports exact field/value filtering and includes the
+final object in CSV and JSON exports.
 | `{call_outcome}` | string | Outcome (completed, transferred, etc.) |
 | `{call_start_time}` | string | ISO timestamp |
 | `{call_end_time}` | string | ISO timestamp |

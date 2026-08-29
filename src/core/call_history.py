@@ -60,6 +60,11 @@ class CallRecord:
     external_direction: Optional[str] = None
     external_disposition: Optional[str] = None
     external_metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # Operator-selected enrichment only. Kept separate from external_metadata,
+    # which is owned by VICIdial/external dialer lifecycle integration.
+    call_metadata: Dict[str, str] = field(default_factory=dict)
+    call_metadata_updates: List[Dict[str, Any]] = field(default_factory=list)
     
     # Tool executions (debugging)
     # tool_calls = append-only terminal in-call tool results. Entries retain
@@ -105,8 +110,11 @@ class CallRecord:
                     data[key] = None
         
         # Parse JSON strings for complex fields
-        _list_fields = ['conversation_history', 'tool_calls', 'pre_call_tool_calls', 'post_call_tool_calls']
-        for key in ['pipeline_components', 'external_metadata', *_list_fields]:
+        _list_fields = [
+            'conversation_history', 'tool_calls', 'pre_call_tool_calls',
+            'post_call_tool_calls', 'call_metadata_updates',
+        ]
+        for key in ['pipeline_components', 'external_metadata', 'call_metadata', *_list_fields]:
             if data.get(key) and isinstance(data[key], str):
                 try:
                     data[key] = json.loads(data[key])
@@ -116,6 +124,10 @@ class CallRecord:
                 # NULL columns on pre-migration rows must retain their declared
                 # collection type instead of overriding dataclass defaults with None.
                 data[key] = [] if key in _list_fields else {}
+        if not isinstance(data.get('call_metadata'), dict):
+            data['call_metadata'] = {}
+        if not isinstance(data.get('call_metadata_updates'), list):
+            data['call_metadata_updates'] = []
         
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
@@ -159,6 +171,8 @@ class CallHistoryStore:
         external_direction TEXT,
         external_disposition TEXT,
         external_metadata TEXT,
+        call_metadata TEXT,
+        call_metadata_updates TEXT,
         tool_calls TEXT,
         pre_call_tool_calls TEXT,
         post_call_tool_calls TEXT,
@@ -253,6 +267,8 @@ class CallHistoryStore:
                 "external_direction": "TEXT",
                 "external_disposition": "TEXT",
                 "external_metadata": "TEXT",
+                "call_metadata": "TEXT",
+                "call_metadata_updates": "TEXT",
             }
             for name, sql_type in additive_columns.items():
                 if name not in existing:
@@ -288,6 +304,15 @@ class CallHistoryStore:
             with self._lock:
                 conn = self._get_connection()
                 try:
+                    from src.core.call_metadata import (
+                        normalize_call_metadata_updates,
+                        validate_call_metadata_document,
+                    )
+
+                    call_metadata = validate_call_metadata_document(record.call_metadata or {})
+                    call_metadata_updates = normalize_call_metadata_updates(
+                        record.call_metadata_updates or []
+                    )
                     cursor = conn.cursor()
                     # Check if record with same call_id already exists (prevent duplicates)
                     cursor.execute("SELECT id FROM call_records WHERE call_id = ?", (record.call_id,))
@@ -305,10 +330,11 @@ class CallHistoryStore:
                             conversation_history, outcome, transfer_destination, error_message,
                             external_platform, external_call_id, external_direction,
                             external_disposition, external_metadata,
+                            call_metadata, call_metadata_updates,
                             tool_calls, pre_call_tool_calls, post_call_tool_calls,
                             avg_turn_latency_ms, max_turn_latency_ms, total_turns,
                             caller_audio_format, codec_alignment_ok, barge_in_count, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         record.id,
                         record.call_id,
@@ -336,6 +362,8 @@ class CallHistoryStore:
                         record.external_direction,
                         record.external_disposition,
                         json.dumps(record.external_metadata),
+                        json.dumps(call_metadata),
+                        json.dumps(call_metadata_updates),
                         json.dumps(record.tool_calls),
                         json.dumps(record.pre_call_tool_calls),
                         json.dumps(record.post_call_tool_calls),
@@ -642,6 +670,8 @@ class CallHistoryStore:
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
         transcript_search: Optional[str] = None,
+        call_metadata_key: Optional[str] = None,
+        call_metadata_value: Optional[str] = None,
         order_by: str = "start_time",
         order_dir: str = "DESC",
         include_details: bool = True,
@@ -722,6 +752,11 @@ class CallHistoryStore:
                         escaped = self._escape_like(transcript_search)
                         conditions.append("LOWER(conversation_history) LIKE LOWER(?) ESCAPE '\\'")
                         params.append(f"%{escaped}%")
+                    if call_metadata_key is not None and call_metadata_value is not None:
+                        from src.core.call_metadata import call_metadata_json_path
+
+                        conditions.append("CAST(json_extract(call_metadata, ?) AS TEXT) = ?")
+                        params.extend([call_metadata_json_path(call_metadata_key), call_metadata_value])
 
                     # Validate order_by to prevent SQL injection
                     valid_columns = [
@@ -868,6 +903,8 @@ class CallHistoryStore:
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
         transcript_search: Optional[str] = None,
+        call_metadata_key: Optional[str] = None,
+        call_metadata_value: Optional[str] = None,
     ) -> int:
         """Count records matching filters."""
         if not self._enabled:
@@ -921,6 +958,11 @@ class CallHistoryStore:
                         escaped = self._escape_like(transcript_search)
                         conditions.append("LOWER(conversation_history) LIKE LOWER(?) ESCAPE '\\'")
                         params.append(f"%{escaped}%")
+                    if call_metadata_key is not None and call_metadata_value is not None:
+                        from src.core.call_metadata import call_metadata_json_path
+
+                        conditions.append("CAST(json_extract(call_metadata, ?) AS TEXT) = ?")
+                        params.extend([call_metadata_json_path(call_metadata_key), call_metadata_value])
 
                     where_clause = " AND ".join(conditions) if conditions else "1=1"
                     query = f"SELECT COUNT(*) FROM call_records WHERE {where_clause}"

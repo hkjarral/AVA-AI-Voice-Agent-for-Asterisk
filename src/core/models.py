@@ -195,6 +195,14 @@ class CallSession:
     # Pre-call tool results (Milestone 24) - CRM lookup data injected into prompts
     pre_call_results: Dict[str, str] = field(default_factory=dict)  # {variable_name: value}
 
+    # Opt-in, bounded enrichment fields. These never control caller identity,
+    # routing, consent, transfer, disposition, or external-dialer state.
+    call_metadata: Dict[str, str] = field(default_factory=dict)
+    call_metadata_policy: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # Audit contains field/source/timestamp only; values remain in the bounded
+    # final metadata object and are not duplicated into tool diagnostics.
+    call_metadata_updates: List[Dict[str, Any]] = field(default_factory=list)
+
     # Pre-call tool execution metadata for the call history UI.
     # Same per-entry shape as the post_call_tool_calls JSON column on CallRecord.
     pre_call_tool_calls: List[Dict[str, Any]] = field(default_factory=list)

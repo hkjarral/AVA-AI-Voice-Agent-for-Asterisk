@@ -121,6 +121,45 @@ def test_crud_roundtrip_pre_call(client):
     assert client.get("/api/tools/managed/crm_lookup").status_code == 404
 
 
+def test_pre_call_metadata_policy_round_trip_and_validation(client):
+    response = client.post("/api/tools/managed", json={
+        "name": "crm_metadata", "phase": "pre_call",
+        "url": "https://api.example.com/lookup",
+        "output_variables": {"customer_tier": "contact.tier"},
+        "call_metadata_fields": {
+            "customer_tier": {
+                "persist": True,
+                "correctable": True,
+                "description": "Confirmed tier",
+                "max_length": 64,
+            }
+        },
+    })
+    assert response.status_code == 201, response.text
+    policy = response.json()["config"]["call_metadata_fields"]["customer_tier"]
+    assert policy == {
+        "persist": True,
+        "correctable": True,
+        "description": "Confirmed tier",
+        "max_length": 64,
+    }
+
+    orphan = client.patch("/api/tools/managed/crm_metadata", json={
+        "output_variables": {"account_region": "contact.region"},
+    })
+    assert orphan.status_code == 422
+    assert "not a configured output variable" in orphan.json()["detail"]
+
+    reserved = client.post("/api/tools/managed", json={
+        "name": "unsafe_metadata", "phase": "pre_call",
+        "url": "https://api.example.com/lookup",
+        "output_variables": {"caller_number": "contact.phone"},
+        "call_metadata_fields": {"caller_number": {"persist": True}},
+    })
+    assert reserved.status_code == 422
+    assert "authoritative call state" in reserved.json()["detail"]
+
+
 def test_in_call_tool_goes_to_in_call_block(client):
     r = client.post("/api/tools/managed", json={
         "name": "check_availability", "phase": "in_call",
