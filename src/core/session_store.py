@@ -7,7 +7,8 @@ with a single, thread-safe store that enforces invariants.
 
 import asyncio
 import time
-from typing import Optional, Dict, Set, List
+from datetime import datetime, timezone
+from typing import Any, Optional, Dict, Set, List
 import structlog
 
 from src.core.models import CallSession, PlaybackRef, ProviderSession
@@ -79,6 +80,81 @@ class SessionStore:
                 session.tool_calls = []
             session.tool_calls.append(record)
             return True
+
+    async def update_call_metadata(
+        self,
+        call_id: str,
+        field_name: str,
+        value: Any,
+    ) -> Dict[str, Any]:
+        """Atomically correct one explicitly allowed metadata field.
+
+        The active-session lookup, lifecycle gate, policy check, size check, and
+        mutation all happen under the same lock. A late tool result therefore
+        cannot resurrect a removed call or race cleanup.
+        """
+        from src.core.call_metadata import (
+            CallMetadataValidationError,
+            MAX_CALL_METADATA_UPDATES,
+            normalize_call_metadata_value,
+            validate_call_metadata_document,
+            validate_call_metadata_key,
+        )
+
+        async with self._lock:
+            session = self._sessions_by_call_id.get(call_id)
+            if session is None:
+                return {"status": "error", "message": "The call is no longer active."}
+            if bool(getattr(session, "cleanup_in_progress", False)) or bool(
+                getattr(session, "cleanup_completed", False)
+            ):
+                return {"status": "error", "message": "The call is ending; metadata can no longer be changed."}
+
+            try:
+                field = validate_call_metadata_key(field_name)
+            except CallMetadataValidationError as exc:
+                return {"status": "error", "message": str(exc)}
+            policy = dict((getattr(session, "call_metadata_policy", {}) or {}).get(field) or {})
+            if not policy or not bool(policy.get("correctable", False)):
+                return {"status": "error", "message": f"'{field}' is not an allowed correctable field."}
+
+            try:
+                normalized = normalize_call_metadata_value(
+                    value,
+                    max_length=int(policy.get("max_length") or 1024),
+                )
+                current = dict(getattr(session, "call_metadata", {}) or {})
+                previous = current.get(field)
+                current[field] = normalized
+                current = validate_call_metadata_document(current)
+            except CallMetadataValidationError as exc:
+                return {"status": "error", "message": str(exc)}
+
+            if previous == normalized:
+                return {
+                    "status": "success",
+                    "message": f"'{field}' already has that value.",
+                    "field": field,
+                    "changed": False,
+                }
+
+            session.call_metadata = current
+            updates = list(getattr(session, "call_metadata_updates", []) or [])
+            updates.append(
+                {
+                    "field": field,
+                    "source": "agent_correction",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            # The values are bounded above; keep the audit bounded as well.
+            session.call_metadata_updates = updates[-MAX_CALL_METADATA_UPDATES:]
+            return {
+                "status": "success",
+                "message": f"Updated '{field}' for this call.",
+                "field": field,
+                "changed": True,
+            }
     
     async def get_by_channel_id(self, channel_id: str) -> Optional[CallSession]:
         """Get session by any channel_id (caller, local, external_media)."""

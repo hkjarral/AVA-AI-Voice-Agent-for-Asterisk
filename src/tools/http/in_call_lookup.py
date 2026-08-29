@@ -481,8 +481,16 @@ class InCallHTTPTool(Tool):
                             f"Added pre-call variables to in-call tool context: {list(pre_call_results.keys())}",
                             extra={"tool": self.config.name, "call_id": context.call_id}
                         )
+                    call_metadata = getattr(session, 'call_metadata', None) or {}
+                    built_in_keys = {
+                        "caller_number", "called_number", "caller_name",
+                        "context_name", "call_id",
+                    }
+                    for key, value in call_metadata.items():
+                        if key not in built_in_keys:
+                            sub[key] = str(value) if value is not None else ""
         except Exception as e:
-            logger.warning(f"Failed to load pre-call results for in-call tool: {e}")
+            logger.warning(f"Failed to load call enrichment for in-call tool: {e}")
         
         # Add AI-provided parameters (these override pre-call vars if same name)
         for key, value in ai_params.items():

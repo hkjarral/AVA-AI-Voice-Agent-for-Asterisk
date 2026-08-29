@@ -51,6 +51,10 @@ interface HTTPToolConfig {
     body_template?: string;
     payload_template?: string;
     output_variables?: Record<string, string>;
+    call_metadata_fields?: Record<
+        string,
+        { persist: boolean; correctable: boolean; description?: string; max_length?: number }
+    >;
     hold_audio_file?: string;
     hold_audio_threshold_ms?: number;
     generate_summary?: boolean;
@@ -478,8 +482,35 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
 
     const removeOutputVariable = (key: string) => {
         const vars = { ...toolForm.output_variables };
+        const metadataFields = { ...(toolForm.call_metadata_fields || {}) };
         delete vars[key];
-        setToolForm({ ...toolForm, output_variables: vars });
+        delete metadataFields[key];
+        setToolForm({
+            ...toolForm,
+            output_variables: vars,
+            call_metadata_fields: metadataFields,
+        });
+    };
+
+    const updateOutputMetadataPolicy = (
+        key: string,
+        setting: 'persist' | 'correctable',
+        enabled: boolean
+    ) => {
+        const fields = { ...(toolForm.call_metadata_fields || {}) };
+        const current = fields[key] || {
+            persist: false,
+            correctable: false,
+            max_length: 1024,
+        };
+        const next = { ...current, [setting]: enabled };
+        if (setting === 'persist' && !enabled) {
+            delete fields[key];
+        } else {
+            if (setting === 'correctable' && enabled) next.persist = true;
+            fields[key] = next;
+        }
+        setToolForm({ ...toolForm, call_metadata_fields: fields });
     };
 
     const addQueryParam = () => {
@@ -893,21 +924,67 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                 <FormLabel tooltip="Map JSON response paths to variables for prompt injection. Use dot notation like 'contact.name' or 'contacts[0].email'">
                                     Output Variables
                                 </FormLabel>
+                                <p className="text-xs text-muted-foreground">
+                                    Persistence is off by default. Selected values appear in Call History,
+                                    exports, and backups.
+                                    Correction also requires assigning the Update Call Metadata tool to the Agent.
+                                </p>
                                 <div className="space-y-1">
                                     {Object.entries(toolForm.output_variables || {}).map(
                                         ([k, v]) => (
                                             <div
                                                 key={k}
-                                                className="flex items-center gap-2 text-xs bg-accent/50 px-2 py-1 rounded"
+                                                className="flex flex-wrap items-center gap-3 text-xs bg-accent/50 px-2 py-1.5 rounded"
                                             >
                                                 <span className="font-mono">
                                                     <span className={variableTokenClass}>{k}</span>{' '}
                                                     <span className="text-muted-foreground">←</span>{' '}
                                                     <span>{String(v)}</span>
                                                 </span>
+                                                <label className="ml-auto inline-flex items-center gap-1.5">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={
+                                                            toolForm.call_metadata_fields?.[k]?.persist === true
+                                                        }
+                                                        onChange={e =>
+                                                            updateOutputMetadataPolicy(
+                                                                k,
+                                                                'persist',
+                                                                e.target.checked
+                                                            )
+                                                        }
+                                                    />
+                                                    Persist in Call History
+                                                </label>
+                                                <label
+                                                    className={`inline-flex items-center gap-1.5 ${
+                                                        toolForm.call_metadata_fields?.[k]?.persist === true
+                                                            ? ''
+                                                            : 'opacity-50'
+                                                    }`}
+                                                >
+                                                    <input
+                                                        type="checkbox"
+                                                        disabled={
+                                                            toolForm.call_metadata_fields?.[k]?.persist !== true
+                                                        }
+                                                        checked={
+                                                            toolForm.call_metadata_fields?.[k]?.correctable === true
+                                                        }
+                                                        onChange={e =>
+                                                            updateOutputMetadataPolicy(
+                                                                k,
+                                                                'correctable',
+                                                                e.target.checked
+                                                            )
+                                                        }
+                                                    />
+                                                    Allow Agent to correct
+                                                </label>
                                                 <button
                                                     onClick={() => removeOutputVariable(k)}
-                                                    className="ml-auto text-destructive hover:text-destructive/80"
+                                                    className="text-destructive hover:text-destructive/80"
                                                 >
                                                     <Trash2 className="w-3 h-3" />
                                                 </button>

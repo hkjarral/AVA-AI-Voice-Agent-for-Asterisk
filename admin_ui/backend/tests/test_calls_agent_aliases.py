@@ -7,6 +7,22 @@ from types import SimpleNamespace
 from api import calls as calls_api
 
 
+def test_csv_cells_neutralize_spreadsheet_formulas():
+    for prefix in ("=", "+", "-", "@", "\t", "\r", "\n"):
+        value = f"{prefix}untrusted"
+        assert calls_api._csv_safe_cell(value) == f"'{value}"
+    for value in (
+        " =HYPERLINK('https://example.invalid')",
+        "\n=HYPERLINK('https://example.invalid')",
+        " \t\r\n @SUM(1+1)",
+        "\u00a0+SUM(1+1)",
+    ):
+        assert calls_api._csv_safe_cell(value) == f"'{value}"
+    assert calls_api._csv_safe_cell("ordinary") == "ordinary"
+    assert calls_api._csv_safe_cell(" ordinary") == " ordinary"
+    assert calls_api._csv_safe_cell(42) == 42
+
+
 def _rec(**over):
     base = dict(
         id="r1", call_id="c1", caller_number=None, caller_name=None,

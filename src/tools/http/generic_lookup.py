@@ -54,6 +54,9 @@ class HTTPLookupConfig:
     
     # Response mapping (JMESPath-like simple dot notation for MVP)
     output_variables: Dict[str, str] = field(default_factory=dict)
+    # Selected output fields to copy into bounded Call History metadata.
+    # Keys must also exist in output_variables; omitted means fully disabled.
+    call_metadata_fields: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     
     # Response limits
     max_response_size_bytes: int = 65536  # 64KB max
@@ -88,6 +91,12 @@ class GenericHTTPLookupTool(PreCallTool):
     """
     
     def __init__(self, config: HTTPLookupConfig):
+        from src.core.call_metadata import normalize_call_metadata_policy
+
+        config.call_metadata_fields = normalize_call_metadata_policy(
+            config.call_metadata_fields,
+            output_variables=config.output_variables,
+        )
         self.config = config
         self._definition = ToolDefinition(
             name=config.name,
@@ -647,6 +656,7 @@ def create_http_lookup_tool(name: str, config_dict: Dict[str, Any]) -> GenericHT
         query_params=config_dict.get('query_params', {}),
         body_template=config_dict.get('body_template'),
         output_variables=config_dict.get('output_variables', {}),
+        call_metadata_fields=config_dict.get('call_metadata_fields', {}),
         max_response_size_bytes=config_dict.get('max_response_size_bytes', 65536),
         response_body_max_chars=config_dict.get('response_body_max_chars'),
     )

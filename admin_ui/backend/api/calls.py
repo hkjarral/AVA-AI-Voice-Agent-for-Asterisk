@@ -16,7 +16,7 @@ import subprocess
 import sys
 import wave
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pathlib import Path
 
@@ -46,6 +46,16 @@ def _get_server_timezone():
 
 
 _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _csv_safe_cell(value: Any) -> Any:
+    """Prevent spreadsheet applications from evaluating untrusted CSV cells."""
+    if isinstance(value, str):
+        starts_with_control = value.startswith(("\t", "\r", "\n"))
+        starts_with_formula = value.lstrip().startswith(("=", "+", "-", "@"))
+        if starts_with_control or starts_with_formula:
+            return f"'{value}"
+    return value
 
 
 def _parse_datetime_param(value: Optional[str], *, end_of_day_if_date_only: bool) -> Optional[datetime]:
@@ -147,6 +157,8 @@ class CallRecordResponse(BaseModel):
     external_direction: Optional[str] = None
     external_disposition: Optional[str] = None
     external_metadata: dict = Field(default_factory=dict)
+    call_metadata: dict = Field(default_factory=dict)
+    call_metadata_updates: list = Field(default_factory=list)
     tool_calls: list = Field(default_factory=list)
     pre_call_tool_calls: list = Field(default_factory=list)
     post_call_tool_calls: list = Field(default_factory=list)
@@ -359,6 +371,8 @@ def _record_to_response(record, agent_names: Optional[Dict[str, str]] = None) ->
         external_direction=getattr(record, "external_direction", None),
         external_disposition=getattr(record, "external_disposition", None),
         external_metadata=getattr(record, "external_metadata", {}) or {},
+        call_metadata=getattr(record, "call_metadata", {}) or {},
+        call_metadata_updates=getattr(record, "call_metadata_updates", []) or [],
         tool_calls=_normalize_tool_calls(record.tool_calls or []),
         pre_call_tool_calls=_normalize_phase_tool_calls(
             getattr(record, "pre_call_tool_calls", None) or [], "pre_call"
@@ -485,6 +499,8 @@ async def list_calls(
     min_duration: Optional[float] = Query(None, description="Minimum duration in seconds"),
     max_duration: Optional[float] = Query(None, description="Maximum duration in seconds"),
     transcript_search: Optional[str] = Query(None, min_length=1, max_length=256, description="Search within conversation transcripts (case-insensitive substring match)"),
+    call_metadata_key: Optional[str] = Query(None, max_length=64, description="Exact call metadata field name"),
+    call_metadata_value: Optional[str] = Query(None, max_length=1024, description="Exact call metadata value"),
     order_by: str = Query("start_time", description="Column to order by"),
     order_dir: str = Query("DESC", description="Order direction (ASC/DESC)"),
 ):
@@ -495,6 +511,15 @@ async def list_calls(
     
     parsed_start = _parse_datetime_param(start_date, end_of_day_if_date_only=False)
     parsed_end = _parse_datetime_param(end_date, end_of_day_if_date_only=True)
+    if (call_metadata_key is None) != (call_metadata_value is None):
+        raise HTTPException(status_code=422, detail="call_metadata_key and call_metadata_value must be provided together")
+    if call_metadata_key is not None:
+        from src.core.call_metadata import CallMetadataValidationError, validate_call_metadata_key
+
+        try:
+            call_metadata_key = validate_call_metadata_key(call_metadata_key)
+        except CallMetadataValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     
     # Get total count (with all filters for accurate pagination)
     total = await store.count(
@@ -510,6 +535,8 @@ async def list_calls(
         min_duration=min_duration,
         max_duration=max_duration,
         transcript_search=transcript_search,
+        call_metadata_key=call_metadata_key,
+        call_metadata_value=call_metadata_value,
     )
     
     # Get paginated records
@@ -529,6 +556,8 @@ async def list_calls(
         min_duration=min_duration,
         max_duration=max_duration,
         transcript_search=transcript_search,
+        call_metadata_key=call_metadata_key,
+        call_metadata_value=call_metadata_value,
         order_by=order_by,
         order_dir=order_dir,
         include_details=False,
@@ -963,6 +992,8 @@ async def export_calls_csv(
     has_tool_calls: Optional[bool] = Query(None, description="Filter by tool usage"),
     min_duration: Optional[float] = Query(None, description="Minimum duration in seconds"),
     max_duration: Optional[float] = Query(None, description="Maximum duration in seconds"),
+    call_metadata_key: Optional[str] = Query(None, max_length=64),
+    call_metadata_value: Optional[str] = Query(None, max_length=1024),
 ):
     """
     Export call records as CSV with all filters matching the UI.
@@ -971,6 +1002,14 @@ async def export_calls_csv(
     
     parsed_start = _parse_datetime_param(start_date, end_of_day_if_date_only=False)
     parsed_end = _parse_datetime_param(end_date, end_of_day_if_date_only=True)
+    if (call_metadata_key is None) != (call_metadata_value is None):
+        raise HTTPException(status_code=422, detail="call_metadata_key and call_metadata_value must be provided together")
+    if call_metadata_key is not None:
+        from src.core.call_metadata import CallMetadataValidationError, validate_call_metadata_key
+        try:
+            call_metadata_key = validate_call_metadata_key(call_metadata_key)
+        except CallMetadataValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     
     # Get all matching records (limit to 10000 for safety)
     records = await store.list(
@@ -987,6 +1026,8 @@ async def export_calls_csv(
         has_tool_calls=has_tool_calls,
         min_duration=min_duration,
         max_duration=max_duration,
+        call_metadata_key=call_metadata_key,
+        call_metadata_value=call_metadata_value,
         include_details=True,
     )
     
@@ -1001,12 +1042,12 @@ async def export_calls_csv(
         "Provider", "Pipeline", "Context", "Outcome",
         "Transfer Destination", "Error Message",
         "Tool Calls", "Avg Latency (ms)", "Max Latency (ms)",
-        "Total Turns", "Barge-ins"
+        "Total Turns", "Barge-ins", "Call Metadata"
     ])
     
     # Data rows
     for r in records:
-        writer.writerow([
+        row = [
             r.id, r.call_id, r.caller_number or "", r.caller_name or "",
             r.start_time.isoformat() if r.start_time else "",
             r.end_time.isoformat() if r.end_time else "",
@@ -1014,8 +1055,10 @@ async def export_calls_csv(
             r.provider_name, r.pipeline_name or "", r.context_name or "", r.outcome,
             r.transfer_destination or "", r.error_message or "",
             len(r.tool_calls), round(r.avg_turn_latency_ms, 2), round(r.max_turn_latency_ms, 2),
-            r.total_turns, r.barge_in_count
-        ])
+            r.total_turns, r.barge_in_count,
+            json.dumps(getattr(r, "call_metadata", {}) or {}, ensure_ascii=False, sort_keys=True),
+        ]
+        writer.writerow([_csv_safe_cell(value) for value in row])
     
     csv_content = output.getvalue()
     
@@ -1041,6 +1084,8 @@ async def export_calls_json(
     has_tool_calls: Optional[bool] = Query(None, description="Filter by tool usage"),
     min_duration: Optional[float] = Query(None, description="Minimum duration in seconds"),
     max_duration: Optional[float] = Query(None, description="Maximum duration in seconds"),
+    call_metadata_key: Optional[str] = Query(None, max_length=64),
+    call_metadata_value: Optional[str] = Query(None, max_length=1024),
 ):
     """
     Export call records as JSON with all filters matching the UI.
@@ -1049,6 +1094,14 @@ async def export_calls_json(
     
     parsed_start = _parse_datetime_param(start_date, end_of_day_if_date_only=False)
     parsed_end = _parse_datetime_param(end_date, end_of_day_if_date_only=True)
+    if (call_metadata_key is None) != (call_metadata_value is None):
+        raise HTTPException(status_code=422, detail="call_metadata_key and call_metadata_value must be provided together")
+    if call_metadata_key is not None:
+        from src.core.call_metadata import CallMetadataValidationError, validate_call_metadata_key
+        try:
+            call_metadata_key = validate_call_metadata_key(call_metadata_key)
+        except CallMetadataValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     
     # Get all matching records (limit to 10000 for safety)
     records = await store.list(
@@ -1065,6 +1118,8 @@ async def export_calls_json(
         has_tool_calls=has_tool_calls,
         min_duration=min_duration,
         max_duration=max_duration,
+        call_metadata_key=call_metadata_key,
+        call_metadata_value=call_metadata_value,
         include_details=True,
     )
     

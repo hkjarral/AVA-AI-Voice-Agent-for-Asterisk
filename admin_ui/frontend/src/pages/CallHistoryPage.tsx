@@ -63,6 +63,12 @@ interface CallRecordDetail extends CallRecordSummary {
         session?: Record<string, any>;
         events?: Array<Record<string, any>>;
     };
+    call_metadata: Record<string, string>;
+    call_metadata_updates: Array<{
+        field: string;
+        source: string;
+        updated_at?: string;
+    }>;
 }
 
 interface CallStats {
@@ -227,6 +233,8 @@ const CallHistoryPage = () => {
         outcome: '',
         start_date: '',
         end_date: '',
+        call_metadata_key: '',
+        call_metadata_value: '',
     });
     const [showFilters, setShowFilters] = useState(false);
 
@@ -278,8 +286,13 @@ const CallHistoryPage = () => {
             
             // Add filters
             Object.entries(filters).forEach(([key, value]) => {
+                if (key.startsWith('call_metadata_')) return;
                 if (value) params[key] = value;
             });
+            if (filters.call_metadata_key && filters.call_metadata_value) {
+                params.call_metadata_key = filters.call_metadata_key;
+                params.call_metadata_value = filters.call_metadata_value;
+            }
             if (transcriptSearch) params.transcript_search = transcriptSearch;
 
             const res = await axios.get('/api/calls', { params });
@@ -529,8 +542,13 @@ const CallHistoryPage = () => {
         try {
             const params: Record<string, any> = {};
             Object.entries(filters).forEach(([key, value]) => {
+                if (key.startsWith('call_metadata_')) return;
                 if (value) params[key] = value;
             });
+            if (filters.call_metadata_key && filters.call_metadata_value) {
+                params.call_metadata_key = filters.call_metadata_key;
+                params.call_metadata_value = filters.call_metadata_value;
+            }
             
             const res = await axios.get(`/api/calls/export/${format}`, { 
                 params,
@@ -648,6 +666,8 @@ const CallHistoryPage = () => {
             outcome: '',
             start_date: '',
             end_date: '',
+            call_metadata_key: '',
+            call_metadata_value: '',
         });
     };
 
@@ -844,7 +864,7 @@ const CallHistoryPage = () => {
                             </button>
                         )}
                     </div>
-                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
+                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
                         <div>
                             <label className="text-sm text-muted-foreground">Caller Number</label>
                             <input
@@ -934,6 +954,40 @@ const CallHistoryPage = () => {
                                 onChange={(e) => setFilters({ ...filters, end_date: e.target.value })}
                                 className="w-full mt-1 px-3 py-2 bg-background border rounded-lg text-sm"
                             />
+                        </div>
+                        <div>
+                            <label htmlFor="call-metadata-key" className="text-sm text-muted-foreground">Metadata Field</label>
+                            <input
+                                id="call-metadata-key"
+                                type="text"
+                                value={filters.call_metadata_key}
+                                onChange={(e) => {
+                                    setFilters({ ...filters, call_metadata_key: e.target.value });
+                                    setPage(1);
+                                }}
+                                placeholder="e.g. customer_tier"
+                                className="w-full mt-1 px-3 py-2 bg-background border rounded-lg text-sm font-mono"
+                            />
+                        </div>
+                        <div>
+                            <label htmlFor="call-metadata-value" className="text-sm text-muted-foreground">Metadata Value (exact)</label>
+                            <input
+                                id="call-metadata-value"
+                                type="text"
+                                value={filters.call_metadata_value}
+                                onChange={(e) => {
+                                    setFilters({ ...filters, call_metadata_value: e.target.value });
+                                    setPage(1);
+                                }}
+                                placeholder="Exact value"
+                                className="w-full mt-1 px-3 py-2 bg-background border rounded-lg text-sm"
+                            />
+                            {(filters.call_metadata_key && !filters.call_metadata_value) ||
+                            (!filters.call_metadata_key && filters.call_metadata_value) ? (
+                                <div className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                                    Enter both fields to apply this filter.
+                                </div>
+                            ) : null}
                         </div>
                     </div>
                 </div>
@@ -1299,6 +1353,41 @@ const CallHistoryPage = () => {
                                                 </pre>
                                             </details>
                                         )}
+                                    </div>
+                                </div>
+                            )}
+
+                            {selectedCall && Object.keys(selectedCall.call_metadata || {}).length > 0 && (
+                                <div>
+                                    <h3 className="font-semibold mb-2">Call Metadata</h3>
+                                    <div className="rounded-lg border border-border bg-card p-4">
+                                        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+                                            {Object.entries(selectedCall.call_metadata).map(([key, value]) => {
+                                                const update = (selectedCall.call_metadata_updates || [])
+                                                    .filter(item => item.field === key)
+                                                    .slice(-1)[0];
+                                                return (
+                                                    <div key={key} className="rounded-md bg-muted/30 p-3">
+                                                        <div className="flex items-center justify-between gap-2">
+                                                            <span className="font-mono text-xs text-muted-foreground">{key}</span>
+                                                            <span className={`rounded px-1.5 py-0.5 text-[10px] ${
+                                                                update
+                                                                    ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                                                                    : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                                                            }`}>
+                                                                {update ? 'Updated during call' : 'Pre-call'}
+                                                            </span>
+                                                        </div>
+                                                        <div className="mt-1 break-words text-sm">{String(value)}</div>
+                                                        {update?.updated_at && (
+                                                            <div className="mt-1 text-[11px] text-muted-foreground">
+                                                                {formatDate(update.updated_at)}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
                                     </div>
                                 </div>
                             )}

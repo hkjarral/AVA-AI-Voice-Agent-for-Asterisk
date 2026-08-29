@@ -629,6 +629,12 @@ Tool Definitions:
             self.register(RequestTranscriptTool)
         except ImportError as e:
             logger.warning(f"Could not import RequestTranscriptTool: {e}")
+
+        try:
+            from src.tools.business.update_call_metadata import UpdateCallMetadataTool
+            self.register(UpdateCallMetadataTool)
+        except ImportError as e:
+            logger.warning(f"Could not import UpdateCallMetadataTool: {e}")
         
         try:
             from src.tools.business.gcal_tool import GCalendarTool

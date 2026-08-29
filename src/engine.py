@@ -7206,6 +7206,7 @@ class Engine:
             "current_datetime_iso": _now_utc.isoformat(timespec="seconds"),
             "today": _now_local.strftime("%A, %B %d, %Y"),
         }
+        built_in_substitution_keys = set(substitutions)
         
         # Add pre-call tool results (Milestone 24 - CRM enrichment variables)
         pre_call_results = getattr(session, 'pre_call_results', None) or {}
@@ -7214,11 +7215,19 @@ class Engine:
             if key not in substitutions:
                 substitutions[key] = str(value) if value else ""
 
+        # Selected call metadata is the effective enrichment layer. It may
+        # replace an initial pre-call value but never a built-in variable.
+        call_metadata = getattr(session, 'call_metadata', None) or {}
+        for key, value in call_metadata.items():
+            if key not in built_in_substitution_keys:
+                substitutions[key] = str(value) if value is not None else ""
+
         # Avoid awkward optional-enrichment output such as "from ," when a
         # lookup succeeds but does not return a mapped value. This deliberately
         # handles only a small phrase immediately preceding an empty pre-call
         # placeholder; unknown placeholders remain untouched.
-        for key, value in pre_call_results.items():
+        effective_enrichment = {**pre_call_results, **call_metadata}
+        for key, value in effective_enrichment.items():
             if value not in (None, ""):
                 continue
             escaped = re.escape(str(key))
@@ -9811,6 +9820,8 @@ class Engine:
                 error_message=session.error_message,
                 tool_calls=getattr(session, 'tool_calls', []) or [],
                 pre_call_tool_calls=getattr(session, 'pre_call_tool_calls', []) or [],
+                call_metadata=dict(getattr(session, 'call_metadata', {}) or {}),
+                call_metadata_updates=list(getattr(session, 'call_metadata_updates', []) or []),
                 # post_call_tool_calls is populated AFTER this initial save by the
                 # post-call dispatch loop, via CallHistoryStore.append/update_phase_tool.
                 post_call_tool_calls=[],
@@ -17773,6 +17784,30 @@ class Engine:
             },
         )
 
+    async def _configure_call_metadata_tool_runtime(self, session: CallSession) -> CallSession:
+        """Install a per-call schema containing only its correctable fields."""
+        from src.tools.business.update_call_metadata import UpdateCallMetadataTool
+
+        latest = await self.session_store.get_by_call_id(session.call_id)
+        if latest is not None:
+            session = latest
+        registry = self._tool_registry_for_session(session).clone()
+        policies = dict(getattr(session, "call_metadata_policy", {}) or {})
+        correctable = {
+            key: value
+            for key, value in policies.items()
+            if isinstance(value, dict) and bool(value.get("correctable", False))
+        }
+        if correctable:
+            registry.register_instance(UpdateCallMetadataTool(correctable))
+        else:
+            # An Agent assignment alone is insufficient when this call has no
+            # selected correctable pre-call fields.
+            registry.unregister("update_call_metadata")
+        session.tool_runtime_registry = registry
+        await self._save_session(session)
+        return session
+
     def _compute_config_state(self) -> dict:
         """Compare the running (loaded) config against what's on disk.
 
@@ -19024,6 +19059,29 @@ class Engine:
                     )
             except Exception:
                 logger.debug("Pre-call tool execution failed", call_id=call_id, exc_info=True)
+
+            # The selected pre-call outputs determine the call-local correction
+            # schema. Always configure it, including when no lookup succeeded,
+            # so the generic catalog definition is never exposed to a live Agent.
+            try:
+                session = await self._configure_call_metadata_tool_runtime(session)
+            except Exception:
+                logger.warning(
+                    "Failed to configure call metadata tool; disabling it for this call",
+                    call_id=call_id,
+                    exc_info=True,
+                )
+                try:
+                    registry = self._tool_registry_for_session(session).clone()
+                    registry.unregister("update_call_metadata")
+                    session.tool_runtime_registry = registry
+                    await self._save_session(session)
+                except Exception:
+                    logger.debug(
+                        "Failed to remove metadata tool after setup error",
+                        call_id=call_id,
+                        exc_info=True,
+                    )
 
             # Preserve any per-call override previously applied. Only assign a pipeline
             # here if one has already been selected (e.g., via AI_PROVIDER or active_pipeline)
@@ -20445,7 +20503,9 @@ class Engine:
             tool_tasks = [run_tool_with_timeout(tool) for tool in tools_to_run]
             tool_outputs = await asyncio.gather(*tool_tasks, return_exceptions=True)
             
-            # Merge results
+            # Merge results and seed only explicitly selected metadata fields.
+            metadata_values: Dict[str, str] = {}
+            metadata_policy: Dict[str, Dict[str, Any]] = {}
             for i, output in enumerate(tool_outputs):
                 if isinstance(output, Exception):
                     logger.error("Pre-call tool raised exception",
@@ -20455,9 +20515,41 @@ class Engine:
                     continue
                 if isinstance(output, dict):
                     results.update(output)
+                    raw_policy = getattr(
+                        getattr(tools_to_run[i], "config", None),
+                        "call_metadata_fields",
+                        {},
+                    ) or {}
+                    if isinstance(raw_policy, dict):
+                        from src.core.call_metadata import normalize_call_metadata_value
+
+                        for field_name, field_policy in raw_policy.items():
+                            if field_name not in output or not isinstance(field_policy, dict):
+                                continue
+                            try:
+                                metadata_values[field_name] = normalize_call_metadata_value(
+                                    output[field_name],
+                                    max_length=int(field_policy.get("max_length") or 1024),
+                                )
+                                metadata_policy[field_name] = {
+                                    **field_policy,
+                                    "source_tool": tools_to_run[i].definition.name,
+                                }
+                            except Exception:
+                                logger.warning(
+                                    "Rejected invalid pre-call metadata value",
+                                    call_id=call_id,
+                                    tool=tools_to_run[i].definition.name,
+                                    field=field_name,
+                                )
             
             # Store pre-call results in session for debugging and in-call access
             session.pre_call_results = results
+            from src.core.call_metadata import validate_call_metadata_document
+
+            session.call_metadata = validate_call_metadata_document(metadata_values)
+            session.call_metadata_policy = metadata_policy
+            session.call_metadata_updates = []
             # Execution metadata for the call history UI (one entry per tool).
             session.pre_call_tool_calls = tool_call_records
             await self._save_session(session)
@@ -20545,6 +20637,7 @@ class Engine:
                 summary=getattr(session, 'summary', None),
                 tool_calls=list(getattr(session, 'tool_calls', []) or []),
                 pre_call_results=dict(getattr(session, 'pre_call_results', {}) or {}),
+                call_metadata=dict(getattr(session, 'call_metadata', {}) or {}),
                 campaign_id=getattr(session, 'outbound_campaign_id', None),
                 lead_id=getattr(session, 'outbound_lead_id', None),
                 config=self._tool_config_for_session(session),
