@@ -7,6 +7,14 @@ from types import SimpleNamespace
 from api import calls as calls_api
 
 
+def test_csv_cells_neutralize_spreadsheet_formulas():
+    for prefix in ("=", "+", "-", "@", "\t", "\r"):
+        value = f"{prefix}untrusted"
+        assert calls_api._csv_safe_cell(value) == f"'{value}"
+    assert calls_api._csv_safe_cell("ordinary") == "ordinary"
+    assert calls_api._csv_safe_cell(42) == 42
+
+
 def _rec(**over):
     base = dict(
         id="r1", call_id="c1", caller_number=None, caller_name=None,

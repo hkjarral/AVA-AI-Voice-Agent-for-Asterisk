@@ -42,6 +42,12 @@ def test_call_metadata_policy_is_opt_in_and_rejects_authoritative_or_secret_fiel
             {"customer_tier": {"persist": True}},
             output_variables={},
         )
+    for invalid_flag in ("true", 1, [], None):
+        with pytest.raises(CallMetadataValidationError, match="must be a boolean"):
+            normalize_call_metadata_policy(
+                {"customer_tier": {"persist": invalid_flag}},
+                output_variables={"customer_tier": "contact.tier"},
+            )
 
 
 def test_update_tool_schema_contains_only_call_local_correctable_fields():

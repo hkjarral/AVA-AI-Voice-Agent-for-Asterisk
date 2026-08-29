@@ -16,7 +16,7 @@ import subprocess
 import sys
 import wave
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pathlib import Path
 
@@ -46,6 +46,13 @@ def _get_server_timezone():
 
 
 _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _csv_safe_cell(value: Any) -> Any:
+    """Prevent spreadsheet applications from evaluating untrusted CSV cells."""
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r")):
+        return f"'{value}"
+    return value
 
 
 def _parse_datetime_param(value: Optional[str], *, end_of_day_if_date_only: bool) -> Optional[datetime]:
@@ -1037,7 +1044,7 @@ async def export_calls_csv(
     
     # Data rows
     for r in records:
-        writer.writerow([
+        row = [
             r.id, r.call_id, r.caller_number or "", r.caller_name or "",
             r.start_time.isoformat() if r.start_time else "",
             r.end_time.isoformat() if r.end_time else "",
@@ -1047,7 +1054,8 @@ async def export_calls_csv(
             len(r.tool_calls), round(r.avg_turn_latency_ms, 2), round(r.max_turn_latency_ms, 2),
             r.total_turns, r.barge_in_count,
             json.dumps(getattr(r, "call_metadata", {}) or {}, ensure_ascii=False, sort_keys=True),
-        ])
+        ]
+        writer.writerow([_csv_safe_cell(value) for value in row])
     
     csv_content = output.getvalue()
     

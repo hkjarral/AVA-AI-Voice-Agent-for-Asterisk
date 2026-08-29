@@ -167,6 +167,15 @@ def test_pre_call_metadata_policy_round_trip_and_validation(client):
     assert unknown_policy_key.status_code == 422
     assert "Extra inputs are not permitted" in unknown_policy_key.text
 
+    string_flag = client.post("/api/tools/managed", json={
+        "name": "string_flag_metadata", "phase": "pre_call",
+        "url": "https://api.example.com/lookup",
+        "output_variables": {"customer_tier": "contact.tier"},
+        "call_metadata_fields": {"customer_tier": {"persist": "true"}},
+    })
+    assert string_flag.status_code == 422
+    assert "Input should be a valid boolean" in string_flag.text
+
     reserved = client.post("/api/tools/managed", json={
         "name": "unsafe_metadata", "phase": "pre_call",
         "url": "https://api.example.com/lookup",

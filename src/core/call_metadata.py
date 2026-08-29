@@ -63,6 +63,23 @@ class CallMetadataValidationError(ValueError):
     """Raised when metadata configuration or a value violates its boundary."""
 
 
+def _tokenize_camel_case(value: str) -> str:
+    """Insert separators at camel/Pascal-case boundaries in linear time."""
+    tokenized: list[str] = []
+    for index, character in enumerate(value):
+        previous = value[index - 1] if index else ""
+        following = value[index + 1] if index + 1 < len(value) else ""
+        starts_word = character.isupper() and (
+            previous.islower()
+            or previous.isdigit()
+            or (previous.isupper() and following.islower())
+        )
+        if tokenized and starts_word:
+            tokenized.append("_")
+        tokenized.append(character)
+    return "".join(tokenized)
+
+
 def validate_call_metadata_key(key: Any) -> str:
     normalized = str(key or "").strip()
     if not _KEY_RE.fullmatch(normalized):
@@ -77,8 +94,7 @@ def validate_call_metadata_key(key: Any) -> str:
     # Split camel/Pascal-case boundaries before checking credential tokens so
     # names such as ``customerAccessToken`` and ``crmPassword`` receive the
     # same treatment as their snake_case equivalents.
-    credential_key = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", normalized)
-    credential_key = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", credential_key)
+    credential_key = _tokenize_camel_case(normalized)
     if _CREDENTIAL_RE.search(credential_key):
         raise CallMetadataValidationError(
             f"'{normalized}' looks credential-related and cannot be persisted"
@@ -118,8 +134,13 @@ def normalize_call_metadata_policy(
             raise CallMetadataValidationError(
                 f"unsupported policy field(s) for '{key}': {', '.join(sorted(unknown))}"
             )
-        persist = bool(raw_policy.get("persist", False))
-        correctable = bool(raw_policy.get("correctable", False))
+        for flag_name in ("persist", "correctable"):
+            if flag_name in raw_policy and not isinstance(raw_policy[flag_name], bool):
+                raise CallMetadataValidationError(
+                    f"'{flag_name}' for '{key}' must be a boolean"
+                )
+        persist = raw_policy.get("persist", False)
+        correctable = raw_policy.get("correctable", False)
         if correctable and not persist:
             raise CallMetadataValidationError(
                 f"'{key}' cannot be correctable unless persistence is enabled"
