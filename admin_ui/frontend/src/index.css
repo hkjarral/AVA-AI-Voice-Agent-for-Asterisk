@@ -26,6 +26,13 @@
     --input: 240 5.9% 90%;
     --ring: 240 5.9% 10%;
     --radius: 0.5rem;
+    /*
+     * Native form controls (select popups, checkboxes, date inputs,
+     * scrollbars) are drawn by the browser using color-scheme, not by
+     * this file's custom properties. Nothing set it before, so those
+     * controls stayed light even after the rest of the UI went dark.
+     */
+    color-scheme: light;
   }
 
   .dark {
@@ -48,6 +55,8 @@
     --border: 240 3.7% 15.9%;
     --input: 240 3.7% 15.9%;
     --ring: 240 4.9% 83.9%;
+
+    color-scheme: dark;
   }
 }
 
@@ -58,5 +67,22 @@
 
   body {
     @apply bg-background text-foreground;
+  }
+
+  /*
+   * Preflight's `color: inherit` on select beats UA `select { color:
+   * FieldText }`, so select computes --foreground and options inherit that.
+   * background-color skips option, and select's bg skips the popup, so it
+   * kept the light UA canvas: 1.04:1. Chromium paints disabled options the
+   * same as enabled, so this rule pins both engines to one token.
+   */
+  option,
+  optgroup {
+    background-color: hsl(var(--popover));
+    color: hsl(var(--popover-foreground));
+  }
+
+  option:disabled {
+    color: hsl(var(--muted-foreground));
   }
 }
