@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Google Live "Test Connection" honors managed API key files/env references** ([#633](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/633)): the Admin UI's provider connection test now uses the already-resolved `api_key_file`/`api_key_env` secret before falling back to `GOOGLE_API_KEY` in `.env`. Previously the test ignored resolved credentials and reported a broken provider even while `ai_engine` was placing live calls on that same key.
+- **Dark-theme `<select>` options are readable again** ([#635](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/635)): option text rendered near-white on the browser's white popup canvas in dark mode, measured at 1.04:1 and unreadable unless a row was hovered. Tailwind Preflight sets `color: inherit` on `select`, which overrides the browser default `select { color: FieldText }`, and options inherit from the select; nothing declared `color-scheme`, so the popup kept the light canvas. Both themes now declare `color-scheme`, and options paint from the `--popover` tokens: 19.06:1 in dark, 19.90:1 in light. Disabled options get a consistent theme-aware muted colour, where Chromium previously drew them the same as enabled options.
 
 ## [7.5.6] - 2026-08-26
 
