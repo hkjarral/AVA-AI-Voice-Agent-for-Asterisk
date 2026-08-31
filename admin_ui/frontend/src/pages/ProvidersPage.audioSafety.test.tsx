@@ -363,4 +363,52 @@ describe('ProvidersPage OpenAI Realtime save contract', () => {
             chat_model: 'deepseek-v4-flash',
         });
     });
+
+    it('offers and serializes the Google Gemini modular LLM template', async () => {
+        mocks.config = {
+            providers: {
+                existing_llm: {
+                    enabled: true,
+                    type: 'openai',
+                    capabilities: ['llm'],
+                    chat_model: 'existing-model',
+                },
+            },
+        };
+
+        render(
+            <MemoryRouter>
+                <ProvidersPage />
+            </MemoryRouter>,
+        );
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Add Provider Templates' }));
+        const dialog = await screen.findByRole('dialog', { name: 'Add Provider Templates' });
+        fireEvent.click(within(dialog).getByRole('checkbox', { name: /Google Gemini LLM/i }));
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Add Selected' }));
+
+        await waitFor(() => {
+            expect(axios.post).toHaveBeenCalledWith(
+                '/api/config/yaml',
+                expect.objectContaining({ content: expect.any(String) }),
+            );
+        });
+        const saveCall = vi.mocked(axios.post).mock.calls.find(([url]) => url === '/api/config/yaml');
+        const body = saveCall?.[1] as { content: string };
+        const saved = yaml.load(body.content) as {
+            providers: Record<string, Record<string, unknown>>;
+        };
+        expect(saved.providers.existing_llm).toMatchObject({
+            enabled: true,
+            chat_model: 'existing-model',
+        });
+        expect(saved.providers.google_llm).toEqual({
+            enabled: false,
+            type: 'google',
+            capabilities: ['llm'],
+            api_key_env: 'GOOGLE_API_KEY',
+            llm_base_url: 'https://generativelanguage.googleapis.com/v1',
+            llm_model: 'gemini-2.5-flash',
+        });
+    });
 });

@@ -355,6 +355,14 @@ const ProvidersPage: React.FC = () => {
                 local_llm: { type: 'local', capabilities: ['llm'], enabled: false, auth_token: '${LOCAL_WS_AUTH_TOKEN:-}' },
                 local_tts: { type: 'local', capabilities: ['tts'], enabled: false, ws_url: '${LOCAL_WS_URL:-ws://127.0.0.1:8765}', auth_token: '${LOCAL_WS_AUTH_TOKEN:-}' }
             },
+            google_llm: {
+                enabled: false,
+                type: 'google',
+                capabilities: ['llm'],
+                api_key_env: 'GOOGLE_API_KEY',
+                llm_base_url: 'https://generativelanguage.googleapis.com/v1',
+                llm_model: 'gemini-2.5-flash',
+            },
             telnyx_llm: {
                 enabled: false,
                 type: 'telnyx',
@@ -1674,6 +1682,23 @@ const ProvidersPage: React.FC = () => {
                     <div className="space-y-2">
                         <h4 className="text-sm font-medium">Modular Providers (Cloud)</h4>
                         {[
+                            {
+                                id: 'google_llm',
+                                name: 'Google Gemini LLM',
+                                desc: 'Gemini models through the native Google Generative Language API',
+                                doc: 'https://ai.google.dev/gemini-api/docs',
+                                tooltip: (
+                                    <>
+                                        <strong>Google Gemini LLM</strong> — modular LLM slot for post-call summaries and pipelines.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>Native Google <code>generateContent</code> API</li>
+                                            <li>Default model: <code>gemini-2.5-flash</code></li>
+                                            <li>Free-tier availability depends on Google account, region, and quota</li>
+                                            <li>Requires <code>GOOGLE_API_KEY</code></li>
+                                        </ul>
+                                    </>
+                                ),
+                            },
                             {
                                 id: 'telnyx_llm',
                                 name: 'Telnyx LLM',
