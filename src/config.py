@@ -394,6 +394,22 @@ class GoogleProviderConfig(BaseModel):
     vad_prefix_padding_ms: int = Field(default=20, ge=0)
     vad_silence_duration_ms: int = Field(default=500, ge=0)
 
+    # Gemini Live `realtimeInputConfig.activityHandling`, a sibling of
+    # `automaticActivityDetection` rather than one of its members, hence no
+    # `vad_` prefix. `NO_INTERRUPTION` stops the model cancelling its own
+    # generation when the caller starts speaking, so the agent finishes the
+    # sentence it is on. Default None omits the key, leaving the API default
+    # (`START_OF_ACTIVITY_INTERRUPTS`) in force.
+    #
+    # Declared here because GoogleProviderConfig is built as
+    # GoogleProviderConfig(**merged); pydantic's extra="ignore" would drop an
+    # undeclared key silently, with nothing logged.
+    #
+    # Validation lives in the provider (coerce_activity_handling) so an invalid
+    # value degrades to omitting the key on one call rather than failing config
+    # load for every agent.
+    activity_handling: Optional[str] = Field(default=None)
+
     # Google Live response configuration
     response_modalities: str = Field(default="audio")  # "audio", "text", or "audio_text"
     
