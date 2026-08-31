@@ -1606,6 +1606,9 @@ class ProviderTestRequest(BaseModel):
     name: str
     config: Dict[str, Any]
 
+class _LocalAIAuthenticationError(RuntimeError):
+    pass
+
 class SmtpTestRequest(BaseModel):
     to_email: str
     from_email: Optional[str] = None
@@ -1709,6 +1712,12 @@ async def test_provider_connection(request: ProviderTestRequest):
             # Handle env var format
             if '${' in ws_url:
                 ws_url = 'ws://127.0.0.1:8765'  # Default fallback
+
+            auth_token = str(
+                provider_config.get("auth_token")
+                or get_env_key("LOCAL_WS_AUTH_TOKEN")
+                or ""
+            ).strip()
             
             try:
                 def _fallback_ws_url(url: str) -> str:
@@ -1725,6 +1734,18 @@ async def test_provider_connection(request: ProviderTestRequest):
 
                 async def _try_connect(url: str):
                     async with websockets.connect(url, open_timeout=5.0) as ws:
+                        if auth_token:
+                            await ws.send(json.dumps({"type": "auth", "auth_token": auth_token}))
+                            response = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                            auth_response = json.loads(response)
+                            if (
+                                auth_response.get("type") != "auth_response"
+                                or auth_response.get("status") != "ok"
+                            ):
+                                raise _LocalAIAuthenticationError(
+                                    "Local AI Server authentication failed"
+                                )
+
                         # Send status request to check models
                         await ws.send(json.dumps({"type": "status"}))
                         response = await asyncio.wait_for(ws.recv(), timeout=5.0)
@@ -1734,6 +1755,8 @@ async def test_provider_connection(request: ProviderTestRequest):
                 try:
                     data = await _try_connect(ws_url)
                     effective_url = ws_url
+                except _LocalAIAuthenticationError:
+                    raise
                 except Exception as e:
                     alt = _fallback_ws_url(ws_url)
                     if alt != ws_url:
@@ -1757,9 +1780,28 @@ async def test_provider_connection(request: ProviderTestRequest):
                     status_parts.append(f"LLM: {llm_model} ✓" if llm_loaded else "LLM: not loaded")
                     status_parts.append(f"TTS: {tts_backend} ✓" if tts_loaded else "TTS: not loaded")
 
-                    all_loaded = stt_loaded and llm_loaded and tts_loaded
+                    declared_capabilities = provider_config.get("capabilities") or []
+                    if isinstance(declared_capabilities, str):
+                        declared_capabilities = [declared_capabilities]
+                    loaded_by_capability = {
+                        "stt": stt_loaded,
+                        "llm": llm_loaded,
+                        "tts": tts_loaded,
+                    }
+                    required_capabilities = {
+                        str(capability).strip().lower()
+                        for capability in declared_capabilities
+                        if str(capability).strip().lower() in loaded_by_capability
+                    }
+                    if not required_capabilities:
+                        required_capabilities = set(loaded_by_capability)
+
+                    provider_ready = all(
+                        loaded_by_capability[capability]
+                        for capability in required_capabilities
+                    )
                     return {
-                        "success": all_loaded,
+                        "success": provider_ready,
                         "message": f"Local AI Server connected ({effective_url}). {' | '.join(status_parts)}",
                     }
                 return {"success": False, "message": "Local AI Server responded but status invalid"}
