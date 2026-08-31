@@ -362,9 +362,6 @@ const ProvidersPage: React.FC = () => {
                 api_key_env: 'GOOGLE_API_KEY',
                 llm_base_url: 'https://generativelanguage.googleapis.com/v1',
                 llm_model: 'gemini-2.5-flash',
-                temperature: 0.7,
-                max_output_tokens: 200,
-                timeout_sec: 30.0,
             },
             telnyx_llm: {
                 enabled: false,
