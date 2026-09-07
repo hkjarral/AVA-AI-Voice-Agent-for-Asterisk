@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import ipaddress
 import json
 import random
 import shutil
@@ -65,34 +66,39 @@ def test_allowlist_compares_canonical_ip_addresses(allowed, peer, expected):
 
 
 @pytest.mark.asyncio
-async def test_ipv4_peer_is_admitted_on_dual_stack_listener(monkeypatch):
+async def test_ipv4_peer_is_admitted_on_mapped_ipv6_loopback_listener(monkeypatch):
     if not socket.has_dualstack_ipv6():
         pytest.skip("dual-stack IPv6 unavailable")
     from src.audio.transports import asterisk_websocket as module
 
     listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-    listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-    listener.bind(("::", 0))
-    listener.listen()
-    listener.setblocking(False)
     original_serve = module.serve
 
-    # asyncio normally forces IPV6_V6ONLY; supply a real dual-stack socket to
-    # exercise the IPv4-mapped address returned by that supported topology.
+    # Keep the real AF_INET6 / IPv4-mapped peer regression, but bind only the
+    # mapped loopback address so the test never listens on external interfaces.
+    # asyncio normally forces IPV6_V6ONLY, hence the explicitly supplied socket.
     def serve_dual_stack(handler, host, port, **kwargs):
-        assert host == "::"
+        assert host == "::ffff:127.0.0.1"
         return original_serve(handler, sock=listener, **kwargs)
 
     monkeypatch.setattr(module, "serve", serve_dual_stack)
-    server = WebSocketMediaServer(_config(bind_host="::"), AsyncMock(), AsyncMock())
+    server = WebSocketMediaServer(_config(bind_host="::ffff:127.0.0.1"), AsyncMock(), AsyncMock())
     try:
+        listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        listener.bind(("::ffff:127.0.0.1", 0))
+        listener.listen()
+        listener.setblocking(False)
         await server.start()
+        assert ipaddress.ip_address(server.address[0]).ipv4_mapped == ipaddress.ip_address("127.0.0.1")
         nonce = server.register_call("call-1", "media-1", "ulaw")
         async with connect(f"ws://127.0.0.1:{server.address[1]}/media?nonce={nonce}",
                            subprotocols=["media"], additional_headers=_headers()) as ws:
             await ws.send(_start(nonce))
             binding = await server.wait_ready("call-1")
             assert binding.state == "ready"
+            peer = ipaddress.ip_address(binding.websocket.remote_address[0])
+            assert isinstance(peer, ipaddress.IPv6Address)
+            assert peer.ipv4_mapped == ipaddress.ip_address("127.0.0.1")
     finally:
         await server.stop()
         listener.close()
