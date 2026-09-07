@@ -87,7 +87,7 @@ from .audio.transports.codec import (
     decode_wire_audio,
     sample_rate_for_codec,
 )
-from .audio.resampler import resample_audio, resolve_output_resampler_policy
+from .audio.resampler import pcm16le_to_mulaw, resample_audio, resolve_output_resampler_policy
 from .providers.base import AIProviderInterface
 from .providers.deepgram import DeepgramProvider
 from .providers.local import LocalProvider
@@ -4578,6 +4578,26 @@ class Engine:
         if codec not in {"ulaw", "alaw", "slin", "slin16"}:
             raise ValueError(f"Unsupported WebSocket media codec: {encoding}")
         return codec
+
+    @staticmethod
+    def _pipeline_audio_for_file_playback(tts_options: Any, audio: bytes) -> bytes:
+        """ARI file playback writes `.ulaw`, so PCM pipeline TTS must become mu-law 8 kHz."""
+        fmt = (tts_options or {}).get("format")
+        if not isinstance(fmt, dict):
+            fmt = (tts_options or {}).get("target_format")
+        if not isinstance(fmt, dict) or not audio:
+            return audio
+        encoding = str(fmt.get("encoding") or fmt.get("format") or "mulaw").strip().lower()
+        if encoding not in ("slin", "slin16", "linear16", "pcm16", "pcm"):
+            return audio
+        try:
+            rate = int(fmt.get("sample_rate") or fmt.get("sample_rate_hz") or (16000 if encoding == "slin16" else 8000))
+        except (TypeError, ValueError):
+            rate = 8000
+        pcm = bytes(audio[: len(audio) - (len(audio) % 2)])
+        if rate != 8000:
+            pcm, _ = resample_audio(pcm, rate, 8000)
+        return pcm16le_to_mulaw(pcm)
 
     def _websocket_control_format(self) -> Optional[str]:
         from src.media_transport_capabilities import resolve_media_websocket_control
@@ -16885,7 +16905,8 @@ class Engine:
                                                     pass
                                             tts_bytes.extend(tts_chunk)
                                     if tts_bytes:
-                                        playback_id = await self.playback_manager.play_audio(call_id, bytes(tts_bytes), "pipeline-tts")
+                                        tts_bytes = self._pipeline_audio_for_file_playback(pipeline.tts_options, bytes(tts_bytes))
+                                        playback_id = await self.playback_manager.play_audio(call_id, tts_bytes, "pipeline-tts")
                                 except Exception:
                                     logger.debug("Pipeline file-playback fallback failed", call_id=call_id, exc_info=True)
                                     if not tool_calls:
@@ -17088,9 +17109,10 @@ class Engine:
                                                     if chunk:
                                                         transfer_bytes.extend(chunk)
                                                 if transfer_bytes:
+                                                    transfer_bytes = self._pipeline_audio_for_file_playback(pipeline.tts_options, bytes(transfer_bytes))
                                                     transfer_pid = await self.playback_manager.play_audio(
                                                         call_id,
-                                                        bytes(transfer_bytes),
+                                                        transfer_bytes,
                                                         "pipeline-transfer",
                                                     )
                                                     if transfer_pid:
@@ -17122,7 +17144,8 @@ class Engine:
                                                 async for chunk in pipeline.tts_adapter.synthesize(call_id, farewell, pipeline.tts_options):
                                                     fw_bytes.extend(chunk)
                                                 if fw_bytes:
-                                                    pid = await self.playback_manager.play_audio(call_id, bytes(fw_bytes), "pipeline-farewell")
+                                                    fw_bytes = self._pipeline_audio_for_file_playback(pipeline.tts_options, bytes(fw_bytes))
+                                                    pid = await self.playback_manager.play_audio(call_id, fw_bytes, "pipeline-farewell")
                                                     # Calculate actual duration: mulaw 8kHz = 8000 bytes/sec
                                                     duration_sec = len(fw_bytes) / 8000.0
                                                     # Wait for farewell (interruptible by barge-in) + small buffer
@@ -17401,7 +17424,8 @@ class Engine:
                                                                             if chunk:
                                                                                 transfer_bytes.extend(chunk)
                                                                         if transfer_bytes:
-                                                                            transfer_pid = await self.playback_manager.play_audio(call_id, bytes(transfer_bytes), "pipeline-transfer")
+                                                                            transfer_bytes = self._pipeline_audio_for_file_playback(pipeline.tts_options, bytes(transfer_bytes))
+                                                                            transfer_pid = await self.playback_manager.play_audio(call_id, transfer_bytes, "pipeline-transfer")
                                                                             if transfer_pid:
                                                                                 await self.playback_manager.wait_for_playback_end(
                                                                                     call_id,
@@ -17421,7 +17445,8 @@ class Engine:
                                                                 async for chunk in pipeline.tts_adapter.synthesize(call_id, farewell, pipeline.tts_options):
                                                                     fw_bytes.extend(chunk)
                                                                 if fw_bytes:
-                                                                    fw_pid = await self.playback_manager.play_audio(call_id, bytes(fw_bytes), "pipeline-farewell")
+                                                                    fw_bytes = self._pipeline_audio_for_file_playback(pipeline.tts_options, bytes(fw_bytes))
+                                                                    fw_pid = await self.playback_manager.play_audio(call_id, fw_bytes, "pipeline-farewell")
                                                                     if fw_pid:
                                                                         await self.playback_manager.wait_for_playback_end(
                                                                             call_id,
