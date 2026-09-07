@@ -43,6 +43,9 @@ const MODULE_DESCRIPTIONS: Record<string, string> = {
     res_stasis: 'Stasis application framework',
     chan_pjsip: 'PJSIP channel driver',
     res_http_websocket: 'HTTP WebSocket support for ARI events',
+    res_ari_channels: 'ARI channel operations used for media channels',
+    chan_websocket: 'Asterisk Media WebSocket channel driver',
+    res_websocket_client: 'Outbound WebSocket client for per-call media connections',
 };
 
 const CONFIG_CHECK_LABELS: Record<string, { label: string; fixHint: string }> = {

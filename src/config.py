@@ -16,10 +16,12 @@ from pydantic import (
     model_validator,
 )
 from typing import Dict, Any, Literal, Optional, List
+import ipaddress
 import re
 import structlog
 
 from src.utils.diagnostic_paths import DEFAULT_DIAGNOSTIC_TAP_DIR
+from src.media_transport_capabilities import supports_media_websocket, resolve_media_websocket_control
 
 # Import configuration helpers (AAVA-40 refactor)
 from src.config.loaders import resolve_config_path, load_yaml_with_env_expansion, load_yaml_with_local_override
@@ -95,6 +97,152 @@ class AudioSocketConfig(BaseModel):
     advertise_host: Optional[str] = Field(default=None)  # Advertise host: IP Asterisk connects to (defaults to host if not set)
     port: int = Field(default=8090)
     format: str = Field(default="ulaw")  # 'ulaw' or 'slin16'
+
+
+def media_websocket_capability_reason(version: Optional[str], requested: str = "json") -> str:
+    """Give a safe, operator-facing explanation of a websocket version gate."""
+    mode = resolve_media_websocket_control(version, requested)
+    if mode == "plain":
+        return "Experimental plain controls selected for Asterisk 20.17.0; provider/pipeline live qualification is required."
+    if mode == "json":
+        return "Asterisk release meets the JSON Media WebSocket compatibility floor."
+    if not str(version or "").strip():
+        return "Asterisk version is unavailable; WebSocket activation must fail closed."
+    if requested != "json":
+        return "Requested WebSocket protocol is unsupported on this version. Auto permits JSON on 20.18+/22.8+/23.2+ or experimental plain on exactly 20.17.0; plain is restricted to 20.17.0."
+    return (
+        "WebSocket requires JSON-control support: Asterisk 20.18+, 22.8+, or "
+        "23.2+. Asterisk 21.x and un-certified release lines are not supported."
+    )
+
+
+class WebSocketMediaAuthConfig(BaseModel):
+    """Credential reference only; the secret is always supplied by ai_engine env."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    required: bool = Field(default=True)
+    username: str = Field(
+        default="aava_media",
+        min_length=1,
+        max_length=128,
+        pattern=r"^[^\s:\x00-\x1f\x7f]+$",
+    )
+    password_env: str = Field(
+        default="ASTERISK_MEDIA_WS_PASSWORD",
+        pattern=r"^[A-Z_][A-Z0-9_]*$",
+        max_length=128,
+    )
+
+
+class WebSocketMediaTLSConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=False)
+    cert_file: Optional[str] = Field(default=None, max_length=1024)
+    key_file: Optional[str] = Field(default=None, max_length=1024)
+
+    @model_validator(mode="after")
+    def _validate_certificate_pair(self) -> "WebSocketMediaTLSConfig":
+        if self.enabled and (not self.cert_file or not self.key_file):
+            raise ValueError("websocket_media.tls requires cert_file and key_file when enabled")
+        if not self.enabled and (self.cert_file or self.key_file):
+            raise ValueError("websocket_media.tls cert_file/key_file require tls.enabled=true")
+        return self
+
+
+class WebSocketMediaConfig(BaseModel):
+    """Asterisk-outbound Media WebSocket listener configuration for v1.
+
+    This model is intentionally strict independently of the project-wide config
+    schema: a typo in an inactive listener block must not become a surprising
+    active listener after a later transport switch.  It contains an env-var
+    reference, never a password value.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    connection_mode: Literal["asterisk_outbound"] = "asterisk_outbound"
+    connection_name: str = Field(
+        default="aava_media",
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    bind_host: str = Field(default="127.0.0.1", min_length=1, max_length=255)
+    advertise_host: str = Field(default="127.0.0.1", min_length=1, max_length=255)
+    port: int = Field(default=8787, ge=1024, le=65535)
+    path: str = Field(default="/media", min_length=1, max_length=256)
+    format_policy: Literal["profile"] = "profile"
+    fallback_format: Literal["ulaw", "alaw", "slin", "slin16"] = "ulaw"
+    control_format: Literal["json", "auto", "plain"] = "json"
+    direction: Literal["both"] = "both"
+    handshake_timeout_ms: int = Field(default=5000, ge=100, le=60000)
+    media_start_timeout_ms: int = Field(default=5000, ge=100, le=60000)
+    drain_timeout_ms: int = Field(default=30000, ge=1000, le=120000)
+    pre_start_buffer_ms: int = Field(default=200, ge=0, le=5000)
+    max_connections: int = Field(default=100, ge=1, le=10000)
+    # These two limits keep the listener bounded even while Asterisk is under
+    # backpressure. They are intentionally not exposed in the v1 UI.
+    max_input_queue_frames: int = Field(default=32, ge=1, le=1000)
+    max_message_bytes: int = Field(default=65500, ge=160, le=65500)
+    allowed_remote_hosts: List[str] = Field(default_factory=lambda: ["127.0.0.1"])
+    auth: WebSocketMediaAuthConfig = Field(default_factory=WebSocketMediaAuthConfig)
+    tls: WebSocketMediaTLSConfig = Field(default_factory=WebSocketMediaTLSConfig)
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        if (
+            not value.startswith("/")
+            or "?" in value
+            or "#" in value
+            or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value)
+        ):
+            raise ValueError("websocket_media.path must be an absolute path without query or fragment")
+        return value
+
+    @field_validator("bind_host", "advertise_host")
+    @classmethod
+    def _validate_listener_host(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or any(char.isspace() or char in "/?#@" for char in normalized):
+            raise ValueError("websocket_media listener hosts must be bare hostnames or IP literals")
+        return normalized
+
+    @field_validator("allowed_remote_hosts")
+    @classmethod
+    def _validate_allowed_hosts(cls, value: List[str]) -> List[str]:
+        normalized = [str(host).strip() for host in value if str(host).strip()]
+        if not normalized:
+            raise ValueError("websocket_media.allowed_remote_hosts must contain at least one host")
+        for host in normalized:
+            try:
+                ipaddress.ip_address(host)
+            except ValueError:
+                if host.lower() != "localhost":
+                    raise ValueError(
+                        "websocket_media.allowed_remote_hosts must contain IP literals or localhost"
+                    )
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_network_security(self) -> "WebSocketMediaConfig":
+        def is_loopback(host: str) -> bool:
+            if host.lower() == "localhost":
+                return True
+            try:
+                return ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                # A hostname may resolve to a remote endpoint, so treat it as
+                # non-loopback for the authentication requirement.
+                return False
+
+        if (not is_loopback(self.bind_host) or not is_loopback(self.advertise_host)) and not self.auth.required:
+            raise ValueError(
+                "websocket_media.auth.required must be true for non-loopback listener addresses"
+            )
+        return self
 
 
 class LocalProviderConfig(BaseModel):
@@ -1088,10 +1236,13 @@ class AppConfig(BaseModel):
     providers: Dict[str, Any]
     asterisk: AsteriskConfig
     llm: LLMConfig
-    audio_transport: str = Field(default="externalmedia")  # 'externalmedia' | 'legacy'
+    audio_transport: Literal["externalmedia", "audiosocket", "websocket"] = Field(
+        default="externalmedia"
+    )
     downstream_mode: str = Field(default="stream")  # 'file' | 'stream'
     external_media: Optional[ExternalMediaConfig] = Field(default_factory=ExternalMediaConfig)
     audiosocket: Optional[AudioSocketConfig] = Field(default_factory=AudioSocketConfig)
+    websocket_media: WebSocketMediaConfig = Field(default_factory=WebSocketMediaConfig)
     vad: Optional[VADConfig] = Field(default_factory=VADConfig)
     no_input: Optional[NoInputConfig] = Field(default_factory=NoInputConfig)
     streaming: Optional[StreamingConfig] = Field(default_factory=StreamingConfig)
@@ -1549,6 +1700,37 @@ def validate_production_config(config: AppConfig) -> tuple[list[str], list[str]]
             format_val = getattr(config.audiosocket, 'format', None)
             if format_val and format_val not in ['slin', 'slin16', 'slin24', 'ulaw', 'alaw']:
                 errors.append(f"Invalid audiosocket format: {format_val} (must be slin, slin16, slin24, ulaw, or alaw)")
+
+        # The inactive WebSocket block is deliberately allowed to exist without
+        # an injected secret. Once selected, the ai_engine process must have the
+        # referenced credential; do not look for it during Admin-UI YAML saves.
+        if getattr(config, "audio_transport", None) == "websocket":
+            websocket_media = getattr(config, "websocket_media", None)
+            auth = getattr(websocket_media, "auth", None)
+            password_env = str(getattr(auth, "password_env", "") or "").strip()
+            if bool(getattr(auth, "required", True)) and (
+                not password_env or not os.getenv(password_env, "").strip()
+            ):
+                errors.append(
+                    "audio_transport=websocket requires the ai_engine environment "
+                    f"variable {password_env or 'ASTERISK_MEDIA_WS_PASSWORD'}"
+                )
+
+            tls = getattr(websocket_media, "tls", None)
+            bind_host = str(getattr(websocket_media, "bind_host", "") or "")
+            advertise_host = str(getattr(websocket_media, "advertise_host", "") or "")
+            try:
+                non_loopback = any(
+                    host.lower() != "localhost" and not ipaddress.ip_address(host).is_loopback
+                    for host in (bind_host, advertise_host)
+                )
+            except ValueError:
+                non_loopback = True
+            if non_loopback and not bool(getattr(tls, "enabled", False)):
+                warnings.append(
+                    "WebSocket listener uses a non-loopback address without TLS; "
+                    "use wss with a trusted certificate for routed or untrusted networks"
+                )
         
         # Provider API keys validation (non-blocking for local-only setups)
         has_openai = bool(os.getenv('OPENAI_API_KEY'))
@@ -1690,8 +1872,6 @@ def validate_production_config(config: AppConfig) -> tuple[list[str], list[str]]
                         allowed = getattr(config.external_media, "allowed_remote_hosts", None)
                         allowed_list = [str(x).strip() for x in (allowed or []) if str(x).strip()]
                         asterisk_host = str(getattr(getattr(config, "asterisk", None), "host", "") or "").strip()
-
-                        import ipaddress  # local import to avoid global dependency assumptions
 
                         asterisk_host_is_ip = False
                         try:

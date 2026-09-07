@@ -119,7 +119,7 @@ active_pipeline: local_hybrid
 # NOTE: For remote Asterisk deployments (AI engine on different machine than Asterisk):
 #   - AudioSocket is RECOMMENDED: works without shared storage
 #   - ExternalMedia requires shared storage (NFS mount) for file-based playback
-audio_transport: "audiosocket"   # audiosocket | externalmedia
+audio_transport: "audiosocket"   # audiosocket | externalmedia | websocket
 downstream_mode: "stream"        # stream | file
 
 # AudioSocket listener (when audio_transport=audiosocket)
@@ -142,6 +142,25 @@ external_media:
   port_range: "18080:18099"
   codec: "ulaw"
   direction: "both"
+
+# Asterisk Media WebSocket (when audio_transport=websocket; opt-in, version-gated)
+# Read docs/WebSocket-Transport.md before enabling. The media password comes only
+# from the env var named by auth.password_env (set in .env), never from YAML.
+# websocket_media:
+#   connection_name: "aava_media"        # must match the [section] in Asterisk websocket_client.conf
+#   bind_host: "127.0.0.1"
+#   advertise_host: "127.0.0.1"
+#   port: 8787
+#   path: "/media"
+#   fallback_format: "ulaw"              # ulaw | alaw | slin | slin16
+#   control_format: "json"               # json | auto | plain (auto/plain: experimental, Asterisk 20.17.0 only)
+#   allowed_remote_hosts: ["127.0.0.1"]  # IP literals or localhost only (no CIDR/DNS)
+#   auth:
+#     required: true
+#     username: "aava_media"
+#     password_env: "ASTERISK_MEDIA_WS_PASSWORD"
+#   tls:
+#     enabled: false
 
 # Optional VAD/barge-in and streaming tuning
 barge_in:

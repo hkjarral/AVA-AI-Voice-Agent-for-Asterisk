@@ -227,6 +227,11 @@ class TransportOrchestrator:
         audiosocket_config = config.get('audiosocket', {})
         self.audiosocket_format = audiosocket_config.get('format', 'slin16') if audiosocket_config else 'slin16'
         self.audiosocket_sample_rate = audiosocket_config.get('sample_rate', None) if audiosocket_config else None
+        websocket_config = config.get('websocket_media', {})
+        self.websocket_fallback_format = (
+            websocket_config.get('fallback_format', 'ulaw')
+            if websocket_config else 'ulaw'
+        )
         
         # If no profiles defined, synthesize from legacy config
         if not self.profiles:
@@ -531,10 +536,35 @@ class TransportOrchestrator:
                     wire_rate = 8000
                 else:
                     wire_rate = 8000
+        elif self.audio_transport in {"externalmedia", "rtp", "websocket"}:
+            # ExternalMedia RTP and Media WebSocket both negotiate per-call from
+            # the effective profile.  WebSocket's fallback applies only when a
+            # profile genuinely omits a wire encoding.
+            default_encoding = (
+                self.websocket_fallback_format
+                if self.audio_transport == "websocket"
+                else "slin"
+            )
+            wire_enc = profile.transport_out.get('encoding') or default_encoding
+            wire_rate = profile.transport_out.get('sample_rate_hz')
+            normalized = self._normalize_encoding(str(wire_enc or ""))
+            if not wire_rate:
+                wire_rate = 16000 if normalized == "linear16" and str(wire_enc).lower() == "slin16" else 8000
+            if self.audio_transport == "websocket":
+                token = str(wire_enc or "").strip().lower()
+                if normalized == "mulaw":
+                    wire_enc, wire_rate = "ulaw", 8000
+                elif normalized == "alaw":
+                    wire_enc, wire_rate = "alaw", 8000
+                elif normalized == "linear16":
+                    wire_enc = "slin16" if int(wire_rate) >= 16000 else "slin"
+                    wire_rate = 16000 if wire_enc == "slin16" else 8000
+                if str(wire_enc).lower() not in {"ulaw", "alaw", "slin", "slin16"}:
+                    raise ValueError(
+                        f"WebSocket transport does not support profile encoding {token or '<empty>'}"
+                    )
         else:
-            # RTP: use profile's transport_out (negotiated codec)
-            wire_enc = profile.transport_out.get('encoding', 'slin')
-            wire_rate = profile.transport_out.get('sample_rate_hz', 8000)
+            raise ValueError(f"Unsupported audio transport: {self.audio_transport}")
         
         # Read the provider's configured requirements. Compatibility profiles
         # retain these values exactly. An explicitly selected wideband linear
@@ -580,7 +610,7 @@ class TransportOrchestrator:
 
         normalized_wire = self._normalize_encoding(str(wire_enc or ""))
         wideband_selected = bool(
-            self.audio_transport == "audiosocket"
+            self.audio_transport in {"audiosocket", "websocket"}
             and normalized_wire == "linear16"
             and int(wire_rate or 0) >= 16000
         )
@@ -736,6 +766,10 @@ class TransportOrchestrator:
             'ulaw': 'mulaw',
             'g711_ulaw': 'mulaw',
             'g711ulaw': 'mulaw',
+            'alaw': 'alaw',
+            'a-law': 'alaw',
+            'g711_alaw': 'alaw',
+            'g711alaw': 'alaw',
         }
         return norm_map.get(encoding.lower(), encoding.lower())
     

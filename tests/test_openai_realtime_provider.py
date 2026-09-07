@@ -148,6 +148,267 @@ async def test_greeting_vad_fallback_releases_guard_when_vad_update_fails(
 
 
 @pytest.mark.asyncio
+async def test_farewell_audio_done_cancels_timeout_before_delayed_drain_callback(
+    openai_config,
+):
+    events = []
+    drain_started = asyncio.Event()
+    release_drain = asyncio.Event()
+
+    async def on_event(event):
+        events.append(event)
+        if event["type"] == "AgentAudioDone":
+            drain_started.set()
+            await release_drain.wait()
+
+    provider = OpenAIRealtimeProvider(openai_config, on_event=on_event)
+    provider._call_id = "call-farewell-drain"
+    provider._current_response_id = "resp-farewell"
+    provider._farewell_response_id = "resp-farewell"
+    provider._farewell_waiting_for_audio_done = True
+    provider._hangup_after_response = True
+    provider._audio_seen_response_ids.add("resp-farewell")
+    provider._in_audio_burst = True
+    provider._farewell_timeout_seconds = 0.01
+    provider._start_farewell_timeout()
+
+    done_task = asyncio.create_task(
+        provider._emit_audio_done(farewell_audio_complete=True)
+    )
+    await asyncio.wait_for(drain_started.wait(), timeout=0.2)
+    await asyncio.sleep(0.03)
+
+    assert [event["type"] for event in events] == ["AgentAudioDone"]
+    assert provider._farewell_timeout_task is None
+
+    release_drain.set()
+    await asyncio.wait_for(done_task, timeout=0.2)
+
+    assert events[-1] == {
+        "type": "HangupReady",
+        "call_id": "call-farewell-drain",
+        "reason": "farewell_completed",
+        "had_audio": True,
+    }
+    assert len([event for event in events if event["type"] == "HangupReady"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_farewell_response_done_preserves_correlation_until_audio_done(
+    openai_config,
+):
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = OpenAIRealtimeProvider(openai_config, on_event=on_event)
+    provider._call_id = "call-farewell-response-first"
+    provider._current_response_id = "resp-farewell"
+    provider._farewell_response_id = "resp-farewell"
+    provider._farewell_waiting_for_audio_done = True
+    provider._hangup_after_response = True
+    provider._audio_seen_response_ids.add("resp-farewell")
+    provider._in_audio_burst = True
+    provider._farewell_timeout_seconds = 1.0
+    provider._start_farewell_timeout()
+    timeout_task = provider._farewell_timeout_task
+
+    await provider._handle_event(_response_done_event("resp-farewell"))
+
+    assert [event["type"] for event in events] == ["AgentAudioDone"]
+    assert provider._current_response_id == "resp-farewell"
+    assert provider._farewell_response_id == "resp-farewell"
+    assert provider._farewell_response_done is True
+    assert "resp-farewell" in provider._audio_seen_response_ids
+
+    await provider._handle_event({"type": "response.output_audio.done"})
+    await asyncio.gather(timeout_task, return_exceptions=True)
+
+    assert events[-1] == {
+        "type": "HangupReady",
+        "call_id": "call-farewell-response-first",
+        "reason": "farewell_completed",
+        "had_audio": True,
+    }
+    assert len([event for event in events if event["type"] == "HangupReady"]) == 1
+    assert provider._current_response_id is None
+    assert provider._farewell_response_id is None
+    assert provider._farewell_response_done is False
+    assert "resp-farewell" not in provider._audio_seen_response_ids
+
+
+@pytest.mark.asyncio
+async def test_farewell_timeout_emits_once_when_no_audio_arrives(openai_config):
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = OpenAIRealtimeProvider(openai_config, on_event=on_event)
+    provider._call_id = "call-farewell-timeout"
+    provider._current_response_id = "resp-farewell"
+    provider._farewell_response_id = "resp-farewell"
+    provider._farewell_waiting_for_audio_done = True
+    provider._hangup_after_response = True
+    provider._farewell_timeout_seconds = 0.01
+    provider._start_farewell_timeout()
+    timeout_task = provider._farewell_timeout_task
+
+    await asyncio.wait_for(timeout_task, timeout=0.2)
+
+    assert events == [
+        {
+            "type": "HangupReady",
+            "call_id": "call-farewell-timeout",
+            "reason": "farewell_timeout",
+            "had_audio": False,
+        }
+    ]
+    assert provider._farewell_timeout_task is None
+    assert provider._farewell_response_id is None
+    assert provider._farewell_waiting_for_audio_done is False
+    assert provider._hangup_after_response is False
+
+
+@pytest.mark.asyncio
+async def test_farewell_timeout_reports_audio_when_completion_never_arrives(
+    openai_config,
+):
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = OpenAIRealtimeProvider(openai_config, on_event=on_event)
+    provider._call_id = "call-farewell-missing-done"
+    provider._current_response_id = "resp-farewell"
+    provider._farewell_response_id = "resp-farewell"
+    provider._farewell_waiting_for_audio_done = True
+    provider._audio_seen_response_ids.add("resp-farewell")
+    provider._farewell_timeout_seconds = 0.01
+    provider._start_farewell_timeout()
+    timeout_task = provider._farewell_timeout_task
+
+    await asyncio.wait_for(timeout_task, timeout=0.2)
+
+    assert events == [
+        {
+            "type": "HangupReady",
+            "call_id": "call-farewell-missing-done",
+            "reason": "farewell_timeout",
+            "had_audio": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_farewell_timeout_after_response_done_preserves_audio_evidence(
+    openai_config,
+):
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = OpenAIRealtimeProvider(openai_config, on_event=on_event)
+    provider._call_id = "call-farewell-response-done-timeout"
+    provider._current_response_id = "resp-farewell"
+    provider._farewell_response_id = "resp-farewell"
+    provider._farewell_waiting_for_audio_done = True
+    provider._audio_seen_response_ids.add("resp-farewell")
+    provider._in_audio_burst = True
+    provider._farewell_timeout_seconds = 0.01
+    provider._start_farewell_timeout()
+    timeout_task = provider._farewell_timeout_task
+
+    await provider._handle_event(_response_done_event("resp-farewell"))
+    await asyncio.wait_for(timeout_task, timeout=0.2)
+
+    assert events[-1] == {
+        "type": "HangupReady",
+        "call_id": "call-farewell-response-done-timeout",
+        "reason": "farewell_timeout",
+        "had_audio": True,
+    }
+    assert provider._current_response_id is None
+    assert provider._farewell_response_id is None
+    assert "resp-farewell" not in provider._audio_seen_response_ids
+
+
+@pytest.mark.asyncio
+async def test_no_audio_response_done_cancels_timeout_before_callback(openai_config):
+    events = []
+    callback_started = asyncio.Event()
+    release_callback = asyncio.Event()
+
+    async def on_event(event):
+        events.append(event)
+        if event["type"] == "HangupReady":
+            callback_started.set()
+            await release_callback.wait()
+
+    provider = OpenAIRealtimeProvider(openai_config, on_event=on_event)
+    provider._call_id = "call-farewell-no-audio"
+    provider._current_response_id = "resp-farewell"
+    provider._farewell_response_id = "resp-farewell"
+    provider._farewell_waiting_for_audio_done = True
+    provider._hangup_after_response = True
+    provider._farewell_timeout_seconds = 0.01
+    provider._start_farewell_timeout()
+
+    done_task = asyncio.create_task(
+        provider._handle_event(_response_done_event("resp-farewell"))
+    )
+    await asyncio.wait_for(callback_started.wait(), timeout=0.2)
+    await asyncio.sleep(0.03)
+
+    assert events == [
+        {
+            "type": "HangupReady",
+            "call_id": "call-farewell-no-audio",
+            "reason": "farewell_no_audio",
+            "had_audio": False,
+        }
+    ]
+    assert provider._farewell_timeout_task is None
+
+    release_callback.set()
+    await asyncio.wait_for(done_task, timeout=0.2)
+    assert len(events) == 1
+
+
+@pytest.mark.asyncio
+async def test_stop_session_cancels_farewell_without_terminal_callback(openai_config):
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = OpenAIRealtimeProvider(openai_config, on_event=on_event)
+    provider._call_id = "call-farewell-stop"
+    provider._current_response_id = "resp-farewell"
+    provider._farewell_response_id = "resp-farewell"
+    provider._farewell_waiting_for_audio_done = True
+    provider._audio_seen_response_ids.add("resp-farewell")
+    provider._in_audio_burst = True
+    provider._farewell_timeout_seconds = 0.01
+    provider._start_farewell_timeout()
+    timeout_task = provider._farewell_timeout_task
+
+    await provider.stop_session()
+    await asyncio.gather(timeout_task, return_exceptions=True)
+
+    assert [event["type"] for event in events] == ["AgentAudioDone"]
+    assert provider._farewell_timeout_task is None
+    assert provider._farewell_response_id is None
+    assert provider._farewell_waiting_for_audio_done is False
+    assert provider._farewell_response_done is False
+    assert provider._current_response_id is None
+    assert provider._audio_seen_response_ids == set()
+
+
+@pytest.mark.asyncio
 async def test_speech_started_cannot_flush_openai_greeting_transport_tail(openai_config):
     events = []
 

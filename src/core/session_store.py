@@ -39,9 +39,14 @@ class SessionStore:
         
         logger.info("SessionStore initialized")
     
-    async def upsert_call(self, session: CallSession) -> None:
+    async def upsert_call(self, session: CallSession, *, require_current: bool = False) -> bool:
         """Add or update a call session atomically."""
         async with self._lock:
+            if require_current and (
+                self._sessions_by_call_id.get(session.call_id) is not session
+                or session.cleanup_in_progress or session.cleanup_completed
+            ):
+                return False
             # Store by call_id (canonical)
             self._sessions_by_call_id[session.call_id] = session
             
@@ -59,11 +64,17 @@ class SessionStore:
             # Store by audiosocket_channel_id if present
             if session.audiosocket_channel_id:
                 self._sessions_by_channel_id[session.audiosocket_channel_id] = session
+
+            # Neutral media index covers WebSocket immediately and lets existing
+            # transports migrate without teaching every caller another lookup.
+            if session.media_channel_id:
+                self._sessions_by_channel_id[session.media_channel_id] = session
             
             logger.debug("Call session upserted",
                         call_id=session.call_id,
                         caller_channel_id=session.caller_channel_id,
                         local_channel_id=session.local_channel_id)
+            return True
     
     async def get_by_call_id(self, call_id: str) -> Optional[CallSession]:
         """Get session by canonical call_id."""
@@ -184,6 +195,8 @@ class SessionStore:
                 self._sessions_by_channel_id.pop(session.external_media_id, None)
             if session.audiosocket_channel_id:
                 self._sessions_by_channel_id.pop(session.audiosocket_channel_id, None)
+            if session.media_channel_id:
+                self._sessions_by_channel_id.pop(session.media_channel_id, None)
             
             logger.debug("Call session removed",
                         call_id=call_id,

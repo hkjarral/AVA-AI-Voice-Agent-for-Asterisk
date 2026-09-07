@@ -179,11 +179,14 @@ func (w *Wizard) stepAudioTransport() error {
 	options := []string{
 		"AudioSocket (TCP media)",
 		"ExternalMedia (RTP; current default for new installs)",
+		"WebSocket (Asterisk Media WebSocket; JSON controls)",
 	}
 
 	defaultIdx := 0
 	if w.config.AudioTransport == "externalmedia" {
 		defaultIdx = 1
+	} else if w.config.AudioTransport == "websocket" {
+		defaultIdx = 2
 	}
 
 	choice := PromptSelect("Select transport:", options, defaultIdx)
@@ -191,6 +194,8 @@ func (w *Wizard) stepAudioTransport() error {
 	newTransport := "audiosocket"
 	if choice == 1 {
 		newTransport = "externalmedia"
+	} else if choice == 2 {
+		newTransport = "websocket"
 	}
 
 	if newTransport != w.config.AudioTransport {
@@ -219,6 +224,21 @@ func (w *Wizard) stepAudioTransport() error {
 		} else {
 			PrintSuccess(fmt.Sprintf("Port %s is listening", newPort))
 		}
+	}
+
+	if newTransport == "websocket" {
+		fmt.Println()
+		PrintInfo("WebSocket uses Asterisk-outbound per-call media connections; the existing Stasis dialplan normally stays unchanged.")
+		PrintInfo("Asterisk 20.18+, 22.8+, or 23.2+ with chan_websocket and res_websocket_client is required. Asterisk 21.x is unsupported.")
+		newPassword := PromptPassword("Asterisk Media WebSocket Password", w.config.WebSocketMediaPassword != "")
+		if newPassword != "" && newPassword != w.config.WebSocketMediaPassword {
+			w.config.WebSocketMediaPassword = newPassword
+			w.hasChanges = true
+		}
+		if w.config.WebSocketMediaPassword == "" {
+			PrintWarning("ASTERISK_MEDIA_WS_PASSWORD is required before the AI Engine can start WebSocket transport.")
+		}
+		PrintInfo("Configure websocket_media listener details and the matching websocket_client.conf stanza in Admin UI > Advanced > Transport before restarting.")
 	}
 
 	return nil

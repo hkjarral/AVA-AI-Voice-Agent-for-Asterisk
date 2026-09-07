@@ -326,6 +326,9 @@ external_media:
   rtp_port: 18080
   # Optional: allocate per-call RTP ports
   # port_range: "18080:18099"
+
+# Opt-in, version-gated Asterisk Media WebSocket — see docs/WebSocket-Transport.md
+# audio_transport: websocket
 ```
 
 #### Dialplan Not Passing to Stasis
@@ -1589,8 +1592,9 @@ exten => s,1,NoOp(AI Voice Agent)
 **Transport is controlled in config, not dialplan:**
 - Set `audio_transport: externalmedia` for **pipelines** (hybrid, local_only)
 - Set `audio_transport: audiosocket` for **full agents** (Deepgram, OpenAI Realtime)
+- Set `audio_transport: websocket` only for the opt-in, version-gated Asterisk Media WebSocket transport — see [WebSocket-Transport.md](WebSocket-Transport.md)
 
-The `ai_engine` service automatically creates the AudioSocket server or RTP endpoint based on your config. You don't need to add `AudioSocket()` to the dialplan.
+The `ai_engine` service automatically creates the AudioSocket server, RTP endpoint, or WebSocket listener based on your config. You don't need to add `AudioSocket()` to the dialplan.
 
 **Agent Selection:**
 Use `AI_AGENT` to select an operator-managed agent. Normally its configured target is authoritative; set `AI_PROVIDER` only for an intentional per-call provider or pipeline override. Generate a current snippet with `agent dialplan --agent <slug>`.

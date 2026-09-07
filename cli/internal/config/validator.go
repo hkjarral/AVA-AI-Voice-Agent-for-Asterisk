@@ -223,12 +223,13 @@ func (v *Validator) validateTransport(result *ValidationResult) {
 		validTransports := map[string]bool{
 			"audiosocket":   true,
 			"externalmedia": true,
+			"websocket":     true,
 		}
 
 		if validTransports[transport] {
 			result.Passed = append(result.Passed, fmt.Sprintf("Audio transport '%s' valid", transport))
 		} else {
-			result.Errors = append(result.Errors, fmt.Sprintf("Invalid audio transport: %s (must be 'audiosocket' or 'externalmedia')", transport))
+			result.Errors = append(result.Errors, fmt.Sprintf("Invalid audio transport: %s (must be 'audiosocket', 'externalmedia', or 'websocket')", transport))
 		}
 	} else {
 		result.Warnings = append(result.Warnings, "No audio_transport specified (will use default)")

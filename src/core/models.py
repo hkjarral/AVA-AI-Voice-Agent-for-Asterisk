@@ -63,6 +63,26 @@ class CallSession:
     audiosocket_channel_id: Optional[str] = None
     audiosocket_conn_id: Optional[str] = None
     audiosocket_uuid: Optional[str] = None
+    # Transport-neutral media identity.  The legacy RTP/AudioSocket fields above
+    # remain as compatibility projections while all three transports migrate to
+    # this common lifecycle.
+    media_transport_kind: Optional[str] = None
+    media_channel_id: Optional[str] = None
+    media_channel_pending: bool = False
+    media_connection_id: Optional[str] = None
+    media_connection_state: str = "disconnected"
+    negotiated_encoding: Optional[str] = None
+    negotiated_sample_rate: Optional[int] = None
+    media_packetization_ms: Optional[int] = None
+    media_optimal_frame_size: Optional[int] = None
+    media_output_segment: Optional[str] = None
+    media_output_generation: int = 0
+    media_pending_drain_id: Optional[str] = None
+    media_pending_buffering_id: Optional[str] = None
+    media_flow_writable: bool = True
+    media_flow_transition_ts: float = 0.0
+    media_last_error: Optional[str] = None
+    websocket_input_rejections: Dict[str, int] = field(default_factory=dict)
     provider_session_active: bool = False
     bridge_id: Optional[str] = None
     

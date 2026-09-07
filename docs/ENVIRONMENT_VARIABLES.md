@@ -68,6 +68,7 @@ These are used when Asterisk and containers are not on the same host/network (NA
 
 - `AUDIOSOCKET_ADVERTISE_HOST`: public/LAN IP that Asterisk should use to reach the AudioSocket listener.
 - `EXTERNAL_MEDIA_ADVERTISE_HOST`: public/LAN IP that Asterisk should use to reach ExternalMedia RTP.
+- `ASTERISK_MEDIA_WS_PASSWORD`: required only when `audio_transport: websocket`. Must match the `password` in Asterisk's `websocket_client.conf` for the configured `websocket_media.connection_name`. Set it only in `.env`, never in YAML (the variable name is configurable via `websocket_media.auth.password_env`). See [WebSocket Transport](WebSocket-Transport.md).
 
 If you’re not sure, start without these; use `agent check` and `docs/Transport-Mode-Compatibility.md` for validation guidance.
 
