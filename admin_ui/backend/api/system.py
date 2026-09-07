@@ -682,6 +682,7 @@ def _validate_websocket_restart_environment(*, recreate: bool) -> None:
     if not config.auth.required:
         return
     key = config.auth.password_env
+    source = "the project .env file" if recreate else "the existing AI Engine container"
     if recreate:
         present = bool(_dotenv_value(key))
     else:
@@ -695,6 +696,11 @@ def _validate_websocket_restart_environment(*, recreate: bool) -> None:
                 and bool(entry.partition("=")[2].strip())
                 for entry in env
             )
+        except docker.errors.NotFound:
+            # The restart endpoint recovers absent services through Compose,
+            # which loads env_file rather than an existing container's env.
+            source = "the project .env file"
+            present = bool(_dotenv_value(key))
         except Exception:
             raise HTTPException(
                 status_code=409,
@@ -707,7 +713,6 @@ def _validate_websocket_restart_environment(*, recreate: bool) -> None:
                 except Exception:
                     pass
     if not present:
-        source = "the project .env file" if recreate else "the existing AI Engine container"
         raise HTTPException(
             status_code=409,
             detail=f"WebSocket media requires {key} in {source}. Configure it and recreate the AI Engine; no container was stopped.",

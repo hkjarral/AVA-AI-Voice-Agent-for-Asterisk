@@ -52,6 +52,10 @@ providers and modular pipelines stay explicitly unqualified.
 - Choose a unique `connection_name`, listener port, and an allowlist containing
   only the Asterisk source address. Use an authenticated listener in every
   topology; the media password is separate from ARI credentials.
+  The configuration permits an explicit `auth.required: false` opt-out on
+  loopback only when all local processes are trusted. Without authentication,
+  local clients can occupy connection slots until MEDIA_START times out;
+  per-call nonces prevent call misbinding, not connection exhaustion.
 - Put the password only in the AI Engine environment (normally `.env`) as
   `ASTERISK_MEDIA_WS_PASSWORD` or the configured `password_env` name. Do not
   put its value in YAML, a support bundle, a ticket, or a shell command.

@@ -172,16 +172,30 @@ class WebSocketMediaServer:
         self._auth_password = str(password) if password is not None else (os.getenv(str(password_env)) if password_env else None)
 
     @staticmethod
+    def _canonical_peer(host: str) -> str:
+        """Compare equivalent IPv6 spellings and mapped IPv4 as one address."""
+        address = ipaddress.ip_address(host)
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        return str(address)
+
+    @staticmethod
     def _normalise_allowed_hosts(hosts: Any) -> set[str]:
         if hosts is None:
             return set()
         if isinstance(hosts, str):
             hosts = [hosts]
-        result = {str(host).strip() for host in hosts if str(host).strip()}
         # No DNS lookup belongs in a media listener.  This spelling is useful
         # for the default local-only deployment without weakening peer checks.
-        if "localhost" in result:
-            result.update({"127.0.0.1", "::1"})
+        result = set()
+        for host in hosts:
+            host = str(host).strip()
+            if not host:
+                continue
+            if host.lower() == "localhost":
+                result.update({"127.0.0.1", "::1"})
+            else:
+                result.add(WebSocketMediaServer._canonical_peer(host))
         return result
 
     async def start(self) -> None:
@@ -523,7 +537,10 @@ class WebSocketMediaServer:
             return True
         remote = getattr(connection, "remote_address", None)
         host = str(remote[0]) if isinstance(remote, tuple) and remote else ""
-        return host in self._allowed_peers
+        try:
+            return self._canonical_peer(host) in self._allowed_peers
+        except ValueError:
+            return False
 
     def _valid_basic_auth(self, header: Optional[str]) -> bool:
         if not header or not header.startswith("Basic "):

@@ -65,6 +65,43 @@ def test_legacy_transport_does_not_require_websocket_secret(monkeypatch):
     source.assert_not_called()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("secret", ["test-only-secret", None])
+async def test_missing_container_validates_compose_env_before_recovery(monkeypatch, secret):
+    configure(monkeypatch)
+    monkeypatch.setattr(system, "_dotenv_value", lambda key: secret)
+    client = Mock()
+    client.containers.get.side_effect = system.docker.errors.NotFound("missing")
+    monkeypatch.setattr(system.docker, "from_env", lambda: client)
+    monkeypatch.setattr(system, "_check_active_calls", AsyncMock(return_value={"active_calls": 0}))
+    start = AsyncMock(return_value={"status": "success"})
+    monkeypatch.setattr(system, "_start_via_compose", start)
+    if secret:
+        assert (await system.restart_container("ai_engine"))["status"] == "success"
+        start.assert_awaited_once()
+    else:
+        with pytest.raises(HTTPException) as exc:
+            await system.restart_container("ai_engine")
+        assert exc.value.status_code == 409
+        assert "project .env file" in exc.value.detail
+        start.assert_not_awaited()
+    client.close.assert_called_once_with()
+
+
+def test_docker_access_failure_does_not_use_compose_secret(monkeypatch):
+    configure(monkeypatch)
+    source = Mock(return_value="saved-only-secret")
+    monkeypatch.setattr(system, "_dotenv_value", source)
+    client = Mock()
+    client.containers.get.side_effect = system.docker.errors.APIError("unavailable")
+    monkeypatch.setattr(system.docker, "from_env", lambda: client)
+    with pytest.raises(HTTPException) as exc:
+        system._validate_websocket_restart_environment(recreate=False)
+    assert exc.value.status_code == 409
+    source.assert_not_called()
+    client.close.assert_called_once_with()
+
+
 def test_invalid_config_error_does_not_echo_raw_password(monkeypatch):
     monkeypatch.setattr(system, "_read_merged_config_dict_for_system", lambda: {
         "audio_transport": "websocket", "websocket_media": {"auth": {"password": "never-echo"}},

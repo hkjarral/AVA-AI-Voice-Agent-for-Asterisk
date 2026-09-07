@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Mapping
 
+from ...logging_config import get_logger
 from .base import CallMediaSetupResult, SelectedTransportRuntime
+
+logger = get_logger(__name__)
 
 
 class CallMediaLifecycle:
@@ -41,14 +44,22 @@ class CallMediaLifecycle:
                 try:
                     await asyncio.wait_for(hangup(channel_id), timeout=2.0)
                 except Exception:
-                    pass
+                    logger.warning(
+                        "Media setup abort could not hang up auxiliary channel",
+                        call_id=str(session.call_id), transport=self.runtime.kind,
+                        channel_id=channel_id, exc_info=True,
+                    )
         try:
             await asyncio.wait_for(
                 self.runtime.close_call(str(session.call_id)),
                 timeout=2.0,
             )
         except Exception:
-            pass
+            logger.warning(
+                "Media setup abort could not close transport resources",
+                call_id=str(session.call_id), transport=self.runtime.kind,
+                channel_id=channel_id, exc_info=True,
+            )
 
     async def setup(self, owner: Any, session: Any) -> CallMediaSetupResult:
         request = None

@@ -405,7 +405,7 @@ Applies when `audio_transport: websocket` (opt-in; see [WebSocket Transport](Web
 - websocket_media.path: Absolute WebSocket path without query or fragment (default `/media`).
 - websocket_media.format_policy: `profile` (only value; the frozen per-call audio profile selects the wire format).
 - websocket_media.fallback_format: `ulaw` | `alaw` | `slin` | `slin16` (default `ulaw`); used when the profile does not pin a wire format.
-- websocket_media.control_format: `json` | `auto` | `plain` (default `json`). `auto`/`plain` are experimental and limited to Asterisk 20.17.0; see the Transports section above.
+- websocket_media.control_format: `json` | `auto` | `plain` (default `json`). Explicit `plain` is experimental and limited to Asterisk 20.17.0. `auto` opts into plain on exactly 20.17.0 and selects JSON on 20.18+, 22.8+, or 23.2+; unsupported release lines fail closed. See the Transports section above.
 - websocket_media.direction: `both` (only value).
 - websocket_media.handshake_timeout_ms: WebSocket open/close handshake timeout (default `5000`; 100–60000).
 - websocket_media.media_start_timeout_ms: Max wait for the per-call connection to become ready (`MEDIA_START`) before the call fails (default `5000`; 100–60000).
@@ -413,7 +413,7 @@ Applies when `audio_transport: websocket` (opt-in; see [WebSocket Transport](Web
 - websocket_media.pre_start_buffer_ms: Amount of inbound media (in ms) buffered when Asterisk sends audio before `MEDIA_START`; `0` rejects such frames (default `200`; 0–5000).
 - websocket_media.max_connections: Listener connection cap; further connections are refused (default `100`; 1–10000).
 - websocket_media.allowed_remote_hosts: Allowed Asterisk source addresses (default `["127.0.0.1"]`). IP literals or `localhost` only — no CIDR ranges or DNS names; at least one entry is required.
-- websocket_media.auth.required: Require authentication (default `true`). Must be `true` whenever `bind_host` or `advertise_host` is not loopback.
+- websocket_media.auth.required: Require authentication (default `true`). Must be `true` whenever `bind_host` or `advertise_host` is not loopback. Disabling it on loopback is an explicit trusted-local-process opt-out: a nonce protects call binding, not listener admission, and untrusted local processes can exhaust connection slots. Keep authentication enabled unless all local processes are trusted.
 - websocket_media.auth.username: Username Asterisk presents (default `aava_media`).
 - websocket_media.auth.password_env: Name of the AI Engine env var holding the media password (default `ASTERISK_MEDIA_WS_PASSWORD`). YAML never holds the value: set `ASTERISK_MEDIA_WS_PASSWORD` in `.env`, keep it equal to the `password` in the Asterisk client stanza, and recreate the engine container after changing it.
 - websocket_media.tls.enabled: Serve WSS (default `false`).

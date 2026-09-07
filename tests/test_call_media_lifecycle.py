@@ -61,6 +61,21 @@ class _Runtime:
         return None
 
 
+@pytest.mark.asyncio
+async def test_abort_cleanup_failures_are_logged_without_skipping_local_cleanup(monkeypatch):
+    from src.audio.transports import lifecycle as module
+
+    runtime = SimpleNamespace(kind="externalmedia", close_call=AsyncMock(side_effect=RuntimeError("close failed")))
+    owner = SimpleNamespace(ari_client=SimpleNamespace(hangup_channel=AsyncMock(side_effect=RuntimeError("hangup failed"))))
+    logger = Mock()
+    monkeypatch.setattr(module, "logger", logger)
+    await CallMediaLifecycle(runtime)._abort_interrupted_setup(owner, SimpleNamespace(call_id="call-1"), "media-1")
+    runtime.close_call.assert_awaited_once_with("call-1")
+    assert logger.warning.call_count == 2
+    for call in logger.warning.call_args_list:
+        assert call.kwargs == {"call_id": "call-1", "transport": "externalmedia", "channel_id": "media-1", "exc_info": True}
+
+
 def _request(**overrides):
     values = {
         "kind": "test",

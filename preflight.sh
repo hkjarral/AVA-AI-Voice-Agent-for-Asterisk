@@ -2158,11 +2158,11 @@ check_asterisk_config() {
     local base_transport_source="$SCRIPT_DIR/config/ai-agent.yaml"
     local local_transport_source="$SCRIPT_DIR/config/ai-agent.local.yaml"
     if [ -f "$base_transport_source" ]; then
-        selected_transport=$(awk -F: "/^[[:space:]]*audio_transport:[[:space:]]*/ {gsub(/[[:space:]\\\"']/, \"\", \$2); print tolower(\$2); exit}" "$base_transport_source")
+        selected_transport=$(awk -F: "/^[[:space:]]*audio_transport:[[:space:]]*/ {sub(/#.*/, \"\", \$2); gsub(/[[:space:]\\\"']/, \"\", \$2); print tolower(\$2); exit}" "$base_transport_source")
     fi
     if [ -f "$local_transport_source" ]; then
         local local_transport
-        local_transport=$(awk -F: "/^[[:space:]]*audio_transport:[[:space:]]*/ {gsub(/[[:space:]\\\"']/, \"\", \$2); print tolower(\$2); exit}" "$local_transport_source")
+        local_transport=$(awk -F: "/^[[:space:]]*audio_transport:[[:space:]]*/ {sub(/#.*/, \"\", \$2); gsub(/[[:space:]\\\"']/, \"\", \$2); print tolower(\$2); exit}" "$local_transport_source")
         [ -n "$local_transport" ] && selected_transport="$local_transport"
     fi
     case "$selected_transport" in

@@ -122,7 +122,12 @@ describe('TransportPage audio profile guidance', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         mocks.config.audio_transport = 'externalmedia';
+        mocks.config.websocket_media = {
+            connection_name: 'aava_media',
+            auth: { password_env: 'ASTERISK_MEDIA_WS_PASSWORD' },
+        };
         mocks.restartRequired = false;
+        mocks.updaterImageStatus = { status: 'idle', phase: 'idle', message: '' };
         mocks.websocketStatus = {
             config: {},
             secret_reference: 'ASTERISK_MEDIA_WS_PASSWORD',
@@ -233,6 +238,51 @@ describe('TransportPage audio profile guidance', () => {
         expect(saved.websocket_media.auth.password_env).toBe('ASTERISK_MEDIA_WS_PASSWORD');
     });
 
+    it('renders a scalar WebSocket allowlist and saves an edited array', async () => {
+        mocks.config.audio_transport = 'websocket';
+        Object.assign(mocks.config.websocket_media, { allowed_remote_hosts: '127.0.0.1' });
+        render(<TransportPage />);
+        const hosts = await screen.findByLabelText('Allowed Asterisk Hosts');
+        expect(hosts).toHaveValue('127.0.0.1');
+        fireEvent.change(hosts, { target: { value: '127.0.0.1, ::1' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+        await waitFor(() => expect(mocks.post).toHaveBeenCalledTimes(1));
+        const saved = yaml.load(mocks.post.mock.calls[0][1].content) as {
+            websocket_media: { allowed_remote_hosts: string[] };
+        };
+        expect(saved.websocket_media.allowed_remote_hosts).toEqual(['127.0.0.1', '::1']);
+    });
+
+    it.each([
+        ['Maximum Connections', 'max_connections', 100, 1, 10000],
+        ['Handshake Timeout (ms)', 'handshake_timeout_ms', 5000, 100, 60000],
+        ['MEDIA_START Timeout (ms)', 'media_start_timeout_ms', 5000, 100, 60000],
+        ['Drain Timeout (ms)', 'drain_timeout_ms', 30000, 1000, 120000],
+        ['Pre-start Buffer (ms)', 'pre_start_buffer_ms', 200, 0, 5000],
+    ] as const)(
+        'keeps %s finite and bounded when edited',
+        async (label, key, fallback, min, max) => {
+            mocks.config.audio_transport = 'websocket';
+            render(<TransportPage />);
+            const input = await screen.findByLabelText(label);
+            fireEvent.change(input, { target: { value: '' } });
+            expect(input).toHaveValue(fallback);
+            fireEvent.change(input, { target: { value: String(max + 1) } });
+            expect(input).toHaveValue(max);
+            fireEvent.change(input, { target: { value: String(min - 1) } });
+            expect(input).toHaveValue(min);
+            fireEvent.change(input, { target: { value: String(min + 1) } });
+            expect(input).toHaveValue(min + 1);
+            fireEvent.change(input, { target: { value: '' } });
+            fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+            await waitFor(() => expect(mocks.post).toHaveBeenCalledTimes(1));
+            const content = mocks.post.mock.calls[0][1].content;
+            expect(content).not.toContain('.nan');
+            const saved = yaml.load(content) as { websocket_media: Record<string, number> };
+            expect(saved.websocket_media[key]).toBe(fallback);
+        }
+    );
+
     it('distinguishes an edited selection from the running transport and leaves unknown capability unverified', async () => {
         render(<TransportPage />);
 
@@ -337,7 +387,9 @@ describe('TransportPage audio profile guidance', () => {
 
         fireEvent.click(await screen.findByRole('button', { name: 'Recreate AI Engine' }));
 
-        expect(await screen.findByText('Building updater image from local source')).toBeInTheDocument();
+        expect(
+            await screen.findByText('Building updater image from local source')
+        ).toBeInTheDocument();
     });
 
     it('shows the running engine module failure even when the saved-selection probe passes', async () => {

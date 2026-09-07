@@ -18,6 +18,11 @@ const normalizeAriPingSeconds = (rawValue: string): number => {
     return Number.isFinite(parsed) ? Math.min(60, Math.max(5, parsed)) : 10;
 };
 
+const parseBoundedInt = (rawValue: string, fallback: number, min: number, max: number): number => {
+    const parsed = Number.parseInt(rawValue, 10);
+    return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+};
+
 type TransportConfig = Record<string, unknown> & {
     audio_transport?: string;
     asterisk?: {
@@ -59,7 +64,7 @@ type TransportConfig = Record<string, unknown> & {
         drain_timeout_ms?: number;
         pre_start_buffer_ms?: number;
         max_connections?: number;
-        allowed_remote_hosts?: string[];
+        allowed_remote_hosts?: string[] | string | null;
         auth?: { required?: boolean; username?: string; password_env?: string };
         tls?: { enabled?: boolean; cert_file?: string | null; key_file?: string | null };
     };
@@ -530,7 +535,9 @@ const TransportPage = () => {
                         <span>
                             {bannerMessage}
                             {applyProgress && (
-                                <span className="block text-xs opacity-80 mt-1">{applyProgress}</span>
+                                <span className="block text-xs opacity-80 mt-1">
+                                    {applyProgress}
+                                </span>
                             )}
                         </span>
                     </div>
@@ -1150,9 +1157,12 @@ const TransportPage = () => {
                                 />
                                 <FormInput
                                     label="Allowed Asterisk Hosts"
-                                    value={(
-                                        websocketMediaConfig.allowed_remote_hosts || ['127.0.0.1']
-                                    ).join(', ')}
+                                    value={
+                                        Array.isArray(websocketMediaConfig.allowed_remote_hosts)
+                                            ? websocketMediaConfig.allowed_remote_hosts.join(', ')
+                                            : (websocketMediaConfig.allowed_remote_hosts ??
+                                              '127.0.0.1')
+                                    }
                                     onChange={e =>
                                         updateSectionConfig(
                                             'websocket_media',
@@ -1235,7 +1245,7 @@ const TransportPage = () => {
                                             updateSectionConfig(
                                                 'websocket_media',
                                                 'max_connections',
-                                                parseInt(e.target.value, 10)
+                                                parseBoundedInt(e.target.value, 100, 1, 10000)
                                             )
                                         }
                                     />
@@ -1249,7 +1259,7 @@ const TransportPage = () => {
                                             updateSectionConfig(
                                                 'websocket_media',
                                                 'handshake_timeout_ms',
-                                                parseInt(e.target.value, 10)
+                                                parseBoundedInt(e.target.value, 5000, 100, 60000)
                                             )
                                         }
                                     />
@@ -1263,7 +1273,7 @@ const TransportPage = () => {
                                             updateSectionConfig(
                                                 'websocket_media',
                                                 'media_start_timeout_ms',
-                                                parseInt(e.target.value, 10)
+                                                parseBoundedInt(e.target.value, 5000, 100, 60000)
                                             )
                                         }
                                     />
@@ -1277,7 +1287,7 @@ const TransportPage = () => {
                                             updateSectionConfig(
                                                 'websocket_media',
                                                 'drain_timeout_ms',
-                                                parseInt(e.target.value, 10)
+                                                parseBoundedInt(e.target.value, 30000, 1000, 120000)
                                             )
                                         }
                                     />
@@ -1291,7 +1301,7 @@ const TransportPage = () => {
                                             updateSectionConfig(
                                                 'websocket_media',
                                                 'pre_start_buffer_ms',
-                                                parseInt(e.target.value, 10)
+                                                parseBoundedInt(e.target.value, 200, 0, 5000)
                                             )
                                         }
                                         tooltip="Bounded allowance for binary audio that arrives before MEDIA_START."

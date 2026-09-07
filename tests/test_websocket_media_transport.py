@@ -3,6 +3,7 @@ import base64
 import json
 import random
 import shutil
+import socket
 import ssl
 import subprocess
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from websockets.asyncio.client import connect
-from websockets.exceptions import InvalidStatus
+from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from src.config import supports_media_websocket as config_supports_media_websocket
 from src.audio.transports.asterisk_websocket import (
@@ -47,6 +48,89 @@ def _config(**overrides):
 
 def _headers():
     return {"Authorization": "Basic " + base64.b64encode(b"asterisk:secret").decode()}
+
+
+@pytest.mark.parametrize("allowed,peer,expected", [
+    (["127.0.0.1"], "::ffff:127.0.0.1", True),
+    (["::ffff:127.0.0.1"], "127.0.0.1", True),
+    (["::1"], "0:0:0:0:0:0:0:1", True),
+    (["0:0:0:0:0:0:0:1"], "::1", True),
+    (["LOCALHOST"], "::1", True),
+    (["127.0.0.1"], "::ffff:192.0.2.1", False),
+    (["127.0.0.1"], "invalid", False),
+])
+def test_allowlist_compares_canonical_ip_addresses(allowed, peer, expected):
+    server = WebSocketMediaServer(_config(allowed_remote_hosts=allowed), AsyncMock(), AsyncMock())
+    assert server._peer_allowed(SimpleNamespace(remote_address=(peer, 1234))) is expected
+
+
+@pytest.mark.asyncio
+async def test_ipv4_peer_is_admitted_on_dual_stack_listener(monkeypatch):
+    if not socket.has_dualstack_ipv6():
+        pytest.skip("dual-stack IPv6 unavailable")
+    from src.audio.transports import asterisk_websocket as module
+
+    listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+    listener.bind(("::", 0))
+    listener.listen()
+    listener.setblocking(False)
+    original_serve = module.serve
+
+    # asyncio normally forces IPV6_V6ONLY; supply a real dual-stack socket to
+    # exercise the IPv4-mapped address returned by that supported topology.
+    def serve_dual_stack(handler, host, port, **kwargs):
+        assert host == "::"
+        return original_serve(handler, sock=listener, **kwargs)
+
+    monkeypatch.setattr(module, "serve", serve_dual_stack)
+    server = WebSocketMediaServer(_config(bind_host="::"), AsyncMock(), AsyncMock())
+    try:
+        await server.start()
+        nonce = server.register_call("call-1", "media-1", "ulaw")
+        async with connect(f"ws://127.0.0.1:{server.address[1]}/media?nonce={nonce}",
+                           subprotocols=["media"], additional_headers=_headers()) as ws:
+            await ws.send(_start(nonce))
+            binding = await server.wait_ready("call-1")
+            assert binding.state == "ready"
+    finally:
+        await server.stop()
+        listener.close()
+
+
+@pytest.mark.asyncio
+async def test_unauthenticated_requests_do_not_consume_media_slots():
+    server = WebSocketMediaServer(_config(max_connections=1), AsyncMock(), AsyncMock())
+    await server.start()
+    try:
+        nonce = server.register_call("call-1", "media-1", "ulaw")
+        uri = f"ws://127.0.0.1:{server.address[1]}/media?nonce={nonce}"
+        for _ in range(3):
+            with pytest.raises(InvalidStatus) as exc:
+                async with connect(uri, subprotocols=["media"]):
+                    pytest.fail("unauthenticated handshake upgraded")
+            assert exc.value.response.status_code == 401
+            assert server.health()["active_connections"] == 0
+            assert server.health()["metrics"]["connections"] == 0
+        async with connect(uri, subprotocols=["media"], additional_headers=_headers()) as ws:
+            await ws.send(_start(nonce))
+            assert (await server.wait_ready("call-1")).state == "ready"
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_trusted_loopback_can_explicitly_opt_out_of_authentication():
+    server = WebSocketMediaServer(_config(auth={"required": False}), AsyncMock(), AsyncMock())
+    await server.start()
+    try:
+        nonce = server.register_call("call-1", "media-1", "ulaw")
+        uri = f"ws://127.0.0.1:{server.address[1]}/media?nonce={nonce}"
+        async with connect(uri, subprotocols=["media"]) as ws:
+            await ws.send(_start(nonce))
+            assert (await server.wait_ready("call-1")).state == "ready"
+    finally:
+        await server.stop()
 
 
 def _start(nonce, channel_id="media-1", codec="ulaw"):
@@ -199,7 +283,7 @@ async def test_auth_path_subprotocol_and_duplicate_nonce_fail_closed():
                 f"ws://{host}:{port}/media?nonce={nonce}", subprotocols=["media"], additional_headers=_headers()
             ) as duplicate:
                 await duplicate.send(_start(nonce))
-                with pytest.raises(Exception):
+                with pytest.raises(ConnectionClosed):
                     await duplicate.recv()
     finally:
         await server.stop()
@@ -287,7 +371,7 @@ async def test_zero_prestart_buffer_rejects_binary_before_media_start():
             f"ws://{host}:{port}/media?nonce={nonce}", subprotocols=["media"], additional_headers=_headers()
         ) as ws:
             await ws.send(b"not accepted")
-            with pytest.raises(Exception):
+            with pytest.raises(ConnectionClosed):
                 await ws.recv()
     finally:
         await server.stop()
@@ -320,7 +404,7 @@ async def test_invalid_media_start_fails_registered_call_closed(event_patch):
             event = json.loads(_start(nonce))
             event.update(event_patch)
             await ws.send(json.dumps(event))
-            with pytest.raises(Exception):
+            with pytest.raises(ConnectionClosed):
                 await ws.recv()
             with pytest.raises(RuntimeError):
                 await server.wait_ready("call-1", 0.1)
@@ -343,7 +427,7 @@ async def test_prestart_buffer_is_bounded_at_largest_supported_wire_rate():
         ) as ws:
             # 200 ms at 32 kB/s is 6400 bytes. One more byte must fail closed.
             await ws.send(b"x" * 6401)
-            with pytest.raises(Exception):
+            with pytest.raises(ConnectionClosed):
                 await ws.recv()
             with pytest.raises(RuntimeError):
                 await server.wait_ready("call-1", 0.1)
@@ -367,7 +451,7 @@ async def test_media_start_rejects_odd_signed_linear_frame_size():
             event = json.loads(_start(nonce, codec="slin"))
             event["optimal_frame_size"] = 321
             await ws.send(json.dumps(event))
-            with pytest.raises(Exception):
+            with pytest.raises(ConnectionClosed):
                 await ws.recv()
             with pytest.raises(RuntimeError):
                 await server.wait_ready("call-1", 0.1)
@@ -395,7 +479,7 @@ async def test_malformed_json_and_error_event_fail_closed_without_stale_completi
             f"ws://{host}:{port}/media?nonce={nonce}", subprotocols=["media"], additional_headers=_headers()
         ) as ws:
             await ws.send("{")
-            with pytest.raises(Exception):
+            with pytest.raises(ConnectionClosed):
                 await ws.recv()
             with pytest.raises(RuntimeError):
                 await malformed.wait_ready("call-malformed", 0.1)
@@ -496,7 +580,7 @@ async def test_remote_close_once_unregister_and_stop_leave_no_callback_tasks():
         await ws.send(_start(nonce, "media-2"))
         await server.wait_ready("call-2")
         await server.stop()
-        with pytest.raises(Exception):
+        with pytest.raises(ConnectionClosed):
             await ws.recv()
     assert len(disconnected) == 2
     assert not server._callback_tasks

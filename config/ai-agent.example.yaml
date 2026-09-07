@@ -153,7 +153,7 @@ external_media:
 #   port: 8787
 #   path: "/media"
 #   fallback_format: "ulaw"              # ulaw | alaw | slin | slin16
-#   control_format: "json"               # json | auto | plain (auto/plain: experimental, Asterisk 20.17.0 only)
+#   control_format: "json"               # plain: experimental, 20.17.0 only; auto: plain on 20.17.0, JSON on 20.18+/22.8+/23.2+
 #   allowed_remote_hosts: ["127.0.0.1"]  # IP literals or localhost only (no CIDR/DNS)
 #   auth:
 #     required: true
