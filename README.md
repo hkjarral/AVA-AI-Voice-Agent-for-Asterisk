@@ -53,6 +53,7 @@ Get the **Admin UI running in 2 minutes**.
 For a complete **first successful call** walkthrough (dialplan + transport selection + verification), see:
 - **[Installation Guide](docs/INSTALLATION.md)**
 - **[Transport Compatibility](docs/Transport-Mode-Compatibility.md)**
+- **[WebSocket Transport Setup](docs/WebSocket-Transport.md)** — opt-in authenticated transport; qualify the intended provider, codec, and topology
 
 ### 1. Run Pre-flight Check (Required)
 
@@ -851,7 +852,7 @@ pipelines:
 - **Tool Calling System**: AI-powered actions (transfers, emails) work with any provider.
 - **Agent CLI Tools**: `setup`, `check`, `rca`, `update`, `version` commands (legacy aliases: `init`, `doctor`, `troubleshoot`).
 - **Modular Pipeline System**: Independent STT, LLM, and TTS provider selection.
-- **Dual Transport Support**: AudioSocket (default in `config/ai-agent.yaml`) and ExternalMedia RTP (both supported — see the transport matrix).
+- **Multiple Transports**: AudioSocket (default in `config/ai-agent.yaml`), ExternalMedia RTP, and opt-in, version-gated [Asterisk Media WebSocket](docs/WebSocket-Transport.md) (see the transport matrix).
 - **Per-Agent Audio Profiles**: Stable and enhanced 8 kHz telephony profiles, plus opt-in 16 kHz AudioSocket with provider-native PCM conversion on supported Asterisk versions and G.722/wideband endpoint or trunk legs. ExternalMedia RTP remains on the supported 8 kHz profiles; G.711/PSTN Agents remain on an 8 kHz profile.
 - **Streaming-First Downstream**: Streaming playback when possible, with automatic fallback to file playback for robustness.
 - **High-Performance Architecture**: Separate `ai_engine` and `local_ai_server` containers.

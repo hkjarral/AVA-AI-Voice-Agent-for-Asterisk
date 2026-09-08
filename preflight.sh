@@ -2154,14 +2154,47 @@ check_asterisk_config() {
     fi
 
     # --- Module checks (requires asterisk binary) ---
-    local mod_audiosocket_ok=false mod_audiosocket_detail="binary not available"
+    local selected_transport="externalmedia"
+    local base_transport_source="$SCRIPT_DIR/config/ai-agent.yaml"
+    local local_transport_source="$SCRIPT_DIR/config/ai-agent.local.yaml"
+    if [ -f "$base_transport_source" ]; then
+        selected_transport=$(awk -F: "/^[[:space:]]*audio_transport:[[:space:]]*/ {sub(/#.*/, \"\", \$2); gsub(/[[:space:]\\\"']/, \"\", \$2); print tolower(\$2); exit}" "$base_transport_source")
+    fi
+    if [ -f "$local_transport_source" ]; then
+        local local_transport
+        local_transport=$(awk -F: "/^[[:space:]]*audio_transport:[[:space:]]*/ {sub(/#.*/, \"\", \$2); gsub(/[[:space:]\\\"']/, \"\", \$2); print tolower(\$2); exit}" "$local_transport_source")
+        [ -n "$local_transport" ] && selected_transport="$local_transport"
+    fi
+    case "$selected_transport" in
+        audiosocket|externalmedia|websocket) ;;
+        *) selected_transport="externalmedia" ;;
+    esac
+
+    local mod_audiosocket_ok=true mod_audiosocket_detail="not required"
+    local mod_chan_websocket_ok=true mod_chan_websocket_detail="not required"
+    local mod_res_websocket_client_ok=true mod_res_websocket_client_detail="not required"
+    local mod_res_http_websocket_ok=true mod_res_http_websocket_detail="not required"
+    local mod_res_ari_channels_ok=true mod_res_ari_channels_detail="not required"
     local mod_res_ari_ok=false mod_res_ari_detail="binary not available"
     local mod_res_stasis_ok=false mod_res_stasis_detail="binary not available"
     local mod_chan_pjsip_ok=false mod_chan_pjsip_detail="binary not available"
 
     if resolve_asterisk_binary; then
-        _check_ast_module "app_audiosocket" && mod_audiosocket_ok=true && mod_audiosocket_detail="Running"
-        [ "$mod_audiosocket_ok" = false ] && mod_audiosocket_detail="Not loaded"
+        if [ "$selected_transport" = "audiosocket" ]; then
+            mod_audiosocket_ok=false mod_audiosocket_detail="Not loaded"
+            _check_ast_module "app_audiosocket" && mod_audiosocket_ok=true && mod_audiosocket_detail="Running"
+        fi
+
+        if [ "$selected_transport" = "websocket" ]; then
+            mod_chan_websocket_ok=false mod_chan_websocket_detail="Not loaded"
+            mod_res_websocket_client_ok=false mod_res_websocket_client_detail="Not loaded"
+            mod_res_ari_channels_ok=false mod_res_ari_channels_detail="Not loaded"
+            mod_res_http_websocket_ok=false mod_res_http_websocket_detail="Not loaded"
+            _check_ast_module "chan_websocket" && mod_chan_websocket_ok=true && mod_chan_websocket_detail="Running"
+            _check_ast_module "res_websocket_client" && mod_res_websocket_client_ok=true && mod_res_websocket_client_detail="Running"
+            _check_ast_module "res_ari_channels" && mod_res_ari_channels_ok=true && mod_res_ari_channels_detail="Running"
+            _check_ast_module "res_http_websocket" && mod_res_http_websocket_ok=true && mod_res_http_websocket_detail="Running"
+        fi
 
         _check_ast_module "res_ari" && mod_res_ari_ok=true && mod_res_ari_detail="Running"
         [ "$mod_res_ari_ok" = false ] && mod_res_ari_detail="Not loaded"
@@ -2172,19 +2205,23 @@ check_asterisk_config() {
         _check_ast_module "chan_pjsip" && mod_chan_pjsip_ok=true && mod_chan_pjsip_detail="Running"
         [ "$mod_chan_pjsip_ok" = false ] && mod_chan_pjsip_detail="Not loaded"
 
-        log_ok "Asterisk modules: audiosocket=$mod_audiosocket_detail, res_ari=$mod_res_ari_detail, res_stasis=$mod_res_stasis_detail, chan_pjsip=$mod_chan_pjsip_detail"
+        log_ok "Asterisk modules ($selected_transport): audiosocket=$mod_audiosocket_detail, websocket=$mod_chan_websocket_detail, websocket_client=$mod_res_websocket_client_detail, http_websocket=$mod_res_http_websocket_detail, res_ari=$mod_res_ari_detail, res_stasis=$mod_res_stasis_detail, chan_pjsip=$mod_chan_pjsip_detail"
     else
         log_info "Asterisk binary not in PATH — module checks skipped (will use ARI in Admin UI)"
     fi
 
     # --- Build JSON checks object ---
     local ari_enabled_detail_e ari_user_detail_e http_enabled_detail_e dialplan_detail_e
-    local mod_audiosocket_detail_e mod_res_ari_detail_e mod_res_stasis_detail_e mod_chan_pjsip_detail_e
+    local mod_audiosocket_detail_e mod_chan_websocket_detail_e mod_res_websocket_client_detail_e mod_res_http_websocket_detail_e mod_res_ari_channels_detail_e mod_res_ari_detail_e mod_res_stasis_detail_e mod_chan_pjsip_detail_e
     ari_enabled_detail_e=$(_json_escape "$ari_enabled_detail")
     ari_user_detail_e=$(_json_escape "$ari_user_detail")
     http_enabled_detail_e=$(_json_escape "$http_enabled_detail")
     dialplan_detail_e=$(_json_escape "$dialplan_detail")
     mod_audiosocket_detail_e=$(_json_escape "$mod_audiosocket_detail")
+    mod_chan_websocket_detail_e=$(_json_escape "$mod_chan_websocket_detail")
+    mod_res_websocket_client_detail_e=$(_json_escape "$mod_res_websocket_client_detail")
+    mod_res_http_websocket_detail_e=$(_json_escape "$mod_res_http_websocket_detail")
+    mod_res_ari_channels_detail_e=$(_json_escape "$mod_res_ari_channels_detail")
     mod_res_ari_detail_e=$(_json_escape "$mod_res_ari_detail")
     mod_res_stasis_detail_e=$(_json_escape "$mod_res_stasis_detail")
     mod_chan_pjsip_detail_e=$(_json_escape "$mod_chan_pjsip_detail")
@@ -2197,6 +2234,10 @@ check_asterisk_config() {
     "http_enabled": { "ok": $http_enabled_ok, "detail": "$http_enabled_detail_e" },
     "dialplan_context": { "ok": $dialplan_ok, "detail": "$dialplan_detail_e" },
     "module_app_audiosocket": { "ok": $mod_audiosocket_ok, "detail": "$mod_audiosocket_detail_e" },
+    "module_chan_websocket": { "ok": $mod_chan_websocket_ok, "detail": "$mod_chan_websocket_detail_e" },
+    "module_res_websocket_client": { "ok": $mod_res_websocket_client_ok, "detail": "$mod_res_websocket_client_detail_e" },
+    "module_res_http_websocket": { "ok": $mod_res_http_websocket_ok, "detail": "$mod_res_http_websocket_detail_e" },
+    "module_res_ari_channels": { "ok": $mod_res_ari_channels_ok, "detail": "$mod_res_ari_channels_detail_e" },
     "module_res_ari": { "ok": $mod_res_ari_ok, "detail": "$mod_res_ari_detail_e" },
     "module_res_stasis": { "ok": $mod_res_stasis_ok, "detail": "$mod_res_stasis_detail_e" },
     "module_chan_pjsip": { "ok": $mod_chan_pjsip_ok, "detail": "$mod_chan_pjsip_detail_e" }

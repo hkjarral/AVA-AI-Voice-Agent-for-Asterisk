@@ -489,6 +489,8 @@ async def test_streaming_manager_keeps_audiosocket_framing_per_call():
         audio_transport="audiosocket",
         audiosocket_server=audio_server,
     )
+    manager.active_streams["call-8k"] = {"stream_id": "stream-8k"}
+    manager.active_streams["call-16k"] = {"stream_id": "stream-16k"}
 
     assert await manager._send_audio_chunk(
         "call-8k", "stream-8k", b"a" * 320, target_fmt="slin", target_rate=8000

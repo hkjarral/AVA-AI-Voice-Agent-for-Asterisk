@@ -1,11 +1,21 @@
 # Transport & Playback Mode Compatibility Guide
 
-**Last Updated**: July 11, 2026
+**Last Updated**: September 6, 2026
 **Issue**: Linear AAVA-28, AAVA-85
 
 ## Overview
 
 This document defines the **validated and supported** combinations of audio transport, provider mode, and playback methods.
+
+The opt-in Asterisk Media WebSocket path is distinct from the historical
+AudioSocket and ExternalMedia RTP claims below. It retains the existing Stasis
+dialplan and uses ARI `externalMedia` to create Asterisk's per-call WebSocket
+media leg. Its floors are Asterisk 20.18+, 22.8+, or 23.2+, and it must be
+qualified for the intended provider, codec, topology, and lifecycle. See
+[WebSocket Transport](WebSocket-Transport.md).
+An explicit experimental `control_format: auto/plain` also permits plain
+controls on exactly 20.17.0 using an ARI-originated auxiliary WebSocket leg.
+Its isolated four-codec proof does not qualify provider/pipeline call behavior.
 
 For **v5.1.4+**: both **AudioSocket** and **ExternalMedia RTP** are validated options for pipeline deployments and full-agent deployments. Choose based on what fits your Asterisk environment and network constraints (TCP `8090` for AudioSocket vs UDP `18080` for ExternalMedia RTP), and confirm the combination you’re running matches the matrix below.
 
@@ -161,6 +171,11 @@ downstream_mode: file  # recommended + most validated for pipelines
 | **AudioSocket** | Pipeline | File (PlaybackManager) | ✅ Working | ✅ **VALIDATED** (v4.0+) |
 | **ExternalMedia RTP** | Pipeline | Streaming-first (fallback to file) | ✅ Working | ⚠️ **SUPPORTED (v5.1.4+)** |
 | **AudioSocket** | Pipeline | Streaming-first (fallback to file) | ✅ Working | ⚠️ **SUPPORTED (v5.1.4+)** |
+| **Asterisk Media WebSocket** | OpenAI Realtime | Streaming, `ulaw` | ✅ Observed | ✅ **ONE QUALIFIED COMBINATION**: Asterisk 22.10.1 / FreePBX 17, 128-second multilingual call with barge-in and intentional farewell hangup |
+
+The WebSocket row is deliberately narrow. It is not evidence that every
+provider, pipeline, codec, deployment topology, or failure path is qualified;
+run the release acceptance checklist in [WebSocket Transport](WebSocket-Transport.md#qualification-and-rollback) before enabling another combination.
 
 ---
 

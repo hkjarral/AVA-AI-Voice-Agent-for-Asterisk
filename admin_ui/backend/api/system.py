@@ -655,6 +655,70 @@ PY"""
     return None
 
 
+def _validate_websocket_restart_environment(*, recreate: bool) -> None:
+    """Check the intended engine credential source before stopping its container.
+
+    Saving incomplete configuration is allowed for staged setup. Applying it
+    must not turn a functioning previous transport into a predictable startup
+    failure. Never use the Admin process environment as engine-secret proof.
+    """
+    try:
+        merged = _read_merged_config_dict_for_system()
+    except Exception:
+        # Restart never depended on YAML parseability; do not start now.
+        logger.warning("Skipping media credential check: could not read YAML config", exc_info=True)
+        return
+    if merged.get("audio_transport") != "websocket":
+        return
+    try:
+        from src.config import WebSocketMediaConfig
+
+        config = WebSocketMediaConfig.model_validate(merged.get("websocket_media") or {})
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot apply invalid media configuration; correct Audio Transport settings first.",
+        ) from None
+    if not config.auth.required:
+        return
+    key = config.auth.password_env
+    source = "the project .env file" if recreate else "the existing AI Engine container"
+    if recreate:
+        present = bool(_dotenv_value(key))
+    else:
+        client = None
+        try:
+            client = docker.from_env()
+            container = client.containers.get("ai_engine")
+            env = (container.attrs.get("Config") or {}).get("Env") or []
+            present = any(
+                isinstance(entry, str) and entry.startswith(key + "=")
+                and bool(entry.partition("=")[2].strip())
+                for entry in env
+            )
+        except docker.errors.NotFound:
+            # The restart endpoint recovers absent services through Compose,
+            # which loads env_file rather than an existing container's env.
+            source = "the project .env file"
+            present = bool(_dotenv_value(key))
+        except Exception:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot verify the AI Engine media credential; check Docker access or recreate from a configured .env file.",
+            ) from None
+        finally:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+    if not present:
+        raise HTTPException(
+            status_code=409,
+            detail=f"WebSocket media requires {key} in {source}. Configure it and recreate the AI Engine; no container was stopped.",
+        )
+
+
 @router.post("/containers/{container_id}/restart")
 async def restart_container(container_id: str, force: bool = False, recreate: bool = False):
     """
@@ -703,6 +767,9 @@ async def restart_container(container_id: str, force: bool = False, recreate: bo
     safe_container_name = _sanitize_for_log(container_name)
     logger.info("Restarting container: %s", safe_container_name)
 
+    if container_name == "ai_engine":
+        await asyncio.to_thread(_validate_websocket_restart_environment, recreate=recreate)
+
     # Check for active calls before restarting AI Engine (unless forced)
     if container_name == "ai_engine" and not force:
         call_status = await _check_active_calls()
@@ -727,8 +794,6 @@ async def restart_container(container_id: str, force: bool = False, recreate: bo
     # force-recreate it (the API process is the one being replaced). Use a scheduled Docker-SDK
     # restart which is significantly more reliable from within the container itself.
     if container_name == "admin_ui":
-        import asyncio
-
         async def _restart_admin_ui_later():
             try:
                 await asyncio.sleep(0.75)
@@ -1301,6 +1366,22 @@ async def reload_ai_engine():
                 "tool_config_hash": data.get("tool_config_hash"),
             }
         
+        if resp.status_code == 409:
+            # Engine refused to hot-apply restart-only transport keys; nothing
+            # was mutated. Surface it as the usual "restart required" outcome.
+            data = resp.json()
+            return {
+                "status": "partial",
+                "message": data.get(
+                    "message",
+                    "Transport changes require an AI Engine restart and were not applied",
+                ),
+                "changes": data.get("changed_keys", []),
+                "restart_required": True,
+                "apply_required": True,
+                "recommended_apply_method": "restart",
+            }
+
         raise HTTPException(
             status_code=resp.status_code,
             detail=f"AI Engine reload failed: {resp.text}"
@@ -3411,6 +3492,10 @@ async def restart_all_containers():
     """Restart all containers."""
     import subprocess
     project_root = os.getenv("PROJECT_ROOT", "/app/project")
+
+    # Compose up may recreate from the changed env_file; validate that source
+    # before stopping any service, just as the individual engine action does.
+    await asyncio.to_thread(_validate_websocket_restart_environment, recreate=True)
     
     try:
         # Stop
@@ -6010,8 +6095,7 @@ async def updates_job_log(job_id: str):
 # Asterisk Config Discovery (AAVA: Asterisk Setup Page)
 # ============================================================================
 
-_REQUIRED_MODULES = [
-    "app_audiosocket",
+_COMMON_REQUIRED_MODULES = [
     "res_ari",
     "res_stasis",
     "chan_pjsip",
@@ -6019,25 +6103,51 @@ _REQUIRED_MODULES = [
 ]
 
 
+def _required_modules_for_transport(transport: str) -> list[str]:
+    """Return only the modules needed by the selected media transport."""
+    normalized = str(transport or "externalmedia").strip().lower()
+    if normalized == "audiosocket":
+        return [*_COMMON_REQUIRED_MODULES, "app_audiosocket"]
+    if normalized == "websocket":
+        return [
+            *_COMMON_REQUIRED_MODULES,
+            "res_ari_channels",
+            "chan_websocket",
+            "res_websocket_client",
+        ]
+    return list(_COMMON_REQUIRED_MODULES)
+
+
+def _read_merged_config_dict_for_system() -> dict:
+    """Read the effective YAML config with the engine's override semantics."""
+    from .config import _read_merged_config_dict
+
+    return _read_merged_config_dict()
+
+
+def _set_websocket_capability(live: dict) -> None:
+    """Attach a fail-closed, requested-mode-specific capability result."""
+    if live.get("audio_transport") != "websocket":
+        return
+    try:
+        from src.config import media_websocket_capability_reason
+        from src.media_transport_capabilities import resolve_media_websocket_control
+
+        version = live.get("asterisk_version")
+        requested = live.get("websocket_control_format", "json")
+        effective = resolve_media_websocket_control(version, requested)
+        live["websocket_effective_control_format"] = effective
+        live["websocket_media_supported"] = effective is not None
+        live["websocket_media_reason"] = media_websocket_capability_reason(version, requested)
+    except Exception:
+        live["websocket_media_supported"] = False
+        live["websocket_media_reason"] = "Asterisk Media WebSocket compatibility could not be verified."
+
+
 def _resolve_app_name() -> str:
     """Resolve the ARI app name from YAML config, env, or default."""
     try:
-        project_root = os.getenv("PROJECT_ROOT", "/app/project")
-        base_path = os.path.join(project_root, "config", "ai-agent.yaml")
-        local_path = os.path.join(project_root, "config", "ai-agent.local.yaml")
-
-        merged_cfg: dict = {}
-        if os.path.exists(base_path):
-            with open(base_path, "r") as f:
-                base_cfg = yaml.safe_load(f) or {}
-            if isinstance(base_cfg, dict):
-                merged_cfg = dict(base_cfg)
-
-        if os.path.exists(local_path):
-            with open(local_path, "r") as f:
-                local_cfg = yaml.safe_load(f) or {}
-            if isinstance(local_cfg, dict):
-                merged_cfg = _deep_merge_dict(merged_cfg, local_cfg)
+        merged_cfg = _read_merged_config_dict_for_system()
 
         ast_cfg = merged_cfg.get("asterisk") or {}
         if isinstance(ast_cfg, dict) and ast_cfg.get("app_name"):
@@ -6151,7 +6261,9 @@ async def _probe_asterisk_ari(settings: dict, live: dict) -> None:
                 resp = await client.get(f"{base_url}/ari/asterisk/modules", auth=auth)
                 if resp.status_code == 200:
                     all_modules = resp.json()
-                    for req_mod in _REQUIRED_MODULES:
+                    for req_mod in _required_modules_for_transport(
+                        live.get("audio_transport", "externalmedia")
+                    ):
                         matched = None
                         for m in all_modules:
                             name = m.get("name", "")
@@ -6230,8 +6342,21 @@ async def asterisk_status():
         "last_reload": None,
         "app_registered": False,
         "app_name": _resolve_app_name(),
+        "audio_transport": "externalmedia",
         "modules": {},
     }
+    try:
+        merged_config = _read_merged_config_dict_for_system()
+        if isinstance(merged_config, dict):
+            live["websocket_control_format"] = (merged_config.get("websocket_media") or {}).get("control_format", "json")
+        # Engine precedence is YAML first (defaults.py setdefault), env only as fallback.
+        configured_transport = merged_config.get("audio_transport") if isinstance(merged_config, dict) else None
+        if not configured_transport:
+            configured_transport = _dotenv_value("AUDIO_TRANSPORT") or os.getenv("AUDIO_TRANSPORT")
+        if configured_transport in {"externalmedia", "audiosocket", "websocket"}:
+            live["audio_transport"] = configured_transport
+    except Exception:
+        logger.debug("Could not resolve selected audio transport for module checks", exc_info=True)
 
     has_probe_creds = bool(settings.get("username") and settings.get("password"))
 
@@ -6261,14 +6386,17 @@ async def asterisk_status():
             if not live.pop("_app_registration_checked", False) and not live["app_registered"]:
                 live["app_registered"] = True
             live["ari_reachable"] = True
+        _set_websocket_capability(live)
         return {"mode": mode, "manifest": manifest, "live": live}
 
     # Fallback: engine health unavailable. Use the hardened direct probe when we have
     # credentials; otherwise reachability is undeterminable and stays False.
     if not has_probe_creds:
+        _set_websocket_capability(live)
         return {"mode": mode, "manifest": manifest, "live": live}
     await _probe_asterisk_ari(settings, live)
     live.pop("_app_registration_checked", None)  # internal signal — keep out of the response
+    _set_websocket_capability(live)
     return {"mode": mode, "manifest": manifest, "live": live}
 
 

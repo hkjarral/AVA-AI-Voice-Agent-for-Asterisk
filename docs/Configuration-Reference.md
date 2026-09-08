@@ -161,8 +161,9 @@ ExternalMedia RTP supports the shipped `telephony_ulaw_8k` and
 `audio_transport: externalmedia` is active. RTP ExternalMedia has no SDP offer
 and therefore cannot negotiate the dynamic payload mapping used by Asterisk for
 `slin16`; returning payload type 118 produced no caller audio in live testing.
-Asterisk Media over WebSocket can carry `slin16`, but AAVA does not currently
-implement that separate transport. Use AudioSocket for supported wideband audio.
+Asterisk Media WebSocket can carry `slin16` as well as `ulaw`, `alaw`, and
+`slin` in AAVA's opt-in WebSocket transport. That transport has its own
+qualification and network requirements; see [WebSocket Transport](WebSocket-Transport.md).
 
 The wideband provider boundary is call-scoped and does not rewrite provider
 defaults. OpenAI Realtime uses PCM at 24 kHz in both directions; Google Live
@@ -352,9 +353,20 @@ contains configuration and verification evidence, but never the referenced API p
 
 ## Transports
 
-- audio_transport: `audiosocket` | `externalmedia`
+- audio_transport: `audiosocket` | `externalmedia` | `websocket`
   - **audiosocket**: TCP-based audio transport.
   - **externalmedia**: RTP/UDP-based audio transport.
+  - **websocket**: Opt-in Asterisk Media WebSocket transport. AAVA creates the
+    media leg through ARI; calls still enter the normal Stasis
+    dialplan. Requires Asterisk 20.18+, 22.8+, or 23.2+ on those branches,
+    authenticated Asterisk-outbound media connections, and per-combination
+    qualification. It supports `ulaw`, `alaw`, `slin`, and `slin16`; it does
+    not automatically fall back mid-call to AudioSocket or RTP. See
+    [WebSocket setup and qualification](WebSocket-Transport.md).
+    `websocket_media.control_format` defaults to `json`; experimental `auto`
+    selects plain on exactly 20.17.0 or JSON on the listed floors. Explicit
+    `plain` is restricted to 20.17.0. Unknown versions fail closed. Both modes
+    require per-provider live qualification and a restart/recreate to apply.
   - **Selection**: Use the validated combinations in **[Transport & Playback Mode Compatibility Guide](Transport-Mode-Compatibility.md)**. Transport selection depends on provider mode and playback method (not a single strict rule).
 - downstream_mode: `stream` | `file`
   - **stream**: Real-time streaming (20ms frames). Best UX. Works with full agents.
@@ -380,6 +392,32 @@ contains configuration and verification evidence, but never the referenced API p
   - Note: if `asterisk.host` is an IP literal, the engine may default `allowed_remote_hosts` to `[asterisk.host]` unless explicitly configured.
   - If `asterisk.host` is a **hostname**, set `external_media.allowed_remote_hosts` explicitly (the platform does not auto-allowlist hostnames).
 - Note: `external_media.jitter_buffer_ms` is no longer used (RTP buffering is not configurable here). Use `streaming.jitter_buffer_ms` for downstream playback pacing.
+
+## WebSocket Media
+
+Applies when `audio_transport: websocket` (opt-in; see [WebSocket Transport](WebSocket-Transport.md) for version floors, the matching Asterisk `websocket_client.conf` stanza, and qualification). The block is strictly validated: unknown keys are rejected even while another transport is selected.
+
+- websocket_media.connection_mode: `asterisk_outbound` (only value; Asterisk opens the per-call connection to the engine listener).
+- websocket_media.connection_name: Name of the Asterisk `websocket_client.conf` section (default `aava_media`; letters, digits, `_`, `-`).
+- websocket_media.bind_host: Listener bind address (default `127.0.0.1`).
+- websocket_media.advertise_host: Address Asterisk connects to (default `127.0.0.1`). Use for routed/NAT topologies.
+- websocket_media.port: Listener TCP port (default `8787`; 1024–65535).
+- websocket_media.path: Absolute WebSocket path without query or fragment (default `/media`).
+- websocket_media.format_policy: `profile` (only value; the frozen per-call audio profile selects the wire format).
+- websocket_media.fallback_format: `ulaw` | `alaw` | `slin` | `slin16` (default `ulaw`); used when the profile does not pin a wire format.
+- websocket_media.control_format: `json` | `auto` | `plain` (default `json`). Explicit `plain` is experimental and limited to Asterisk 20.17.0. `auto` opts into plain on exactly 20.17.0 and selects JSON on 20.18+, 22.8+, or 23.2+; unsupported release lines fail closed. See the Transports section above.
+- websocket_media.direction: `both` (only value).
+- websocket_media.handshake_timeout_ms: WebSocket open/close handshake timeout (default `5000`; 100–60000).
+- websocket_media.media_start_timeout_ms: Max wait for the per-call connection to become ready (`MEDIA_START`) before the call fails (default `5000`; 100–60000).
+- websocket_media.drain_timeout_ms: Max wait for queued playback to drain (e.g. farewell audio) before hangup proceeds (default `30000`; 1000–120000).
+- websocket_media.pre_start_buffer_ms: Amount of inbound media (in ms) buffered when Asterisk sends audio before `MEDIA_START`; `0` rejects such frames (default `200`; 0–5000).
+- websocket_media.max_connections: Listener connection cap; further connections are refused (default `100`; 1–10000).
+- websocket_media.allowed_remote_hosts: Allowed Asterisk source addresses (default `["127.0.0.1"]`). IP literals or `localhost` only — no CIDR ranges or DNS names; at least one entry is required.
+- websocket_media.auth.required: Require authentication (default `true`). Must be `true` whenever `bind_host` or `advertise_host` is not loopback. Disabling it on loopback is an explicit trusted-local-process opt-out: a nonce protects call binding, not listener admission, and untrusted local processes can exhaust connection slots. Keep authentication enabled unless all local processes are trusted.
+- websocket_media.auth.username: Username Asterisk presents (default `aava_media`).
+- websocket_media.auth.password_env: Name of the AI Engine env var holding the media password (default `ASTERISK_MEDIA_WS_PASSWORD`). YAML never holds the value: set `ASTERISK_MEDIA_WS_PASSWORD` in `.env`, keep it equal to the `password` in the Asterisk client stanza, and recreate the engine container after changing it.
+- websocket_media.tls.enabled: Serve WSS (default `false`).
+- websocket_media.tls.cert_file / websocket_media.tls.key_file: Certificate and key paths readable by the AI Engine. Both are required when `tls.enabled` is `true` and rejected when it is `false`.
 
 ## Barge‑In
 

@@ -9,6 +9,7 @@
 - **[Outbound Calling (Alpha)](OUTBOUND_CALLING.md)** - Scheduled outbound campaigns, voicemail drop, consent gate
 - **[VICIdial Remote Agents (Alpha)](Vicidial-Setup.md)** - VICIdial-owned campaigns routed to mapped AAVA Agents
 - **[Configuration Reference](Configuration-Reference.md)** - All settings explained
+- **[WebSocket Transport](WebSocket-Transport.md)** - Opt-in Asterisk Media WebSocket setup, authenticated loopback/WSS topology, qualification, and rollback
 - **[Caller Inactivity Watchdog](Configuration-Reference.md#caller-inactivity-no_input)** - 30-second inbound silence protection, per-agent overrides, and safe terminal playback (v7.3.1+)
 - **[Agents](AGENTS.md)** - v7.4 Agent routing, dialplan selection, and per-Agent tool access
 - **[v7.5.6 Validation Matrix](baselines/golden/v7.5.6-validation-matrix.md)** - outbound lead context, Agent-scoped hangup markers, and configured post-call summary LLM evidence

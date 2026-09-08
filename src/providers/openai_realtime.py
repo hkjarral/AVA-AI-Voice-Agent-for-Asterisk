@@ -128,6 +128,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         self._farewell_response_id: Optional[str] = None  # Track farewell response for hangup
         self._hangup_after_response: bool = False  # Flag to trigger hangup after next response
         self._farewell_timeout_task: Optional[asyncio.Task] = None  # Timeout fallback for hangup
+        self._farewell_timeout_seconds: float = 5.0
         self._greeting_vad_task: Optional[asyncio.Task] = None
         self._background_tasks: set[asyncio.Task] = set()
         self._in_audio_burst: bool = False
@@ -150,6 +151,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         self._recent_tool_call_id_ttl_s: float = 30.0
         # For farewells, wait for output_audio.done before emitting HangupReady to avoid cutting off speech.
         self._farewell_waiting_for_audio_done: bool = False
+        self._farewell_response_done: bool = False
         self._response_audio_start_time: Optional[float] = None  # Track when audio started for interruption cooldown
         self._min_response_time_before_interrupt: float = 2.5  # Minimum seconds of audio before allowing interruption (increased for farewells)
         self._first_output_chunk_logged: bool = False
@@ -411,6 +413,12 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         self._call_id = call_id
         self._pending_response = False
         self._in_audio_burst = False
+        self._current_response_id = None
+        self._farewell_response_id = None
+        self._farewell_waiting_for_audio_done = False
+        self._farewell_response_done = False
+        self._hangup_after_response = False
+        self._audio_seen_response_ids.clear()
         self._first_output_chunk_logged = False
         self._input_resample_state = None
         self._output_resample_state = None
@@ -1008,6 +1016,13 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             
             # Cancel farewell timeout if active
             self._cancel_farewell_timeout()
+            farewell_response_id = self._farewell_response_id
+            self._farewell_response_id = None
+            self._farewell_waiting_for_audio_done = False
+            self._farewell_response_done = False
+            self._hangup_after_response = False
+            if farewell_response_id:
+                self._audio_seen_response_ids.discard(farewell_response_id)
 
             if self._greeting_vad_task and not self._greeting_vad_task.done():
                 self._greeting_vad_task.cancel()
@@ -1054,6 +1069,8 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             self._closed = True
             self._pending_response = False
             self._in_audio_burst = False
+            self._current_response_id = None
+            self._audio_seen_response_ids.clear()
             self._greeting_transport_guard_active = False
             self._greeting_guard_silence_logged = False
             self._input_resample_state = None
@@ -1507,27 +1524,65 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             "⏱️  Farewell timeout started (5s fallback)",
             call_id=self._call_id
         )
+
+    def _claim_farewell_hangup(self, *, force_cleanup: bool = False) -> Optional[str]:
+        """Atomically claim the pending farewell's terminal notification.
+
+        Claiming before an awaited callback prevents the no-audio timer and the
+        normal audio-complete path from both emitting HangupReady. The engine
+        remains the sole owner of caller-facing transport drain and ARI hangup.
+        """
+        response_id = self._farewell_response_id
+        if not self._farewell_waiting_for_audio_done or response_id is None:
+            return None
+
+        response_done = self._farewell_response_done
+        self._farewell_waiting_for_audio_done = False
+        self._farewell_response_id = None
+        self._farewell_response_done = False
+        self._hangup_after_response = False
+        self._cancel_farewell_timeout()
+        if force_cleanup or response_done:
+            self._audio_seen_response_ids.discard(response_id)
+            if self._current_response_id == response_id:
+                self._current_response_id = None
+        return response_id
     
     def _cancel_farewell_timeout(self):
         """Cancel the farewell timeout if it's still running."""
-        if self._farewell_timeout_task and not self._farewell_timeout_task.done():
-            self._farewell_timeout_task.cancel()
+        task = self._farewell_timeout_task
+        self._farewell_timeout_task = None
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
             logger.debug(
                 "⏱️  Farewell timeout cancelled",
                 call_id=self._call_id
             )
-            self._farewell_timeout_task = None
     
     async def _farewell_timeout_handler(self):
-        """Wait 5 seconds, then trigger hangup if farewell audio wasn't generated."""
+        """Bound farewell completion when audio or its done signal never arrives."""
         try:
-            await asyncio.sleep(5.0)
-            
-            # If we reach here, timeout expired without being cancelled
-            logger.warning(
-                "⏱️  Farewell timeout expired - OpenAI did not generate audio within 5s, triggering hangup anyway",
-                call_id=self._call_id
+            await asyncio.sleep(self._farewell_timeout_seconds)
+
+            response_id = self._farewell_response_id
+            had_audio = bool(
+                response_id and response_id in self._audio_seen_response_ids
             )
+            if self._claim_farewell_hangup(force_cleanup=True) is None:
+                return
+
+            if had_audio:
+                logger.warning(
+                    "⏱️  Farewell timeout expired after audio began - triggering bounded hangup",
+                    call_id=self._call_id,
+                    response_id=response_id,
+                )
+            else:
+                logger.warning(
+                    "⏱️  Farewell timeout expired - OpenAI did not generate audio within 5s, triggering hangup anyway",
+                    call_id=self._call_id,
+                    response_id=response_id,
+                )
             
             # Emit HangupReady event to trigger hangup
             try:
@@ -1536,7 +1591,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                         "type": "HangupReady",
                         "call_id": self._call_id,
                         "reason": "farewell_timeout",
-                        "had_audio": False
+                        "had_audio": had_audio,
                     })
             except Exception as e:
                 logger.error(
@@ -1907,6 +1962,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 # Mark response as farewell if hangup was requested
                 elif self._hangup_after_response:
                     self._farewell_response_id = response_id
+                    self._farewell_response_done = False
                     logger.info(
                         "🔚 Farewell response created - will trigger hangup on completion",
                         call_id=self._call_id,
@@ -1929,7 +1985,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 if audio_b64:
                     await self._handle_output_audio(audio_b64)
             elif delta_type == "output_audio.done":
-                await self._emit_audio_done()
+                await self._emit_audio_done(farewell_audio_complete=True)
             elif delta_type == "output_text.delta":
                 text = delta.get("text")
                 if text:
@@ -1953,7 +2009,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             return
 
         if event_type == "response.output_audio.done":
-            await self._emit_audio_done()
+            await self._emit_audio_done(farewell_audio_complete=True)
             return
 
         # Additional modern variant used by some previews
@@ -1982,7 +2038,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             # Do NOT re-enable VAD here - it will trigger too early!
             # VAD re-enable handled in response.done event
             
-            await self._emit_audio_done()
+            await self._emit_audio_done(farewell_audio_complete=True)
             return
 
         if event_type == "response.audio_transcript.delta":
@@ -2022,6 +2078,16 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             current_response_id = self._current_response_id
             had_audio_for_response = bool(
                 current_response_id and current_response_id in self._audio_seen_response_ids
+            )
+            is_terminal_farewell = bool(
+                self._farewell_response_id is not None
+                and current_response_id == self._farewell_response_id
+            )
+            if is_terminal_farewell:
+                self._farewell_response_done = True
+            is_completed_farewell = bool(
+                is_terminal_farewell
+                and event_type in ("response.completed", "response.done")
             )
             
             # Reset audio start time when response fully completes - allows interruption for next response
@@ -2100,13 +2166,8 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             
             # Check if this was the farewell response
             # CRITICAL: Check farewell_response_id is not None to prevent None == None false positive
-            if (self._farewell_response_id is not None and 
-                self._current_response_id == self._farewell_response_id and 
-                event_type in ("response.completed", "response.done")):
-                
-                # Cancel timeout if it's still running
-                self._cancel_farewell_timeout()
-                
+            if is_completed_farewell:
+
                 # If farewell has audio, we hang up on output_audio.done (not response.done) so we don't
                 # cut off the end of the spoken goodbye (provider can deliver audio faster than real-time).
                 if had_audio_for_response:
@@ -2122,40 +2183,46 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                         call_id=self._call_id,
                         response_id=self._current_response_id
                     )
-                    
-                    # Emit HangupReady event immediately since there's no audio to wait for
-                    try:
-                        if self.on_event:
-                            await self.on_event({
-                                "type": "HangupReady",
-                                "call_id": self._call_id,
-                                "reason": "farewell_no_audio",
-                                "had_audio": False
-                            })
-                    except Exception as e:
-                        logger.error(
-                            "Failed to emit HangupReady event for no-audio farewell",
-                            call_id=self._call_id,
-                            error=str(e),
-                            exc_info=True,
-                        )
-                
-                # Reset hangup marker; HangupReady will be emitted on output_audio.done if we had audio.
-                if not had_audio_for_response:
-                    self._farewell_waiting_for_audio_done = False
-                    self._farewell_response_id = None
-                self._hangup_after_response = False
+
+                    # Claim before awaiting the callback so the timeout cannot
+                    # concurrently emit a second terminal notification.
+                    if self._claim_farewell_hangup() is not None:
+                        try:
+                            if self.on_event:
+                                await self.on_event({
+                                    "type": "HangupReady",
+                                    "call_id": self._call_id,
+                                    "reason": "farewell_no_audio",
+                                    "had_audio": False
+                                })
+                        except Exception as e:
+                            logger.error(
+                                "Failed to emit HangupReady event for no-audio farewell",
+                                call_id=self._call_id,
+                                error=str(e),
+                                exc_info=True,
+                            )
+
+                # HangupReady will be emitted on output_audio.done if we had audio.
+                if had_audio_for_response:
+                    self._hangup_after_response = False
             
             # Drop per-response audio tracking to avoid unbounded growth.
             try:
-                if current_response_id:
+                preserve_farewell_correlation = bool(
+                    had_audio_for_response
+                    and self._farewell_waiting_for_audio_done
+                    and current_response_id == self._farewell_response_id
+                )
+                if current_response_id and not preserve_farewell_correlation:
                     self._audio_seen_response_ids.discard(current_response_id)
             except Exception:
-                pass
+                preserve_farewell_correlation = False
 
             self._pending_response = False
             await self._emit_assistant_transcript(event, "", is_final=True)
-            self._current_response_id = None  # Clear response ID after completion
+            if not preserve_farewell_correlation:
+                self._current_response_id = None  # Clear response ID after completion
             return
 
         if event_type == "conversation.item.input_audio_transcription.completed":
@@ -2561,9 +2628,25 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 except Exception:
                     logger.error("Failed to emit AgentAudio event", call_id=self._call_id, exc_info=True)
 
-    async def _emit_audio_done(self):
+    async def _emit_audio_done(self, *, farewell_audio_complete: bool = False):
         if not self.on_event or not self._call_id:
             return
+
+        # AgentAudioDone may block while downstream WebSocket playback reaches
+        # its correlated boundary. Claim and cancel the no-audio fallback first
+        # once this farewell has demonstrably produced audio, then emit the
+        # terminal event only after the callback returns.
+        farewell_response_id = self._farewell_response_id
+        farewell_completed = bool(
+            farewell_audio_complete
+            and self._farewell_waiting_for_audio_done
+            and farewell_response_id is not None
+            and self._current_response_id == farewell_response_id
+            and farewell_response_id in self._audio_seen_response_ids
+        )
+        if farewell_completed:
+            farewell_completed = self._claim_farewell_hangup() is not None
+
         try:
             if self._in_audio_burst:
                 is_greeting = bool(
@@ -2595,13 +2678,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             self._first_output_chunk_logged = False
 
         # If a hangup was requested and we just finished emitting the farewell audio, trigger hangup now.
-        if self._farewell_waiting_for_audio_done and self._farewell_response_id is not None:
-            # CRITICAL: Cancel the farewell timeout BEFORE emitting HangupReady to prevent
-            # race condition where both farewell_completed and farewell_timeout fire.
-            self._cancel_farewell_timeout()
-            
-            self._farewell_waiting_for_audio_done = False
-            self._farewell_response_id = None
+        if farewell_completed:
             try:
                 await self.on_event(
                     {

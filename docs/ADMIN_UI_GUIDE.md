@@ -32,7 +32,7 @@ Clickable cards navigate directly to the relevant settings pages.
 The wizard walks you through initial configuration:
 1. **Provider selection** — Choose your AI provider (OpenAI, Deepgram, Google, ElevenLabs, Local Hybrid)
 2. **API key entry** — Enter and validate your provider credentials
-3. **Transport selection** — AudioSocket (default) or ExternalMedia RTP
+3. **Transport selection** — AudioSocket (default) or ExternalMedia RTP. The opt-in [WebSocket transport](WebSocket-Transport.md) is configured after setup under **Advanced → Audio Transport**.
 4. **Test** — Verify the configuration produces a healthy engine
 
 The wizard writes to `config/ai-agent.local.yaml` (operator overrides), so upstream updates to the base config never conflict.

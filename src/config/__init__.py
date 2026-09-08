@@ -30,6 +30,11 @@ spec.loader.exec_module(_parent_config)
 AsteriskConfig = _parent_config.AsteriskConfig
 ExternalMediaConfig = _parent_config.ExternalMediaConfig
 AudioSocketConfig = _parent_config.AudioSocketConfig
+WebSocketMediaAuthConfig = _parent_config.WebSocketMediaAuthConfig
+WebSocketMediaTLSConfig = _parent_config.WebSocketMediaTLSConfig
+WebSocketMediaConfig = _parent_config.WebSocketMediaConfig
+supports_media_websocket = _parent_config.supports_media_websocket
+media_websocket_capability_reason = _parent_config.media_websocket_capability_reason
 LocalProviderConfig = _parent_config.LocalProviderConfig
 DeepgramProviderConfig = _parent_config.DeepgramProviderConfig
 OpenAIProviderConfig = _parent_config.OpenAIProviderConfig
@@ -65,6 +70,11 @@ __all__ = [
     'AsteriskConfig',
     'ExternalMediaConfig',
     'AudioSocketConfig',
+    'WebSocketMediaAuthConfig',
+    'WebSocketMediaTLSConfig',
+    'WebSocketMediaConfig',
+    'supports_media_websocket',
+    'media_websocket_capability_reason',
     'LocalProviderConfig',
     'DeepgramProviderConfig',
     'OpenAIProviderConfig',

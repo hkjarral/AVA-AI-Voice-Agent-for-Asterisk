@@ -24,6 +24,7 @@ from src.audio.resampler import (
     resample_audio,
 )
 from src.core.session_store import SessionStore
+from src.audio.transports.output import OutputFrame, create_output_transport
 from src.core.models import CallSession, PlaybackRef
 from src.config.provider_instances import FULL_AGENT_KINDS_WITH_NATIVE_TTS_GATING
 from src.utils.diagnostic_paths import (
@@ -44,6 +45,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 logger = structlog.get_logger(__name__)
 
 _JITTER_SENTINEL = object()
+
+class _TransportBoundary:
+    """An output boundary ordered with provider bytes, not provider callbacks."""
+
+    def __init__(self):
+        self.completed = asyncio.get_running_loop().create_future()
 
 # Prometheus metrics for streaming playback (module-scope, registered once)
 _STREAMING_ACTIVE_GAUGE = Gauge(
@@ -147,6 +154,7 @@ class StreamingPlaybackManager:
         audiosocket_server: Optional[Any] = None,
         audio_diag_callback: Optional[Callable[[str, str, bytes, str, int], Awaitable[None]]] = None,
         audio_capture_manager: Optional[Any] = None,
+        websocket_server: Optional[Any] = None,
     ):
         self.session_store = session_store
         self.ari_client = ari_client
@@ -156,6 +164,8 @@ class StreamingPlaybackManager:
         self.audio_transport = audio_transport
         self.rtp_server = rtp_server
         self.audiosocket_server = audiosocket_server
+        self.websocket_server = websocket_server
+        self._output_transports = {}
         self.audio_diag_callback = audio_diag_callback
         self.audio_capture_manager = audio_capture_manager
         self.audiosocket_format: str = "ulaw"  # default format expected by dialplan
@@ -197,7 +207,6 @@ class StreamingPlaybackManager:
         # First outbound frame logged tracker
         self._first_send_logged: Set[str] = set()
         # RTP codec cache for performance (avoid repeated codec checks on every packet)
-        self._rtp_codec_cache: Dict[str, bool] = {}
         # Startup gating to allow jitter buffers to fill before playback begins
         self._startup_ready: Dict[str, bool] = {}
         # Track last segment end time per call for adaptive warm-up
@@ -356,6 +365,8 @@ class StreamingPlaybackManager:
             "mulaw": "ulaw",
             "g711_ulaw": "ulaw",
             "g711ulaw": "ulaw",
+            "g711_alaw": "alaw",
+            "a-law": "alaw",
             "linear16": "slin16",
             "pcm16": "slin16",
             # "slin": "slin16",  # REMOVED: slin should remain slin (8kHz PCM16)
@@ -369,6 +380,16 @@ class StreamingPlaybackManager:
     def _is_mulaw(value: Optional[str]) -> bool:
         canonical = StreamingPlaybackManager._canonicalize_encoding(value)
         return canonical in {"ulaw", "mulaw", "g711_ulaw", "mu-law"}
+
+    @staticmethod
+    def _bytes_per_sample(value: Optional[str]) -> int:
+        return 1 if StreamingPlaybackManager._canonicalize_encoding(value) in {"ulaw", "alaw"} else 2
+
+    @staticmethod
+    def _silence_byte(value: Optional[str]) -> bytes:
+        return {"ulaw": b"\xff", "alaw": b"\xd5"}.get(
+            StreamingPlaybackManager._canonicalize_encoding(value), b"\x00"
+        )
 
     def _ensure_call_tap_buffers(self, call_id: str, sample_rate: int) -> None:
         if not getattr(self, "diag_enable_taps", False):
@@ -449,6 +470,10 @@ class StreamingPlaybackManager:
             stream_id if successful, None if failed
         """
         try:
+            if self.audio_transport == "websocket":
+                if not self.websocket_server or self.websocket_server.get_binding(call_id) is None:
+                    logger.warning("WebSocket playback requested before media readiness", call_id=call_id)
+                    return None
             # Reuse a live stream. If its producer has already exited, settle
             # that exact stream before allocating replacement per-call queues.
             # Otherwise the old producer's finally block can wake later and
@@ -728,6 +753,13 @@ class StreamingPlaybackManager:
             # must honor it so an 8 kHz and a 16 kHz call can coexist; the
             # process-wide value is only a fallback when no target was passed.
             transport_format = resolved_target_format
+            if self.audio_transport == "websocket":
+                binding = self.websocket_server.get_binding(call_id) if self.websocket_server else None
+                if binding is None:
+                    raise RuntimeError("WebSocket media binding is not ready")
+                transport_format = binding.codec
+                resolved_target_format = binding.codec
+                resolved_target_rate = binding.sample_rate
             # ExternalMedia/RTP remains channel-owned and uses the codec ARI
             # negotiated for that specific media channel.
             if self.audio_transport == "externalmedia":
@@ -752,6 +784,9 @@ class StreamingPlaybackManager:
             pcm_transport = self._canonicalize_encoding(transport_format)
             if mulaw_transport:
                 resolved_target_format = "ulaw"
+                resolved_target_rate = 8000
+            elif pcm_transport == "alaw":
+                resolved_target_format = "alaw"
                 resolved_target_rate = 8000
             elif pcm_transport in {"slin16", "linear16", "pcm16"}:
                 resolved_target_format = "slin16"
@@ -800,6 +835,8 @@ class StreamingPlaybackManager:
 
             self.active_streams[call_id] = {
                 'stream_id': stream_id,
+                'audio_source_queue': audio_chunks,
+                'segment_gate_epoch': 0,
                 'playback_type': playback_type,
                 'streaming_task': streaming_task,
                 'pacer_task': pacer_task,
@@ -823,6 +860,7 @@ class StreamingPlaybackManager:
                 'source_sample_rate': src_rate,
                 'target_format': resolved_target_format,
                 'target_sample_rate': resolved_target_rate,
+                'output_resampler': getattr(transport_profile, "output_resampler", "linear"),
                 'tx_bytes': 0,
                 'real_tx_bytes': 0,
                 'real_tx_bytes_segment_baseline': 0,
@@ -925,6 +963,10 @@ class StreamingPlaybackManager:
                     # Wait for audio chunk with timeout
                     chunk = await asyncio.wait_for(audio_chunks.get(), timeout=fallback_timeout)
 
+                    if isinstance(chunk, _TransportBoundary):
+                        await jitter_buffer.put(chunk)
+                        continue
+
                     if chunk is None:  # End of stream signal from provider
                         logger.info("🎵 STREAMING PLAYBACK - End of stream", call_id=call_id, stream_id=stream_id)
                         try:
@@ -952,6 +994,9 @@ class StreamingPlaybackManager:
 
                     # Update timing and metrics
                     last_send_time = time.time()
+                    current_info = self.active_streams.get(call_id)
+                    if current_info is not None and current_info.get("stream_id") == stream_id:
+                        current_info["last_chunk_time"] = last_send_time
                     try:
                         _STREAMING_BYTES_TOTAL.inc(len(chunk))
                         info = self.active_streams.get(call_id)
@@ -1028,11 +1073,12 @@ class StreamingPlaybackManager:
                                     tgt_fmt,
                                     int(self.sample_rate),
                                 )
-                            src_bps = 1 if self._is_mulaw(src_enc) else 2
-                            tgt_bps = 1 if self._is_mulaw(tgt_fmt) else 2
+                            src_bps = self._bytes_per_sample(src_enc)
+                            tgt_bps = self._bytes_per_sample(tgt_fmt)
                             try:
                                 ratio = (tgt_bps / float(max(1, src_bps))) * (float(tgt_rate) / float(max(1, src_rate)))
-                                egress_bytes = int(max(1, round(len(chunk) * max(0.5, ratio))))
+                                effective_ratio = ratio if self.audio_transport == "websocket" else max(0.5, ratio)
+                                egress_bytes = int(max(1, round(len(chunk) * effective_ratio)))
                             except Exception:
                                 egress_bytes = len(chunk)
                             info['buffered_bytes'] = int(info.get('buffered_bytes', 0)) + egress_bytes
@@ -1044,6 +1090,13 @@ class StreamingPlaybackManager:
                     # No audio chunk received within timeout
                     if not self.continuous_stream:
                         if time.time() - last_send_time > fallback_timeout:
+                            if self.audio_transport == "websocket":
+                                # Finish already queued media through its own
+                                # acknowledged boundary. Replaying it as an ARI
+                                # file could overlap audio still in Asterisk.
+                                if call_id in self.active_streams:
+                                    self.active_streams[call_id]['end_reason'] = 'provider-timeout'
+                                break
                             logger.warning("🎵 STREAMING PLAYBACK - Timeout, falling back to file playback", call_id=call_id, stream_id=stream_id, timeout=fallback_timeout)
                             await self._record_fallback(call_id, f"timeout>{fallback_timeout}s")
                             await self._fallback_to_file_playback(call_id, stream_id)
@@ -1139,6 +1192,11 @@ class StreamingPlaybackManager:
                 # We still cap the wait to avoid hanging indefinitely on transport failures.
                 drain_timeout = max(0.5, (frames_remaining * chunk_sec) + 0.5)
                 drain_timeout = min(120.0, drain_timeout)
+                if self.audio_transport == "websocket":
+                    # Local frame count excludes Asterisk's remote queue and
+                    # correlated boundary waits. The adapter bounds each wait;
+                    # keep this outer watchdog from cancelling it after 500ms.
+                    drain_timeout = 120.0
                 with suppress(asyncio.CancelledError, asyncio.TimeoutError):
                     await asyncio.wait_for(pacer_task, timeout=drain_timeout)
             if pacer_task and not pacer_task.done():
@@ -1182,6 +1240,18 @@ class StreamingPlaybackManager:
                     call_id, stream_id, jitter_buffer
                 )
                 if status == "error":
+                    if self.audio_transport == "websocket":
+                        info = self.active_streams.get(call_id)
+                        if not info or info.get("stop_requested"):
+                            # The stop owner already invalidated this writer
+                            # and owns the FLUSH fence. Do not start a second
+                            # abort that teardown could cancel mid-transition.
+                            break
+                        if info:
+                            info["end_reason"] = "transport-failure"
+                        if self.websocket_server:
+                            await self._selected_output_transport().abort_output(call_id)
+                        break
                     try:
                         await self._record_fallback(call_id, "transport-failure")
                         await self._fallback_to_file_playback(call_id, stream_id)
@@ -1240,7 +1310,7 @@ class StreamingPlaybackManager:
         sentinel_seen = bool(stream_info.get('sentinel_seen', False))
         pending = self.frame_remainders.get(call_id, b"")
 
-        while len(pending) < frame_size:
+        while len(pending) < frame_size and not stream_info.get("transport_pending_boundary"):
             try:
                 chunk = jitter_buffer.get_nowait()
             except asyncio.QueueEmpty:
@@ -1249,6 +1319,9 @@ class StreamingPlaybackManager:
                 sentinel_seen = True
                 stream_info['sentinel_seen'] = True
                 continue
+            if isinstance(chunk, _TransportBoundary):
+                stream_info["transport_pending_boundary"] = chunk
+                break
             processed_chunk = await self._process_audio_chunk(call_id, chunk)
             if not processed_chunk:
                 try:
@@ -1271,7 +1344,8 @@ class StreamingPlaybackManager:
         except Exception:
             pass
 
-        if self._should_wait_for_low_water(call_id, stream_info, available_frames, sentinel_seen):
+        boundary = stream_info.get("transport_pending_boundary")
+        if self._should_wait_for_low_water(call_id, stream_info, available_frames, sentinel_seen or bool(boundary)):
             return "wait"
 
         if len(pending) >= frame_size:
@@ -1286,9 +1360,9 @@ class StreamingPlaybackManager:
                 filler=False,
             )
 
-        if sentinel_seen:
+        if sentinel_seen or boundary:
             if pending:
-                filler_byte = b"\xFF" if self._is_mulaw(target_fmt) else b"\x00"
+                filler_byte = self._silence_byte(target_fmt)
                 padded = pending + (filler_byte * max(0, frame_size - len(pending)))
                 self.frame_remainders[call_id] = b""
                 return await self._emit_frame(
@@ -1299,6 +1373,12 @@ class StreamingPlaybackManager:
                     target_rate,
                     filler=False,
                 )
+            if boundary:
+                ok = await self.finish_transport_segment(call_id)
+                stream_info.pop("transport_pending_boundary", None)
+                if not boundary.completed.done():
+                    boundary.completed.set_result(ok)
+                return "wait" if ok else "error"
             if jitter_buffer.empty():
                 return "finished"
 
@@ -1307,6 +1387,10 @@ class StreamingPlaybackManager:
             and not sentinel_seen
             and jitter_buffer.empty()
         ):
+            if self.audio_transport == "websocket" and not pending:
+                # chan_websocket supplies silence. Do not reopen a completed
+                # segment merely to send filler or prevent terminal drain.
+                return "wait"
             # Adaptive low-buffer backoff: occasionally wait instead of emitting filler
             try:
                 backoff = int(stream_info.get('empty_backoff_ticks', 0) or 0)
@@ -1330,7 +1414,7 @@ class StreamingPlaybackManager:
                         return "wait"
             except Exception:
                 pass
-            filler_byte = b"\xFF" if self._is_mulaw(target_fmt) else b"\x00"
+            filler_byte = self._silence_byte(target_fmt)
             if pending:
                 pending_len = len(pending)
                 frame = pending + (filler_byte * max(0, frame_size - pending_len))
@@ -1612,10 +1696,89 @@ class StreamingPlaybackManager:
                     pass
         return "sent"
     
+    def _process_websocket_chunk(self, call_id: str, chunk: bytes) -> bytes:
+        """Convert provider audio to the immutable call wire format (PCM is LE)."""
+        info = self.active_streams.get(call_id) or {}
+        source = self._canonicalize_encoding(info.get("source_encoding")) or "slin16"
+        target = self._canonicalize_encoding(info.get("target_format")) or "ulaw"
+        source_rate = int(info.get("source_sample_rate") or self.sample_rate)
+        target_rate = int(info.get("target_sample_rate") or self.sample_rate)
+        if source not in {"ulaw", "alaw", "slin", "slin16"}:
+            source = "slin"  # Unknown provider tokens are PCM16, as on AudioSocket.
+        if target not in {"ulaw", "alaw", "slin", "slin16"}:
+            raise ValueError("Unsupported WebSocket audio encoding")
+        if source == target and source_rate == target_rate and source in {"ulaw", "alaw"}:
+            if getattr(self, "diag_enable_taps", False) and info.get("diag_enabled"):
+                pcm = audioop.ulaw2lin(chunk, 2) if source == "ulaw" else audioop.alaw2lin(chunk, 2)
+                self._append_websocket_taps(call_id, info, pcm, pcm, target_rate)
+            return bytes(chunk)
+        if source == "ulaw":
+            pcm = audioop.ulaw2lin(chunk, 2)
+        elif source == "alaw":
+            pcm = audioop.alaw2lin(chunk, 2)
+        else:
+            pcm = info.pop("websocket_source_remainder", b"") + bytes(chunk)
+            if len(pcm) % 2:
+                info["websocket_source_remainder"] = pcm[-1:]
+                pcm = pcm[:-1]
+        if not pcm:
+            return b""
+        if source_rate != target_rate:
+            pcm, state = resample_audio(
+                pcm, source_rate, target_rate,
+                state=self._resample_states.get(call_id),
+                mode=str(info.get("output_resampler") or "linear"),
+            )
+            self._resample_states[call_id] = state
+        pre_processing = pcm
+        pcm = self._apply_attack_envelope(call_id, pcm, target_rate, info)
+        if self.normalizer_enabled and self.normalizer_target_rms > 0:
+            pcm = self._apply_normalizer(pcm, self.normalizer_target_rms, self.normalizer_max_gain_db)
+        if self.limiter_enabled:
+            pcm = self._apply_soft_limiter(pcm, self.limiter_headroom_ratio)
+        self._append_websocket_taps(call_id, info, pre_processing, pcm, target_rate)
+        if target == "ulaw":
+            return audioop.lin2ulaw(pcm, 2)
+        if target == "alaw":
+            return audioop.lin2alaw(pcm, 2)
+        return pcm
+
+    def _append_websocket_taps(self, call_id, info, pre, post, sample_rate):
+        if not getattr(self, "diag_enable_taps", False) or not info.get("diag_enabled"):
+            return
+        try:
+            info.setdefault("tap_pre_pcm16", bytearray()).extend(pre)
+            info.setdefault("tap_post_pcm16", bytearray()).extend(post)
+            info["tap_rate"] = sample_rate
+            self._append_call_taps(call_id, pre, post, sample_rate)
+        except Exception:
+            logger.debug("WebSocket diagnostic tap accumulation failed", call_id=call_id, exc_info=True)
+
+    async def finish_transport_segment(self, call_id: str) -> bool:
+        """Finish only bytes already paced to the adapter; callers order boundaries."""
+        if self.audio_transport != "websocket":
+            return True
+        info = self.active_streams.get(call_id)
+        if not info:
+            return True
+        generation = info.get("websocket_output_generation")
+        if generation is None:
+            return not bool(info.get("websocket_output_failed"))
+        if info.get("stop_requested"):
+            return False
+        ok = await self._selected_output_transport().finish_output(call_id, generation)
+        if self.active_streams.get(call_id) is info and info.get("websocket_output_generation") == generation:
+            info.pop("websocket_output_generation", None)
+            if not ok:
+                info["websocket_output_failed"] = True
+        return bool(ok)
+
     async def _process_audio_chunk(self, call_id: str, chunk: bytes) -> Optional[bytes]:
         """Process audio chunk for streaming transport."""
         if not chunk:
             return None
+        if self.audio_transport == "websocket":
+            return self._process_websocket_chunk(call_id, chunk)
 
         # ExternalMedia/RTP path: pass-through (conversion handled by RTP layer)
         if self.audio_transport != "audiosocket":
@@ -2690,6 +2853,8 @@ class StreamingPlaybackManager:
                 logger.warning("Cannot stream audio - session not found", call_id=call_id)
                 return False
             stream_info = self.active_streams.get(call_id, {})
+            if stream_info.get("stream_id") != stream_id or stream_info.get("stop_requested"):
+                return False
             if self.audio_diag_callback:
                 try:
                     effective_fmt = (
@@ -2719,30 +2884,53 @@ class StreamingPlaybackManager:
                         pass
                     logger.debug("Streaming diagnostics callback failed", call_id=call_id, exc_info=True)
 
+            # Diagnostic callbacks can yield across stop/replacement. Never
+            # send an old frame into any transport after ownership changed.
+            if self.active_streams.get(call_id) is not stream_info or stream_info.get("stop_requested"):
+                return False
+
+            if self.audio_transport == "websocket":
+                if not self.websocket_server or stream_info.get("stop_requested") or stream_info.get("websocket_output_failed"):
+                    return False
+                if stream_info.get("stream_id") != stream_id:
+                    return False
+                generation = stream_info.get("websocket_output_generation")
+                if generation is None:
+                    generation = await self._selected_output_transport().begin_output(call_id)
+                    if stream_info.get("stop_requested") or self.active_streams.get(call_id) is not stream_info:
+                        return False
+                    stream_info["websocket_output_generation"] = generation
+                success = await self._selected_output_transport().write(OutputFrame(
+                    call_id, chunk, stream_info.get("target_format", "ulaw"),
+                    int(stream_info.get("target_sample_rate") or self.sample_rate),
+                    generation=generation,
+                ))
+                if success:
+                    _STREAM_TX_BYTES.inc(len(chunk))
+                    stream_info["tx_bytes"] = int(stream_info.get("tx_bytes", 0)) + len(chunk)
+                    stream_info["tx_total_bytes"] = int(stream_info.get("tx_total_bytes", 0)) + len(chunk)
+                    if self.audio_capture_manager:
+                        try:
+                            self.audio_capture_manager.append_encoded(
+                                call_id, "agent_out_to_caller", chunk,
+                                stream_info.get("target_format"), int(stream_info.get("target_sample_rate")),
+                            )
+                        except Exception:
+                            # Capture is diagnostic: audio already reached the
+                            # transport and must not be retried or failed here.
+                            logger.debug("WebSocket audio capture failed", call_id=call_id, exc_info=True)
+                return bool(success)
+
             if self.audio_transport == "externalmedia":
                 if not self.rtp_server:
                     logger.warning("Streaming transport unavailable (no RTP server)", call_id=call_id)
                     return False
 
-                # RTP expects PCM16 in network byte order (big-endian) for slin16 codec
-                # Streaming manager produces little-endian PCM16, so we need to byte-swap
-                # Cache codec check per call for performance
-                rtp_chunk = chunk
-                if call_id not in self._rtp_codec_cache:
-                    codec_str = str(getattr(session, 'external_media_codec', 'ulaw')).lower()
-                    self._rtp_codec_cache[call_id] = codec_str in ('slin16', 'slin', 'pcm16', 'linear16')
-                    
-                # Fast path: byte-swap only if needed for PCM16
-                if self._rtp_codec_cache.get(call_id, False) and len(chunk) > 0:
-                    try:
-                        import audioop
-                        rtp_chunk = audioop.byteswap(chunk, 2)
-                    except Exception as e:
-                        logger.warning("RTP byte-swap failed, sending original", call_id=call_id, error=str(e))
-                        rtp_chunk = chunk
-
                 ssrc = getattr(session, "ssrc", None)
-                success = await self.rtp_server.send_audio(call_id, rtp_chunk, ssrc=ssrc)
+                success = await self._selected_output_transport().write(OutputFrame(
+                    call_id, chunk, str(getattr(session, "external_media_codec", "ulaw")),
+                    int(stream_info.get("target_sample_rate") or self.sample_rate), ssrc=ssrc,
+                ))
                 if not success:
                     # If the remote RTP endpoint isn't known yet, early sends are expected to be deferred.
                     # Avoid warning spam; higher-level logic will wait briefly and then fall back for greetings.
@@ -2765,11 +2953,11 @@ class StreamingPlaybackManager:
                         logger.warning("RTP streaming send failed", call_id=call_id, stream_id=stream_id)
                 else:
                     try:
-                        _STREAM_TX_BYTES.inc(len(rtp_chunk))
+                        _STREAM_TX_BYTES.inc(len(chunk))
                         if call_id in self.active_streams:
                             info = self.active_streams[call_id]
-                            info['tx_bytes'] = int(info.get('tx_bytes', 0)) + len(rtp_chunk)
-                            info['tx_total_bytes'] = int(info.get('tx_total_bytes', 0) or 0) + len(rtp_chunk)
+                            info['tx_bytes'] = int(info.get('tx_bytes', 0)) + len(chunk)
+                            info['tx_total_bytes'] = int(info.get('tx_total_bytes', 0) or 0) + len(chunk)
                     except Exception:
                         pass
                 return success
@@ -2875,12 +3063,9 @@ class StreamingPlaybackManager:
                     conns = list(set(getattr(session, 'audiosocket_conns', []) or []))
                     sent = 0
                     for cid in conns or [conn_id]:
-                        if await self.audiosocket_server.send_audio(
-                            cid,
-                            chunk,
-                            encoding=fmt,
-                            sample_rate=sample_rate,
-                        ):
+                        if await self._selected_output_transport().write(OutputFrame(
+                            call_id, chunk, fmt, sample_rate, connection_id=cid,
+                        )):
                             sent += 1
                     if sent == 0:
                         logger.warning("AudioSocket broadcast send failed (no recipients)", call_id=call_id, stream_id=stream_id)
@@ -2889,12 +3074,9 @@ class StreamingPlaybackManager:
                         logger.debug("AudioSocket broadcast sent", call_id=call_id, stream_id=stream_id, recipients=len(conns))
                     return True
                 # Normal single-conn send
-                success = await self.audiosocket_server.send_audio(
-                    conn_id,
-                    chunk,
-                    encoding=fmt,
-                    sample_rate=sample_rate,
-                )
+                success = await self._selected_output_transport().write(OutputFrame(
+                    call_id, chunk, fmt, sample_rate, connection_id=conn_id,
+                ))
                 if not success:
                     logger.warning("AudioSocket streaming send failed", call_id=call_id, stream_id=stream_id)
                 else:
@@ -3105,7 +3287,7 @@ class StreamingPlaybackManager:
                     fallback_sample_rate=sample_rate,
                     stream_info_keys=list(info.keys()) if info else [],
                 )
-        bytes_per_sample = 1 if self._is_mulaw(fmt) else 2
+        bytes_per_sample = self._bytes_per_sample(fmt)
         chunk_size_ms = self.chunk_size_ms
         if call_id and call_id in self.active_streams:
             try:
@@ -3172,16 +3354,33 @@ class StreamingPlaybackManager:
         audiosocket_server: Optional[Any] = None,
         audio_transport: Optional[str] = None,
         audiosocket_format: Optional[str] = None,
+        websocket_server: Optional[Any] = None,
     ) -> None:
         """Configure transport dependencies after engine initialization."""
         if rtp_server is not None:
             self.rtp_server = rtp_server
         if audiosocket_server is not None:
             self.audiosocket_server = audiosocket_server
+        if websocket_server is not None:
+            self.websocket_server = websocket_server
         if audio_transport is not None:
             self.audio_transport = audio_transport
         if audiosocket_format is not None:
             self.audiosocket_format = audiosocket_format
+
+    def _selected_output_transport(self):
+        """Resolve wire behavior without changing existing server projections."""
+        kind = self.audio_transport
+        if kind not in self._output_transports:
+            attribute = {
+                "externalmedia": "rtp_server",
+                "audiosocket": "audiosocket_server",
+                "websocket": "websocket_server",
+            }.get(kind)
+            self._output_transports[kind] = create_output_transport(
+                kind, lambda: getattr(self, attribute, None),
+            )
+        return self._output_transports[kind]
 
     def record_provider_bytes(self, call_id: str, provider_bytes: int) -> None:
         try:
@@ -3314,11 +3513,11 @@ class StreamingPlaybackManager:
                 await asyncio.sleep(self.keepalive_interval_ms / 1000.0)
                 
                 # Check if stream is still active
-                if call_id not in self.active_streams:
+                stream_info = self.active_streams.get(call_id)
+                if stream_info is None or stream_info.get("stream_id") != stream_id:
                     break
                 
                 # Check for timeout
-                stream_info = self.active_streams[call_id]
                 time_since_last_chunk = time.time() - stream_info['last_chunk_time']
                 stream_info["last_chunk_age_s"] = max(0.0, float(time_since_last_chunk))
                 self._refresh_streaming_summary_metrics()
@@ -3330,6 +3529,16 @@ class StreamingPlaybackManager:
                         await self.session_store.upsert_call(sess)
                 except Exception:
                     pass
+
+                if self.active_streams.get(call_id) is not stream_info:
+                    break
+                if self.audio_transport == "websocket":
+                    # Provider silence isn't a media-socket failure: the
+                    # producer owns its idle deadline and drains through the
+                    # correlated boundary; the adapter bounds XOFF/ack waits.
+                    # This legacy watchdog must not replay already queued WS
+                    # audio as an ARI file or interrupt a healthy slow drain.
+                    continue
                 
                 if time_since_last_chunk > (self.connection_timeout_ms / 1000.0):
                     logger.warning("🎵 STREAMING PLAYBACK - Connection timeout",
@@ -3379,6 +3588,8 @@ class StreamingPlaybackManager:
         try:
             stream_info = self.active_streams.get(call_id)
             if not stream_info:
+                if self.audio_transport == "websocket" and self.websocket_server:
+                    return bool(await self._selected_output_transport().abort_output(call_id))
                 logger.warning("No active streaming to stop", call_id=call_id)
                 return False
             stream_id = stream_info.get('stream_id') or ''
@@ -3401,6 +3612,13 @@ class StreamingPlaybackManager:
             # producer so its finally block cannot duplicate slow async cleanup
             # while this method is waiting for all stream tasks to settle.
             stream_info['stop_requested'] = True
+            if self.audio_transport == "websocket":
+                stream_info["end_reason"] = "interrupted"
+                stream_info["websocket_output_failed"] = True
+                self.frame_remainders.pop(call_id, None)
+                # Invalidate remote output before waiting on local producer
+                # teardown. XOFF cannot prevent the flush command.
+                await self._selected_output_transport().abort_output(call_id)
 
             # An aborted stream does not need to preserve queued provider audio.
             # Release a producer blocked on a full jitter queue before cancelling
@@ -3408,7 +3626,7 @@ class StreamingPlaybackManager:
             # an entire synthesized response much faster than the pacer consumes
             # it. Cancelling both ends while the queue remains full can otherwise
             # leave the producer pending until garbage collection.
-            if not drain:
+            if not drain or self.audio_transport == "websocket":
                 jitter_buffer = self.jitter_buffers.get(call_id)
                 if jitter_buffer is not None:
                     while True:
@@ -3489,6 +3707,16 @@ class StreamingPlaybackManager:
             info = self.active_streams.get(call_id)
             if not info:
                 return
+            if self.audio_transport == "websocket":
+                boundary = _TransportBoundary()
+                info["websocket_boundary"] = boundary
+                source = info.get("audio_source_queue")
+                if source is None:
+                    boundary.completed.set_result(False)
+                    return
+                await source.put(boundary)
+                info["startup_ready"] = True
+                self._startup_ready[call_id] = True
             
             # Increment segment counter for warm-up optimization
             info['segments_played'] = info.get('segments_played', 0) + 1
@@ -3517,6 +3745,7 @@ class StreamingPlaybackManager:
             info = self.active_streams.get(call_id)
             if not info:
                 return
+            info["segment_gate_epoch"] = int(info.get("segment_gate_epoch", 0)) + 1
             # This method runs on the first provider chunk of each assistant
             # item. Baseline here rather than at AgentAudioDone, because the
             # previous item may still have queued transport audio when provider
@@ -3546,6 +3775,43 @@ class StreamingPlaybackManager:
                 return
             stream_id = str(info.get('stream_id') or '')
             if not stream_id:
+                return
+            if self.audio_transport == "websocket":
+                boundary = info.get("websocket_boundary")
+                if not boundary:
+                    return
+                epoch = info.get("segment_gate_epoch", 0)
+
+                async def complete_boundary_gating():
+                    try:
+                        ok = await asyncio.shield(boundary.completed)
+                        if (
+                            not ok or self.active_streams.get(call_id) is not info
+                            or info.get("segment_gate_epoch", 0) != epoch
+                            or info.get("websocket_boundary") is not boundary
+                        ):
+                            return
+                        if self.conversation_coordinator:
+                            await self.conversation_coordinator.on_tts_end(
+                                call_id, stream_id, reason="segment-end",
+                                notify_no_input=notify_no_input,
+                            )
+                            await self.conversation_coordinator.on_tts_end(
+                                call_id, f"tts_segment:{call_id}", reason="segment-end-fallback",
+                                notify_no_input=notify_no_input,
+                            )
+                        else:
+                            await self.session_store.clear_gating_token(call_id, stream_id)
+                            await self.session_store.clear_gating_token(call_id, f"tts_segment:{call_id}")
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.debug("WebSocket boundary gating failed", call_id=call_id, exc_info=True)
+
+                task = asyncio.create_task(complete_boundary_gating())
+                tasks = info.setdefault("websocket_gating_tasks", set())
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
                 return
             if self.conversation_coordinator:
                 try:
@@ -3590,6 +3856,12 @@ class StreamingPlaybackManager:
             return
         self._cleanup_in_progress.add(call_id)
         try:
+            for task in tuple(current.get("websocket_gating_tasks", ())):
+                task.cancel()
+            for key in ("websocket_boundary", "transport_pending_boundary"):
+                boundary = current.get(key)
+                if boundary and not boundary.completed.done():
+                    boundary.completed.set_result(False)
             # Diagnostic: write pre/post tap WAVs if enabled
             try:
                 info = self.active_streams.get(call_id, {})
@@ -3829,7 +4101,7 @@ class StreamingPlaybackManager:
                 barge_in_end = self._is_interrupted_end_reason(end_reason)
                 if rem and not barge_in_end:
                     self._decrement_buffered_bytes(call_id, len(rem))
-                    if self.audio_transport == "audiosocket":
+                    if self.audio_transport in {"audiosocket", "websocket"}:
                         fmt = (
                             self._canonicalize_encoding(self.audiosocket_format)
                             or "ulaw"
@@ -3846,7 +4118,7 @@ class StreamingPlaybackManager:
                         if sr <= 0:
                             sr = self._default_sample_rate_for_format(fmt, self.sample_rate)
                         frame_size = self._frame_size_bytes(call_id)
-                        filler_byte = b"\xFF" if self._is_mulaw(fmt) else b"\x00"
+                        filler_byte = self._silence_byte(fmt)
                         # Pad with encoding-specific silence to avoid a click at
                         # the final frame boundary.
                         if len(rem) < frame_size:
@@ -3879,6 +4151,11 @@ class StreamingPlaybackManager:
                     )
             except Exception:
                 logger.debug("Remainder flush failed", call_id=call_id, stream_id=stream_id)
+
+            if self.audio_transport == "websocket" and not current.get("stop_requested"):
+                if not await self.finish_transport_segment(call_id):
+                    current["end_reason"] = "transport-failure"
+                    await self._selected_output_transport().abort_output(call_id)
 
             # Clear TTS gating after flushing
             if self.conversation_coordinator:
@@ -3913,7 +4190,7 @@ class StreamingPlaybackManager:
                             or self._canonicalize_encoding(self.audiosocket_format)
                             or "ulaw"
                         )
-                        bps = 1 if self._is_mulaw(fmt) else 2
+                        bps = self._bytes_per_sample(fmt)
                         try:
                             sr_candidate = int(info.get('target_sample_rate', 0) or 0)
                         except Exception:
@@ -3963,7 +4240,6 @@ class StreamingPlaybackManager:
             self._startup_ready.pop(call_id, None)
             self._resample_states.pop(call_id, None)
             self._dc_block_state.pop(call_id, None)
-            self._rtp_codec_cache.pop(call_id, None)
             # Metrics are aggregate; refreshed when active_streams changes.
             
             # Reset session streaming flags

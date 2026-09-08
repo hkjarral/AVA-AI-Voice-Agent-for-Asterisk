@@ -20,7 +20,8 @@ def apply_transport_defaults(config_data: Dict[str, Any]) -> None:
     Apply transport and mode defaults from environment variables.
     
     Sets:
-    - audio_transport: 'externalmedia' or 'audiosocket' (default: externalmedia)
+    - audio_transport: 'externalmedia', 'audiosocket', or 'websocket'
+      (default: externalmedia)
     - downstream_mode: 'file' or 'stream' (default: stream)
     
     Environment variables:

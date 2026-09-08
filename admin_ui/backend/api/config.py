@@ -1199,7 +1199,56 @@ async def reset_pipeline_audio(pipeline_name: str):
 @router.get("")
 @router.get("/")
 async def get_config():
-    return _read_merged_config_dict()
+    return _redact_websocket_media_secrets(_read_merged_config_dict())
+
+
+def _redact_websocket_media_secrets(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Defensively keep an accidentally hand-written WS secret out of API reads."""
+    safe = deepcopy(config)
+    websocket_media = safe.get("websocket_media") if isinstance(safe, dict) else None
+    auth = websocket_media.get("auth") if isinstance(websocket_media, dict) else None
+    if isinstance(auth, dict):
+        # `password_env` is an identifier, not a credential, and remains visible
+        # so operators know exactly which ai_engine env var is required.
+        for key in ("password", "secret", "token"):
+            auth.pop(key, None)
+    return safe
+
+
+@router.get("/websocket-media-status")
+async def get_websocket_media_status():
+    """Return safe WebSocket listener configuration and env-file secret state.
+
+    The Admin UI does not infer secret availability from its own container
+    environment.  ai_engine receives the project `.env` through Compose's
+    `env_file`, so this endpoint checks that intended source only and never
+    returns its value.
+    """
+    try:
+        from dotenv import dotenv_values
+        from src.config import WebSocketMediaConfig
+
+        merged = _read_merged_config_dict()
+        raw = merged.get("websocket_media") if isinstance(merged, dict) else None
+        websocket_media = WebSocketMediaConfig.model_validate(raw or {})
+        password_env = websocket_media.auth.password_env
+        dotenv_map = dotenv_values(settings.ENV_PATH) if os.path.exists(settings.ENV_PATH) else {}
+        secret_present = bool(str(dotenv_map.get(password_env) or "").strip())
+        return {
+            "config": websocket_media.model_dump(),
+            "secret_reference": password_env,
+            "secret_present": secret_present,
+            "secret_source": "ai_engine env_file (.env)",
+        }
+    except Exception as exc:
+        # Validation errors can include rejected raw input values (including an
+        # accidentally hand-written auth.password), so never attach traceback
+        # data to this operator-facing status failure.
+        logger.warning("Unable to read WebSocket media status")
+        raise HTTPException(
+            status_code=400,
+            detail="WebSocket media configuration is invalid; correct it in Audio Transport settings.",
+        ) from exc
 
 
 @router.post("/yaml")
@@ -1225,8 +1274,13 @@ async def get_yaml_config():
         # Return the merged config (base + local overrides) so the editor
         # always shows the effective configuration the engine will use.
         config_content = _read_merged_config_content()
-        _safe_load_no_duplicates(config_content)  # Validate YAML and reject duplicate keys
-        return {"content": config_content}
+        parsed = _safe_load_no_duplicates(config_content)  # Validate YAML and reject duplicate keys
+        safe_content = yaml.dump(
+            _redact_websocket_media_secrets(parsed or {}),
+            default_flow_style=False,
+            sort_keys=False,
+        )
+        return {"content": safe_content}
     except yaml.YAMLError as e:
         logger.info("YAML parse error while reading config YAML", exc_info=True)
         # Extract detailed error information for user-friendly display
@@ -1486,6 +1540,16 @@ async def update_env(env_data: Dict[str, Optional[str]]):
         changed_keys = sorted(set(keys_to_update) | set(keys_to_delete))
 
         impacts_ai_engine = any(_ai_engine_env_key(k) for k in changed_keys)
+        # A WebSocket credential may use an operator-selected env name rather
+        # than the default ASTERISK_* prefix. Its value still enters ai_engine
+        # through env_file and requires recreation, including on deletion.
+        try:
+            effective = _read_merged_config_dict()
+            ws_auth = ((effective.get("websocket_media") or {}).get("auth") or {})
+            ws_password_env = str(ws_auth.get("password_env") or "ASTERISK_MEDIA_WS_PASSWORD")
+            impacts_ai_engine = impacts_ai_engine or ws_password_env in changed_keys
+        except Exception:
+            logger.warning("Unable to resolve custom media credential reference for environment apply plan")
         impacts_local_ai = any(_local_ai_env_key(k) for k in changed_keys)
         impacts_admin_ui = any(_admin_ui_env_key(k) for k in changed_keys)
 

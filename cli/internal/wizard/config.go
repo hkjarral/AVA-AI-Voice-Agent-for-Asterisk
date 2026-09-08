@@ -23,17 +23,17 @@ type PipelineComponents struct {
 // CAMB_API_KEY is the env var used by the cambai_tts adapter (verified
 // against config/ai-agent.golden-cambai.yaml).
 var adapterEnvKey = map[string]string{
-	"openai_stt":    "OPENAI_API_KEY",
-	"openai_llm":    "OPENAI_API_KEY",
-	"openai_tts":    "OPENAI_API_KEY",
-	"deepgram_stt":  "DEEPGRAM_API_KEY",
-	"deepgram_tts":  "DEEPGRAM_API_KEY",
+	"openai_stt":     "OPENAI_API_KEY",
+	"openai_llm":     "OPENAI_API_KEY",
+	"openai_tts":     "OPENAI_API_KEY",
+	"deepgram_stt":   "DEEPGRAM_API_KEY",
+	"deepgram_tts":   "DEEPGRAM_API_KEY",
 	"elevenlabs_tts": "ELEVENLABS_API_KEY",
-	"telnyx_llm":    "TELNYX_API_KEY",
-	"groq_stt":      "GROQ_API_KEY",
-	"groq_llm":      "GROQ_API_KEY",
-	"groq_tts":      "GROQ_API_KEY",
-	"cambai_tts":    "CAMB_API_KEY",
+	"telnyx_llm":     "TELNYX_API_KEY",
+	"groq_stt":       "GROQ_API_KEY",
+	"groq_llm":       "GROQ_API_KEY",
+	"groq_tts":       "GROQ_API_KEY",
+	"cambai_tts":     "CAMB_API_KEY",
 }
 
 // providerEnvKey maps full-agent DefaultProvider values to their env vars.
@@ -51,15 +51,16 @@ var providerEnvKey = map[string][]string{
 // Config holds all configuration
 type Config struct {
 	// .env values
-	AsteriskHost     string
-	AsteriskUsername string
-	AsteriskPassword string
-	AudioTransport   string
-	AudioSocketHost  string
-	AudioSocketPort  string
-	OpenAIKey        string
-	DeepgramKey      string
-	AnthropicKey     string
+	AsteriskHost           string
+	AsteriskUsername       string
+	AsteriskPassword       string
+	AudioTransport         string
+	AudioSocketHost        string
+	AudioSocketPort        string
+	WebSocketMediaPassword string
+	OpenAIKey              string
+	DeepgramKey            string
+	AnthropicKey           string
 	// Keys holds additional provider API keys keyed by env-var name.
 	Keys map[string]string
 
@@ -328,6 +329,8 @@ func (c *Config) loadEnv() error {
 			c.AudioSocketHost = value
 		case "AUDIOSOCKET_PORT":
 			c.AudioSocketPort = value
+		case "ASTERISK_MEDIA_WS_PASSWORD":
+			c.WebSocketMediaPassword = value
 		case "OPENAI_API_KEY":
 			c.OpenAIKey = value
 		case "DEEPGRAM_API_KEY":
@@ -414,15 +417,16 @@ func (c *Config) SaveEnv() error {
 
 	// Update values
 	updates := map[string]string{
-		"ASTERISK_HOST":         c.AsteriskHost,
-		"ASTERISK_ARI_USERNAME": c.AsteriskUsername,
-		"ASTERISK_ARI_PASSWORD": c.AsteriskPassword,
-		"AUDIO_TRANSPORT":       c.AudioTransport,
-		"AUDIOSOCKET_HOST":      c.AudioSocketHost,
-		"AUDIOSOCKET_PORT":      c.AudioSocketPort,
-		"OPENAI_API_KEY":        c.OpenAIKey,
-		"DEEPGRAM_API_KEY":      c.DeepgramKey,
-		"ANTHROPIC_API_KEY":     c.AnthropicKey,
+		"ASTERISK_HOST":              c.AsteriskHost,
+		"ASTERISK_ARI_USERNAME":      c.AsteriskUsername,
+		"ASTERISK_ARI_PASSWORD":      c.AsteriskPassword,
+		"AUDIO_TRANSPORT":            c.AudioTransport,
+		"AUDIOSOCKET_HOST":           c.AudioSocketHost,
+		"AUDIOSOCKET_PORT":           c.AudioSocketPort,
+		"ASTERISK_MEDIA_WS_PASSWORD": c.WebSocketMediaPassword,
+		"OPENAI_API_KEY":             c.OpenAIKey,
+		"DEEPGRAM_API_KEY":           c.DeepgramKey,
+		"ANTHROPIC_API_KEY":          c.AnthropicKey,
 	}
 	for k, v := range c.Keys {
 		if v != "" {

@@ -16,6 +16,7 @@ import base64
 import json
 import ipaddress
 import sqlite3
+from weakref import WeakValueDictionary
 from collections import deque
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -66,7 +67,27 @@ from .audio.audiosocket_protocol import (
     normalize_slin_format,
     supports_multirate_audiosocket,
 )
-from .audio.resampler import resample_audio, resolve_output_resampler_policy
+from .audio.transports.asterisk_websocket import (
+    WebSocketMediaServer,
+    supports_media_websocket,
+)
+from .audio.transports.identity import new_websocket_channel_id
+from .audio.transports.base import (
+    CallMediaRequest,
+    CallMediaSetupResult,
+    SelectedTransportRuntime,
+)
+from .audio.transports.factory import (
+    TransportCallbacks,
+    create_selected_transport_runtime,
+)
+from .audio.transports.lifecycle import CallMediaLifecycle
+from .audio.transports.codec import (
+    canonical_wire_codec,
+    decode_wire_audio,
+    sample_rate_for_codec,
+)
+from .audio.resampler import pcm16le_to_mulaw, resample_audio, resolve_output_resampler_policy
 from .providers.base import AIProviderInterface
 from .providers.deepgram import DeepgramProvider
 from .providers.local import LocalProvider
@@ -294,6 +315,12 @@ _BARGE_REACTION_SECONDS = Histogram(
     "ai_agent_barge_in_reaction_seconds",
     "Time from first speech energy to barge-in trigger",
     buckets=(0.1, 0.2, 0.3, 0.5, 0.8, 1.2, 2.0),
+)
+
+_BARGE_ACTIONS = Counter(
+    "ai_agent_barge_in_actions_total",
+    "Platform playback-flush actions applied, including provider speech-start events",
+    labelnames=("source",),
 )
 
 # Per-call audio byte counters (ingress)
@@ -594,6 +621,9 @@ class Engine:
         self.channel_to_conn: Dict[str, str] = {}
         self.conn_to_caller: Dict[str, str] = {}  # conn_id -> caller_channel_id
         self.audio_socket_server: Optional[AudioSocketServer] = None
+        self.websocket_server: Optional[WebSocketMediaServer] = None
+        self.media_transport_runtime: Optional[SelectedTransportRuntime] = None
+        self.call_media_lifecycle: Optional[CallMediaLifecycle] = None
         self.audiosocket_conn_to_ssrc: Dict[str, int] = {}
         self.audiosocket_resample_state: Dict[str, Optional[tuple]] = {}
         # Stateful resampling: maintain per-call/per-provider ratecv states to avoid drift
@@ -713,6 +743,11 @@ class Engine:
         # NEW: Caller channel tracking for dual StasisStart handling
         self.pending_local_channels: Dict[str, str] = {}  # local_channel_id -> caller_channel_id
         self.pending_audiosocket_channels: Dict[str, str] = {}  # audiosocket_channel_id -> caller_channel_id
+        self.pending_websocket_channels: Dict[str, str] = {}  # media_channel_id -> caller_channel_id
+        self.websocket_media_channels: Dict[str, str] = {}  # active/pending media_channel_id -> caller_channel_id
+        self._websocket_ingress_resample_state: Dict[str, Optional[tuple]] = {}
+        self._websocket_setup_locks = WeakValueDictionary()
+        self._websocket_input_rejections: Dict[str, int] = {}
         self._audio_rx_debug: Dict[str, int] = {}
         self._keepalive_tasks: Dict[str, asyncio.Task] = {}
         # Track provider segment start timestamps per call for duration logging
@@ -857,9 +892,13 @@ class Engine:
         """Default event handler for unhandled ARI events."""
         logger.debug("Received unhandled ARI event", event_type=event.get("type"), ari_event=event)
 
-    async def _save_session(self, session: CallSession, *, new: bool = False) -> None:
+    async def _save_session(self, session: CallSession, *, new: bool = False, require_current: bool = False) -> None:
         """Persist session updates and keep coordinator metrics in sync."""
-        await self.session_store.upsert_call(session)
+        if require_current:
+            if not await self.session_store.upsert_call(session, require_current=True):
+                return
+        else:
+            await self.session_store.upsert_call(session)
         if self.conversation_coordinator:
             if new:
                 await self.conversation_coordinator.register_call(session)
@@ -991,175 +1030,68 @@ class Engine:
         # 3) Log transport and downstream modes
         logger.info("Runtime modes", audio_transport=self.config.audio_transport, downstream_mode=self.config.downstream_mode)
 
-        # 4) Prepare AudioSocket transport (guarded)
-        if self.config.audio_transport == "audiosocket":
-            try:
-                if not self.config.audiosocket:
-                    raise ValueError("AudioSocket configuration not found")
+        # 4) Bind exactly one selected call-media listener.  Runtime adapters
+        # delegate to the existing protocol servers and preserve their public
+        # projections because per-call lifecycle migration is a separate step.
+        runtime = None
+        try:
+            runtime = self._build_selected_transport_runtime()
+            await runtime.start()
+            self.media_transport_runtime = runtime
+            self.call_media_lifecycle = CallMediaLifecycle(runtime)
+            self.audio_socket_server = runtime.server if runtime.kind == "audiosocket" else None
+            self.websocket_server = runtime.server if runtime.kind == "websocket" else None
+            self.rtp_server = runtime.server if runtime.kind == "externalmedia" else None
 
-                host = self.config.audiosocket.host
-                port = self.config.audiosocket.port
-                self.audio_socket_server = AudioSocketServer(
-                    host=host,
-                    port=port,
-                    on_uuid=self._audiosocket_handle_uuid,
-                    on_audio=self._audiosocket_handle_audio,
-                    on_disconnect=self._audiosocket_handle_disconnect,
-                    on_dtmf=self._audiosocket_handle_dtmf,
-                )
-                await self.audio_socket_server.start()
-                logger.info("AudioSocket server listening", host=host, port=port)
-                # Configure streaming manager with AudioSocket format expected by dialplan
-                as_format = None
-                try:
-                    if self.config.audiosocket and hasattr(self.config.audiosocket, 'format'):
-                        as_format = self.config.audiosocket.format
-                except Exception:
-                    as_format = None
+            if runtime.kind == "audiosocket":
+                as_format = getattr(getattr(self.config, "audiosocket", None), "format", None)
                 self.streaming_playback_manager.set_transport(
-                    audio_transport=self.config.audio_transport,
+                    audio_transport="audiosocket",
                     audiosocket_server=self.audio_socket_server,
                     audiosocket_format=as_format,
                 )
-                # Pre-call transport summary and alignment audit
                 try:
                     self._audit_transport_alignment()
                 except Exception:
                     logger.debug("Transport alignment audit failed", exc_info=True)
-            except Exception as exc:
-                logger.error("Failed to start AudioSocket transport", error=str(exc), exc_info=True)
-                self.audio_socket_server = None
-
-        # 5) Prepare RTP server for ExternalMedia transport (guarded)
-        if self.config.audio_transport == "externalmedia":
-            try:
-                if not self.config.external_media:
-                    raise ValueError("ExternalMedia configuration not found")
-                
-                rtp_host = self.config.external_media.rtp_host
-                rtp_port = int(getattr(self.config.external_media, "rtp_port", 0) or 18080)
-                codec = getattr(self.config.external_media, "codec", "ulaw")
-                format = getattr(self.config.external_media, "format", "slin16")
-                sample_rate = getattr(self.config.external_media, "sample_rate", None)
-                
-                # Infer sample_rate from format if not explicitly set
-                if not sample_rate:
-                    if format in ("slin16", "linear16", "pcm16"):
-                        sample_rate = 16000
-                    elif format in ("slin", "linear"):
-                        sample_rate = 8000
-                    else:  # ulaw, alaw
-                        sample_rate = 8000
-                
-                
-                port_range = self._parse_port_range(
-                    getattr(self.config.external_media, "port_range", None),
-                    rtp_port,
-                )
-                allowed_remote_hosts = self._resolve_allowed_remote_hosts(
-                    getattr(self.config.external_media, "allowed_remote_hosts", None),
-                    getattr(self.config.asterisk, "host", None),
-                )
-                if allowed_remote_hosts:
-                    logger.info(
-                        "ExternalMedia RTP allowlist resolved",
-                        allowed_remote_hosts=allowed_remote_hosts,
-                    )
-                lock_remote_endpoint = bool(
-                    getattr(self.config.external_media, "lock_remote_endpoint", True)
-                )
-                
-                # Create RTP server with callback to route audio to providers
-                self.rtp_server = RTPServer(
-                    host=rtp_host,
-                    port=rtp_port,
-                    engine_callback=self._on_rtp_audio,
-                    codec=codec,
-                    format=format,
-                    sample_rate=sample_rate,
-                    port_range=port_range,
-                    allowed_remote_hosts=allowed_remote_hosts,
-                    lock_remote_endpoint=lock_remote_endpoint,
-                )
-                
-                # Start RTP server
-                await self.rtp_server.start()
-                logger.info("RTP server started for ExternalMedia transport", 
-                           host=rtp_host, port=rtp_port, codec=codec, format=format, sample_rate=sample_rate)
+            elif runtime.kind == "websocket":
                 self.streaming_playback_manager.set_transport(
-                    rtp_server=self.rtp_server,
-                    audio_transport=self.config.audio_transport,
+                    audio_transport="websocket",
+                    websocket_server=self.websocket_server,
                 )
-                
-                # Validate provider format alignment with ExternalMedia transport
-                try:
-                    for prov_name, provider in self.providers.items():
-                        if hasattr(provider, 'config'):
-                            cfg = provider.config
-                            # Check provider input alignment.
-                            # ExternalMedia "codec" reflects the RTP wire codec (e.g., ulaw@8k),
-                            # while "sample_rate" here is the engine's internal PCM rate derived from external_media.format.
-                            def _enc_class(enc: Any) -> str:
-                                e = str(enc or "").strip().lower()
-                                if e in ("ulaw", "mulaw", "g711_ulaw", "mu-law"):
-                                    return "g711_ulaw"
-                                if e in ("alaw", "g711_alaw"):
-                                    return "g711_alaw"
-                                if e in ("slin", "slin16", "linear16", "pcm16", "pcm"):
-                                    return "pcm16"
-                                return e
+            else:
+                self.streaming_playback_manager.set_transport(
+                    audio_transport="externalmedia",
+                    rtp_server=self.rtp_server,
+                )
+                self._audit_externalmedia_provider_formats(self.rtp_server)
 
-                            transport_codec_class = _enc_class(codec)
-                            provider_in_enc = getattr(cfg, "provider_input_encoding", None) or getattr(cfg, "input_encoding", None)
-                            provider_in_class = _enc_class(provider_in_enc)
-
-                            provider_rate_key = (
-                                "provider_input_sample_rate_hz"
-                                if getattr(cfg, "provider_input_sample_rate_hz", None) is not None
-                                else "input_sample_rate_hz"
-                            )
-                            provider_input_rate = getattr(cfg, provider_rate_key, None)
-                            try:
-                                provider_input_rate = int(provider_input_rate) if provider_input_rate else None
-                            except Exception:
-                                provider_input_rate = None
-
-                            # If the provider expects G.711, 8 kHz is correct regardless of internal PCM rate.
-                            # If the provider expects PCM, align to the internal PCM rate to avoid resampling.
-                            expected_rate = None
-                            if provider_in_class in ("g711_ulaw", "g711_alaw"):
-                                expected_rate = 8000
-                            elif provider_in_class == "pcm16":
-                                expected_rate = int(sample_rate or 0) or None
-
-                            if provider_input_rate and expected_rate and provider_input_rate != expected_rate:
-                                logger.warning(
-                                    "⚠️  TRANSPORT/PROVIDER MISMATCH",
-                                    provider=prov_name,
-                                    transport="ExternalMedia",
-                                    transport_codec=codec,
-                                    transport_internal_rate=sample_rate,
-                                    provider_input_encoding=str(provider_in_enc or ""),
-                                    provider_rate=provider_input_rate,
-                                    expected_rate=expected_rate,
-                                    impact="Extra resampling step - slight quality loss",
-                                    suggestion=f"Consider updating providers.{prov_name}.{provider_rate_key} to {expected_rate} to avoid resampling",
-                                )
-                except Exception:
-                    logger.debug("Provider format validation failed", exc_info=True)
-                
-                # Pre-call transport summary and alignment audit
-                try:
-                    for prov_name, prov in self.providers.items():
-                        issues = self._describe_provider_alignment(prov_name, prov)
-                        if issues:
-                            for issue in issues:
-                                logger.info("Provider alignment info", provider=prov_name, issue=issue)
-                except Exception:
-                    logger.debug("Transport alignment audit failed", exc_info=True)
-            except Exception as exc:
-                logger.error("Failed to start ExternalMedia RTP transport", error=str(exc), exc_info=True)
-                self.rtp_server = None
+            logger.info(
+                "Selected media transport started",
+                transport=runtime.kind,
+                capabilities={
+                    "completion_quality": runtime.capabilities.completion_quality.value,
+                    "remote_flush": runtime.capabilities.supports_remote_flush,
+                    "remote_flow_control": runtime.capabilities.supports_remote_flow_control,
+                    "per_call_codec": runtime.capabilities.supports_per_call_codec,
+                },
+                health=runtime.health(),
+            )
+        except Exception as exc:
+            if runtime is not None:
+                with contextlib.suppress(Exception):
+                    await runtime.stop()
+            logger.error(
+                "Failed to start selected media transport",
+                transport=getattr(self.config, "audio_transport", None),
+                error=str(exc),
+                exc_info=True,
+            )
+            self.media_transport_runtime = None
+            self.call_media_lifecycle = None
+            self.audio_socket_server = None
+            self.websocket_server = None
+            self.rtp_server = None
 
         # Prepare helper RTP runtime for attended-transfer streaming even when the
         # main call transport is AudioSocket.
@@ -1273,6 +1205,170 @@ class Engine:
                 fallback=fallback_port,
             )
             return (int(fallback_port), int(fallback_port))
+
+    def _build_selected_transport_runtime(self) -> SelectedTransportRuntime:
+        """Construct the configured primary listener without binding it."""
+
+        callbacks = TransportCallbacks(
+            on_rtp_pcm=self._on_rtp_audio,
+            on_externalmedia_aux=self._handle_external_media_stasis_start,
+            on_audiosocket_uuid=self._audiosocket_handle_uuid,
+            on_audiosocket_audio=self._audiosocket_handle_audio,
+            on_audiosocket_disconnect=self._audiosocket_handle_disconnect,
+            on_audiosocket_dtmf=self._audiosocket_handle_dtmf,
+            on_audiosocket_aux=self._handle_audiosocket_channel_stasis_start,
+            on_websocket_audio=self._websocket_handle_audio,
+            on_websocket_disconnect=self._websocket_handle_disconnect,
+            on_websocket_dtmf=self._websocket_handle_dtmf,
+            on_websocket_aux=self._handle_websocket_media_stasis_start,
+            asterisk_version=lambda: getattr(getattr(self, "ari_client", None), "asterisk_version", None),
+        )
+        kwargs: Dict[str, Any] = {}
+        if str(getattr(self.config, "audio_transport", "") or "").lower() in {
+            "externalmedia",
+            "rtp",
+        }:
+            section = getattr(self.config, "external_media", None)
+            if section is None:
+                raise ValueError("ExternalMedia configuration not found")
+            port = int(getattr(section, "rtp_port", 0) or 18080)
+            kwargs["rtp_port_range"] = self._parse_port_range(
+                getattr(section, "port_range", None),
+                port,
+            )
+            allowed = self._resolve_allowed_remote_hosts(
+                getattr(section, "allowed_remote_hosts", None),
+                getattr(getattr(self.config, "asterisk", None), "host", None),
+            )
+            kwargs["rtp_allowed_remote_hosts"] = allowed
+            if allowed:
+                logger.info(
+                    "ExternalMedia RTP allowlist resolved",
+                    allowed_remote_hosts=allowed,
+                )
+        return create_selected_transport_runtime(self.config, callbacks, **kwargs)
+
+    def _selected_transport_ready(self) -> bool:
+        """Cheap readiness check with compatibility for partial Engine fixtures."""
+
+        version = getattr(getattr(self, "ari_client", None), "asterisk_version", None)
+        kind = getattr(getattr(self, "config", None), "audio_transport", None)
+        if kind == "websocket" and not self._websocket_module_health()["modules_ready"]:
+            return False
+        runtime = getattr(self, "media_transport_runtime", None)
+        if runtime is not None:
+            return bool(runtime.ready(asterisk_version=version))
+        kind = getattr(getattr(self, "config", None), "audio_transport", None)
+        if kind == "audiosocket":
+            return getattr(self, "audio_socket_server", None) is not None
+        if kind == "externalmedia":
+            return getattr(self, "rtp_server", None) is not None
+        if kind == "websocket":
+            server = getattr(self, "websocket_server", None)
+            return bool(
+                server
+                and server.health().get("listening")
+                and self._websocket_control_format() is not None
+            )
+        return False
+
+    def _selected_transport_health(self) -> Dict[str, Any]:
+        runtime = getattr(self, "media_transport_runtime", None)
+        if runtime is not None:
+            status = dict(runtime.health())
+            if getattr(self.config, "audio_transport", None) == "websocket":
+                status.update(self._websocket_module_health())
+                status["engine_input_rejections"] = dict(getattr(self, "_websocket_input_rejections", {}))
+            return status
+        server = getattr(self, "websocket_server", None)
+        if server is not None:
+            return {
+                **server.health(), **self._websocket_module_health(),
+                "engine_input_rejections": dict(getattr(self, "_websocket_input_rejections", {})),
+            }
+        return {}
+
+    def _websocket_module_health(self) -> Dict[str, Any]:
+        probe = getattr(getattr(self, "ari_client", None), "websocket_media_module_capability", None)
+        capability = probe() if callable(probe) else None
+        return {
+            "modules_ready": bool(capability and capability.ready),
+            "module_inventory_available": bool(capability and capability.inventory_available),
+            "missing_modules": list(capability.missing_required_modules) if capability else [],
+            "non_running_modules": list(capability.non_running_required_modules) if capability else [],
+            "timing_modules": list(capability.running_timing_modules) if capability else [],
+            "module_reason": capability.reason if capability else "Asterisk module inventory is unavailable",
+        }
+
+    async def _refresh_websocket_modules(self, *, force: bool = False) -> None:
+        """Refresh readiness in the PBX's namespace, never the engine filesystem."""
+        if getattr(getattr(self, "config", None), "audio_transport", None) != "websocket":
+            return
+        client = getattr(self, "ari_client", None)
+        refresh = getattr(client, "refresh_module_inventory", None)
+        if not callable(refresh):
+            return  # The synchronous check remains fail-closed without a probe.
+        inventory = getattr(client, "module_inventory", None)
+        captured = getattr(inventory, "captured_at_monotonic", None)
+        if force or captured is None or time.monotonic() - captured >= 5.0:
+            await refresh(timeout_sec=3.0)
+
+    def _audit_externalmedia_provider_formats(self, server: Any) -> None:
+        """Preserve pre-call ExternalMedia provider alignment diagnostics."""
+
+        try:
+            codec = getattr(server, "codec", None)
+            sample_rate = getattr(server, "sample_rate", None)
+
+            def _enc_class(encoding: Any) -> str:
+                value = str(encoding or "").strip().lower()
+                if value in ("ulaw", "mulaw", "g711_ulaw", "mu-law"):
+                    return "g711_ulaw"
+                if value in ("alaw", "g711_alaw"):
+                    return "g711_alaw"
+                if value in ("slin", "slin16", "linear16", "pcm16", "pcm"):
+                    return "pcm16"
+                return value
+
+            for provider_name, provider in self.providers.items():
+                cfg = getattr(provider, "config", None)
+                if cfg is None:
+                    continue
+                provider_encoding = getattr(cfg, "provider_input_encoding", None) or getattr(
+                    cfg, "input_encoding", None
+                )
+                provider_class = _enc_class(provider_encoding)
+                rate_key = (
+                    "provider_input_sample_rate_hz"
+                    if getattr(cfg, "provider_input_sample_rate_hz", None) is not None
+                    else "input_sample_rate_hz"
+                )
+                provider_rate = getattr(cfg, rate_key, None)
+                try:
+                    provider_rate = int(provider_rate) if provider_rate else None
+                except Exception:
+                    provider_rate = None
+                expected_rate = 8000 if provider_class in ("g711_ulaw", "g711_alaw") else None
+                if provider_class == "pcm16":
+                    expected_rate = int(sample_rate or 0) or None
+                if provider_rate and expected_rate and provider_rate != expected_rate:
+                    logger.warning(
+                        "⚠️  TRANSPORT/PROVIDER MISMATCH",
+                        provider=provider_name,
+                        transport="ExternalMedia",
+                        transport_codec=codec,
+                        transport_internal_rate=sample_rate,
+                        provider_input_encoding=str(provider_encoding or ""),
+                        provider_rate=provider_rate,
+                        expected_rate=expected_rate,
+                        impact="Extra resampling step - slight quality loss",
+                        suggestion=f"Consider updating providers.{provider_name}.{rate_key} to {expected_rate} to avoid resampling",
+                    )
+            for provider_name, provider in self.providers.items():
+                for issue in self._describe_provider_alignment(provider_name, provider):
+                    logger.info("Provider alignment info", provider=provider_name, issue=issue)
+        except Exception:
+            logger.debug("Transport/provider alignment audit failed", exc_info=True)
 
     def _get_attended_transfer_config(self) -> Dict[str, Any]:
         tools_cfg = getattr(self.config, "tools", {}) or {}
@@ -3860,16 +3956,31 @@ class Engine:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-        # Stop RTP server if running
-        if hasattr(self, 'rtp_server') and self.rtp_server:
-            await self.rtp_server.stop()
-        if self.attended_transfer_rtp_server:
+        # Stop the selected listener once through its lifecycle adapter.  The
+        # projection fallback preserves shutdown behavior for minimal/legacy
+        # Engine fixtures that bypass __init__.
+        runtime = getattr(self, "media_transport_runtime", None)
+        if runtime is not None:
+            await runtime.stop()
+            self.media_transport_runtime = None
+            self.call_media_lifecycle = None
+        else:
+            selected_kind = getattr(getattr(self, "config", None), "audio_transport", None)
+            selected_server = {
+                "externalmedia": getattr(self, "rtp_server", None),
+                "audiosocket": getattr(self, "audio_socket_server", None),
+                "websocket": getattr(self, "websocket_server", None),
+            }.get(selected_kind)
+            if selected_server is not None:
+                await selected_server.stop()
+        self.call_media_lifecycle = None
+        self.rtp_server = None
+        self.audio_socket_server = None
+        self.websocket_server = None
+        if getattr(self, "attended_transfer_rtp_server", None):
             await self.attended_transfer_rtp_server.stop()
             self.attended_transfer_rtp_server = None
         # Stop health server
-        if self.audio_socket_server:
-            await self.audio_socket_server.stop()
-            self.audio_socket_server = None
         try:
             if self._health_runner:
                 await self._health_runner.cleanup()
@@ -4316,6 +4427,22 @@ class Engine:
         channel_name = channel.get('name', '')
         return channel_name.startswith('UnicastRTP/')
 
+    def _is_websocket_media_channel(self, channel: dict) -> bool:
+        """Return whether an ARI channel belongs to the Media WebSocket leg.
+
+        The application-chosen channel ID is authoritative and is registered
+        before the ARI request.  The name prefix is a defensive fallback for an
+        event that arrives before the response is observed.
+        """
+        channel_id = str(channel.get("id") or "")
+        channel_name = str(channel.get("name") or "")
+        return bool(
+            channel_id in getattr(self, "pending_websocket_channels", {})
+            or channel_id in getattr(self, "websocket_media_channels", {})
+            or channel_name.startswith("WebSocket/")
+            or channel_name.startswith("MediaWebSocket/")
+        )
+
     async def _find_caller_for_local(self, local_channel_id: str) -> Optional[str]:
         """Find the caller channel that corresponds to this Local channel."""
         # Check if we have a pending Local channel mapping
@@ -4347,6 +4474,26 @@ class Engine:
                    args=args,
                    is_caller=self._is_caller_channel(channel),
                    is_local=self._is_local_channel(channel))
+
+        # Selected media legs may carry driver/application args. Classify them
+        # before interpreting any Stasis arg as an agent action, otherwise an
+        # auxiliary channel could enter caller/business routing.
+        lifecycle = getattr(self, "call_media_lifecycle", None)
+        known_media_ids = {
+            *getattr(self, "pending_audiosocket_channels", {}).keys(),
+            *getattr(self, "pending_websocket_channels", {}).keys(),
+            *getattr(self, "websocket_media_channels", {}).keys(),
+        }
+        if lifecycle is not None and lifecycle.is_aux_channel(
+            channel, known_channel_ids=known_media_ids
+        ):
+            self._seen_aux_channels.add(channel_id)
+            await lifecycle.handle_aux_channel(channel_id, channel)
+            return
+        if lifecycle is None and self._is_websocket_media_channel(channel):
+            self._seen_aux_channels.add(channel_id)
+            await self._handle_websocket_media_stasis_start(channel_id, channel)
+            return
 
         # Reserved Stasis args for internal control-plane flows.
         if args and len(args) > 0:
@@ -4405,7 +4552,379 @@ class Engine:
                           channel_id=channel_id, 
                           channel_name=channel_name)
 
-    async def _start_external_media_channel(self, caller_channel_id: str) -> Optional[str]:
+    @staticmethod
+    def _websocket_profile_codec(session: CallSession, fallback: str = "ulaw") -> str:
+        """Map the frozen per-call profile to one certified Asterisk codec."""
+        profile = getattr(session, "transport_profile", None)
+        encoding = str(getattr(profile, "wire_encoding", None) or fallback).strip().lower()
+        try:
+            sample_rate = int(getattr(profile, "wire_sample_rate", 0) or 0)
+        except (TypeError, ValueError):
+            sample_rate = 0
+        aliases = {
+            "mulaw": "ulaw",
+            "mu-law": "ulaw",
+            "g711_ulaw": "ulaw",
+            "g711ulaw": "ulaw",
+            "a-law": "alaw",
+            "g711_alaw": "alaw",
+            "g711alaw": "alaw",
+            "linear16": "slin16" if sample_rate >= 16000 else "slin",
+            "pcm16": "slin16" if sample_rate >= 16000 else "slin",
+        }
+        codec = aliases.get(encoding, encoding)
+        if codec == "slin16" and sample_rate and sample_rate < 16000:
+            codec = "slin"
+        if codec not in {"ulaw", "alaw", "slin", "slin16"}:
+            raise ValueError(f"Unsupported WebSocket media codec: {encoding}")
+        return codec
+
+    @staticmethod
+    def _pipeline_audio_for_file_playback(tts_options: Any, audio: bytes) -> bytes:
+        """ARI file playback writes `.ulaw`, so PCM pipeline TTS must become mu-law 8 kHz."""
+        fmt = (tts_options or {}).get("format")
+        if not isinstance(fmt, dict):
+            fmt = (tts_options or {}).get("target_format")
+        if not isinstance(fmt, dict) or not audio:
+            return audio
+        encoding = str(fmt.get("encoding") or fmt.get("format") or "mulaw").strip().lower()
+        if encoding not in ("slin", "slin16", "linear16", "pcm16", "pcm"):
+            return audio
+        try:
+            rate = int(fmt.get("sample_rate") or fmt.get("sample_rate_hz") or (16000 if encoding == "slin16" else 8000))
+        except (TypeError, ValueError):
+            rate = 8000
+        pcm = bytes(audio[: len(audio) - (len(audio) % 2)])
+        if rate != 8000:
+            pcm, _ = resample_audio(pcm, rate, 8000)
+        return pcm16le_to_mulaw(pcm)
+
+    def _websocket_control_format(self) -> Optional[str]:
+        from src.media_transport_capabilities import resolve_media_websocket_control
+        return resolve_media_websocket_control(
+            getattr(self.ari_client, "asterisk_version", None),
+            getattr(getattr(self.config, "websocket_media", None), "control_format", "json"),
+        )
+
+    def _websocket_admission_error(self) -> Optional[str]:
+        """Return a fail-closed reason when selected WebSocket is not usable."""
+        server = getattr(self, "websocket_server", None)
+        if server is None or not server.health().get("listening"):
+            return "Asterisk Media WebSocket listener is not ready"
+        version = getattr(self.ari_client, "asterisk_version", None)
+        if self._websocket_control_format() is None:
+            from src.config import media_websocket_capability_reason
+            return media_websocket_capability_reason(version, getattr(self.config.websocket_media, "control_format", "json"))
+        modules = self._websocket_module_health()
+        if not modules["modules_ready"]:
+            return modules["module_reason"] or "Asterisk Media WebSocket modules are not ready"
+        return None
+
+    async def _setup_selected_call_media(
+        self, session: CallSession
+    ) -> CallMediaSetupResult:
+        """Run the selected primary transport lifecycle and its common gates."""
+        lifecycle = getattr(self, "call_media_lifecycle", None)
+        if lifecycle is None:
+            raise RuntimeError("Selected media transport lifecycle is unavailable")
+
+        result = await lifecycle.setup(self, session)
+        request = result.request
+        kind = request.kind if request is not None else lifecycle.runtime.kind
+        if result.failure_reason:
+            logger.error(
+                "Selected media transport setup failed",
+                call_id=session.call_id,
+                transport=kind,
+                media_channel_id=result.channel_id,
+                reason=result.failure_reason,
+            )
+            if await self._media_session_is_active(session):
+                await self._stop_connection_audio(
+                    session, reason=result.failure_reason
+                )
+            if result.force_cleanup:
+                await self._cleanup_call(
+                    session.call_id,
+                    force_caller_hangup=True,
+                )
+            return result
+
+        # AudioSocket becomes ready in its auxiliary StasisStart handler. RTP
+        # and WebSocket complete here only after their bridge/readiness gates.
+        if not result.ready:
+            return result
+        if not await self._media_session_is_active(session):
+            return result
+
+        if not session.provider_session_active:
+            await self._ensure_provider_session_started(session.call_id)
+        if not await self._media_session_is_active(session):
+            return result
+        try:
+            await self._enable_pipeline_talk_detect(session)
+        except Exception:
+            logger.debug(
+                "TALK_DETECT enable failed after selected media attach",
+                call_id=session.call_id,
+                transport=kind,
+                exc_info=True,
+            )
+        return result
+
+    async def _media_session_is_active(self, session: CallSession) -> bool:
+        """Check identity and lifecycle after any media-setup await."""
+        get_by_call_id = getattr(self.session_store, "get_by_call_id", None)
+        current = (
+            await get_by_call_id(session.call_id)
+            if callable(get_by_call_id)
+            else session
+        )
+        return bool(
+            current is session
+            and not session.cleanup_in_progress
+            and not session.cleanup_completed
+        )
+
+    async def _websocket_session_is_active(self, session: CallSession) -> bool:
+        """Compatibility name retained for focused WebSocket lifecycle tests."""
+        return await self._media_session_is_active(session)
+
+    async def _start_websocket_media_channel(
+        self,
+        session: CallSession,
+        *,
+        request: Optional[CallMediaRequest] = None,
+    ) -> Optional[str]:
+        """Register correlation, then create the Asterisk WebSocket media leg."""
+        server = getattr(self, "websocket_server", None)
+        cfg = getattr(self.config, "websocket_media", None)
+        if server is None or cfg is None:
+            return None
+        if not await self._websocket_session_is_active(session):
+            return None
+
+        if request is None:
+            fallback = str(getattr(cfg, "fallback_format", "ulaw") or "ulaw")
+            codec = self._websocket_profile_codec(session, fallback)
+            media_channel_id = new_websocket_channel_id()
+            mode = self._websocket_control_format()
+            if mode is None:
+                return None
+            nonce = server.register_call(session.call_id, media_channel_id, codec, control_format=mode)
+            ari_params = {
+                "app": self.config.asterisk.app_name,
+                "external_host": str(getattr(cfg, "connection_name", "aava_media")),
+                "format": codec,
+                "direction": "both",
+                "encapsulation": "none",
+                "transport": "websocket",
+                "connection_type": "client",
+                "transport_data": f"f(json)v(nonce={nonce})",
+                "channel_id": media_channel_id,
+            }
+            operation = "external_media"
+            if mode == "plain":
+                operation = "websocket_originate"
+                ari_params = {
+                    "endpoint": f"WebSocket/{getattr(cfg, 'connection_name', 'aava_media')}/c({codec})v(nonce={nonce})",
+                    "app": self.config.asterisk.app_name, "channelId": media_channel_id,
+                    "formats": codec, "timeout": 10,
+                }
+        else:
+            operation = request.operation
+            codec = str(request.codec)
+            media_channel_id = str(request.channel_id or "")
+            nonce = str(request.correlation_id or "")
+            ari_params = dict(request.ari_params)
+            if not media_channel_id or not nonce:
+                raise ValueError("WebSocket media request is missing correlation identity")
+
+        # Publish every ownership marker before ARI can synchronously deliver a
+        # StasisStart/ChannelDestroyed event for the new auxiliary leg.
+        self.pending_websocket_channels[media_channel_id] = session.call_id
+        self.websocket_media_channels[media_channel_id] = session.call_id
+        self._seen_aux_channels.add(media_channel_id)
+        session.media_transport_kind = "websocket"
+        session.media_channel_id = media_channel_id
+        session.media_channel_pending = True
+        session.media_connection_state = "pending"
+        session.negotiated_encoding = codec
+        session.negotiated_sample_rate = 16000 if codec == "slin16" else 8000
+        await self._save_session(session)
+
+        try:
+            if operation == "websocket_originate":
+                response = await self.ari_client.send_command("POST", "channels", params=ari_params)
+            elif operation == "external_media":
+                response = await self.ari_client.create_external_media_channel(**ari_params)
+            else:
+                raise ValueError("Invalid WebSocket media creation operation")
+            returned_id = response.get("id") if isinstance(response, dict) else None
+            if returned_id != media_channel_id:
+                raise RuntimeError(
+                    "Asterisk returned an unexpected Media WebSocket channel ID"
+                )
+            if not await self._websocket_session_is_active(session):
+                # Caller cleanup may have completed while ARI was creating the
+                # leg.  Destroy the late channel explicitly; never resurrect
+                # the detached session or provider.
+                with contextlib.suppress(Exception):
+                    await self.ari_client.hangup_channel(media_channel_id)
+                self.pending_websocket_channels.pop(media_channel_id, None)
+                self.websocket_media_channels.pop(media_channel_id, None)
+                with contextlib.suppress(Exception):
+                    await server.unregister_call(session.call_id)
+                return None
+            return media_channel_id
+        except Exception as exc:
+            self.pending_websocket_channels.pop(media_channel_id, None)
+            self.websocket_media_channels.pop(media_channel_id, None)
+            # An HTTP timeout may hide successful channel creation. Delete only
+            # our predetermined identity; never retry originate or trust an
+            # unexpected response ID as ours.
+            with contextlib.suppress(Exception):
+                await self.ari_client.hangup_channel(media_channel_id)
+            with contextlib.suppress(Exception):
+                await server.unregister_call(session.call_id)
+            if await self._websocket_session_is_active(session):
+                session.media_channel_pending = False
+                session.media_connection_state = "failed"
+                session.media_last_error = str(exc)[:256]
+                await self._save_session(session)
+            logger.error(
+                "Failed to create Asterisk Media WebSocket channel",
+                call_id=session.call_id,
+                media_channel_id=media_channel_id,
+                error=str(exc),
+            )
+            return None
+
+    def _websocket_setup_lock(self, call_id: str) -> asyncio.Lock:
+        # A local strong reference (including waiters) keeps the lock alive.
+        # Weak values avoid retaining completed calls or splitting a lock when
+        # cleanup runs while an old setup coroutine is still waiting.
+        locks = getattr(self, "_websocket_setup_locks", None)
+        if locks is None:
+            locks = self._websocket_setup_locks = WeakValueDictionary()
+        lock = locks.get(call_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[call_id] = lock
+        return lock
+
+    async def _websocket_setup_is_owned(
+        self, session: CallSession, media_channel_id: str, bridge_id: str
+    ) -> bool:
+        return bool(
+            await self._websocket_session_is_active(session)
+            and media_channel_id and bridge_id
+            and session.media_channel_id == media_channel_id
+            and session.bridge_id == bridge_id
+            and self.websocket_media_channels.get(media_channel_id) == session.call_id
+            and session.media_connection_state in {"pending", "bridge_attached", "ready"}
+        )
+
+    async def _attach_websocket_media_channel(
+        self, session: CallSession, media_channel_id: str
+    ) -> bool:
+        bridge_id = session.bridge_id
+        lock = self._websocket_setup_lock(session.call_id)
+        async with lock:
+            if not await self._websocket_setup_is_owned(session, media_channel_id, bridge_id):
+                return False
+            if session.media_connection_state in {"bridge_attached", "ready"}:
+                return True
+            added = await self.ari_client.add_channel_to_bridge(bridge_id, media_channel_id)
+            if not await self._websocket_setup_is_owned(session, media_channel_id, bridge_id):
+                # The lifecycle/cleanup owner deletes its predetermined leg.
+                # A stale completion must not mutate or hang up a replacement.
+                return False
+            if not added:
+                return False
+            session.media_channel_pending = False
+            session.media_connection_state = "bridge_attached"
+            await self._save_session(session, require_current=True)
+            return await self._websocket_setup_is_owned(session, media_channel_id, bridge_id)
+
+    async def _await_websocket_media_ready(self, session: CallSession) -> bool:
+        media_channel_id, bridge_id = session.media_channel_id, session.bridge_id
+        lock = self._websocket_setup_lock(session.call_id)
+        async with lock:
+            if not await self._websocket_setup_is_owned(session, media_channel_id, bridge_id):
+                return False
+            if session.media_connection_state == "ready":
+                return True
+            if session.media_connection_state != "bridge_attached":
+                return False
+            return await self._finalize_websocket_media_ready(session, media_channel_id, bridge_id)
+
+    async def _finalize_websocket_media_ready(
+        self, session: CallSession, media_channel_id: str, bridge_id: str
+    ) -> bool:
+        """Finalize under the per-call setup lock; disconnect/cleanup never wait on it."""
+        server = getattr(self, "websocket_server", None)
+        cfg = getattr(self.config, "websocket_media", None)
+        if server is None or cfg is None:
+            return False
+        timeout = max(0.1, float(getattr(cfg, "media_start_timeout_ms", 5000)) / 1000.0)
+        try:
+            binding = await server.wait_ready(session.call_id, timeout=timeout)
+        except Exception as exc:
+            if await self._websocket_setup_is_owned(session, media_channel_id, bridge_id):
+                session.media_connection_state = "failed"
+                session.media_last_error = str(exc)[:256]
+                await self._save_session(session, require_current=True)
+            return False
+        if not await self._websocket_setup_is_owned(session, media_channel_id, bridge_id):
+            return False
+        if binding is None:
+            session.media_connection_state = "failed"
+            session.media_last_error = "MEDIA_START timed out"
+            await self._save_session(session, require_current=True)
+            return False
+        if str(getattr(binding, "channel_id", "")) != str(session.media_channel_id or ""):
+            session.media_connection_state = "failed"
+            session.media_last_error = "MEDIA_START channel ID mismatch"
+            await self._save_session(session, require_current=True)
+            return False
+        session.media_connection_id = str(getattr(binding, "connection_id", "") or "") or None
+        session.media_connection_state = "ready"
+        session.negotiated_encoding = str(getattr(binding, "codec", "") or session.negotiated_encoding)
+        session.negotiated_sample_rate = int(getattr(binding, "sample_rate", 0) or session.negotiated_sample_rate or 0) or None
+        session.media_packetization_ms = int(getattr(binding, "ptime", 0) or 0) or None
+        session.media_optimal_frame_size = int(getattr(binding, "optimal_frame_size", 0) or 0) or None
+        await self._save_session(session, require_current=True)
+        return await self._websocket_setup_is_owned(session, media_channel_id, bridge_id)
+
+    async def _handle_websocket_media_stasis_start(
+        self, media_channel_id: str, channel: dict
+    ) -> None:
+        call_id = (
+            self.pending_websocket_channels.get(media_channel_id)
+            or self.websocket_media_channels.get(media_channel_id)
+        )
+        session = (
+            await self.session_store.get_by_call_id(call_id) if call_id else None
+        ) or await self.session_store.get_by_channel_id(media_channel_id)
+        if not session:
+            logger.warning(
+                "Unowned Asterisk Media WebSocket channel entered Stasis",
+                media_channel_id=media_channel_id,
+            )
+            await self.ari_client.hangup_channel(media_channel_id)
+            return
+        if not await self._attach_websocket_media_channel(session, media_channel_id):
+            # Main lifecycle owns bounded retries and terminal setup failure.
+            # An auxiliary event must not poison a pending or replacement call.
+            logger.debug("WebSocket auxiliary attach deferred to setup owner", call_id=session.call_id)
+
+    async def _start_external_media_channel(
+        self,
+        caller_channel_id: str,
+        *,
+        request: Optional[CallMediaRequest] = None,
+    ) -> Optional[str]:
         """Allocate RTP resources and originate the ExternalMedia channel via ARI."""
         if not self.config.external_media:
             logger.error("🎯 EXTERNAL MEDIA - Configuration missing; cannot start ExternalMedia channel",
@@ -4416,34 +4935,48 @@ class Engine:
                          caller_channel_id=caller_channel_id)
             return None
 
-        try:
-            port = await self.rtp_server.allocate_session(caller_channel_id)
-        except Exception as exc:
-            logger.error("🎯 EXTERNAL MEDIA - RTP session allocation failed",
-                         caller_channel_id=caller_channel_id,
-                         error=str(exc),
-                         exc_info=True)
-            return None
+        if request is None:
+            try:
+                port = await self.rtp_server.allocate_session(caller_channel_id)
+            except Exception as exc:
+                logger.error("🎯 EXTERNAL MEDIA - RTP session allocation failed",
+                             caller_channel_id=caller_channel_id,
+                             error=str(exc),
+                             exc_info=True)
+                return None
 
-        bind_host = self.config.external_media.rtp_host
-        # Use advertise_host for the address Asterisk sends RTP to (NAT/VPN support)
-        # Fall back to bind_host if advertise_host is not set
-        advertise_host = getattr(self.config.external_media, 'advertise_host', None) or bind_host
-        # Prevent Asterisk from trying to send RTP to 0.0.0.0 (invalid destination)
-        if advertise_host in ("0.0.0.0", "::"):
-            advertise_host = "127.0.0.1"
-        codec = getattr(self.config.external_media, "codec", "ulaw")
-        direction = getattr(self.config.external_media, "direction", "both")
-        external_host = f"{advertise_host}:{port}"
+            bind_host = self.config.external_media.rtp_host
+            # Use advertise_host for the address Asterisk sends RTP to (NAT/VPN support)
+            # Fall back to bind_host if advertise_host is not set
+            advertise_host = getattr(self.config.external_media, 'advertise_host', None) or bind_host
+            # Prevent Asterisk from trying to send RTP to 0.0.0.0 (invalid destination)
+            if advertise_host in ("0.0.0.0", "::"):
+                advertise_host = "127.0.0.1"
+            codec = getattr(self.config.external_media, "codec", "ulaw")
+            direction = getattr(self.config.external_media, "direction", "both")
+            external_host = f"{advertise_host}:{port}"
+            ari_params = {
+                "app": self.config.asterisk.app_name,
+                "external_host": external_host,
+                "format": codec,
+                "direction": direction,
+                "encapsulation": "rtp",
+            }
+        else:
+            metadata = dict(request.metadata or {})
+            try:
+                port = int(metadata["port"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("ExternalMedia request is missing its allocated RTP port") from exc
+            bind_host = str(metadata.get("bind_host") or self.config.external_media.rtp_host)
+            advertise_host = str(metadata.get("advertise_host") or bind_host)
+            codec = str(request.codec)
+            direction = str(request.ari_params.get("direction") or "both")
+            external_host = str(request.ari_params.get("external_host") or "")
+            ari_params = dict(request.ari_params)
 
         try:
-            response = await self.ari_client.create_external_media_channel(
-                app=self.config.asterisk.app_name,
-                external_host=external_host,
-                format=codec,
-                direction=direction,
-                encapsulation="rtp",
-            )
+            response = await self.ari_client.create_external_media_channel(**ari_params)
         except Exception as exc:
             logger.error("🎯 EXTERNAL MEDIA - ARI create_external_media_channel failed",
                          caller_channel_id=caller_channel_id,
@@ -4486,6 +5019,14 @@ class Engine:
             session.pending_external_media_id = channel_id
             session.external_media_port = port
             session.external_media_codec = codec  # Store codec for RTP byte-swap logic
+            session.media_transport_kind = "externalmedia"
+            session.media_channel_id = channel_id
+            session.media_channel_pending = True
+            session.media_connection_state = "pending"
+            session.negotiated_encoding = str(codec)
+            session.negotiated_sample_rate = int(
+                getattr(self.rtp_server, "sample_rate", 0) or 0
+            ) or None
             await self._save_session(session)
 
         logger.info("🎯 EXTERNAL MEDIA - ExternalMedia channel originated",
@@ -4497,6 +5038,43 @@ class Engine:
                     codec=codec,
                     direction=direction)
         return channel_id
+
+    async def _attach_external_media_channel_direct(
+        self,
+        session: CallSession,
+        external_media_id: str,
+    ) -> bool:
+        """Idempotently attach the primary RTP media leg to its live call."""
+        if not getattr(session, "bridge_id", None):
+            return False
+        if not await self._media_session_is_active(session):
+            return False
+        if (
+            session.external_media_id == external_media_id
+            and not session.pending_external_media_id
+            and session.media_connection_state in {"bridge_attached", "ready"}
+        ):
+            return True
+
+        added = await self.ari_client.add_channel_to_bridge(
+            session.bridge_id, external_media_id
+        )
+        if not await self._media_session_is_active(session):
+            if added:
+                with contextlib.suppress(Exception):
+                    await self.ari_client.hangup_channel(external_media_id)
+            return False
+        if not added:
+            return False
+
+        session.external_media_id = external_media_id
+        session.pending_external_media_id = None
+        session.media_transport_kind = "externalmedia"
+        session.media_channel_id = external_media_id
+        session.media_channel_pending = False
+        session.media_connection_state = "bridge_attached"
+        await self._save_session(session)
+        return True
 
     async def _on_attended_transfer_helper_rtp_audio(self, call_id: str, ssrc: int, audio_data: bytes) -> None:
         """Helper-leg RTP audio is currently ignored; DTMF stays on the SIP/PJSIP agent channel."""
@@ -4802,10 +5380,13 @@ class Engine:
             # Add ExternalMedia channel to the bridge
             bridge_id = session.bridge_id
             if bridge_id:
-                success = await self.ari_client.add_channel_to_bridge(bridge_id, external_media_id)
+                success = await self._attach_external_media_channel_direct(
+                    session, external_media_id
+                )
                 if success:
-                    session.external_media_id = external_media_id
-                    session.pending_external_media_id = None
+                    if not await self._media_session_is_active(session):
+                        return
+                    session.media_connection_state = "ready"
                     await self._save_session(session)
                     logger.info("🎯 EXTERNAL MEDIA - ExternalMedia channel added to bridge", 
                                external_media_id=external_media_id,
@@ -4825,10 +5406,11 @@ class Engine:
                     logger.error("🎯 EXTERNAL MEDIA - Failed to add ExternalMedia channel to bridge", 
                                external_media_id=external_media_id,
                                bridge_id=bridge_id)
-                    await self._stop_connection_audio(
-                        session,
-                        reason="external-media-attach-failed",
-                    )
+                    if await self._media_session_is_active(session):
+                        await self._stop_connection_audio(
+                            session,
+                            reason="external-media-attach-failed",
+                        )
             else:
                 logger.error("ExternalMedia channel entered Stasis but no bridge found", 
                            external_media_id=external_media_id,
@@ -4843,7 +5425,7 @@ class Engine:
                         external_media_id=external_media_id, 
                         error=str(e), 
                         exc_info=True)
-            if session:
+            if session and await self._media_session_is_active(session):
                 await self._stop_connection_audio(
                     session,
                     reason="external-media-attach-failed",
@@ -4912,6 +5494,9 @@ class Engine:
         session = None
         for attempt in range(1, max(1, attempts) + 1):
             try:
+                # Never retain a session object across retry intervals. Cleanup
+                # may remove it while an earlier ARI lookup/add is in flight.
+                session = None
                 if external_media_id in self._attended_transfer_helper_external_media_to_agent_channel:
                     if await self._attach_attended_transfer_helper_external_media(external_media_id):
                         logger.info(
@@ -4930,11 +5515,18 @@ class Engine:
                             session = s
                             break
 
-                if session and session.bridge_id:
-                    success = await self.ari_client.add_channel_to_bridge(session.bridge_id, external_media_id)
+                if (
+                    session
+                    and session.bridge_id
+                    and await self._media_session_is_active(session)
+                ):
+                    success = await self._attach_external_media_channel_direct(
+                        session, external_media_id
+                    )
                     if success:
-                        session.external_media_id = external_media_id
-                        session.pending_external_media_id = None
+                        if not await self._media_session_is_active(session):
+                            return
+                        session.media_connection_state = "ready"
                         await self._save_session(session)
                         logger.info(
                             "🎯 EXTERNAL MEDIA - ExternalMedia channel attached after retry",
@@ -4962,7 +5554,7 @@ class Engine:
             external_media_id=external_media_id,
             attempts=attempts,
         )
-        if session:
+        if session and await self._media_session_is_active(session):
             await self._stop_connection_audio(
                 session,
                 reason="external-media-attach-retry-exhausted",
@@ -5858,6 +6450,21 @@ class Engine:
         if existing_session:
             logger.warning("🎯 HYBRID ARI - Caller already in progress", channel_id=caller_channel_id)
             return
+
+        if getattr(getattr(self, "config", None), "audio_transport", None) == "websocket":
+            # Honor the short freshness window; a forced ARI round trip on
+            # every call sits in the pre-answer path.
+            await self._refresh_websocket_modules()
+            admission_error = self._websocket_admission_error()
+            if admission_error:
+                logger.error(
+                    "Rejecting call because selected WebSocket transport is unavailable",
+                    call_id=caller_channel_id,
+                    reason=admission_error,
+                    asterisk_version=getattr(self.ari_client, "asterisk_version", None),
+                )
+                await self.ari_client.hangup_channel(caller_channel_id)
+                return
         
         try:
             # Answer the caller (inbound) or skip (outbound already answered)
@@ -6281,8 +6888,12 @@ class Engine:
             except Exception:
                 logger.debug("Failed to emit RCA_CALL_START", call_id=caller_channel_id, exc_info=True)
             
-            # Step 5: Create ExternalMedia channel or originate Local channel
-            if self.config.audio_transport == "externalmedia":
+            # Step 5: production engines use one selected transport lifecycle.
+            # The explicit branches remain as compatibility for narrow fixtures
+            # constructed with Engine.__new__ and are not used after start().
+            if getattr(self, "call_media_lifecycle", None) is not None:
+                await self._setup_selected_call_media(session)
+            elif self.config.audio_transport == "externalmedia":
                 logger.info("🎯 EXTERNAL MEDIA - Step 5: Creating ExternalMedia channel", channel_id=caller_channel_id)
                 external_media_id = await self._start_external_media_channel(caller_channel_id)
                 if external_media_id:
@@ -6336,6 +6947,59 @@ class Engine:
                     await self._stop_connection_audio(
                         session,
                         reason="external-media-start-failed",
+                    )
+            elif self.config.audio_transport == "websocket":
+                logger.info(
+                    "Creating Asterisk Media WebSocket channel",
+                    call_id=caller_channel_id,
+                )
+                media_channel_id = await self._start_websocket_media_channel(session)
+                if not media_channel_id:
+                    await self._stop_connection_audio(
+                        session, reason="websocket-media-start-failed"
+                    )
+                    await self._cleanup_call(caller_channel_id, force_caller_hangup=True)
+                    return
+
+                attached = False
+                for attempt in range(1, 26):
+                    if await self._attach_websocket_media_channel(
+                        session, media_channel_id
+                    ):
+                        attached = True
+                        break
+                    await asyncio.sleep(0.1)
+                ready = attached and await self._await_websocket_media_ready(session)
+                ready = ready and await self._websocket_session_is_active(session)
+                if not ready:
+                    logger.error(
+                        "Asterisk Media WebSocket setup did not become ready",
+                        call_id=caller_channel_id,
+                        media_channel_id=media_channel_id,
+                        bridge_attached=attached,
+                        state=session.media_connection_state,
+                    )
+                    await self._stop_connection_audio(
+                        session, reason="websocket-media-setup-failed"
+                    )
+                    await self._cleanup_call(caller_channel_id, force_caller_hangup=True)
+                    return
+
+                self.pending_websocket_channels.pop(media_channel_id, None)
+                session.status = "websocket_media_connected"
+                await self._save_session(session)
+                if (
+                    await self._websocket_session_is_active(session)
+                    and not session.provider_session_active
+                ):
+                    await self._ensure_provider_session_started(caller_channel_id)
+                try:
+                    await self._enable_pipeline_talk_detect(session)
+                except Exception:
+                    logger.debug(
+                        "TALK_DETECT enable failed after WebSocket media attach",
+                        call_id=caller_channel_id,
+                        exc_info=True,
                     )
             else:
                 logger.info("🎯 HYBRID ARI - Step 5: Originating AudioSocket channel", channel_id=caller_channel_id)
@@ -6480,6 +7144,10 @@ class Engine:
             await self.ari_client.hangup_channel(audiosocket_channel_id)
             return
 
+        if not await self._media_session_is_active(session):
+            await self.ari_client.hangup_channel(audiosocket_channel_id)
+            return
+
         bridge_id = session.bridge_id
         if not bridge_id:
             logger.error(
@@ -6496,6 +7164,11 @@ class Engine:
 
         try:
             added = await self.ari_client.add_channel_to_bridge(bridge_id, audiosocket_channel_id)
+            if not await self._media_session_is_active(session):
+                if added:
+                    with contextlib.suppress(Exception):
+                        await self.ari_client.hangup_channel(audiosocket_channel_id)
+                return
             if not added:
                 raise RuntimeError("Failed to add AudioSocket channel to bridge")
 
@@ -6507,6 +7180,10 @@ class Engine:
             )
 
             session.audiosocket_channel_id = audiosocket_channel_id
+            session.media_transport_kind = "audiosocket"
+            session.media_channel_id = audiosocket_channel_id
+            session.media_channel_pending = False
+            session.media_connection_state = "bridge_attached"
             session.status = "audiosocket_channel_connected"
             await self._save_session(session)
 
@@ -6631,6 +7308,46 @@ class Engine:
                    channel_id=channel_id,
                    call_id=call_id)
         # Don't hang up - let MOH play. Channel cleanup happens in _stop_background_music()
+
+    @staticmethod
+    def _primary_media_channel_ids(session: CallSession) -> tuple[str, ...]:
+        """Return the selected primary media leg once, including legacy projections."""
+        return tuple(
+            dict.fromkeys(
+                str(channel_id)
+                for channel_id in (
+                    getattr(session, "media_channel_id", None),
+                    getattr(session, "external_media_id", None),
+                    getattr(session, "audiosocket_channel_id", None),
+                )
+                if channel_id
+            )
+        )
+
+    async def _remove_primary_media_from_bridge(
+        self,
+        session: CallSession,
+        *,
+        reason: str,
+    ) -> None:
+        """Best-effort detach of the selected primary leg during transfer."""
+        bridge_id = getattr(session, "bridge_id", None)
+        if not bridge_id:
+            return
+        for media_channel_id in self._primary_media_channel_ids(session):
+            try:
+                await self.ari_client.remove_channel_from_bridge(
+                    bridge_id, media_channel_id
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to remove primary media channel from bridge",
+                    call_id=getattr(session, "call_id", None),
+                    bridge_id=bridge_id,
+                    media_channel_id=media_channel_id,
+                    reason=reason,
+                    exc_info=True,
+                )
     
     async def _handle_transfer_answered(self, channel_id: str, args: list):
         """
@@ -6660,28 +7377,11 @@ class Engine:
             await self.ari_client.hangup_channel(channel_id)
             return
         
-        # Step 1: Remove AI audio channel from bridge (ExternalMedia OR AudioSocket)
-        if session.external_media_id:
-            try:
-                await self.ari_client.remove_channel_from_bridge(
-                    session.bridge_id,
-                    session.external_media_id
-                )
-                logger.info("✅ UnicastRTP removed from bridge",
-                           external_media_id=session.external_media_id)
-            except Exception as e:
-                logger.warning(f"Failed to remove UnicastRTP: {e}")
-        
-        if session.audiosocket_channel_id:
-            try:
-                await self.ari_client.remove_channel_from_bridge(
-                    session.bridge_id,
-                    session.audiosocket_channel_id
-                )
-                logger.info("✅ AudioSocket channel removed from bridge",
-                           audiosocket_channel_id=session.audiosocket_channel_id)
-            except Exception as e:
-                logger.warning(f"Failed to remove AudioSocket channel: {e}")
+        # Step 1: Remove the selected AI media leg. WebSocket only has the
+        # neutral projection; RTP/AudioSocket temporarily retain both.
+        await self._remove_primary_media_from_bridge(
+            session, reason="transfer-answered"
+        )
         
         # Step 2: Stop AI provider session (per-call instance)
         try:
@@ -6913,13 +7613,9 @@ class Engine:
             except Exception:
                 pass
 
-            try:
-                if session.external_media_id:
-                    await self.ari_client.remove_channel_from_bridge(session.bridge_id, session.external_media_id)
-                if session.audiosocket_channel_id:
-                    await self.ari_client.remove_channel_from_bridge(session.bridge_id, session.audiosocket_channel_id)
-            except Exception:
-                logger.debug("Failed to remove AI media channels during predial transfer", call_id=call_id, exc_info=True)
+            await self._remove_primary_media_from_bridge(
+                session, reason="predial-transfer"
+            )
 
             provider = self._call_providers.pop(call_id, None)
             try:
@@ -8440,13 +9136,9 @@ class Engine:
             logger.debug("Failed to clean up attended transfer helper media before bridge finalize", call_id=call_id, agent_channel_id=agent_channel_id, exc_info=True)
 
         # Remove AI media from bridge and stop provider session (best effort).
-        try:
-            if session.external_media_id:
-                await self.ari_client.remove_channel_from_bridge(session.bridge_id, session.external_media_id)
-            if session.audiosocket_channel_id:
-                await self.ari_client.remove_channel_from_bridge(session.bridge_id, session.audiosocket_channel_id)
-        except Exception:
-            logger.debug("Failed to remove AI media channels during attended transfer", call_id=call_id, exc_info=True)
+        await self._remove_primary_media_from_bridge(
+            session, reason="attended-transfer"
+        )
 
         try:
             start_task = self._provider_start_tasks.pop(call_id, None)
@@ -8566,7 +9258,12 @@ class Engine:
         logger.info("📞 QUEUE FAILED")
         await self.ari_client.hangup_channel(channel_id)
 
-    async def _originate_audiosocket_channel_hybrid(self, caller_channel_id: str):
+    async def _originate_audiosocket_channel_hybrid(
+        self,
+        caller_channel_id: str,
+        *,
+        request: Optional[CallMediaRequest] = None,
+    ) -> Optional[str]:
         """Originate an AudioSocket channel using the native channel interface."""
         if not self.config.audiosocket:
             logger.error(
@@ -8575,36 +9272,57 @@ class Engine:
             )
             raise RuntimeError("AudioSocket configuration missing")
 
-        audio_uuid = str(uuid.uuid4())
-        bind_host = self.config.audiosocket.host or "127.0.0.1"
-        # Use advertise_host for the endpoint Asterisk connects to (NAT/VPN support)
-        # Fall back to bind_host if advertise_host is not set
-        advertise_host = getattr(self.config.audiosocket, 'advertise_host', None) or bind_host
-        # Only rewrite bind-all addresses if no explicit advertise_host was configured
-        # This prevents Asterisk from trying to connect to 0.0.0.0 (invalid destination)
-        if advertise_host in ("0.0.0.0", "::"):
-            advertise_host = "127.0.0.1"
-        port = self.config.audiosocket.port
-        # Match the channel codec to this call's resolved profile. The global
-        # AudioSocket format remains the fallback for legacy sessions.
-        codec = "slin"
-        try:
-            session = await self.session_store.get_by_call_id(caller_channel_id)
-            transport = getattr(session, "transport_profile", None) if session else None
-            fmt = getattr(transport, "wire_encoding", None)
-            rate = getattr(transport, "wire_sample_rate", None)
-            if not fmt:
-                fmt = getattr(self.config.audiosocket, 'format', '') or 'slin'
-            codec, _ = normalize_slin_format(fmt, rate)
-        except Exception:
+        session = await self.session_store.get_by_call_id(caller_channel_id)
+        if request is None:
+            audio_uuid = str(uuid.uuid4())
+            bind_host = self.config.audiosocket.host or "127.0.0.1"
+            # Use advertise_host for the endpoint Asterisk connects to (NAT/VPN support)
+            # Fall back to bind_host if advertise_host is not set
+            advertise_host = getattr(self.config.audiosocket, 'advertise_host', None) or bind_host
+            # Only rewrite bind-all addresses if no explicit advertise_host was configured
+            # This prevents Asterisk from trying to connect to 0.0.0.0 (invalid destination)
+            if advertise_host in ("0.0.0.0", "::"):
+                advertise_host = "127.0.0.1"
+            port = self.config.audiosocket.port
+            # Match the channel codec to this call's resolved profile. The global
+            # AudioSocket format remains the fallback for legacy sessions.
             codec = "slin"
-        endpoint = f"AudioSocket/{advertise_host}:{port}/{audio_uuid}/c({codec})"
+            try:
+                transport = getattr(session, "transport_profile", None) if session else None
+                fmt = getattr(transport, "wire_encoding", None)
+                rate = getattr(transport, "wire_sample_rate", None)
+                if not fmt:
+                    fmt = getattr(self.config.audiosocket, 'format', '') or 'slin'
+                codec, _ = normalize_slin_format(fmt, rate)
+            except Exception:
+                codec = "slin"
+            endpoint = f"AudioSocket/{advertise_host}:{port}/{audio_uuid}/c({codec})"
+            orig_params = {
+                "endpoint": endpoint,
+                "app": self.config.asterisk.app_name,
+                "timeout": "30",
+            }
+            orig_data = {"variables": {"AUDIOSOCKET_UUID": audio_uuid}}
+        else:
+            audio_uuid = str(request.correlation_id or "")
+            if not audio_uuid:
+                raise ValueError("AudioSocket media request is missing its UUID")
+            codec = str(request.codec)
+            orig_params = dict(request.ari_params)
+            orig_data = dict(request.ari_data or {})
+            endpoint = str(orig_params.get("endpoint") or "")
 
-        orig_params = {
-            "endpoint": endpoint,
-            "app": self.config.asterisk.app_name,
-            "timeout": "30",
-        }
+        # UUID correlation is available before ARI can synchronously emit the
+        # auxiliary StasisStart. The channel-id mapping follows the response.
+        self.uuidext_to_channel[audio_uuid] = caller_channel_id
+        if session:
+            session.audiosocket_uuid = audio_uuid
+            session.media_transport_kind = "audiosocket"
+            session.media_channel_pending = True
+            session.media_connection_state = "pending"
+            session.negotiated_encoding = codec
+            session.negotiated_sample_rate = 16000 if codec == "slin16" else 8000
+            await self._save_session(session)
 
         logger.info(
             "🎯 HYBRID ARI - Originating AudioSocket channel",
@@ -8617,26 +9335,41 @@ class Engine:
             response = await self.ari_client.send_command(
                 "POST",
                 "channels",
-                data={"variables": {"AUDIOSOCKET_UUID": audio_uuid}},
+                data=orig_data,
                 params=orig_params,
             )
             if response and response.get("id"):
                 audiosocket_channel_id = response["id"]
                 self.pending_audiosocket_channels[audiosocket_channel_id] = caller_channel_id
-                self.uuidext_to_channel[audio_uuid] = caller_channel_id
 
                 session = await self.session_store.get_by_call_id(caller_channel_id)
                 if session:
                     session.audiosocket_uuid = audio_uuid
+                    session.audiosocket_channel_id = audiosocket_channel_id
+                    session.media_transport_kind = "audiosocket"
+                    session.media_channel_id = audiosocket_channel_id
+                    session.media_channel_pending = True
+                    session.media_connection_state = "pending"
+                    session.negotiated_encoding = codec
+                    session.negotiated_sample_rate = (
+                        16000 if codec == "slin16" else 8000
+                    )
                     await self._save_session(session)
                     logger.info(
                         "🎯 HYBRID ARI - AudioSocket channel originated",
                         caller_channel_id=caller_channel_id,
                         audiosocket_channel_id=audiosocket_channel_id,
                     )
+                return audiosocket_channel_id
             else:
                 raise RuntimeError("Failed to originate AudioSocket channel")
         except Exception as e:
+            self.uuidext_to_channel.pop(audio_uuid, None)
+            if session:
+                session.media_channel_pending = False
+                session.media_connection_state = "failed"
+                with contextlib.suppress(Exception):
+                    await self._save_session(session)
             logger.error(
                 "🎯 HYBRID ARI - AudioSocket channel originate failed",
                 caller_channel_id=caller_channel_id,
@@ -8670,6 +9403,19 @@ class Engine:
                 return
             # Remove from pre-stasis tracking if present
             self._pre_stasis_channels.discard(channel_id)
+            lifecycle = getattr(self, "call_media_lifecycle", None)
+            if lifecycle is not None:
+                known_media_ids = {
+                    *getattr(self, "pending_audiosocket_channels", {}).keys(),
+                    *getattr(self, "pending_websocket_channels", {}).keys(),
+                    *getattr(self, "websocket_media_channels", {}).keys(),
+                }
+                if lifecycle.is_aux_channel(
+                    channel, known_channel_ids=known_media_ids
+                ):
+                    seen_aux = getattr(self, "_seen_aux_channels", None)
+                    if seen_aux is not None:
+                        seen_aux.add(channel_id)
             # An originated AudioSocket leg can fail before StasisStart attaches
             # it to the session. At that point the pending map is the only link
             # back to the caller, so consume it here and end setup ringback.
@@ -8689,8 +9435,34 @@ class Engine:
                         pending_session,
                         reason="audiosocket-destroyed-before-stasis",
                     )
+            pending_websocket_call_id = getattr(
+                self, "pending_websocket_channels", {}
+            ).pop(
+                channel_id, None
+            )
+            if pending_websocket_call_id:
+                pending_session = await self.session_store.get_by_call_id(
+                    pending_websocket_call_id
+                )
+                if pending_session:
+                    pending_session.media_channel_pending = False
+                    pending_session.media_connection_state = "closed"
+                    pending_session.media_last_error = "Media channel destroyed during setup"
+                    await self._save_session(pending_session)
+                    await self._stop_connection_audio(
+                        pending_session,
+                        reason="websocket-destroyed-before-stasis",
+                    )
             await self._handle_outbound_channel_destroyed(event)
-            logger.info("Channel destroyed", channel_id=channel_id)
+            # Preserve Asterisk's terminal evidence even when StasisEnd has
+            # already started cleanup. The application's default caller_hangup
+            # outcome alone cannot distinguish a phone action from SIP timeout.
+            logger.info(
+                "Channel destroyed",
+                channel_id=channel_id,
+                cause=event.get("cause"),
+                cause_txt=event.get("cause_txt"),
+            )
             await self._cleanup_call(channel_id)
         except Exception as exc:
             logger.error("Error handling ChannelDestroyed", error=str(exc), exc_info=True)
@@ -9382,14 +10154,17 @@ class Engine:
                         exc_info=True,
                     )
 
-            for channel_id in filter(
-                None,
-                [
+            for channel_id in dict.fromkeys(
+                filter(
+                    None,
+                    [
                     session.local_channel_id,
                     session.external_media_id,
                     session.audiosocket_channel_id,
+                    session.media_channel_id,
                     *action_channels,
-                ],
+                    ],
+                )
             ):
                 try:
                     await self.ari_client.hangup_channel(channel_id)
@@ -9446,18 +10221,43 @@ class Engine:
             else:
                 logger.info("Skipping caller hangup - transferred to dialplan", call_id=call_id, transfer_target=getattr(session, 'transfer_target', 'unknown'))
 
-            if getattr(self, 'rtp_server', None):
+            runtime = getattr(self, "media_transport_runtime", None)
+            if runtime is not None:
                 try:
-                    await self.rtp_server.cleanup_session(call_id)
+                    await runtime.close_call(
+                        call_id,
+                        connection_id=session.audiosocket_conn_id,
+                    )
                 except Exception:
-                    logger.debug("RTP session cleanup failed during call cleanup", call_id=call_id, exc_info=True)
-
-            # Proactive AudioSocket disconnect (RED-7) — mirrors RTP cleanup above
-            if getattr(self, 'audio_socket_server', None) and session.audiosocket_conn_id:
-                try:
-                    await self.audio_socket_server.disconnect(session.audiosocket_conn_id)
-                except Exception:
-                    logger.debug("AudioSocket disconnect failed during call cleanup", call_id=call_id, conn_id=session.audiosocket_conn_id, exc_info=True)
+                    logger.debug(
+                        "Selected media call cleanup failed",
+                        call_id=call_id,
+                        transport=getattr(runtime, "kind", None),
+                        exc_info=True,
+                    )
+            else:
+                # Compatibility for tests/recovery objects created without the
+                # selected runtime adapter. Only one server exists in normal
+                # initialized engines.
+                if getattr(self, 'rtp_server', None):
+                    try:
+                        await self.rtp_server.cleanup_session(call_id)
+                    except Exception:
+                        logger.debug("RTP session cleanup failed during call cleanup", call_id=call_id, exc_info=True)
+                if getattr(self, 'audio_socket_server', None) and session.audiosocket_conn_id:
+                    try:
+                        await self.audio_socket_server.disconnect(session.audiosocket_conn_id)
+                    except Exception:
+                        logger.debug("AudioSocket disconnect failed during call cleanup", call_id=call_id, conn_id=session.audiosocket_conn_id, exc_info=True)
+                if getattr(self, "websocket_server", None):
+                    try:
+                        await self.websocket_server.unregister_call(call_id)
+                    except Exception:
+                        logger.debug(
+                            "WebSocket media unregister failed during call cleanup",
+                            call_id=call_id,
+                            exc_info=True,
+                        )
 
             # Remove residual mappings so new calls don’t inherit.
             self.bridges.pop(session.caller_channel_id, None)
@@ -9469,6 +10269,9 @@ class Engine:
                 self.audiosocket_channels.pop(session.caller_channel_id, None)
             if session.audiosocket_uuid:
                 self.uuidext_to_channel.pop(session.audiosocket_uuid, None)
+            if session.media_channel_id:
+                self.pending_websocket_channels.pop(session.media_channel_id, None)
+                self.websocket_media_channels.pop(session.media_channel_id, None)
 
             # Clear per-call resample states to prevent unbounded memory growth
             self._resample_state_provider_in.pop(call_id, None)
@@ -9476,6 +10279,7 @@ class Engine:
             self._resample_state_pipeline16k.pop(call_id, None)
             self._resample_state_vad8k.pop(call_id, None)
             self.audiosocket_resample_state.pop(call_id, None)
+            self._websocket_ingress_resample_state.pop(call_id, None)
 
             # Clear detected codec preferences
             self.call_audio_preferences.pop(call_id, None)
@@ -9705,6 +10509,7 @@ class Engine:
                     transferred=self._session_was_transferred(session),
                     transfer_destination=getattr(session, "transfer_destination", None) or getattr(session, "transfer_target", None) or "",
                     media_rx_confirmed=bool(getattr(session, "media_rx_confirmed", False)),
+                    websocket_input_rejections=dict(getattr(session, "websocket_input_rejections", {})),
                 )
             except Exception:
                 logger.debug("Failed to emit RCA_CALL_END", call_id=call_id, exc_info=True)
@@ -9956,6 +10761,8 @@ class Engine:
                     session.audiosocket_conn_id = conn_id
                 except Exception:
                     pass
+                session.media_connection_id = conn_id
+                session.media_connection_state = "ready"
                 session.status = "audiosocket_bound"
                 await self._save_session(session)
 
@@ -11795,6 +12602,13 @@ class Engine:
             except Exception:
                 logger.debug("Failed to notify local provider about barge-in", call_id=call_id, exc_info=True)
 
+            # This is an action counter, not acoustic interruption detection.
+            # The coordinator's existing counter has different semantics and
+            # does not cover provider-owned speech-start/flush actions.
+            metric_source = source if source in {
+                "provider_event", "local_vad_fallback", "local_vad", "talkdetect",
+            } else "other"
+            _BARGE_ACTIONS.labels(source=metric_source).inc()
             logger.info("🎧 BARGE-IN action applied", call_id=call_id, source=source, reason=reason)
         except Exception:
             logger.error("Barge-in action failed", call_id=call_id, source=source, reason=reason, exc_info=True)
@@ -11834,6 +12648,123 @@ class Engine:
         except Exception:
             pass
 
+    def _record_websocket_input_rejection(self, session: Optional[CallSession], reason: str) -> None:
+        # Only fixed internal reasons, never caller IDs or driver strings, are
+        # retained in the aggregate. Per-call detail expires with the session.
+        counts = getattr(self, "_websocket_input_rejections", None)
+        if counts is None:
+            counts = self._websocket_input_rejections = {}
+        counts[reason] = counts.get(reason, 0) + 1
+        if session is not None:
+            detail = session.websocket_input_rejections
+            detail[reason] = detail.get(reason, 0) + 1
+            if detail[reason] == 1:
+                logger.info(
+                    "WebSocket input rejected", call_id=session.call_id,
+                    reason=reason, state=session.media_connection_state,
+                    media_rx_confirmed=session.media_rx_confirmed,
+                )
+
+    async def _websocket_handle_audio(self, call_id: str, audio_bytes: bytes) -> None:
+        """Decode raw WebSocket codec bytes into the canonical PCM16 ingress bus.
+
+        Media WebSocket has no RTP header and its signed-linear payload must not
+        inherit the RTP network-byte-order conversion.  The binding is frozen
+        per call, so concurrent calls may safely use different codecs/rates.
+        """
+        session = await self.session_store.get_by_call_id(call_id)
+        server = getattr(self, "websocket_server", None)
+        if not session or server is None or session.cleanup_in_progress or session.cleanup_completed:
+            self._record_websocket_input_rejection(session, "inactive_session")
+            return
+        binding = server.get_binding(call_id)
+        if binding is None:
+            self._record_websocket_input_rejection(session, "missing_binding")
+            return
+        media_channel_id = str(getattr(binding, "channel_id", "") or "")
+        if (
+            session.media_connection_state != "ready"
+            or not media_channel_id
+            or media_channel_id != str(session.media_channel_id or "")
+            or getattr(self, "websocket_media_channels", {}).get(media_channel_id)
+            != call_id
+        ):
+            identity_matches = bool(
+                media_channel_id and media_channel_id == session.media_channel_id
+                and self.websocket_media_channels.get(media_channel_id) == call_id
+            )
+            self._record_websocket_input_rejection(
+                session, "not_ready" if identity_matches else "ownership_mismatch"
+            )
+            logger.debug(
+                "Dropping WebSocket audio before bridge/media ownership is ready",
+                call_id=call_id,
+                media_channel_id=media_channel_id,
+                state=session.media_connection_state,
+            )
+            return
+        codec = str(getattr(binding, "codec", "") or session.negotiated_encoding or "").lower()
+        rate = int(getattr(binding, "sample_rate", 0) or session.negotiated_sample_rate or 0)
+        try:
+            codec = canonical_wire_codec(codec)
+            # Protocol helpers own exact wire decoding. Signed-linear WebSocket
+            # media is PCM16LE, not RTP L16, so this path never byte-swaps it.
+            pcm = decode_wire_audio(audio_bytes, codec)
+            rate = rate or sample_rate_for_codec(codec)
+
+            if rate != 16000:
+                pcm, state = audioop.ratecv(
+                    pcm,
+                    2,
+                    1,
+                    rate,
+                    16000,
+                    self._websocket_ingress_resample_state.get(call_id),
+                )
+                self._websocket_ingress_resample_state[call_id] = state
+            await self._on_transport_pcm(
+                call_id,
+                pcm,
+                16000,
+                source="websocket",
+            )
+        except Exception as exc:
+            self._record_websocket_input_rejection(session, "decode_or_ingress_error")
+            session.media_last_error = str(exc)[:256]
+            await self._save_session(session)
+            logger.warning(
+                "Dropping invalid Asterisk Media WebSocket audio",
+                call_id=call_id,
+                codec=codec,
+                sample_rate=rate,
+                bytes=len(audio_bytes),
+                error=str(exc),
+            )
+
+    async def _websocket_handle_disconnect(self, call_id: str, reason: str) -> None:
+        """Fail the call once when its v1 media connection closes."""
+        session = await self.session_store.get_by_call_id(call_id)
+        if not session:
+            return
+        session.media_connection_state = "closed"
+        session.media_last_error = str(reason or "media websocket disconnected")[:256]
+        await self._save_session(session)
+        if not session.cleanup_in_progress and not session.cleanup_completed:
+            logger.warning(
+                "Asterisk Media WebSocket disconnected; ending call",
+                call_id=call_id,
+                reason=session.media_last_error,
+            )
+            await self._cleanup_call(call_id, force_caller_hangup=True)
+
+    async def _websocket_handle_dtmf(self, call_id: str, digit: str) -> None:
+        """Log media-driver DTMF without changing ARI action ownership."""
+        logger.info(
+            "Asterisk Media WebSocket DTMF received (informational)",
+            call_id=call_id,
+            digit=str(digit or "")[:1],
+        )
+
     async def _audiosocket_handle_disconnect(self, conn_id: str) -> None:
         """Cleanup mappings when an AudioSocket connection disconnects."""
         try:
@@ -11853,6 +12784,8 @@ class Engine:
                     sess = await self.session_store.get_by_call_id(caller_channel_id)
                     if sess and getattr(sess, 'audiosocket_conn_id', None) == conn_id:
                         sess.audiosocket_conn_id = None
+                        sess.media_connection_id = None
+                        sess.media_connection_state = "closed"
                         await self._save_session(sess)
                 except Exception:
                     pass
@@ -11889,26 +12822,78 @@ class Engine:
             return "forward"
         return "drop"
 
-    async def _on_rtp_audio(self, caller_channel_id: str, ssrc: int, pcm_16k: bytes) -> None:
-        """Route inbound ExternalMedia RTP audio to the active provider.
+    async def _on_rtp_audio(
+        self,
+        caller_channel_id: str,
+        ssrc: int,
+        pcm_16k: bytes,
+    ) -> None:
+        """Compatibility callback matching RTPServer's established signature."""
 
-        IMPORTANT: `caller_channel_id` must be provided by RTPServer (per-session context).
-        Do not infer SSRC→call mappings in the engine; that is not concurrency-safe.
+        sample_rate = int(
+            getattr(self.rtp_server, "sample_rate", 16000)
+            if getattr(self, "rtp_server", None)
+            else 16000
+        )
+        await self._on_transport_pcm(
+            caller_channel_id,
+            pcm_16k,
+            sample_rate,
+            source="externalmedia",
+            ssrc=ssrc,
+        )
+
+    async def _on_transport_pcm(
+        self,
+        caller_channel_id: str,
+        pcm_16k: bytes,
+        pcm_sample_rate: int,
+        *,
+        source: str,
+        ssrc: int = 0,
+    ) -> None:
+        """Route canonical PCM16 transport audio to the active provider.
+
+        The transport owns call correlation and wire decoding. This common bus
+        receives explicit call identity, signed PCM16, and a sample rate; it
+        never infers RTP SSRC ownership or reads another transport's format.
         """
         try:
+            pcm_sample_rate = int(pcm_sample_rate or 16000)
             session = await self.session_store.get_by_call_id(caller_channel_id)
             if not session:
                 logger.debug(
-                    "No session for call; dropping RTP audio",
+                    "No session for call; dropping transport audio",
                     caller_channel_id=caller_channel_id,
+                    source=source,
                     ssrc=ssrc,
                     bytes=len(pcm_16k),
                 )
                 return
 
+            # Capture the decoded caller stream before any TTS/VAD/provider
+            # gating can drop or replace it. AudioCaptureManager owns privacy
+            # policy; capture failures are diagnostic-only and never block the
+            # live media path.
+            try:
+                if pcm_16k:
+                    self.audio_capture.append_pcm16(
+                        session.call_id,
+                        "caller_inbound",
+                        pcm_16k,
+                        pcm_sample_rate,
+                    )
+            except Exception:
+                logger.debug(
+                    "Caller inbound transport capture failed",
+                    call_id=caller_channel_id,
+                    source=source,
+                    exc_info=True,
+                )
+
             # Record SSRC on the session for diagnostics (RTPServer maintains SSRC mapping internally).
             try:
-                if not getattr(session, "ssrc", None):
+                if ssrc and not getattr(session, "ssrc", None):
                     session.ssrc = ssrc
                     await self._save_session(session)
             except Exception:
@@ -11921,32 +12906,35 @@ class Engine:
                     session.media_rx_confirmed = True
                     session.first_media_rx_ts = time.time()
                     await self._save_session(session)
-                    logger.info("Media RX confirmed (ExternalMedia)", call_id=caller_channel_id)
+                    logger.info("Media RX confirmed", call_id=caller_channel_id, source=source)
             except Exception:
-                logger.debug("Failed to set media_rx_confirmed (ExternalMedia)", call_id=caller_channel_id, exc_info=True)
+                logger.debug("Failed to set media_rx_confirmed", call_id=caller_channel_id, source=source, exc_info=True)
 
             await self._observe_no_input_audio(
                 session,
                 pcm_16k,
-                int(getattr(self.rtp_server, 'sample_rate', 16000) if self.rtp_server else 16000),
-                source="externalmedia",
+                pcm_sample_rate,
+                source=source,
             )
 
             # Check for pipeline mode FIRST (before continuous_input provider routing)
             # Pipeline adapters need audio in their queue, not sent to monolithic providers
             pipeline_forced = self._pipeline_forced.get(caller_channel_id)
-            if self._consume_attended_transfer_screening_audio(session.call_id, pcm_16k, int(getattr(self.rtp_server, 'sample_rate', 16000) if self.rtp_server else 16000)):
+            if self._consume_attended_transfer_screening_audio(
+                session.call_id, pcm_16k, pcm_sample_rate
+            ):
                 return
             if self._session_has_pending_attended_transfer(session):
                 logger.debug(
                     "Suspending provider audio during pending attended transfer",
                     call_id=caller_channel_id,
-                    source="externalmedia",
+                    source=source,
                 )
                 return
             logger.debug(
-                "RTP audio routing check",
+                "Transport audio routing check",
                 call_id=caller_channel_id,
+                source=source,
                 pipeline_forced=pipeline_forced,
                 audio_capture_enabled=session.audio_capture_enabled,
                 has_queue=caller_channel_id in self._pipeline_queues,
@@ -12005,8 +12993,9 @@ class Engine:
                         if now - last >= 1.0:
                             mon["last_ts"] = now
                             logger.debug(
-                                "Pipeline barge-in monitor (RTP)",
+                                "Pipeline barge-in monitor",
                                 call_id=caller_channel_id,
+                                source=source,
                                 tts_elapsed_ms=tts_elapsed_ms,
                                 energy=energy,
                                 threshold=threshold,
@@ -12041,9 +13030,9 @@ class Engine:
                                 reason="pipeline_tts_overlap",
                             )
                             session.audio_capture_enabled = True
-                            logger.info("🎧 BARGE-IN (RTP/pipeline) triggered", call_id=caller_channel_id)
+                            logger.info("🎧 BARGE-IN (pipeline) triggered", call_id=caller_channel_id, source=source)
                         except Exception:
-                            logger.error("Error triggering RTP pipeline barge-in", call_id=caller_channel_id, exc_info=True)
+                            logger.error("Error triggering pipeline barge-in", call_id=caller_channel_id, source=source, exc_info=True)
                     else:
                         if int(getattr(session, "barge_in_candidate_ms", 0) or 0) > 0 and self.conversation_coordinator:
                             try:
@@ -12056,12 +13045,12 @@ class Engine:
                 if q:
                     try:
                         q.put_nowait(pcm_16k)  # Canonical modular STT bus.
-                        logger.debug("RTP audio routed to pipeline queue", call_id=caller_channel_id, bytes=len(pcm_16k))
+                        logger.debug("Transport audio routed to pipeline queue", call_id=caller_channel_id, source=source, bytes=len(pcm_16k))
                     except Exception as exc:
-                        logger.warning("Pipeline queue full or unavailable (RTP)", call_id=caller_channel_id, error=str(exc))
+                        logger.warning("Pipeline queue full or unavailable", call_id=caller_channel_id, source=source, error=str(exc))
                     return  # Done - don't route to monolithic provider
                 else:
-                    logger.warning("Pipeline mode active but no queue found (RTP)", call_id=caller_channel_id)
+                    logger.warning("Pipeline mode active but no queue found", call_id=caller_channel_id, source=source)
 
             # Check if provider requires continuous audio input using capabilities
             # Full agents with native VAD need uninterrupted audio flow for turn-taking
@@ -12119,44 +13108,44 @@ class Engine:
                     # Providers without native interruption ownership stay gated and
                     # use AVA's conservative local barge-in fallback.
                     logger.debug(
-                        "Dropping RTP audio for continuous provider during TTS playback",
+                        "Dropping transport audio for continuous provider during TTS playback",
                         call_id=caller_channel_id,
                         provider=provider_name,
+                        source=source,
                     )
                     try:
                         await self._maybe_provider_barge_in_fallback(
                             session,
                             pcm16=pcm_for_barge_in,
-                            pcm_rate_hz=int(getattr(self.rtp_server, 'sample_rate', 16000) if self.rtp_server else 16000),
+                            pcm_rate_hz=pcm_sample_rate,
                             audiosocket_wire=None,
-                            source="externalmedia",
+                            source=source,
                         )
                     except Exception:
                         logger.debug(
-                            "Provider barge-in fallback check failed (ExternalMedia/continuous gated)",
+                            "Provider barge-in fallback check failed (continuous gated)",
                             call_id=caller_channel_id,
+                            source=source,
                             exc_info=True,
                         )
                     return
                 elif not session.audio_capture_enabled:
                     logger.debug(
-                        "Forwarding RTP audio during provider output for native barge-in",
+                        "Forwarding transport audio during provider output for native barge-in",
                         call_id=caller_channel_id,
                         provider=provider_name,
+                        source=source,
                     )
                 if not getattr(session, "provider_session_active", False):
                     return
                 # Encode audio for provider (same as AudioSocket path)
                 try:
-                    # Get RTP server's configured sample rate (no longer hardcoded)
-                    rtp_rate = getattr(self.rtp_server, 'sample_rate', 16000) if self.rtp_server else 16000
-                    
                     prov_payload, prov_enc, prov_rate = self._encode_for_provider(
                         session.call_id,
                         provider_name,
                         provider,
                         pcm_16k,
-                        rtp_rate,  # Use configured rate from RTP server
+                        pcm_sample_rate,
                     )
                     try:
                         self.audio_capture.append_encoded(
@@ -12167,24 +13156,24 @@ class Engine:
                             prov_rate,
                         )
                     except Exception:
-                        logger.debug("Provider input capture failed (continuous-input RTP)", call_id=session.call_id, exc_info=True)
+                        logger.debug("Provider input capture failed (continuous input)", call_id=session.call_id, source=source, exc_info=True)
                     # CRITICAL: Pass sample_rate and encoding to provider
                     # Google Live needs these to avoid double resampling
                     await provider.send_audio(prov_payload, sample_rate=prov_rate, encoding=prov_enc)
                 except Exception as exc:
-                    logger.debug("Continuous-input RTP forward error", call_id=caller_channel_id, error=str(exc))
+                    logger.debug("Continuous-input transport forward error", call_id=caller_channel_id, source=source, error=str(exc))
 
                 # Provider-owned mode: local VAD fallback may flush local output (never cancels provider).
                 try:
                     await self._maybe_provider_barge_in_fallback(
                         session,
                         pcm16=pcm_for_barge_in,
-                        pcm_rate_hz=int(getattr(self.rtp_server, 'sample_rate', 16000) if self.rtp_server else 16000),
+                        pcm_rate_hz=pcm_sample_rate,
                         audiosocket_wire=None,
-                        source="externalmedia",
+                        source=source,
                     )
                 except Exception:
-                    logger.debug("Provider barge-in fallback check failed (ExternalMedia/continuous)", call_id=caller_channel_id, exc_info=True)
+                    logger.debug("Provider barge-in fallback check failed (continuous)", call_id=caller_channel_id, source=source, exc_info=True)
                 return
 
             # Below: standard gating/barge-in logic for hybrid (P2) providers only
@@ -12202,8 +13191,9 @@ class Engine:
                     elapsed_ms = post_guard_ms
                 if elapsed_ms < post_guard_ms:
                     logger.debug(
-                        "Dropping inbound RTP during post-TTS protection window",
+                        "Dropping inbound transport audio during post-TTS protection window",
                         call_id=caller_channel_id,
+                        source=source,
                         elapsed_ms=elapsed_ms,
                         protect_ms=post_guard_ms,
                     )
@@ -12213,8 +13203,8 @@ class Engine:
             if hasattr(session, 'audio_capture_enabled') and not session.audio_capture_enabled:
                 cfg = getattr(self.config, 'barge_in', None)
                 if not cfg or not getattr(cfg, 'enabled', True):
-                    logger.debug("Dropping inbound RTP during TTS playback (barge-in disabled)",
-                                 ssrc=ssrc, caller_channel_id=caller_channel_id, bytes=len(pcm_16k))
+                    logger.debug("Dropping inbound transport audio during TTS playback (barge-in disabled)",
+                                 source=source, ssrc=ssrc, caller_channel_id=caller_channel_id, bytes=len(pcm_16k))
                     return
 
                 now = time.time()
@@ -12234,8 +13224,8 @@ class Engine:
                 except Exception:
                     pass
                 if tts_elapsed_ms < initial_protect:
-                    logger.debug("Dropping inbound RTP during initial TTS protection window",
-                                 ssrc=ssrc, caller_channel_id=caller_channel_id,
+                    logger.debug("Dropping inbound transport audio during initial TTS protection window",
+                                 source=source, ssrc=ssrc, caller_channel_id=caller_channel_id,
                                  tts_elapsed_ms=tts_elapsed_ms, protect_ms=initial_protect)
                     return
 
@@ -12281,9 +13271,9 @@ class Engine:
                             source="local_vad",
                             reason="tts_overlap",
                         )
-                        logger.info("🎧 BARGE-IN (RTP) triggered", call_id=caller_channel_id)
+                        logger.info("🎧 BARGE-IN triggered", call_id=caller_channel_id, source=source)
                     except Exception:
-                        logger.error("Error triggering RTP barge-in", call_id=caller_channel_id, exc_info=True)
+                        logger.error("Error triggering transport barge-in", call_id=caller_channel_id, source=source, exc_info=True)
                 else:
                     # Not yet triggered; drop inbound frame while TTS is active
                     if int(getattr(session, "barge_in_candidate_ms", 0) or 0) > 0 and self.conversation_coordinator:
@@ -12291,8 +13281,8 @@ class Engine:
                             self.conversation_coordinator.note_audio_during_tts(caller_channel_id)
                         except Exception:
                             pass
-                    logger.debug("Dropping inbound RTP during TTS (candidate_ms=%d, energy=%d)",
-                                 session.barge_in_candidate_ms, energy)
+                    logger.debug("Dropping inbound transport audio during TTS (candidate_ms=%d, energy=%d)",
+                                 session.barge_in_candidate_ms, energy, source=source)
                     return
 
             # If a pipeline was explicitly requested for this call, route to pipeline queue
@@ -12308,7 +13298,7 @@ class Engine:
                         q.put_nowait(pcm_16k)
                         return
                     except asyncio.QueueFull:
-                        logger.debug("Pipeline queue full; dropping RTP frame", call_id=caller_channel_id)
+                        logger.debug("Pipeline queue full; dropping transport frame", call_id=caller_channel_id, source=source)
                         return
 
             provider_name = session.provider_name or self.config.default_provider
@@ -12316,7 +13306,7 @@ class Engine:
             if not provider or not hasattr(provider, 'send_audio'):
                 if not provider and caller_channel_id not in self._provider_start_tasks and not getattr(session, "provider_session_active", False):
                     self._kickoff_provider_session_start(caller_channel_id)
-                logger.debug("Provider unavailable for RTP audio", provider=provider_name)
+                logger.debug("Provider unavailable for transport audio", provider=provider_name, source=source)
                 return
             if not getattr(session, "provider_session_active", False):
                 return
@@ -12330,12 +13320,12 @@ class Engine:
                     pcm16=pcm_16k,
                     pcm_rate_hz=16000,
                     audiosocket_wire=None,
-                    source="externalmedia",
+                    source=source,
                 )
             except Exception:
-                logger.debug("Provider barge-in fallback check failed (ExternalMedia)", call_id=caller_channel_id, exc_info=True)
+                logger.debug("Provider barge-in fallback check failed", call_id=caller_channel_id, source=source, exc_info=True)
         except Exception as exc:
-            logger.error("Error handling RTP audio", ssrc=ssrc, error=str(exc), exc_info=True)
+            logger.error("Error handling transport audio", source=source, ssrc=ssrc, error=str(exc), exc_info=True)
 
     def _build_deepgram_config(self, provider_cfg: Dict[str, Any], provider_key: str = "deepgram") -> Optional[DeepgramProviderConfig]:
         """Construct a DeepgramProviderConfig from raw provider settings with validation."""
@@ -13454,6 +14444,7 @@ class Engine:
                 # completion remain separate signals.
                 defer_gating_until_drain = bool(
                     event.get("defer_tts_gating_until_drain", False)
+                    or getattr(self.config, "audio_transport", None) == "websocket"
                 )
                 # If we were suppressing output due to barge-in, end suppression at a segment boundary.
                 # This prevents cutting into the next (new) response once the provider finishes the interrupted one.
@@ -13481,6 +14472,22 @@ class Engine:
                     except Exception:
                         logger.debug("Failed to mark segment boundary", call_id=call_id, exc_info=True)
                     if defer_gating_until_drain:
+                        if getattr(self.config, "audio_transport", None) == "websocket":
+                            try:
+                                # For WebSocket this does not clear tokens now;
+                                # SPM registers a task against the correlated
+                                # boundary enqueued immediately above and clears
+                                # both stream/fallback tokens only after ACK.
+                                await self.streaming_playback_manager.end_segment_gating(
+                                    call_id,
+                                    notify_no_input=False,
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "Failed to arm WebSocket boundary gating",
+                                    call_id=call_id,
+                                    exc_info=True,
+                                )
                         logger.info(
                             "Retaining greeting TTS gating until transport drain",
                             call_id=call_id,
@@ -14093,6 +15100,9 @@ class Engine:
         pending_stream_bytes = 0
         pending_jitter_frames = 0
         pending_remainder_bytes = 0
+        pending_transport_setup = 0
+        pending_transport_output = 0
+        pending_transport_frames = 0
         active_playbacks = 0
         last_real_emit_ts: Optional[float] = None
 
@@ -14130,12 +15140,30 @@ class Engine:
         except Exception:
             pass
 
+        if getattr(getattr(self, "config", None), "audio_transport", None) == "websocket":
+            try:
+                remote = self.websocket_server.snapshot(call_id) if self.websocket_server else {}
+                pending_transport_setup = int(bool(remote.get("pending")))
+                output_state = str(remote.get("output_state") or "idle")
+                pending_transport_output = int(
+                    output_state not in {"idle", "cancelled", "missing", "closed", "failed"}
+                )
+                queue_frames = (remote.get("queue") or {}).get("frames")
+                if queue_frames is not None:
+                    pending_transport_frames = max(0, int(queue_frames))
+            except Exception:
+                # Diagnostics must never break the terminal hangup owner.
+                pass
+
         return {
             "pending_provider_chunks": pending_provider_chunks,
             "pending_coalesce_bytes": pending_coalesce_bytes,
             "pending_stream_bytes": pending_stream_bytes,
             "pending_jitter_frames": pending_jitter_frames,
             "pending_remainder_bytes": pending_remainder_bytes,
+            "pending_transport_setup": pending_transport_setup,
+            "pending_transport_output": pending_transport_output,
+            "pending_transport_frames": pending_transport_frames,
             "active_playbacks": active_playbacks,
             "last_real_emit_ts": last_real_emit_ts,
         }
@@ -14146,7 +15174,11 @@ class Engine:
         # UDP/RTP has no delivery acknowledgement. Its real-time pacer gives us
         # an accurate last-frame timestamp, then this slightly larger post-roll
         # covers Asterisk/network jitter. AudioSocket uses TCP backpressure.
-        return 0.5 if transport == "externalmedia" else 0.35
+        if transport == "externalmedia":
+            return 0.5
+        if transport == "websocket":
+            return 0.2
+        return 0.35
 
     async def _wait_for_call_audio_drain(
         self,
@@ -15873,7 +16905,8 @@ class Engine:
                                                     pass
                                             tts_bytes.extend(tts_chunk)
                                     if tts_bytes:
-                                        playback_id = await self.playback_manager.play_audio(call_id, bytes(tts_bytes), "pipeline-tts")
+                                        tts_bytes = self._pipeline_audio_for_file_playback(pipeline.tts_options, bytes(tts_bytes))
+                                        playback_id = await self.playback_manager.play_audio(call_id, tts_bytes, "pipeline-tts")
                                 except Exception:
                                     logger.debug("Pipeline file-playback fallback failed", call_id=call_id, exc_info=True)
                                     if not tool_calls:
@@ -16076,9 +17109,10 @@ class Engine:
                                                     if chunk:
                                                         transfer_bytes.extend(chunk)
                                                 if transfer_bytes:
+                                                    transfer_bytes = self._pipeline_audio_for_file_playback(pipeline.tts_options, bytes(transfer_bytes))
                                                     transfer_pid = await self.playback_manager.play_audio(
                                                         call_id,
-                                                        bytes(transfer_bytes),
+                                                        transfer_bytes,
                                                         "pipeline-transfer",
                                                     )
                                                     if transfer_pid:
@@ -16110,7 +17144,8 @@ class Engine:
                                                 async for chunk in pipeline.tts_adapter.synthesize(call_id, farewell, pipeline.tts_options):
                                                     fw_bytes.extend(chunk)
                                                 if fw_bytes:
-                                                    pid = await self.playback_manager.play_audio(call_id, bytes(fw_bytes), "pipeline-farewell")
+                                                    fw_bytes = self._pipeline_audio_for_file_playback(pipeline.tts_options, bytes(fw_bytes))
+                                                    pid = await self.playback_manager.play_audio(call_id, fw_bytes, "pipeline-farewell")
                                                     # Calculate actual duration: mulaw 8kHz = 8000 bytes/sec
                                                     duration_sec = len(fw_bytes) / 8000.0
                                                     # Wait for farewell (interruptible by barge-in) + small buffer
@@ -16389,7 +17424,8 @@ class Engine:
                                                                             if chunk:
                                                                                 transfer_bytes.extend(chunk)
                                                                         if transfer_bytes:
-                                                                            transfer_pid = await self.playback_manager.play_audio(call_id, bytes(transfer_bytes), "pipeline-transfer")
+                                                                            transfer_bytes = self._pipeline_audio_for_file_playback(pipeline.tts_options, bytes(transfer_bytes))
+                                                                            transfer_pid = await self.playback_manager.play_audio(call_id, transfer_bytes, "pipeline-transfer")
                                                                             if transfer_pid:
                                                                                 await self.playback_manager.wait_for_playback_end(
                                                                                     call_id,
@@ -16409,7 +17445,8 @@ class Engine:
                                                                 async for chunk in pipeline.tts_adapter.synthesize(call_id, farewell, pipeline.tts_options):
                                                                     fw_bytes.extend(chunk)
                                                                 if fw_bytes:
-                                                                    fw_pid = await self.playback_manager.play_audio(call_id, bytes(fw_bytes), "pipeline-farewell")
+                                                                    fw_bytes = self._pipeline_audio_for_file_playback(pipeline.tts_options, bytes(fw_bytes))
+                                                                    fw_pid = await self.playback_manager.play_audio(call_id, fw_bytes, "pipeline-farewell")
                                                                     if fw_pid:
                                                                         await self.playback_manager.wait_for_playback_end(
                                                                             call_id,
@@ -18985,7 +20022,10 @@ class Engine:
 
     def _provider_input_mode_for_transport(self, session: CallSession) -> str:
         """Resolve the provider input mode without losing legacy AudioSocket config."""
-        if self.config.audio_transport == "externalmedia":
+        if self.config.audio_transport in {"externalmedia", "websocket"}:
+            # Both paths enter the provider bus as canonical PCM16 at 16 kHz.
+            # WebSocket wire codec/rate conversion occurs in its ingress
+            # callback before reaching the shared RTP-era pipeline.
             return "pcm16_16k"
 
         transport = getattr(session, "transport_profile", None)
@@ -19011,6 +20051,11 @@ class Engine:
             session = await self.session_store.get_by_call_id(call_id)
             if not session:
                 logger.error("Start provider session called for unknown call", call_id=call_id)
+                return
+            if session.cleanup_in_progress or session.cleanup_completed:
+                logger.debug(
+                    "Skipping provider start for ending call", call_id=call_id
+                )
                 return
             # Idempotent fast-path.
             if getattr(session, "provider_session_active", False) and call_id in self._call_providers:
@@ -19060,6 +20105,18 @@ class Engine:
             except Exception:
                 logger.debug("Pre-call tool execution failed", call_id=call_id, exc_info=True)
 
+            current_session = await self.session_store.get_by_call_id(call_id)
+            if (
+                current_session is not session
+                or session.cleanup_in_progress
+                or session.cleanup_completed
+            ):
+                logger.debug(
+                    "Call ended during pre-call setup; provider will not start",
+                    call_id=call_id,
+                )
+                return
+
             # The selected pre-call outputs determine the call-local correction
             # schema. Always configure it, including when no lookup succeeded,
             # so the generic catalog definition is never exposed to a live Agent.
@@ -19082,6 +20139,18 @@ class Engine:
                         call_id=call_id,
                         exc_info=True,
                     )
+
+            current_session = await self.session_store.get_by_call_id(call_id)
+            if (
+                current_session is not session
+                or session.cleanup_in_progress
+                or session.cleanup_completed
+            ):
+                logger.debug(
+                    "Call ended during provider configuration; provider will not start",
+                    call_id=call_id,
+                )
+                return
 
             # Preserve any per-call override previously applied. Only assign a pipeline
             # here if one has already been selected (e.g., via AI_PROVIDER or active_pipeline)
@@ -20894,6 +21963,7 @@ class Engine:
 
     async def _build_live_status_components(self) -> Dict[str, Dict[str, Any]]:
         """Build Admin UI live-status components from the engine's in-memory state."""
+        await self._refresh_websocket_modules()
         providers_info: Dict[str, Dict[str, Any]] = {}
         provider_warnings: List[str] = []
         for name, prov in (self.providers or {}).items():
@@ -20927,12 +21997,7 @@ class Engine:
             default_ready = self._pipeline_is_ready(default_target)
 
         ari_connected = bool(self.ari_client and self.ari_client.running)
-        if getattr(self.config, "audio_transport", None) == "audiosocket":
-            transport_ok = self.audio_socket_server is not None
-        elif getattr(self.config, "audio_transport", None) == "externalmedia":
-            transport_ok = self.rtp_server is not None
-        else:
-            transport_ok = True
+        transport_ok = self._selected_transport_ready()
 
         active_sessions = await self.session_store.get_all_sessions()
         session_stats = await self.session_store.get_session_stats()
@@ -21025,6 +22090,7 @@ class Engine:
     async def _health_handler(self, request):
         """Return JSON with engine/provider status."""
         try:
+            await self._refresh_websocket_modules()
             # Gather pipeline details
             pipelines_info = {}
             pipeline_status = self._pipeline_status_snapshot()
@@ -21077,7 +22143,13 @@ class Engine:
                 default_ready = self._pipeline_is_ready(default_target)
             ari_connected = bool(self.ari_client and self.ari_client.running)
             audiosocket_listening = self.audio_socket_server is not None if self.config.audio_transport == 'audiosocket' else True
-            is_ready = ari_connected and audiosocket_listening and default_ready
+            websocket_status = (
+                self._selected_transport_health()
+                if self.config.audio_transport == "websocket"
+                else {"listening": False, "active_connections": 0, "pending_calls": 0}
+            )
+            selected_transport_ready = self._selected_transport_ready()
+            is_ready = ari_connected and selected_transport_ready and default_ready
 
             # Get conversation coordinator metrics
             conversation_summary = await self.conversation_coordinator.get_summary()
@@ -21120,6 +22192,11 @@ class Engine:
                     "rtp_port": getattr(self.config.external_media, 'rtp_port', None) if self.config.external_media else None,
                     "port_range": getattr(self.config.external_media, 'port_range', None) if self.config.external_media else None,
                 },
+                "websocket_media": {
+                    **websocket_status,
+                    "version_compatible": self._websocket_control_format() is not None,
+                    "asterisk_version": getattr(self.ari_client, "asterisk_version", None),
+                },
                 "config_warnings": [
                     *self._compute_nat_warnings(),
                     *[
@@ -21149,13 +22226,10 @@ class Engine:
     async def _ready_handler(self, request):
         """Readiness probe: 200 only if ARI, transport, and default provider are ready."""
         try:
+            await self._refresh_websocket_modules()
             # Use is_connected property which reflects true WebSocket state (AAVA-136)
             ari_connected = bool(self.ari_client and self.ari_client.is_connected)
-            transport_ok = True
-            if self.config.audio_transport == 'audiosocket':
-                transport_ok = self.audio_socket_server is not None
-            elif self.config.audio_transport == 'externalmedia':
-                transport_ok = self.rtp_server is not None
+            transport_ok = self._selected_transport_ready()
             default_target = getattr(self.config, "default_provider", None) if self.config else None
             provider_ok = False
             pipeline_ok = False
@@ -21257,6 +22331,37 @@ class Engine:
                 }, status=500)
 
             apply_decision = classify_config_change(self.config, new_config)
+            transport_restart_keys = {
+                "audio_transport",
+                "audiosocket",
+                "external_media",
+                "websocket_media",
+            }
+            changed_transport_keys = sorted(
+                set(apply_decision.changed_keys) & transport_restart_keys
+            )
+            if changed_transport_keys:
+                # Never publish a new config/orchestrator that describes a
+                # listener different from the one actually running.  The disk
+                # config remains visible through /config-state and can be
+                # activated by the normal restart path.
+                self._restart_required_after_reload = True
+                logger.warning(
+                    "Rejected hot reload of restart-only transport configuration",
+                    changed_keys=changed_transport_keys,
+                )
+                return web.json_response(
+                    {
+                        "success": False,
+                        "message": "Transport changes require an AI Engine restart and were not applied",
+                        "errors": [],
+                        "changed_keys": changed_transport_keys,
+                        "apply_required": True,
+                        "restart_required": True,
+                        "recommended_apply_method": "restart",
+                    },
+                    status=409,
+                )
 
             # Build every new-call runtime object off-side. Nothing running is
             # mutated unless both tool construction and orchestration validation
