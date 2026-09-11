@@ -129,6 +129,10 @@ update a single deduplicated tracking issue rather than creating duplicates.
 
 ## Miscellaneous
 
+- `scripts/issue_625_metadata_guidance_trial.py`
+  - Temporary, version-guarded issue #625 trial that strengthens only the provider-facing `update_call_metadata` instructions. Supports `apply`, `check`, and `revert`; it does not change field permissions, persisted data, or configuration.
+  - Usage: `python3 scripts/issue_625_metadata_guidance_trial.py apply`, followed by an `ai_engine` rebuild/recreate. Use `revert` and rebuild/recreate to roll back.
+
 - `scripts/llm_latency_test.py`
   - Rough latency probe for LLM responses (dev utility).
 
