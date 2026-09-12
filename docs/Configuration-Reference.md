@@ -877,5 +877,21 @@ pytest tests/test_pipeline_fish_audio_adapters.py          # mocked HTTP
 FISH_AUDIO_API_KEY=... pytest -m integration tests/test_pipeline_fish_audio_adapters.py
 ```
 
+Without an account, `scripts/fish_audio_mock.py` answers like the service does
+(Bearer auth, `model` header, body validation, chunked audio) so the whole path
+can be exercised, including a call end to end:
+
+```bash
+python scripts/fish_audio_mock.py &
+FISH_AUDIO_API_KEY=mock-key FISH_AUDIO_BASE_URL=http://127.0.0.1:8788/v1 \
+    pytest -m integration tests/test_pipeline_fish_audio_adapters.py
+```
+
+Set `base_url: http://127.0.0.1:8788/v1` on the provider to route a real call
+through the mock. It serves a generated tone by default; set
+`FISH_MOCK_LOCAL_WS=ws://127.0.0.1:8765` to hear speech from a local AI server
+instead. The request text also carries hooks — `FISH_MOCK_401`,
+`FISH_MOCK_SLOW`, `FISH_MOCK_EMPTY` — to check how failures are handled.
+
 The integration test is skipped unless `FISH_AUDIO_API_KEY` is set; set
 `FISH_AUDIO_REFERENCE_ID` as well to synthesise with a specific voice.

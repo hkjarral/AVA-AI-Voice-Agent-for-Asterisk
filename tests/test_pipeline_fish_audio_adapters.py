@@ -318,15 +318,23 @@ async def test_pipeline_orchestrator_skips_disabled_provider():
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_fish_audio_live_api():
-    """Integration test: call the real Fish Audio API and verify telephone audio."""
+    """Integration test against a real endpoint.
+
+    Point it at the service with FISH_AUDIO_API_KEY (and optionally
+    FISH_AUDIO_REFERENCE_ID), or at the bundled mock with:
+
+        python scripts/fish_audio_mock.py &
+        FISH_AUDIO_API_KEY=mock-key FISH_AUDIO_BASE_URL=http://127.0.0.1:8788/v1 \
+            pytest -m integration tests/test_pipeline_fish_audio_adapters.py
+    """
     api_key = os.getenv("FISH_AUDIO_API_KEY")
     if not api_key:
         pytest.skip("FISH_AUDIO_API_KEY not set - skipping live API test")
 
     app_config = _build_app_config(api_key=api_key)
     payload = dict(app_config.providers["fishaudio_tts"])
-    reference_id = os.getenv("FISH_AUDIO_REFERENCE_ID")
-    payload["reference_id"] = reference_id or None
+    payload["base_url"] = os.getenv("FISH_AUDIO_BASE_URL", payload["base_url"])
+    payload["reference_id"] = os.getenv("FISH_AUDIO_REFERENCE_ID") or None
     provider_config = FishAudioProviderConfig(**payload)
 
     adapter = FishAudioTTSAdapter("fishaudio_tts", app_config, provider_config, {})
@@ -345,5 +353,7 @@ async def test_fish_audio_live_api():
         # mu-law 8 kHz in 20 ms chunks is 160 bytes per chunk.
         for chunk in chunks:
             assert len(chunk) <= 160
+        # Audio must arrive progressively, not as a single blob.
+        assert len(chunks) > 1
     finally:
         await adapter.stop()
