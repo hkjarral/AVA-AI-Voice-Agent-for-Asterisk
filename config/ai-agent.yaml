@@ -558,6 +558,7 @@ providers:
     capabilities:
     - tts
     enabled: false
+    transport: http        # http or websocket (realtime session)
     model: s2.1-pro
     reference_id: null
     audio_format: pcm

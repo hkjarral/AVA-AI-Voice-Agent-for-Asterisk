@@ -1,8 +1,10 @@
+import asyncio
 import io
 import os
 import struct
 import wave
 
+import aiohttp
 import pytest
 
 from src.config import AppConfig, FishAudioProviderConfig
@@ -328,6 +330,164 @@ async def test_pipeline_orchestrator_skips_disabled_provider():
         await orchestrator.start()
 
 
+
+# ─── Realtime transport (websocket) ─────────────────────────────────────
+
+
+class _FakeWebSocket:
+    """Minimal aiohttp-like websocket speaking the Fish Audio realtime protocol."""
+
+    def __init__(self, pack, audio_chunks, finish_reason="stop"):
+        self._pack = pack
+        self._audio_chunks = list(audio_chunks)
+        self._finish_reason = finish_reason
+        self.sent = []
+        self.closed = False
+        self._stopped = asyncio.Event()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.closed = True
+        return False
+
+    async def send_bytes(self, data):
+        self.sent.append(data)
+
+    def __aiter__(self):
+        return self._messages()
+
+    async def _messages(self):
+        # Let the sender task deliver "start" and the first fragments.
+        await asyncio.sleep(0)
+        for chunk in self._audio_chunks:
+            yield _FakeWSMessage(self._pack({"event": "audio", "audio": chunk}))
+            await asyncio.sleep(0)
+        # The provider only finishes once the client closed the text stream.
+        for _ in range(100):
+            if any(b"stop" in message for message in self.sent):
+                break
+            await asyncio.sleep(0.01)
+        yield _FakeWSMessage(self._pack({"event": "finish", "reason": self._finish_reason}))
+
+
+class _FakeWSMessage:
+    def __init__(self, data):
+        self.type = aiohttp.WSMsgType.BINARY
+        self.data = data
+
+
+class _WebSocketSession(_FakeSession):
+    """HTTP session whose ws_connect returns the fake websocket."""
+
+    def __init__(self, websocket):
+        super().__init__([b""])
+        self.websocket = websocket
+        self.ws_calls = []
+
+    def ws_connect(self, url, headers=None, timeout=None, heartbeat=None, max_msg_size=None):
+        self.ws_calls.append({"url": url, "headers": headers, "timeout": timeout})
+        return self.websocket
+
+
+async def _fragments(*texts):
+    for text in texts:
+        yield text
+
+
+@pytest.mark.asyncio
+async def test_fish_audio_transport_declares_text_streaming():
+    session = _FakeSession([b""])
+    http_adapter = await _adapter(session)
+    assert http_adapter.supports_text_stream is False
+
+    ws_adapter = await _adapter(session, {"transport": "websocket"})
+    assert ws_adapter.supports_text_stream is True
+
+
+@pytest.mark.asyncio
+async def test_fish_audio_realtime_session_follows_the_protocol():
+    msgpack = pytest.importorskip("msgpack")
+
+    def pack(obj):
+        return msgpack.packb(obj, use_bin_type=True)
+
+    def unpack(data):
+        return msgpack.unpackb(data, raw=False)
+
+    websocket = _FakeWebSocket(pack, [_pcm16_tone(160), _pcm16_tone(160)])
+    session = _WebSocketSession(websocket)
+    adapter = await _adapter(session, {"transport": "websocket"})
+
+    chunks = []
+    async for chunk in adapter.synthesize_stream(
+        "call-1", _fragments("Bonjour,", " vous etes bien chez Rea PC."), {}
+    ):
+        chunks.append(chunk)
+
+    # The realtime endpoint is derived from the configured base URL.
+    assert session.ws_calls[0]["url"] == "wss://api.fish.audio/v1/tts/live"
+    assert session.ws_calls[0]["headers"]["model"] == "s2.1-pro"
+
+    events = [unpack(message) for message in websocket.sent]
+    assert [event["event"] for event in events] == [
+        "start", "text", "flush", "text", "flush", "stop",
+    ]
+    start_request = events[0]["request"]
+    assert start_request["format"] == "pcm"
+    assert start_request["sample_rate"] == 8000
+    assert start_request["latency"] == "low"
+    assert start_request["reference_id"] == "voice-model-id"
+    assert start_request["text"] == ""
+    assert [event["text"] for event in events if event["event"] == "text"] == [
+        "Bonjour,", " vous etes bien chez Rea PC.",
+    ]
+
+    # Audio comes back as 20 ms mu-law chunks, as on the HTTP path.
+    assert [len(chunk) for chunk in chunks] == [160, 160]
+
+
+@pytest.mark.asyncio
+async def test_fish_audio_realtime_error_is_raised():
+    msgpack = pytest.importorskip("msgpack")
+    pack = lambda obj: msgpack.packb(obj, use_bin_type=True)  # noqa: E731
+
+    websocket = _FakeWebSocket(pack, [], finish_reason="error")
+    session = _WebSocketSession(websocket)
+    adapter = await _adapter(session, {"transport": "websocket"})
+
+    with pytest.raises(RuntimeError, match="realtime session finished with an error"):
+        async for _ in adapter.synthesize_stream("call-1", _fragments("Bonjour"), {}):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_fish_audio_stream_falls_back_to_http_requests():
+    session = _FakeSession([_pcm16_tone(160)])
+    adapter = await _adapter(session)  # transport http
+
+    chunks = []
+    async for chunk in adapter.synthesize_stream(
+        "call-1", _fragments("Bonjour,", " bienvenue."), {}
+    ):
+        chunks.append(chunk)
+
+    # One request per fragment, and audio for both.
+    assert len(session.requests) == 2
+    assert sum(len(chunk) for chunk in chunks) == 320
+
+
+@pytest.mark.asyncio
+async def test_fish_audio_realtime_url_can_be_overridden():
+    session = _FakeSession([b""])
+    adapter = await _adapter(
+        session, {"transport": "websocket", "ws_base_url": "http://127.0.0.1:8789/v1"}
+    )
+    assert adapter._websocket_url(adapter._compose_options({})) == (
+        "ws://127.0.0.1:8789/v1/tts/live"
+    )
+
 # ─── Integration Test (live API) ────────────────────────────────────────
 
 
@@ -371,6 +531,47 @@ async def test_fish_audio_live_api():
         for chunk in chunks:
             assert len(chunk) <= 160
         # Audio must arrive progressively, not as a single blob.
+        assert len(chunks) > 1
+    finally:
+        await adapter.stop()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_fish_audio_live_realtime():
+    """Realtime integration test, against the service or the bundled mock.
+
+        python scripts/fish_audio_mock.py &
+        FISH_AUDIO_API_KEY=mock-key FISH_AUDIO_WS_BASE_URL=ws://127.0.0.1:8789/v1 \
+            pytest -m integration tests/test_pipeline_fish_audio_adapters.py
+    """
+    api_key = os.getenv("FISH_AUDIO_API_KEY")
+    if not api_key:
+        pytest.skip("FISH_AUDIO_API_KEY not set - skipping live API test")
+    pytest.importorskip("msgpack")
+
+    app_config = _build_app_config(api_key=api_key)
+    payload = dict(app_config.providers["fishaudio_tts"])
+    payload["transport"] = "websocket"
+    payload["ws_base_url"] = os.getenv("FISH_AUDIO_WS_BASE_URL") or None
+    payload["base_url"] = os.getenv("FISH_AUDIO_BASE_URL", payload["base_url"])
+    payload["reference_id"] = os.getenv("FISH_AUDIO_REFERENCE_ID") or None
+    provider_config = FishAudioProviderConfig(**payload)
+
+    adapter = FishAudioTTSAdapter("fishaudio_tts", app_config, provider_config, {})
+    await adapter.start()
+    await adapter.open_call("call-live", {})
+
+    try:
+        chunks = []
+        async for chunk in adapter.synthesize_stream(
+            "call-live", _fragments("Bonjour,", " ici le test temps reel."), {}
+        ):
+            chunks.append(chunk)
+        synthesized = b"".join(chunks)
+        assert len(synthesized) > 100, "expected substantial audio, got %d bytes" % len(synthesized)
+        for chunk in chunks:
+            assert len(chunk) <= 160
         assert len(chunks) > 1
     finally:
         await adapter.stop()

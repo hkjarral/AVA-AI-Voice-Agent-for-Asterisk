@@ -358,3 +358,24 @@ class TTSComponent(Component):
         options: Dict[str, Any],
     ) -> AsyncIterator[bytes]:
         """Yield audio frames (μ-law or PCM) for the supplied text."""
+
+    # Adapters that hold one provider session open for a whole turn set this to
+    # True and implement ``synthesize_stream``. The engine then feeds them text
+    # as the LLM produces it, instead of waiting for each fragment to be
+    # synthesised before consuming the next tokens.
+    supports_text_stream: bool = False
+
+    async def synthesize_stream(
+        self,
+        call_id: str,
+        text_chunks: AsyncIterator[str],
+        options: Dict[str, Any],
+    ) -> AsyncIterator[bytes]:
+        """Yield audio frames for a stream of text fragments (one turn).
+
+        The default implementation synthesises each fragment in turn, so the
+        engine can use a single code path for every adapter.
+        """
+        async for text in text_chunks:
+            async for chunk in self.synthesize(call_id, text, options):
+                yield chunk

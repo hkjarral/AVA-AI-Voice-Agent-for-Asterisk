@@ -686,6 +686,11 @@ class FishAudioProviderConfig(BaseModel):
     enabled: bool = Field(default=True)
     api_key: Optional[str] = None
     base_url: str = Field(default="https://api.fish.audio/v1")
+    # http posts one request per fragment; websocket keeps one realtime session
+    # per turn and receives the text as the engine produces it.
+    transport: Literal["http", "websocket"] = Field(default="http")
+    # Defaults to base_url with a ws/wss scheme; override to reach a local mock.
+    ws_base_url: Optional[str] = None
     # Speech model, sent as the `model` request header.
     model: str = Field(default="s2.1-pro")  # s1, s2-pro, s2.1-pro, drama-3-preview
     # Voice model id from the Fish Audio library; None uses the account default.
