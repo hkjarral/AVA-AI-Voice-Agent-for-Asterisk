@@ -16439,6 +16439,9 @@ class Engine:
 
                         stream_q: asyncio.Queue = asyncio.Queue(maxsize=256)
                         old_provider_name = getattr(session, "provider_name", None)
+                        # Set when the TTS adapter consumes a text stream for the turn.
+                        tts_stream_task = None
+                        text_q = None
                         try:
                             self._assign_session_provider(session, "pipeline")
                             await self.session_store.upsert_call(session)
@@ -16467,6 +16470,62 @@ class Engine:
                             if not stream_id:
                                 raise RuntimeError("start_streaming_playback returned no stream_id")
 
+                            async def _deliver_tts_chunk(tts_chunk) -> None:
+                                """Hand one synthesized chunk to the playback stream."""
+                                nonlocal first_tts_ts
+                                if not tts_chunk:
+                                    return
+                                if first_tts_ts is None:
+                                    first_tts_ts = time.time()
+                                    turn_latency_ms = (first_tts_ts - turn_start_time) * 1000
+                                    session.turn_latencies_ms.append(turn_latency_ms)
+                                    try:
+                                        if t_start is not None:
+                                            _TURN_STT_TO_TTS.labels(pipeline_label, provider_label).observe(
+                                                max(0.0, first_tts_ts - t_start)
+                                            )
+                                    except Exception:
+                                        pass
+                                await self._put_pipeline_stream_chunk(
+                                    call_id, stream_id, stream_q, tts_chunk
+                                )
+
+                            # Adapters that hold a provider session open for the whole turn
+                            # take the text as it is produced, so token consumption never
+                            # waits on synthesis. Others keep the per-fragment request path.
+                            if bool(getattr(pipeline.tts_adapter, "supports_text_stream", False)):
+                                text_q = asyncio.Queue()
+
+                                async def _text_fragments():
+                                    while True:
+                                        fragment = await text_q.get()
+                                        if fragment is None:
+                                            return
+                                        yield fragment
+
+                                async def _drain_tts_stream():
+                                    async for tts_chunk in pipeline.tts_adapter.synthesize_stream(
+                                        call_id, _text_fragments(), pipeline.tts_options,
+                                    ):
+                                        await _deliver_tts_chunk(tts_chunk)
+
+                                tts_stream_task = asyncio.ensure_future(_drain_tts_stream())
+                                logger.info(
+                                    "Pipeline TTS text streaming active",
+                                    call_id=call_id,
+                                    pipeline=pipeline_label,
+                                )
+
+                            async def _speak(fragment: str) -> None:
+                                """Send one text fragment to the voice."""
+                                if text_q is not None:
+                                    await text_q.put(fragment)
+                                    return
+                                async for tts_chunk in pipeline.tts_adapter.synthesize(
+                                    call_id, fragment, pipeline.tts_options,
+                                ):
+                                    await _deliver_tts_chunk(tts_chunk)
+
                             async for token in pipeline.llm_adapter.generate_stream(
                                 call_id, transcript_text, context_for_llm, llm_options,
                             ):
@@ -16480,39 +16539,18 @@ class Engine:
                                     sentence_buffer = sentence_buffer[split_pos:]
 
                                     if to_speak:
-                                        async for tts_chunk in pipeline.tts_adapter.synthesize(
-                                            call_id, to_speak, pipeline.tts_options,
-                                        ):
-                                            if tts_chunk:
-                                                if first_tts_ts is None:
-                                                    first_tts_ts = time.time()
-                                                    turn_latency_ms = (first_tts_ts - turn_start_time) * 1000
-                                                    session.turn_latencies_ms.append(turn_latency_ms)
-                                                    try:
-                                                        if t_start is not None:
-                                                            _TURN_STT_TO_TTS.labels(pipeline_label, provider_label).observe(
-                                                                max(0.0, first_tts_ts - t_start)
-                                                            )
-                                                    except Exception:
-                                                        pass
-                                                await self._put_pipeline_stream_chunk(
-                                                    call_id, stream_id, stream_q, tts_chunk
-                                                )
+                                        await _speak(to_speak)
 
                             # Flush remaining sentence buffer
                             remainder = sentence_buffer.strip()
                             if remainder:
-                                async for tts_chunk in pipeline.tts_adapter.synthesize(
-                                    call_id, remainder, pipeline.tts_options,
-                                ):
-                                    if tts_chunk:
-                                        if first_tts_ts is None:
-                                            first_tts_ts = time.time()
-                                            turn_latency_ms = (first_tts_ts - turn_start_time) * 1000
-                                            session.turn_latencies_ms.append(turn_latency_ms)
-                                        await self._put_pipeline_stream_chunk(
-                                            call_id, stream_id, stream_q, tts_chunk
-                                        )
+                                await _speak(remainder)
+
+                            if tts_stream_task is not None:
+                                # Close the text stream and let the session drain.
+                                await text_q.put(None)
+                                await tts_stream_task
+                                tts_stream_task = None
 
                             # End-of-segment sentinel
                             await self._put_pipeline_stream_chunk(
@@ -16550,6 +16588,12 @@ class Engine:
                             # Don't return — fall through to serial path below
                             full_response_text = ""
                         finally:
+                            if tts_stream_task is not None and not tts_stream_task.done():
+                                tts_stream_task.cancel()
+                                try:
+                                    await tts_stream_task
+                                except BaseException:  # cleanup only
+                                    pass
                             try:
                                 self._assign_session_provider(session, old_provider_name)
                                 await self.session_store.upsert_call(session)
