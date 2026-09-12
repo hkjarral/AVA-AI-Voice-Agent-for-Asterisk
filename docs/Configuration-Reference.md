@@ -848,7 +848,7 @@ providers:
 
 | Key | Purpose |
 |---|---|
-| `model` | Sent as the `model` HTTP header, which is how Fish Audio selects the speech model. |
+| `model` | Sent as the `model` HTTP header, which is how Fish Audio selects the speech model. `s2.1-pro-free` needs no API credit, which is handy for a live check. |
 | `reference_id` | Voice model id (a voice from the Fish Audio library, or one you cloned). Omit to use the account default. |
 | `audio_format` | `pcm` streams chunk by chunk and is recommended for calls; `wav` is read in full, then decoded. |
 | `sample_rate` | Leave `null` to follow the negotiated transport. A rate Fish Audio cannot emit falls back to 16 kHz and is resampled locally. |

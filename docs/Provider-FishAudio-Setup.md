@@ -16,7 +16,7 @@ resample, no waiting for the full sentence.
 |---|---|
 | Capability | TTS (pipeline adapter) |
 | Provider key | `fishaudio_tts` |
-| Models | `s1`, `s2-pro`, `s2.1-pro` (default), `drama-3-preview` |
+| Models | `s1`, `s2-pro`, `s2.1-pro` (default), `drama-3-preview`, `s2.1-pro-free` (no API credit needed, for testing) |
 | Output used | `pcm` (streamed) or `wav` (buffered) |
 | Pricing | Per character, see [fish.audio](https://fish.audio) — a free tier is available for testing |
 | Per-agent voice | Not applicable (modular adapter); the voice is set on the provider or pipeline |
@@ -128,6 +128,21 @@ the provider. The mock serves a generated tone by default; point
 `FISH_MOCK_LOCAL_WS=ws://127.0.0.1:8765` at a local AI server to hear speech
 instead. Three hooks in the request text exercise failure handling:
 `FISH_MOCK_401`, `FISH_MOCK_SLOW` and `FISH_MOCK_EMPTY`.
+
+## Checking against the live service for free
+
+The `s2.1-pro-free` model answers without API credit, so the live endpoint can
+be exercised at no cost:
+
+```bash
+FISH_AUDIO_API_KEY=... FISH_AUDIO_MODEL=s2.1-pro-free \
+    FISH_AUDIO_REFERENCE_ID=<a voice id from the library> \
+    pytest -m integration tests/test_pipeline_fish_audio_adapters.py
+```
+
+Worth knowing before you top up: API credit is billed separately from the
+platform credit shown in the web app. An account with platform credits but no
+developer balance gets `402 Payment Required` from the paid models.
 
 ## Troubleshooting
 

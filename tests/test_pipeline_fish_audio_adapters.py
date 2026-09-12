@@ -350,6 +350,7 @@ async def test_fish_audio_live_api():
     app_config = _build_app_config(api_key=api_key)
     payload = dict(app_config.providers["fishaudio_tts"])
     payload["base_url"] = os.getenv("FISH_AUDIO_BASE_URL", payload["base_url"])
+    payload["model"] = os.getenv("FISH_AUDIO_MODEL", payload["model"])
     payload["reference_id"] = os.getenv("FISH_AUDIO_REFERENCE_ID") or None
     provider_config = FishAudioProviderConfig(**payload)
 
