@@ -54,6 +54,7 @@ providers:
     reference_id: null     # voice id from your Fish Audio library
     audio_format: pcm      # pcm (streamed) or wav (buffered)
     sample_rate: null      # null follows the call: 8 kHz telephony, 16 kHz wideband
+    transport: http        # http, or websocket for the realtime session
     latency: low           # low, normal, balanced
     chunk_length: 200      # 100-300, provider-side synthesis granularity
     normalize: true
@@ -129,9 +130,45 @@ the provider. The mock serves a generated tone by default; point
 instead. Three hooks in the request text exercise failure handling:
 `FISH_MOCK_401`, `FISH_MOCK_SLOW` and `FISH_MOCK_EMPTY`.
 
+## Realtime transport (websocket)
+
+Fish Audio also exposes a realtime endpoint, `wss://api.fish.audio/v1/tts/live`,
+which keeps one session open and accepts text as it is written. With
+`transport: websocket` the adapter opens that session for a whole turn and sends
+each fragment as the engine produces it, so the provider starts speaking while
+the model is still composing the rest — and the engine no longer waits for a
+fragment to be synthesised before consuming the next tokens.
+
+```yaml
+providers:
+  fishaudio_tts:
+    transport: websocket
+    # ws_base_url: wss://api.fish.audio/v1   # defaults to base_url with a ws scheme
+```
+
+Requirements and behaviour:
+
+- `msgpack` (already in `requirements.txt`) — the realtime protocol is
+  MessagePack. It is imported only when the websocket transport is used.
+- The engine feeds text progressively only for adapters that declare
+  `supports_text_stream`; with `transport: http` the same adapter keeps the
+  one-request-per-fragment path, so nothing else changes.
+- A superseded turn (barge-in, a newer transcript) cancels the session; the
+  provider sees the socket close, which is expected.
+- The session log lines are `Fish Audio realtime session opening` and
+  `... completed`, with `fragments`, `first_audio_ms` and `output_bytes`.
+
+Test it against the mock, which serves the realtime endpoint too:
+
+```bash
+python scripts/fish_audio_mock.py &     # HTTP on 8788, realtime on 8789
+FISH_AUDIO_API_KEY=mock-key FISH_AUDIO_WS_BASE_URL=ws://127.0.0.1:8789/v1 \
+    pytest -m integration tests/test_pipeline_fish_audio_adapters.py
+```
+
 ## Checking against the live service for free
 
-The `s2.1-pro-free` model answers without API credit, so the live endpoint can
+The `s2.1-pro-free` model answers without API credit, so both endpoints can
 be exercised at no cost:
 
 ```bash
@@ -142,7 +179,8 @@ FISH_AUDIO_API_KEY=... FISH_AUDIO_MODEL=s2.1-pro-free \
 
 Worth knowing before you top up: API credit is billed separately from the
 platform credit shown in the web app. An account with platform credits but no
-developer balance gets `402 Payment Required` from the paid models.
+developer balance gets `402 Payment Required` from the paid models, and the
+realtime endpoint refuses the websocket handshake with the same status.
 
 ## Troubleshooting
 
@@ -157,6 +195,7 @@ developer balance gets `402 Payment Required` from the paid models.
 | Audio plays but sounds thin or metallic | Check the transport encoding and rate in `options.tts.format`; on 8 kHz telephony the adapter should report `source_sample_rate=8000` (no resample). |
 | First audio is slow | Try `latency: low` and a smaller `chunk_length`; check network latency to the API, and confirm the greeting is not synthesised on the caller's first turn. |
 | Turn fails after ~15 s | The request budget (`request_timeout_sec`) elapsed; the provider never finished streaming. |
+| `realtime transport requires msgpack` | Install `msgpack` (it ships in `requirements.txt`) or switch back to `transport: http`. |
 | No audio at all, no error | The service answered without audio (`output_bytes=0`); the call continues silently. Check the text sent and the account status. |
 
 ## References

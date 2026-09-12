@@ -324,7 +324,12 @@ async def realtime_handler(connection) -> None:
                     return
                 continue
     except Exception as exc:  # noqa: BLE001 - the mock must stay up
-        log("realtime: session error (%s)" % type(exc).__name__)
+        # A caller that hangs up, or an engine that drops a superseded turn,
+        # closes the socket without a stop event: that is normal.
+        if type(exc).__name__ in ("ConnectionClosedOK", "ConnectionClosedError", "ConnectionClosed"):
+            log("realtime: client closed the session")
+        else:
+            log("realtime: session error (%s)" % type(exc).__name__)
 
 
 def _msgpack_codec():
