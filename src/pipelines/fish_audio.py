@@ -179,8 +179,12 @@ class FishAudioTTSAdapter(TTSComponent):
         first_audio_ms: Optional[float] = None
         output_bytes = 0
 
+        # Bound the whole exchange: a hung provider must not hold the turn open.
+        timeout = aiohttp.ClientTimeout(total=float(merged["request_timeout_sec"]))
         try:
-            async with self._session.post(url, json=payload, headers=headers) as response:
+            async with self._session.post(
+                url, json=payload, headers=headers, timeout=timeout
+            ) as response:
                 if response.status >= 400:
                     body = await response.text()
                     logger.error(
@@ -343,6 +347,9 @@ class FishAudioTTSAdapter(TTSComponent):
                 ),
             },
             "chunk_size_ms": pick("chunk_size_ms", 20),
+            "request_timeout_sec": pick(
+                "request_timeout_sec", self._provider_config.request_timeout_sec
+            ),
             "output_resampler": pick(
                 "output_resampler", self._provider_config.output_resampler
             ),

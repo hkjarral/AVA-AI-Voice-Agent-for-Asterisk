@@ -95,7 +95,9 @@ class _FakeSession:
         self.closed = False
 
     def post(self, url, json=None, params=None, headers=None, data=None, timeout=None):
-        self.requests.append({"url": url, "json": json, "headers": headers})
+        self.requests.append(
+            {"url": url, "json": json, "headers": headers, "timeout": timeout}
+        )
         response = _FakeResponse(self._chunks, status=self._status)
         self.responses.append(response)
         return response
@@ -249,6 +251,20 @@ async def test_fish_audio_runtime_options_override_defaults():
     assert payload["reference_id"] == "other-voice"
     assert payload["latency"] == "balanced"
     assert payload["prosody"] == {"speed": 1.1, "volume": 0.5}
+
+
+@pytest.mark.asyncio
+async def test_fish_audio_request_is_bounded_by_a_timeout():
+    session = _FakeSession([_pcm16_tone(160)])
+    adapter = await _adapter(session)
+
+    [chunk async for chunk in adapter.synthesize("call-1", "Bonjour", {})]
+    assert session.requests[0]["timeout"].total == 15.0
+
+    session = _FakeSession([_pcm16_tone(160)])
+    adapter = await _adapter(session)
+    [chunk async for chunk in adapter.synthesize("call-1", "Bonjour", {"request_timeout_sec": 4})]
+    assert session.requests[0]["timeout"].total == 4.0
 
 
 @pytest.mark.asyncio

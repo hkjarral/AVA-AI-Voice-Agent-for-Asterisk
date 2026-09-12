@@ -842,6 +842,7 @@ providers:
     top_p: 0.7
     speed: null            # prosody.speed override
     volume: null           # prosody.volume override
+    request_timeout_sec: 15
     output_resampler: inherit
 ```
 
@@ -853,6 +854,7 @@ providers:
 | `sample_rate` | Leave `null` to follow the negotiated transport. A rate Fish Audio cannot emit falls back to 16 kHz and is resampled locally. |
 | `latency` | `low` favours time to first audio, which is what a phone call needs. |
 | `speed`, `volume` | Sent as `prosody`; leave `null` to keep the model default. |
+| `request_timeout_sec` | Whole-request budget, streamed body included. A hung provider fails the turn instead of holding it open. |
 
 Every key can also be set per pipeline under `options.tts`, and overridden per
 request at runtime.

@@ -567,6 +567,7 @@ providers:
     normalize: true
     temperature: 0.7
     top_p: 0.7
+    request_timeout_sec: 15
   openai_stt:
     enabled: false
     capabilities:

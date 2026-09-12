@@ -703,6 +703,8 @@ class FishAudioProviderConfig(BaseModel):
     speed: Optional[float] = None
     volume: Optional[float] = None
     output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
+    # Whole-request budget, including the streamed body.
+    request_timeout_sec: float = Field(default=15.0, gt=0)
     # Provider-specific farewell hangup delay (overrides global)
     farewell_hangup_delay_sec: Optional[float] = None
 

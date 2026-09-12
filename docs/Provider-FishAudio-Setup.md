@@ -61,6 +61,7 @@ providers:
     top_p: 0.7
     speed: null            # prosody.speed override
     volume: null           # prosody.volume override
+    request_timeout_sec: 15 # whole-request budget, streamed body included
     output_resampler: inherit
 ```
 
@@ -140,6 +141,7 @@ instead. Three hooks in the request text exercise failure handling:
 | `Unsupported Fish Audio TTS output format` | `audio_format` must be `pcm` or `wav`; mp3 and opus are not used for calls. |
 | Audio plays but sounds thin or metallic | Check the transport encoding and rate in `options.tts.format`; on 8 kHz telephony the adapter should report `source_sample_rate=8000` (no resample). |
 | First audio is slow | Try `latency: low` and a smaller `chunk_length`; check network latency to the API, and confirm the greeting is not synthesised on the caller's first turn. |
+| Turn fails after ~15 s | The request budget (`request_timeout_sec`) elapsed; the provider never finished streaming. |
 | No audio at all, no error | The service answered without audio (`output_bytes=0`); the call continues silently. Check the text sent and the account status. |
 
 ## References
