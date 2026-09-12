@@ -45,6 +45,7 @@ GroqSTTProviderConfig = _parent_config.GroqSTTProviderConfig
 GroqTTSProviderConfig = _parent_config.GroqTTSProviderConfig
 ElevenLabsProviderConfig = _parent_config.ElevenLabsProviderConfig
 CambAiProviderConfig = _parent_config.CambAiProviderConfig
+FishAudioProviderConfig = _parent_config.FishAudioProviderConfig
 OpenAIRealtimeProviderConfig = _parent_config.OpenAIRealtimeProviderConfig
 GrokProviderConfig = _parent_config.GrokProviderConfig
 AzureSTTProviderConfig = _parent_config.AzureSTTProviderConfig
@@ -85,6 +86,7 @@ __all__ = [
     'GroqTTSProviderConfig',
     'ElevenLabsProviderConfig',
     'CambAiProviderConfig',
+    'FishAudioProviderConfig',
     'OpenAIRealtimeProviderConfig',
     'GrokProviderConfig',
     'AzureSTTProviderConfig',
