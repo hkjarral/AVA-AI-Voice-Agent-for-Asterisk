@@ -801,3 +801,81 @@ By default, the Admin UI blocks test requests to localhost/private targets to re
 MCP-backed tools (Model Context Protocol) can be exposed through the existing tool calling system.
 
 - Design + configuration guide: `docs/MCP_INTEGRATION.md`
+
+## Fish Audio TTS (`fishaudio_tts`)
+
+Native support for [Fish Audio](https://fish.audio) speech models (S1, S2 and the
+drama preview). Fish Audio returns raw PCM over a chunked HTTP response, at a
+sample rate you choose, so the adapter asks for the call's own rate: on a
+telephone call the audio is produced at 8 kHz, converted to µ-law chunk by chunk
+and forwarded while the sentence is still being synthesised.
+
+### Credentials
+
+```bash
+# .env
+FISH_AUDIO_API_KEY=your-api-key
+```
+
+The provider is skipped (with a warning) when the key is missing, so a pipeline
+referencing it falls back to a placeholder adapter instead of failing the call.
+
+### Provider configuration
+
+```yaml
+providers:
+  fishaudio_tts:
+    type: fishaudio
+    capabilities:
+      - tts
+    enabled: true
+    model: s2.1-pro        # s1, s2-pro, s2.1-pro, drama-3-preview
+    reference_id: null     # voice model id from your Fish Audio library
+    audio_format: pcm      # pcm (streamed) or wav (buffered)
+    sample_rate: null      # null follows the call: 8 kHz telephony, 16 kHz wideband
+    latency: low           # low, normal, balanced
+    chunk_length: 200      # 100-300, provider-side synthesis granularity
+    normalize: true
+    temperature: 0.7
+    top_p: 0.7
+    speed: null            # prosody.speed override
+    volume: null           # prosody.volume override
+    output_resampler: inherit
+```
+
+| Key | Purpose |
+|---|---|
+| `model` | Sent as the `model` HTTP header, which is how Fish Audio selects the speech model. |
+| `reference_id` | Voice model id (a voice from the Fish Audio library, or one you cloned). Omit to use the account default. |
+| `audio_format` | `pcm` streams chunk by chunk and is recommended for calls; `wav` is read in full, then decoded. |
+| `sample_rate` | Leave `null` to follow the negotiated transport. A rate Fish Audio cannot emit falls back to 16 kHz and is resampled locally. |
+| `latency` | `low` favours time to first audio, which is what a phone call needs. |
+| `speed`, `volume` | Sent as `prosody`; leave `null` to keep the model default. |
+
+Every key can also be set per pipeline under `options.tts`, and overridden per
+request at runtime.
+
+### Example pipeline
+
+```yaml
+pipelines:
+  hybrid_fishaudio:
+    stt: local_stt
+    llm: openai_llm
+    tts: fishaudio_tts
+    options:
+      tts:
+        format:
+          encoding: mulaw
+          sample_rate: 8000
+```
+
+### Tests
+
+```bash
+pytest tests/test_pipeline_fish_audio_adapters.py          # mocked HTTP
+FISH_AUDIO_API_KEY=... pytest -m integration tests/test_pipeline_fish_audio_adapters.py
+```
+
+The integration test is skipped unless `FISH_AUDIO_API_KEY` is set; set
+`FISH_AUDIO_REFERENCE_ID` as well to synthesise with a specific voice.
