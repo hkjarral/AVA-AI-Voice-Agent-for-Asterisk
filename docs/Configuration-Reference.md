@@ -804,6 +804,8 @@ MCP-backed tools (Model Context Protocol) can be exposed through the existing to
 
 ## Fish Audio TTS (`fishaudio_tts`)
 
+Full setup walkthrough: [Provider-FishAudio-Setup.md](Provider-FishAudio-Setup.md).
+
 Native support for [Fish Audio](https://fish.audio) speech models (S1, S2 and the
 drama preview). Fish Audio returns raw PCM over a chunked HTTP response, at a
 sample rate you choose, so the adapter asks for the call's own rate: on a
