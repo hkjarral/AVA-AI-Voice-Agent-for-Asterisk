@@ -555,6 +555,7 @@ async def test_fish_audio_live_realtime():
     payload["transport"] = "websocket"
     payload["ws_base_url"] = os.getenv("FISH_AUDIO_WS_BASE_URL") or None
     payload["base_url"] = os.getenv("FISH_AUDIO_BASE_URL", payload["base_url"])
+    payload["model"] = os.getenv("FISH_AUDIO_MODEL", payload["model"])
     payload["reference_id"] = os.getenv("FISH_AUDIO_REFERENCE_ID") or None
     provider_config = FishAudioProviderConfig(**payload)
 
