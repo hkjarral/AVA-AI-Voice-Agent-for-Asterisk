@@ -183,7 +183,9 @@ const ProvidersPage: React.FC = () => {
             await refetch();
         } catch (err) {
             console.error('Failed to save config', err);
-            toast.error('Failed to save configuration');
+            toast.error('Failed to save configuration', {
+                description: err instanceof Error ? err.message : undefined,
+            });
         }
     };
 

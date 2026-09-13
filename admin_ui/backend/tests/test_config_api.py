@@ -59,6 +59,55 @@ def test_get_config_redacts_hand_written_websocket_secret(monkeypatch):
     }
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_config_validation_rejects_non_finite_provider_numbers(value):
+    parsed = yaml.safe_load(Path(config.settings.CONFIG_PATH).read_text())
+    parsed["providers"]["google_live"]["input_gain_max_db"] = value
+
+    with pytest.raises(HTTPException) as exc_info:
+        config._validate_ai_agent_config(yaml.safe_dump(parsed, sort_keys=False))
+
+    assert exc_info.value.status_code == 400
+    assert "providers.google_live.input_gain_max_db" in str(exc_info.value.detail)
+
+
+def test_get_config_reports_existing_non_finite_value_with_recovery_path(monkeypatch):
+    monkeypatch.setattr(
+        config,
+        "_read_merged_config_dict",
+        lambda: {"providers": {"google_live": {"input_gain_max_db": float("nan")}}},
+    )
+
+    app = FastAPI()
+    app.include_router(config.router, prefix="/api/config")
+    response = TestClient(app, raise_server_exceptions=False).get("/api/config")
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "providers.google_live.input_gain_max_db" in detail
+    assert "Advanced > Raw YAML" in detail
+
+
+def test_config_update_rejects_non_finite_value_before_write(monkeypatch):
+    parsed = yaml.safe_load(Path(config.settings.CONFIG_PATH).read_text())
+    parsed["providers"]["google_live"]["input_gain_max_db"] = float("nan")
+    monkeypatch.setattr(
+        config,
+        "_write_local_config",
+        lambda _content: pytest.fail("invalid config must not be written"),
+    )
+
+    app = FastAPI()
+    app.include_router(config.router, prefix="/api/config")
+    response = TestClient(app).post(
+        "/api/config/yaml",
+        json={"content": yaml.safe_dump(parsed, sort_keys=False)},
+    )
+
+    assert response.status_code == 400
+    assert "providers.google_live.input_gain_max_db" in response.json()["detail"]
+
+
 def test_health_api_token_impacts_local_ai_when_used_as_live_status_fallback():
     assert config._local_ai_env_key("HEALTH_API_TOKEN") is True
 

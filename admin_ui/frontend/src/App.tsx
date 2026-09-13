@@ -1,4 +1,4 @@
-import React, { useEffect, useState, Suspense, lazy } from 'react';
+import React, { useEffect, useRef, useState, Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import { ConfirmDialogProvider } from './hooks/useConfirmDialog';
@@ -54,43 +54,61 @@ const PageLoader = () => (
 );
 
 // Auth/Setup Guard
-const SetupGuard = ({ children }: { children: React.ReactNode }) => {
+export const SetupGuard = ({ children }: { children: React.ReactNode }) => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [retryCount, setRetryCount] = useState(0);
     const navigate = useNavigate();
     const location = useLocation();
+    const navigateRef = useRef(navigate);
+    const locationPathRef = useRef(location.pathname);
+    navigateRef.current = navigate;
+    locationPathRef.current = location.pathname;
 
     useEffect(() => {
         let mounted = true;
+        let activeController: AbortController | null = null;
+        let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
-        const checkStatus = async () => {
+        const checkStatus = async (attempt = 0) => {
+            activeController = new AbortController();
+            const timeoutId = setTimeout(() => activeController?.abort(), 5000);
             try {
-                // Add timeout to prevent hanging
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 5000);
-
                 const res = await axios.get('/api/wizard/status', {
-                    signal: controller.signal
+                    signal: activeController.signal
                 });
-
-                clearTimeout(timeoutId);
 
                 if (mounted) {
                     // If not configured and not already on wizard, redirect
-                    if (!res.data.configured && location.pathname !== '/wizard') {
-                        navigate('/wizard');
+                    if (!res.data.configured && locationPathRef.current !== '/wizard') {
+                        navigateRef.current('/wizard');
                     }
+                    setError(null);
                     setLoading(false);
                 }
             } catch (err) {
                 console.error('Failed to check setup status', err);
-                if (mounted) {
-                    // Backend unreachable: surface a clear error instead of
-                    // rendering the app over a dead backend (broken-looking UI).
-                    setError('Could not reach the backend API.');
-                    setLoading(false);
+                if (!mounted) return;
+
+                // A single delayed probe should not replace the entire UI with a
+                // persistent outage screen. Retry once after a short pause.
+                if (attempt === 0) {
+                    retryTimer = setTimeout(() => checkStatus(1), 500);
+                    return;
                 }
+
+                const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+                const timedOut = axios.isAxiosError(err) && err.code === 'ERR_CANCELED';
+                setError(
+                    status
+                        ? `The backend API returned HTTP ${status} while checking setup status.`
+                        : timedOut
+                            ? 'The backend API did not respond before the setup check timed out.'
+                            : 'Could not reach the backend API.'
+                );
+                setLoading(false);
+            } finally {
+                clearTimeout(timeoutId);
             }
         };
 
@@ -100,8 +118,10 @@ const SetupGuard = ({ children }: { children: React.ReactNode }) => {
 
         return () => {
             mounted = false;
+            activeController?.abort();
+            if (retryTimer) clearTimeout(retryTimer);
         };
-    }, [navigate, location.pathname, retryCount]);
+    }, [retryCount]);
 
     if (loading) {
         return (

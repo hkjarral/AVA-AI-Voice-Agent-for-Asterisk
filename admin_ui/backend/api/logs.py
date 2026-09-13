@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import math
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -8,6 +10,50 @@ from fastapi import APIRouter, HTTPException, Query
 from api.log_events import LogEvent, parse_log_line, should_hide_payload
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+_DOCKER_LOG_TIMEOUT_SECONDS = 10
+
+
+def _read_container_logs_sync(
+    container_name: str,
+    *,
+    tail: Optional[int],
+    since: Optional[int] = None,
+    until: Optional[int] = None,
+) -> Tuple[bytes, str, str]:
+    """Read Docker logs without blocking FastAPI's asyncio event loop."""
+    client = docker.from_env(timeout=_DOCKER_LOG_TIMEOUT_SECONDS)
+    try:
+        containers = client.containers.list(all=True, filters={"name": container_name})
+        if not containers:
+            try:
+                container = client.containers.get(container_name)
+            except docker.errors.NotFound as exc:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Container '{container_name}' not found",
+                ) from exc
+        else:
+            container = containers[0]
+
+        kwargs: Dict[str, Any] = {"tail": tail}
+        if since is not None:
+            kwargs["since"] = since
+        if until is not None:
+            kwargs["until"] = until
+        if since is not None or until is not None:
+            kwargs["timestamps"] = False
+
+        logs = container.logs(**kwargs) or b""
+        return logs, container.id, container.name
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                logger.debug("Failed to close Docker client after log read", exc_info=True)
 
 
 def _parse_iso_to_epoch_seconds(value: Optional[str], *, round_up: bool = False) -> Optional[int]:
@@ -160,29 +206,17 @@ async def get_container_logs(
     Fetch logs from a specific container.
     """
     try:
-        client = docker.from_env()
-        # Filter by name to find the correct container
-        # We use a loose match because docker compose prepends project name
-        containers = client.containers.list(all=True, filters={"name": container_name})
-        
-        if not containers:
-            # Try exact match if loose match fails or returns multiple (though list returns list)
-            try:
-                container = client.containers.get(container_name)
-                containers = [container]
-            except docker.errors.NotFound:
-                raise HTTPException(status_code=404, detail=f"Container '{container_name}' not found")
-
-        # Pick the first match (usually the most relevant one if unique enough)
-        container = containers[0]
-        
         wanted_levels = {v.strip().lower() for v in _split_csv(levels)} if levels else set()
         q_norm = (q or "").strip().lower() or None
 
-        # Get logs
-        logs = (container.logs(tail=tail) or b"").decode("utf-8", errors="replace")
+        logs_bytes, container_id, resolved_name = await asyncio.to_thread(
+            _read_container_logs_sync,
+            container_name,
+            tail=tail,
+        )
+        logs = logs_bytes.decode("utf-8", errors="replace")
         if not (wanted_levels or q_norm):
-            return {"logs": logs, "container_id": container.id, "name": container.name}
+            return {"logs": logs, "container_id": container_id, "name": resolved_name}
 
         out_lines: List[str] = []
         for line in logs.splitlines():
@@ -200,9 +234,12 @@ async def get_container_logs(
             # Preserve original ANSI formatting for the Raw Logs view.
             out_lines.append(line)
 
-        return {"logs": "\n".join(out_lines), "container_id": container.id, "name": container.name}
+        return {"logs": "\n".join(out_lines), "container_id": container_id, "name": resolved_name}
 
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.warning("Docker log read failed for %s", container_name, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -227,16 +264,6 @@ async def get_container_log_events(
     This is designed for the Admin UI "Events" view to enable fast troubleshooting.
     """
     try:
-        client = docker.from_env()
-        containers = client.containers.list(all=True, filters={"name": container_name})
-        if not containers:
-            try:
-                container = client.containers.get(container_name)
-                containers = [container]
-            except docker.errors.NotFound:
-                raise HTTPException(status_code=404, detail=f"Container '{container_name}' not found")
-        container = containers[0]
-
         q_norm = (q or "").strip().lower() or None
         call_id_norm = (call_id or "").strip() or None
 
@@ -262,11 +289,12 @@ async def get_container_log_events(
             window_source = "relative"
 
         # Keep volume bounded: use time-window when provided, otherwise tail.
-        logs_bytes = container.logs(
+        logs_bytes, container_id, resolved_name = await asyncio.to_thread(
+            _read_container_logs_sync,
+            container_name,
             since=since_epoch,
             until=until_epoch,
             tail=None if (since_epoch or until_epoch) else 2000,
-            timestamps=False,
         )
         logs_text = (logs_bytes or b"").decode("utf-8", errors="replace")
 
@@ -332,8 +360,8 @@ async def get_container_log_events(
 
         return {
             "events": [e.to_dict() for e in events_sorted],
-            "container_id": container.id,
-            "name": container.name,
+            "container_id": container_id,
+            "name": resolved_name,
             "call": call_meta,
             "window": {
                 "source": window_source,
@@ -347,4 +375,5 @@ async def get_container_log_events(
     except HTTPException:
         raise
     except Exception as e:
+        logger.warning("Docker log event read failed for %s", container_name, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

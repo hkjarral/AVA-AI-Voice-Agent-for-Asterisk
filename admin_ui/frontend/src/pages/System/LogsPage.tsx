@@ -180,15 +180,17 @@ const LogsPage = () => {
         setSearchParams(merged);
     };
 
-    const fetchLogs = async () => {
+    const fetchLogs = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
         setLoading(true);
         try {
             const params: Record<string, any> = { tail: 500 };
             // Send as CSV for FastAPI list parsing (avoid axios `levels[]=...` serialization).
             if (rawLevels.length) params.levels = rawLevels.join(',');
-            const res = await axios.get(`/api/logs/${container}`, { params });
+            const res = await axios.get(`/api/logs/${container}`, { params, signal });
             setLogs(res.data.logs);
+            return true;
         } catch (err: any) {
+            if (signal?.aborted) return false;
             const info = describeApiError(err, `/api/logs/${container}`);
             console.error("Failed to fetch logs", info);
             setLogs(
@@ -199,12 +201,13 @@ const LogsPage = () => {
                 `- Check Docker socket access: ls -ln /var/run/docker.sock\n` +
                 `- If you changed .env or ran preflight, recreate admin_ui: docker compose -p asterisk-ai-voice-agent up -d --force-recreate admin_ui\n`
             );
+            return false;
         } finally {
-            setLoading(false);
+            if (!signal?.aborted) setLoading(false);
         }
-    };
+    }, [container, rawLevels]);
 
-    const fetchEvents = async () => {
+    const fetchEvents = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
         setLoading(true);
         try {
             const viewCategories = (() => {
@@ -234,10 +237,12 @@ const LogsPage = () => {
             if (since.trim()) params.since = since.trim();
             if (until.trim()) params.until = until.trim();
 
-            const res = await axios.get<EventsResponse>(`/api/logs/${container}/events`, { params });
+            const res = await axios.get<EventsResponse>(`/api/logs/${container}/events`, { params, signal });
             setEvents(res.data.events || []);
             setEventsMeta(res.data || null);
+            return true;
         } catch (err: any) {
+            if (signal?.aborted) return false;
             const info = describeApiError(err, `/api/logs/${container}/events`);
             console.error("Failed to fetch events", info);
             setEvents([]);
@@ -246,10 +251,11 @@ const LogsPage = () => {
                 `Failed to fetch log events for ${container}.\n` +
                 `${info.status ? `HTTP ${info.status}` : info.kind}${info.detail ? ` - ${info.detail}` : ''}\n`
             );
+            return false;
         } finally {
-            setLoading(false);
+            if (!signal?.aborted) setLoading(false);
         }
-    };
+    }, [callId, container, hidePayloads, includeDebug, since, until, view]);
 
     const fetchCallFilterOptions = useCallback(async () => {
         try {
@@ -292,24 +298,52 @@ const LogsPage = () => {
 
     useEffect(() => {
         if (mode !== 'raw') return;
-        fetchLogs();
-        const interval = setInterval(() => {
-            if (autoRefresh) fetchLogs();
-        }, 3000);
-        return () => clearInterval(interval);
-    }, [autoRefresh, container, mode, rawLevels.join(',')]);
+        let cancelled = false;
+        let failures = 0;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        let controller: AbortController | null = null;
+
+        const poll = async () => {
+            controller = new AbortController();
+            const succeeded = await fetchLogs(controller.signal);
+            if (cancelled || !autoRefresh) return;
+            failures = succeeded ? 0 : Math.min(failures + 1, 4);
+            const delay = succeeded ? 3000 : Math.min(30000, 3000 * (2 ** failures));
+            timer = setTimeout(poll, delay);
+        };
+
+        void poll();
+        return () => {
+            cancelled = true;
+            controller?.abort();
+            if (timer) clearTimeout(timer);
+        };
+    }, [autoRefresh, fetchLogs, mode]);
 
     useEffect(() => {
         if (mode !== 'troubleshoot') return;
         if (!callId) return;
-        fetchEvents();
-        const interval = setInterval(() => {
-            if (!autoRefresh) return;
-            if (!callId) return;
-            fetchEvents();
-        }, 3000);
-        return () => clearInterval(interval);
-    }, [autoRefresh, container, mode, callId, hidePayloads, since, until, includeDebug, view]);
+        let cancelled = false;
+        let failures = 0;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        let controller: AbortController | null = null;
+
+        const poll = async () => {
+            controller = new AbortController();
+            const succeeded = await fetchEvents(controller.signal);
+            if (cancelled || !autoRefresh) return;
+            failures = succeeded ? 0 : Math.min(failures + 1, 4);
+            const delay = succeeded ? 3000 : Math.min(30000, 3000 * (2 ** failures));
+            timer = setTimeout(poll, delay);
+        };
+
+        void poll();
+        return () => {
+            cancelled = true;
+            controller?.abort();
+            if (timer) clearTimeout(timer);
+        };
+    }, [autoRefresh, callId, fetchEvents, mode]);
 
     useEffect(() => {
         if (autoRefresh && isPinnedToBottom) {
@@ -532,6 +566,7 @@ const LogsPage = () => {
                         }}
                         className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-3"
                         title="Refresh Now"
+                        disabled={loading}
                     >
                         <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
                     </button>

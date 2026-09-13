@@ -13,6 +13,7 @@ import tempfile
 import sys
 import threading
 import logging
+import math
 import ssl
 import smtplib
 from copy import deepcopy
@@ -307,6 +308,38 @@ def _safe_load_no_duplicates(content: str):
     if node is not None:
         _assert_no_duplicate_yaml_keys(node)
     return yaml.safe_load(content)
+
+
+def _non_finite_number_paths(value: Any, path: str = "") -> list[str]:
+    """Return config paths containing floats that cannot be represented in JSON."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return [path or "<root>"]
+
+    paths: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            paths.extend(_non_finite_number_paths(child, child_path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            paths.extend(_non_finite_number_paths(child, f"{path}[{index}]"))
+    return paths
+
+
+def _assert_finite_config_numbers(value: Any, *, status_code: int = 400) -> None:
+    paths = _non_finite_number_paths(value)
+    if not paths:
+        return
+    displayed = ", ".join(paths[:10])
+    if len(paths) > 10:
+        displayed += f", and {len(paths) - 10} more"
+    raise HTTPException(
+        status_code=status_code,
+        detail=(
+            "Configuration contains non-finite numeric values that are not JSON-compatible: "
+            f"{displayed}. Replace .nan/.inf values in Advanced > Raw YAML with finite numbers."
+        ),
+    )
 
 
 def _deep_merge_dicts(base: dict, override: dict) -> dict:
@@ -777,6 +810,11 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
     if not isinstance(parsed, dict):
         raise HTTPException(status_code=400, detail="Invalid YAML: expected a mapping at the document root")
 
+    # YAML permits .nan/.inf, but JSON and downstream numeric operations do not.
+    # Reject these values before validation or persistence so a form edit cannot
+    # poison the structured config endpoint or runtime behavior.
+    _assert_finite_config_numbers(parsed)
+
     # Ensure project root is importable so we can reuse canonical Pydantic models.
     project_root = getattr(settings, "PROJECT_ROOT", None)
     if project_root and project_root not in sys.path:
@@ -1199,7 +1237,11 @@ async def reset_pipeline_audio(pipeline_name: str):
 @router.get("")
 @router.get("/")
 async def get_config():
-    return _redact_websocket_media_secrets(_read_merged_config_dict())
+    safe = _redact_websocket_media_secrets(_read_merged_config_dict())
+    # Existing operator overrides may predate write-time validation. Return a
+    # controlled, actionable response while leaving /yaml available for repair.
+    _assert_finite_config_numbers(safe, status_code=422)
+    return safe
 
 
 def _redact_websocket_media_secrets(config: Dict[str, Any]) -> Dict[str, Any]:

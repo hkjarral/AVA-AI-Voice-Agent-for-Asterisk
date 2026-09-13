@@ -613,8 +613,8 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             type="number"
                             step="0.1"
                             className="w-full p-2 rounded border border-input bg-background"
-                            value={config.llm_temperature || 0.7}
-                            onChange={(e) => handleChange('llm_temperature', parseFloat(e.target.value))}
+                            value={config.llm_temperature ?? 0.7}
+                            onChange={(e) => handleChange('llm_temperature', e.target.value ? parseFloat(e.target.value) : 0.7)}
                         />
                         <p className="text-xs text-muted-foreground">
                             Controls randomness (0.0-2.0). Lower = more focused, higher = more creative.
@@ -640,7 +640,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             type="number"
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.llm_max_output_tokens || 8192}
-                            onChange={(e) => handleChange('llm_max_output_tokens', parseInt(e.target.value))}
+                            onChange={(e) => handleChange('llm_max_output_tokens', e.target.value ? parseInt(e.target.value) : 8192)}
                         />
                         <p className="text-xs text-muted-foreground">
                             Maximum tokens in response. Higher allows longer answers but increases latency.
@@ -670,8 +670,8 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                 type="number"
                                 step="0.01"
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.llm_top_p || 0.95}
-                                onChange={(e) => handleChange('llm_top_p', parseFloat(e.target.value))}
+                                value={config.llm_top_p ?? 0.95}
+                                onChange={(e) => handleChange('llm_top_p', e.target.value ? parseFloat(e.target.value) : 0.95)}
                             />
                             <p className="text-xs text-muted-foreground">
                                 Nucleus sampling (0.0-1.0). Considers tokens comprising top P probability mass.
@@ -697,7 +697,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                 type="number"
                                 className="w-full p-2 rounded border border-input bg-background"
                                 value={config.llm_top_k || 40}
-                                onChange={(e) => handleChange('llm_top_k', parseInt(e.target.value))}
+                                onChange={(e) => handleChange('llm_top_k', e.target.value ? parseInt(e.target.value) : 40)}
                             />
                             <p className="text-xs text-muted-foreground">
                                 Limits to top K most likely tokens. Lower = more focused responses.
@@ -757,7 +757,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                 type="number"
                                 className="w-full p-2 rounded border border-input bg-background"
                                 value={config.input_sample_rate_hz || 8000}
-                                onChange={(e) => handleChange('input_sample_rate_hz', parseInt(e.target.value))}
+                                onChange={(e) => handleChange('input_sample_rate_hz', e.target.value ? parseInt(e.target.value) : 8000)}
                             />
                             <p className="text-xs text-muted-foreground">
                                 Sample rate from Asterisk. Standard telephony uses 8000 Hz.
@@ -811,7 +811,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                 type="number"
                                 className="w-full p-2 rounded border border-input bg-background"
                                 value={config.output_sample_rate_hz || 24000}
-                                onChange={(e) => handleChange('output_sample_rate_hz', parseInt(e.target.value))}
+                                onChange={(e) => handleChange('output_sample_rate_hz', e.target.value ? parseInt(e.target.value) : 24000)}
                             />
                             <p className="text-xs text-muted-foreground">
                                 Sample rate from Google. 24000 Hz is native for Gemini audio.
@@ -864,7 +864,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                 type="number"
                                 className="w-full p-2 rounded border border-input bg-background"
                                 value={config.target_sample_rate_hz || 8000}
-                                onChange={(e) => handleChange('target_sample_rate_hz', parseInt(e.target.value))}
+                                onChange={(e) => handleChange('target_sample_rate_hz', e.target.value ? parseInt(e.target.value) : 8000)}
                             />
                             <p className="text-xs text-muted-foreground">
                                 Final sample rate for playback. 8000 Hz for standard telephony.
@@ -924,7 +924,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                 type="number"
                                 className="w-full p-2 rounded border border-input bg-background"
                                 value={config.provider_input_sample_rate_hz || 16000}
-                                onChange={(e) => handleChange('provider_input_sample_rate_hz', parseInt(e.target.value))}
+                                onChange={(e) => handleChange('provider_input_sample_rate_hz', e.target.value ? parseInt(e.target.value) : 16000)}
                             />
                             <p className="text-xs text-muted-foreground">
                                 Sample rate for Google API input. 16000 Hz is optimal for Gemini STT.
@@ -1077,8 +1077,8 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             <input
                                 type="number"
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.input_gain_target_rms || 0}
-                                onChange={(e) => handleChange('input_gain_target_rms', parseInt(e.target.value))}
+                                value={config.input_gain_target_rms ?? 0}
+                                onChange={(e) => handleChange('input_gain_target_rms', e.target.value ? parseInt(e.target.value) : 0)}
                             />
                             <p className="text-xs text-muted-foreground">Optional normalization target for inbound audio.</p>
                         </div>
@@ -1101,8 +1101,8 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             <input
                                 type="number"
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.input_gain_max_db || 0}
-                                onChange={(e) => handleChange('input_gain_max_db', parseInt(e.target.value))}
+                                value={config.input_gain_max_db ?? 0}
+                                onChange={(e) => handleChange('input_gain_max_db', e.target.value ? parseFloat(e.target.value) : 0)}
                             />
                             <p className="text-xs text-muted-foreground">Optional max gain applied during normalization.</p>
                         </div>

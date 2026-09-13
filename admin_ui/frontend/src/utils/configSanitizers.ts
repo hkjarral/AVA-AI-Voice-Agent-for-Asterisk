@@ -1,3 +1,21 @@
+const findNonFiniteNumberPaths = (value: unknown, path = ''): string[] => {
+  if (typeof value === 'number' && !Number.isFinite(value)) {
+    return [path || '<root>'];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((child, index) => findNonFiniteNumberPaths(child, `${path}[${index}]`));
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) =>
+      findNonFiniteNumberPaths(child, path ? `${path}.${key}` : key),
+    );
+  }
+
+  return [];
+};
+
 export function sanitizeConfigForSave(config: any): any {
   if (!config || typeof config !== "object") return config;
 
@@ -17,6 +35,12 @@ export function sanitizeConfigForSave(config: any): any {
     out.pipelines = nextPipelines;
   }
 
+  const nonFinitePaths = findNonFiniteNumberPaths(out);
+  if (nonFinitePaths.length) {
+    throw new Error(
+      `Configuration contains invalid numeric values: ${nonFinitePaths.slice(0, 10).join(', ')}`,
+    );
+  }
+
   return out;
 }
-
