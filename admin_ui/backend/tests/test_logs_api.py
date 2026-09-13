@@ -104,3 +104,26 @@ async def test_log_reader_uses_bounded_docker_timeout(monkeypatch):
     await logs.get_container_logs("ai_engine", tail=10, levels=None, q=None)
 
     assert captured["timeout"] == logs._DOCKER_LOG_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "kwargs"),
+    [
+        (logs.get_container_logs, {"tail": 10, "levels": None, "q": None}),
+        (logs.get_container_log_events, {"levels": None, "categories": None}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_log_read_failures_sanitize_container_name(endpoint, kwargs, monkeypatch, caplog):
+    def _fail(*_args, **_kwargs):
+        raise RuntimeError("docker unavailable")
+
+    monkeypatch.setattr(logs, "_read_container_logs_sync", _fail)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await endpoint("ai_engine\r\nforged-entry", **kwargs)
+
+    assert exc_info.value.status_code == 500
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("ai_engineforged-entry" in message for message in messages)
+    assert all("\r" not in message and "\n" not in message for message in messages)

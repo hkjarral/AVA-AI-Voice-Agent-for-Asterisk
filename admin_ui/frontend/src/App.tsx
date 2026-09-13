@@ -56,7 +56,7 @@ const PageLoader = () => (
 // Auth/Setup Guard
 export const SetupGuard = ({ children }: { children: React.ReactNode }) => {
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<{ kind: 'http' | 'transport'; message: string } | null>(null);
     const [retryCount, setRetryCount] = useState(0);
     const navigate = useNavigate();
     const location = useLocation();
@@ -99,13 +99,14 @@ export const SetupGuard = ({ children }: { children: React.ReactNode }) => {
 
                 const status = axios.isAxiosError(err) ? err.response?.status : undefined;
                 const timedOut = axios.isAxiosError(err) && err.code === 'ERR_CANCELED';
-                setError(
-                    status
+                setError({
+                    kind: status ? 'http' : 'transport',
+                    message: status
                         ? `The backend API returned HTTP ${status} while checking setup status.`
                         : timedOut
                             ? 'The backend API did not respond before the setup check timed out.'
-                            : 'Could not reach the backend API.'
-                );
+                            : 'Could not reach the backend API.',
+                });
                 setLoading(false);
             } finally {
                 clearTimeout(timeoutId);
@@ -133,13 +134,17 @@ export const SetupGuard = ({ children }: { children: React.ReactNode }) => {
     }
 
     if (error) {
-        console.warn("SetupGuard: backend unreachable:", error);
+        const isHttpError = error.kind === 'http';
+        console.warn("SetupGuard: setup status check failed:", error.message);
         return (
             <div className="min-h-screen flex items-center justify-center flex-col gap-4 px-6 text-center">
-                <h1 className="text-xl font-semibold">Backend unavailable</h1>
+                <h1 className="text-xl font-semibold">
+                    {isHttpError ? 'Setup status check failed' : 'Backend unavailable'}
+                </h1>
                 <p className="text-muted-foreground text-sm max-w-md">
-                    {error} The admin UI cannot load until the AVA backend is running and reachable.
-                    Check that the service is up, then retry.
+                    {isHttpError
+                        ? `${error.message} The backend is reachable, but it could not complete the setup check. Check the Admin UI service logs and permissions, then retry.`
+                        : `${error.message} The admin UI cannot load until the AVA backend is running and reachable. Check that the service is up, then retry.`}
                 </p>
                 <button
                     onClick={() => setRetryCount((c) => c + 1)}

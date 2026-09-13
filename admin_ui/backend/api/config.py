@@ -14,6 +14,7 @@ import sys
 import threading
 import logging
 import math
+import json
 import ssl
 import smtplib
 from copy import deepcopy
@@ -318,7 +319,11 @@ def _non_finite_number_paths(value: Any, path: str = "") -> list[str]:
     paths: list[str] = []
     if isinstance(value, dict):
         for key, child in value.items():
-            child_path = f"{path}.{key}" if path else str(key)
+            key_text = str(key)
+            if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", key_text):
+                child_path = f"{path}.{key_text}" if path else key_text
+            else:
+                child_path = f"{path}[{json.dumps(key_text)}]"
             paths.extend(_non_finite_number_paths(child, child_path))
     elif isinstance(value, list):
         for index, child in enumerate(value):

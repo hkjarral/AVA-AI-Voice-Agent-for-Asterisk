@@ -24,6 +24,18 @@ describe('sanitizeConfigForSave', () => {
     expect(() => sanitizeConfigForSave({ values: [1, Number.NaN] })).toThrow('values[1]');
   });
 
+  it('quotes dotted provider keys so the reported path is unambiguous', () => {
+    const config = {
+      providers: {
+        'acme.google': { input_gain_max_db: Number.NaN },
+      },
+    };
+
+    expect(() => sanitizeConfigForSave(config)).toThrow(
+      'providers["acme.google"].input_gain_max_db',
+    );
+  });
+
   it('preserves finite numeric values', () => {
     const config = { providers: { google_live: { input_gain_max_db: 6.5 } } };
     expect(sanitizeConfigForSave(config)).toEqual(config);

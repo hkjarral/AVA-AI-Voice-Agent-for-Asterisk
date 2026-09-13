@@ -8,9 +8,13 @@ const findNonFiniteNumberPaths = (value: unknown, path = ''): string[] => {
   }
 
   if (value && typeof value === 'object') {
-    return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) =>
-      findNonFiniteNumberPaths(child, path ? `${path}.${key}` : key),
-    );
+    return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) => {
+      const identifierSafe = /^[A-Za-z_$][\w$]*$/.test(key);
+      const childPath = identifierSafe
+        ? path ? `${path}.${key}` : key
+        : `${path}[${JSON.stringify(key)}]`;
+      return findNonFiniteNumberPaths(child, childPath);
+    });
   }
 
   return [];

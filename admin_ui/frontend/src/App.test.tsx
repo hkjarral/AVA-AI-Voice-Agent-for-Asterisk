@@ -22,6 +22,7 @@ const guardedRoutes = (
 describe('SetupGuard', () => {
   beforeEach(() => {
     vi.mocked(axios.get).mockReset();
+    vi.mocked(axios.isAxiosError).mockReset();
   });
 
   it('does not repeat setup detection on ordinary route changes', async () => {
@@ -45,5 +46,17 @@ describe('SetupGuard', () => {
     await waitFor(() => expect(axios.get).toHaveBeenCalledTimes(2), { timeout: 2000 });
     expect(await screen.findByText('Page one')).toBeTruthy();
     expect(screen.queryByText('Backend unavailable')).toBeNull();
+  });
+
+  it('distinguishes an HTTP setup failure from an unreachable backend', async () => {
+    vi.mocked(axios.isAxiosError).mockReturnValue(true);
+    vi.mocked(axios.get).mockRejectedValue({ response: { status: 503 } });
+
+    render(guardedRoutes);
+
+    expect(await screen.findByText('Setup status check failed', {}, { timeout: 2000 })).toBeTruthy();
+    expect(screen.getByText(/backend API returned HTTP 503/)).toBeTruthy();
+    expect(screen.queryByText('Backend unavailable')).toBeNull();
+    expect(screen.queryByText(/running and reachable/)).toBeNull();
   });
 });

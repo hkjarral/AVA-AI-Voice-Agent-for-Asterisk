@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, render } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import axios from 'axios';
@@ -52,5 +52,31 @@ describe('LogsPage polling', () => {
     });
 
     expect(axios.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears loading when switching away from an active raw-log request', async () => {
+    const pendingRequest = new Promise(() => {});
+    vi.mocked(axios.get).mockImplementation((url) => {
+      if (url === '/api/calls/filters') {
+        return Promise.resolve({ data: { providers: [], pipelines: [], contexts: [], outcomes: [] } });
+      }
+      return pendingRequest as any;
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/logs?mode=raw']}>
+        <LogsPage />
+      </MemoryRouter>,
+    );
+
+    await act(async () => Promise.resolve());
+    expect((screen.getByTitle('Refresh Now') as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => {
+      fireEvent.change(screen.getByTitle('Logs View'), { target: { value: 'troubleshoot' } });
+      await Promise.resolve();
+    });
+
+    expect((screen.getByTitle('Refresh Now') as HTMLButtonElement).disabled).toBe(false);
   });
 });

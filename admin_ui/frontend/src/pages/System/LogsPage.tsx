@@ -316,6 +316,7 @@ const LogsPage = () => {
         return () => {
             cancelled = true;
             controller?.abort();
+            setLoading(false);
             if (timer) clearTimeout(timer);
         };
     }, [autoRefresh, fetchLogs, mode]);
@@ -341,6 +342,7 @@ const LogsPage = () => {
         return () => {
             cancelled = true;
             controller?.abort();
+            setLoading(false);
             if (timer) clearTimeout(timer);
         };
     }, [autoRefresh, callId, fetchEvents, mode]);

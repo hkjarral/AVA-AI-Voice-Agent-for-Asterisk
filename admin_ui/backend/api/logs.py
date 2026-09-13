@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 _DOCKER_LOG_TIMEOUT_SECONDS = 10
 
 
+def _sanitize_log_value(value: str) -> str:
+    """Remove line breaks so request values cannot forge additional log entries."""
+    return value.replace("\r\n", "").replace("\r", "").replace("\n", "")
+
+
 def _read_container_logs_sync(
     container_name: str,
     *,
@@ -239,7 +244,11 @@ async def get_container_logs(
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning("Docker log read failed for %s", container_name, exc_info=True)
+        logger.warning(
+            "Docker log read failed for %s",
+            _sanitize_log_value(container_name),
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -375,5 +384,9 @@ async def get_container_log_events(
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning("Docker log event read failed for %s", container_name, exc_info=True)
+        logger.warning(
+            "Docker log event read failed for %s",
+            _sanitize_log_value(container_name),
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail=str(e))

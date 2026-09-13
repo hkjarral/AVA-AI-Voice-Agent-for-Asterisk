@@ -88,6 +88,15 @@ def test_get_config_reports_existing_non_finite_value_with_recovery_path(monkeyp
     assert "Advanced > Raw YAML" in detail
 
 
+def test_non_finite_config_path_quotes_dotted_provider_names():
+    with pytest.raises(HTTPException) as exc_info:
+        config._assert_finite_config_numbers(
+            {"providers": {"acme.google": {"input_gain_max_db": float("nan")}}}
+        )
+
+    assert 'providers["acme.google"].input_gain_max_db' in str(exc_info.value.detail)
+
+
 def test_config_update_rejects_non_finite_value_before_write(monkeypatch):
     parsed = yaml.safe_load(Path(config.settings.CONFIG_PATH).read_text())
     parsed["providers"]["google_live"]["input_gain_max_db"] = float("nan")
