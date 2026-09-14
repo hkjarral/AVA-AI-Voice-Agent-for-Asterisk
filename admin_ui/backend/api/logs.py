@@ -13,6 +13,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _DOCKER_LOG_TIMEOUT_SECONDS = 10
+ALLOWED_LOG_CONTAINERS = {"ai_engine", "local_ai_server", "admin_ui"}
 
 
 def _sanitize_log_value(value: str) -> str:
@@ -28,6 +29,8 @@ def _read_container_logs_sync(
     until: Optional[int] = None,
 ) -> Tuple[bytes, str, str]:
     """Read Docker logs without blocking FastAPI's asyncio event loop."""
+    if container_name not in ALLOWED_LOG_CONTAINERS:
+        raise HTTPException(status_code=400, detail="Unsupported log container")
     client = docker.from_env(timeout=_DOCKER_LOG_TIMEOUT_SECONDS)
     try:
         containers = client.containers.list(all=True, filters={"name": container_name})
@@ -183,7 +186,12 @@ def _compute_related_ids(parsed: List[Tuple[LogEvent, Dict[str, str]]], seed_cal
                 ids_in_line.add(meta.get("external_media_id", ""))
             ids_in_line.discard("")
 
-            intersects = bool(ids_in_line & wanted_ids) or (event.call_id in wanted_ids if event.call_id else False)
+            bridge_id = (kv.get("bridge_id") or "").strip()
+            intersects = (
+                bool(ids_in_line & wanted_ids)
+                or (event.call_id in wanted_ids if event.call_id else False)
+                or bool(bridge_id and bridge_id in wanted_bridge_ids)
+            )
             if not intersects:
                 continue
 
@@ -192,7 +200,6 @@ def _compute_related_ids(parsed: List[Tuple[LogEvent, Dict[str, str]]], seed_cal
             if len(wanted_ids) != before:
                 changed = True
 
-            bridge_id = (kv.get("bridge_id") or "").strip()
             if bridge_id and bridge_id not in wanted_bridge_ids:
                 wanted_bridge_ids.add(bridge_id)
                 changed = True
@@ -284,13 +291,13 @@ async def get_container_log_events(
         window_source = "query" if (since_epoch or until_epoch) else "tail"
         call_meta: Optional[Dict[str, Any]] = None
 
-        # If user filtered by call_id but did not provide a time window, try to resolve
-        # the call's start/end from call history to avoid tail-based truncation.
-        if call_id_norm and since_epoch is None and until_epoch is None and not since_seconds_ago:
+        # Always resolve metadata for a selected call.  Use its padded window only
+        # when the caller did not supply an explicit range.
+        if call_id_norm:
             ch_since, ch_until, ch_meta = await _resolve_call_history_window(call_id_norm, pad_seconds=call_window_pad_seconds)
-            if ch_since is not None or ch_until is not None:
+            call_meta = ch_meta
+            if since_epoch is None and until_epoch is None and not since_seconds_ago and (ch_since is not None or ch_until is not None):
                 since_epoch, until_epoch = ch_since, ch_until
-                call_meta = ch_meta
                 window_source = "call_history"
 
         if since_epoch is None and since_seconds_ago and since_seconds_ago > 0:

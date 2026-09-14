@@ -72,7 +72,7 @@ curl -H "Authorization: Bearer eyJ..." \
 | GET | `/api/config/export` | Export configuration as ZIP |
 | POST | `/api/config/import` | Import configuration from ZIP |
 | POST | `/api/config/env/smtp/test` | Test SMTP settings |
-| GET | `/api/config/export-logs` | Export logs for troubleshooting |
+| GET | `/api/config/export-logs` | Deprecated compatibility alias for the bounded sanitized system-diagnostics package |
 | GET | `/api/config/options/{provider_type}` | Get provider options (models, voices) |
 
 ### System (`/api/system`)
@@ -252,6 +252,25 @@ write succeeds.
 |--------|----------|-------------|
 | GET | `/api/logs/{container_name}` | Get container logs |
 | GET | `/api/logs/{container_name}/events` | Get structured log events |
+
+Only `ai_engine`, `local_ai_server`, and `admin_ui` are valid log container
+names. The event endpoint accepts console, JSON, and mixed log streams and can
+expand a call ID through related channel and bridge IDs.
+
+### Support packages (`/api/support`)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/support/call-preview?call_id=...` | Summarize retained lifecycle evidence, findings, source relevance, settings availability, and tool counts for one call |
+| POST | `/api/support/call-bundle` | Download a call-correlated, sanitized ZIP; optional Local AI Server, Admin UI, transcript, tools, and settings fields default to `true` |
+| POST | `/api/support/system-bundle` | Download a sanitized 1–24 hour system ZIP for issues not tied to one call |
+| GET | `/api/support-bundle` | Legacy redacted agent/system metadata bundle |
+
+Call support packages never include recordings or caller identity. Their
+manifest reports the log format and observed levels. Call-time provider, Audio
+Profile, transport, codec, VAD, barge-in, and streaming configuration is
+available for calls created after the diagnostics-snapshot migration; older
+records return an explicit omission rather than substituting current settings.
 
 ### Wizard (`/api/wizard`)
 | Method | Endpoint | Description |

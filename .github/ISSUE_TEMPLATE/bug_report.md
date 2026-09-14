@@ -30,12 +30,18 @@ assignees: ''
 - **Transport**: <!-- AudioSocket or ExternalMedia RTP -->
 
 ## Logs
-<!-- Paste relevant logs here -->
-```
-docker logs ai_engine --tail=100
-```
+<!-- Do not paste recordings, phone numbers, credentials, or unredacted customer data. -->
 
-**From Admin UI**: Navigate to **Logs** page → filter by call or time range → click **Export** and attach the downloaded file.
+**Call-specific issue (preferred):** In the Admin UI, open **Call History**,
+select the affected call, click **Troubleshoot**, and attach the downloaded
+**Support Package (.zip)**. It includes correlated lifecycle logs, effective
+provider/Audio Profile/transport settings, and pre/in/post-call tool evidence;
+recordings, phone numbers, prompts, and secrets are excluded.
+
+**System-wide issue:** Open **System Logs → Export → System diagnostics**, choose
+the shortest relevant time window, and attach that ZIP. It may include events
+from multiple calls. To share only the filtered text currently on screen, choose
+**Download current view** instead.
 
 ## Diagnostics (Recommended)
 
@@ -85,5 +91,5 @@ agent rca --json
 ## Checklist
 - [ ] I have searched existing issues for duplicates
 - [ ] I have redacted all sensitive information (API keys, passwords)
-- [ ] I have included relevant logs
+- [ ] I have attached a call support package or the shortest relevant system diagnostics/current-view export
 - [ ] I have specified my environment details

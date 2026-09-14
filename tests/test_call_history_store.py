@@ -21,6 +21,34 @@ def test_call_record_pre_migration_null_collections_keep_declared_types():
     assert record.external_metadata == {}
     assert record.conversation_history == []
     assert record.tool_calls == []
+    assert record.diagnostics_snapshot == {}
+
+
+@pytest.mark.asyncio
+async def test_call_diagnostics_snapshot_round_trips(tmp_path, monkeypatch):
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    from src.core.call_history import CallHistoryStore, CallRecord
+
+    store = CallHistoryStore(db_path=str(tmp_path / "diagnostics.db"))
+    now = datetime.now(timezone.utc)
+    snapshot = {
+        "schema_version": 1,
+        "resolved": {
+            "provider_name": "google_live",
+            "audio_profile": "telephony_ulaw_8k",
+            "transport_profile": {"wire_encoding": "ulaw", "wire_sample_rate": 8000},
+        },
+    }
+    assert await store.save(CallRecord(
+        call_id="diagnostics-1",
+        start_time=now,
+        end_time=now + timedelta(seconds=2),
+        diagnostics_snapshot=snapshot,
+    )) is True
+
+    fetched = await store.get_by_call_id("diagnostics-1")
+    assert fetched is not None
+    assert fetched.diagnostics_snapshot == snapshot
 
 
 @pytest.mark.asyncio

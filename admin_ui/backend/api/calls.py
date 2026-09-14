@@ -168,6 +168,7 @@ class CallRecordResponse(BaseModel):
     caller_audio_format: str = "ulaw"
     codec_alignment_ok: bool = True
     barge_in_count: int = 0
+    diagnostics_snapshot: dict = Field(default_factory=dict)
     created_at: Optional[str] = None
 
 
@@ -386,6 +387,7 @@ def _record_to_response(record, agent_names: Optional[Dict[str, str]] = None) ->
         caller_audio_format=record.caller_audio_format,
         codec_alignment_ok=record.codec_alignment_ok,
         barge_in_count=record.barge_in_count,
+        diagnostics_snapshot=getattr(record, "diagnostics_snapshot", {}) or {},
         created_at=record.created_at.isoformat() if record.created_at else None,
     )
 

@@ -1,10 +1,11 @@
 import React, { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { RefreshCw, Pause, Play, Terminal, ArrowDown } from 'lucide-react';
+import { RefreshCw, Pause, Play, Terminal, ArrowDown, ChevronDown, Download, FileArchive, X } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { parseAnsi } from '../../utils/ansi';
 import { describeApiError } from '../../utils/apiErrors';
+import CallTroubleshootView from '../../components/logs/CallTroubleshootView';
 
 type LogLevel = 'error' | 'warning' | 'info' | 'debug';
 type LogCategory = 'call' | 'provider' | 'audio' | 'transport' | 'vad' | 'tools' | 'config';
@@ -112,7 +113,7 @@ const LogsPage = () => {
     const [events, setEvents] = useState<LogEvent[]>([]);
     const [eventsMeta, setEventsMeta] = useState<EventsResponse | null>(null);
     const [loading, setLoading] = useState(false);
-    const [autoRefresh, setAutoRefresh] = useState(true);
+    const [autoRefresh, setAutoRefresh] = useState(!searchParams.get('call_id'));
     const [container, setContainer] = useState(searchParams.get('container') || 'ai_engine');
     const [mode, setMode] = useState<LogsMode>(() => {
         const rawMode = (searchParams.get('mode') || '').toLowerCase();
@@ -166,6 +167,16 @@ const LogsPage = () => {
         promise: Promise<boolean>;
     } | null>(null);
     const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
+    const [showExportMenu, setShowExportMenu] = useState(false);
+    const [showSystemExport, setShowSystemExport] = useState(false);
+    const [exportingSystem, setExportingSystem] = useState(false);
+    const [systemExport, setSystemExport] = useState({
+        hours: 1,
+        include_ai_engine: true,
+        include_local_ai_server: true,
+        include_admin_ui: true,
+        include_config: true,
+    });
 
     const recomputePinned = useCallback(() => {
         const el = scrollRef.current;
@@ -505,6 +516,58 @@ const LogsPage = () => {
         return allRawLines.filter(line => line.toLowerCase().includes(q.toLowerCase()));
     }, [allRawLines, q]);
 
+    const downloadData = (data: BlobPart, filename: string) => {
+        const url = window.URL.createObjectURL(new Blob([data]));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+    };
+
+    const downloadCurrentView = () => {
+        const timestamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+        downloadData(`${filteredRawLines.join('\n')}\n`, `${container}-current-view-${timestamp}.log`);
+        setShowExportMenu(false);
+        toast.success('Current log view downloaded');
+    };
+
+    const downloadSystemDiagnostics = async () => {
+        setExportingSystem(true);
+        try {
+            const response = await axios.post('/api/support/system-bundle', systemExport, { responseType: 'blob' });
+            const disposition = String(response.headers?.['content-disposition'] || '');
+            const match = disposition.match(/filename="?([^";]+)"?/i);
+            downloadData(response.data, match?.[1] || 'ava-system-diagnostics.zip');
+            setShowSystemExport(false);
+            toast.success('System diagnostics downloaded');
+        } catch (err) {
+            console.error('Failed to export system diagnostics', err);
+            toast.error('Failed to export system diagnostics');
+        } finally {
+            setExportingSystem(false);
+        }
+    };
+
+    if (mode === 'troubleshoot' && callId && !showCallFinder) {
+        return (
+            <CallTroubleshootView
+                callId={callId}
+                events={events}
+                onChooseAnotherCall={() => {
+                    setCallId('');
+                    setSince('');
+                    setUntil('');
+                    setShowCallFinder(true);
+                    setAutoRefresh(false);
+                    updateUrlParams({ call_id: '', since: '', until: '' });
+                }}
+            />
+        );
+    }
+
     return (
         <div className="space-y-6 h-[calc(100vh-140px)] flex flex-col">
             <div className="flex justify-between items-center flex-shrink-0">
@@ -515,28 +578,46 @@ const LogsPage = () => {
                     </p>
                 </div>
                 <div className="flex space-x-2 items-center">
-                    <button
-                        onClick={async () => {
-                            try {
-                                const response = await axios.get('/api/config/export-logs', { responseType: 'blob' });
-                                const url = window.URL.createObjectURL(new Blob([response.data]));
-                                const link = document.createElement('a');
-                                link.href = url;
-                                link.setAttribute('download', `debug-logs-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.zip`);
-                                document.body.appendChild(link);
-                                link.click();
-                                link.remove();
-                            } catch (err) {
-                                console.error('Failed to export logs', err);
-                                toast.error('Failed to export logs');
-                            }
-                        }}
-                        className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-3"
-                        title="Export Logs & Config for Debugging"
-                    >
-                        <span className="mr-2">Export</span>
-                        <Terminal className="w-4 h-4" />
-                    </button>
+                    <div className="relative">
+                        <button
+                            onClick={() => setShowExportMenu(open => !open)}
+                            className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-md border border-input bg-background px-3 text-sm font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground"
+                            aria-expanded={showExportMenu}
+                        >
+                            <Download className="mr-2 h-4 w-4" /> Export <ChevronDown className="ml-2 h-3.5 w-3.5" />
+                        </button>
+                        {showExportMenu && (
+                            <div className="absolute right-0 z-30 mt-2 w-72 overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-lg">
+                                {mode === 'raw' && (
+                                    <button onClick={downloadCurrentView} className="w-full rounded px-3 py-2 text-left hover:bg-accent">
+                                        <span className="block text-sm font-medium">Download current view</span>
+                                        <span className="block text-xs text-muted-foreground">Only the visible container, levels and search results.</span>
+                                    </button>
+                                )}
+                                <button
+                                    onClick={() => {
+                                        setMode('troubleshoot');
+                                        setCallId('');
+                                        setShowCallFinder(true);
+                                        setAutoRefresh(false);
+                                        setShowExportMenu(false);
+                                        updateUrlParams({ mode: 'troubleshoot', call_id: '', since: '', until: '' });
+                                    }}
+                                    className="w-full rounded px-3 py-2 text-left hover:bg-accent"
+                                >
+                                    <span className="block text-sm font-medium">Call support package…</span>
+                                    <span className="block text-xs text-muted-foreground">Choose one call and export correlated evidence.</span>
+                                </button>
+                                <button
+                                    onClick={() => { setShowExportMenu(false); setShowSystemExport(true); }}
+                                    className="w-full rounded px-3 py-2 text-left hover:bg-accent"
+                                >
+                                    <span className="block text-sm font-medium">System diagnostics…</span>
+                                    <span className="block text-xs text-muted-foreground">Advanced, bounded export that may span multiple calls.</span>
+                                </button>
+                            </div>
+                        )}
+                    </div>
 
                     <select
                         className="h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -770,11 +851,11 @@ const LogsPage = () => {
                                     <button
                                         onClick={() => {
                                             setCallId(r.call_id);
-                                            setSince(r.start_time || '');
-                                            setUntil(r.end_time || '');
+                                            setSince('');
+                                            setUntil('');
                                             setShowCallFinder(false);
                                             setAutoRefresh(false);
-                                            updateUrlParams({ mode: 'troubleshoot', call_id: r.call_id, since: r.start_time || '', until: r.end_time || '' });
+                                            updateUrlParams({ mode: 'troubleshoot', call_id: r.call_id, since: '', until: '' });
                                         }}
                                         className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-xs font-medium transition-colors border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-8 px-2"
                                     >
@@ -1079,6 +1160,28 @@ const LogsPage = () => {
                 )}
                 <div ref={logsEndRef} />
             </div>
+
+            {showSystemExport && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-labelledby="system-export-title">
+                    <div className="w-full max-w-lg rounded-lg border bg-background p-5 shadow-xl">
+                        <div className="flex items-start justify-between gap-4">
+                            <div><h2 id="system-export-title" className="text-lg font-semibold">Export system diagnostics</h2><p className="mt-1 text-sm text-muted-foreground">Use this only when an issue is not tied to one call.</p></div>
+                            <button onClick={() => setShowSystemExport(false)} aria-label="Close"><X className="h-5 w-5" /></button>
+                        </div>
+                        <div className="mt-4 space-y-3">
+                            <label className="block text-sm"><span className="mb-1 block text-xs text-muted-foreground">Time window</span><select value={systemExport.hours} onChange={event => setSystemExport(current => ({ ...current, hours: Number(event.target.value) }))} className="h-9 w-full rounded-md border bg-background px-3"><option value={1}>Last hour</option><option value={6}>Last 6 hours</option><option value={24}>Last 24 hours</option></select></label>
+                            {([
+                                ['include_ai_engine', 'AI Engine logs'],
+                                ['include_local_ai_server', 'Local AI Server logs'],
+                                ['include_admin_ui', 'Admin UI logs'],
+                                ['include_config', 'Sanitized current configuration'],
+                            ] as const).map(([key, label]) => <label key={key} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={systemExport[key]} onChange={event => setSystemExport(current => ({ ...current, [key]: event.target.checked }))} />{label}</label>)}
+                        </div>
+                        <div className="mt-4 rounded-md border border-amber-800/60 bg-amber-500/10 p-3 text-xs text-amber-100">This package can include events from multiple calls. It is sanitized and never includes recordings, phone numbers, credentials or secret values.</div>
+                        <div className="mt-5 flex justify-end gap-2"><button onClick={() => setShowSystemExport(false)} className="h-9 rounded-md border px-3 text-sm">Cancel</button><button onClick={downloadSystemDiagnostics} disabled={exportingSystem} className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-60"><FileArchive className="h-4 w-4" />{exportingSystem ? 'Preparing…' : 'Download diagnostics'}</button></div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

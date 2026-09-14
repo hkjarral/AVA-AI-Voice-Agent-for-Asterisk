@@ -67,7 +67,7 @@ For “what happened on *this* call?” debugging, use **Call History**:
 
 - **Admin UI**: navigate to `/history` (Call History) and search/filter by time/provider/outcome.
 - **Database**: stored under the mounted `./data` volume by default (`CALL_HISTORY_DB_PATH`, default `/app/data/call_history.db`).
-- **Logs correlation**: Call History entries include the `call_id`; search structured logs for that `call_id`.
+- **Logs correlation**: Call History entries include the `call_id`. Use **Troubleshoot** on the affected row to review correlated lifecycle evidence and download a sanitized support package. The package records the observed console/JSON format and available levels; new calls also carry the immutable provider, Audio Profile, transport, codec, VAD, streaming, and tool settings actually resolved for the call.
 
 ---
 

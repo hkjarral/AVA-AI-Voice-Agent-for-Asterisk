@@ -116,4 +116,25 @@ describe('LogsPage polling', () => {
     });
     expect(axios.get).toHaveBeenCalledTimes(3);
   });
+
+  it('offers context-specific exports instead of one unbounded download', async () => {
+    vi.mocked(axios.get).mockResolvedValue({ data: { logs: '2026 INFO ready\n' } });
+    window.URL.createObjectURL = vi.fn(() => 'blob:test');
+    window.URL.revokeObjectURL = vi.fn();
+    HTMLAnchorElement.prototype.click = vi.fn();
+
+    render(
+      <MemoryRouter initialEntries={['/logs?mode=raw']}>
+        <LogsPage />
+      </MemoryRouter>,
+    );
+    await act(async () => Promise.resolve());
+    fireEvent.click(screen.getByRole('button', { name: /Export/ }));
+
+    expect(screen.getByText('Download current view')).toBeTruthy();
+    expect(screen.getByText('Call support package…')).toBeTruthy();
+    fireEvent.click(screen.getByText('System diagnostics…'));
+    expect(screen.getByRole('dialog', { name: 'Export system diagnostics' })).toBeTruthy();
+    expect(screen.getByText(/can include events from multiple calls/i)).toBeTruthy();
+  });
 });

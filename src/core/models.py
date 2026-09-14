@@ -195,6 +195,10 @@ class CallSession:
     codec_alignment_ok: bool = True
     codec_alignment_message: Optional[str] = None
     audio_diagnostics: Dict[str, Any] = field(default_factory=dict)
+    # Immutable, secret-free settings captured after Agent/provider/pipeline and
+    # Audio Profile resolution.  The support-package workflow persists this
+    # snapshot so later config reloads cannot rewrite the evidence for a call.
+    diagnostics_snapshot: Dict[str, Any] = field(default_factory=dict)
     
     # Agent action tracking (transfers, hangup, etc.)
     pending_actions: list = field(default_factory=list)  # Queue of pending actions

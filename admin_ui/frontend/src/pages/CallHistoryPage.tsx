@@ -643,16 +643,12 @@ const CallHistoryPage = () => {
 
     const openTroubleshoot = (call: CallRecordSummary | CallRecordDetail) => {
         const callId = call.call_id;
-        const start = (call as any).start_time;
-        const end = (call as any).end_time;
         const params = new URLSearchParams();
         params.set('container', 'ai_engine');
         params.set('mode', 'troubleshoot');
-        params.set('preset', 'important');
+        params.set('view', 'overview');
         params.set('call_id', callId);
-        if (start) params.set('since', start);
-        if (end) params.set('until', end);
-        window.location.href = `/logs?${params.toString()}`;
+        navigate(`/logs?${params.toString()}`);
     };
 
     const clearFilters = () => {

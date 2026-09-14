@@ -15,6 +15,25 @@ sys.path.insert(0, str(BACKEND_ROOT))
 
 from api import config  # noqa: E402
 from api import system  # noqa: E402
+from api import support  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_legacy_log_export_uses_safe_bounded_system_bundle(monkeypatch):
+    captured = {}
+
+    def fake_system_bundle(request, *, deprecated=False):
+        captured["request"] = request
+        captured["deprecated"] = deprecated
+        return "safe-system-bundle"
+
+    monkeypatch.setattr(support, "_system_bundle_sync", fake_system_bundle)
+
+    result = await config.export_logs()
+
+    assert result == "safe-system-bundle"
+    assert captured["request"].hours == 1
+    assert captured["deprecated"] is True
 
 
 def test_get_config_returns_merged_structured_config(monkeypatch):

@@ -65,7 +65,7 @@ async def test_slow_docker_logs_do_not_block_event_loop(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_missing_log_container_keeps_404(monkeypatch):
+async def test_missing_allowed_log_container_keeps_404(monkeypatch):
     class _MissingContainers:
         def list(self, **_kwargs):
             return []
@@ -78,10 +78,41 @@ async def test_missing_log_container_keeps_404(monkeypatch):
     monkeypatch.setattr(logs.docker, "from_env", lambda **_kwargs: client)
 
     with pytest.raises(HTTPException) as exc_info:
-        await logs.get_container_logs("missing", tail=100, levels=None, q=None)
+        await logs.get_container_logs("admin_ui", tail=100, levels=None, q=None)
 
     assert exc_info.value.status_code == 404
     assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_unknown_log_container_is_rejected_before_docker_lookup(monkeypatch):
+    called = False
+
+    def _from_env(**_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("Docker should not be queried")
+
+    monkeypatch.setattr(logs.docker, "from_env", _from_env)
+    with pytest.raises(HTTPException) as exc_info:
+        await logs.get_container_logs("arbitrary_container", tail=100, levels=None, q=None)
+
+    assert exc_info.value.status_code == 400
+    assert called is False
+
+
+def test_related_ids_expand_through_an_already_known_bridge():
+    parsed = []
+    for line in (
+        '2026-01-01T00:00:00Z [INFO] joined [src.engine] call_id=1789247215.144 bridge_id=bridge-1',
+        '2026-01-01T00:00:01Z [INFO] media joined [src.engine] external_media_id=media-2 bridge_id=bridge-1',
+    ):
+        parsed.append(logs.parse_log_line(line))
+
+    related, bridges = logs._compute_related_ids(parsed, "1789247215.144")
+
+    assert related == ["1789247215.144", "media-2"]
+    assert bridges == ["bridge-1"]
 
 
 @pytest.mark.asyncio

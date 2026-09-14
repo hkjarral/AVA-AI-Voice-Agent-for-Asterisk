@@ -85,6 +85,7 @@ class CallRecord:
     caller_audio_format: str = "ulaw"
     codec_alignment_ok: bool = True
     barge_in_count: int = 0
+    diagnostics_snapshot: Dict[str, Any] = field(default_factory=dict)
     
     # Metadata
     created_at: Optional[datetime] = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -114,7 +115,7 @@ class CallRecord:
             'conversation_history', 'tool_calls', 'pre_call_tool_calls',
             'post_call_tool_calls', 'call_metadata_updates',
         ]
-        for key in ['pipeline_components', 'external_metadata', 'call_metadata', *_list_fields]:
+        for key in ['pipeline_components', 'external_metadata', 'call_metadata', 'diagnostics_snapshot', *_list_fields]:
             if data.get(key) and isinstance(data[key], str):
                 try:
                     data[key] = json.loads(data[key])
@@ -182,6 +183,7 @@ class CallHistoryStore:
         caller_audio_format TEXT,
         codec_alignment_ok INTEGER,
         barge_in_count INTEGER,
+        diagnostics_snapshot TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
     """
@@ -269,6 +271,7 @@ class CallHistoryStore:
                 "external_metadata": "TEXT",
                 "call_metadata": "TEXT",
                 "call_metadata_updates": "TEXT",
+                "diagnostics_snapshot": "TEXT",
             }
             for name, sql_type in additive_columns.items():
                 if name not in existing:
@@ -333,8 +336,9 @@ class CallHistoryStore:
                             call_metadata, call_metadata_updates,
                             tool_calls, pre_call_tool_calls, post_call_tool_calls,
                             avg_turn_latency_ms, max_turn_latency_ms, total_turns,
-                            caller_audio_format, codec_alignment_ok, barge_in_count, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            caller_audio_format, codec_alignment_ok, barge_in_count,
+                            diagnostics_snapshot, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         record.id,
                         record.call_id,
@@ -373,6 +377,7 @@ class CallHistoryStore:
                         record.caller_audio_format,
                         1 if record.codec_alignment_ok else 0,
                         record.barge_in_count,
+                        json.dumps(record.diagnostics_snapshot or {}),
                         record.created_at.isoformat() if record.created_at else None,
                     ))
                     conn.commit()

@@ -193,6 +193,27 @@ describe('CallHistoryPage deep links', () => {
         );
     });
 
+    it('opens the dedicated call troubleshooting route without pinning an exact time range', async () => {
+        render(
+            <MemoryRouter initialEntries={['/history?id=record-1']}>
+                <Routes>
+                    <Route path="/history" element={<CallHistoryPage />} />
+                    <Route path="/logs" element={<FullLocationProbe />} />
+                </Routes>
+            </MemoryRouter>
+        );
+
+        await screen.findByRole('dialog', { name: 'Call Details' });
+        fireEvent.click(screen.getAllByRole('button', { name: 'Troubleshoot' })[0]);
+
+        const location = await screen.findByTestId('full-location');
+        expect(location).toHaveTextContent('/logs?');
+        expect(location).toHaveTextContent('mode=troubleshoot');
+        expect(location).toHaveTextContent('call_id=asterisk-1');
+        expect(location).not.toHaveTextContent('since=');
+        expect(location).not.toHaveTextContent('until=');
+    });
+
     it('shows final metadata provenance and applies an exact-match filter', async () => {
         render(
             <MemoryRouter initialEntries={['/history?id=record-1']}>
