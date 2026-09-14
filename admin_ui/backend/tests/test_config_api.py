@@ -152,6 +152,24 @@ def test_get_config_reports_recursive_local_override(monkeypatch, tmp_path):
     assert "local configuration file" in response.json()["detail"]
 
 
+@pytest.mark.parametrize("key", [".nan", ".inf", "-.inf"])
+def test_get_config_reports_non_finite_local_override_key(monkeypatch, tmp_path, key):
+    base_path = tmp_path / "ai-agent.yaml"
+    local_path = tmp_path / "ai-agent.local.yaml"
+    base_path.write_text("providers:\n  local:\n    type: local\n")
+    local_path.write_text(f"{key}: malformed\n")
+    monkeypatch.setattr(config.settings, "CONFIG_PATH", str(base_path))
+    monkeypatch.setattr(config.settings, "LOCAL_CONFIG_PATH", str(local_path))
+
+    app = FastAPI()
+    app.include_router(config.router, prefix="/api/config")
+    response = TestClient(app, raise_server_exceptions=False).get("/api/config")
+
+    assert response.status_code == 422
+    assert "non-finite numeric mapping key" in response.json()["detail"]
+    assert "local configuration file" in response.json()["detail"]
+
+
 def test_config_update_rejects_non_finite_value_before_write(monkeypatch):
     parsed = yaml.safe_load(Path(config.settings.CONFIG_PATH).read_text())
     parsed["providers"]["google_live"]["input_gain_max_db"] = float("nan")
