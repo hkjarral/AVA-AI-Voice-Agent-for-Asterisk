@@ -230,6 +230,22 @@ def test_sanitize_text_preserves_diagnostic_timestamps_calendar_slots_and_ipv4()
     assert sanitized.count("[PHONE_REDACTED]") == 1
 
 
+def test_sanitize_text_redacts_private_context_repr_but_keeps_diagnostics():
+    value = (
+        r"ContextConfig(prompt='Private caller flow with don\'t wording', "
+        r'greeting="Hello caller", provider="google_live", profile="telephony_ulaw_8k")'
+    )
+
+    sanitized = support_api.sanitize_text(value)
+
+    assert "Private caller flow" not in sanitized
+    assert "Hello caller" not in sanitized
+    assert "prompt=[REDACTED]" in sanitized
+    assert "greeting=[REDACTED]" in sanitized
+    assert 'provider="google_live"' in sanitized
+    assert 'profile="telephony_ulaw_8k"' in sanitized
+
+
 def test_system_bundle_is_bounded_and_sanitizes_config_and_logs(monkeypatch):
     from api import config as config_api
     from api import system as system_api

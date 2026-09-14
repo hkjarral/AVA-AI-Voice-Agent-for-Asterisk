@@ -117,7 +117,11 @@ _BEARER_RE = re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]+")
 _URL_SECRET_RE = re.compile(r"(?i)([?&](?:api[_-]?key|token|secret|password|signature)=)[^&\s]+")
 _KV_SECRET_RE = re.compile(
     r"(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|password|secret|authorization)"
-    r"(\s*[=:]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,}\]]+)"
+    r"(\s*[=:]\s*)(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)"
+)
+_KV_PRIVATE_TEXT_RE = re.compile(
+    r"(?i)\b(prompt|greeting|instructions|system_message|notes)"
+    r"(\s*=\s*)(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*')"
 )
 _KV_IDENTITY_RE = re.compile(
     r"(?i)\b(caller_number|caller_name|called_number|phone_number)"
@@ -183,6 +187,7 @@ def sanitize_text(value: str) -> str:
     text = _BEARER_RE.sub(r"\1[REDACTED]", text)
     text = _URL_SECRET_RE.sub(r"\1[REDACTED]", text)
     text = _KV_SECRET_RE.sub(r"\1\2[REDACTED]", text)
+    text = _KV_PRIVATE_TEXT_RE.sub(r"\1\2[REDACTED]", text)
     text = _KV_IDENTITY_RE.sub(r"\1\2[IDENTITY_REDACTED]", text)
     text = _PHONE_CANDIDATE_RE.sub(redact_phone, text)
     for token, original in protected.items():
