@@ -54,9 +54,11 @@ Back up at least:
 - `data/operator/agents.db` and `data/call_history.db` when present; and
 - any custom secrets, certificates, recordings, or media stored outside those paths.
 
-The v7.6 updater also creates a per-job backup under `.agent/update-backups/` and
-uses SQLite's online backup API for `agents.db` and `call_history.db`. An independent
-off-host backup is still recommended.
+The v7.6 updater also creates a per-job backup under `.agent/update-backups/`.
+While `ai_engine` is running, it uses SQLite's online backup API for `agents.db`
+and `call_history.db`. If the engine is stopped or unavailable, it instead copies
+each database plus any WAL/SHM sidecars from the host, when there are no active
+engine writers. An independent off-host backup is still recommended.
 
 ### 1) Choose how to handle tracked source changes
 
