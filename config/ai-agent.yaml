@@ -119,6 +119,25 @@ pipelines:
     tts: local_tts
   # Local STT + OpenAI LLM + ElevenLabs TTS (premium voice quality)
   # Requires: ELEVENLABS_API_KEY + OPENAI_API_KEY in .env
+  hybrid_fishaudio:
+    stt: local_stt
+    llm: openai_llm
+    tts: fishaudio_tts
+    options:
+      stt:
+        chunk_ms: 160
+        mode: stt
+        streaming: true
+        stream_format: pcm16_16k
+      llm:
+        base_url: https://api.openai.com/v1
+        model: gpt-4o-mini
+        temperature: 0.7
+        max_tokens: 200
+      tts:
+        format:
+          encoding: mulaw
+          sample_rate: 8000
   hybrid_elevenlabs:
     stt: local_stt
     llm: openai_llm
@@ -534,6 +553,22 @@ providers:
     similarity_boost: 0.75
     style: 0.0
     use_speaker_boost: true
+  fishaudio_tts:
+    type: fishaudio
+    capabilities:
+    - tts
+    enabled: false
+    transport: http        # http or websocket (realtime session)
+    model: s2.1-pro
+    reference_id: null
+    audio_format: pcm
+    sample_rate: null
+    latency: low
+    chunk_length: 200
+    normalize: true
+    temperature: 0.7
+    top_p: 0.7
+    request_timeout_sec: 15
   openai_stt:
     enabled: false
     capabilities:

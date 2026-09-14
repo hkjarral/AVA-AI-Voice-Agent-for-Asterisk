@@ -675,6 +675,45 @@ class CambAiProviderConfig(BaseModel):
     farewell_hangup_delay_sec: Optional[float] = None
 
 
+class FishAudioProviderConfig(BaseModel):
+    """Fish Audio TTS provider configuration.
+
+    Fish Audio streams raw PCM at a requested sample rate, so a telephone call
+    can be served at 8 kHz without an intermediate resample.
+
+    API Reference: https://docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech
+    """
+    enabled: bool = Field(default=True)
+    api_key: Optional[str] = None
+    base_url: str = Field(default="https://api.fish.audio/v1")
+    # http posts one request per fragment; websocket keeps one realtime session
+    # per turn and receives the text as the engine produces it.
+    transport: Literal["http", "websocket"] = Field(default="http")
+    # Defaults to base_url with a ws/wss scheme; override to reach a local mock.
+    ws_base_url: Optional[str] = None
+    # Speech model, sent as the `model` request header.
+    model: str = Field(default="s2.1-pro")  # s1, s2-pro, s2.1-pro, drama-3-preview
+    # Voice model id from the Fish Audio library; None uses the account default.
+    reference_id: Optional[str] = None
+    # Raw PCM streams chunk by chunk; wav is buffered and decoded.
+    audio_format: Literal["pcm", "wav"] = Field(default="pcm")
+    # None follows the call: 8 kHz on telephony, 16 kHz on wideband transports.
+    sample_rate: Optional[int] = None
+    latency: Literal["low", "normal", "balanced"] = Field(default="low")
+    chunk_length: int = Field(default=200, ge=100, le=300)
+    normalize: bool = Field(default=True)
+    temperature: float = Field(default=0.7, ge=0.0, le=1.0)
+    top_p: float = Field(default=0.7, ge=0.0, le=1.0)
+    # Prosody overrides; None leaves the model default.
+    speed: Optional[float] = None
+    volume: Optional[float] = None
+    output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
+    # Whole-request budget, including the streamed body.
+    request_timeout_sec: float = Field(default=15.0, gt=0)
+    # Provider-specific farewell hangup delay (overrides global)
+    farewell_hangup_delay_sec: Optional[float] = None
+
+
 _AZURE_REGION_RE = re.compile(r"^[a-z][a-z0-9-]{0,48}[a-z0-9]$")
 
 
