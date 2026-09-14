@@ -79,4 +79,41 @@ describe('LogsPage polling', () => {
 
     expect((screen.getByTitle('Refresh Now') as HTMLButtonElement).disabled).toBe(false);
   });
+
+  it('serializes a manual refresh with the scheduled poll', async () => {
+    let resolveManual: (value: any) => void = () => {};
+    const manualRequest = new Promise((resolve) => {
+      resolveManual = resolve;
+    });
+    vi.mocked(axios.get)
+      .mockResolvedValueOnce({ data: { logs: 'automatic' } })
+      .mockReturnValueOnce(manualRequest as any)
+      .mockResolvedValue({ data: { logs: 'next automatic' } });
+
+    render(
+      <MemoryRouter initialEntries={['/logs?mode=raw']}>
+        <LogsPage />
+      </MemoryRouter>,
+    );
+
+    await act(async () => Promise.resolve());
+    fireEvent.click(screen.getByTitle('Refresh Now'));
+    expect(axios.get).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+      await Promise.resolve();
+    });
+    expect(axios.get).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      resolveManual({ data: { logs: 'manual' } });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+      await Promise.resolve();
+    });
+    expect(axios.get).toHaveBeenCalledTimes(3);
+  });
 });

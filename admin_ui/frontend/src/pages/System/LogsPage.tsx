@@ -161,6 +161,10 @@ const LogsPage = () => {
     const [callLoading, setCallLoading] = useState(false);
     const logsEndRef = useRef<HTMLDivElement>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
+    const activeLogRequestRef = useRef<{
+        controller: AbortController;
+        promise: Promise<boolean>;
+    } | null>(null);
     const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
 
     const recomputePinned = useCallback(() => {
@@ -187,6 +191,7 @@ const LogsPage = () => {
             // Send as CSV for FastAPI list parsing (avoid axios `levels[]=...` serialization).
             if (rawLevels.length) params.levels = rawLevels.join(',');
             const res = await axios.get(`/api/logs/${container}`, { params, signal });
+            if (signal?.aborted) return false;
             setLogs(res.data.logs);
             return true;
         } catch (err: any) {
@@ -238,6 +243,7 @@ const LogsPage = () => {
             if (until.trim()) params.until = until.trim();
 
             const res = await axios.get<EventsResponse>(`/api/logs/${container}/events`, { params, signal });
+            if (signal?.aborted) return false;
             setEvents(res.data.events || []);
             setEventsMeta(res.data || null);
             return true;
@@ -256,6 +262,26 @@ const LogsPage = () => {
             if (!signal?.aborted) setLoading(false);
         }
     }, [callId, container, hidePayloads, includeDebug, since, until, view]);
+
+    const runLogRequest = useCallback((request: (signal: AbortSignal) => Promise<boolean>) => {
+        const active = activeLogRequestRef.current;
+        if (active) return active.promise;
+
+        const controller = new AbortController();
+        const promise = request(controller.signal).finally(() => {
+            if (activeLogRequestRef.current?.promise === promise) {
+                activeLogRequestRef.current = null;
+            }
+        });
+        activeLogRequestRef.current = { controller, promise };
+        return promise;
+    }, []);
+
+    const cancelActiveLogRequest = useCallback(() => {
+        activeLogRequestRef.current?.controller.abort();
+        activeLogRequestRef.current = null;
+        setLoading(false);
+    }, []);
 
     const fetchCallFilterOptions = useCallback(async () => {
         try {
@@ -301,11 +327,9 @@ const LogsPage = () => {
         let cancelled = false;
         let failures = 0;
         let timer: ReturnType<typeof setTimeout> | null = null;
-        let controller: AbortController | null = null;
 
         const poll = async () => {
-            controller = new AbortController();
-            const succeeded = await fetchLogs(controller.signal);
+            const succeeded = await runLogRequest(fetchLogs);
             if (cancelled || !autoRefresh) return;
             failures = succeeded ? 0 : Math.min(failures + 1, 4);
             const delay = succeeded ? 3000 : Math.min(30000, 3000 * (2 ** failures));
@@ -315,11 +339,10 @@ const LogsPage = () => {
         void poll();
         return () => {
             cancelled = true;
-            controller?.abort();
-            setLoading(false);
+            cancelActiveLogRequest();
             if (timer) clearTimeout(timer);
         };
-    }, [autoRefresh, fetchLogs, mode]);
+    }, [autoRefresh, cancelActiveLogRequest, fetchLogs, mode, runLogRequest]);
 
     useEffect(() => {
         if (mode !== 'troubleshoot') return;
@@ -327,11 +350,9 @@ const LogsPage = () => {
         let cancelled = false;
         let failures = 0;
         let timer: ReturnType<typeof setTimeout> | null = null;
-        let controller: AbortController | null = null;
 
         const poll = async () => {
-            controller = new AbortController();
-            const succeeded = await fetchEvents(controller.signal);
+            const succeeded = await runLogRequest(fetchEvents);
             if (cancelled || !autoRefresh) return;
             failures = succeeded ? 0 : Math.min(failures + 1, 4);
             const delay = succeeded ? 3000 : Math.min(30000, 3000 * (2 ** failures));
@@ -341,11 +362,10 @@ const LogsPage = () => {
         void poll();
         return () => {
             cancelled = true;
-            controller?.abort();
-            setLoading(false);
+            cancelActiveLogRequest();
             if (timer) clearTimeout(timer);
         };
-    }, [autoRefresh, callId, fetchEvents, mode]);
+    }, [autoRefresh, callId, cancelActiveLogRequest, fetchEvents, mode, runLogRequest]);
 
     useEffect(() => {
         if (autoRefresh && isPinnedToBottom) {
@@ -561,9 +581,9 @@ const LogsPage = () => {
                         onClick={() => {
                             if (mode === 'troubleshoot') {
                                 if (showCallFinder) fetchCalls();
-                                else fetchEvents();
+                                else void runLogRequest(fetchEvents);
                             } else {
-                                fetchLogs();
+                                void runLogRequest(fetchLogs);
                             }
                         }}
                         className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-3"

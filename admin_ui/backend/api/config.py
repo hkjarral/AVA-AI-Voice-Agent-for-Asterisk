@@ -274,6 +274,10 @@ def _admin_ui_env_key(key: str) -> bool:
     )
 
 
+class _RecursiveYamlAliasError(ConstructorError):
+    """Raised when YAML aliases create a cycle in the configuration graph."""
+
+
 def _assert_no_duplicate_yaml_keys(
     node: yaml.Node,
     visiting: Optional[set[int]] = None,
@@ -290,7 +294,7 @@ def _assert_no_duplicate_yaml_keys(
     active = visiting if visiting is not None else set()
     node_id = id(node)
     if node_id in active:
-        raise ConstructorError(
+        raise _RecursiveYamlAliasError(
             "while constructing the configuration",
             node.start_mark,
             "found recursive YAML alias",
@@ -485,6 +489,8 @@ def _read_merged_config_dict() -> dict:
     try:
         with open(settings.LOCAL_CONFIG_PATH, "r") as f:
             local = _safe_load_no_duplicates(f.read()) or {}
+    except _RecursiveYamlAliasError:
+        raise
     except Exception:
         return base
 
@@ -1295,7 +1301,16 @@ async def reset_pipeline_audio(pipeline_name: str):
 @router.get("")
 @router.get("/")
 async def get_config():
-    safe = _redact_websocket_media_secrets(_read_merged_config_dict())
+    try:
+        safe = _redact_websocket_media_secrets(_read_merged_config_dict())
+    except _RecursiveYamlAliasError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Configuration contains a recursive YAML alias. Repair the local "
+                "configuration file by replacing the alias with an ordinary mapping or list."
+            ),
+        ) from exc
     # Existing operator overrides may predate write-time validation. Return a
     # controlled, actionable response while leaving /yaml available for repair.
     _assert_finite_config_numbers(safe, status_code=422)

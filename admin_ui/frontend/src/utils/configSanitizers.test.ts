@@ -36,6 +36,30 @@ describe('sanitizeConfigForSave', () => {
     );
   });
 
+  it.each([
+    ['object', () => {
+      const value: Record<string, unknown> = {};
+      value.self = value;
+      return { value };
+    }, 'value.self'],
+    ['array', () => {
+      const value: unknown[] = [];
+      value.push(value);
+      return { value };
+    }, 'value[0]'],
+  ])('rejects a recursive %s with its exact path', (_label, createConfig, expectedPath) => {
+    expect(() => sanitizeConfigForSave(createConfig())).toThrow(
+      `Configuration contains a recursive reference at ${expectedPath}`,
+    );
+  });
+
+  it('allows shared non-recursive references', () => {
+    const shared = { input_gain_max_db: 6.5 };
+    const config = { providers: { first: shared, second: shared } };
+
+    expect(sanitizeConfigForSave(config)).toEqual(config);
+  });
+
   it('preserves finite numeric values', () => {
     const config = { providers: { google_live: { input_gain_max_db: 6.5 } } };
     expect(sanitizeConfigForSave(config)).toEqual(config);
