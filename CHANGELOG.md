@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.6.0] - 2026-09-13
+
 ### Added
 
 - **Call-specific troubleshooting packages and guided Logs UX**: Call History → Troubleshoot now opens an actionable call summary and downloads a shareable ZIP containing correlated AI Engine evidence, the full pre-call/in-call/post-call tool lifecycle, a sanitized transcript, and the provider, pipeline, Audio Profile, transport, codec, VAD, barge-in, and streaming settings that were actually resolved for that call. New calls persist an immutable, secret-free settings snapshot so later configuration edits cannot rewrite the evidence. Optional Local AI Server and Admin UI sources are selected by default with provider-aware guidance. Packages work with console, JSON, or mixed logs at any configured log level; the manifest records the formats and levels actually present. Recordings, caller identity, phone numbers, credentials, prompts, and secret values are never included. The general Logs export is now a menu for the visible raw view, a call package, or a bounded sanitized system-diagnostics package; the legacy unbounded export endpoint remains as a deprecated compatibility alias to the safe system package.
@@ -2344,7 +2346,8 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 - **v4.0.0** (2025-10-29) - Modular pipeline architecture, production monitoring, golden baselines
 - **v3.0.0** (2025-09-16) - Modular pipeline architecture, file based playback
 
-[Unreleased]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.6...HEAD
+[Unreleased]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.6.0...HEAD
+[7.6.0]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.6...v7.6.0
 [7.5.6]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.5...v7.5.6
 [7.5.5]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.4...v7.5.5
 [7.5.4]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.3...v7.5.4

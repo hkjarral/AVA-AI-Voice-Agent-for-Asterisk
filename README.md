@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-7.5.6-blue.svg)
+![Version](https://img.shields.io/badge/version-7.6.0-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -171,6 +171,44 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>v7.6.0 — Asterisk Media WebSocket, call metadata, and safer troubleshooting</b></summary>
+
+v7.6.0 adds a third, opt-in media transport and expands call diagnostics while
+keeping existing AudioSocket, ExternalMedia RTP, Agent, and provider selections
+unchanged by default.
+
+- **Asterisk Media WebSocket is available as an opt-in transport** — supported
+  Asterisk releases can open an authenticated, per-call media WebSocket to AVA,
+  with Admin UI setup, CLI/preflight validation, codec conversion, lifecycle
+  cleanup, and explicit qualification boundaries. Only OpenAI Realtime with
+  `ulaw` on Asterisk 22.10.1/FreePBX 17 has a live qualified smoke; other
+  combinations remain unqualified until tested
+  ([#644](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/644)).
+- **Selected pre-call data can become bounded call metadata** — HTTP lookup
+  fields are opt-in, scalar, and non-authoritative. An Agent may correct only
+  explicitly allowed fields during the active call, without changing caller
+  identity, routing, consent/DNC, transfers, disposition, or external systems
+  ([#632](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/632)).
+- **Call troubleshooting now produces privacy-safe support packages** — Call
+  History captures the effective provider, pipeline, Audio Profile, transport,
+  codec, VAD, streaming, and tool settings for new calls, then combines that
+  snapshot with correlated sanitized logs and tool lifecycle evidence. General
+  diagnostics exports are bounded and the legacy export endpoint now uses the
+  same safe path
+  ([#657](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/657)).
+- **Admin UI reliability and configuration handling are hardened** — slow
+  Docker log reads no longer block the API event loop, overlapping Logs polls
+  are prevented, and non-finite YAML/JavaScript numbers are rejected with exact
+  paths before persistence
+  ([#656](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/656)).
+
+See the [v7.6.0 changelog](CHANGELOG.md#760---2026-09-13),
+[migration notes](docs/MIGRATION.md#v756-to-v760), and
+[validation matrix](docs/baselines/golden/v7.6.0-validation-matrix.md).
+
+</details>
+
+<details>
 <summary><b>v7.5.6 — Safer outbound context, Agent hangup policies, and configured summary LLMs</b></summary>
 
 v7.5.6 is an in-place feature and reliability release. It does not migrate
@@ -437,7 +475,7 @@ voicemail mailboxes it should be allowed to use.**
   working.
 
 Before upgrading—especially from v7.3.0–v7.3.3—read the
-[current upgrade procedure](docs/INSTALLATION.md#upgrade-to-v756-existing-checkout)
+[current upgrade procedure](docs/INSTALLATION.md#upgrade-to-v760-existing-checkout)
 and [Contexts → Agents migration guide](docs/OPERATOR_MIGRATION.md).
 
 </details>
@@ -1184,6 +1222,7 @@ Then load **[AVA.mdc](AVA.mdc)** into your AI coding assistant (Claude, Cursor, 
 <tr>
 <td align="center"><a href="https://github.com/exaland"><img src="https://github.com/exaland.png" width="60" alt="exaland"><br><sub><b>exaland</b></sub></a><br>Outbound .ULAW Compatibility</td>
 <td align="center"><a href="https://github.com/YosefAdPro"><img src="https://github.com/YosefAdPro.png" width="60" alt="YosefAdPro"><br><sub><b>YosefAdPro</b></sub></a><br>Agents API/OpenAPI</td>
+<td align="center"><a href="https://github.com/cswilsnetex"><img src="https://github.com/cswilsnetex.png" width="60" alt="cswilsnetex"><br><sub><b>Chris Wilson</b></sub></a><br>Google Live Key Handling, Admin UI Accessibility</td>
 </tr>
 </table>
 

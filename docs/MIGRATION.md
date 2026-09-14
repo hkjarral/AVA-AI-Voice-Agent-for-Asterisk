@@ -2,6 +2,59 @@
 
 This guide covers upgrading between major versions of Asterisk AI Voice Agent.
 
+## v7.5.6 to v7.6.0
+
+v7.6.0 is an in-place minor release. It adds an opt-in Asterisk Media
+WebSocket transport, bounded call metadata and call-local correction, and
+privacy-safe call troubleshooting packages. It does not change the selected
+transport, default Audio Profile, Agent assignment, provider credential, or
+tool authorization on upgrade.
+
+On first AI Engine startup, `call_history.db` receives three nullable text
+columns: `call_metadata`, `call_metadata_updates`, and
+`diagnostics_snapshot`. The migration is additive and automatic. Existing
+rows remain valid with empty metadata and no settings snapshot; no `agents.db`
+migration or manual SQL is required.
+
+Before upgrading, drain or complete active calls and back up the normal
+operator configuration and SQLite data. Then:
+
+1. Rebuild and recreate `ai_engine` and `admin_ui`. Rebuild and recreate
+   `local_ai_server` only when the deployment uses the bundled Local AI
+   service; leave it absent or stopped on remote-only and split-server
+   deployments.
+2. Existing AudioSocket and ExternalMedia RTP installations continue using
+   their saved transport. To opt into WebSocket, first qualify the exact
+   Asterisk release, provider, codec, and topology; configure a source
+   allowlist and normally authentication; add the matching per-call Asterisk
+   WebSocket client; drain calls; then recreate the AI Engine. Only OpenAI
+   Realtime with `ulaw` on Asterisk 22.10.1/FreePBX 17 has a live qualified
+   smoke in this release. See [WebSocket Transport](WebSocket-Transport.md).
+3. Call metadata persistence remains off until individual pre-call HTTP output
+   fields are selected. Marking a field correctable defines the call-local
+   schema but does not grant an Agent the `update_call_metadata` tool. Test the
+   selected fields, exact Call History filters, exports, and post-call webhook
+   data before relying on them operationally.
+4. New calls capture an allowlisted effective-settings snapshot for
+   troubleshooting. Historical calls remain usable but cannot reconstruct a
+   snapshot that was never recorded. The legacy general log-export endpoint
+   now returns a bounded, sanitized one-hour system package instead of an
+   unbounded raw archive.
+5. After the update, make controlled calls on every provider/transport pair
+   the deployment intends to keep in service. Confirm greetings, two-way
+   speech, interruption, applicable tools or transfers, intentional hangup,
+   one terminal Call History record, and no orphan channels or media legs.
+   Download a call package and verify it is useful without exposing caller
+   identity, credentials, prompts, secret values, or recordings.
+
+Rollback uses the prior tagged images and the pre-update configuration backup;
+there is no database downgrade. The additive Call History columns may remain
+and are ignored by older code. Before downgrading a WebSocket-enabled install,
+drain calls, select and verify AudioSocket or ExternalMedia RTP, and restore a
+configuration compatible with the prior release. In particular, remove or
+reset WebSocket-only settings such as `control_format: auto/plain`, because
+older strict schemas may reject them even when another transport is selected.
+
 ## v7.5.5 to v7.5.6
 
 v7.5.6 is an in-place feature and reliability release with no database

@@ -15,7 +15,7 @@ It is self-contained: everything an external contributor's assistant needs is ei
 this file or in the committed docs it links to. If this file ever contradicts the code or
 the docs, trust the code, then the docs — and please open an issue so we can fix it here.
 
-> Last verified against: **v7.5.6 candidate** (2026-08). Freshness is
+> Last verified against: **v7.6.0 candidate** (2026-09). Freshness is
 > checked as part of the release checklist (`docs/RELEASE_CHECKLIST.md`).
 
 ## What This Project Is
@@ -55,9 +55,12 @@ Use these terms consistently and tie every change back to them:
 
 - **Two-container core**: `ai_engine` (Python engine) + `admin_ui`; plus optional
   `local_ai_server` (local/hybrid pipelines) and `updater`.
-- **Upstream audio transports**: AudioSocket (TCP) and ExternalMedia RTP (UDP). Never
-  assume a default — check `config/ai-agent.yaml` and the active golden baseline. See
-  `docs/Transport-Mode-Compatibility.md`.
+- **Upstream audio transports**: AudioSocket (TCP), ExternalMedia RTP (UDP), and the
+  opt-in Asterisk Media WebSocket transport. Never assume a default — check
+  `config/ai-agent.yaml` and the active golden baseline. WebSocket requires a qualified
+  Asterisk version/module set, source allowlist, and normally authentication; only the
+  combinations explicitly listed in the current validation matrix are qualified. See
+  `docs/Transport-Mode-Compatibility.md` and `docs/WebSocket-Transport.md`.
 - **Audio profiles & negotiation**: codec/sample-rate decisions belong in
   `TransportOrchestrator` (`src/core/transport_orchestrator.py`) and YAML `profiles` —
   never hard-coded in providers.
@@ -135,6 +138,15 @@ Use these terms consistently and tie every change back to them:
   JSON `variables` object. Nonempty `AAVA_CUSTOM_VARS_JSON` is bounded canonical JSON and
   must be reapplied and confirmed exactly before AMD/provider startup; unavailable or
   corrupt authoritative state fails the call closed. Never log lead-context values.
+- **Call metadata (v7.6.0+)**: selected pre-call HTTP output fields can be persisted under
+  a bounded, non-authoritative `call_metadata` namespace. Only explicitly correctable
+  fields exposed to an Agent with `update_call_metadata` may change during that active
+  call. Corrections never write back to external systems or mutate caller identity,
+  routing, consent/DNC, transfer, disposition, provider, or dialer state.
+- **Support diagnostics (v7.6.0+)**: call-specific support packages use an immutable,
+  allowlisted settings snapshot plus bounded, sanitized log sources. Never add recordings,
+  caller identity, credentials, prompts, greetings, instructions, or secret values to a
+  support bundle; keep legacy export compatibility routed through the safe bounded path.
 - **Live status & call history**: push-based live-status hub feeds the Admin UI dashboard;
   call history persists to SQLite (`src/core/call_history.py`).
 
