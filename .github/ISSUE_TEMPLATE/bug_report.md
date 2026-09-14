@@ -34,9 +34,10 @@ assignees: ''
 
 **Call-specific issue (preferred):** In the Admin UI, open **Call History**,
 select the affected call, click **Troubleshoot**, and attach the downloaded
-**Support Package (.zip)**. It includes correlated lifecycle logs, effective
-provider/Audio Profile/transport settings, and pre/in/post-call tool evidence;
-recordings, phone numbers, prompts, and secrets are excluded.
+**Support Package (.zip)**. It includes correlated lifecycle logs, pre/in/post-call
+tool evidence, and provider/Audio Profile/transport settings when the call record
+contains them. Older calls may omit effective settings if they predate diagnostic
+snapshots. Recordings, phone numbers, prompts, and secrets are excluded.
 
 **System-wide issue:** Open **System Logs → Export → System diagnostics**, choose
 the shortest relevant time window, and attach that ZIP. It may include events

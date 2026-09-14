@@ -179,6 +179,35 @@ def test_call_bundle_captures_all_phases_settings_and_mixed_log_levels(monkeypat
         assert forbidden not in contents
 
 
+@pytest.mark.asyncio
+async def test_call_evidence_bounds_debug_heavy_correlation_window(monkeypatch):
+    client = _call_bundle_client(
+        monkeypatch,
+        '2026-09-13T12:00:00Z [INFO] started [src.engine] call_id=1789247215.144',
+    )
+    limits = []
+
+    async def bounded_read_window(container, since, until, *, limit):
+        limits.append(limit)
+        return "", {
+            "container": container,
+            "container_id": "container123",
+            "available": True,
+            "truncated": False,
+            "original_bytes": 0,
+            "exported_bytes": 0,
+        }
+
+    monkeypatch.setattr(support_api, "_read_window", bounded_read_window)
+
+    response = client.get(
+        "/api/support/call-preview", params={"call_id": "1789247215.144"}
+    )
+
+    assert response.status_code == 200
+    assert limits == [support_api.CORRELATION_MAX_BYTES]
+
+
 def test_call_bundle_options_can_omit_optional_sources_and_content(monkeypatch):
     client = _call_bundle_client(
         monkeypatch,

@@ -22,6 +22,7 @@ from api.logs import _compute_related_ids, _event_matches_call, _read_container_
 router = APIRouter()
 
 MAX_CONTAINER_BYTES = 5 * 1024 * 1024
+CORRELATION_MAX_BYTES = 64 * 1024 * 1024
 MAX_SYSTEM_HOURS = 24
 CALL_WINDOW_PAD_SECONDS = 15
 
@@ -474,9 +475,12 @@ async def _call_evidence(call_id: str):
         end = end.replace(tzinfo=timezone.utc)
     since = int((start - timedelta(seconds=CALL_WINDOW_PAD_SECONDS)).timestamp())
     until = int((end + timedelta(seconds=CALL_WINDOW_PAD_SECONDS)).timestamp())
-    # Correlate before clipping: a noisy DEBUG window can exceed the bundle cap,
-    # and the useful call may sit in the middle of that window.
-    raw, meta = await _read_window("ai_engine", since, until, limit=None)
+    # Use a larger bounded window for correlation before applying the smaller
+    # per-file export cap. This keeps DEBUG-heavy calls useful without allowing
+    # preview and bundle requests to decode an unbounded log window in memory.
+    raw, meta = await _read_window(
+        "ai_engine", since, until, limit=CORRELATION_MAX_BYTES
+    )
     filtered, events, related_ids, bridge_ids = _filter_call_lines(raw, call_id)
     filtered = _sanitize_call_text(filtered, call)
     filtered, call_truncated, matched_original_size = _bounded_text(filtered.encode("utf-8"))
