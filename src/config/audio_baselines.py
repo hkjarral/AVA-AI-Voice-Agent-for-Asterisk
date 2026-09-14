@@ -104,6 +104,13 @@ PROVIDER_AUDIO_BASELINES: Mapping[str, Mapping[str, Any]] = {
         "output_format": "ulaw_8000",
         "output_resampler": "inherit",
     },
+    "fishaudio_tts": {
+        "audio_format": "pcm",
+        "sample_rate": 8000,
+        "target_encoding": "mulaw",
+        "target_sample_rate_hz": 8000,
+        "output_resampler": "inherit",
+    },
     "openai_stt": {
         "input_encoding": "linear16",
         "input_sample_rate_hz": 16000,
@@ -123,6 +130,7 @@ PROVIDER_AUDIO_EXTRA_FIELDS: Mapping[str, frozenset[str]] = {
     "groq_tts": frozenset({"response_format", "output_format"}),
     "azure_tts": frozenset({"output_format", "response_format"}),
     "elevenlabs_tts": frozenset({"output_format", "response_format"}),
+    "fishaudio_tts": frozenset({"audio_format", "sample_rate"}),
     "openai_tts": frozenset({"response_format", "output_format"}),
 }
 
