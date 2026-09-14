@@ -210,8 +210,23 @@ def sanitize_value(value: Any, key: str = "") -> Any:
     return value
 
 
+def _call_number_values(call: Any) -> list[str]:
+    values = []
+    for field in ("caller_number", "called_number"):
+        value = str(getattr(call, field, "") or "").strip()
+        if value and value.lower() not in {"unknown", "anonymous", "unavailable"}:
+            values.append(value)
+    return values
+
+
 def _sanitize_call_text(value: str, call: Any) -> str:
     text = sanitize_text(value)
+    for number in _call_number_values(call):
+        text = re.sub(
+            rf"(?<!\w){re.escape(number)}(?!\w)",
+            "[CALL_NUMBER_REDACTED]",
+            text,
+        )
     caller_name = str(getattr(call, "caller_name", "") or "").strip()
     if len(caller_name) >= 3 and caller_name.lower() not in {"unknown", "anonymous", "unavailable"}:
         text = re.sub(re.escape(caller_name), "[CALLER_NAME_REDACTED]", text, flags=re.IGNORECASE)
@@ -229,6 +244,8 @@ def _sanitize_for_call(value: Any, call: Any, key: str = "") -> Any:
         return [_sanitize_for_call(item, call) for item in value]
     if isinstance(value, str):
         return _sanitize_call_text(value, call)
+    if value is not None and str(value) in _call_number_values(call):
+        return "[CALL_NUMBER_REDACTED]"
     return value
 
 

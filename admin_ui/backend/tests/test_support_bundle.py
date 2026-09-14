@@ -1,5 +1,6 @@
 import io, json, zipfile
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -273,6 +274,27 @@ def test_sanitize_text_redacts_private_context_repr_but_keeps_diagnostics():
     assert "greeting=[REDACTED]" in sanitized
     assert 'provider="google_live"' in sanitized
     assert 'profile="telephony_ulaw_8k"' in sanitized
+
+
+def test_call_sanitizer_redacts_short_call_numbers_in_text_and_scalar_values():
+    call = SimpleNamespace(
+        caller_number="8123",
+        called_number="7000",
+        caller_name="Extension Caller",
+    )
+
+    sanitized = support_api._sanitize_for_call({
+        "response_summary": "SMS skipped for caller 8123 routed to 7000",
+        "opaque_numeric_value": 8123,
+        "diagnostic_id": "1789247215.144",
+    }, call)
+
+    assert sanitized["response_summary"] == (
+        "SMS skipped for caller [CALL_NUMBER_REDACTED] routed to "
+        "[CALL_NUMBER_REDACTED]"
+    )
+    assert sanitized["opaque_numeric_value"] == "[CALL_NUMBER_REDACTED]"
+    assert sanitized["diagnostic_id"] == "1789247215.144"
 
 
 def test_system_bundle_is_bounded_and_sanitizes_config_and_logs(monkeypatch):
