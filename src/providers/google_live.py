@@ -107,6 +107,28 @@ def coerce_vad_sensitivity(value: Optional[str], valid: AbstractSet[str], defaul
     return value if value in valid else default
 
 
+# ActivityHandling members per the Live API reference. The third member,
+# ACTIVITY_HANDLING_UNSPECIFIED, is deliberately not accepted: sending it is
+# equivalent to omitting the key, and omission is the cheaper path.
+VALID_ACTIVITY_HANDLING = {"NO_INTERRUPTION", "START_OF_ACTIVITY_INTERRUPTS"}
+
+
+def coerce_activity_handling(value: Optional[str]) -> Optional[str]:
+    """Return value if it is an API-accepted activityHandling, else None.
+
+    None means "omit the key entirely", which is the right fallback rather than
+    a substituted default: the field is optional, so omission leaves the API's
+    own behaviour (START_OF_ACTIVITY_INTERRUPTS) in force and keeps the setup
+    message identical to today's for every provider that has not opted in.
+    Unknown values land here rather than on the wire because Google Live closes
+    the socket at 1007 on an unrecognised enum, and a typo in the YAML must not
+    cost the caller the call.
+    """
+    if not isinstance(value, str):
+        return None
+    return value if value in VALID_ACTIVITY_HANDLING else None
+
+
 def resolve_google_voice(session_voice: Optional[str], configured: Optional[str]) -> str:
     """Resolve the prebuilt voice name for a session.
 
@@ -1107,7 +1129,21 @@ class GoogleLiveProvider(AIProviderInterface):
             logger.warning("Coerced invalid vad_end_of_speech_sensitivity to END_SENSITIVITY_HIGH", call_id=self._call_id, value=raw_eos, valid=list(VALID_EOS_SENSITIVITY))
         if vad_sos != raw_sos:
             logger.warning("Coerced invalid vad_start_of_speech_sensitivity to START_SENSITIVITY_HIGH", call_id=self._call_id, value=raw_sos, valid=list(VALID_SOS_SENSITIVITY))
-        logger.info("Google Live VAD config", call_id=self._call_id, eos=vad_eos, sos=vad_sos, prefix_ms=vad_prefix_ms, silence_ms=vad_silence_ms)
+        raw_activity_handling = getattr(self.config, "activity_handling", None)
+        activity_handling = coerce_activity_handling(raw_activity_handling)
+        if raw_activity_handling and not activity_handling:
+            logger.warning(
+                "Ignoring invalid activity_handling; omitting realtimeInputConfig.activityHandling",
+                call_id=self._call_id,
+                value=raw_activity_handling,
+                valid=sorted(VALID_ACTIVITY_HANDLING),
+            )
+        # Logged as a keyword only when set, so a provider that has not opted in
+        # emits exactly the log line it does today.
+        activity_handling_log = (
+            {"activity_handling": activity_handling} if activity_handling else {}
+        )
+        logger.info("Google Live VAD config", call_id=self._call_id, eos=vad_eos, sos=vad_sos, prefix_ms=vad_prefix_ms, silence_ms=vad_silence_ms, **activity_handling_log)
         setup_msg["setup"]["realtimeInputConfig"] = {
             "automaticActivityDetection": {
                 "disabled": False,
@@ -1117,6 +1153,10 @@ class GoogleLiveProvider(AIProviderInterface):
                 "silenceDurationMs": vad_silence_ms,
             }
         }
+        # Absent when unset; see coerce_activity_handling for why omission beats
+        # sending ACTIVITY_HANDLING_UNSPECIFIED.
+        if activity_handling:
+            setup_msg["setup"]["realtimeInputConfig"]["activityHandling"] = activity_handling
 
         # Debug: Log setup message structure
         logger.debug(
