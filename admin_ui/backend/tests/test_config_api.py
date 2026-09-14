@@ -97,6 +97,44 @@ def test_non_finite_config_path_quotes_dotted_provider_names():
     assert 'providers["acme.google"].input_gain_max_db' in str(exc_info.value.detail)
 
 
+def test_config_update_rejects_recursive_yaml_alias_before_write(monkeypatch):
+    monkeypatch.setattr(
+        config,
+        "_write_local_config",
+        lambda _content: pytest.fail("recursive config must not be written"),
+    )
+    app = FastAPI()
+    app.include_router(config.router, prefix="/api/config")
+
+    response = TestClient(app).post(
+        "/api/config/yaml",
+        json={"content": "loop: &loop [*loop]\n"},
+    )
+
+    assert response.status_code == 400
+    assert "recursive YAML alias" in response.json()["detail"]
+
+
+def test_finite_number_validation_rejects_recursive_loaded_config():
+    loop = []
+    loop.append(loop)
+
+    with pytest.raises(HTTPException) as exc_info:
+        config._assert_finite_config_numbers({"loop": loop}, status_code=422)
+
+    assert exc_info.value.status_code == 422
+    assert "recursive YAML alias at loop[0]" in str(exc_info.value.detail)
+
+
+def test_config_validation_allows_non_recursive_yaml_aliases():
+    parsed = config._safe_load_no_duplicates(
+        "first: &shared [1, 2]\nsecond: *shared\n"
+    )
+
+    config._assert_finite_config_numbers(parsed)
+    assert parsed == {"first": [1, 2], "second": [1, 2]}
+
+
 def test_config_update_rejects_non_finite_value_before_write(monkeypatch):
     parsed = yaml.safe_load(Path(config.settings.CONFIG_PATH).read_text())
     parsed["providers"]["google_live"]["input_gain_max_db"] = float("nan")

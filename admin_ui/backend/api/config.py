@@ -274,34 +274,54 @@ def _admin_ui_env_key(key: str) -> bool:
     )
 
 
-def _assert_no_duplicate_yaml_keys(node: yaml.Node) -> None:
+def _assert_no_duplicate_yaml_keys(
+    node: yaml.Node,
+    visiting: Optional[set[int]] = None,
+) -> None:
     """
     Detect duplicate mapping keys before calling yaml.safe_load().
 
     We avoid yaml.load() here to keep CodeQL happy while still enforcing our
     "no duplicate keys" constraint for Admin UI config edits.
     """
-    if isinstance(node, MappingNode):
-        seen: dict[str, ScalarNode] = {}
-        for key_node, value_node in node.value:
-            # Config files use string keys; if not, fall back to a stable repr.
-            if isinstance(key_node, ScalarNode):
-                key = str(key_node.value)
-            else:
-                key = str(key_node)
-            if key in seen:
-                raise ConstructorError(
-                    "while constructing a mapping",
-                    node.start_mark,
-                    f"found duplicate key ({key!r})",
-                    key_node.start_mark,
-                )
-            if isinstance(key_node, ScalarNode):
-                seen[key] = key_node
-            _assert_no_duplicate_yaml_keys(value_node)
-    elif isinstance(node, SequenceNode):
-        for item in node.value:
-            _assert_no_duplicate_yaml_keys(item)
+    if not isinstance(node, (MappingNode, SequenceNode)):
+        return
+
+    active = visiting if visiting is not None else set()
+    node_id = id(node)
+    if node_id in active:
+        raise ConstructorError(
+            "while constructing the configuration",
+            node.start_mark,
+            "found recursive YAML alias",
+            node.start_mark,
+        )
+
+    active.add(node_id)
+    try:
+        if isinstance(node, MappingNode):
+            seen: dict[str, ScalarNode] = {}
+            for key_node, value_node in node.value:
+                # Config files use string keys; if not, fall back to a stable repr.
+                if isinstance(key_node, ScalarNode):
+                    key = str(key_node.value)
+                else:
+                    key = str(key_node)
+                if key in seen:
+                    raise ConstructorError(
+                        "while constructing a mapping",
+                        node.start_mark,
+                        f"found duplicate key ({key!r})",
+                        key_node.start_mark,
+                    )
+                if isinstance(key_node, ScalarNode):
+                    seen[key] = key_node
+                _assert_no_duplicate_yaml_keys(value_node, active)
+        else:
+            for item in node.value:
+                _assert_no_duplicate_yaml_keys(item, active)
+    finally:
+        active.remove(node_id)
 
 
 def _safe_load_no_duplicates(content: str):
@@ -311,28 +331,61 @@ def _safe_load_no_duplicates(content: str):
     return yaml.safe_load(content)
 
 
-def _non_finite_number_paths(value: Any, path: str = "") -> list[str]:
+class _RecursiveConfigAliasError(ValueError):
+    """Raised when an in-memory configuration contains a recursive container."""
+
+    def __init__(self, path: str):
+        self.path = path or "<root>"
+        super().__init__(self.path)
+
+
+def _non_finite_number_paths(
+    value: Any,
+    path: str = "",
+    visiting: Optional[set[int]] = None,
+) -> list[str]:
     """Return config paths containing floats that cannot be represented in JSON."""
     if isinstance(value, float) and not math.isfinite(value):
         return [path or "<root>"]
 
+    if not isinstance(value, (dict, list)):
+        return []
+
+    active = visiting if visiting is not None else set()
+    value_id = id(value)
+    if value_id in active:
+        raise _RecursiveConfigAliasError(path)
+
+    active.add(value_id)
     paths: list[str] = []
-    if isinstance(value, dict):
-        for key, child in value.items():
-            key_text = str(key)
-            if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", key_text):
-                child_path = f"{path}.{key_text}" if path else key_text
-            else:
-                child_path = f"{path}[{json.dumps(key_text)}]"
-            paths.extend(_non_finite_number_paths(child, child_path))
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            paths.extend(_non_finite_number_paths(child, f"{path}[{index}]"))
-    return paths
+    try:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                key_text = str(key)
+                if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", key_text):
+                    child_path = f"{path}.{key_text}" if path else key_text
+                else:
+                    child_path = f"{path}[{json.dumps(key_text)}]"
+                paths.extend(_non_finite_number_paths(child, child_path, active))
+        else:
+            for index, child in enumerate(value):
+                paths.extend(_non_finite_number_paths(child, f"{path}[{index}]", active))
+        return paths
+    finally:
+        active.remove(value_id)
 
 
 def _assert_finite_config_numbers(value: Any, *, status_code: int = 400) -> None:
-    paths = _non_finite_number_paths(value)
+    try:
+        paths = _non_finite_number_paths(value)
+    except _RecursiveConfigAliasError as exc:
+        raise HTTPException(
+            status_code=status_code,
+            detail=(
+                "Configuration contains a recursive YAML alias at "
+                f"{exc.path}. Replace the alias with an ordinary mapping or list."
+            ),
+        ) from exc
     if not paths:
         return
     displayed = ", ".join(paths[:10])
