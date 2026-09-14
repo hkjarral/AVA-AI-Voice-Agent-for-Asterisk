@@ -124,6 +124,16 @@ _KV_IDENTITY_RE = re.compile(
     r"(\s*[=:]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,}\]]+)"
 )
 _CALL_ID_RE = re.compile(r"\b\d{9,12}\.\d+\b")
+_DATETIME_RE = re.compile(
+    r"\b(?:"
+    r"\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?"
+    r"|\d{8}-\d{6}"
+    r")\b"
+)
+_IPV4_RE = re.compile(
+    r"\b(?:25[0-5]|2[0-4]\d|1?\d?\d)"
+    r"(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}\b"
+)
 _PHONE_CANDIDATE_RE = re.compile(r"(?<![\w.])\+?\d[\d() .-]{7,}\d(?![\w.])")
 
 
@@ -154,8 +164,8 @@ def sanitize_text(value: str) -> str:
 
     protected: Dict[str, str] = {}
 
-    def protect_call_id(match: re.Match) -> str:
-        token = f"__AVA_CALL_ID_{len(protected)}__"
+    def protect_diagnostic_value(match: re.Match) -> str:
+        token = f"__AVA_SAFE_VALUE_{len(protected)}__"
         protected[token] = match.group(0)
         return token
 
@@ -163,15 +173,20 @@ def sanitize_text(value: str) -> str:
         candidate = match.group(0)
         return "[PHONE_REDACTED]" if sum(char.isdigit() for char in candidate) >= 10 else candidate
 
-    text = _CALL_ID_RE.sub(protect_call_id, raw_text)
+    # Preserve diagnostic identifiers and time anchors before applying the broad
+    # phone-number fallback. ISO timestamps, calendar slots, and IPv4 addresses
+    # contain enough digits to otherwise look like telephone numbers.
+    text = _CALL_ID_RE.sub(protect_diagnostic_value, raw_text)
+    text = _DATETIME_RE.sub(protect_diagnostic_value, text)
+    text = _IPV4_RE.sub(protect_diagnostic_value, text)
     text = _EMAIL_RE.sub("[EMAIL_REDACTED]", text)
     text = _BEARER_RE.sub(r"\1[REDACTED]", text)
     text = _URL_SECRET_RE.sub(r"\1[REDACTED]", text)
     text = _KV_SECRET_RE.sub(r"\1\2[REDACTED]", text)
     text = _KV_IDENTITY_RE.sub(r"\1\2[IDENTITY_REDACTED]", text)
     text = _PHONE_CANDIDATE_RE.sub(redact_phone, text)
-    for token, call_id in protected.items():
-        text = text.replace(token, call_id)
+    for token, original in protected.items():
+        text = text.replace(token, original)
     return text
 
 

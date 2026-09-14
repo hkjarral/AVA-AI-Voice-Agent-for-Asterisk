@@ -210,6 +210,26 @@ def test_sanitize_text_redacts_phone_but_preserves_asterisk_call_id():
     assert "[PHONE_REDACTED]" in sanitized
 
 
+def test_sanitize_text_preserves_diagnostic_timestamps_calendar_slots_and_ipv4():
+    value = (
+        "2026-09-13 18:24:10 event at 2026-09-14T09:00:00-07:00 "
+        "slots 2026-09-14 09:00, 2026-09-14 09:30 "
+        "archive 20260914-012606 host 192.168.10.149 "
+        "caller +1 (316) 461-9284"
+    )
+
+    sanitized = support_api.sanitize_text(value)
+
+    assert "2026-09-13 18:24:10" in sanitized
+    assert "2026-09-14T09:00:00-07:00" in sanitized
+    assert "2026-09-14 09:00" in sanitized
+    assert "2026-09-14 09:30" in sanitized
+    assert "20260914-012606" in sanitized
+    assert "192.168.10.149" in sanitized
+    assert "316" not in sanitized
+    assert sanitized.count("[PHONE_REDACTED]") == 1
+
+
 def test_system_bundle_is_bounded_and_sanitizes_config_and_logs(monkeypatch):
     from api import config as config_api
     from api import system as system_api
