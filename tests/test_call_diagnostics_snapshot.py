@@ -1,6 +1,11 @@
+from copy import deepcopy
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 
 from src.core.call_diagnostics import build_call_diagnostics_snapshot
+from src.engine import Engine
 
 
 def test_snapshot_captures_effective_provider_audio_and_runtime_without_secrets():
@@ -102,3 +107,129 @@ def test_snapshot_freezes_configured_values_but_refreshes_runtime():
     assert final["configured"]["audio_transport"] == "audiosocket"
     assert final["resolved"]["audio_profile"] == "first"
     assert final["runtime"]["streaming_bytes_sent"] == 99
+
+
+def test_snapshot_deep_copies_mutable_allowlisted_values():
+    response_modalities = ["audio", "text"]
+    fallback_providers = ["local"]
+    fallback_thresholds = {"google_live": 180}
+    allowed_hosts = ["127.0.0.1"]
+    config = SimpleNamespace(
+        audio_transport="externalmedia",
+        downstream_mode="stream",
+        providers={"google_live": {"response_modalities": response_modalities}},
+        streaming=None,
+        vad=None,
+        barge_in=SimpleNamespace(
+            provider_fallback_providers=fallback_providers,
+            provider_fallback_min_ms_by_provider=fallback_thresholds,
+        ),
+        external_media=SimpleNamespace(allowed_remote_hosts=allowed_hosts),
+    )
+    session = SimpleNamespace(
+        diagnostics_snapshot={},
+        provider_name="google_live",
+        pipeline_components={"stt": {"name": "local_stt"}},
+        transport_profile=None,
+        websocket_input_rejections={},
+    )
+
+    snapshot = build_call_diagnostics_snapshot(config, session)
+    response_modalities.append("image")
+    fallback_providers.append("deepgram")
+    fallback_thresholds["google_live"] = 999
+    allowed_hosts.append("10.0.0.1")
+    session.pipeline_components["stt"]["name"] = "changed"
+
+    assert snapshot["configured"]["provider"]["response_modalities"] == ["audio", "text"]
+    assert snapshot["configured"]["barge_in"]["provider_fallback_providers"] == ["local"]
+    assert snapshot["configured"]["barge_in"]["provider_fallback_min_ms_by_provider"] == {"google_live": 180}
+    assert snapshot["configured"]["selected_transport"]["allowed_remote_hosts"] == ["127.0.0.1"]
+    assert snapshot["resolved"]["pipeline_components"] == {"stt": {"name": "local_stt"}}
+
+
+def test_setup_finalizer_recaptures_effective_provider_and_audio_profile():
+    config = SimpleNamespace(
+        audio_transport="audiosocket",
+        downstream_mode="stream",
+        providers={
+            "default": {"model": "default-model"},
+            "override": {"model": "effective-model"},
+        },
+        streaming=None,
+        vad=None,
+        barge_in=None,
+        audiosocket=SimpleNamespace(format="slin", port=8090),
+    )
+    session = SimpleNamespace(
+        diagnostics_snapshot={},
+        provider_name="default",
+        pipeline_components={},
+        transport_profile=SimpleNamespace(profile_name="initial"),
+        websocket_input_rejections={},
+    )
+    session.diagnostics_snapshot = build_call_diagnostics_snapshot(config, session)
+    session.provider_name = "override"
+    session.transport_profile = SimpleNamespace(profile_name="telephony_ulaw_8k")
+
+    finalized = build_call_diagnostics_snapshot(
+        config,
+        session,
+        replace_configured=True,
+    )
+
+    assert finalized["configured"]["provider"]["model"] == "effective-model"
+    assert finalized["resolved"]["provider_name"] == "override"
+    assert finalized["resolved"]["audio_profile"] == "telephony_ulaw_8k"
+
+
+@pytest.mark.asyncio
+async def test_stasis_setup_failure_has_an_initial_diagnostics_snapshot():
+    engine = Engine.__new__(Engine)
+    engine.config = SimpleNamespace(
+        default_provider="google_live",
+        audio_transport="audiosocket",
+        downstream_mode="stream",
+        providers={"google_live": {"model": "gemini-live"}},
+        streaming=None,
+        vad=None,
+        barge_in=None,
+        audiosocket=SimpleNamespace(format="slin", port=8090),
+    )
+    engine.ari_client = SimpleNamespace(
+        send_command=AsyncMock(return_value={}),
+        answer_channel=AsyncMock(),
+        create_bridge=AsyncMock(return_value="bridge-1"),
+        add_channel_to_bridge=AsyncMock(return_value=True),
+    )
+    engine.session_store = SimpleNamespace(get_by_call_id=AsyncMock(return_value=None))
+    engine.bridges = {}
+    engine._called_number_cache = {}
+    engine._get_provider_kind = lambda provider: provider
+    engine._tool_generation = None
+    engine._resolve_session_tool_runtime = lambda _session: None
+    engine._should_use_local_vad = lambda _provider: False
+    engine.vad_manager = None
+    engine._cleanup_call = AsyncMock()
+    captured = []
+
+    async def save(session, *, new=False):
+        if new:
+            captured.append(deepcopy(session.diagnostics_snapshot))
+            return
+        raise RuntimeError("fail after initial session registration")
+
+    engine._save_session = save
+
+    await Engine._handle_caller_stasis_start_hybrid(
+        engine,
+        "setup-failure-call",
+        {"caller": {"name": "Test", "number": "anonymous"}},
+    )
+
+    assert captured[0]["configured"]["provider"]["model"] == "gemini-live"
+    assert captured[0]["resolved"]["provider_name"] == "google_live"
+    engine._cleanup_call.assert_awaited_once_with(
+        "setup-failure-call",
+        force_caller_hangup=True,
+    )

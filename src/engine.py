@@ -6523,6 +6523,19 @@ class Engine:
                     provider=session.provider_name,
                     vad_mode=getattr(self, "_vad_mode", "auto"),
                 )
+            try:
+                # Preserve call-start configuration even when a later setup step
+                # fails before effective provider/profile resolution completes.
+                session.diagnostics_snapshot = build_call_diagnostics_snapshot(
+                    self.config,
+                    session,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to capture initial call diagnostics snapshot",
+                    call_id=caller_channel_id,
+                    exc_info=True,
+                )
             await self._save_session(session, new=True)
 
             # Read called_number: cache (from ChannelVarSet events) > GET request > "unknown"
@@ -6814,7 +6827,11 @@ class Engine:
             # RCA: emit a deterministic per-call header snapshot for log-driven `agent rca`.
             # This MUST be INFO-level so it is available even when debug logging is disabled.
             try:
-                session.diagnostics_snapshot = build_call_diagnostics_snapshot(self.config, session)
+                session.diagnostics_snapshot = build_call_diagnostics_snapshot(
+                    self.config,
+                    session,
+                    replace_configured=True,
+                )
                 await self._save_session(session)
                 tp = getattr(session, "transport_profile", None)
                 tp_fmt = (

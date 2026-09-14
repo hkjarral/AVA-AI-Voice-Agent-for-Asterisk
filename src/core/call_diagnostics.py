@@ -8,6 +8,7 @@ Only explicitly allow-listed operational fields are copied here.
 from __future__ import annotations
 
 import os
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable
 
@@ -25,7 +26,7 @@ def _pick(source: Any, keys: Iterable[str]) -> Dict[str, Any]:
     for key in keys:
         value = _get(source, key)
         if value is not None and value != "":
-            out[key] = value
+            out[key] = deepcopy(value)
     return out
 
 
@@ -174,15 +175,24 @@ def _selected_transport_config(config: Any, transport_kind: str) -> Dict[str, An
     return {}
 
 
-def build_call_diagnostics_snapshot(config: Any, session: Any) -> Dict[str, Any]:
+def build_call_diagnostics_snapshot(
+    config: Any,
+    session: Any,
+    *,
+    replace_configured: bool = False,
+) -> Dict[str, Any]:
     """Create or finalize a call-owned settings and runtime snapshot.
 
-    Configured/resolved sections are frozen on the first call.  Repeated calls
+    Configured/resolved sections are frozen on the first call. Repeated calls
     update only call-owned resolved values that may become known later (voice)
-    and runtime observations accumulated during the call.
+    and runtime observations accumulated during the call. During call setup,
+    ``replace_configured`` replaces the early failure-path snapshot once the
+    effective provider, pipeline, and audio profile have been resolved.
     """
 
-    existing = dict(_get(session, "diagnostics_snapshot", {}) or {})
+    existing = deepcopy(_get(session, "diagnostics_snapshot", {}) or {})
+    if replace_configured:
+        existing = {}
     provider_name = str(_get(session, "provider_name", "") or "")
     providers = _get(config, "providers", {}) or {}
     provider_cfg = providers.get(provider_name, {}) if isinstance(providers, dict) else {}
@@ -213,7 +223,7 @@ def build_call_diagnostics_snapshot(config: Any, session: Any) -> Dict[str, Any]
                 "provider_name": provider_name,
                 "provider_kind": _get(session, "provider_kind"),
                 "pipeline_name": _get(session, "pipeline_name"),
-                "pipeline_components": dict(_get(session, "pipeline_components", {}) or {}),
+                "pipeline_components": deepcopy(dict(_get(session, "pipeline_components", {}) or {})),
                 "audio_profile": _get(transport, "profile_name"),
                 "transport_profile": _pick(transport, TRANSPORT_FIELDS),
                 "tool_generation_id": _get(session, "tool_generation_id"),
@@ -231,7 +241,7 @@ def build_call_diagnostics_snapshot(config: Any, session: Any) -> Dict[str, Any]
     resolved["provider_name"] = provider_name
     resolved["provider_kind"] = _get(session, "provider_kind")
     resolved["pipeline_name"] = _get(session, "pipeline_name")
-    resolved["pipeline_components"] = dict(_get(session, "pipeline_components", {}) or {})
+    resolved["pipeline_components"] = deepcopy(dict(_get(session, "pipeline_components", {}) or {}))
     resolved["allowed_tools"] = sorted(str(name) for name in (_get(session, "allowed_tools", []) or []))
 
     existing["runtime"] = {
@@ -252,6 +262,6 @@ def build_call_diagnostics_snapshot(config: Any, session: Any) -> Dict[str, Any]
         "streaming_fallback_count": int(_get(session, "streaming_fallback_count", 0) or 0),
         "streaming_keepalive_timeouts": int(_get(session, "streaming_keepalive_timeouts", 0) or 0),
         "last_streaming_error": _get(session, "last_streaming_error"),
-        "websocket_input_rejections": dict(_get(session, "websocket_input_rejections", {}) or {}),
+        "websocket_input_rejections": deepcopy(dict(_get(session, "websocket_input_rejections", {}) or {})),
     }
     return existing

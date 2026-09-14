@@ -14,11 +14,56 @@ logger = logging.getLogger(__name__)
 
 _DOCKER_LOG_TIMEOUT_SECONDS = 10
 ALLOWED_LOG_CONTAINERS = {"ai_engine", "local_ai_server", "admin_ui"}
+_TRUSTED_COMPOSE_PROJECT = "asterisk-ai-voice-agent"
 
 
 def _sanitize_log_value(value: str) -> str:
     """Remove line breaks so request values cannot forge additional log entries."""
     return value.replace("\r\n", "").replace("\r", "").replace("\n", "")
+
+
+def _container_labels(container: Any) -> Dict[str, str]:
+    """Return normalized Docker labels without trusting filter semantics alone."""
+    labels = getattr(container, "labels", None)
+    if not isinstance(labels, dict):
+        attrs = getattr(container, "attrs", {}) or {}
+        labels = (attrs.get("Config", {}) or {}).get("Labels", {}) if isinstance(attrs, dict) else {}
+    return {str(key): str(value) for key, value in (labels or {}).items()}
+
+
+def _resolve_log_container(client: Any, container_name: str):
+    """Resolve only an exact approved name or one unambiguous trusted Compose service."""
+    try:
+        container = client.containers.get(container_name)
+    except docker.errors.NotFound:
+        container = None
+
+    if container is not None and str(getattr(container, "name", "")).lstrip("/") == container_name:
+        return container
+
+    project_label = f"com.docker.compose.project={_TRUSTED_COMPOSE_PROJECT}"
+    service_label = f"com.docker.compose.service={container_name}"
+    candidates = client.containers.list(
+        all=True,
+        filters={"label": [project_label, service_label]},
+    )
+    trusted = []
+    for candidate in candidates:
+        labels = _container_labels(candidate)
+        if (
+            labels.get("com.docker.compose.project") == _TRUSTED_COMPOSE_PROJECT
+            and labels.get("com.docker.compose.service") == container_name
+        ):
+            trusted.append(candidate)
+
+    if len(trusted) == 1:
+        return trusted[0]
+    if len(trusted) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Multiple trusted containers found for '{container_name}'",
+        )
+    raise HTTPException(status_code=404, detail=f"Container '{container_name}' not found")
 
 
 def _read_container_logs_sync(
@@ -33,17 +78,7 @@ def _read_container_logs_sync(
         raise HTTPException(status_code=400, detail="Unsupported log container")
     client = docker.from_env(timeout=_DOCKER_LOG_TIMEOUT_SECONDS)
     try:
-        containers = client.containers.list(all=True, filters={"name": container_name})
-        if not containers:
-            try:
-                container = client.containers.get(container_name)
-            except docker.errors.NotFound as exc:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Container '{container_name}' not found",
-                ) from exc
-        else:
-            container = containers[0]
+        container = _resolve_log_container(client, container_name)
 
         kwargs: Dict[str, Any] = {"tail": tail}
         if since is not None:
