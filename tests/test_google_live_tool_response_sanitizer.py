@@ -82,3 +82,30 @@ def test_check_extension_new_fields_survive_sanitization():
     assert out["availability_status"] == "dnd"
     assert out["availability_reason"] == "dnd"
     assert out["device_states"][0]["status"] == "dnd"
+
+
+@pytest.mark.unit
+def test_google_live_tool_response_payload_includes_calendar_events():
+    from src.providers.google_live import GoogleLiveProvider
+    from src.config import GoogleProviderConfig
+
+    provider = GoogleLiveProvider(config=GoogleProviderConfig(), on_event=lambda e: None)
+    result = {
+        "status": "success",
+        "message": "Events listed.",
+        "events": [
+            {
+                "id": "event-1",
+                "summary": "Customer appointment",
+                "start": "2026-09-20T09:00:00-07:00",
+                "end": "2026-09-20T09:30:00-07:00",
+                "calendar": "default",
+            }
+        ],
+    }
+
+    payload = provider._build_tool_response_payload("google_calendar", result)
+
+    assert payload["events"] == result["events"]
+    assert payload["total_events"] == 1
+    assert payload["events_truncated"] is False

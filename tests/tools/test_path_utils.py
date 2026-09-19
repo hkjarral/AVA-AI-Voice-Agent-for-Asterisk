@@ -431,3 +431,83 @@ class TestSanitizerPreservesData:
         sanitized = sanitize_tool_result_for_json_string(tool_result, max_bytes=max_bytes)
         encoded = json.dumps(sanitized, ensure_ascii=False)
         assert len(encoded.encode("utf-8")) <= max_bytes
+
+
+class TestSanitizerPreservesCalendarResults:
+    @pytest.mark.parametrize("tool_name", ["google_calendar", "microsoft_calendar"])
+    def test_list_events_keeps_structured_events_for_all_calendar_tools(self, tool_name):
+        events = [
+            {
+                "id": "event-1",
+                "summary": "Customer appointment",
+                "start": "2026-09-20T09:00:00-07:00",
+                "end": "2026-09-20T09:30:00-07:00",
+                "calendar": "default",
+            }
+        ]
+        sanitized = sanitize_tool_result_for_json_string(
+            {
+                "status": "success",
+                "message": "Events listed.",
+                "events": events,
+                "internal_debug": "must not reach the provider",
+            },
+            tool_name=tool_name,
+        )
+
+        assert sanitized["events"] == events
+        assert sanitized["total_events"] == 1
+        assert sanitized["events_returned"] == 1
+        assert sanitized["events_truncated"] is False
+        assert "internal_debug" not in sanitized
+
+    def test_large_event_list_is_truncated_but_not_discarded(self):
+        events = [
+            {
+                "id": f"event-{idx}",
+                "summary": f"Appointment {idx} " + ("x" * 120),
+                "start": f"2026-09-20T{idx % 24:02d}:00:00-07:00",
+                "end": f"2026-09-20T{idx % 24:02d}:30:00-07:00",
+                "calendar": "default",
+            }
+            for idx in range(40)
+        ]
+
+        sanitized = sanitize_tool_result_for_json_string(
+            {"status": "success", "message": "Events listed.", "events": events},
+            tool_name="google_calendar",
+            max_bytes=1800,
+        )
+
+        encoded = json.dumps(sanitized, ensure_ascii=False).encode("utf-8")
+        assert len(encoded) <= 1800
+        assert 0 < len(sanitized["events"]) < len(events)
+        assert sanitized["events"][0]["id"] == "event-0"
+        assert sanitized["total_events"] == len(events)
+        assert sanitized["events_returned"] == len(sanitized["events"])
+        assert sanitized["events_truncated"] is True
+
+    def test_free_slots_keeps_paired_structured_times(self):
+        sanitized = sanitize_tool_result_for_json_string(
+            {
+                "status": "success",
+                "message": "Free slots found.",
+                "slots": ["2026-09-20T09:00:00-07:00"],
+                "slots_with_end": [
+                    {
+                        "start": "2026-09-20T09:00:00-07:00",
+                        "end": "2026-09-20T09:30:00-07:00",
+                    }
+                ],
+                "slot_duration_minutes": 30,
+                "calendar_timezone": "America/Los_Angeles",
+                "availability_mode": "freebusy",
+                "total_slots_available": 1,
+                "slots_truncated": False,
+            },
+            tool_name="google_calendar",
+        )
+
+        assert sanitized["slots"] == ["2026-09-20T09:00:00-07:00"]
+        assert sanitized["slots_with_end"][0]["end"] == "2026-09-20T09:30:00-07:00"
+        assert sanitized["availability_mode"] == "freebusy"

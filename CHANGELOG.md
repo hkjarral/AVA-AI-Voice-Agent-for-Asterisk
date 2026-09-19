@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Calendar event and availability results now reach every voice provider** ([#645](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/645)): the shared tool-response sanitizer now preserves an explicit, safe allowlist of structured Google and Microsoft Calendar fields, including listed events, retrieved event details, and free-slot metadata. Large event lists retain the earliest entries with total/returned counts and a truncation flag while staying inside provider payload limits, instead of dropping the entire list and causing the model to report an empty calendar. Leaving Google Calendar's Free prefix blank continues to use native free/busy data within configured working hours, so empty gaps are treated as availability without synthetic `FREE` events.
+
 ## [7.6.0] - 2026-09-13
 
 ### Added
