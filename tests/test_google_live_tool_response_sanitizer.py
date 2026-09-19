@@ -86,6 +86,7 @@ def test_check_extension_new_fields_survive_sanitization():
 
 @pytest.mark.unit
 def test_google_live_tool_response_payload_includes_calendar_events():
+    """Google Live must receive the event list rather than only a success message."""
     from src.providers.google_live import GoogleLiveProvider
     from src.config import GoogleProviderConfig
 

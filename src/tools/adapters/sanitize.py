@@ -57,6 +57,7 @@ TOOL_CALENDAR_KEYS: Tuple[str, ...] = (
 
 
 def _safe_jsonable(obj: Any, *, depth: int = 0, max_depth: int = 5, max_items: int = 50) -> Any:
+    """Convert arbitrary tool output to a bounded JSON-compatible value."""
     if depth >= max_depth:
         return str(obj)
     if obj is None or isinstance(obj, (str, int, float, bool)):
@@ -110,6 +111,7 @@ def sanitize_tool_result_for_json_string(
 
     # Cap size; drop structured keys progressively, then truncate message.
     def _fits() -> bool:
+        """Return whether the current payload fits the provider byte budget."""
         try:
             return len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) <= max_bytes
         except Exception:

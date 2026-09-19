@@ -436,6 +436,7 @@ class TestSanitizerPreservesData:
 class TestSanitizerPreservesCalendarResults:
     @pytest.mark.parametrize("tool_name", ["google_calendar", "microsoft_calendar"])
     def test_list_events_keeps_structured_events_for_all_calendar_tools(self, tool_name):
+        """Both calendar integrations retain public events and filter internal fields."""
         events = [
             {
                 "id": "event-1",
@@ -462,6 +463,7 @@ class TestSanitizerPreservesCalendarResults:
         assert "internal_debug" not in sanitized
 
     def test_large_event_list_is_truncated_but_not_discarded(self):
+        """Oversized event lists keep a useful prefix and truthful count metadata."""
         events = [
             {
                 "id": f"event-{idx}",
@@ -488,6 +490,7 @@ class TestSanitizerPreservesCalendarResults:
         assert sanitized["events_truncated"] is True
 
     def test_free_slots_keeps_paired_structured_times(self):
+        """Free-slot start/end pairs and availability mode survive sanitization."""
         sanitized = sanitize_tool_result_for_json_string(
             {
                 "status": "success",
