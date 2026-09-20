@@ -1453,15 +1453,33 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                         <FormInput
                                             label="Deferred Audio Drain Timeout (seconds)"
                                             type="number"
+                                            min={0}
+                                            max={30}
                                             value={config.transfer?.deferred_audio_drain_timeout_sec ?? 15}
-                                            onChange={(e) => updateNestedConfig('transfer', 'deferred_audio_drain_timeout_sec', parseFloat(e.target.value) || 15)}
+                                            onChange={(e) => {
+                                                const parsed = parseFloat(e.target.value);
+                                                updateNestedConfig(
+                                                    'transfer',
+                                                    'deferred_audio_drain_timeout_sec',
+                                                    Number.isFinite(parsed) ? Math.max(0, Math.min(30, parsed)) : 15,
+                                                );
+                                            }}
                                             tooltip="Maximum time to wait for caller-facing transfer audio to finish. If it does not drain, the transfer is cancelled and the AI apologizes instead."
                                         />
                                         <FormInput
                                             label="Deferred Audio Quiet Period (ms)"
                                             type="number"
+                                            min={0}
+                                            max={5000}
                                             value={config.transfer?.deferred_audio_drain_quiet_ms ?? 500}
-                                            onChange={(e) => updateNestedConfig('transfer', 'deferred_audio_drain_quiet_ms', parseInt(e.target.value) || 500)}
+                                            onChange={(e) => {
+                                                const parsed = parseInt(e.target.value, 10);
+                                                updateNestedConfig(
+                                                    'transfer',
+                                                    'deferred_audio_drain_quiet_ms',
+                                                    Number.isFinite(parsed) ? Math.max(0, Math.min(5000, parsed)) : 500,
+                                                );
+                                            }}
                                             tooltip="How long the caller-facing audio path must remain empty before the deferred transfer can commit."
                                         />
                                     </div>

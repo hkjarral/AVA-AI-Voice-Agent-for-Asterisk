@@ -626,6 +626,7 @@ async def test_deferred_transfer_timeout_cleans_predial_and_resumes_ai(monkeypat
     assert updated.current_action is None
     assert updated.audio_capture_enabled is True
     assert channel_id not in engine._predial_transfer_channel_to_call_id
+    assert engine._deferred_predial_forced_hangup_tasks == {}
     assert events == [
         ("hangup", channel_id),
         ("command", "DELETE", "channels/caller-predial-timeout/moh"),
@@ -639,6 +640,76 @@ async def test_deferred_transfer_timeout_cleans_predial_and_resumes_ai(monkeypat
             None,
         ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_deferred_transfer_timeout_retains_predial_owner_until_hangup_accepted(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    call_id = "call-predial-hangup-retry"
+    channel_id = "predial-channel-hangup-retry"
+    session = CallSession(
+        call_id=call_id,
+        caller_channel_id="caller-predial-hangup-retry",
+        context_name="support",
+    )
+    session.pending_deferred_transfer = {
+        "id": "action-predial-hangup-retry",
+        "kind": "transfer",
+        "commit_tool": "blind_transfer",
+        "transfer_type": "extension",
+        "target": "6000",
+        "payload": {"predial": {"channel_id": channel_id}},
+    }
+    session.current_action = {
+        "type": "predial_transfer",
+        "deferred_action_id": "action-predial-hangup-retry",
+        "predial_channel_id": channel_id,
+    }
+    await engine.session_store.upsert_call(session)
+    engine.register_predial_transfer_channel(call_id, channel_id)
+
+    hangup_results = iter((False, True))
+    retry_started = asyncio.Event()
+    allow_retry = asyncio.Event()
+
+    async def fake_hangup(self, target_channel_id):
+        assert target_channel_id == channel_id
+        return next(hangup_results)
+
+    async def fake_command(self, **kwargs):
+        return True
+
+    async def fake_stop_streaming(target_call_id):
+        return True
+
+    async def fake_speak(target_call_id, text, kind):
+        return True
+
+    async def controlled_sleep(_seconds):
+        retry_started.set()
+        await allow_retry.wait()
+
+    engine.ari_client.hangup_channel = types.MethodType(fake_hangup, engine.ari_client)
+    engine.ari_client.send_command = types.MethodType(fake_command, engine.ari_client)
+    monkeypatch.setattr(engine.streaming_playback_manager, "stop_streaming_playback", fake_stop_streaming)
+    monkeypatch.setattr(engine, "_speak_no_input_announcement", fake_speak)
+    monkeypatch.setattr("src.engine.asyncio.sleep", controlled_sleep)
+
+    result = await engine._abort_deferred_transfer_after_drain_timeout(
+        call_id,
+        action_id="action-predial-hangup-retry",
+    )
+    await retry_started.wait()
+
+    assert result["error_code"] == "deferred_audio_drain_timeout"
+    assert engine._predial_transfer_channel_to_call_id[channel_id] == call_id
+    retry_task = engine._deferred_predial_forced_hangup_tasks[channel_id]
+
+    allow_retry.set()
+    await retry_task
+
+    assert channel_id not in engine._predial_transfer_channel_to_call_id
+    assert engine._deferred_predial_forced_hangup_tasks == {}
 
 
 @pytest.mark.asyncio
@@ -666,6 +737,28 @@ async def test_deferred_transfer_audio_drain_defaults_to_fifteen_seconds(monkeyp
         "quiet_sec": 0.5,
         "reason": "deferred_transfer",
     }
+
+
+@pytest.mark.asyncio
+async def test_deferred_transfer_zero_timeout_still_fails_closed_with_pending_audio():
+    engine = _build_engine({"enabled": True})
+    engine.config.tools["transfer"]["deferred_audio_drain_timeout_sec"] = 0
+    engine.config.tools["transfer"]["deferred_audio_drain_quiet_ms"] = 500
+    call_id = "call-zero-drain"
+    session = CallSession(call_id=call_id, caller_channel_id="caller-zero-drain")
+    await engine.session_store.upsert_call(session)
+    engine.streaming_playback_manager.active_streams[call_id] = {
+        "buffered_bytes": 160,
+        "jitter_depth": 0,
+        "last_real_emit_ts": time.time(),
+    }
+
+    assert await engine._wait_for_deferred_transfer_audio_drain(call_id) is False
+
+    engine.streaming_playback_manager.active_streams[call_id]["buffered_bytes"] = 0
+    engine.streaming_playback_manager.active_streams[call_id]["last_real_emit_ts"] = time.time() - 1.0
+
+    assert await engine._wait_for_deferred_transfer_audio_drain(call_id) is True
 
 
 @pytest.mark.asyncio

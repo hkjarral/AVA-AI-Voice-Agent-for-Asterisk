@@ -76,11 +76,27 @@ describe('ToolForm — deferred transfer audio safety (issue #662)', () => {
         const quiet = screen.getByLabelText('Deferred Audio Quiet Period (ms)');
         expect(timeout).toHaveValue(15);
         expect(quiet).toHaveValue(500);
+        expect(timeout).toHaveAttribute('min', '0');
+        expect(timeout).toHaveAttribute('max', '30');
+        expect(quiet).toHaveAttribute('min', '0');
+        expect(quiet).toHaveAttribute('max', '5000');
+
+        fireEvent.change(timeout, { target: { value: '0' } });
+        fireEvent.change(quiet, { target: { value: '0' } });
+        let lastCall = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+        expect(lastCall.transfer.deferred_audio_drain_timeout_sec).toBe(0);
+        expect(lastCall.transfer.deferred_audio_drain_quiet_ms).toBe(0);
+
+        fireEvent.change(timeout, { target: { value: '31' } });
+        fireEvent.change(quiet, { target: { value: '5001' } });
+        lastCall = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+        expect(lastCall.transfer.deferred_audio_drain_timeout_sec).toBe(30);
+        expect(lastCall.transfer.deferred_audio_drain_quiet_ms).toBe(5000);
 
         fireEvent.change(timeout, { target: { value: '20' } });
         fireEvent.change(quiet, { target: { value: '750' } });
 
-        const lastCall = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+        lastCall = onChange.mock.calls[onChange.mock.calls.length - 1][0];
         expect(lastCall.transfer.deferred_audio_drain_timeout_sec).toBe(20);
         expect(lastCall.transfer.deferred_audio_drain_quiet_ms).toBe(750);
     });

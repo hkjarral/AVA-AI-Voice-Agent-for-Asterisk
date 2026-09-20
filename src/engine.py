@@ -671,6 +671,7 @@ class Engine:
         # A rejected scheduled-outbound channel needs the same independent
         # ownership when its fail-closed ARI DELETE is not accepted.
         self._outbound_forced_hangup_tasks: Dict[str, asyncio.Task] = {}
+        self._deferred_predial_forced_hangup_tasks: Dict[str, asyncio.Task] = {}
         # Local TTS farewells are a two-step exchange: execute hangup_call,
         # then wait for Local AI Server to synthesize the tool's farewell.
         # Keep that boundary separate from cleanup_after_tts so a stale
@@ -3946,6 +3947,7 @@ class Engine:
         forced_hangup_tasks = [
             *getattr(self, "_vicidial_forced_hangup_tasks", {}).values(),
             *getattr(self, "_outbound_forced_hangup_tasks", {}).values(),
+            *getattr(self, "_deferred_predial_forced_hangup_tasks", {}).values(),
         ]
         for forced_hangup_task in forced_hangup_tasks:
             if not forced_hangup_task.done():
@@ -7706,7 +7708,7 @@ class Engine:
     async def _handle_unbridged_predial_transfer_channel_end(self, session: "CallSession", predial_channel_id: str) -> None:
         """Handle a predial destination leg ending before it is bridged to the caller."""
         call_id = session.call_id
-        self._unregister_predial_transfer_channel(predial_channel_id)
+        self._release_deferred_predial_hangup_ownership(predial_channel_id)
         try:
             latest = await self.session_store.get_by_call_id(call_id) or session
             action = dict(getattr(latest, "current_action", None) or {})
@@ -7724,6 +7726,34 @@ class Engine:
             "Ignoring unbridged predial transfer destination leg cleanup",
             call_id=call_id,
             predial_channel_id=predial_channel_id,
+        )
+
+    def _release_deferred_predial_hangup_ownership(self, channel_id: str) -> None:
+        """Release mapping/retry ownership after ARI accepts hangup or reports 404."""
+        self._unregister_predial_transfer_channel(channel_id)
+        tasks = getattr(self, "_deferred_predial_forced_hangup_tasks", None) or {}
+        retry_task = tasks.pop(channel_id, None)
+        current_task = asyncio.current_task()
+        if retry_task and retry_task is not current_task and not retry_task.done():
+            retry_task.cancel()
+
+    def _schedule_deferred_predial_forced_hangup_retry(
+        self,
+        *,
+        call_id: str,
+        channel_id: str,
+    ) -> None:
+        """Retain a timed-out predial leg until ARI accepts its hangup."""
+        self._schedule_forced_hangup_retry_owner(
+            task_store_attribute="_deferred_predial_forced_hangup_tasks",
+            task_name_prefix="deferred-predial-forced-hangup",
+            log_subject="deferred predial",
+            log_context={"call_id": call_id},
+            attempt_log_field="retry_attempt",
+            channel_id=channel_id,
+            on_accepted=lambda: self._release_deferred_predial_hangup_ownership(
+                channel_id
+            ),
         )
 
     async def _stop_provider_after_predial_bridge(self, call_id: str, provider: Any, provider_name: Optional[str]) -> None:
@@ -21398,9 +21428,11 @@ class Engine:
         await self._save_session(session)
 
         if predial_channel_id:
-            self._unregister_predial_transfer_channel(predial_channel_id)
+            hangup_accepted = False
             try:
-                await self.ari_client.hangup_channel(predial_channel_id)
+                hangup_accepted = bool(
+                    await self.ari_client.hangup_channel(predial_channel_id)
+                )
             except Exception:
                 logger.warning(
                     "Failed to hang up deferred transfer predial leg after drain timeout",
@@ -21408,6 +21440,21 @@ class Engine:
                     action_id=action_id,
                     predial_channel_id=predial_channel_id,
                     exc_info=True,
+                )
+            if hangup_accepted:
+                self._release_deferred_predial_hangup_ownership(
+                    predial_channel_id
+                )
+            else:
+                logger.error(
+                    "Deferred transfer predial hangup was not accepted; retaining retry owner",
+                    call_id=call_id,
+                    action_id=action_id,
+                    predial_channel_id=predial_channel_id,
+                )
+                self._schedule_deferred_predial_forced_hangup_retry(
+                    call_id=call_id,
+                    channel_id=predial_channel_id,
                 )
             try:
                 await self.ari_client.send_command(
@@ -21640,10 +21687,29 @@ class Engine:
             quiet_sec = float(transfer_cfg.get("deferred_audio_drain_quiet_ms", 500)) / 1000.0
         except (TypeError, ValueError):
             quiet_sec = 0.5
+        timeout_sec = max(0.0, min(timeout_sec, 30.0))
+        quiet_sec = max(0.0, min(quiet_sec, 5.0))
+        if timeout_sec <= 0.0:
+            snapshot = await self._call_audio_drain_snapshot(call_id)
+            last_real_emit_ts = snapshot.pop("last_real_emit_ts", None)
+            has_pending_audio = any(int(value or 0) > 0 for value in snapshot.values())
+            emit_quiet = (
+                last_real_emit_ts is None
+                or max(0.0, time.time() - float(last_real_emit_ts)) >= quiet_sec
+            )
+            drained = not has_pending_audio and emit_quiet
+            logger.info(
+                "Deferred transfer zero-time audio drain snapshot",
+                call_id=call_id,
+                drained=drained,
+                quiet_ms=int(quiet_sec * 1000),
+                **snapshot,
+            )
+            return drained
         return await self._wait_for_call_audio_drain(
             call_id,
-            timeout_sec=max(0.0, min(timeout_sec, 30.0)),
-            quiet_sec=max(0.0, min(quiet_sec, 5.0)),
+            timeout_sec=timeout_sec,
+            quiet_sec=quiet_sec,
             reason="deferred_transfer",
         )
 
