@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Provider credential status reflects effective Google Live authentication** ([#660](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/660)): System → Environment no longer treats an unresolved `${GOOGLE_API_KEY}` reference as a configured API key, and it recognizes an existing legacy shared Vertex service-account file without copying it into per-instance storage. New Vertex uploads also keep the provider form's `credentials_path` synchronized so a later Save cannot strand the uploaded per-instance file and silently fall back to missing legacy ADC.
 - **Calendar event and availability results now reach every voice provider** ([#645](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/645)): the shared tool-response sanitizer now preserves an explicit, safe allowlist of structured Google and Microsoft Calendar fields, including listed events, retrieved event details, and free-slot metadata. Large event lists retain the earliest entries with total/returned counts and a truncation flag while staying inside provider payload limits, instead of dropping the entire list and causing the model to report an empty calendar. Leaving Google Calendar's Free prefix blank continues to use native free/busy data within configured working hours, so empty gaps are treated as availability without synthetic `FREE` events.
 
 ## [7.6.0] - 2026-09-13

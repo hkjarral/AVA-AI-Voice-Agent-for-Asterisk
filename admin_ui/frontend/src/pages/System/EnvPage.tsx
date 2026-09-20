@@ -27,7 +27,7 @@ interface PerInstanceCredentialRow {
     providerKey: string;
     kind: string;
     credentialType: string;
-    state: 'file_uploaded' | 'env_var_ref' | 'not_configured' | 'inline_value';
+    state: 'file_uploaded' | 'configured_file' | 'legacy_shared_file' | 'env_var_ref' | 'not_configured' | 'inline_value';
     path?: string;
     envVar?: string;
     inlineValue?: string;
@@ -237,9 +237,12 @@ const EnvPage = () => {
                     const isEnvRef = typeof inlineValue === 'string' && inlineValue.trim().startsWith('${');
 
                     let state: PerInstanceCredentialRow['state'];
-                    if (status.uploaded) state = 'file_uploaded';
-                    else if (isEnvRef) state = 'env_var_ref';
-                    else if (inlineValue && typeof inlineValue === 'string' && inlineValue.trim()) state = 'inline_value';
+                    if (!status.configured) state = 'not_configured';
+                    else if (status.uploaded) state = 'file_uploaded';
+                    else if (status.source === 'legacy_shared_file') state = 'legacy_shared_file';
+                    else if (status.source === 'configured_file' || status.source === 'legacy_env_file') state = 'configured_file';
+                    else if (status.source === 'env_var' || status.source === 'legacy_env' || isEnvRef) state = 'env_var_ref';
+                    else if (status.source === 'inline' || (inlineValue && typeof inlineValue === 'string' && inlineValue.trim())) state = 'inline_value';
                     else state = 'not_configured';
 
                     rows.push({
@@ -248,9 +251,9 @@ const EnvPage = () => {
                         credentialType,
                         state,
                         path: status.path,
-                        envVar: isEnvRef
+                        envVar: status.env_var || (isEnvRef
                             ? inlineValue.trim().replace(/^\$\{/, '').replace(/\}$/, '').split(':-')[0]
-                            : undefined,
+                            : undefined),
                         inlineValue: !isEnvRef && state === 'inline_value' ? '(inline value)' : undefined,
                         uploadedAt: status.uploaded_at,
                     });
@@ -939,6 +942,8 @@ const EnvPage = () => {
                                     {perInstanceRows.map((row) => {
                                         const stateLabel = {
                                             file_uploaded: { text: 'File uploaded', color: 'text-green-700 dark:text-green-400', icon: <CheckCircle className="w-3.5 h-3.5" /> },
+                                            configured_file: { text: 'Configured file', color: 'text-green-700 dark:text-green-400', icon: <CheckCircle className="w-3.5 h-3.5" /> },
+                                            legacy_shared_file: { text: 'Legacy shared file', color: 'text-blue-700 dark:text-blue-400', icon: <CheckCircle className="w-3.5 h-3.5" /> },
                                             env_var_ref: { text: `env var ${row.envVar}`, color: 'text-blue-700 dark:text-blue-400', icon: <CheckCircle className="w-3.5 h-3.5" /> },
                                             inline_value: { text: 'inline value set', color: 'text-yellow-700 dark:text-yellow-400', icon: <AlertCircle className="w-3.5 h-3.5" /> },
                                             not_configured: { text: 'not configured', color: 'text-red-700 dark:text-red-400', icon: <XCircle className="w-3.5 h-3.5" /> },
@@ -958,7 +963,7 @@ const EnvPage = () => {
                                                     <div className={`flex items-center gap-1 text-xs mt-1 ${stateLabel.color}`}>
                                                         {stateLabel.icon}
                                                         <span>{stateLabel.text}</span>
-                                                        {row.path && row.state === 'file_uploaded' && (
+                                                        {row.path && ['file_uploaded', 'configured_file', 'legacy_shared_file'].includes(row.state) && (
                                                             <span className="text-muted-foreground font-mono truncate ml-2" title={row.path}>
                                                                 — {row.path}
                                                             </span>

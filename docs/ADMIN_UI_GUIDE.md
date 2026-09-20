@@ -132,7 +132,7 @@ Full-agent provider forms (Grok, OpenAI Realtime, Deepgram, Google Live, ElevenL
 
 This is the canonical credential storage path for multi-instance deployments (e.g. `acme_grok` and `globex_grok` each with isolated keys). Legacy single-instance configs that set `XAI_API_KEY` / `OPENAI_API_KEY` / etc. in `.env` continue to work as a fallback.
 
-The **System → Environment** page includes a "Per-Instance Provider Credentials" status section listing every configured provider's credential file presence. Lets operators audit which instances have credentials on disk without SSH access.
+The **System → Environment** page includes a "Per-Instance Provider Credentials" status section listing every configured provider's effective credential source. It distinguishes a usable managed file, configured file, resolved environment variable, inline value, legacy shared Google Vertex file, and a missing/unresolved reference. A `${VARIABLE}` placeholder is not reported as configured unless that variable currently resolves. Legacy shared Vertex credentials remain in place as a compatibility fallback; the UI does not copy or delete them when reporting status, and a new upload creates an explicit per-instance override.
 
 ## System Topology (v6.5.2)
 

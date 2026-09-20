@@ -2977,6 +2977,167 @@ def _credential_metadata(provider_key: str, credential_name: str) -> Dict[str, A
     return meta
 
 
+def _configured_file_metadata(path: str, credential_name: str) -> Dict[str, Any]:
+    """Return secret-safe metadata for an operator-configured credential file."""
+    target = Path(str(path or "").strip())
+    meta: Dict[str, Any] = {
+        "uploaded": False,
+        "configured": False,
+        "path": str(target),
+    }
+    if not str(path or "").strip() or not target.is_file():
+        return meta
+
+    stat = target.stat()
+    meta.update(
+        {
+            "configured": True,
+            "filename": target.name,
+            "uploaded_at": stat.st_mtime,
+        }
+    )
+    if credential_name == "vertex-json":
+        try:
+            import json
+
+            with open(target, "r") as f:
+                creds = json.load(f)
+            meta.update(
+                {
+                    "project_id": creds.get("project_id"),
+                    "client_email": creds.get("client_email"),
+                }
+            )
+        except Exception:
+            meta["error"] = "Failed to read credentials metadata"
+    return meta
+
+
+def _provider_legacy_api_key_env_names(provider_key: str, kind: str) -> tuple[str, ...]:
+    """Return the legacy env fallbacks used by each provider runtime."""
+    full_agent = {
+        "openai_realtime": ("OPENAI_API_KEY",),
+        "deepgram": ("DEEPGRAM_API_KEY",),
+        "google_live": ("GOOGLE_API_KEY",),
+        "elevenlabs_agent": ("ELEVENLABS_API_KEY",),
+        "grok": ("XAI_API_KEY",),
+    }.get(kind)
+    if full_agent is not None:
+        return full_agent
+    return _llm_legacy_env_names(provider_key, kind)
+
+
+def _api_key_credential_metadata(
+    provider_key: str, provider_cfg: Dict[str, Any], kind: str
+) -> Dict[str, Any]:
+    """Describe the effective API-key source without returning the secret."""
+    helpers = _provider_instances_module()
+    meta = _credential_metadata(provider_key, "api-key")
+    config_for_resolution = dict(provider_cfg)
+    inline = str(config_for_resolution.get("api_key") or "").strip()
+    env_ref = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}", inline)
+    if env_ref:
+        config_for_resolution["api_key"] = ""
+        config_for_resolution.setdefault("api_key_env", env_ref.group(1))
+
+    def _candidate_resolves(candidate: Dict[str, Any], legacy_env_names: tuple[str, ...] = ()) -> bool:
+        """Return whether one isolated credential source resolves to a usable key."""
+        value = str(
+            helpers["resolve_secret_value"](
+                candidate,
+                file_field="api_key_file",
+                env_field="api_key_env",
+                inline_field="api_key",
+                legacy_env_names=legacy_env_names,
+            )
+            or ""
+        ).strip()
+        return bool(value) and not (value.lower() == "not-needed" and kind != "openai")
+
+    file_path = str(config_for_resolution.get("api_key_file") or "").strip()
+    env_name = str(config_for_resolution.get("api_key_env") or "").strip()
+    literal = str(config_for_resolution.get("api_key") or "").strip()
+    legacy_env_names = _provider_legacy_api_key_env_names(provider_key, kind)
+
+    configured = False
+    source: Optional[str] = None
+    if file_path and _candidate_resolves({"api_key_file": file_path}):
+        configured = True
+        source = "managed_file" if meta.get("uploaded") else "configured_file"
+        meta["path"] = file_path
+    elif env_name and _candidate_resolves({"api_key_env": env_name}):
+        configured = True
+        source = "env_var"
+        meta["env_var"] = env_name
+    elif literal and _candidate_resolves({"api_key": literal}):
+        configured = True
+        source = "inline"
+    else:
+        for legacy_name in legacy_env_names:
+            if _candidate_resolves({}, (legacy_name,)):
+                configured = True
+                source = "legacy_env"
+                meta["env_var"] = legacy_name
+                break
+
+    if source is None:
+        if file_path:
+            source = "configured_file"
+            meta["path"] = file_path
+        elif env_name:
+            source = "env_var"
+            meta["env_var"] = env_name
+        elif literal:
+            source = "inline"
+
+    meta["configured"] = configured
+    meta["source"] = source
+    return meta
+
+
+def _vertex_credential_metadata(provider_key: str, provider_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Describe managed or legacy Vertex credentials without copying them."""
+    managed = _credential_metadata(provider_key, "vertex-json")
+    configured_path = str(provider_cfg.get("credentials_path") or "").strip()
+    if configured_path:
+        managed_path = str(managed.get("path") or "").strip()
+        if (
+            managed.get("uploaded")
+            and managed_path
+            and os.path.abspath(configured_path) == os.path.abspath(managed_path)
+        ):
+            managed.update(
+                {
+                    "configured": True,
+                    "source": "managed_file",
+                    "filename": Path(managed_path).name,
+                }
+            )
+            return managed
+        meta = _configured_file_metadata(configured_path, "vertex-json")
+        meta["source"] = "configured_file"
+        return meta
+
+    env_path = str(os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
+    if env_path:
+        meta = _configured_file_metadata(env_path, "vertex-json")
+        meta.update({"source": "legacy_env_file", "env_var": "GOOGLE_APPLICATION_CREDENTIALS"})
+        return meta
+
+    if Path(VERTEX_CREDENTIALS_PATH).is_file():
+        meta = _configured_file_metadata(VERTEX_CREDENTIALS_PATH, "vertex-json")
+        meta["source"] = "legacy_shared_file"
+        return meta
+
+    managed.update(
+        {
+            "configured": False,
+            "source": "orphaned_managed_file" if managed.get("uploaded") else None,
+        }
+    )
+    return managed
+
+
 def _llm_legacy_env_names(provider_key: str, kind: str) -> tuple[str, ...]:
     prefix = provider_key.rsplit("_llm", 1)[0].upper()
     names = [f"{prefix}_API_KEY"]
@@ -3008,7 +3169,7 @@ def _summary_provider_api_key_configured(
             file_field="api_key_file",
             env_field="api_key_env",
             inline_field="api_key",
-            legacy_env_names=_llm_legacy_env_names(provider_key, kind),
+            legacy_env_names=_provider_legacy_api_key_env_names(provider_key, kind),
         )
         or ""
     )
@@ -3112,8 +3273,19 @@ async def get_provider_credentials_status(provider_key: str):
     for credential_name, field in fields.items():
         if not _credential_allowed_for_kind(kind, credential_name):
             continue
-        credentials[credential_name] = _credential_metadata(provider_key, credential_name)
-        credentials[credential_name]["configured"] = bool(provider_cfg.get(field))
+        if credential_name == "api-key":
+            credentials[credential_name] = _api_key_credential_metadata(
+                provider_key, provider_cfg, kind
+            )
+        elif credential_name == "vertex-json":
+            credentials[credential_name] = _vertex_credential_metadata(
+                provider_key, provider_cfg
+            )
+        else:
+            credentials[credential_name] = _credential_metadata(provider_key, credential_name)
+            credentials[credential_name]["configured"] = bool(
+                provider_cfg.get(field) and credentials[credential_name].get("uploaded")
+            )
     return {
         "provider_key": provider_key,
         "type": kind,
