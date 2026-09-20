@@ -1449,6 +1449,22 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                             tooltip="How long Asterisk should keep ringing the pre-dialed destination leg."
                                         />
                                     </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <FormInput
+                                            label="Deferred Audio Drain Timeout (seconds)"
+                                            type="number"
+                                            value={config.transfer?.deferred_audio_drain_timeout_sec ?? 15}
+                                            onChange={(e) => updateNestedConfig('transfer', 'deferred_audio_drain_timeout_sec', parseFloat(e.target.value) || 15)}
+                                            tooltip="Maximum time to wait for caller-facing transfer audio to finish. If it does not drain, the transfer is cancelled and the AI apologizes instead."
+                                        />
+                                        <FormInput
+                                            label="Deferred Audio Quiet Period (ms)"
+                                            type="number"
+                                            value={config.transfer?.deferred_audio_drain_quiet_ms ?? 500}
+                                            onChange={(e) => updateNestedConfig('transfer', 'deferred_audio_drain_quiet_ms', parseInt(e.target.value) || 500)}
+                                            tooltip="How long the caller-facing audio path must remain empty before the deferred transfer can commit."
+                                        />
+                                    </div>
                                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                         <FormInput
                                             label="Default Extension Context"

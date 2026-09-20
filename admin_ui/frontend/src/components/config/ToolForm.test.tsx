@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { useState } from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, act } from '@testing-library/react';
+import { render, screen, act, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom/vitest';
 
@@ -18,6 +18,11 @@ vi.mock('axios', () => ({
 }));
 
 type TestToolConfig = {
+    transfer?: {
+        enabled?: boolean;
+        deferred_audio_drain_timeout_sec?: number;
+        deferred_audio_drain_quiet_ms?: number;
+    };
     extensions?: {
         internal?: Record<string, {
             dial_string?: string;
@@ -57,6 +62,29 @@ const Harness = ({ onChange }: { onChange: (c: TestToolConfig) => void }) => {
         />
     );
 };
+
+describe('ToolForm — deferred transfer audio safety (issue #662)', () => {
+    it('shows safe drain defaults and persists operator changes', async () => {
+        const onChange = vi.fn();
+
+        render(<Harness onChange={onChange} />);
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+
+        const timeout = screen.getByLabelText('Deferred Audio Drain Timeout (seconds)');
+        const quiet = screen.getByLabelText('Deferred Audio Quiet Period (ms)');
+        expect(timeout).toHaveValue(15);
+        expect(quiet).toHaveValue(500);
+
+        fireEvent.change(timeout, { target: { value: '20' } });
+        fireEvent.change(quiet, { target: { value: '750' } });
+
+        const lastCall = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+        expect(lastCall.transfer.deferred_audio_drain_timeout_sec).toBe(20);
+        expect(lastCall.transfer.deferred_audio_drain_quiet_ms).toBe(750);
+    });
+});
 
 describe('ToolForm — per-extension availability signals (issue #577)', () => {
     it('adds a custom device state and reports it via onChange', async () => {

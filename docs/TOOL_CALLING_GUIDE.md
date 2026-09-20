@@ -913,6 +913,8 @@ tools:
     technology: "PJSIP"                    # Channel technology for direct extension dialing
     defer_until_playback_complete: true    # Speak handoff text before blind/live/attended transfer actions
     deferred_strategy: "drain_then_dial"   # Or "predial_then_bridge" to dial while handoff audio plays
+    deferred_audio_drain_timeout_sec: 15   # Safety ceiling; timeout cancels the transfer and resumes the AI
+    deferred_audio_drain_quiet_ms: 500     # Require this much quiet after the caller-facing queue drains
     predial_bridge_wait_timeout_sec: 10    # Wait after handoff audio for a predialed destination answer
     predial_timeout_seconds: 30            # Asterisk originate timeout for predialed destination leg
     predial_wait_moh_class: "default"      # MOH class while waiting for predial destination answer

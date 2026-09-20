@@ -897,6 +897,8 @@ tools:
   transfer:
     defer_until_playback_complete: true
     deferred_strategy: drain_then_dial
+    deferred_audio_drain_timeout_sec: 15
+    deferred_audio_drain_quiet_ms: 500
     predial_bridge_wait_timeout_sec: 10
     predial_timeout_seconds: 30
     predial_wait_moh_class: default

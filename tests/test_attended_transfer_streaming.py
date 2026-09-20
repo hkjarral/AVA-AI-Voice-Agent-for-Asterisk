@@ -495,6 +495,180 @@ async def test_deferred_transfer_commit_waits_for_audio_drain(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_deferred_transfer_drain_timeout_cancels_instead_of_committing(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-deferred-timeout",
+        caller_channel_id="caller-deferred-timeout",
+        context_name="support",
+    )
+    session.pending_deferred_transfer = {
+        "id": "action-timeout",
+        "kind": "transfer",
+        "commit_tool": "blind_transfer",
+        "transfer_type": "extension",
+        "target": "6000",
+        "description": "Support agent",
+    }
+    await engine.session_store.upsert_call(session)
+
+    calls = []
+
+    async def fake_wait(call_id):
+        calls.append(("drain", call_id))
+        return False
+
+    async def fake_abort(call_id, *, action_id):
+        calls.append(("abort", call_id, action_id))
+        return {"status": "failed", "error_code": "deferred_audio_drain_timeout"}
+
+    async def unexpected_commit(context):
+        raise AssertionError(f"deferred transfer must not commit for {context.call_id}")
+
+    monkeypatch.setattr(engine, "_wait_for_deferred_transfer_audio_drain", fake_wait)
+    monkeypatch.setattr(engine, "_abort_deferred_transfer_after_drain_timeout", fake_abort)
+    monkeypatch.setattr(
+        "src.tools.telephony.deferred_transfer.commit_pending_deferred_transfer",
+        unexpected_commit,
+    )
+
+    result = await engine._commit_pending_deferred_transfer_for_call(
+        "call-deferred-timeout",
+        session,
+    )
+
+    assert result == {"status": "failed", "error_code": "deferred_audio_drain_timeout"}
+    assert calls == [
+        ("drain", "call-deferred-timeout"),
+        ("abort", "call-deferred-timeout", "action-timeout"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deferred_transfer_timeout_cleans_predial_and_resumes_ai(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    call_id = "call-predial-timeout"
+    channel_id = "predial-channel-timeout"
+    session = CallSession(
+        call_id=call_id,
+        caller_channel_id="caller-predial-timeout",
+        context_name="support",
+    )
+    session.audio_capture_enabled = False
+    session.pending_deferred_transfer = {
+        "id": "action-predial-timeout",
+        "kind": "transfer",
+        "commit_tool": "blind_transfer",
+        "transfer_type": "extension",
+        "target": "6000",
+        "description": "Support agent",
+        "payload": {"predial": {"channel_id": channel_id}},
+    }
+    session.current_action = {
+        "type": "predial_transfer",
+        "deferred_action_id": "action-predial-timeout",
+        "predial_channel_id": channel_id,
+    }
+    await engine.session_store.upsert_call(session)
+    engine.register_predial_transfer_channel(call_id, channel_id)
+
+    events = []
+
+    class _Provider:
+        async def cancel_response(self):
+            events.append(("cancel-provider", call_id))
+
+    async def fake_hangup(self, target_channel_id):
+        events.append(("hangup", target_channel_id))
+        return True
+
+    async def fake_command(self, *, method, resource, **kwargs):
+        events.append(("command", method, resource))
+        return True
+
+    async def fake_stop_streaming(target_call_id):
+        events.append(("stop-stream", target_call_id))
+        return True
+
+    async def fake_speak(target_call_id, text, kind):
+        current = await engine.session_store.get_by_call_id(target_call_id)
+        events.append(
+            (
+                "speak",
+                target_call_id,
+                text,
+                kind,
+                current.pending_deferred_transfer,
+            )
+        )
+        return True
+
+    engine._call_providers[call_id] = _Provider()
+    engine.ari_client.hangup_channel = types.MethodType(fake_hangup, engine.ari_client)
+    engine.ari_client.send_command = types.MethodType(fake_command, engine.ari_client)
+    monkeypatch.setattr(engine.streaming_playback_manager, "stop_streaming_playback", fake_stop_streaming)
+    monkeypatch.setattr(engine, "_speak_no_input_announcement", fake_speak)
+
+    result = await engine._abort_deferred_transfer_after_drain_timeout(
+        call_id,
+        action_id="action-predial-timeout",
+    )
+
+    updated = await engine.session_store.get_by_call_id(call_id)
+    assert result == {
+        "status": "failed",
+        "message": "Deferred transfer cancelled because caller-facing audio did not drain before the safety timeout.",
+        "error_code": "deferred_audio_drain_timeout",
+        "transfer_cancelled": True,
+        "apology_spoken": True,
+    }
+    assert updated.pending_deferred_transfer is None
+    assert updated.current_action is None
+    assert updated.audio_capture_enabled is True
+    assert channel_id not in engine._predial_transfer_channel_to_call_id
+    assert events == [
+        ("hangup", channel_id),
+        ("command", "DELETE", "channels/caller-predial-timeout/moh"),
+        ("cancel-provider", call_id),
+        ("stop-stream", call_id),
+        (
+            "speak",
+            call_id,
+            "I'm sorry, I couldn't complete that transfer without interrupting you. How else can I help?",
+            "deferred_transfer_timeout",
+            None,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deferred_transfer_audio_drain_defaults_to_fifteen_seconds(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    session = CallSession(call_id="call-default-drain", caller_channel_id="caller-default-drain")
+    await engine.session_store.upsert_call(session)
+    captured = {}
+
+    async def fake_wait(call_id, *, timeout_sec, quiet_sec, reason):
+        captured.update(
+            call_id=call_id,
+            timeout_sec=timeout_sec,
+            quiet_sec=quiet_sec,
+            reason=reason,
+        )
+        return True
+
+    monkeypatch.setattr(engine, "_wait_for_call_audio_drain", fake_wait)
+
+    assert await engine._wait_for_deferred_transfer_audio_drain("call-default-drain") is True
+    assert captured == {
+        "call_id": "call-default-drain",
+        "timeout_sec": 15.0,
+        "quiet_sec": 0.5,
+        "reason": "deferred_transfer",
+    }
+
+
+@pytest.mark.asyncio
 async def test_deferred_transfer_deepgram_plays_local_handoff_before_commit(monkeypatch):
     engine = _build_engine({"enabled": True})
     engine.config.tools["transfer"]["local_handoff_audio_providers"] = ["deepgram"]
