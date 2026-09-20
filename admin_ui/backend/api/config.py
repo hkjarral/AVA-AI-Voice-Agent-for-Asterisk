@@ -2962,18 +2962,23 @@ def _credential_metadata(provider_key: str, credential_name: str) -> Dict[str, A
     }
     if credential_name == "vertex-json":
         try:
-            import json
+            from google.oauth2 import service_account
 
-            with open(target, "r") as f:
-                creds = json.load(f)
+            creds = service_account.Credentials.from_service_account_file(str(target))
             meta.update(
                 {
-                    "project_id": creds.get("project_id"),
-                    "client_email": creds.get("client_email"),
+                    "valid": True,
+                    "project_id": creds.project_id,
+                    "client_email": creds.service_account_email,
                 }
             )
         except Exception:
-            meta["error"] = "Failed to read credentials metadata"
+            meta.update(
+                {
+                    "valid": False,
+                    "error": "Invalid Google service-account credential file",
+                }
+            )
     return meta
 
 
@@ -2989,27 +2994,30 @@ def _configured_file_metadata(path: str, credential_name: str) -> Dict[str, Any]
         return meta
 
     stat = target.stat()
-    meta.update(
-        {
-            "configured": True,
-            "filename": target.name,
-            "uploaded_at": stat.st_mtime,
-        }
-    )
+    meta.update({"filename": target.name, "uploaded_at": stat.st_mtime})
     if credential_name == "vertex-json":
         try:
-            import json
+            from google.oauth2 import service_account
 
-            with open(target, "r") as f:
-                creds = json.load(f)
+            creds = service_account.Credentials.from_service_account_file(str(target))
             meta.update(
                 {
-                    "project_id": creds.get("project_id"),
-                    "client_email": creds.get("client_email"),
+                    "configured": True,
+                    "valid": True,
+                    "project_id": creds.project_id,
+                    "client_email": creds.service_account_email,
                 }
             )
         except Exception:
-            meta["error"] = "Failed to read credentials metadata"
+            meta.update(
+                {
+                    "configured": False,
+                    "valid": False,
+                    "error": "Invalid Google service-account credential file",
+                }
+            )
+    else:
+        meta["configured"] = True
     return meta
 
 
@@ -3103,6 +3111,7 @@ def _vertex_credential_metadata(provider_key: str, provider_cfg: Dict[str, Any])
         managed_path = str(managed.get("path") or "").strip()
         if (
             managed.get("uploaded")
+            and managed.get("valid")
             and managed_path
             and os.path.abspath(configured_path) == os.path.abspath(managed_path)
         ):
@@ -3113,6 +3122,13 @@ def _vertex_credential_metadata(provider_key: str, provider_cfg: Dict[str, Any])
                     "filename": Path(managed_path).name,
                 }
             )
+            return managed
+        if (
+            managed.get("uploaded")
+            and managed_path
+            and os.path.abspath(configured_path) == os.path.abspath(managed_path)
+        ):
+            managed.update({"configured": False, "source": "managed_file"})
             return managed
         meta = _configured_file_metadata(configured_path, "vertex-json")
         meta["source"] = "configured_file"
