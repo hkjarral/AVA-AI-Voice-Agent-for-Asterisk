@@ -85,6 +85,17 @@ class _RecordingLLM(LLMComponent):
         return ""
 
 
+class _HistoryRecordingLLM(LLMComponent):
+    def __init__(self):
+        self.contexts = []
+        self.calls = asyncio.Queue()
+
+    async def generate(self, call_id, transcript, context, options):
+        self.contexts.append(list(context.get("prior_messages") or []))
+        self.calls.put_nowait(len(self.contexts))
+        return "Transferring you now." if len(self.contexts) == 1 else "Okay."
+
+
 class _BlockingLLM(LLMComponent):
     def __init__(self):
         self.started = asyncio.Event()
@@ -627,6 +638,81 @@ async def test_pipeline_tool_only_turn_keeps_persisted_history_transcript_only(m
     assert all("tool_calls" not in entry and "tool_call_id" not in entry for entry in session.conversation_history)
     assert session.tool_calls[0]["tool_call_id"] == "pipeline-tool-1"
 
+    await engine._cleanup_call(call_id)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_turn_rehydrates_history_after_external_timeout_apology(monkeypatch):
+    config_data = {
+        "default_provider": "local",
+        "providers": {"local": {"enabled": True}},
+        "asterisk": {
+            "host": "127.0.0.1",
+            "port": 8088,
+            "username": "u",
+            "password": "p",
+            "app_name": "ai-voice-agent",
+        },
+        "llm": {"initial_greeting": "", "prompt": "You are helpful", "model": "gpt-4o"},
+        "pipelines": {"history_sync": {}},
+        "active_pipeline": "history_sync",
+        "audio_transport": "audiosocket",
+    }
+    engine = Engine(AppConfig(**config_data))
+    engine.pipeline_orchestrator._started = True
+    stt = _ResultStreamingStubSTT()
+    llm = _HistoryRecordingLLM()
+    resolution = _StubResolution(
+        stt_adapter=stt,
+        stt_options={"streaming": True, "chunk_ms": 80},
+        llm_adapter=llm,
+        tts_adapter=_SilentTTS(),
+    )
+    resolution.llm_options = {"aggregation_timeout_sec": 0.01}
+    monkeypatch.setattr(
+        engine.pipeline_orchestrator,
+        "get_pipeline",
+        lambda *args, **kwargs: resolution,
+    )
+    engine.ari_client.set_channel_var = AsyncMock(return_value=True)
+
+    from src.core.models import CallSession
+
+    call_id = "call-pipeline-history-sync"
+    session = CallSession(call_id=call_id, caller_channel_id=call_id)
+    session.pipeline_name = "history_sync"
+    await engine.session_store.upsert_call(session)
+
+    await engine._ensure_pipeline_runner(session, forced=True)
+    await asyncio.wait_for(stt.started.wait(), timeout=2)
+    await stt.results.put("please transfer me")
+    assert await asyncio.wait_for(llm.calls.get(), timeout=2) == 1
+    for _ in range(100):
+        current = await engine.session_store.get_by_call_id(call_id)
+        if any(
+            item.get("content") == "Transferring you now."
+            for item in current.conversation_history
+        ):
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("first pipeline turn was not persisted")
+
+    current.conversation_history.append(
+        {
+            "role": "assistant",
+            "content": "I'm sorry, I couldn't complete that transfer.",
+            "event": "no_input_deferred_transfer_timeout",
+        }
+    )
+    await engine.session_store.upsert_call(current)
+
+    await stt.results.put("what happened")
+    assert await asyncio.wait_for(llm.calls.get(), timeout=2) == 2
+
+    assert llm.contexts[1][-1]["content"] == (
+        "I'm sorry, I couldn't complete that transfer."
+    )
     await engine._cleanup_call(call_id)
 
 

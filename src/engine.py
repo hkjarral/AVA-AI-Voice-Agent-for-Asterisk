@@ -16453,6 +16453,16 @@ class Engine:
                         call_id, session, stage="turn-start"
                     ):
                         return
+                    # Pipeline-authored announcements (for example a deferred
+                    # transfer timeout apology) are persisted outside this
+                    # dialog worker. Rehydrate at every turn boundary so this
+                    # worker cannot send stale context to the LLM and then
+                    # overwrite those messages with its private history copy.
+                    latest_session = await self.session_store.get_by_call_id(call_id)
+                    if latest_session:
+                        conversation_history = list(
+                            latest_session.conversation_history or []
+                        )
                     response_text = ""
                     tool_calls = []
                     _streaming_handled = False  # Set True when streaming overlap played audio + recorded history
