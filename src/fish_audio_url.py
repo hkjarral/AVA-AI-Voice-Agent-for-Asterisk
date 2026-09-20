@@ -12,6 +12,16 @@ FISH_AUDIO_OFFICIAL_TTS_URL = "https://api.fish.audio/v1/tts"
 FISH_AUDIO_MOCK_TTS_URL = "http://127.0.0.1:8788/v1/tts"
 
 
+def _is_loopback_hostname(hostname: str) -> bool:
+    """Return whether a parsed endpoint host is explicitly loopback."""
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
 def validate_fish_audio_base_url(base_url: str) -> str:
     """Normalize a Fish Audio endpoint and reject unsafe clear-text URLs.
 
@@ -30,16 +40,26 @@ def validate_fish_audio_base_url(base_url: str) -> str:
     if parsed.scheme == "https":
         return normalized
 
-    hostname = parsed.hostname.lower()
-    is_loopback = hostname == "localhost"
-    if not is_loopback:
-        try:
-            is_loopback = ipaddress.ip_address(hostname).is_loopback
-        except ValueError:
-            is_loopback = False
-    if not is_loopback:
+    if not _is_loopback_hostname(parsed.hostname):
         raise RuntimeError(
             "Fish Audio base_url must use HTTPS; HTTP is allowed only for a loopback mock"
+        )
+    return normalized
+
+
+def validate_fish_audio_ws_url(ws_url: str) -> str:
+    """Normalize a realtime endpoint and reject clear-text remote WebSockets."""
+    normalized = str(ws_url or "").strip().rstrip("/")
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"ws", "wss"} or not parsed.hostname:
+        raise RuntimeError("Fish Audio ws_base_url must be an absolute WS(S) URL")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise RuntimeError(
+            "Fish Audio ws_base_url must not contain credentials, query, or fragment"
+        )
+    if parsed.scheme == "ws" and not _is_loopback_hostname(parsed.hostname):
+        raise RuntimeError(
+            "Fish Audio ws_base_url must use WSS; WS is allowed only for a loopback mock"
         )
     return normalized
 

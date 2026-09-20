@@ -834,6 +834,7 @@ providers:
     capabilities:
       - tts
     enabled: true
+    transport: http        # http, or websocket for the realtime session
     model: s2.1-pro        # also: s1, s2-pro, s2.1-pro-free, drama-3-preview
     reference_id: voice-model-id # required voice id from your Fish Audio library
     audio_format: pcm      # pcm (streamed) or wav (buffered)
@@ -859,7 +860,9 @@ providers:
 | `latency` | `low` favours time to first audio, which is what a phone call needs. |
 | `speed`, `volume` | Sent as `prosody`; leave `null` to keep the model default. |
 | `connect_timeout_sec` | Maximum time to establish or acquire the HTTP connection. |
-| `read_timeout_sec` | Maximum gap between response chunks. This fails a stalled stream without imposing a deadline on healthy long synthesis. |
+| `read_timeout_sec` | Maximum gap between HTTP chunks or realtime WebSocket events. This fails a stalled stream without imposing a deadline on healthy long synthesis. |
+| `transport` | `http` posts one request per fragment. `websocket` opens one realtime session per turn and receives the text as the engine produces it (needs `msgpack`). |
+| `ws_base_url` | Realtime endpoint; defaults to `base_url` with a `ws`/`wss` scheme. Remote endpoints require WSS; plain WS is limited to explicit loopback mocks. |
 
 Every key can also be set per pipeline under `options.tts`, and overridden per
 request at runtime.

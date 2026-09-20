@@ -245,6 +245,39 @@ class _HangingTTS(TTSComponent):
             yield b""
 
 
+class _StreamingSentenceLLM(LLMComponent):
+    supports_streaming = True
+
+    async def generate(self, call_id, transcript, context, options):
+        return "This response is streamed."
+
+    async def generate_stream(self, call_id, transcript, context, options):
+        yield "This response is streamed. "
+
+
+class _ClosableStreamingTTS(TTSComponent):
+    supports_text_stream = True
+
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.closed = asyncio.Event()
+
+    async def synthesize(self, call_id, text, options):
+        if False:
+            yield b""
+
+    async def synthesize_stream(self, call_id, text_chunks, options):
+        try:
+            async for fragment in text_chunks:
+                if fragment:
+                    self.started.set()
+                    await asyncio.Event().wait()
+            if False:
+                yield b""
+        finally:
+            self.closed.set()
+
+
 class _StreamOwnershipStub:
     def __init__(self, stream_id="stream-1"):
         self.stream_id = stream_id
@@ -876,6 +909,66 @@ async def test_cleanup_cancels_inflight_pipeline_turn_before_bridge_teardown(mon
     assert llm.cancelled.is_set()
     assert not tts.started.is_set()
     engine.streaming_playback_manager.start_streaming_playback.assert_not_awaited()
+    assert call_id not in engine._pipeline_tasks
+
+
+@pytest.mark.asyncio
+async def test_cleanup_closes_turn_scoped_tts_text_stream(monkeypatch):
+    """Barge-in/call cleanup must not leave a realtime TTS session running."""
+    config_data = {
+        "default_provider": "local",
+        "providers": {"local": {"enabled": True}},
+        "asterisk": {
+            "host": "127.0.0.1",
+            "port": 8088,
+            "username": "u",
+            "password": "p",
+            "app_name": "ai-voice-agent",
+        },
+        "llm": {"initial_greeting": "", "prompt": "You are helpful", "model": "gpt-4o"},
+        "pipelines": {"streaming": {}},
+        "active_pipeline": "streaming",
+        "audio_transport": "audiosocket",
+        "downstream_mode": "stream",
+    }
+    engine = Engine(AppConfig(**config_data))
+    engine.pipeline_orchestrator._started = True
+    stt = _ResultStreamingStubSTT()
+    tts = _ClosableStreamingTTS()
+    resolution = _StubResolution(
+        stt_adapter=stt,
+        stt_options={"streaming": True, "chunk_ms": 80},
+        llm_adapter=_StreamingSentenceLLM(),
+        tts_adapter=tts,
+    )
+    monkeypatch.setattr(
+        engine.pipeline_orchestrator,
+        "get_pipeline",
+        lambda *args, **kwargs: resolution,
+    )
+    engine.ari_client.set_channel_var = AsyncMock(return_value=True)
+    engine.streaming_playback_manager.start_streaming_playback = AsyncMock(
+        return_value="tts-stream"
+    )
+    engine.streaming_playback_manager.stop_streaming_playback = AsyncMock(
+        return_value=True
+    )
+
+    from src.core.models import CallSession
+
+    call_id = "call-cleanup-realtime-tts"
+    session = CallSession(call_id=call_id, caller_channel_id=call_id)
+    session.pipeline_name = "streaming"
+    await engine.session_store.upsert_call(session)
+
+    await engine._ensure_pipeline_runner(session, forced=True)
+    await asyncio.wait_for(stt.started.wait(), timeout=2)
+    await stt.results.put("please explain")
+    await asyncio.wait_for(tts.started.wait(), timeout=2)
+
+    await engine._cleanup_call(call_id)
+
+    assert tts.closed.is_set()
     assert call_id not in engine._pipeline_tasks
 
 

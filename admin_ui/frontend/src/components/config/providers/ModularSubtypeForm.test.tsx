@@ -21,7 +21,9 @@ describe('ModularSubtypeForm', () => {
         const model = screen.getByLabelText('Model *');
         expect(model.tagName).toBe('SELECT');
         expect(model).toHaveValue('s2.1-pro-free');
-        expect(screen.getAllByRole('option').map(option => option.textContent)).toEqual([
+        expect(
+            Array.from((model as HTMLSelectElement).options).map(option => option.textContent)
+        ).toEqual([
             's2.1-pro',
             's2.1-pro-free',
             's2-pro',

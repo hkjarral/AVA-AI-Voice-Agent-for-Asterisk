@@ -2,15 +2,26 @@
 Fish Audio TTS Pipeline Adapter.
 
 Implements the TTSComponent interface for Fish Audio's speech models (S1, S2 and
-the drama preview). The provider streams raw PCM back over chunked HTTP and can
-emit it at the call's own sample rate, so a telephone call needs no intermediate
-resampling: audio is converted to the transport encoding chunk by chunk and
-reaches the caller while the sentence is still being synthesised.
+the drama preview), over either transport:
 
-API Reference: https://docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech
+- ``http`` (default): ``POST /v1/tts`` returns raw PCM over a chunked response.
+  One request per text fragment, converted and forwarded chunk by chunk.
+- ``websocket``: the realtime endpoint ``wss://api.fish.audio/v1/tts/live`` keeps
+  one session open for a whole turn. Text is sent as the LLM produces it and
+  audio comes back while the sentence is still being written, so the engine never
+  waits for a fragment to be synthesised before consuming the next tokens.
+
+Both transports ask the provider for the call's own sample rate, so a telephone
+call needs no intermediate resampling.
+
+API Reference:
+  https://docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech
+  https://docs.fish.audio/api-reference/endpoint/websocket/tts-live
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import io
 import time
 import uuid
@@ -25,7 +36,7 @@ from ..audio import (
     resolve_output_resampler_policy,
 )
 from ..config import AppConfig, FishAudioProviderConfig
-from ..fish_audio_url import validate_fish_audio_base_url
+from ..fish_audio_url import validate_fish_audio_base_url, validate_fish_audio_ws_url
 from ..logging_config import get_logger
 from .base import TTSComponent
 
@@ -37,6 +48,34 @@ FISH_AUDIO_SAMPLE_RATES = (8000, 16000, 24000, 32000, 44100)
 FISH_AUDIO_FALLBACK_SAMPLE_RATE = 16000
 # Size of the HTTP reads while the response is still streaming.
 FISH_AUDIO_READ_BYTES = 4096
+# Realtime path of the websocket endpoint, appended to the configured base URL.
+FISH_AUDIO_WS_PATH = "/tts/live"
+
+
+def _load_msgpack() -> Tuple[Callable[[Any], bytes], Callable[[bytes], Any]]:
+    """Return (pack, unpack) for the realtime transport.
+
+    The websocket endpoint speaks MessagePack. Import lazily so the HTTP
+    transport keeps working when the optional dependency is absent.
+    """
+    try:
+        import ormsgpack
+
+        return ormsgpack.packb, ormsgpack.unpackb
+    except ImportError:
+        pass
+    try:
+        import msgpack
+
+        return (
+            lambda obj: msgpack.packb(obj, use_bin_type=True),
+            lambda data: msgpack.unpackb(data, raw=False),
+        )
+    except ImportError as exc:
+        raise RuntimeError(
+            "Fish Audio realtime transport requires msgpack (pip install msgpack) "
+            "or ormsgpack; use transport: http otherwise"
+        ) from exc
 
 
 class FishAudioTTSAdapter(TTSComponent):
@@ -68,6 +107,10 @@ class FishAudioTTSAdapter(TTSComponent):
         self._pipeline_defaults = options or {}
         self._session_factory = session_factory
         self._session: Optional[aiohttp.ClientSession] = None
+        # The engine feeds text progressively only when the realtime transport is on.
+        self.supports_text_stream = (
+            str(self._compose_options({})["transport"]).strip().lower() == "websocket"
+        )
 
     async def start(self) -> None:
         logger.debug(
@@ -76,6 +119,7 @@ class FishAudioTTSAdapter(TTSComponent):
             model=self._provider_config.model,
             reference_id=self._provider_config.reference_id,
             latency=self._provider_config.latency,
+            transport=self._provider_config.transport,
         )
 
     async def stop(self) -> None:
@@ -100,7 +144,7 @@ class FishAudioTTSAdapter(TTSComponent):
         options: Dict[str, Any],
     ) -> AsyncIterator[bytes]:
         """
-        Synthesize text to speech using the Fish Audio TTS API.
+        Synthesize one text fragment over the HTTP endpoint.
 
         Yields audio chunks in the negotiated per-call transport format, as soon
         as the provider sends them.
@@ -111,10 +155,7 @@ class FishAudioTTSAdapter(TTSComponent):
 
         await self._ensure_session()
         merged = self._compose_options(options)
-
-        api_key = merged.get("api_key")
-        if not api_key:
-            raise RuntimeError("Fish Audio TTS requires an API key (FISH_AUDIO_API_KEY)")
+        api_key = self._require_api_key(merged)
 
         target_encoding = merged["format"]["encoding"]
         target_sample_rate = int(merged["format"]["sample_rate"])
@@ -129,45 +170,14 @@ class FishAudioTTSAdapter(TTSComponent):
             merged.get("sample_rate"), target_sample_rate
         )
 
-        payload: Dict[str, Any] = {
-            "text": text,
-            "format": audio_format,
-            "sample_rate": source_sample_rate,
-            "latency": merged["latency"],
-            "chunk_length": int(merged["chunk_length"]),
-            "normalize": bool(merged["normalize"]),
-            "temperature": float(merged["temperature"]),
-            "top_p": float(merged["top_p"]),
-        }
-        reference_id = merged.get("reference_id")
-        if not reference_id:
-            raise RuntimeError(
-                "Fish Audio TTS requires a reference_id (voice model ID)"
-            )
-        payload["reference_id"] = reference_id
-        prosody: Dict[str, Any] = {}
-        if merged.get("speed") is not None:
-            prosody["speed"] = float(merged["speed"])
-        if merged.get("volume") is not None:
-            prosody["volume"] = float(merged["volume"])
-        if prosody:
-            payload["prosody"] = prosody
-
         # Validate before constructing Authorization headers or entering the
         # request path, so a bearer key cannot reach a non-loopback HTTP host.
         base_url = validate_fish_audio_base_url(str(merged["base_url"]))
-
-        headers = {
-            "Authorization": "Bearer " + str(api_key),
-            "Content-Type": "application/json",
-            # Fish Audio selects the speech model with a header, not a body field.
-            "model": str(merged["model"]),
-        }
-
+        payload = self._build_request(merged, source_sample_rate, audio_format, text=text)
+        headers = self._build_headers(api_key, merged)
         url = base_url + "/tts"
         request_id = "fish-tts-" + uuid.uuid4().hex[:12]
         chunk_ms = int(merged.get("chunk_size_ms", 20))
-        resampler_mode = merged["output_resampler"]
 
         logger.info(
             "Fish Audio TTS synthesis started",
@@ -175,7 +185,7 @@ class FishAudioTTSAdapter(TTSComponent):
             request_id=request_id,
             text_length=len(text),
             model=merged["model"],
-            reference_id=reference_id,
+            reference_id=merged.get("reference_id"),
             latency=merged["latency"],
             source_sample_rate=source_sample_rate,
             target_encoding=target_encoding,
@@ -256,7 +266,7 @@ class FishAudioTTSAdapter(TTSComponent):
                             pcm_data,
                             decoded_rate,
                             target_sample_rate,
-                            mode=resampler_mode,
+                            mode=merged["output_resampler"],
                         )
                     converted = convert_pcm16le_to_target_format(
                         pcm_data, target_encoding
@@ -291,6 +301,343 @@ class FishAudioTTSAdapter(TTSComponent):
                 error=str(exc),
             )
             raise
+
+    async def synthesize_stream(
+        self,
+        call_id: str,
+        text_chunks: AsyncIterator[str],
+        options: Dict[str, Any],
+    ) -> AsyncIterator[bytes]:
+        """
+        Synthesize a whole turn over the realtime websocket session.
+
+        Text fragments are sent as the engine produces them and audio is yielded
+        as the provider returns it. Falls back to one HTTP request per fragment
+        when the realtime transport is not selected.
+        """
+        merged = self._compose_options(options)
+        if str(merged["transport"]).strip().lower() != "websocket":
+            async for text in text_chunks:
+                async for chunk in self.synthesize(call_id, text, options):
+                    yield chunk
+            return
+
+        api_key = self._require_api_key(merged)
+        await self._ensure_session()
+
+        target_encoding = merged["format"]["encoding"]
+        target_sample_rate = int(merged["format"]["sample_rate"])
+        source_sample_rate = self._resolve_source_sample_rate(
+            merged.get("sample_rate"), target_sample_rate
+        )
+        chunk_ms = int(merged.get("chunk_size_ms", 20))
+        emit_size = self._chunk_size_bytes(target_encoding, target_sample_rate, chunk_ms)
+        request_id = "fish-tts-" + uuid.uuid4().hex[:12]
+        url = self._websocket_url(merged)
+        # Validate the destination before loading the protocol codec or building
+        # any credential-bearing connection arguments.
+        pack, unpack = _load_msgpack()
+
+        logger.info(
+            "Fish Audio realtime session opening",
+            call_id=call_id,
+            request_id=request_id,
+            model=merged["model"],
+            reference_id=merged.get("reference_id"),
+            latency=merged["latency"],
+            source_sample_rate=source_sample_rate,
+            target_encoding=target_encoding,
+            target_sample_rate=target_sample_rate,
+        )
+
+        started_at = time.perf_counter()
+        first_audio_ms: Optional[float] = None
+        output_bytes = 0
+        fragments = 0
+        carry = b""
+        pending = bytearray()
+        resample_state = None
+        sender: Optional[asyncio.Task] = None
+        receive_task: Optional[asyncio.Task] = None
+        messages = None
+        websocket_context = None
+        websocket_entered = False
+
+        async def feed(websocket) -> None:
+            """Send each fragment as it is produced, then close the text stream."""
+            nonlocal fragments
+            try:
+                async for fragment in text_chunks:
+                    if not fragment:
+                        continue
+                    fragments += 1
+                    await websocket.send_bytes(pack({"event": "text", "text": fragment}))
+                    # Flush so the provider starts on this fragment instead of
+                    # waiting for its own buffer to fill.
+                    await websocket.send_bytes(pack({"event": "flush"}))
+            finally:
+                with_stop = {"event": "stop"}
+                try:
+                    await asyncio.wait_for(
+                        websocket.send_bytes(pack(with_stop)),
+                        timeout=connect_timeout,
+                    )
+                except BaseException:  # cleanup only; the socket may already be gone
+                    pass
+
+        connect_timeout = float(merged["connect_timeout_sec"])
+        read_timeout = float(merged["read_timeout_sec"])
+        websocket_timeout = aiohttp.ClientWSTimeout(
+            ws_receive=read_timeout,
+            ws_close=connect_timeout,
+        )
+        try:
+            websocket_context = self._session.ws_connect(
+                url,
+                headers=self._build_headers(api_key, merged),
+                timeout=websocket_timeout,
+                heartbeat=20,
+                max_msg_size=0,
+            )
+            websocket = await asyncio.wait_for(
+                websocket_context.__aenter__(),
+                timeout=connect_timeout,
+            )
+            websocket_entered = True
+            try:
+                await websocket.send_bytes(
+                    pack({
+                        "event": "start",
+                        "request": self._build_request(
+                            merged, source_sample_rate, "pcm", text=""
+                        ),
+                    })
+                )
+                sender = asyncio.ensure_future(feed(websocket))
+                monitored_sender: Optional[asyncio.Task] = sender
+                messages = websocket.__aiter__()
+                receive_task = asyncio.create_task(
+                    asyncio.wait_for(messages.__anext__(), timeout=read_timeout)
+                )
+                finished = False
+
+                while True:
+                    wait_for = {receive_task}
+                    if monitored_sender is not None:
+                        wait_for.add(monitored_sender)
+                    done, _ = await asyncio.wait(
+                        wait_for,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+
+                    if monitored_sender is not None and monitored_sender in done:
+                        # Retrieve and propagate text-source or socket-send failures
+                        # immediately instead of leaving the receive loop blocked.
+                        monitored_sender.result()
+                        monitored_sender = None
+
+                    if receive_task not in done:
+                        continue
+                    try:
+                        message = receive_task.result()
+                    except StopAsyncIteration as exc:
+                        raise RuntimeError(
+                            "Fish Audio realtime socket closed before a finish event"
+                        ) from exc
+                    receive_task = None
+
+                    if message.type is aiohttp.WSMsgType.BINARY:
+                        event = unpack(message.data)
+                    elif message.type is aiohttp.WSMsgType.TEXT:
+                        event = None
+                    elif message.type in (
+                        aiohttp.WSMsgType.CLOSED,
+                        aiohttp.WSMsgType.CLOSING,
+                        aiohttp.WSMsgType.CLOSE,
+                    ):
+                        raise RuntimeError(
+                            "Fish Audio realtime socket closed before a finish event"
+                        )
+                    elif message.type is aiohttp.WSMsgType.ERROR:
+                        raise RuntimeError("Fish Audio realtime socket error")
+                    else:
+                        event = None
+
+                    name = event.get("event") if isinstance(event, dict) else None
+                    if name == "audio":
+                        data = carry + (event.get("audio") or b"")
+                        aligned = len(data) - (len(data) % 2)
+                        carry = data[aligned:]
+                        if aligned:
+                            pcm = data[:aligned]
+                            if source_sample_rate != target_sample_rate:
+                                pcm, resample_state = resample_audio(
+                                    pcm,
+                                    source_sample_rate,
+                                    target_sample_rate,
+                                    mode=merged["output_resampler"],
+                                    state=resample_state,
+                                )
+                            pending.extend(
+                                convert_pcm16le_to_target_format(pcm, target_encoding)
+                            )
+                            if first_audio_ms is None and pending:
+                                first_audio_ms = (
+                                    time.perf_counter() - started_at
+                                ) * 1000.0
+                            while len(pending) >= emit_size:
+                                chunk = bytes(pending[:emit_size])
+                                del pending[:emit_size]
+                                output_bytes += len(chunk)
+                                yield chunk
+                    elif name == "finish":
+                        reason = event.get("reason")
+                        if reason == "error":
+                            raise RuntimeError(
+                                "Fish Audio realtime session finished with an error"
+                            )
+                        finished = True
+                        break
+                    elif name == "log":
+                        logger.debug(
+                            "Fish Audio realtime log",
+                            call_id=call_id,
+                            request_id=request_id,
+                            message=str(event.get("message"))[:200],
+                        )
+
+                    receive_task = asyncio.create_task(
+                        asyncio.wait_for(messages.__anext__(), timeout=read_timeout)
+                    )
+
+                if not finished:
+                    raise RuntimeError(
+                        "Fish Audio realtime socket closed before a finish event"
+                    )
+
+                # A conforming server sends finish only after the client stop event.
+                # Surface a sender failure even if finish and that failure raced.
+                if sender is not None and sender.done():
+                    sender.result()
+
+                if pending:
+                    output_bytes += len(pending)
+                    yield bytes(pending)
+
+                if output_bytes == 0:
+                    raise RuntimeError("Fish Audio TTS returned no audio")
+
+            finally:
+                if receive_task is not None:
+                    if not receive_task.done():
+                        receive_task.cancel()
+                    with contextlib.suppress(BaseException):
+                        await receive_task
+                close_messages = getattr(messages, "aclose", None)
+                if close_messages is not None:
+                    with contextlib.suppress(BaseException):
+                        await close_messages()
+
+            logger.info(
+                "Fish Audio realtime session completed",
+                call_id=call_id,
+                request_id=request_id,
+                fragments=fragments,
+                first_audio_ms=round(first_audio_ms, 2) if first_audio_ms else None,
+                total_ms=round((time.perf_counter() - started_at) * 1000.0, 2),
+                output_bytes=output_bytes,
+            )
+
+        except asyncio.TimeoutError as exc:
+            logger.error(
+                "Fish Audio realtime session timed out",
+                call_id=call_id,
+                request_id=request_id,
+                read_timeout_sec=read_timeout,
+            )
+            raise RuntimeError(
+                "Fish Audio realtime session timed out waiting for a provider event"
+            ) from exc
+        except aiohttp.ClientError as exc:
+            logger.error(
+                "Fish Audio realtime connection error",
+                call_id=call_id,
+                request_id=request_id,
+                error=str(exc),
+            )
+            raise
+        finally:
+            if sender is not None:
+                if not sender.done():
+                    sender.cancel()
+                with contextlib.suppress(BaseException):
+                    await sender
+            if websocket_context is not None and websocket_entered:
+                with contextlib.suppress(BaseException):
+                    await websocket_context.__aexit__(None, None, None)
+
+    def _require_api_key(self, merged: Dict[str, Any]) -> str:
+        api_key = merged.get("api_key")
+        if not api_key:
+            raise RuntimeError("Fish Audio TTS requires an API key (FISH_AUDIO_API_KEY)")
+        return str(api_key)
+
+    def _build_headers(self, api_key: str, merged: Dict[str, Any]) -> Dict[str, str]:
+        return {
+            "Authorization": "Bearer " + api_key,
+            "Content-Type": "application/json",
+            # Fish Audio selects the speech model with a header, not a body field.
+            "model": str(merged["model"]),
+        }
+
+    def _build_request(
+        self,
+        merged: Dict[str, Any],
+        source_sample_rate: int,
+        audio_format: str,
+        *,
+        text: str,
+    ) -> Dict[str, Any]:
+        """Body shared by the HTTP request and the realtime start event."""
+        request: Dict[str, Any] = {
+            "text": text,
+            "format": audio_format,
+            "sample_rate": source_sample_rate,
+            "latency": merged["latency"],
+            "chunk_length": int(merged["chunk_length"]),
+            "normalize": bool(merged["normalize"]),
+            "temperature": float(merged["temperature"]),
+            "top_p": float(merged["top_p"]),
+        }
+        reference_id = merged.get("reference_id")
+        if not reference_id:
+            raise RuntimeError(
+                "Fish Audio TTS requires a reference_id (voice model ID)"
+            )
+        request["reference_id"] = reference_id
+        prosody: Dict[str, Any] = {}
+        if merged.get("speed") is not None:
+            prosody["speed"] = float(merged["speed"])
+        if merged.get("volume") is not None:
+            prosody["volume"] = float(merged["volume"])
+        if prosody:
+            request["prosody"] = prosody
+        return request
+
+    def _websocket_url(self, merged: Dict[str, Any]) -> str:
+        configured = merged.get("ws_base_url")
+        if configured:
+            base = validate_fish_audio_ws_url(str(configured))
+        else:
+            http_base = validate_fish_audio_base_url(str(merged["base_url"]))
+            if http_base.startswith("https://"):
+                base = "wss://" + http_base[len("https://"):]
+            else:
+                base = "ws://" + http_base[len("http://"):]
+            base = validate_fish_audio_ws_url(base)
+        if base.endswith(FISH_AUDIO_WS_PATH):
+            return base
+        return base + FISH_AUDIO_WS_PATH
 
     def _resolve_source_sample_rate(
         self, configured: Optional[int], target_sample_rate: int
@@ -347,6 +694,8 @@ class FishAudioTTSAdapter(TTSComponent):
         merged = {
             "api_key": pick("api_key", self._provider_config.api_key),
             "base_url": pick("base_url", self._provider_config.base_url),
+            "ws_base_url": pick("ws_base_url", self._provider_config.ws_base_url),
+            "transport": pick("transport", self._provider_config.transport),
             "model": pick("model", self._provider_config.model),
             "reference_id": pick("reference_id", self._provider_config.reference_id),
             "audio_format": pick("audio_format", self._provider_config.audio_format),

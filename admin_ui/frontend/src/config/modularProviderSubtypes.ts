@@ -200,6 +200,8 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
     yamlType: 'fishaudio',
     fields: [
       { key: 'base_url', label: 'API Base URL', type: 'text', required: true, default: 'https://api.fish.audio/v1', placeholder: 'https://api.fish.audio/v1', tooltip: 'HTTPS is required except for an explicit loopback mock.' },
+      { key: 'transport', label: 'Transport', type: 'select', required: false, default: 'http', suggestions: ['http', 'websocket'], tooltip: 'HTTP sends one request per fragment. WebSocket streams the whole response turn over one realtime session.' },
+      { key: 'ws_base_url', label: 'Realtime WebSocket URL', type: 'text', required: false, placeholder: 'wss://api.fish.audio/v1', tooltip: 'Optional override for websocket transport. Secure WSS is required except for an explicit loopback mock.' },
       { key: 'model', label: 'Model', type: 'select', required: true, default: 's2.1-pro', suggestions: FISH_AUDIO_MODELS },
       { key: 'reference_id', label: 'Voice Reference ID', type: 'text', required: true, placeholder: 'Voice model ID from the Fish Audio library' },
       { key: 'audio_format', label: 'Audio Format', type: 'combobox', required: false, default: 'pcm', suggestions: ['pcm', 'wav'], tooltip: 'PCM streams progressively and is recommended for calls. WAV is buffered before playback.' },

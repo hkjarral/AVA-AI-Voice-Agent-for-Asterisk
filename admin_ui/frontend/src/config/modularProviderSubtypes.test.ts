@@ -46,6 +46,13 @@ describe('modular TTS provider subtypes', () => {
                     default: 'https://api.fish.audio/v1',
                 }),
                 expect.objectContaining({ key: 'reference_id', required: true }),
+                expect.objectContaining({
+                    key: 'transport',
+                    type: 'select',
+                    default: 'http',
+                    suggestions: ['http', 'websocket'],
+                }),
+                expect.objectContaining({ key: 'ws_base_url', required: false }),
                 expect.objectContaining({ key: 'connect_timeout_sec', default: 10 }),
                 expect.objectContaining({ key: 'read_timeout_sec', default: 30 }),
             ])
