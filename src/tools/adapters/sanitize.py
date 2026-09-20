@@ -55,6 +55,14 @@ TOOL_CALENDAR_KEYS: Tuple[str, ...] = (
     "agent_hint",
 )
 
+CALENDAR_EVENT_KEYS: Tuple[str, ...] = (
+    "id",
+    "summary",
+    "start",
+    "end",
+    "calendar",
+)
+
 
 def _safe_jsonable(obj: Any, *, depth: int = 0, max_depth: int = 5, max_items: int = 50) -> Any:
     """Convert arbitrary tool output to a bounded JSON-compatible value."""
@@ -72,6 +80,22 @@ def _safe_jsonable(obj: Any, *, depth: int = 0, max_depth: int = 5, max_items: i
     if isinstance(obj, (list, tuple)):
         return [_safe_jsonable(v, depth=depth + 1, max_depth=max_depth, max_items=max_items) for v in list(obj)[:max_items]]
     return str(obj)
+
+
+def _safe_calendar_events(events: list[Any] | tuple[Any, ...], *, max_items: int = 50) -> list[Dict[str, Any]]:
+    """Return bounded calendar events containing only model-safe public fields."""
+    safe_events: list[Dict[str, Any]] = []
+    for event in list(events)[:max_items]:
+        if not isinstance(event, dict):
+            continue
+        safe_events.append(
+            {
+                key: _safe_jsonable(event[key], depth=1)
+                for key in CALENDAR_EVENT_KEYS
+                if key in event
+            }
+        )
+    return safe_events
 
 
 def sanitize_tool_result_for_json_string(
@@ -95,7 +119,14 @@ def sanitize_tool_result_for_json_string(
         payload = {}
         for k in selected_keep_keys:
             if k in result:
-                payload[k] = _safe_jsonable(result.get(k))
+                if (
+                    normalized_tool_name in CALENDAR_TOOL_NAMES
+                    and k == "events"
+                    and isinstance(result.get(k), (list, tuple))
+                ):
+                    payload[k] = _safe_calendar_events(result[k])
+                else:
+                    payload[k] = _safe_jsonable(result.get(k))
         if "message" not in payload:
             payload["message"] = str(result.get("message") or "")
         # Keep a compact structured payload when available (helps follow-up reasoning).

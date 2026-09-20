@@ -444,6 +444,8 @@ class TestSanitizerPreservesCalendarResults:
                 "start": "2026-09-20T09:00:00-07:00",
                 "end": "2026-09-20T09:30:00-07:00",
                 "calendar": "default",
+                "attendees": [{"email": "private@example.com"}],
+                "internal_secret": "must not reach the provider",
             }
         ]
         sanitized = sanitize_tool_result_for_json_string(
@@ -456,7 +458,17 @@ class TestSanitizerPreservesCalendarResults:
             tool_name=tool_name,
         )
 
-        assert sanitized["events"] == events
+        assert sanitized["events"] == [
+            {
+                "id": "event-1",
+                "summary": "Customer appointment",
+                "start": "2026-09-20T09:00:00-07:00",
+                "end": "2026-09-20T09:30:00-07:00",
+                "calendar": "default",
+            }
+        ]
+        assert "attendees" not in sanitized["events"][0]
+        assert "internal_secret" not in sanitized["events"][0]
         assert sanitized["total_events"] == 1
         assert sanitized["events_returned"] == 1
         assert sanitized["events_truncated"] is False
