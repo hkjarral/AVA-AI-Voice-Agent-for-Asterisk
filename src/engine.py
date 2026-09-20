@@ -672,6 +672,7 @@ class Engine:
         # ownership when its fail-closed ARI DELETE is not accepted.
         self._outbound_forced_hangup_tasks: Dict[str, asyncio.Task] = {}
         self._deferred_predial_forced_hangup_tasks: Dict[str, asyncio.Task] = {}
+        self._deferred_transfer_recovery_tasks: Dict[str, asyncio.Task] = {}
         # Local TTS farewells are a two-step exchange: execute hangup_call,
         # then wait for Local AI Server to synthesize the tool's farewell.
         # Keep that boundary separate from cleanup_after_tts so a stale
@@ -10205,6 +10206,13 @@ class Engine:
                 fallback = self._terminal_fallback_tasks.pop(call_id, None)
                 if fallback and not fallback.done():
                     fallback.cancel()
+                deferred_recovery = getattr(
+                    self,
+                    "_deferred_transfer_recovery_tasks",
+                    {},
+                ).pop(call_id, None)
+                if deferred_recovery and not deferred_recovery.done():
+                    deferred_recovery.cancel()
                 self._deferred_transfer_commit_locks.pop(call_id, None)
                 self._terminal_hangup_locks.pop(call_id, None)
                 self._terminal_hangup_started.discard(call_id)
@@ -21536,17 +21544,18 @@ class Engine:
                 exc_info=True,
             )
 
-        try:
-            stream_info = self.streaming_playback_manager.active_streams.get(call_id)
-            if stream_info is not None:
-                stream_info["end_reason"] = "deferred-transfer-drain-timeout"
-            await self.streaming_playback_manager.stop_streaming_playback(call_id)
-        except Exception:
-            logger.debug(
-                "Failed to flush streaming output after deferred transfer timeout",
-                call_id=call_id,
-                exc_info=True,
-            )
+        tools_cfg = (self._tool_config_for_session(session).get("tools") or {})
+        transfer_cfg = tools_cfg.get("transfer", {}) if isinstance(tools_cfg, dict) else {}
+        if not isinstance(transfer_cfg, dict):
+            transfer_cfg = {}
+        apology = str(
+            transfer_cfg.get("deferred_audio_drain_timeout_message")
+            or "I'm sorry, I couldn't complete that transfer without interrupting you. How else can I help?"
+        ).strip()
+
+        stream_stopped = await self._stop_deferred_transfer_stream_before_recovery(
+            call_id
+        )
         self._provider_stream_queues.pop(call_id, None)
         self._provider_stream_formats.pop(call_id, None)
         self._provider_coalesce_buf.pop(call_id, None)
@@ -21555,11 +21564,19 @@ class Engine:
         playbacks_stopped = await self._stop_deferred_transfer_playbacks_before_recovery(
             call_id
         )
-        if not playbacks_stopped:
-            logger.info(
-                "Deferred transfer recovery speech skipped because the call ended during playback cleanup",
+        if not stream_stopped or not playbacks_stopped:
+            self._schedule_deferred_transfer_timeout_recovery(
                 call_id=call_id,
                 action_id=action_id,
+                predial_channel_id=predial_channel_id,
+                apology=apology,
+            )
+            logger.warning(
+                "Deferred transfer recovery deferred until caller-facing output cleanup is confirmed",
+                call_id=call_id,
+                action_id=action_id,
+                stream_stopped=stream_stopped,
+                playbacks_stopped=playbacks_stopped,
             )
             return {
                 "status": "failed",
@@ -21567,13 +21584,84 @@ class Engine:
                 "error_code": "deferred_audio_drain_timeout",
                 "transfer_cancelled": True,
                 "apology_spoken": False,
+                "recovery_pending": True,
             }
+
+        apology_spoken = await self._complete_deferred_transfer_timeout_recovery(
+            call_id=call_id,
+            action_id=action_id,
+            predial_channel_id=predial_channel_id,
+            apology=apology,
+        )
+        return {
+            "status": "failed",
+            "message": "Deferred transfer cancelled because caller-facing audio did not drain before the safety timeout.",
+            "error_code": "deferred_audio_drain_timeout",
+            "transfer_cancelled": True,
+            "apology_spoken": bool(apology_spoken),
+        }
+
+    async def _stop_deferred_transfer_stream_before_recovery(
+        self,
+        call_id: str,
+    ) -> bool:
+        """Stop local streaming and confirm a remote WebSocket flush when required."""
+        requires_remote_confirmation = (
+            str(getattr(self.config, "audio_transport", "") or "").lower()
+            == "websocket"
+        )
+        had_active_stream = False
+        try:
+            stream_info = self.streaming_playback_manager.active_streams.get(call_id)
+            had_active_stream = stream_info is not None
+            if stream_info is not None:
+                stream_info["end_reason"] = "deferred-transfer-drain-timeout"
+            stopped = bool(
+                await self.streaming_playback_manager.stop_streaming_playback(
+                    call_id
+                )
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            stopped = False
+            logger.debug(
+                "Failed to flush streaming output after deferred transfer timeout",
+                call_id=call_id,
+                exc_info=True,
+            )
+        if (requires_remote_confirmation or had_active_stream) and not stopped:
+            logger.warning(
+                "Deferred transfer output stop was not confirmed",
+                call_id=call_id,
+                audio_transport=str(
+                    getattr(self.config, "audio_transport", "") or ""
+                ),
+            )
+            return False
+        return True
+
+    async def _complete_deferred_transfer_timeout_recovery(
+        self,
+        *,
+        call_id: str,
+        action_id: Any,
+        predial_channel_id: str,
+        apology: str,
+    ) -> bool:
+        """Restore caller input and speak after output cleanup is confirmed."""
+        current = await self.session_store.get_by_call_id(call_id)
+        if (
+            not current
+            or bool(getattr(current, "cleanup_in_progress", False))
+            or self._session_was_transferred(current)
+        ):
+            return False
 
         # File and pipeline playback can leave microphone-gating tokens behind
         # when it is aborted. Release only this call's tokens before asking the
         # provider to speak the recovery message.
         try:
-            current = await self.session_store.get_by_call_id(call_id)
             for token in list(getattr(current, "tts_tokens", set()) or []):
                 try:
                     if self.conversation_coordinator:
@@ -21592,9 +21680,10 @@ class Engine:
                         exc_info=True,
                     )
             current = await self.session_store.get_by_call_id(call_id)
-            if current:
-                current.audio_capture_enabled = True
-                await self._save_session(current)
+            if not current or bool(getattr(current, "cleanup_in_progress", False)):
+                return False
+            current.audio_capture_enabled = True
+            await self._save_session(current)
         except Exception:
             logger.debug(
                 "Failed to restore audio capture after deferred transfer timeout",
@@ -21602,14 +21691,6 @@ class Engine:
                 exc_info=True,
             )
 
-        tools_cfg = (self._tool_config_for_session(session).get("tools") or {})
-        transfer_cfg = tools_cfg.get("transfer", {}) if isinstance(tools_cfg, dict) else {}
-        if not isinstance(transfer_cfg, dict):
-            transfer_cfg = {}
-        apology = str(
-            transfer_cfg.get("deferred_audio_drain_timeout_message")
-            or "I'm sorry, I couldn't complete that transfer without interrupting you. How else can I help?"
-        ).strip()
         apology_spoken = await self._speak_no_input_announcement(
             call_id,
             apology,
@@ -21622,13 +21703,75 @@ class Engine:
             predial_channel_id=predial_channel_id or None,
             apology_spoken=apology_spoken,
         )
-        return {
-            "status": "failed",
-            "message": "Deferred transfer cancelled because caller-facing audio did not drain before the safety timeout.",
-            "error_code": "deferred_audio_drain_timeout",
-            "transfer_cancelled": True,
-            "apology_spoken": bool(apology_spoken),
-        }
+        return bool(apology_spoken)
+
+    def _schedule_deferred_transfer_timeout_recovery(
+        self,
+        *,
+        call_id: str,
+        action_id: Any,
+        predial_channel_id: str,
+        apology: str,
+    ) -> None:
+        """Retain recovery ownership until output is absent or the call ends."""
+        tasks = getattr(self, "_deferred_transfer_recovery_tasks", None)
+        if tasks is None:
+            tasks = {}
+            self._deferred_transfer_recovery_tasks = tasks
+        previous = tasks.get(call_id)
+        if previous and not previous.done():
+            return
+
+        async def _recover() -> None:
+            delay_seconds = 0.5
+            attempt = 0
+            try:
+                while True:
+                    session = await self.session_store.get_by_call_id(call_id)
+                    if (
+                        not session
+                        or bool(getattr(session, "cleanup_in_progress", False))
+                        or self._session_was_transferred(session)
+                    ):
+                        return
+                    attempt += 1
+                    stream_stopped = await self._stop_deferred_transfer_stream_before_recovery(
+                        call_id
+                    )
+                    playbacks_stopped = await self._stop_deferred_transfer_playbacks_before_recovery(
+                        call_id
+                    )
+                    if stream_stopped and playbacks_stopped:
+                        await self._complete_deferred_transfer_timeout_recovery(
+                            call_id=call_id,
+                            action_id=action_id,
+                            predial_channel_id=predial_channel_id,
+                            apology=apology,
+                        )
+                        return
+                    logger.warning(
+                        "Deferred transfer recovery owner is waiting for output cleanup",
+                        call_id=call_id,
+                        action_id=action_id,
+                        attempt=attempt,
+                        stream_stopped=stream_stopped,
+                        playbacks_stopped=playbacks_stopped,
+                        next_retry_seconds=delay_seconds,
+                    )
+                    await asyncio.sleep(delay_seconds)
+                    delay_seconds = min(delay_seconds * 2.0, 5.0)
+            except asyncio.CancelledError:
+                return
+            finally:
+                if tasks.get(call_id) is asyncio.current_task():
+                    tasks.pop(call_id, None)
+
+        task = self._fire_and_forget_for_call(
+            call_id,
+            _recover(),
+            name=f"deferred-transfer-timeout-recovery-{call_id}",
+        )
+        tasks[call_id] = task
 
     async def _stop_deferred_transfer_playbacks_before_recovery(
         self,

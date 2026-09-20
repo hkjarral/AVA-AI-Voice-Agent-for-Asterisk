@@ -1011,9 +1011,15 @@ async def test_deferred_transfer_playback_cleanup_failure_suppresses_apology(mon
     async def unexpected_speak(*args, **kwargs):
         raise AssertionError("apology must remain suppressed while playback cleanup failed")
 
+    scheduled = []
+
+    def fake_schedule_recovery(**kwargs):
+        scheduled.append(kwargs)
+
     monkeypatch.setattr(engine.streaming_playback_manager, "stop_streaming_playback", fake_stop_streaming)
     monkeypatch.setattr(engine, "_stop_deferred_transfer_playbacks_before_recovery", failed_playback_cleanup)
     monkeypatch.setattr(engine, "_speak_no_input_announcement", unexpected_speak)
+    monkeypatch.setattr(engine, "_schedule_deferred_transfer_timeout_recovery", fake_schedule_recovery)
 
     result = await engine._abort_deferred_transfer_after_drain_timeout(
         call_id,
@@ -1023,8 +1029,130 @@ async def test_deferred_transfer_playback_cleanup_failure_suppresses_apology(mon
     assert result["error_code"] == "deferred_audio_drain_timeout"
     assert result["transfer_cancelled"] is True
     assert result["apology_spoken"] is False
+    assert result["recovery_pending"] is True
+    assert scheduled == [
+        {
+            "call_id": call_id,
+            "action_id": "action-playback-cleanup-failed",
+            "predial_channel_id": "",
+            "apology": "I'm sorry, I couldn't complete that transfer without interrupting you. How else can I help?",
+        }
+    ]
     updated = await engine.session_store.get_by_call_id(call_id)
     assert updated.audio_capture_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_deferred_transfer_websocket_abort_failure_retains_recovery_owner(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    engine.config.audio_transport = "websocket"
+    call_id = "call-websocket-abort-failed"
+    session = CallSession(
+        call_id=call_id,
+        caller_channel_id="caller-websocket-abort-failed",
+        context_name="support",
+    )
+    await engine.session_store.upsert_call(session)
+
+    async def failed_stream_abort(target_call_id):
+        assert target_call_id == call_id
+        return False
+
+    monkeypatch.setattr(
+        engine.streaming_playback_manager,
+        "stop_streaming_playback",
+        failed_stream_abort,
+    )
+
+    assert not await engine._stop_deferred_transfer_stream_before_recovery(call_id)
+
+
+@pytest.mark.asyncio
+async def test_deferred_transfer_active_audiosocket_stop_failure_retains_recovery_owner(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    call_id = "call-audiosocket-stop-failed"
+    engine.streaming_playback_manager.active_streams[call_id] = {
+        "stream_id": "active-audiosocket-stream"
+    }
+
+    async def failed_stream_stop(target_call_id):
+        assert target_call_id == call_id
+        return False
+
+    monkeypatch.setattr(
+        engine.streaming_playback_manager,
+        "stop_streaming_playback",
+        failed_stream_stop,
+    )
+
+    assert not await engine._stop_deferred_transfer_stream_before_recovery(call_id)
+
+
+@pytest.mark.asyncio
+async def test_deferred_transfer_recovery_owner_retries_until_cleanup_then_apologizes(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    call_id = "call-deferred-recovery-owner"
+    session = CallSession(
+        call_id=call_id,
+        caller_channel_id="caller-deferred-recovery-owner",
+        context_name="support",
+    )
+    await engine.session_store.upsert_call(session)
+
+    stream_results = iter((False, True))
+    playback_results = iter((False, True))
+    events = []
+
+    async def fake_stop_stream(target_call_id):
+        assert target_call_id == call_id
+        result = next(stream_results)
+        events.append(("stream", result))
+        return result
+
+    async def fake_stop_playbacks(target_call_id):
+        assert target_call_id == call_id
+        result = next(playback_results)
+        events.append(("playbacks", result))
+        return result
+
+    async def fake_complete(**kwargs):
+        events.append(("complete", kwargs))
+        return True
+
+    async def fake_sleep(seconds):
+        events.append(("sleep", seconds))
+
+    monkeypatch.setattr(engine, "_stop_deferred_transfer_stream_before_recovery", fake_stop_stream)
+    monkeypatch.setattr(engine, "_stop_deferred_transfer_playbacks_before_recovery", fake_stop_playbacks)
+    monkeypatch.setattr(engine, "_complete_deferred_transfer_timeout_recovery", fake_complete)
+    monkeypatch.setattr("src.engine.asyncio.sleep", fake_sleep)
+
+    engine._schedule_deferred_transfer_timeout_recovery(
+        call_id=call_id,
+        action_id="action-recovery-owner",
+        predial_channel_id="predial-recovery-owner",
+        apology="Please hold while I recover.",
+    )
+    task = engine._deferred_transfer_recovery_tasks[call_id]
+    await task
+
+    assert events == [
+        ("stream", False),
+        ("playbacks", False),
+        ("sleep", 0.5),
+        ("stream", True),
+        ("playbacks", True),
+        (
+            "complete",
+            {
+                "call_id": call_id,
+                "action_id": "action-recovery-owner",
+                "predial_channel_id": "predial-recovery-owner",
+                "apology": "Please hold while I recover.",
+            },
+        ),
+    ]
+    assert engine._deferred_transfer_recovery_tasks == {}
 
 
 @pytest.mark.asyncio

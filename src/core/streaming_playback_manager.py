@@ -3612,13 +3612,16 @@ class StreamingPlaybackManager:
             # producer so its finally block cannot duplicate slow async cleanup
             # while this method is waiting for all stream tasks to settle.
             stream_info['stop_requested'] = True
+            remote_abort_confirmed = True
             if self.audio_transport == "websocket":
                 stream_info["end_reason"] = "interrupted"
                 stream_info["websocket_output_failed"] = True
                 self.frame_remainders.pop(call_id, None)
                 # Invalidate remote output before waiting on local producer
                 # teardown. XOFF cannot prevent the flush command.
-                await self._selected_output_transport().abort_output(call_id)
+                remote_abort_confirmed = bool(
+                    await self._selected_output_transport().abort_output(call_id)
+                )
 
             # An aborted stream does not need to preserve queued provider audio.
             # Release a producer blocked on a full jitter queue before cancelling
@@ -3674,8 +3677,13 @@ class StreamingPlaybackManager:
                     logger.debug("Failed while waiting for streaming stop tasks", call_id=call_id, exc_info=True)
             # Cleanup resources and emit summaries
             await self._cleanup_stream(call_id, stream_id)
-            logger.info("🎵 STREAMING PLAYBACK - Stopped", call_id=call_id, stream_id=stream_id)
-            return True
+            logger.info(
+                "🎵 STREAMING PLAYBACK - Stopped",
+                call_id=call_id,
+                stream_id=stream_id,
+                remote_abort_confirmed=remote_abort_confirmed,
+            )
+            return remote_abort_confirmed
         except Exception as e:
             logger.error("Error stopping streaming playback", call_id=call_id, error=str(e), exc_info=True)
             return False

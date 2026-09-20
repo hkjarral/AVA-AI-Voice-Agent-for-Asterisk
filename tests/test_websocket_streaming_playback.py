@@ -194,6 +194,17 @@ async def test_stop_flushes_remote_audio_even_without_live_local_stream():
 
 
 @pytest.mark.asyncio
+async def test_stop_reports_failed_remote_abort_after_local_stream_cleanup():
+    mgr, server, _ = manager()
+    server.abort_output.return_value = False
+
+    assert not await mgr.stop_streaming_playback("call")
+
+    server.abort_output.assert_awaited_once_with("call")
+    assert "call" not in mgr.active_streams
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("codec,rate", [
     ("ulaw", 8000), ("alaw", 8000), ("slin", 8000), ("slin16", 16000),
 ])
