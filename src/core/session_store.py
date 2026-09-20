@@ -92,6 +92,29 @@ class SessionStore:
             session.tool_calls.append(record)
             return True
 
+    async def bind_deferred_transfer_tool_origin_if_active(
+        self,
+        call_id: str,
+        action_id: str,
+        origin: dict,
+    ) -> bool:
+        """Bind one deferred action to its first persisted tool result."""
+        async with self._lock:
+            session = self._sessions_by_call_id.get(call_id)
+            if session is None:
+                return False
+            pending = getattr(session, "pending_deferred_transfer", None)
+            if (
+                not isinstance(pending, dict)
+                or pending.get("id") != action_id
+            ):
+                return False
+            # Duplicate provider invocations can return the same armed action.
+            # Preserve the first invocation as the action's history owner.
+            if not isinstance(pending.get("_tool_history_origin"), dict):
+                pending["_tool_history_origin"] = dict(origin)
+            return True
+
     async def update_call_metadata(
         self,
         call_id: str,

@@ -468,6 +468,22 @@ async def record_in_call_tool_result(
         )
         if session_store is None:
             return None
+        deferred_action = (
+            result.get("deferred_transfer")
+            if isinstance(result, dict)
+            else None
+        )
+        deferred_action_id = (
+            str(deferred_action.get("id") or "").strip()
+            if isinstance(deferred_action, dict)
+            and deferred_action.get("kind") == "transfer"
+            else ""
+        )
+        deferred_origin = {
+            "tool_call_id": record["tool_call_id"],
+            "name": record["name"],
+            "params": dict(record.get("params") or {}),
+        }
         atomic_append = getattr(session_store, "append_tool_call_if_active", None)
         if callable(atomic_append):
             if not await atomic_append(call_id, record):
@@ -478,6 +494,18 @@ async def record_in_call_tool_result(
                     tool_call_id=record["tool_call_id"],
                 )
                 return None
+            if deferred_action_id:
+                bind_origin = getattr(
+                    session_store,
+                    "bind_deferred_transfer_tool_origin_if_active",
+                    None,
+                )
+                if callable(bind_origin):
+                    await bind_origin(
+                        call_id,
+                        deferred_action_id,
+                        deferred_origin,
+                    )
             return record
 
         # Lightweight test/custom stores may not expose the atomic helper.
@@ -495,6 +523,14 @@ async def record_in_call_tool_result(
         if getattr(current, "tool_calls", None) is None:
             current.tool_calls = []
         current.tool_calls.append(record)
+        pending = getattr(current, "pending_deferred_transfer", None)
+        if (
+            deferred_action_id
+            and isinstance(pending, dict)
+            and pending.get("id") == deferred_action_id
+            and not isinstance(pending.get("_tool_history_origin"), dict)
+        ):
+            pending["_tool_history_origin"] = dict(deferred_origin)
         await session_store.upsert_call(current)
         logger.debug(
             "Tool result recorded in call history",

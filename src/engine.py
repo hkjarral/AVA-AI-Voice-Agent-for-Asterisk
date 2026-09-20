@@ -21492,6 +21492,8 @@ class Engine:
         if clear_predial_current_action:
             session.current_action = None
 
+        await self._record_deferred_transfer_timeout_tool_result(session, action)
+
         # Clear the action before any network or playback awaits. A provider
         # OutputDone event emitted by the apology must not retry the transfer.
         session.pending_deferred_transfer = None
@@ -21610,6 +21612,48 @@ class Engine:
             "transfer_cancelled": True,
             "apology_spoken": bool(apology_spoken),
         }
+
+    async def _record_deferred_transfer_timeout_tool_result(
+        self,
+        session: CallSession,
+        action: Dict[str, Any],
+    ) -> None:
+        """Append the terminal cancellation to the originating tool history."""
+        origin = action.get("_tool_history_origin")
+        if not isinstance(origin, dict):
+            logger.warning(
+                "Deferred transfer timeout has no originating tool history record",
+                call_id=session.call_id,
+                action_id=action.get("id"),
+            )
+            return
+        tool_call_id = str(origin.get("tool_call_id") or "").strip()
+        tool_name = str(
+            origin.get("name") or action.get("source_tool") or "blind_transfer"
+        ).strip()
+        if not tool_call_id:
+            return
+        try:
+            created_at = float(action.get("created_at") or time.time())
+        except (TypeError, ValueError):
+            created_at = time.time()
+        await record_in_call_tool_result(
+            session_store=self.session_store,
+            call_id=session.call_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            canonical_name=tool_name,
+            parameters=dict(origin.get("params") or {}),
+            result={
+                "status": "cancelled",
+                "action": "deferred_transfer_timeout",
+                "message": "Deferred transfer cancelled because caller-facing audio did not drain before the safety timeout.",
+                "error_code": "deferred_audio_drain_timeout",
+                "transfer_cancelled": True,
+                "target": action.get("target"),
+            },
+            duration_ms=max(0.0, (time.time() - created_at) * 1000.0),
+        )
 
     async def _stop_deferred_transfer_stream_before_recovery(
         self,

@@ -8,6 +8,7 @@ import pytest
 from src.config import AppConfig
 from src.core.models import CallSession
 from src.engine import Engine
+from src.tools.execution_history import record_in_call_tool_result
 
 
 def _build_engine(attended_transfer_cfg: dict) -> Engine:
@@ -570,6 +571,19 @@ async def test_deferred_transfer_timeout_cleans_predial_and_resumes_ai(monkeypat
         "predial_channel_id": channel_id,
     }
     await engine.session_store.upsert_call(session)
+    await record_in_call_tool_result(
+        session_store=engine.session_store,
+        call_id=call_id,
+        tool_call_id="tool-call-predial-timeout",
+        tool_name="blind_transfer",
+        parameters={"destination": "support_agent"},
+        result={
+            "status": "success",
+            "message": "Transferring you to Support agent now.",
+            "destination": "6000",
+            "deferred_transfer": dict(session.pending_deferred_transfer),
+        },
+    )
     engine.register_predial_transfer_channel(call_id, channel_id)
 
     events = []
@@ -625,6 +639,16 @@ async def test_deferred_transfer_timeout_cleans_predial_and_resumes_ai(monkeypat
     assert updated.pending_deferred_transfer is None
     assert updated.current_action is None
     assert updated.audio_capture_enabled is True
+    assert [item["status"] for item in updated.tool_calls] == [
+        "success",
+        "failure",
+    ]
+    assert [item["tool_call_id"] for item in updated.tool_calls] == [
+        "tool-call-predial-timeout",
+        "tool-call-predial-timeout",
+    ]
+    assert updated.tool_calls[-1]["action"] == "deferred_transfer_timeout"
+    assert updated.tool_calls[-1]["result"] == "cancelled"
     assert channel_id not in engine._predial_transfer_channel_to_call_id
     assert engine._deferred_predial_forced_hangup_tasks == {}
     assert events == [

@@ -80,7 +80,13 @@ def build_deferred_transfer_result(
         "status": status,
         "message": message,
         "defer_until_playback_complete": True,
-        DEFERRED_TRANSFER_RESULT_KEY: dict(action),
+        # Runtime ownership metadata is private to the engine and must not be
+        # echoed into provider-visible tool results.
+        DEFERRED_TRANSFER_RESULT_KEY: {
+            key: value
+            for key, value in action.items()
+            if not str(key).startswith("_")
+        },
     }
     if extra:
         result.update(extra)

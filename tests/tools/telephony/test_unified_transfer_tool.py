@@ -171,6 +171,11 @@ class TestUnifiedTransferTool:
             "target": "6000",
             "description": "Support Agent",
             "dialplan_context": "from-internal",
+            "_tool_history_origin": {
+                "tool_call_id": "provider-transfer-origin",
+                "name": "blind_transfer",
+                "params": {"destination": "***REDACTED***"},
+            },
         }
         tool_context.session_store.get_by_call_id.return_value.pending_deferred_transfer = existing_action
         tool_context.config["tools"]["transfer"] = {
@@ -189,7 +194,12 @@ class TestUnifiedTransferTool:
 
         assert result["status"] == "success"
         assert result["duplicate_suppressed"] is True
-        assert result[DEFERRED_TRANSFER_RESULT_KEY] == existing_action
+        assert result[DEFERRED_TRANSFER_RESULT_KEY] == {
+            key: value
+            for key, value in existing_action.items()
+            if not key.startswith("_")
+        }
+        assert "_tool_history_origin" not in result[DEFERRED_TRANSFER_RESULT_KEY]
         mock_ari_client.send_command.assert_not_called()
 
     @pytest.mark.asyncio
