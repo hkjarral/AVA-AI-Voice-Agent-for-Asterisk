@@ -3944,6 +3944,11 @@ class Engine:
         sessions = await self.session_store.get_all_sessions()
         for session in sessions:
             await self._cleanup_call(session.call_id)
+        # A deferred transfer timeout can retain an answered predial leg under
+        # a retry owner after the call's current_action has been cleared. Make
+        # one final, result-checked ARI hangup attempt while the connection is
+        # still available instead of only cancelling that owner below.
+        await self._finalize_deferred_predial_hangups_for_shutdown()
         forced_hangup_tasks = [
             *getattr(self, "_vicidial_forced_hangup_tasks", {}).values(),
             *getattr(self, "_outbound_forced_hangup_tasks", {}).values(),
@@ -7755,6 +7760,31 @@ class Engine:
                 channel_id
             ),
         )
+
+    async def _finalize_deferred_predial_hangups_for_shutdown(self) -> None:
+        """Attempt retained predial hangups once more before ARI disconnects."""
+        tasks = getattr(self, "_deferred_predial_forced_hangup_tasks", None) or {}
+        for channel_id in tuple(tasks):
+            try:
+                accepted = bool(await self.ari_client.hangup_channel(channel_id))
+            except Exception:
+                accepted = False
+                logger.error(
+                    "Final deferred predial hangup raised during shutdown",
+                    predial_channel_id=channel_id,
+                    exc_info=True,
+                )
+            if accepted:
+                logger.info(
+                    "Final deferred predial hangup accepted during shutdown",
+                    predial_channel_id=channel_id,
+                )
+                self._release_deferred_predial_hangup_ownership(channel_id)
+            else:
+                logger.error(
+                    "Final deferred predial hangup was not accepted during shutdown",
+                    predial_channel_id=channel_id,
+                )
 
     async def _stop_provider_after_predial_bridge(self, call_id: str, provider: Any, provider_name: Optional[str]) -> None:
         try:
@@ -14769,7 +14799,19 @@ class Engine:
                     try:
                         session = await self.session_store.get_by_call_id(call_id)
                         if session and isinstance(getattr(session, "pending_deferred_transfer", None), dict):
-                            await self._commit_pending_deferred_transfer_for_call(call_id, session)
+                            # Provider callbacks such as Deepgram's receive loop
+                            # are serialized. A timeout recovery may ask that
+                            # same provider to speak and wait for its audio
+                            # events, so the commit/recovery lifecycle must run
+                            # outside this callback.
+                            self._fire_and_forget_for_call(
+                                call_id,
+                                self._commit_pending_deferred_transfer_for_call(
+                                    call_id,
+                                    session,
+                                ),
+                                name=f"deferred-transfer-commit-{call_id}",
+                            )
                             return
                         if session and getattr(session, 'cleanup_after_tts', False):
                             pending = getattr(self, "_local_tts_farewell_pending", set())

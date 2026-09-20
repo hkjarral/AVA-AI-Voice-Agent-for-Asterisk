@@ -713,6 +713,87 @@ async def test_deferred_transfer_timeout_retains_predial_owner_until_hangup_acce
 
 
 @pytest.mark.asyncio
+async def test_deferred_predial_shutdown_finalizes_retained_hangup_owner():
+    engine = _build_engine({"enabled": True})
+    call_id = "call-predial-shutdown"
+    channel_id = "predial-channel-shutdown"
+    owner_blocker = asyncio.Event()
+
+    async def retry_owner():
+        await owner_blocker.wait()
+
+    retry_task = asyncio.create_task(retry_owner())
+    engine._deferred_predial_forced_hangup_tasks[channel_id] = retry_task
+    engine.register_predial_transfer_channel(call_id, channel_id)
+    hangups = []
+
+    async def fake_hangup(self, target_channel_id):
+        hangups.append(target_channel_id)
+        return True
+
+    engine.ari_client.hangup_channel = types.MethodType(fake_hangup, engine.ari_client)
+
+    await engine._finalize_deferred_predial_hangups_for_shutdown()
+    await asyncio.gather(retry_task, return_exceptions=True)
+
+    assert hangups == [channel_id]
+    assert retry_task.cancelled()
+    assert engine._deferred_predial_forced_hangup_tasks == {}
+    assert channel_id not in engine._predial_transfer_channel_to_call_id
+
+
+@pytest.mark.asyncio
+async def test_agent_audio_done_defers_transfer_commit_outside_provider_callback(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    call_id = "call-deferred-provider-callback"
+    session = CallSession(
+        call_id=call_id,
+        caller_channel_id="caller-deferred-provider-callback",
+        context_name="support",
+    )
+    session.pending_deferred_transfer = {
+        "id": "action-provider-callback",
+        "kind": "transfer",
+        "commit_tool": "blind_transfer",
+        "transfer_type": "extension",
+        "target": "6000",
+    }
+    await engine.session_store.upsert_call(session)
+    engine.streaming_playback_manager.continuous_stream = False
+    commit_started = asyncio.Event()
+    allow_commit = asyncio.Event()
+
+    async def fake_note_output_end(*args, **kwargs):
+        return None
+
+    async def controlled_commit(target_call_id, target_session):
+        assert target_call_id == call_id
+        assert target_session.pending_deferred_transfer["id"] == "action-provider-callback"
+        commit_started.set()
+        await allow_commit.wait()
+
+    monkeypatch.setattr(engine, "_note_provider_output_end", fake_note_output_end)
+    monkeypatch.setattr(engine, "_commit_pending_deferred_transfer_for_call", controlled_commit)
+
+    await asyncio.wait_for(
+        engine.on_provider_event(
+            {
+                "type": "AgentAudioDone",
+                "call_id": call_id,
+                "streaming_done": True,
+            }
+        ),
+        timeout=0.25,
+    )
+    await asyncio.wait_for(commit_started.wait(), timeout=0.25)
+
+    task = next(iter(engine._call_bg_tasks[call_id]))
+    assert not task.done()
+    allow_commit.set()
+    await task
+
+
+@pytest.mark.asyncio
 async def test_deferred_transfer_audio_drain_defaults_to_fifteen_seconds(monkeypatch):
     engine = _build_engine({"enabled": True})
     session = CallSession(call_id="call-default-drain", caller_channel_id="caller-default-drain")
