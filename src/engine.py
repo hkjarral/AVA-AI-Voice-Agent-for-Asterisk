@@ -21540,24 +21540,22 @@ class Engine:
         self._provider_coalesce_buf.pop(call_id, None)
         self._segment_tts_active.discard(call_id)
 
-        try:
-            playback_ids = await self.session_store.list_playbacks_for_call(call_id)
-            for playback_id in playback_ids:
-                try:
-                    await self.ari_client.stop_playback(playback_id)
-                except Exception:
-                    logger.debug(
-                        "Failed to stop playback after deferred transfer timeout",
-                        call_id=call_id,
-                        playback_id=playback_id,
-                        exc_info=True,
-                    )
-        except Exception:
-            logger.debug(
-                "Failed to enumerate playbacks after deferred transfer timeout",
+        playbacks_stopped = await self._stop_deferred_transfer_playbacks_before_recovery(
+            call_id
+        )
+        if not playbacks_stopped:
+            logger.info(
+                "Deferred transfer recovery speech skipped because the call ended during playback cleanup",
                 call_id=call_id,
-                exc_info=True,
+                action_id=action_id,
             )
+            return {
+                "status": "failed",
+                "message": "Deferred transfer cancelled because caller-facing audio did not drain before the safety timeout.",
+                "error_code": "deferred_audio_drain_timeout",
+                "transfer_cancelled": True,
+                "apology_spoken": False,
+            }
 
         # File and pipeline playback can leave microphone-gating tokens behind
         # when it is aborted. Release only this call's tokens before asking the
@@ -21619,6 +21617,78 @@ class Engine:
             "transfer_cancelled": True,
             "apology_spoken": bool(apology_spoken),
         }
+
+    async def _stop_deferred_transfer_playbacks_before_recovery(
+        self,
+        call_id: str,
+    ) -> bool:
+        """Confirm caller-facing ARI playbacks are stopped before apologizing."""
+        retry_delay = 0.1
+        attempt = 0
+        while True:
+            session = await self.session_store.get_by_call_id(call_id)
+            if not session or bool(getattr(session, "cleanup_in_progress", False)):
+                return False
+            try:
+                playback_ids = await self.session_store.list_playbacks_for_call(
+                    call_id
+                )
+            except Exception:
+                logger.error(
+                    "Failed to enumerate playbacks during deferred transfer recovery",
+                    call_id=call_id,
+                    exc_info=True,
+                )
+                return False
+            if not playback_ids:
+                return True
+
+            attempt += 1
+            rejected = []
+            for playback_id in playback_ids:
+                try:
+                    accepted = bool(
+                        await self.ari_client.stop_playback(playback_id)
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    accepted = False
+                    logger.debug(
+                        "Playback stop raised during deferred transfer recovery",
+                        call_id=call_id,
+                        playback_id=playback_id,
+                        attempt=attempt,
+                        exc_info=True,
+                    )
+                if accepted:
+                    # ARI accepted the DELETE (or confirmed 404), so audio can
+                    # no longer overlap recovery speech. Let PlaybackFinished
+                    # clear normal ownership first, then close a stale local
+                    # reference idempotently if that event was missed.
+                    await self.playback_manager.wait_for_playback_end(
+                        call_id,
+                        playback_id,
+                        timeout_sec=0.5,
+                    )
+                    if await self.session_store.get_playback(playback_id):
+                        await self.playback_manager.on_playback_finished(
+                            playback_id
+                        )
+                else:
+                    rejected.append(playback_id)
+
+            if not rejected:
+                continue
+            logger.warning(
+                "Deferred transfer playback stops were not accepted; retaining cleanup ownership",
+                call_id=call_id,
+                playback_ids=rejected,
+                attempt=attempt,
+                next_retry_seconds=retry_delay,
+            )
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2.0, 1.0)
 
     def _deferred_transfer_local_handoff_providers(self, session: Optional[CallSession] = None) -> set[str]:
         tools_cfg = (self._tool_config_for_session(session).get("tools") or {})

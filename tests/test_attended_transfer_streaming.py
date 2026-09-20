@@ -794,6 +794,89 @@ async def test_agent_audio_done_defers_transfer_commit_outside_provider_callback
 
 
 @pytest.mark.asyncio
+async def test_deferred_transfer_timeout_retries_rejected_playback_stop_before_apology(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    call_id = "call-playback-stop-retry"
+    playback_id = "playback-stop-retry"
+    session = CallSession(
+        call_id=call_id,
+        caller_channel_id="caller-playback-stop-retry",
+        context_name="support",
+    )
+    session.pending_deferred_transfer = {
+        "id": "action-playback-stop-retry",
+        "kind": "transfer",
+        "commit_tool": "blind_transfer",
+        "transfer_type": "extension",
+        "target": "6000",
+    }
+    await engine.session_store.upsert_call(session)
+    playback_active = True
+    stop_results = iter((False, True))
+    events = []
+
+    async def fake_stop_streaming(target_call_id):
+        events.append(("stop-stream", target_call_id))
+        return True
+
+    async def fake_list_playbacks(target_call_id):
+        assert target_call_id == call_id
+        return [playback_id] if playback_active else []
+
+    async def fake_get_playback(target_playback_id):
+        assert target_playback_id == playback_id
+        return object() if playback_active else None
+
+    async def fake_stop_playback(target_playback_id):
+        assert target_playback_id == playback_id
+        result = next(stop_results)
+        events.append(("stop-playback", result))
+        return result
+
+    async def fake_wait_for_playback_end(target_call_id, target_playback_id, *, timeout_sec):
+        events.append(("wait-playback", target_call_id, target_playback_id, timeout_sec))
+        return False
+
+    async def fake_playback_finished(target_playback_id):
+        nonlocal playback_active
+        events.append(("finish-playback", target_playback_id))
+        playback_active = False
+        return True
+
+    async def fake_sleep(seconds):
+        events.append(("retry-sleep", seconds))
+
+    async def fake_speak(target_call_id, text, kind):
+        events.append(("speak", target_call_id, kind))
+        return True
+
+    monkeypatch.setattr(engine.streaming_playback_manager, "stop_streaming_playback", fake_stop_streaming)
+    monkeypatch.setattr(engine.session_store, "list_playbacks_for_call", fake_list_playbacks)
+    monkeypatch.setattr(engine.session_store, "get_playback", fake_get_playback)
+    monkeypatch.setattr(engine.ari_client, "stop_playback", fake_stop_playback)
+    monkeypatch.setattr(engine.playback_manager, "wait_for_playback_end", fake_wait_for_playback_end)
+    monkeypatch.setattr(engine.playback_manager, "on_playback_finished", fake_playback_finished)
+    monkeypatch.setattr(engine, "_speak_no_input_announcement", fake_speak)
+    monkeypatch.setattr("src.engine.asyncio.sleep", fake_sleep)
+
+    result = await engine._abort_deferred_transfer_after_drain_timeout(
+        call_id,
+        action_id="action-playback-stop-retry",
+    )
+
+    assert result["apology_spoken"] is True
+    assert events == [
+        ("stop-stream", call_id),
+        ("stop-playback", False),
+        ("retry-sleep", 0.1),
+        ("stop-playback", True),
+        ("wait-playback", call_id, playback_id, 0.5),
+        ("finish-playback", playback_id),
+        ("speak", call_id, "deferred_transfer_timeout"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_deferred_transfer_audio_drain_defaults_to_fifteen_seconds(monkeypatch):
     engine = _build_engine({"enabled": True})
     session = CallSession(call_id="call-default-drain", caller_channel_id="caller-default-drain")
