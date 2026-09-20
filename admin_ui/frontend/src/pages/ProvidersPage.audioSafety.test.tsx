@@ -195,6 +195,73 @@ describe('ProvidersPage OpenAI Realtime save contract', () => {
         expect(within(providerBDialog).queryByDisplayValue('provider_a')).not.toBeInTheDocument();
     });
 
+    it('does not restore a deleted Google credentials path on provider save', async () => {
+        mocks.config = {
+            providers: {
+                google_live: {
+                    type: 'google_live',
+                    capabilities: ['stt', 'llm', 'tts'],
+                    enabled: true,
+                    use_vertex_ai: true,
+                    llm_model: 'gemini-live-2.5-flash-native-audio',
+                    credentials_path:
+                        '/app/project/secrets/providers/google_live/vertex-service-account.json',
+                },
+            },
+            default_provider: 'google_live',
+        };
+        vi.mocked(axios.get).mockImplementation(async url => {
+            if (url === '/api/config/vertex-ai/regions') {
+                return { data: { regions: [] } };
+            }
+            if (url === '/api/config/providers/google_live/credentials') {
+                return {
+                    data: {
+                        credentials: {
+                            'vertex-json': {
+                                uploaded: true,
+                                configured: true,
+                                filename: 'vertex-service-account.json',
+                            },
+                        },
+                    },
+                };
+            }
+            return { data: {} };
+        });
+        vi.mocked(axios.delete).mockResolvedValue({ data: {} });
+
+        render(
+            <MemoryRouter>
+                <ProvidersPage />
+            </MemoryRouter>,
+        );
+
+        fireEvent.click(await screen.findByTitle('Settings'));
+        const dialog = await screen.findByRole('dialog', {
+            name: 'Edit Provider: google_live',
+        });
+        fireEvent.click(await within(dialog).findByTitle('Delete credentials'));
+        await waitFor(() =>
+            expect(axios.delete).toHaveBeenCalledWith(
+                '/api/config/providers/google_live/credentials/vertex-json',
+            ),
+        );
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }));
+
+        await waitFor(() => {
+            expect(axios.post).toHaveBeenCalledWith(
+                '/api/config/yaml',
+                expect.objectContaining({ content: expect.any(String) }),
+            );
+        });
+        const saveCall = vi.mocked(axios.post).mock.calls.find(([url]) => url === '/api/config/yaml');
+        const saved = yaml.load((saveCall?.[1] as { content: string }).content) as {
+            providers: Record<string, Record<string, unknown>>;
+        };
+        expect(saved.providers.google_live).not.toHaveProperty('credentials_path');
+    });
+
     it('removes stale Flux-only fields when Deepgram is saved with Nova-3', async () => {
         mocks.config = {
             providers: {

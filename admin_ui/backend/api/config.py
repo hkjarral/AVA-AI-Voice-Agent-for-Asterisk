@@ -3066,12 +3066,21 @@ def _api_key_credential_metadata(
     env_name = str(config_for_resolution.get("api_key_env") or "").strip()
     literal = str(config_for_resolution.get("api_key") or "").strip()
     legacy_env_names = _provider_legacy_api_key_env_names(provider_key, kind)
+    managed_path = str(meta.get("path") or "").strip()
+    file_is_managed = bool(
+        file_path
+        and meta.get("uploaded")
+        and managed_path
+        and os.path.abspath(file_path) == os.path.abspath(managed_path)
+    )
+    if file_path and not file_is_managed:
+        meta = _configured_file_metadata(file_path, "api-key")
 
     configured = False
     source: Optional[str] = None
     if file_path and _candidate_resolves({"api_key_file": file_path}):
         configured = True
-        source = "managed_file" if meta.get("uploaded") else "configured_file"
+        source = "managed_file" if file_is_managed else "configured_file"
         meta["path"] = file_path
     elif env_name and _candidate_resolves({"api_key_env": env_name}):
         configured = True

@@ -84,6 +84,36 @@ async def test_google_api_key_placeholder_reports_only_resolved_environment(monk
 
 
 @pytest.mark.asyncio
+async def test_external_api_key_file_is_not_mislabeled_as_managed(monkeypatch, tmp_path):
+    """An explicit external file wins without inheriting managed-file metadata."""
+    provider_root = tmp_path / "providers"
+    managed_path = provider_root / "google_live" / "api-key"
+    managed_path.parent.mkdir(parents=True)
+    managed_path.write_text("managed-key", encoding="utf-8")
+    external_path = tmp_path / "external-google-key"
+    external_path.write_text("external-key", encoding="utf-8")
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.setattr(config_api, "PROVIDER_SECRETS_ROOT", str(provider_root))
+    monkeypatch.setattr(config_api, "VERTEX_CREDENTIALS_PATH", str(tmp_path / "missing-legacy.json"))
+    monkeypatch.setattr(
+        config_api,
+        "_read_merged_config_dict",
+        lambda: _google_provider(api_key="", api_key_file=str(external_path)),
+    )
+
+    response = await config_api.get_provider_credentials_status("google_live")
+    status = response["credentials"]["api-key"]
+
+    assert status["configured"] is True
+    assert status["uploaded"] is False
+    assert status["source"] == "configured_file"
+    assert status["path"] == str(external_path)
+    assert "managed-key" not in json.dumps(response)
+    assert "external-key" not in json.dumps(response)
+
+
+@pytest.mark.asyncio
 async def test_legacy_vertex_file_is_reported_without_copying(monkeypatch, tmp_path):
     """A valid shared legacy file remains usable without migration or copying."""
     provider_root = tmp_path / "providers"

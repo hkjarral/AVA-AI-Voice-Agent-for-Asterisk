@@ -45,6 +45,7 @@ const ProvidersPage: React.FC = () => {
     const [editingProvider, setEditingProvider] = useState<string | null>(null);
     const editingProviderRef = useRef<string | null>(null);
     const [providerForm, setProviderForm] = useState<any>({});
+    const deletedProviderFieldsRef = useRef<Set<string>>(new Set());
     const [isNewProvider, setIsNewProvider] = useState(false);
     const [testingProvider, setTestingProvider] = useState<string | null>(null);
     const [testResults, setTestResults] = useState<{ [key: string]: { success: boolean; message: string } | undefined }>({});
@@ -110,6 +111,7 @@ const ProvidersPage: React.FC = () => {
     };
 
     const updateEditingProvider = (providerKey: string | null) => {
+        deletedProviderFieldsRef.current.clear();
         editingProviderRef.current = providerKey;
         setEditingProvider(providerKey);
     };
@@ -659,6 +661,9 @@ const ProvidersPage: React.FC = () => {
 
         const existingData = !isNewProvider && editingProvider ? (config.providers?.[editingProvider] || {}) : {};
         let providerData = { ...existingData, ...providerForm, name: finalName, capabilities };
+        for (const field of deletedProviderFieldsRef.current) {
+            delete providerData[field];
+        }
         if (fullAgentKind === 'openai_realtime') {
             // Normalize again at the persistence boundary. Async form updates
             // (for example credential operations) can otherwise reintroduce a
@@ -775,18 +780,23 @@ const ProvidersPage: React.FC = () => {
         // a stale `providerForm` captured at render time.
         //
         // Delete semantics: a key set to `undefined` in `newValues` is treated
-        // as "remove this key from the form state". This is how the credential
-        // card signals deletion of `api_key_file` / `agent_id_file` after the
-        // user clicks Delete — without this, a shallow merge would preserve
-        // the prior path and a later form Save would write that stale
-        // reference back to YAML, pointing at a file that was just removed.
+        // as "remove this key from the form state" and retained as a tombstone
+        // until Save. This is how the credential card signals deletion of
+        // `api_key_file` / `agent_id_file` / `credentials_path` after the user
+        // clicks Delete — without the tombstone, merging with the persisted
+        // provider would restore the stale path to the file that was removed.
         // (Reported in PR #395 review.)
         const updateForm = (newValues: any) =>
             setProviderForm((prev: any) => {
                 const next: any = { ...prev };
                 for (const [k, v] of Object.entries(newValues)) {
-                    if (v === undefined) delete next[k];
-                    else next[k] = v;
+                    if (v === undefined) {
+                        delete next[k];
+                        deletedProviderFieldsRef.current.add(k);
+                    } else {
+                        next[k] = v;
+                        deletedProviderFieldsRef.current.delete(k);
+                    }
                 }
                 return next;
             });
