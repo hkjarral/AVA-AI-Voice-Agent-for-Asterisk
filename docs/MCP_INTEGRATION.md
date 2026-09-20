@@ -157,6 +157,24 @@ The deterministic ATIS server uses `met.no` (tafmetar feed) for METAR fetch and 
 - Optional: `defaults.explicit_not_available: true` to speak explicit “not available” lines when runway/frequency/advisories are not configured.
 - The ATIS MCP server re-reads its `--config` file when it changes (no engine restart required for those per-aerodrome tweaks).
 
+### Optional Memcode memory example
+
+[`examples/mcp/memcode-memory-example.yaml`](../examples/mcp/memcode-memory-example.yaml)
+shows an opt-in stdio bridge for Memcode's personal v2 API. It is intended for
+single-user or otherwise isolated deployments: the configured bearer credential
+selects one memory owner, so do not share it across unrelated callers or tenants.
+The example requires exact caller approval before a write, returns durable ingest
+receipts, and includes `latency_ms` for reproducible tool-call measurements. It
+does not claim that memory lowers network latency; evaluate whether recall avoids
+repeated clarification turns for the same synthetic task.
+
+The `approved` argument is a guardrail for the prompt and schema, not proof that
+a human approved the write; keep the save tool off Agents that cannot reliably
+obtain explicit consent. Remove the Memcode server/tool entries to disable future
+reads and writes. That does not delete stored records, and the example does not
+expose a delete tool, so verify the account/deployment deletion path before
+storing data with a deletion requirement.
+
 ### Agent scoping
 
 Enable MCP tools only on the Agents that need them through **Admin UI → Agents →
