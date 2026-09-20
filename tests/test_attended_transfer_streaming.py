@@ -71,8 +71,12 @@ async def test_attended_transfer_stream_mode_uses_helper_media(monkeypatch):
         caller_number="15551234567",
         context_name="support",
     )
-    session.current_action = {"type": "attended_transfer"}
+    session.current_action = {
+        "type": "attended_transfer",
+        "agent_channel_id": "agent-ringing",
+    }
     await engine.session_store.upsert_call(session)
+    engine.register_attended_transfer_agent_channel("call-stream", "agent-ringing")
 
     streamed_chunks = []
     finalize_calls = []
@@ -120,6 +124,38 @@ async def test_attended_transfer_stream_mode_uses_helper_media(monkeypatch):
     assert updated is not None
     assert updated.current_action is not None
     assert updated.current_action.get("decision") == "accepted"
+    assert updated.current_action.get("agent_channel_id") == "agent-stream"
+    assert "agent-ringing" not in engine._attended_transfer_agent_channel_to_call_id
+    assert engine._attended_transfer_agent_channel_to_call_id["agent-stream"] == "call-stream"
+
+
+@pytest.mark.asyncio
+async def test_attended_transfer_pickup_replaces_ringing_leg_before_cleanup():
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-pickup",
+        caller_channel_id="caller-pickup",
+    )
+    session.current_action = {
+        "type": "attended_transfer",
+        "agent_channel_id": "agent-ringing",
+    }
+    await engine.session_store.upsert_call(session)
+    engine.register_attended_transfer_agent_channel("call-pickup", "agent-ringing")
+
+    superseded = engine._activate_attended_transfer_answered_channel(
+        "call-pickup", "agent-pickup"
+    )
+
+    assert superseded == ("agent-ringing",)
+    assert "agent-ringing" not in engine._attended_transfer_agent_channel_to_call_id
+    assert engine._attended_transfer_agent_channel_to_call_id["agent-pickup"] == "call-pickup"
+
+    # Asterisk destroys the original ringing channel after pickup. It no longer
+    # owns the transfer, so that event must not tear down the caller session.
+    await engine._cleanup_call("agent-ringing")
+
+    assert await engine.session_store.get_by_call_id("call-pickup") is session
 
 
 @pytest.mark.asyncio

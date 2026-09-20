@@ -1346,6 +1346,7 @@ You: "Please transfer me to support"
 Expected: Caller hears MOH while agent is contacted
 Expected: Destination hears announcement + DTMF prompt
 Expected: Agent presses 1 → caller bridged to destination; AI audio removed
+Expected with FreePBX pickup groups: a different group phone may answer the ringing destination with the configured pickup feature code; that pickup phone receives the same announcement and must still press the configured acceptance digit before bridging
 ```
 
 **3. Verify in Logs**:

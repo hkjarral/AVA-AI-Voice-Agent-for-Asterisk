@@ -7736,6 +7736,39 @@ class Engine:
         if agent_channel_id:
             self._attended_transfer_agent_channel_to_call_id[agent_channel_id] = call_id
 
+    def _activate_attended_transfer_answered_channel(
+        self, call_id: str, agent_channel_id: str
+    ) -> tuple[str, ...]:
+        """Make the channel that entered Stasis the sole active transfer leg.
+
+        Asterisk/FreePBX call pickup answers an originated ringing channel on the
+        pickup phone's channel.  The original channel is then destroyed.  Keeping
+        both channels mapped to the call makes that expected teardown look like
+        the active destination hung up, which triggers full caller cleanup.
+
+        This replacement is deliberately synchronous so ownership changes before
+        this StasisStart handler performs any await.  Screening and DTMF acceptance
+        continue on ``agent_channel_id`` exactly as they do for a direct answer.
+        """
+        superseded = tuple(
+            channel_id
+            for channel_id, mapped_call_id in list(
+                self._attended_transfer_agent_channel_to_call_id.items()
+            )
+            if mapped_call_id == call_id and channel_id != agent_channel_id
+        )
+        self.register_attended_transfer_agent_channel(call_id, agent_channel_id)
+        for channel_id in superseded:
+            self._unregister_attended_transfer_agent_channel(channel_id)
+        if superseded:
+            logger.info(
+                "Attended transfer ownership moved to answered channel",
+                call_id=call_id,
+                agent_channel_id=agent_channel_id,
+                superseded_agent_channel_ids=list(superseded),
+            )
+        return superseded
+
     def start_attended_transfer_timeout_guard(self, call_id: str, agent_channel_id: str, *, timeout_sec: float) -> None:
         """Ensure MOH/action state is cleaned up if the agent leg never answers."""
         try:
@@ -8728,9 +8761,15 @@ class Engine:
             await self.ari_client.hangup_channel(channel_id)
             return
 
+        # FreePBX pickup can answer the originated ringing leg on a different
+        # PJSIP channel. Replace runtime ownership before the first await so the
+        # original leg's teardown cannot clean up the caller session.
+        self._activate_attended_transfer_answered_channel(caller_id, channel_id)
+
         session = await self.session_store.get_by_call_id(caller_id)
         if not session:
             logger.error("🔀 ATTENDED TRANSFER - Session not found", caller_id=caller_id, channel_id=channel_id)
+            self._unregister_attended_transfer_agent_channel(channel_id)
             await self.ari_client.hangup_channel(channel_id)
             return
 
@@ -8738,11 +8777,9 @@ class Engine:
         attended_cfg = tools_cfg.get("attended_transfer") if isinstance(tools_cfg, dict) else None
         if not isinstance(attended_cfg, dict) or not bool(attended_cfg.get("enabled", False)):
             logger.info("Attended transfer disabled - hanging up agent channel", call_id=caller_id, channel_id=channel_id)
+            self._unregister_attended_transfer_agent_channel(channel_id)
             await self.ari_client.hangup_channel(channel_id)
             return
-
-        # Best-effort: bind agent channel to call for DTMF routing.
-        self.register_attended_transfer_agent_channel(caller_id, channel_id)
 
         # Ensure session state is consistent.
         try:
