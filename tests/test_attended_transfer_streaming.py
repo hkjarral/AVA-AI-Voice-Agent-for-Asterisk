@@ -713,6 +713,75 @@ async def test_deferred_transfer_timeout_retains_predial_owner_until_hangup_acce
 
 
 @pytest.mark.asyncio
+async def test_deferred_transfer_timeout_owns_predial_before_initial_hangup_await(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    call_id = "call-predial-cancel-window"
+    channel_id = "predial-channel-cancel-window"
+    session = CallSession(
+        call_id=call_id,
+        caller_channel_id="caller-predial-cancel-window",
+        context_name="support",
+    )
+    session.pending_deferred_transfer = {
+        "id": "action-predial-cancel-window",
+        "kind": "transfer",
+        "commit_tool": "blind_transfer",
+        "transfer_type": "extension",
+        "target": "6000",
+        "payload": {"predial": {"channel_id": channel_id}},
+    }
+    session.current_action = {
+        "type": "predial_transfer",
+        "deferred_action_id": "action-predial-cancel-window",
+        "predial_channel_id": channel_id,
+    }
+    await engine.session_store.upsert_call(session)
+    engine.register_predial_transfer_channel(call_id, channel_id)
+    direct_hangup_started = asyncio.Event()
+    retry_sleep_started = asyncio.Event()
+    allow_retry = asyncio.Event()
+    hangup_calls = 0
+
+    async def fake_hangup(self, target_channel_id):
+        nonlocal hangup_calls
+        assert target_channel_id == channel_id
+        hangup_calls += 1
+        if hangup_calls == 1:
+            direct_hangup_started.set()
+            await asyncio.Event().wait()
+        return True
+
+    async def controlled_sleep(_seconds):
+        retry_sleep_started.set()
+        await allow_retry.wait()
+
+    engine.ari_client.hangup_channel = types.MethodType(fake_hangup, engine.ari_client)
+    monkeypatch.setattr("src.engine.asyncio.sleep", controlled_sleep)
+
+    recovery_task = asyncio.create_task(
+        engine._abort_deferred_transfer_after_drain_timeout(
+            call_id,
+            action_id="action-predial-cancel-window",
+        )
+    )
+    await asyncio.wait_for(direct_hangup_started.wait(), timeout=0.25)
+    await asyncio.wait_for(retry_sleep_started.wait(), timeout=0.25)
+
+    recovery_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await recovery_task
+
+    assert engine._predial_transfer_channel_to_call_id[channel_id] == call_id
+    retry_task = engine._deferred_predial_forced_hangup_tasks[channel_id]
+    allow_retry.set()
+    await retry_task
+
+    assert hangup_calls == 2
+    assert channel_id not in engine._predial_transfer_channel_to_call_id
+    assert engine._deferred_predial_forced_hangup_tasks == {}
+
+
+@pytest.mark.asyncio
 async def test_deferred_predial_shutdown_finalizes_retained_hangup_owner():
     engine = _build_engine({"enabled": True})
     call_id = "call-predial-shutdown"
@@ -874,6 +943,88 @@ async def test_deferred_transfer_timeout_retries_rejected_playback_stop_before_a
         ("finish-playback", playback_id),
         ("speak", call_id, "deferred_transfer_timeout"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_deferred_transfer_playback_stop_retry_limit_is_bounded(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    call_id = "call-playback-stop-limit"
+    playback_id = "playback-stop-limit"
+    session = CallSession(
+        call_id=call_id,
+        caller_channel_id="caller-playback-stop-limit",
+        context_name="support",
+    )
+    await engine.session_store.upsert_call(session)
+    stop_attempts = []
+    retry_delays = []
+
+    async def fake_list_playbacks(target_call_id):
+        assert target_call_id == call_id
+        return [playback_id]
+
+    async def fake_stop_playback(target_playback_id):
+        assert target_playback_id == playback_id
+        stop_attempts.append(target_playback_id)
+        return False
+
+    async def fake_sleep(seconds):
+        retry_delays.append(seconds)
+
+    monkeypatch.setattr(engine.session_store, "list_playbacks_for_call", fake_list_playbacks)
+    monkeypatch.setattr(engine.ari_client, "stop_playback", fake_stop_playback)
+    monkeypatch.setattr("src.engine.asyncio.sleep", fake_sleep)
+
+    stopped = await engine._stop_deferred_transfer_playbacks_before_recovery(call_id)
+
+    assert stopped is False
+    assert stop_attempts == [playback_id] * 5
+    assert retry_delays == [0.1, 0.2, 0.4, 0.8]
+
+
+@pytest.mark.asyncio
+async def test_deferred_transfer_playback_cleanup_failure_suppresses_apology(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    call_id = "call-playback-cleanup-failed"
+    session = CallSession(
+        call_id=call_id,
+        caller_channel_id="caller-playback-cleanup-failed",
+        context_name="support",
+    )
+    session.pending_deferred_transfer = {
+        "id": "action-playback-cleanup-failed",
+        "kind": "transfer",
+        "commit_tool": "blind_transfer",
+        "transfer_type": "extension",
+        "target": "6000",
+    }
+    await engine.session_store.upsert_call(session)
+
+    async def fake_stop_streaming(target_call_id):
+        assert target_call_id == call_id
+        return True
+
+    async def failed_playback_cleanup(target_call_id):
+        assert target_call_id == call_id
+        return False
+
+    async def unexpected_speak(*args, **kwargs):
+        raise AssertionError("apology must remain suppressed while playback cleanup failed")
+
+    monkeypatch.setattr(engine.streaming_playback_manager, "stop_streaming_playback", fake_stop_streaming)
+    monkeypatch.setattr(engine, "_stop_deferred_transfer_playbacks_before_recovery", failed_playback_cleanup)
+    monkeypatch.setattr(engine, "_speak_no_input_announcement", unexpected_speak)
+
+    result = await engine._abort_deferred_transfer_after_drain_timeout(
+        call_id,
+        action_id="action-playback-cleanup-failed",
+    )
+
+    assert result["error_code"] == "deferred_audio_drain_timeout"
+    assert result["transfer_cancelled"] is True
+    assert result["apology_spoken"] is False
+    updated = await engine.session_store.get_by_call_id(call_id)
+    assert updated.audio_capture_enabled is False
 
 
 @pytest.mark.asyncio

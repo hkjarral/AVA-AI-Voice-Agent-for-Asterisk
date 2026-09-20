@@ -21450,6 +21450,7 @@ class Engine:
             ((action.get("payload") or {}).get("predial") or {}).get("channel_id")
             or ""
         ).strip()
+        clear_predial_current_action = False
         if (
             isinstance(current_action, dict)
             and current_action.get("type") == "predial_transfer"
@@ -21460,13 +21461,28 @@ class Engine:
                 or predial_channel_id
                 or ""
             ).strip()
+            clear_predial_current_action = True
+        if predial_channel_id:
+            # Establish an owner that is independent of the per-call recovery
+            # task before clearing action state or awaiting ARI. If caller
+            # cleanup cancels this task during the first DELETE, the retry owner
+            # still retains and removes the answered destination leg.
+            self._schedule_deferred_predial_forced_hangup_retry(
+                call_id=call_id,
+                channel_id=predial_channel_id,
+            )
+        if clear_predial_current_action:
             session.current_action = None
 
         # Clear the action before any network or playback awaits. A provider
         # OutputDone event emitted by the apology must not retry the transfer.
         session.pending_deferred_transfer = None
         session.transfer_context = None
-        session.audio_capture_enabled = True
+        # Keep capture gated until every caller-facing playback is confirmed
+        # stopped. The normal recovery path restores it immediately before the
+        # apology; a bounded cleanup failure leaves the existing TTS ownership
+        # in control until PlaybackFinished arrives.
+        session.audio_capture_enabled = False
         await self._save_session(session)
 
         if predial_channel_id:
@@ -21493,10 +21509,6 @@ class Engine:
                     call_id=call_id,
                     action_id=action_id,
                     predial_channel_id=predial_channel_id,
-                )
-                self._schedule_deferred_predial_forced_hangup_retry(
-                    call_id=call_id,
-                    channel_id=predial_channel_id,
                 )
             try:
                 await self.ari_client.send_command(
@@ -21625,7 +21637,8 @@ class Engine:
         """Confirm caller-facing ARI playbacks are stopped before apologizing."""
         retry_delay = 0.1
         attempt = 0
-        while True:
+        max_attempts = 5
+        while attempt < max_attempts:
             session = await self.session_store.get_by_call_id(call_id)
             if not session or bool(getattr(session, "cleanup_in_progress", False)):
                 return False
@@ -21685,10 +21698,20 @@ class Engine:
                 call_id=call_id,
                 playback_ids=rejected,
                 attempt=attempt,
-                next_retry_seconds=retry_delay,
+                next_retry_seconds=(
+                    retry_delay if attempt < max_attempts else None
+                ),
             )
-            await asyncio.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2.0, 1.0)
+            if attempt < max_attempts:
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2.0, 1.0)
+
+        logger.error(
+            "Deferred transfer playback stops exhausted retry limit; recovery speech remains suppressed",
+            call_id=call_id,
+            attempts=attempt,
+        )
+        return False
 
     def _deferred_transfer_local_handoff_providers(self, session: Optional[CallSession] = None) -> set[str]:
         tools_cfg = (self._tool_config_for_session(session).get("tools") or {})
