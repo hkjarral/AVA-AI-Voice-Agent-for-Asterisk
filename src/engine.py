@@ -21386,7 +21386,12 @@ class Engine:
             # commit an action that was cancelled or replaced while audio drained.
             session = await self.session_store.get_by_call_id(call_id)
             action = getattr(session, "pending_deferred_transfer", None) if session else None
-            if not session or not isinstance(action, dict):
+            if (
+                not session
+                or getattr(session, "cleanup_in_progress", False)
+                or getattr(session, "cleanup_completed", False)
+                or not isinstance(action, dict)
+            ):
                 return None
             action_id = action.get("id")
 
@@ -21405,14 +21410,18 @@ class Engine:
             latest_action = getattr(session, "pending_deferred_transfer", None) if session else None
             if (
                 not session
+                or getattr(session, "cleanup_in_progress", False)
+                or getattr(session, "cleanup_completed", False)
                 or not isinstance(latest_action, dict)
                 or latest_action.get("id") != action_id
             ):
                 logger.info(
-                    "Deferred transfer commit skipped because pending action changed",
+                    "Deferred transfer commit skipped because call state changed",
                     call_id=call_id,
                     action_id=action_id,
                     latest_action_id=latest_action.get("id") if isinstance(latest_action, dict) else None,
+                    cleanup_in_progress=getattr(session, "cleanup_in_progress", False) if session else False,
+                    cleanup_completed=getattr(session, "cleanup_completed", False) if session else False,
                 )
                 return None
 
@@ -21631,6 +21640,9 @@ class Engine:
         tool_name = str(
             origin.get("name") or action.get("source_tool") or "blind_transfer"
         ).strip()
+        canonical_name = self._tool_registry_for_session(
+            session
+        ).canonicalize_tool_name(tool_name)
         if not tool_call_id:
             return
         try:
@@ -21642,7 +21654,7 @@ class Engine:
             call_id=session.call_id,
             tool_call_id=tool_call_id,
             tool_name=tool_name,
-            canonical_name=tool_name,
+            canonical_name=canonical_name,
             parameters=dict(origin.get("params") or {}),
             result={
                 "status": "cancelled",

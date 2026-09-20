@@ -484,6 +484,27 @@ async def record_in_call_tool_result(
             "name": record["name"],
             "params": dict(record.get("params") or {}),
         }
+        atomic_append_and_bind = getattr(
+            session_store,
+            "append_tool_call_and_bind_deferred_origin_if_active",
+            None,
+        )
+        if callable(atomic_append_and_bind):
+            if not await atomic_append_and_bind(
+                call_id,
+                record,
+                deferred_action_id=deferred_action_id,
+                deferred_origin=deferred_origin if deferred_action_id else None,
+            ):
+                logger.debug(
+                    "Tool result history skipped; session no longer active",
+                    call_id=call_id,
+                    tool=record["name"],
+                    tool_call_id=record["tool_call_id"],
+                )
+                return None
+            return record
+
         atomic_append = getattr(session_store, "append_tool_call_if_active", None)
         if callable(atomic_append):
             if not await atomic_append(call_id, record):
@@ -494,18 +515,6 @@ async def record_in_call_tool_result(
                     tool_call_id=record["tool_call_id"],
                 )
                 return None
-            if deferred_action_id:
-                bind_origin = getattr(
-                    session_store,
-                    "bind_deferred_transfer_tool_origin_if_active",
-                    None,
-                )
-                if callable(bind_origin):
-                    await bind_origin(
-                        call_id,
-                        deferred_action_id,
-                        deferred_origin,
-                    )
             return record
 
         # Lightweight test/custom stores may not expose the atomic helper.

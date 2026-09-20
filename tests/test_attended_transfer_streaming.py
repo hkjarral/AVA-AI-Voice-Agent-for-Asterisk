@@ -496,6 +496,80 @@ async def test_deferred_transfer_commit_waits_for_audio_drain(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_field", ["cleanup_in_progress", "cleanup_completed"])
+async def test_deferred_transfer_commit_skips_calls_already_in_cleanup(
+    monkeypatch,
+    cleanup_field,
+):
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id=f"call-deferred-{cleanup_field}",
+        caller_channel_id=f"caller-deferred-{cleanup_field}",
+    )
+    session.pending_deferred_transfer = {
+        "id": f"action-{cleanup_field}",
+        "kind": "transfer",
+        "commit_tool": "blind_transfer",
+        "target": "6000",
+    }
+    setattr(session, cleanup_field, True)
+    await engine.session_store.upsert_call(session)
+
+    async def unexpected(*args, **kwargs):
+        raise AssertionError("cleanup must prevent deferred transfer work")
+
+    monkeypatch.setattr(engine, "_play_deferred_transfer_local_handoff", unexpected)
+    monkeypatch.setattr(engine, "_wait_for_deferred_transfer_audio_drain", unexpected)
+
+    result = await engine._commit_pending_deferred_transfer_for_call(
+        session.call_id,
+        session,
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_deferred_transfer_commit_rechecks_cleanup_after_audio_drain(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-deferred-cleanup-during-drain",
+        caller_channel_id="caller-deferred-cleanup-during-drain",
+    )
+    session.pending_deferred_transfer = {
+        "id": "action-cleanup-during-drain",
+        "kind": "transfer",
+        "commit_tool": "blind_transfer",
+        "target": "6000",
+    }
+    await engine.session_store.upsert_call(session)
+
+    async def fake_handoff(*args, **kwargs):
+        return False
+
+    async def fake_wait(call_id):
+        session.cleanup_in_progress = True
+        return True
+
+    async def unexpected_commit(context):
+        raise AssertionError(f"cleanup must prevent transfer for {context.call_id}")
+
+    monkeypatch.setattr(engine, "_play_deferred_transfer_local_handoff", fake_handoff)
+    monkeypatch.setattr(engine, "_wait_for_deferred_transfer_audio_drain", fake_wait)
+    monkeypatch.setattr(
+        "src.tools.telephony.deferred_transfer.commit_pending_deferred_transfer",
+        unexpected_commit,
+    )
+
+    result = await engine._commit_pending_deferred_transfer_for_call(
+        session.call_id,
+        session,
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
 async def test_deferred_transfer_drain_timeout_cancels_instead_of_committing(monkeypatch):
     engine = _build_engine({"enabled": True})
     session = CallSession(
@@ -543,6 +617,35 @@ async def test_deferred_transfer_drain_timeout_cancels_instead_of_committing(mon
         ("drain", "call-deferred-timeout"),
         ("abort", "call-deferred-timeout", "action-timeout"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_deferred_transfer_timeout_history_canonicalizes_tool_alias():
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-deferred-timeout-alias",
+        caller_channel_id="caller-deferred-timeout-alias",
+    )
+    action = {
+        "id": "action-timeout-alias",
+        "kind": "transfer",
+        "source_tool": "transfer_call",
+        "target": "6000",
+        "created_at": time.time(),
+        "_tool_history_origin": {
+            "tool_call_id": "provider-transfer-alias",
+            "name": "transfer_call",
+            "params": {"destination": "support_agent"},
+        },
+    }
+    session.pending_deferred_transfer = action
+    await engine.session_store.upsert_call(session)
+
+    await engine._record_deferred_transfer_timeout_tool_result(session, action)
+
+    assert session.tool_calls[-1]["name"] == "blind_transfer"
+    assert session.tool_calls[-1]["tool_call_id"] == "provider-transfer-alias"
+    assert session.tool_calls[-1]["result"] == "cancelled"
 
 
 @pytest.mark.asyncio

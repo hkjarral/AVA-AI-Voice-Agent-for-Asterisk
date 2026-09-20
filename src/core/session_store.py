@@ -83,6 +83,20 @@ class SessionStore:
 
     async def append_tool_call_if_active(self, call_id: str, record: dict) -> bool:
         """Append history only while the call is registered, under one lock."""
+        return await self.append_tool_call_and_bind_deferred_origin_if_active(
+            call_id,
+            record,
+        )
+
+    async def append_tool_call_and_bind_deferred_origin_if_active(
+        self,
+        call_id: str,
+        record: dict,
+        *,
+        deferred_action_id: str = "",
+        deferred_origin: Optional[dict] = None,
+    ) -> bool:
+        """Append history and bind its deferred action origin atomically."""
         async with self._lock:
             session = self._sessions_by_call_id.get(call_id)
             if session is None:
@@ -90,29 +104,17 @@ class SessionStore:
             if session.tool_calls is None:
                 session.tool_calls = []
             session.tool_calls.append(record)
-            return True
-
-    async def bind_deferred_transfer_tool_origin_if_active(
-        self,
-        call_id: str,
-        action_id: str,
-        origin: dict,
-    ) -> bool:
-        """Bind one deferred action to its first persisted tool result."""
-        async with self._lock:
-            session = self._sessions_by_call_id.get(call_id)
-            if session is None:
-                return False
             pending = getattr(session, "pending_deferred_transfer", None)
             if (
-                not isinstance(pending, dict)
-                or pending.get("id") != action_id
+                deferred_action_id
+                and isinstance(deferred_origin, dict)
+                and isinstance(pending, dict)
+                and pending.get("id") == deferred_action_id
+                and not isinstance(pending.get("_tool_history_origin"), dict)
             ):
-                return False
-            # Duplicate provider invocations can return the same armed action.
-            # Preserve the first invocation as the action's history owner.
-            if not isinstance(pending.get("_tool_history_origin"), dict):
-                pending["_tool_history_origin"] = dict(origin)
+                # Duplicate provider invocations can return the same armed
+                # action. Preserve the first invocation as its history owner.
+                pending["_tool_history_origin"] = dict(deferred_origin)
             return True
 
     async def update_call_metadata(

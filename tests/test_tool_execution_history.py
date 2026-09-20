@@ -343,8 +343,12 @@ async def test_retries_append_with_same_stable_tool_call_id_and_leave_transcript
 
 
 @pytest.mark.asyncio
-async def test_deferred_transfer_result_binds_first_tool_history_origin():
+async def test_deferred_transfer_result_binds_first_tool_history_origin(monkeypatch):
     store = SessionStore()
+    legacy_append = AsyncMock(
+        side_effect=AssertionError("combined append-and-bind helper must be used")
+    )
+    monkeypatch.setattr(store, "append_tool_call_if_active", legacy_append)
     session = CallSession(
         call_id="call-deferred-origin",
         caller_channel_id="caller-deferred-origin",
@@ -385,6 +389,7 @@ async def test_deferred_transfer_result_binds_first_tool_history_origin():
         "name": "blind_transfer",
         "params": {"destination": "***REDACTED***"},
     }
+    legacy_append.assert_not_awaited()
 
 
 @pytest.mark.asyncio
