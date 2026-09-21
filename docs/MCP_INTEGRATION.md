@@ -163,6 +163,9 @@ The deterministic ATIS server uses `met.no` (tafmetar feed) for METAR fetch and 
 shows an opt-in stdio bridge for Memcode's personal v2 API. It is intended for
 single-user or otherwise isolated deployments: the configured bearer credential
 selects one memory owner, so do not share it across unrelated callers or tenants.
+Create it from the [Memcode API-key dashboard](https://app.memcode.in/dashboard?section=api-keys&integration=ava-asterisk) with
+**AVA for Asterisk** selected under integration attribution. Memcode binds that
+identity when issuing the key; the bridge sends no attribution override.
 The example requires exact caller approval before a write, returns durable ingest
 receipts, and includes `latency_ms` for reproducible tool-call measurements. It
 does not claim that memory lowers network latency; evaluate whether recall avoids
