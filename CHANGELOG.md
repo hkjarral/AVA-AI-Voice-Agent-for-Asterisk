@@ -7,9 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.6.1] - 2026-09-20
+
 ### Added
 
 - **Native Fish Audio modular TTS provider** ([#653](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/653), contributed by [@Rea-PC08](https://github.com/Rea-PC08)): streams Fish Audio PCM progressively at the negotiated call rate, supports provider-scoped managed API keys and Admin UI configuration, enforces encrypted remote endpoints, and bounds connection and stalled-stream waits without cutting off a healthy long synthesis. **Test Connection** performs a short real synthesis so model entitlement, account-credit, and empty-audio failures are caught before a call. The Admin UI exposes the supported models as a closed dropdown and keeps registered provider settings out of the additional-fields editor, preventing stale duplicate values from overriding structured choices. CI guards catalog, default, sample-config, and documentation consistency. The bundled loopback mock covers credential, streaming, timeout, cancellation, and error paths without requiring an account.
+- **Fish Audio realtime WebSocket streaming** ([#654](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/654), contributed by [@Rea-PC08](https://github.com/Rea-PC08)): the modular pipeline can stream LLM text deltas directly into Fish Audio's realtime WebSocket TTS path instead of waiting for a complete response. The adapter keeps HTTP streaming as a supported fallback, preserves provider cancellation and cleanup, and bounds connection, first-audio, and stalled-stream waits.
 
 ### Fixed
 
@@ -17,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **FreePBX call pickup preserves attended transfers** ([#661](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/661)): when a pickup-group phone answers an AVA attended-transfer destination, ownership now moves from the original ringing PJSIP leg to the pickup channel before Asterisk tears the ringing leg down. AVA no longer mistakes that expected teardown for the destination hanging up; the pickup phone still receives the configured screening announcement and must press the configured acceptance digit before the caller is bridged.
 - **Provider credential status reflects effective Google Live authentication** ([#660](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/660)): System → Environment no longer treats an unresolved `${GOOGLE_API_KEY}` reference as a configured API key, and it recognizes an existing legacy shared Vertex service-account file without copying it into per-instance storage. New Vertex uploads also keep the provider form's `credentials_path` synchronized so a later Save cannot strand the uploaded per-instance file and silently fall back to missing legacy ADC.
 - **Calendar event and availability results now reach every voice provider** ([#645](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/645)): the shared tool-response sanitizer now preserves an explicit, safe allowlist of structured Google and Microsoft Calendar fields, including listed events, retrieved event details, and free-slot metadata. Large event lists retain the earliest entries with total/returned counts and a truncation flag while staying inside provider payload limits, instead of dropping the entire list and causing the model to report an empty calendar. Leaving Google Calendar's Free prefix blank continues to use native free/busy data within configured working hours, so empty gaps are treated as availability without synthetic `FREE` events.
+
+### Security
+
+- **msgpack is updated from 1.1.0 to 1.2.1** ([#670](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/670)), resolving the high-severity `Unpacker` out-of-bounds read and denial-of-service advisory [GHSA-6v7p-g79w-8964](https://github.com/advisories/GHSA-6v7p-g79w-8964).
 
 ## [7.6.0] - 2026-09-13
 
@@ -2357,7 +2364,8 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 - **v4.0.0** (2025-10-29) - Modular pipeline architecture, production monitoring, golden baselines
 - **v3.0.0** (2025-09-16) - Modular pipeline architecture, file based playback
 
-[Unreleased]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.6.0...HEAD
+[Unreleased]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.6.1...HEAD
+[7.6.1]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.6.0...v7.6.1
 [7.6.0]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.6...v7.6.0
 [7.5.6]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.5...v7.5.6
 [7.5.5]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v7.5.4...v7.5.5
