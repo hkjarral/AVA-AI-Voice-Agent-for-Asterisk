@@ -12,6 +12,8 @@ from .stdio_framing import encode_message, decode_frame
 
 logger = structlog.get_logger(__name__)
 
+MCP_PROTOCOL_VERSION = "2025-06-18"
+
 
 class MCPStdioClient:
     """Minimal MCP stdio client (JSON-RPC 2.0 + Content-Length framing)."""
@@ -59,7 +61,7 @@ class MCPStdioClient:
         await self.request(
             "initialize",
             {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {"name": "Asterisk-AI-Voice-Agent", "version": "dev"},
             },

@@ -19,6 +19,8 @@ from typing import Any, Dict, Optional
 from src.mcp.stdio_framing import encode_message
 
 
+MCP_PROTOCOL_VERSION = "2025-06-18"
+
 TOOLS = [
     {
         "name": "search_memories",
@@ -72,6 +74,8 @@ TOOLS = [
 
 
 def _bounded_top_k(value: Any) -> int:
+    """Normalize an optional result limit to the supported range."""
+
     try:
         parsed = int(value)
     except (TypeError, ValueError):
@@ -80,6 +84,8 @@ def _bounded_top_k(value: Any) -> int:
 
 
 def _required_text(arguments: Dict[str, Any], key: str, max_length: int = 10_000) -> str:
+    """Read and validate one required bounded string argument."""
+
     value = arguments.get(key)
     text = value.strip() if isinstance(value, str) else ""
     if not text:
@@ -90,10 +96,12 @@ def _required_text(arguments: Dict[str, Any], key: str, max_length: int = 10_000
 
 
 def _base_url() -> str:
+    """Return the configured HTTPS API origin without a trailing slash."""
+
     value = os.getenv("MEMCODE_API_URL", "https://memory.memcode.in").strip().rstrip("/")
     parsed = urllib.parse.urlsplit(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("MEMCODE_API_URL must be an http or https URL")
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError("MEMCODE_API_URL must be an https URL")
     return value
 
 
@@ -103,6 +111,8 @@ def _api_request(
     *,
     body: Optional[Dict[str, Any]] = None,
 ) -> tuple[Dict[str, Any], float]:
+    """Call the configured personal v2 API and return its data plus latency."""
+
     api_key = os.getenv("MEMCODE_API_KEY", "").strip()
     if not api_key:
         raise ValueError("MEMCODE_API_KEY is not configured")
@@ -132,6 +142,8 @@ def _api_request(
 
 
 def _source_summary(items: Any, limit: int) -> list[Dict[str, Any]]:
+    """Return a bounded, speech-safe summary of provider source records."""
+
     sources: list[Dict[str, Any]] = []
     if not isinstance(items, list):
         return sources
@@ -150,9 +162,11 @@ def _source_summary(items: Any, limit: int) -> list[Dict[str, Any]]:
 
 
 def _tool_result(spoken: str, **structured: Any) -> Dict[str, Any]:
+    """Build an MCP tool result with standard machine-readable content."""
+
     result: Dict[str, Any] = {
         "content": [{"type": "text", "text": spoken}],
-        "structured": {"spoken": spoken, **structured},
+        "structuredContent": {"spoken": spoken, **structured},
     }
     if structured.get("error") is True:
         result["isError"] = True
@@ -160,6 +174,8 @@ def _tool_result(spoken: str, **structured: Any) -> Dict[str, Any]:
 
 
 def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Validate and execute one exposed memory tool."""
+
     args = arguments if isinstance(arguments, dict) else {}
 
     if name == "search_memories":
@@ -239,6 +255,8 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def handle_message(message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Handle one JSON-RPC request or notification."""
+
     method = message.get("method")
     request_id = message.get("id")
     if method == "notifications/initialized":
@@ -247,7 +265,7 @@ def handle_message(message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     if method == "initialize":
         result = {
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": MCP_PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "ava-memcode-memory", "version": "0.1.0"},
         }
@@ -277,6 +295,8 @@ def handle_message(message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def main() -> None:
+    """Serve newline-delimited MCP messages over stdin and stdout."""
+
     for raw in sys.stdin.buffer:
         line = raw.strip()
         if not line:

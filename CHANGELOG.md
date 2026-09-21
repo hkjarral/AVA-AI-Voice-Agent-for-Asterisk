@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Optional Memcode personal-memory MCP example**: isolated deployments can run a bundled stdio bridge for attributed personal v2 credentials, expose bounded search/retrieve/save/status tools to selected Agents, require exact caller approval before a write, and preserve standard MCP structured results without weakening existing per-Agent tool access.
+
 ### Fixed
 
 - **Deferred transfers fail closed when caller-facing audio cannot drain** ([#662](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/662)): the transfer-specific drain result is now authoritative, its default safety ceiling is 15 seconds, and the Admin UI exposes both the ceiling and quiet-period controls. If queued handoff audio still cannot drain, AVA cancels the exact pending action, tears down any unbridged pre-dial leg, flushes stale output, and resumes the active AI voice with an apology instead of committing a transfer that truncates speech.
