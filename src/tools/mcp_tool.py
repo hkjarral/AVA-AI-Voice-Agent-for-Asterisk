@@ -136,8 +136,8 @@ class MCPTool(Tool):
         # Allow server-side structured payloads. Many servers include a "data" field or similar.
         data_obj: Dict[str, Any] = {}
         if isinstance(result, dict):
-            # Some servers return {"content":[...], "structured":{...}}
-            for key in ("structured", "data", "result", "output"):
+            # Prefer the standard MCP field while retaining older server shapes.
+            for key in ("structuredContent", "structured", "data", "result", "output"):
                 if isinstance(result.get(key), dict):
                     data_obj = result[key]
                     break
