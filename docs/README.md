@@ -3,7 +3,7 @@
 ## User Documentation
 
 - **[Quick Start Guide](../README.md)** - Get started in 10 minutes
-- **[Installation and Upgrade Guide](INSTALLATION.md)** - Fresh setup, v7.6.0 upgrade steps, and older-installation updater recovery
+- **[Installation and Upgrade Guide](INSTALLATION.md)** - Fresh setup, v7.6.1 upgrade steps, and older-installation updater recovery
 - **[Admin UI Guide](ADMIN_UI_GUIDE.md)** - Web interface for configuration and monitoring
 - **[FreePBX Integration Guide](FreePBX-Integration-Guide.md)** - Dialplan and queue configuration
 - **[Outbound Calling (Alpha)](OUTBOUND_CALLING.md)** - Scheduled outbound campaigns, voicemail drop, consent gate
@@ -12,6 +12,7 @@
 - **[WebSocket Transport](WebSocket-Transport.md)** - Opt-in Asterisk Media WebSocket setup, authenticated loopback/WSS topology, qualification, and rollback
 - **[Caller Inactivity Watchdog](Configuration-Reference.md#caller-inactivity-no_input)** - 30-second inbound silence protection, per-agent overrides, and safe terminal playback (v7.3.1+)
 - **[Agents](AGENTS.md)** - v7.4 Agent routing, dialplan selection, and per-Agent tool access
+- **[v7.6.1 Validation Matrix](baselines/golden/v7.6.1-validation-matrix.md)** - Fish Audio, calendar and credential handling, transfer safety, and dependency security evidence
 - **[v7.6.0 Validation Matrix](baselines/golden/v7.6.0-validation-matrix.md)** - Asterisk Media WebSocket, call metadata, support-package privacy, and legacy-transport regression evidence
 - **[v7.5.6 Validation Matrix](baselines/golden/v7.5.6-validation-matrix.md)** - outbound lead context, Agent-scoped hangup markers, and configured post-call summary LLM evidence
 - **[v7.5.5 Validation Matrix](baselines/golden/v7.5.5-validation-matrix.md)** - Admin UI sidebar, post-call webhook variable, and extension availability mapping evidence
@@ -37,6 +38,7 @@
 - **[Telnyx AI Inference Setup](Provider-Telnyx-Setup.md)** - OpenAI-compatible LLM via Telnyx
 - **[Azure Speech Service Setup](Provider-Azure-Setup.md)** - Azure STT & TTS pipeline adapters
 - **[MiniMax LLM Setup](Provider-MiniMax-Setup.md)** - MiniMax M3 LLM via OpenAI-compatible API
+- **[Fish Audio TTS Setup](Provider-FishAudio-Setup.md)** - Streaming PCM modular TTS with managed credentials
 - **[Multi-Instance Full-Agent Providers](Multi-Instance-Full-Agent-Providers.md)** - Run multiple instances of the same provider type with isolated credentials
 
 ## Local AI & GPU Setup

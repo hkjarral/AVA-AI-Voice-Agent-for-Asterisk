@@ -20,6 +20,7 @@ from ..config import (
     AzureSTTProviderConfig,
     AzureTTSProviderConfig,
     CambAiProviderConfig,
+    FishAudioProviderConfig,
     DeepgramProviderConfig,
     ElevenLabsProviderConfig,
     GoogleProviderConfig,
@@ -45,6 +46,7 @@ from .minimax import MiniMaxLLMAdapter
 from .telnyx import TelnyxLLMAdapter
 from .azure import AzureSTTFastAdapter, AzureSTTRealtimeAdapter, AzureTTSAdapter
 from .cambai import CambAiTTSAdapter
+from .fish_audio import FishAudioTTSAdapter
 
 logger = get_logger(__name__)
 
@@ -237,6 +239,7 @@ class PipelineOrchestrator:
         self._google_provider_config: Optional[GoogleProviderConfig] = self._hydrate_google_config()
         self._elevenlabs_provider_config: Optional[ElevenLabsProviderConfig] = self._hydrate_elevenlabs_config()
         self._cambai_provider_config: Optional[CambAiProviderConfig] = self._hydrate_cambai_config()
+        self._fishaudio_component_configs = self._hydrate_fishaudio_component_configs()
         self._groq_stt_provider_config: Optional[GroqSTTProviderConfig] = self._hydrate_groq_stt_config()
         self._groq_tts_provider_config: Optional[GroqTTSProviderConfig] = self._hydrate_groq_tts_config()
         self._azure_stt_provider_config: Optional[AzureSTTProviderConfig] = self._hydrate_azure_stt_config()
@@ -805,6 +808,24 @@ class PipelineOrchestrator:
         else:
             logger.debug("CAMB AI TTS pipeline adapter not registered - API key unavailable or config missing")
 
+        # Fish Audio TTS adapters. Register each configured provider under its
+        # exact YAML key so Admin UI-created custom ``*_tts`` instances work in
+        # pipelines instead of only the canonical ``fishaudio_tts`` key.
+        if self._fishaudio_component_configs:
+            for component_key, provider_config in self._fishaudio_component_configs.items():
+                tts_factory = self._make_fishaudio_tts_factory(provider_config)
+                self.register_factory(component_key, tts_factory)
+                logger.info(
+                    "Fish Audio TTS pipeline adapter registered",
+                    tts_factory=component_key,
+                    model=provider_config.model,
+                    reference_id=provider_config.reference_id,
+                )
+        else:
+            logger.debug(
+                "Fish Audio TTS pipeline adapters not registered - API key unavailable or config missing"
+            )
+
         # Ollama LLM adapter - for self-hosted local LLMs
         # Read config from providers.ollama_llm in YAML if available
         ollama_provider_config = {}
@@ -1242,6 +1263,23 @@ class PipelineOrchestrator:
 
         return factory
 
+    def _make_fishaudio_tts_factory(
+        self,
+        provider_config: FishAudioProviderConfig,
+    ) -> ComponentFactory:
+        """Create factory for Fish Audio TTS adapter."""
+        config_payload = provider_config.model_dump()
+
+        def factory(component_key: str, options: Dict[str, Any]) -> Component:
+            return FishAudioTTSAdapter(
+                component_key,
+                self.config,
+                FishAudioProviderConfig(**config_payload),
+                options,
+            )
+
+        return factory
+
     def _hydrate_google_config(self) -> Optional[GoogleProviderConfig]:
         providers = getattr(self.config, "providers", {}) or {}
         raw_config = providers.get("google")
@@ -1366,6 +1404,98 @@ class PipelineOrchestrator:
             )
 
         return config
+
+    def _hydrate_fishaudio_component_configs(self) -> Dict[str, FishAudioProviderConfig]:
+        """Hydrate every enabled Fish Audio TTS provider from YAML or env."""
+        providers = getattr(self.config, "providers", {}) or {}
+        candidates: Dict[str, Any] = {}
+        if isinstance(providers, dict):
+            for name, provider in providers.items():
+                if not isinstance(provider, (dict, FishAudioProviderConfig)):
+                    continue
+                provider_type = (
+                    str(provider.get("type") or "").strip().lower()
+                    if isinstance(provider, dict)
+                    else "fishaudio"
+                )
+                try:
+                    role = _extract_role(str(name))
+                except Exception:
+                    role = None
+                if str(name) in {"fishaudio", "fishaudio_tts"} or (
+                    role == "tts" and provider_type == "fishaudio"
+                ):
+                    component_key = (
+                        "fishaudio_tts" if str(name) == "fishaudio" else str(name)
+                    )
+                    candidates[component_key] = provider
+
+        if not candidates:
+            api_key = os.getenv("FISH_AUDIO_API_KEY")
+            reference_id = os.getenv("FISH_AUDIO_REFERENCE_ID")
+            if api_key and reference_id:
+                return {
+                    "fishaudio_tts": FishAudioProviderConfig(
+                        api_key=api_key,
+                        reference_id=reference_id,
+                    )
+                }
+            return {}
+
+        hydrated: Dict[str, FishAudioProviderConfig] = {}
+        for component_key, raw_config in candidates.items():
+            if isinstance(raw_config, FishAudioProviderConfig):
+                payload = raw_config.model_dump()
+            else:
+                if raw_config.get("enabled") is False:
+                    logger.debug(
+                        "Fish Audio TTS adapter disabled by provider configuration",
+                        component=component_key,
+                    )
+                    continue
+                payload = dict(raw_config)
+            try:
+                known_fields = set(FishAudioProviderConfig.model_fields.keys())
+                filtered = {}
+                for key, value in payload.items():
+                    if key not in known_fields:
+                        continue
+                    if isinstance(value, str) and value == "":
+                        continue
+                    filtered[key] = value
+                filtered["api_key"] = resolve_secret_value(
+                    payload,
+                    file_field="api_key_file",
+                    env_field="api_key_env",
+                    inline_field="api_key",
+                    legacy_env_names=("FISH_AUDIO_API_KEY",),
+                )
+                config = FishAudioProviderConfig(**filtered)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to hydrate Fish Audio provider config for pipelines",
+                    component=component_key,
+                    error=str(exc),
+                )
+                continue
+
+            if not config.enabled:
+                continue
+            if not config.api_key:
+                logger.warning(
+                    "Fish Audio TTS adapter requires a configured API key",
+                    component=component_key,
+                )
+                continue
+            if not str(config.reference_id or "").strip():
+                logger.warning(
+                    "Fish Audio TTS adapter requires a reference_id voice model",
+                    component=component_key,
+                )
+                continue
+            hydrated[component_key] = config
+
+        return hydrated
 
     def _hydrate_cambai_config(self) -> Optional[CambAiProviderConfig]:
         """Hydrate CAMB AI provider config from YAML or env."""

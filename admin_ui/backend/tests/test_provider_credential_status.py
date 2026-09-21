@@ -18,6 +18,38 @@ pytest.importorskip("fastapi")
 from api import config as config_api  # noqa: E402
 
 
+@pytest.mark.asyncio
+async def test_fish_audio_managed_api_key_status(monkeypatch, tmp_path):
+    provider_root = tmp_path / "providers"
+    managed_path = provider_root / "fishaudio_tts" / "api-key"
+    managed_path.parent.mkdir(parents=True)
+    managed_path.write_text("fish-secret", encoding="utf-8")
+    monkeypatch.delenv("FISH_AUDIO_API_KEY", raising=False)
+    monkeypatch.setattr(config_api, "PROVIDER_SECRETS_ROOT", str(provider_root))
+    monkeypatch.setattr(
+        config_api,
+        "_read_merged_config_dict",
+        lambda: {
+            "providers": {
+                "fishaudio_tts": {
+                    "type": "fishaudio",
+                    "capabilities": ["tts"],
+                    "api_key_file": str(managed_path),
+                }
+            }
+        },
+    )
+
+    response = await config_api.get_provider_credentials_status("fishaudio_tts")
+    status = response["credentials"]["api-key"]
+
+    assert response["type"] == "fishaudio"
+    assert status["uploaded"] is True
+    assert status["configured"] is True
+    assert status["source"] == "managed_file"
+    assert "fish-secret" not in json.dumps(response)
+
+
 def _google_provider(**overrides):
     """Build a minimal Google Live provider configuration for status tests."""
     provider = {

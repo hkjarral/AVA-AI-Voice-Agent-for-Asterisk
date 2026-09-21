@@ -22,6 +22,7 @@ import structlog
 
 from src.utils.diagnostic_paths import DEFAULT_DIAGNOSTIC_TAP_DIR
 from src.media_transport_capabilities import supports_media_websocket, resolve_media_websocket_control
+from src.fish_audio_url import validate_fish_audio_base_url, validate_fish_audio_ws_url
 
 # Import configuration helpers (AAVA-40 refactor)
 from src.config.loaders import resolve_config_path, load_yaml_with_env_expansion, load_yaml_with_local_override
@@ -673,6 +674,69 @@ class CambAiProviderConfig(BaseModel):
     output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
     # Provider-specific farewell hangup delay (overrides global)
     farewell_hangup_delay_sec: Optional[float] = None
+
+
+class FishAudioProviderConfig(BaseModel):
+    """Fish Audio TTS provider configuration.
+
+    Fish Audio streams raw PCM at a requested sample rate, so a telephone call
+    can be served at 8 kHz without an intermediate resample.
+
+    API Reference: https://docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech
+    """
+    enabled: bool = Field(default=True)
+    api_key: Optional[str] = None
+    api_key_file: Optional[str] = None
+    api_key_env: Optional[str] = None
+    base_url: str = Field(default="https://api.fish.audio/v1")
+    # http posts one request per fragment; websocket keeps one realtime session
+    # per turn and receives the text as the engine produces it.
+    transport: Literal["http", "websocket"] = Field(default="http")
+    # Defaults to base_url with a ws/wss scheme; override to reach a local mock.
+    ws_base_url: Optional[str] = None
+    # Speech model, sent as the `model` request header.
+    model: str = Field(default="s2.1-pro")  # also: s1, s2-pro, s2.1-pro-free, drama-3-preview
+    # Voice model id from the Fish Audio library. The adapter supports the
+    # reference_id request form, so a value is required before synthesis.
+    reference_id: Optional[str] = None
+    # Raw PCM streams chunk by chunk; wav is buffered and decoded.
+    audio_format: Literal["pcm", "wav"] = Field(default="pcm")
+    # None follows the call: 8 kHz on telephony, 16 kHz on wideband transports.
+    sample_rate: Optional[int] = None
+    latency: Literal["low", "normal", "balanced"] = Field(default="low")
+    chunk_length: int = Field(default=200, ge=100, le=300)
+    normalize: bool = Field(default=True)
+    temperature: float = Field(default=0.7, ge=0.0, le=1.0)
+    top_p: float = Field(default=0.7, ge=0.0, le=1.0)
+    # Prosody overrides; None leaves the model default.
+    speed: Optional[float] = None
+    volume: Optional[float] = None
+    output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
+    # Connection establishment and inter-chunk budgets. There is deliberately
+    # no whole-request deadline: a healthy synthesis may stream longer than the
+    # read budget in aggregate as long as audio continues arriving.
+    connect_timeout_sec: float = Field(default=10.0, gt=0)
+    read_timeout_sec: float = Field(default=30.0, gt=0)
+    # Provider-specific farewell hangup delay (overrides global)
+    farewell_hangup_delay_sec: Optional[float] = None
+
+    @field_validator("base_url")
+    @classmethod
+    def _validate_base_url(cls, value: str) -> str:
+        try:
+            return validate_fish_audio_base_url(value)
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator("ws_base_url")
+    @classmethod
+    def _validate_ws_base_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        try:
+            return validate_fish_audio_ws_url(value)
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 _AZURE_REGION_RE = re.compile(r"^[a-z][a-z0-9-]{0,48}[a-z0-9]$")

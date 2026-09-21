@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getEffectiveFullAgentKind, isFullAgentProvider } from './providerNaming';
+import { getEffectiveFullAgentKind, isFullAgentProvider, isRegisteredProvider } from './providerNaming';
 
 /**
  * Regression coverage for GitHub issue #436: a canonical Google Live provider
@@ -44,5 +44,11 @@ describe('getEffectiveFullAgentKind', () => {
         expect(getEffectiveFullAgentKind({ type: 'local', capabilities: ['stt', 'llm', 'tts'] }, 'local')).toBe('local');
         expect(getEffectiveFullAgentKind({ type: 'local' }, 'office_local')).toBe('local');
         expect(isFullAgentProvider({ type: 'local' }, 'office_local')).toBe(true);
+    });
+});
+
+describe('provider registration', () => {
+    it('recognizes Fish Audio as an engine-backed provider type', () => {
+        expect(isRegisteredProvider({ type: 'fishaudio', capabilities: ['tts'] })).toBe(true);
     });
 });
