@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Optional Memcode personal-memory MCP example**: isolated deployments can run a bundled stdio bridge for attributed personal v2 credentials, expose bounded search/retrieve/save/status tools to selected Agents, require exact caller approval before a write, and preserve standard MCP structured results without weakening existing per-Agent tool access.
+
 ## [7.6.1] - 2026-09-20
 
 ### Added
