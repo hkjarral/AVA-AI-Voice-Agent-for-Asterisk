@@ -2,7 +2,9 @@
 #
 # The bundled bridge uses AVA's supported stdio MCP transport and the Memcode
 # personal v2 REST API. Do not use one credential across unrelated callers or
-# tenants: the credential determines a single memory owner.
+# tenants: the credential determines a single memory owner. Create the key with
+# "AVA for Asterisk" selected in the Memcode dashboard so its requests receive
+# server-bound integration attribution.
 
 mcp:
   enabled: true
