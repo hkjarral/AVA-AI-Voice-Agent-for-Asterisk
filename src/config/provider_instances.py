@@ -59,12 +59,15 @@ API_KEY_COMPATIBLE_KINDS = frozenset(
         "telnyx",
         "telenyx",
         "minimax",
+        "fishaudio",
     }
 )
 
 MODULAR_LLM_KINDS = frozenset(
     {"openai", "google", "ollama", "local", "telnyx", "telenyx", "minimax"}
 )
+
+MODULAR_TTS_KINDS = frozenset({"fishaudio"})
 
 CREDENTIAL_NAME_TO_FIELD = {
     "api-key": "api_key_file",
@@ -110,12 +113,18 @@ def credential_provider_kind(provider_key: str, provider_cfg: Any) -> Optional[s
         return None
     raw_type = str(provider_cfg.get("type") or "").strip().lower()
     if raw_type:
-        return raw_type if raw_type in MODULAR_LLM_KINDS else None
+        modular_kinds = MODULAR_LLM_KINDS | MODULAR_TTS_KINDS
+        return raw_type if raw_type in modular_kinds else None
     key = str(provider_key).lower()
-    if not (key.endswith("_llm") or key in MODULAR_LLM_KINDS):
-        return None
-    inferred = key.rsplit("_llm", 1)[0]
-    return inferred if inferred in MODULAR_LLM_KINDS else None
+    if key.endswith("_llm"):
+        inferred = key.rsplit("_llm", 1)[0]
+        return inferred if inferred in MODULAR_LLM_KINDS else None
+    if key.endswith("_tts"):
+        inferred = key.rsplit("_tts", 1)[0]
+        return inferred if inferred in MODULAR_TTS_KINDS else None
+    if key in MODULAR_LLM_KINDS | MODULAR_TTS_KINDS:
+        return key
+    return None
 
 
 def is_full_agent_provider(provider_key: str, provider_cfg: Any) -> bool:

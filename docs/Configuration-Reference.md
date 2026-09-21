@@ -801,3 +801,109 @@ By default, the Admin UI blocks test requests to localhost/private targets to re
 MCP-backed tools (Model Context Protocol) can be exposed through the existing tool calling system.
 
 - Design + configuration guide: `docs/MCP_INTEGRATION.md`
+
+## Fish Audio TTS (`fishaudio_tts`)
+
+Full setup walkthrough: [Provider-FishAudio-Setup.md](Provider-FishAudio-Setup.md).
+
+Native support for [Fish Audio](https://fish.audio) speech models (S1, S2 and the
+drama preview). Fish Audio returns raw PCM over a chunked HTTP response, at a
+sample rate you choose, so the adapter asks for the call's own rate: on a
+telephone call the audio is produced at 8 kHz, converted to µ-law chunk by chunk
+and forwarded while the sentence is still being synthesised.
+
+### Credentials
+
+```bash
+# .env
+FISH_AUDIO_API_KEY=your-api-key
+FISH_AUDIO_REFERENCE_ID=voice-model-id
+```
+
+The Admin UI can instead store a provider-scoped API key in an owner-only file.
+The engine resolves `api_key_file`, `api_key_env`, an inline key, then the legacy
+`FISH_AUDIO_API_KEY` fallback. A pipeline with a missing key or voice reference
+is invalid at startup and fails closed; AVA never substitutes another TTS voice.
+
+### Provider configuration
+
+```yaml
+providers:
+  fishaudio_tts:
+    type: fishaudio
+    capabilities:
+      - tts
+    enabled: true
+    transport: http        # http, or websocket for the realtime session
+    model: s2.1-pro        # also: s1, s2-pro, s2.1-pro-free, drama-3-preview
+    reference_id: voice-model-id # required voice id from your Fish Audio library
+    audio_format: pcm      # pcm (streamed) or wav (buffered)
+    sample_rate: null      # null follows the call: 8 kHz telephony, 16 kHz wideband
+    latency: low           # low, normal, balanced
+    chunk_length: 200      # 100-300, provider-side synthesis granularity
+    normalize: true
+    temperature: 0.7
+    top_p: 0.7
+    speed: null            # prosody.speed override
+    volume: null           # prosody.volume override
+    connect_timeout_sec: 10
+    read_timeout_sec: 30
+    output_resampler: inherit
+```
+
+| Key | Purpose |
+|---|---|
+| `model` | Sent as the `model` HTTP header, which is how Fish Audio selects the speech model. `s2.1-pro-free` needs no API credit, which is handy for a live check. |
+| `reference_id` | Required voice model id (a voice from the Fish Audio library, or one you cloned). |
+| `audio_format` | `pcm` streams chunk by chunk and is recommended for calls; `wav` is read in full, then decoded. |
+| `sample_rate` | Leave `null` to follow the negotiated transport. A rate Fish Audio cannot emit falls back to 16 kHz and is resampled locally. |
+| `latency` | `low` favours time to first audio, which is what a phone call needs. |
+| `speed`, `volume` | Sent as `prosody`; leave `null` to keep the model default. |
+| `connect_timeout_sec` | Maximum time to establish or acquire the HTTP connection. |
+| `read_timeout_sec` | Maximum gap between HTTP chunks or realtime WebSocket events. This fails a stalled stream without imposing a deadline on healthy long synthesis. |
+| `transport` | `http` posts one request per fragment. `websocket` opens one realtime session per turn and receives the text as the engine produces it (needs `msgpack`). |
+| `ws_base_url` | Realtime endpoint; defaults to `base_url` with a `ws`/`wss` scheme. Remote endpoints require WSS; plain WS is limited to explicit loopback mocks. |
+
+Every key can also be set per pipeline under `options.tts`, and overridden per
+request at runtime.
+
+### Example pipeline
+
+```yaml
+pipelines:
+  hybrid_fishaudio:
+    stt: local_stt
+    llm: openai_llm
+    tts: fishaudio_tts
+    options:
+      tts:
+        format:
+          encoding: mulaw
+          sample_rate: 8000
+```
+
+### Tests
+
+```bash
+pytest tests/test_pipeline_fish_audio_adapters.py          # mocked HTTP
+FISH_AUDIO_API_KEY=... pytest -m integration tests/test_pipeline_fish_audio_adapters.py
+```
+
+Without an account, `scripts/fish_audio_mock.py` answers like the service does
+(Bearer auth, `model` header, body validation, chunked audio) so the whole path
+can be exercised, including a call end to end:
+
+```bash
+python scripts/fish_audio_mock.py &
+FISH_AUDIO_API_KEY=mock-key FISH_AUDIO_BASE_URL=http://127.0.0.1:8788/v1 \
+    pytest -m integration tests/test_pipeline_fish_audio_adapters.py
+```
+
+Set `base_url: http://127.0.0.1:8788/v1` on the provider to route a real call
+through the mock. It serves a generated tone by default; set
+`FISH_MOCK_LOCAL_WS=ws://127.0.0.1:8765` to hear speech from a local AI server
+instead. The request text also carries hooks — `FISH_MOCK_401`,
+`FISH_MOCK_SLOW`, `FISH_MOCK_EMPTY` — to check how failures are handled.
+
+The integration test is skipped unless both `FISH_AUDIO_API_KEY` and
+`FISH_AUDIO_REFERENCE_ID` are set.

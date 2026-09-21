@@ -25,6 +25,12 @@ def test_credential_provider_kind_infers_standard_modular_llm_key():
     assert credential_provider_kind("openai_llm", {"type": "unsupported"}) is None
 
 
+def test_credential_provider_kind_accepts_fish_audio_tts():
+    assert credential_provider_kind("fishaudio_tts", {"type": "fishaudio"}) == "fishaudio"
+    assert credential_provider_kind("customer_voice_tts", {"type": "fishaudio"}) == "fishaudio"
+    assert credential_provider_kind("fishaudio_tts", {}) == "fishaudio"
+
+
 def test_secret_file_failure_falls_back_to_configured_environment(tmp_path, monkeypatch):
     missing = tmp_path / "missing-api-key"
     monkeypatch.setenv("FALLBACK_PROVIDER_KEY", "from-environment")

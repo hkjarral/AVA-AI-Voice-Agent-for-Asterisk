@@ -1,5 +1,5 @@
 import React from 'react';
-import { FormInput, FormLabel } from '../../ui/FormComponents';
+import { FormInput, FormLabel, FormSelect } from '../../ui/FormComponents';
 import HelpTooltip from '../../ui/HelpTooltip';
 import ComboboxInput from '../../ui/ComboboxInput';
 import type { ProviderSubtype, SubtypeField } from '../../../config/modularProviderSubtypes';
@@ -18,6 +18,30 @@ interface ModularSubtypeFormProps {
 const ModularSubtypeForm: React.FC<ModularSubtypeFormProps> = ({ subtype, config, onChange }) => {
   const renderField = (field: SubtypeField) => {
     const currentValue = config[field.key] ?? field.default ?? '';
+
+    if (field.type === 'select') {
+      const value = String(currentValue);
+      const suggestions = field.suggestions ?? [];
+      const isLegacyValue = value !== '' && !suggestions.includes(value);
+      const options = [
+        ...(isLegacyValue
+          ? [{ value, label: `${value} (unsupported current value)`, disabled: true }]
+          : []),
+        ...suggestions.map(suggestion => ({ value: suggestion, label: suggestion })),
+      ];
+
+      return (
+        <div key={field.key}>
+          <FormSelect
+            label={`${field.label}${field.required ? ' *' : ''}`}
+            value={value}
+            onChange={(event) => onChange(field.key, event.target.value)}
+            options={options}
+            tooltip={field.tooltip}
+          />
+        </div>
+      );
+    }
 
     if (field.type === 'combobox') {
       return (

@@ -160,6 +160,7 @@ export const REGISTERED_PROVIDER_TYPES = [
     'telenyx',
     'azure',
     'minimax',
+    'fishaudio',
     // AAVA-182: Admin UI creates providers with type 'modular'
     'modular',
 ] as const;

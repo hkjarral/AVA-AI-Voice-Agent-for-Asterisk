@@ -21,6 +21,7 @@ Thanks to all the people who have contributed to the Asterisk AI Voice Agent!
 | <img src="https://github.com/exaland.png" width="50" alt="exaland"> | **[exaland](https://github.com/exaland)** | Code — Outbound Recording `.ULAW` Compatibility |
 | <img src="https://github.com/YosefAdPro.png" width="50" alt="YosefAdPro"> | **[YosefAdPro](https://github.com/YosefAdPro)** | Code, Docs, Tests — v7 Agents API/OpenAPI |
 | <img src="https://github.com/cswilsnetex.png" width="50" alt="cswilsnetex"> | **[Chris Wilson (cswilsnetex)](https://github.com/cswilsnetex)** | Code — Google Live Key Handling, Admin UI Accessibility |
+| <img src="https://github.com/Rea-PC08.png" width="50" alt="Rea-PC08"> | **[Rea-PC08](https://github.com/Rea-PC08)** | Code — Fish Audio TTS Provider and Realtime Streaming |
 
 <!-- markdownlint-restore -->
 <!-- prettier-ignore-end -->

@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-7.6.0-blue.svg)
+![Version](https://img.shields.io/badge/version-7.6.1-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -171,6 +171,44 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>v7.6.1 — Fish Audio streaming and safer transfer/calendar operations</b></summary>
+
+v7.6.1 is an in-place feature, reliability, and security release. It does not
+migrate databases, reassign Agents, or change the selected provider, transport,
+or Audio Profile.
+
+- **Fish Audio joins the modular TTS catalog** — configure provider-scoped
+  credentials and stream PCM through either the supported HTTP path or the new
+  realtime WebSocket path. WebSocket mode can consume LLM text deltas directly
+  for lower first-audio latency
+  ([#653](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/653),
+  [#654](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/654),
+  contributed by [@Rea-PC08](https://github.com/Rea-PC08)).
+- **Calendar tools preserve useful structured results** — safe event,
+  event-detail, availability, and truncation metadata now reaches every voice
+  provider instead of being discarded by the shared sanitizer
+  ([#663](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/663)).
+- **Google credential status matches effective authentication** — unresolved
+  environment references no longer appear configured, legacy Vertex credential
+  files are recognized, and new uploads keep the saved provider path aligned
+  ([#664](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/664)).
+- **Attended transfers fail safer** — FreePBX pickup channels inherit transfer
+  ownership before the original ringing leg disappears, while a deferred
+  transfer that cannot drain its caller-facing audio is cancelled and returned
+  to the active AI voice
+  ([#665](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/665),
+  [#666](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/666)).
+- **msgpack is updated to 1.2.1** — resolving the high-severity
+  `Unpacker` denial-of-service and out-of-bounds read advisory
+  ([#670](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/670)).
+
+See the [v7.6.1 changelog](CHANGELOG.md#761---2026-09-20),
+[migration notes](docs/MIGRATION.md#v760-to-v761), and
+[validation matrix](docs/baselines/golden/v7.6.1-validation-matrix.md).
+
+</details>
+
+<details>
 <summary><b>v7.6.0 — Asterisk Media WebSocket, call metadata, and safer troubleshooting</b></summary>
 
 v7.6.0 adds a third, opt-in media transport and expands call diagnostics while
@@ -475,7 +513,7 @@ voicemail mailboxes it should be allowed to use.**
   working.
 
 Before upgrading—especially from v7.3.0–v7.3.3—read the
-[current upgrade procedure](docs/INSTALLATION.md#upgrade-to-v760-existing-checkout)
+[current upgrade procedure](docs/INSTALLATION.md#upgrade-to-v761-existing-checkout)
 and [Contexts → Agents migration guide](docs/OPERATOR_MIGRATION.md).
 
 </details>
@@ -1223,6 +1261,7 @@ Then load **[AVA.mdc](AVA.mdc)** into your AI coding assistant (Claude, Cursor, 
 <td align="center"><a href="https://github.com/exaland"><img src="https://github.com/exaland.png" width="60" alt="exaland"><br><sub><b>exaland</b></sub></a><br>Outbound .ULAW Compatibility</td>
 <td align="center"><a href="https://github.com/YosefAdPro"><img src="https://github.com/YosefAdPro.png" width="60" alt="YosefAdPro"><br><sub><b>YosefAdPro</b></sub></a><br>Agents API/OpenAPI</td>
 <td align="center"><a href="https://github.com/cswilsnetex"><img src="https://github.com/cswilsnetex.png" width="60" alt="cswilsnetex"><br><sub><b>Chris Wilson</b></sub></a><br>Google Live Key Handling, Admin UI Accessibility</td>
+<td align="center"><a href="https://github.com/Rea-PC08"><img src="https://github.com/Rea-PC08.png" width="60" alt="Rea-PC08"><br><sub><b>Rea-PC08</b></sub></a><br>Fish Audio TTS</td>
 </tr>
 </table>
 

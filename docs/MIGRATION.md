@@ -2,6 +2,43 @@
 
 This guide covers upgrading between major versions of Asterisk AI Voice Agent.
 
+## v7.6.0 to v7.6.1
+
+v7.6.1 is an in-place feature, reliability, and security release. It adds the
+opt-in Fish Audio modular TTS provider and realtime WebSocket streaming, improves
+calendar result delivery and Google credential status, hardens attended-transfer
+ownership and deferred-transfer audio drain, and updates `msgpack` to 1.2.1. It
+does not migrate databases, reassign Agents, or change the selected provider,
+transport, Audio Profile, or transfer destination on upgrade.
+
+Before upgrading, drain or complete active calls and back up the normal operator
+configuration and SQLite data. Then:
+
+1. Rebuild and recreate `ai_engine` and `admin_ui`. The bundled
+   `local_ai_server` is unchanged and does not need to be recreated for this
+   release.
+2. Existing providers and pipelines remain selected. Fish Audio is opt-in: add
+   and test its provider-scoped API key, model, endpoint, and HTTP or realtime
+   WebSocket transport before assigning it to an Agent or production pipeline.
+3. Review deferred-transfer timing if the deployment has a custom policy. The
+   transfer-specific drain ceiling now defaults to 15 seconds and fails closed:
+   if caller-facing handoff audio cannot drain, AVA cancels the exact pending
+   transfer and resumes the active AI voice instead of committing a truncated
+   handoff.
+4. For FreePBX pickup groups, confirm the pickup device still receives the
+   configured screening prompt and must press the configured acceptance digit.
+   AVA now transfers ownership to the pickup channel before the original ringing
+   leg is destroyed.
+5. Verify Google provider credential status and any Google or Microsoft Calendar
+   tools used by the deployment. Calendar responses now preserve an allowlisted,
+   bounded set of event and availability fields for every voice provider.
+
+Rollback uses the v7.6.0 images and the pre-update configuration backup; there is
+no database downgrade. Before rollback, drain calls and restore the v7.6.0
+configuration backup, especially if Fish Audio providers, pipeline assignments,
+or v7.6.1-only transfer controls were added. Older strict schemas may reject
+unknown provider types or settings even when they are not selected.
+
 ## v7.5.6 to v7.6.0
 
 v7.6.0 is an in-place minor release. It adds an opt-in Asterisk Media

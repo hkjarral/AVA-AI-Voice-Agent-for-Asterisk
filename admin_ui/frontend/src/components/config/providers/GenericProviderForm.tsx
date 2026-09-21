@@ -30,6 +30,23 @@ const CAPABILITIES: { value: Capability; label: string }[] = [
 
 const GOOGLE_LIVE_SUGGESTED_MODELS = GOOGLE_LIVE_MODEL_OPTIONS.map((modelOption) => modelOption.value);
 
+const CORE_CONFIG_KEYS = [
+    'name',
+    'type',
+    'base_url',
+    'base_url_stt',
+    'base_url_tts',
+    'base_url_llm',
+    'capabilities',
+    'enabled',
+    'api_key',
+    'api_key_file',
+    'api_key_env',
+];
+
+const getManagedSubtypeKeys = (subtype?: ProviderSubtype) =>
+    new Set(subtype?.fields.map(field => field.key) ?? []);
+
 const PROVIDER_OPTIONS: Record<string, Record<string, string[]>> = {
     deepgram: {
         model: ['nova-3', 'nova-2', 'nova-2-general', 'nova-2-meeting', 'enhanced', 'base', 'flux-general-en', 'flux-general-multi'],
@@ -100,10 +117,10 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
     // Initialize custom fields from config on mount
     useEffect(() => {
         const initialFields: { key: string; value: string }[] = [];
-        const knownKeys = ['name', 'type', 'base_url', 'base_url_stt', 'base_url_tts', 'base_url_llm', 'capabilities', 'enabled', 'api_key', 'api_key_file', 'api_key_env'];
+        const managedSubtypeKeys = getManagedSubtypeKeys(inferSubtype(config));
 
         Object.entries(config).forEach(([key, value]) => {
-            if (!knownKeys.includes(key) && typeof value !== 'object') {
+            if (!CORE_CONFIG_KEYS.includes(key) && !managedSubtypeKeys.has(key) && typeof value !== 'object') {
                 initialFields.push({ key, value: String(value) });
             }
         });
@@ -119,6 +136,15 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
         }
     }, []); // Run once on mount
 
+    // A provider-specific field has one owner: the structured subtype form.
+    // Remove any stale generic copy when an existing provider is inferred or
+    // the operator selects a subtype, so it cannot overwrite the value above.
+    useEffect(() => {
+        if (!selectedSubtype) return;
+        const managedSubtypeKeys = getManagedSubtypeKeys(selectedSubtype);
+        setCustomFields(fields => fields.filter(field => !managedSubtypeKeys.has(field.key)));
+    }, [selectedSubtype]);
+
     useEffect(() => {
         // Lock name when a modular capability is present (only after save/initial load)
         if (!isNew && (config.type || 'modular') !== 'full' && Array.isArray(config.capabilities) && config.capabilities.length === 1) {
@@ -131,7 +157,8 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
     }, [config.type, config.capabilities]);
 
     const getBaseConfig = () => {
-        const knownKeys = ['name', 'type', 'base_url', 'base_url_stt', 'base_url_tts', 'base_url_llm', 'capabilities', 'enabled', 'api_key', 'api_key_file', 'api_key_env'];
+        const activeSubtype = selectedSubtype ?? inferSubtype(config);
+        const knownKeys = [...CORE_CONFIG_KEYS, ...getManagedSubtypeKeys(activeSubtype)];
         const base: any = {};
         knownKeys.forEach(key => {
             if (config[key] !== undefined) {
@@ -141,13 +168,13 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
         return base;
     };
 
-    const updateConfig = (updates: any) => {
+    const updateConfig = (updates: any, fields = customFields) => {
         // Start with base config (known keys only)
         const baseConfig = getBaseConfig();
         const updatedConfig = { ...baseConfig, ...updates };
 
         // Merge custom fields
-        customFields.forEach(field => {
+        fields.forEach(field => {
             if (field.key) {
                 let val: any = field.value;
                 if (val === 'true') val = true;
@@ -178,7 +205,7 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
         }
 
         setCustomFields(newFields);
-        updateConfig(updates);
+        updateConfig(updates, newFields);
     };
 
     const handleCapabilityChange = (cap: Capability) => {
@@ -218,10 +245,14 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
                 defaults[f.key] = f.default;
             }
         });
-        updateConfig(defaults);
+        const managedSubtypeKeys = getManagedSubtypeKeys(subtype);
+        const additionalFields = customFields.filter(field => !managedSubtypeKeys.has(field.key));
+        setCustomFields(additionalFields);
+        updateConfig(defaults, additionalFields);
     };
 
     const handleSubtypeFieldChange = (key: string, value: any) => {
+        setCustomFields(fields => fields.filter(field => field.key !== key));
         // Directly merge into config without going through getBaseConfig()
         // which strips subtype-specific keys like chat_base_url, chat_model, etc.
         const updated = { ...config, [key]: value };
@@ -229,8 +260,14 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
     };
 
     const handleFieldChange = (index: number, field: 'key' | 'value', value: string) => {
+        const activeSubtype = selectedSubtype ?? inferSubtype(config);
+        if (field === 'key' && getManagedSubtypeKeys(activeSubtype).has(value)) {
+            toast.error(`“${value}” is configured in Provider Configuration above.`);
+            return;
+        }
+
         const newFields = [...customFields];
-        newFields[index][field] = value;
+        newFields[index] = { ...newFields[index], [field]: value };
         setCustomFields(newFields);
 
         // Propagate changes to parent immediately
@@ -476,6 +513,27 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
                                         }}
                                     />
                                 )}
+                                {cap === 'tts' && selectedSubtype.yamlType === 'fishaudio' && (
+                                    <ProviderCredentialsCard
+                                        providerKey={isNew ? undefined : config.name}
+                                        credentialType="api-key"
+                                        label="Fish Audio API Key"
+                                        placeholder="Paste Fish Audio API key"
+                                        envVarFallback="FISH_AUDIO_API_KEY"
+                                        inlineValue={
+                                            config.api_key ||
+                                            (config.api_key_env
+                                                ? `\${${config.api_key_env}}`
+                                                : undefined)
+                                        }
+                                        helpText="Stored in an owner-only provider-scoped file. Use Test Connection to verify it without exposing the key."
+                                        onConfigPatch={(patch) => {
+                                            const next = { ...config, ...patch };
+                                            Object.keys(next).forEach((key) => next[key] === undefined && delete next[key]);
+                                            onChange(next);
+                                        }}
+                                    />
+                                )}
                             </div>
                         )}
 
@@ -515,8 +573,11 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
             <div className="space-y-4">
                 <div className="flex justify-between items-center">
                     <h4 className="font-semibold flex items-center gap-2">
-                        Configuration Fields
-                        <HelpTooltip content="Add up to 10 custom key-value pairs for provider configuration." />
+                        {selectedSubtype ? 'Additional Configuration Fields' : 'Configuration Fields'}
+                        <HelpTooltip content={selectedSubtype
+                            ? 'Advanced key-value pairs not already provided in Provider Configuration above.'
+                            : 'Add up to 10 custom key-value pairs for provider configuration.'}
+                        />
                     </h4>
                     <button
                         type="button"
@@ -528,7 +589,11 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
                     </button>
                 </div>
 
-                {config.type !== 'full' && (
+                {selectedSubtype ? (
+                    <div className="text-xs text-muted-foreground">
+                        Optional advanced settings only. Fields already shown in Provider Configuration are kept in sync there and are not repeated here.
+                    </div>
+                ) : config.type !== 'full' && (
                     <div className="text-xs text-muted-foreground">
                         {(() => {
                             const cap = (config.capabilities || [])[0];
@@ -543,7 +608,9 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
                 <div className="space-y-3">
                     {customFields.length === 0 && (
                         <div className="text-sm text-muted-foreground italic p-2 border border-dashed rounded">
-                            No custom fields added. Click "Add Field" to configure specific settings like 'model', 'voice', etc.
+                            {selectedSubtype
+                                ? 'No additional fields configured. Use “Add Field” only for an advanced setting not available above.'
+                                : 'No custom fields added. Click "Add Field" to configure specific settings like model or voice.'}
                         </div>
                     )}
 
@@ -555,7 +622,7 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
                                     <input
                                         type="text"
                                         className="w-full p-2 text-sm rounded border border-input bg-background font-mono"
-                                        placeholder="Key (e.g. model)"
+                                        placeholder={selectedSubtype ? 'Additional key' : 'Key (e.g. model)'}
                                         value={field.key}
                                         onChange={(e) => handleFieldChange(index, 'key', e.target.value)}
                                     />
