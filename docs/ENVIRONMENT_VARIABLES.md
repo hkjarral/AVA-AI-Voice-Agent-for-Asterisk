@@ -145,3 +145,7 @@ Recreate `ai_engine` and `admin_ui` after credential changes. See
 
 - Transport mode / pipelines / providers / barge-in / streaming: `config/ai-agent.yaml`
 - Secrets + host wiring + operational knobs: `.env`
+
+## 60db modular TTS
+
+`SIXTYDB_API_KEY` supplies the legacy/shared API key for `sixtydb_tts`. Provider-specific `api_key_file` or `api_key_env` takes precedence. See [60db setup](Provider-60db-Setup.md).

@@ -102,7 +102,7 @@ Use these terms consistently and tie every change back to them:
     instances of the same provider type are supported.
   - **Modular pipelines** — separate STT/LLM/TTS adapters resolved by
     `PipelineOrchestrator` (`src/pipelines/orchestrator.py`): OpenAI, Deepgram (+ Flux),
-    Google, Azure, ElevenLabs, Groq, Ollama, Telnyx (LLM), MiniMax (LLM), CambAI, Local.
+    Google, Azure, ElevenLabs, Groq, Ollama, Telnyx (LLM), MiniMax (LLM), CambAI, 60db (TTS), Local.
 - **Voice selection (v7.3.0+)**: voice belongs to Agents. Precedence: per-call override >
   Agent voice in `agents.db` > provider default. Resolution lives
   in `resolve_effective_voice()`/`apply_context_voice()` (`src/core/transport_orchestrator.py`);

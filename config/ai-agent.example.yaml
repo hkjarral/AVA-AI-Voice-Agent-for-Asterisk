@@ -327,3 +327,16 @@ llm:
   initial_greeting: "Hello, how can I help you today?"
   prompt: "You are a concise and helpful voice assistant. Keep replies under 20 words unless asked for detail."
   model: "gpt-4o"
+
+# To add 60db to the providers mapping (do not route directly to this TTS key):
+#   sixtydb_tts:
+#     type: sixtydb
+#     capabilities: [tts]
+#     enabled: true
+#     api_key_env: SIXTYDB_API_KEY
+#     voice_id: your-workspace-voice-id
+#     speed: 1.0
+#     connect_timeout_sec: 10
+#     read_timeout_sec: 30
+#     output_resampler: inherit
+# See docs/Provider-60db-Setup.md for a complete pipeline example.

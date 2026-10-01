@@ -513,13 +513,13 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
                                         }}
                                     />
                                 )}
-                                {cap === 'tts' && selectedSubtype.yamlType === 'fishaudio' && (
+                                {cap === 'tts' && ['fishaudio', 'sixtydb'].includes(selectedSubtype.yamlType) && (
                                     <ProviderCredentialsCard
                                         providerKey={isNew ? undefined : config.name}
                                         credentialType="api-key"
-                                        label="Fish Audio API Key"
-                                        placeholder="Paste Fish Audio API key"
-                                        envVarFallback="FISH_AUDIO_API_KEY"
+                                        label={`${selectedSubtype.label} API Key`}
+                                        placeholder={`Paste ${selectedSubtype.label} API key`}
+                                        envVarFallback={selectedSubtype.yamlType === 'sixtydb' ? 'SIXTYDB_API_KEY' : 'FISH_AUDIO_API_KEY'}
                                         inlineValue={
                                             config.api_key ||
                                             (config.api_key_env
