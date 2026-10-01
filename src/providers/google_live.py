@@ -31,6 +31,7 @@ from typing import AbstractSet, Any, Dict, Optional, List, Tuple
 from collections import deque
 
 import websockets
+from .connection_recovery import connect_with_recovery
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
@@ -838,6 +839,9 @@ class GoogleLiveProvider(AIProviderInterface):
                 call_id=call_id,
             )
 
+        connection_started = asyncio.get_running_loop().time()
+        connection_budget = self.config.connect_total_timeout_sec
+
         # Build WebSocket URL and headers — Vertex AI vs Developer API (AAVA-191)
         use_vertex = getattr(self.config, 'use_vertex_ai', False)
         ws_url: str
@@ -874,11 +878,22 @@ class GoogleLiveProvider(AIProviderInterface):
                 else:
                     credentials, _ = google.auth.default(scopes=scopes)
                 auth_req = google.auth.transport.requests.Request()
+                if connection_budget is not None:
+                    from functools import partial
+                    remaining = connection_budget - (time.monotonic() - connection_started)
+                    if remaining <= 0:
+                        raise TimeoutError("Provider connection budget exhausted")
+                    auth_req = partial(auth_req, timeout=remaining)
                 credentials.refresh(auth_req)
                 return credentials.token
 
             try:
-                bearer_token = await asyncio.get_event_loop().run_in_executor(None, _get_vertex_token)
+                token_future = asyncio.get_running_loop().run_in_executor(None, _get_vertex_token)
+                if connection_budget is None:
+                    bearer_token = await token_future
+                else:
+                    remaining = connection_budget - (asyncio.get_running_loop().time() - connection_started)
+                    bearer_token = await asyncio.wait_for(token_future, timeout=max(0, remaining))
             except Exception as vertex_err:
                 # ADC failed — fall back to Developer API if an API key exists
                 _fallback_key = (getattr(self.config, 'api_key', None) or "").strip()
@@ -934,15 +949,20 @@ class GoogleLiveProvider(AIProviderInterface):
 
         try:
             # Establish WebSocket connection
-            self.websocket = await websockets.connect(
-                ws_url,
-                additional_headers=ws_extra_headers,
-                subprotocols=["gemini-live"],
-                max_size=10 * 1024 * 1024,  # 10MB max message size
-                # Disable library-level ping frames. We implement our own keepalive behavior
-                # in `_keepalive_loop()` and have seen 1008 closes correlated with ping activity.
-                ping_interval=None,
-                ping_timeout=None,
+            self.websocket = await connect_with_recovery(
+                lambda timeout: websockets.connect(
+                    ws_url,
+                    open_timeout=timeout,
+                    additional_headers=ws_extra_headers,
+                    subprotocols=["gemini-live"],
+                    max_size=10 * 1024 * 1024,  # 10MB max message size
+                    # Disable library-level ping frames. We implement our own keepalive behavior
+                    # in `_keepalive_loop()` and have seen 1008 closes correlated with ping activity.
+                    ping_interval=None,
+                    ping_timeout=None,
+                ),
+                self.config, provider=self.provider_event_name(), call_id=call_id,
+                started_at=connection_started,
             )
 
             _GOOGLE_LIVE_SESSIONS.inc()

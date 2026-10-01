@@ -534,3 +534,8 @@ Stasis(asterisk-ai-voice-agent)
 
 - **Issues**: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues
 - **Docs**: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/tree/main/docs
+
+
+## Optional startup connection recovery
+
+This full-agent provider supports bounded retries before session setup. Upgrades preserve a 10-second opening timeout and zero retries. Enable recovery per provider under **Startup connection recovery (Expert)** in the Admin UI, then restart AI Engine. Setup, keepalive, and mid-call behavior remain separate. See [connection recovery configuration and real-call tests](Provider-Connection-Recovery.md) for deadlines, rollback, and qualification steps.

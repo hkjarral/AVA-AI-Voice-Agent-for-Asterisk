@@ -1,3 +1,4 @@
+import ConnectionRecoveryFields from './ConnectionRecoveryFields';
 import React from 'react';
 import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 import HelpTooltip from '../../ui/HelpTooltip';
@@ -651,6 +652,7 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                     </p>
                 </div>
             </div>
+            <ConnectionRecoveryFields config={config} onChange={onChange} />
         </div>
     );
 };

@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Opt-in cloud provider startup connection recovery** ([#676](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/676)): Google Live/Vertex, OpenAI Realtime, Grok, Deepgram Agent, and ElevenLabs Agent can retry transient initial connection failures with configurable opening and total connection deadlines. Provider forms expose the controls under Expert settings. Upgrades retain a 10-second opening timeout, zero retries, and no added aggregate deadline; setup, mid-call recovery, keepalive, terminal failure routing, and Local behavior are unchanged. See [connection recovery and real-call verification](docs/Provider-Connection-Recovery.md).
+
+
 - **Gemini 3.8 Live on Developer API and Vertex AI** ([#673](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/673)): adds model selection on both surfaces, AUDIO-only setup, ID-matched function responses, and cancellation-aware tool execution. Read-only extension status checks can run non-blocking; call-state and telephony actions remain blocking. The Admin UI shows model-aware Vertex regions, resets an incompatible region to the shared `us-central1` default when switching models, and locks 3.8 response modality to Audio Only. Gemini 3.8 uses full-duplex caller audio for barge-in and drains a spoken farewell without forwarding a post-hangup model continuation. Shared attended-transfer cleanup now resumes the caller when an agent leg ends before answer. A Vertex `us-central1` 3.8 call (`1790560988.243`) exercised interruption, tools, unanswered-transfer recovery, and hangup; a Vertex 2.5 retest (`1790561587.250`) exercised the existing model path and the same recovery. Broader production and Developer API qualification remains outstanding. Shipped model defaults are unchanged.
 
 ## [7.6.1] - 2026-09-20

@@ -53,6 +53,56 @@ describe('ProvidersPage OpenAI Realtime save contract', () => {
     });
 
     it.each([
+        { field: 'connect_total_timeout_sec', label: 'Maximum connection wait (sec)', fallback: null },
+        { field: 'connect_timeout_sec', label: 'Connection timeout per attempt (sec)', fallback: 10 },
+        { field: 'connect_max_retries', label: 'Initial connection retries', fallback: 0 },
+    ])('removes cleared $field through save and reopen', async ({ field, label, fallback }) => {
+        mocks.config = {
+            providers: {
+                openai_realtime: {
+                    type: 'openai_realtime',
+                    capabilities: ['stt', 'llm', 'tts'],
+                    enabled: true,
+                    model: 'gpt-realtime',
+                    connect_timeout_sec: 8,
+                    connect_max_retries: 1,
+                    connect_total_timeout_sec: 25,
+                },
+            },
+            default_provider: 'openai_realtime',
+        };
+        vi.mocked(axios.post).mockImplementation(async (url, body) => {
+            if (url === '/api/config/yaml') {
+                mocks.config = yaml.load((body as { content: string }).content) as Record<string, unknown>;
+            }
+            return { data: {}, status: 200 };
+        });
+        render(<MemoryRouter><ProvidersPage /></MemoryRouter>);
+        fireEvent.click(await screen.findByTitle('Settings'));
+        const dialog = await screen.findByRole('dialog', { name: 'Edit Provider: openai_realtime' });
+        fireEvent.change(within(dialog).getByLabelText(label), { target: { value: '' } });
+        expect(within(dialog).getByLabelText(label)).toHaveValue(fallback);
+        // A later edit must not restore the deleted field from the original config.
+        fireEvent.click(within(dialog).getByLabelText('Enabled'));
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledWith(
+            '/api/config/yaml', expect.objectContaining({ content: expect.any(String) }),
+        ));
+        const providers = mocks.config.providers as Record<string, Record<string, unknown>>;
+        expect(providers.openai_realtime).not.toHaveProperty(field);
+        expect(providers.openai_realtime.enabled).toBe(false);
+        for (const [otherField, value] of Object.entries({
+            connect_timeout_sec: 8, connect_max_retries: 1, connect_total_timeout_sec: 25,
+        })) {
+            if (otherField !== field) expect(providers.openai_realtime[otherField]).toBe(value);
+        }
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+        fireEvent.click(screen.getByTitle('Settings'));
+        const reopened = await screen.findByRole('dialog', { name: 'Edit Provider: openai_realtime' });
+        expect(within(reopened).getByLabelText(label)).toHaveValue(fallback);
+    });
+
+    it.each([
         {
             label: 'explicit GA',
             apiVersion: 'ga',

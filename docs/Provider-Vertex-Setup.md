@@ -180,3 +180,8 @@ The `us` and `eu` values use Google's [multi-region endpoints](https://docs.clou
 - [Provider-Google-Setup.md](Provider-Google-Setup.md) — Dialplan, pipelines, advanced config, Google Live architecture
 - [Configuration-Reference.md](Configuration-Reference.md) — Full config reference
 - [Transport-Mode-Compatibility.md](Transport-Mode-Compatibility.md) — Audio transport options
+
+
+## Optional startup connection recovery
+
+This full-agent provider supports bounded retries before session setup. Upgrades preserve a 10-second opening timeout and zero retries. Enable recovery per provider under **Startup connection recovery (Expert)** in the Admin UI, then restart AI Engine. Setup, keepalive, and mid-call behavior remain separate. See [connection recovery configuration and real-call tests](Provider-Connection-Recovery.md) for deadlines, rollback, and qualification steps.

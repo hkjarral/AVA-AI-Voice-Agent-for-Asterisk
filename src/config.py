@@ -31,7 +31,8 @@ from src.config.security import (
     inject_llm_config,
     inject_provider_api_keys,
 )
-from src.config.provider_instances import full_agent_default
+from src.config.provider_instances import full_agent_default, provider_kind
+from src.config.connection_recovery import CloudConnectionConfig, CLOUD_CONNECTION_KINDS
 from src.config.defaults import (
     apply_transport_defaults,
     apply_audiosocket_defaults,
@@ -324,7 +325,7 @@ class LocalProviderConfig(BaseModel):
         return self.base_url or self.ws_url or "ws://127.0.0.1:8765"
 
 
-class DeepgramProviderConfig(BaseModel):
+class DeepgramProviderConfig(CloudConnectionConfig):
     api_key: Optional[str] = None
     api_key_file: Optional[str] = None
     api_key_env: Optional[str] = None
@@ -517,7 +518,7 @@ class MiniMaxLLMProviderConfig(BaseModel):
     response_timeout_sec: float = Field(default=30.0)
 
 
-class GoogleProviderConfig(BaseModel):
+class GoogleProviderConfig(CloudConnectionConfig):
     api_key: Optional[str] = None
     api_key_file: Optional[str] = None
     api_key_env: Optional[str] = None
@@ -935,7 +936,7 @@ class MCPConfig(BaseModel):
     servers: Dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
-class OpenAIRealtimeProviderConfig(BaseModel):
+class OpenAIRealtimeProviderConfig(CloudConnectionConfig):
     enabled: bool = Field(default=True)
     api_key: Optional[str] = None
     api_key_file: Optional[str] = None
@@ -989,7 +990,7 @@ class OpenAIRealtimeProviderConfig(BaseModel):
     turn_detection: Optional[TurnDetectionConfig] = None
 
 
-class GrokProviderConfig(BaseModel):
+class GrokProviderConfig(CloudConnectionConfig):
     """Configuration for the xAI Grok Voice Agent realtime provider.
 
     The Voice Agent API is OpenAI-Realtime-compatible at the wire level with
@@ -1458,6 +1459,12 @@ class AppConfig(BaseModel):
         for provider_name, provider_config in self.providers.items():
             if not isinstance(provider_config, dict):
                 continue
+            if provider_kind(str(provider_name), provider_config) in CLOUD_CONNECTION_KINDS:
+                # Validate without inserting defaults into operator-owned YAML.
+                try:
+                    CloudConnectionConfig.model_validate(provider_config)
+                except ValueError as exc:
+                    raise ValueError(f"providers.{provider_name}: invalid connection recovery settings: {exc}") from exc
             if "output_resampler" in provider_config:
                 validate_resampler(
                     f"providers.{provider_name}.output_resampler",

@@ -16,6 +16,9 @@ def test_snapshot_captures_effective_provider_audio_and_runtime_without_secrets(
             "google_live": {
                 "type": "google_live",
                 "model": "gemini-live",
+                "connect_timeout_sec": 10,
+                "connect_max_retries": 0,
+                "connect_total_timeout_sec": None,
                 "input_encoding": "pcm16",
                 "input_sample_rate_hz": 16000,
                 "api_key": "must-not-be-copied",
@@ -77,6 +80,8 @@ def test_snapshot_captures_effective_provider_audio_and_runtime_without_secrets(
     assert snapshot["resolved"]["audio_profile"] == "telephony_ulaw_8k"
     assert snapshot["resolved"]["transport_profile"]["wire_sample_rate"] == 8000
     assert snapshot["configured"]["provider"]["model"] == "gemini-live"
+    assert snapshot["configured"]["provider"]["connect_timeout_sec"] == 10
+    assert snapshot["configured"]["provider"]["connect_max_retries"] == 0
     assert snapshot["configured"]["vad"]["vad_mode"] == "provider"
     assert snapshot["runtime"]["streaming_bytes_sent"] == 2048
     rendered = repr(snapshot)
