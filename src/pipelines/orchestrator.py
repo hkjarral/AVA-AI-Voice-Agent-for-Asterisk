@@ -47,6 +47,8 @@ from .telnyx import TelnyxLLMAdapter
 from .azure import AzureSTTFastAdapter, AzureSTTRealtimeAdapter, AzureTTSAdapter
 from .cambai import CambAiTTSAdapter
 from .fish_audio import FishAudioTTSAdapter
+from .sixtydb import SixtyDBTTSAdapter
+from ..config import SixtyDBProviderConfig
 
 logger = get_logger(__name__)
 
@@ -808,6 +810,8 @@ class PipelineOrchestrator:
         else:
             logger.debug("CAMB AI TTS pipeline adapter not registered - API key unavailable or config missing")
 
+        self._register_sixtydb_tts_factories()
+
         # Fish Audio TTS adapters. Register each configured provider under its
         # exact YAML key so Admin UI-created custom ``*_tts`` instances work in
         # pipelines instead of only the canonical ``fishaudio_tts`` key.
@@ -896,6 +900,35 @@ class PipelineOrchestrator:
         else:
             logger.debug("Azure TTS pipeline adapter not registered - API key unavailable or config missing")
 
+
+    def _register_sixtydb_tts_factories(self) -> None:
+        """Register configured 60db TTS keys, preserving fail-closed pipelines."""
+        for name, raw in (self.config.providers or {}).items():
+            if not isinstance(raw, (dict, SixtyDBProviderConfig)):
+                continue
+            payload = raw.model_dump() if isinstance(raw, SixtyDBProviderConfig) else dict(raw)
+            if not (name == "sixtydb_tts" or (
+                str(name).endswith("_tts") and payload.get("type") == "sixtydb"
+            )) or payload.get("enabled") is False:
+                continue
+            payload["api_key"] = resolve_secret_value(
+                payload,
+                file_field="api_key_file",
+                env_field="api_key_env",
+                inline_field="api_key",
+                legacy_env_names=("SIXTYDB_API_KEY",),
+            )
+            try:
+                provider = SixtyDBProviderConfig(**payload)
+            except Exception:
+                logger.warning("Invalid 60db TTS configuration", component=name)
+                continue
+            if not provider.api_key or not str(provider.voice_id or "").strip():
+                logger.warning("60db TTS requires an API key and workspace voice_id", component=name)
+                continue
+            def factory(component_key: str, options: Dict[str, Any], provider=provider) -> Component:
+                return SixtyDBTTSAdapter(component_key, self.config, provider, options)
+            self.register_factory(str(name), factory)
 
     def _register_configured_llm_factories(self) -> None:
         """Register every supported modular ``*_llm`` provider by its YAML key."""

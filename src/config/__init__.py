@@ -45,6 +45,7 @@ GroqSTTProviderConfig = _parent_config.GroqSTTProviderConfig
 GroqTTSProviderConfig = _parent_config.GroqTTSProviderConfig
 ElevenLabsProviderConfig = _parent_config.ElevenLabsProviderConfig
 CambAiProviderConfig = _parent_config.CambAiProviderConfig
+SixtyDBProviderConfig = _parent_config.SixtyDBProviderConfig
 FishAudioProviderConfig = _parent_config.FishAudioProviderConfig
 OpenAIRealtimeProviderConfig = _parent_config.OpenAIRealtimeProviderConfig
 GrokProviderConfig = _parent_config.GrokProviderConfig
@@ -86,6 +87,7 @@ __all__ = [
     'GroqTTSProviderConfig',
     'ElevenLabsProviderConfig',
     'CambAiProviderConfig',
+    'SixtyDBProviderConfig',
     'FishAudioProviderConfig',
     'OpenAIRealtimeProviderConfig',
     'GrokProviderConfig',

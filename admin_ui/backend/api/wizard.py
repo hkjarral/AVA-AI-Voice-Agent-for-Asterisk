@@ -2958,6 +2958,11 @@ class SetupConfig(BaseModel):
 
 def _validate_setup_provider_credentials(config: SetupConfig) -> None:
     """Validate only credentials owned by the selected setup target."""
+    if config.provider in {"sixtydb", "sixtydb_tts"}:
+        raise HTTPException(
+            status_code=400,
+            detail="60db is a modular TTS adapter. Finish setup with a full agent, then add 60db under Providers and select it in a pipeline.",
+        )
     if config.provider == "openai_realtime" and not config.openai_key:
         raise HTTPException(status_code=400, detail="OpenAI API Key is required for OpenAI Realtime provider")
     if config.provider == "deepgram":

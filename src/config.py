@@ -701,6 +701,20 @@ class CambAiProviderConfig(BaseModel):
     )
 
 
+class SixtyDBProviderConfig(BaseModel):
+    """60db TTS-only pipeline configuration; voice IDs belong to the workspace."""
+    enabled: bool = True
+    api_key: Optional[str] = None
+    api_key_file: Optional[str] = None
+    api_key_env: Optional[str] = None
+    voice_id: Optional[str] = None
+    model_id: Optional[str] = None
+    speed: float = Field(default=1.0, ge=0.5, le=2.0, allow_inf_nan=False)
+    connect_timeout_sec: float = Field(default=10.0, gt=0, allow_inf_nan=False)
+    read_timeout_sec: float = Field(default=30.0, gt=0, allow_inf_nan=False)
+    output_resampler: Literal["inherit", "linear", "bandlimited"] = "inherit"
+
+
 class FishAudioProviderConfig(BaseModel):
     """Fish Audio TTS provider configuration.
 

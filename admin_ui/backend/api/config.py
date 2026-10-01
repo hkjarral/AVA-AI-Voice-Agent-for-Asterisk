@@ -1974,11 +1974,33 @@ async def test_provider_connection(request: ProviderTestRequest):
                 return {"success": False, "message": f"Cannot connect to Local AI Server at {ws_url} (see server logs)"}
         
         # ============================================================
+        # Modular TTS provider validation.
         # FISH AUDIO TTS - perform a minimal real synthesis. A key-only model
         # listing can succeed even when the configured model returns 402 for
         # missing credit or entitlement. A loopback-only exception supports
         # the bundled mock; bearer credentials never reach arbitrary hosts.
         # ============================================================
+        if provider_type == 'sixtydb':
+            api_key = provider_config.get('api_key') or get_env_key('SIXTYDB_API_KEY')
+            voice_id = str(provider_config.get('voice_id') or '').strip()
+            if not api_key or not voice_id:
+                return {"success": False, "message": "60db requires an API key and workspace voice ID"}
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+                for tier in ("quality", "fast"):
+                    response = await client.get(
+                        f"https://api.60db.ai/voices?model={tier}",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                    )
+                    if response.status_code != 200:
+                        return {"success": False, "message": f"60db voice catalog failed: HTTP {response.status_code}"}
+                    catalog = response.json()
+                    records = catalog.get("data", []) if isinstance(catalog, dict) else []
+                    if isinstance(records, list) and any(
+                        isinstance(voice, dict) and voice.get("voice_id") == voice_id for voice in records
+                    ):
+                        return {"success": True, "message": "60db workspace voice verified (synthesis not tested)"}
+            return {"success": False, "message": "60db workspace voice ID was not found"}
+
         if provider_type == 'fishaudio':
             api_key = (
                 str(provider_config.get('api_key') or '').strip()
@@ -3100,6 +3122,7 @@ def _provider_legacy_api_key_env_names(provider_key: str, kind: str) -> tuple[st
         "elevenlabs_agent": ("ELEVENLABS_API_KEY",),
         "grok": ("XAI_API_KEY",),
         "fishaudio": ("FISH_AUDIO_API_KEY",),
+        "sixtydb": ("SIXTYDB_API_KEY",),
     }.get(kind)
     if full_agent is not None:
         return full_agent
@@ -3544,6 +3567,7 @@ async def verify_provider_credentials(provider_key: str):
         "elevenlabs_agent": ("ELEVENLABS_API_KEY",),
         "grok": ("XAI_API_KEY",),
         "fishaudio": ("FISH_AUDIO_API_KEY",),
+        "sixtydb": ("SIXTYDB_API_KEY",),
     }.get(kind, ())
     api_key = helpers["resolve_secret_value"](
         provider_cfg,
@@ -3628,6 +3652,17 @@ async def verify_provider_credentials(provider_key: str):
             if resp.status_code >= 400:
                 raise HTTPException(status_code=400, detail="xAI API key verification failed")
             return {"status": "success", "message": "xAI API key verified"}
+        if kind == "sixtydb":
+            if not api_key:
+                raise HTTPException(status_code=400, detail="60db API key is not configured")
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+                resp = await client.get(
+                    "https://api.60db.ai/voices",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+            if resp.status_code != 200:
+                raise HTTPException(status_code=400, detail="60db API key verification failed")
+            return {"status": "success", "message": "60db API key verified"}
         if kind == "fishaudio":
             if not api_key:
                 raise HTTPException(status_code=400, detail="Fish Audio API key is not configured")

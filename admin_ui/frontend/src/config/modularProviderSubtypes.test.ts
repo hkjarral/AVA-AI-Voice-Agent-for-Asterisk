@@ -86,3 +86,15 @@ describe('modular TTS provider subtypes', () => {
         ).toBe('fishaudio');
     });
 });
+
+
+describe('60db modular TTS', () => {
+    it('offers workspace voice selection without an invented default voice', () => {
+        const subtype = MODULAR_SUBTYPES.tts.find(item => item.id === 'sixtydb');
+        expect(subtype?.fields.find(field => field.key === 'voice_id')).toEqual(
+            expect.objectContaining({ required: true })
+        );
+        expect(subtype?.fields.find(field => field.key === 'voice_id')?.default).toBeUndefined();
+        expect(inferSubtype({type: 'sixtydb', capabilities: ['tts']})?.id).toBe('sixtydb');
+    });
+});

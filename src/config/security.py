@@ -205,6 +205,14 @@ def _matches_provider_family(
 #                OpenAI-compatible "type: openai" must point at api.openai.com).
 PROVIDER_KEY_FAMILIES = [
     {
+        "name": "sixtydb",
+        "secret_fields": {"SIXTYDB_API_KEY": "api_key"},
+        "types": {"sixtydb"},
+        "name_prefixes": ("sixtydb",),
+        "url_fields": (),
+        "hosts": set(),
+    },
+    {
         "name": "openai",
         "secret_fields": {"OPENAI_API_KEY": "api_key"},
         "types": {"openai", "openai_realtime"},

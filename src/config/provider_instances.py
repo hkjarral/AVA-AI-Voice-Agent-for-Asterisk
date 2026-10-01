@@ -60,6 +60,7 @@ API_KEY_COMPATIBLE_KINDS = frozenset(
         "telenyx",
         "minimax",
         "fishaudio",
+        "sixtydb",
     }
 )
 
@@ -67,7 +68,7 @@ MODULAR_LLM_KINDS = frozenset(
     {"openai", "google", "ollama", "local", "telnyx", "telenyx", "minimax"}
 )
 
-MODULAR_TTS_KINDS = frozenset({"fishaudio"})
+MODULAR_TTS_KINDS = frozenset({"fishaudio", "sixtydb"})
 
 CREDENTIAL_NAME_TO_FIELD = {
     "api-key": "api_key_file",

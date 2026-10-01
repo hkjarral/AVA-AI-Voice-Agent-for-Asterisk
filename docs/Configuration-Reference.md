@@ -907,3 +907,7 @@ instead. The request text also carries hooks — `FISH_MOCK_401`,
 
 The integration test is skipped unless both `FISH_AUDIO_API_KEY` and
 `FISH_AUDIO_REFERENCE_ID` are set.
+
+## 60db modular TTS (`sixtydb_tts`)
+
+Use `type: sixtydb`, `capabilities: [tts]`, and a workspace `voice_id`. Optional fields: `model_id`, `speed` (0.5–2.0, default 1), `connect_timeout_sec` (default 10), `read_timeout_sec` (default 30), and `output_resampler` (`inherit`, `linear`, `bandlimited`). Credentials use `api_key_file`, `api_key_env`, or `SIXTYDB_API_KEY`. Custom provider names must end in `_tts`. See [60db setup](Provider-60db-Setup.md) for pipeline and audio configuration.

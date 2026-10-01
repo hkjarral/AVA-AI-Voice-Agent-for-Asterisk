@@ -194,6 +194,20 @@ const OUTPUT_RESAMPLER_FIELD: SubtypeField = {
 };
 const TTS_SUBTYPES: ProviderSubtype[] = [
   {
+    id: 'sixtydb',
+    label: '60db',
+    description: '60db workspace voices for modular text-to-speech',
+    yamlType: 'sixtydb',
+    fields: [
+      { key: 'voice_id', label: 'Workspace Voice ID', type: 'text', required: true, tooltip: 'Choose a voice ID available in your 60db workspace.' },
+      { key: 'model_id', label: 'Model ID', type: 'text', required: false, placeholder: 'Optional; use the workspace default', tooltip: 'Leave blank to use the service default.' },
+      { key: 'speed', label: 'Speed', type: 'number', required: false, default: 1, tooltip: 'Speech speed from 0.5 to 2.0.' },
+      { key: 'connect_timeout_sec', label: 'Connect Timeout (sec)', type: 'number', required: false, default: 10 },
+      { key: 'read_timeout_sec', label: 'Audio Read Timeout (sec)', type: 'number', required: false, default: 30 },
+      OUTPUT_RESAMPLER_FIELD,
+    ],
+  },
+  {
     id: 'fishaudio',
     label: 'Fish Audio',
     description: 'Fish Audio streaming PCM text-to-speech for telephony',
