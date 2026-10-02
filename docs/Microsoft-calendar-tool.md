@@ -62,6 +62,17 @@ retain them. Missing, forbidden and explicitly read-only calendars still fail.
 Reconnect only when authorization actually expires or is revoked, rather than
 as an upgrade workaround.
 
+The configured `user_principal_name` must match the MSAL cached account username.
+New connections save that canonical username, even when Graph mail or the sign-in
+claim uses an alias. If an older configuration contains an alias or manually
+entered identity that does not match the cache, verification returns
+`account_identity_mismatch` rather than claiming the token expired. An operator
+must confirm the intended account and correct this field to its cached username,
+then Verify again; the existing cache and calendar ID can remain unchanged. Do
+not substitute a username merely to bypass this check. An empty/expired cache
+still requires reconnecting. Runtime never falls back to a different cached
+identity, even when it is the only account in the cache.
+
 When `enforce_booking_limits` is absent or false, existing working-hour values
 continue to guide suggestions, while exact checks, creation and rescheduling
 allow other hours/days and dates beyond the displayed horizon. Enable the switch
@@ -218,10 +229,12 @@ and body while preserving the confirmed caller details and attendees.
   retry identity; staff can rebook it. A changed slot can be booked anew after
   cancellation, with fresh caller agreement.
 
-Cancellation sends the freshly observed event ETag in `If-Match`. A missing
-version or a 412 precondition failure requires staff; there is no unconditional
-retry. Subject/time/attendee/body edits detected before the request also stop
-the change. Provider enforcement of conditional event requests must be checked
+Cancellation and rescheduling send the freshly observed event ETag in `If-Match`.
+A missing, blank, non-string or wildcard version and a 412 precondition failure
+require staff; there is no unconditional retry. Refusing an unversioned
+reschedule creates no pending operation; a later attempt with a concrete version
+can proceed after renewed confirmation. Subject/time/attendee/body edits detected
+before the request also stop the change. Provider enforcement of conditional event requests must be checked
 in the approved mailbox acceptance test; this does not establish a distributed
 reservation guarantee.
 

@@ -252,9 +252,18 @@ def test_event_preferences_survive_pagination_and_all_conditional_mutations():
     assert send.call_args_list[-1].args[0].get_header("If-match") == 'W/"version2"'
 
 
-@pytest.mark.parametrize("matched", [True, False])
+@pytest.mark.parametrize(
+    "cached_users",
+    [
+        ["scheduler@example.com"],
+        ["alias@example.com"],
+        ["other@example.com"],
+        ["other@example.com", "alias@example.com"],
+        [],
+    ],
+)
 def test_existing_cache_loads_unchanged_and_never_falls_back_to_another_identity(
-    tmp_path, matched
+    tmp_path, cached_users
 ):
     import msal
     from dataclasses import replace
@@ -266,12 +275,13 @@ def test_existing_cache_loads_unchanged_and_never_falls_back_to_another_identity
     )
     cache_data = {
         "Account": {
-            "synthetic-account": {
-                "username": "scheduler@example.com" if matched else "other@example.com",
-                "home_account_id": "synthetic-home",
+            f"synthetic-account-{index}": {
+                "username": username,
+                "home_account_id": f"synthetic-home-{index}",
                 "environment": "login.microsoftonline.com",
                 "realm": "synthetic",
             }
+            for index, username in enumerate(cached_users)
         }
     }
     original = json.dumps(cache_data).encode()
@@ -289,13 +299,20 @@ def test_existing_cache_loads_unchanged_and_never_falls_back_to_another_identity
         return app
 
     with patch.object(graph._msal, "PublicClientApplication", side_effect=application):
-        if matched:
+        if "scheduler@example.com" in cached_users:
             assert graph.acquire_token() == "synthetic-token"
         else:
             with pytest.raises(MicrosoftGraphApiError) as caught:
                 graph.acquire_token()
-            assert caught.value.error_code == "auth_expired"
+            assert caught.value.error_code == (
+                "account_identity_mismatch" if cached_users else "auth_expired"
+            )
             app.acquire_token_silent.assert_not_called()
-    app.get_accounts.assert_called_once_with(username="scheduler@example.com")
+    assert app.get_accounts.call_args_list[0].kwargs == {
+        "username": "scheduler@example.com"
+    }
+    assert app.get_accounts.call_count == (
+        1 if "scheduler@example.com" in cached_users else 2
+    )
     assert (tmp_path / "synthetic-cache.json").read_bytes() == original
     assert graph.account.calendar_id == "named/calendar"

@@ -201,7 +201,13 @@ def build_in_call_tool_runtime_guidance(config: Dict[str, Any], allowed_tools: I
     if "microsoft_calendar" in allowed:
         calendar = ((config or {}).get("tools") or {}).get("microsoft_calendar") or {}
         accounts = calendar.get("accounts") or {"default": calendar}
-        selected = calendar.get("selected_accounts", list(accounts))
+        selected = calendar.get("selected_accounts")
+        if selected is None:
+            selected = list(accounts)
+        elif isinstance(selected, (list, tuple)):
+            selected = [str(key) for key in selected if str(key) in accounts]
+        else:
+            selected = []
         lines = [
             "Microsoft Calendar booking rules:",
             "- For a requested time, call check_availability with its exact start_datetime/end_datetime first. get_free_slots is a suggestion subset, never proof that an omitted time is busy. Offer alternatives only when the requested interval is unavailable.",
@@ -216,7 +222,7 @@ def build_in_call_tool_runtime_guidance(config: Dict[str, Any], allowed_tools: I
             f"- Working-hours and booking-horizon enforcement is {'enabled' if calendar.get('enforce_booking_limits') is True else 'disabled'} by the operator. Suggestions still use configured hours; exact availability checks use the booking policy.",
             f"- Caller invitations are {'enabled' if calendar.get('invitations_enabled') is True else 'disabled'} by the operator.",
         ]
-        for key in selected if isinstance(selected, list) else []:
+        for key in selected:
             account = accounts.get(key) or {}
             timezone_name = account.get("timezone") or calendar.get("timezone") or "UTC"
             try:

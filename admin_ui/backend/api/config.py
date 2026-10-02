@@ -5082,6 +5082,31 @@ def _ms_device_flow_worker(flow_id: str, tenant_id: str, client_id: str, account
                     "message": description or error or "Microsoft device-code authorization failed.",
                 }
             return
+        # This cache is fresh for the explicitly authorized device flow. Persist
+        # its canonical MSAL username, rather than a Graph mail address/alias that
+        # will fail the runtime's strict configured-account lookup on upgrade.
+        claimed_username = str(
+            (result.get("id_token_claims") or {}).get("preferred_username") or ""
+        ).strip()
+        cached_accounts = app.get_accounts()
+        matches = [
+            item
+            for item in cached_accounts
+            if isinstance(item.get("username"), str)
+            and item["username"].casefold() == claimed_username.casefold()
+        ]
+        signed_in = None
+        if len(matches) == 1:
+            signed_in = matches[0]
+        elif len(cached_accounts) == 1:
+            signed_in = cached_accounts[0]
+        username = (signed_in or {}).get("username")
+        if not isinstance(username, str) or not username.strip():
+            raise ValueError(
+                "Cannot identify the account authorized by this device flow; "
+                "retry Connect with the intended scheduling account."
+            )
+        username = username.strip()
         _persist_ms_token_cache(cache, account_key)
         # Capture the canonical cache path for the success payload. The
         # caller surfaces this in /devices/poll so the UI can show where
@@ -5100,12 +5125,6 @@ def _ms_device_flow_worker(flow_id: str, tenant_id: str, client_id: str, account
             page = _ms_graph_request_with_token(access_token, "GET", next_url)
             calendars.extend(page.get("value") or [])
             next_url = page.get("@odata.nextLink")
-        username = (
-            (result.get("id_token_claims") or {}).get("preferred_username")
-            or me.get("userPrincipalName")
-            or me.get("mail")
-            or ""
-        )
         with _ms_flow_lock():
             _MS_DEVICE_FLOWS[flow_id]["status"] = "success"
             _MS_DEVICE_FLOWS[flow_id]["result"] = {

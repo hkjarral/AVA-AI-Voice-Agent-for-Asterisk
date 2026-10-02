@@ -273,6 +273,7 @@ class MicrosoftCalendarTool(Tool):
         messages = {
             "auth_expired": "Microsoft Calendar is not configured for runtime use: reconnect required.",
             "auth_failed": "Microsoft Calendar authorization failed; ask an operator to reconnect.",
+            "account_identity_mismatch": "The configured Microsoft identity does not match the signed-in cache. Ask an operator to verify and correct the identity; no other cached account will be used.",
             "forbidden_calendar": "Microsoft Calendar access is forbidden (403).",
             "calendar_not_found": "Microsoft Calendar is not configured correctly: calendar not found.",
             "graph_unavailable": "Microsoft Graph is currently unavailable.",
@@ -1508,6 +1509,12 @@ class MicrosoftCalendarTool(Tool):
                         "contentType": "text",
                         "content": rendered_body,
                     }
+                etag = event.get("@odata.etag")
+                if not isinstance(etag, str) or not etag.strip() or etag.strip() == "*":
+                    raise BookingValidationError(
+                        "booking_changed",
+                        "Cannot verify the booking version; ask staff to handle rescheduling.",
+                    )
                 self._check_mutation_active(cancelled, deadline)
                 tracked.update(
                     pending_operation=operation,
@@ -1516,9 +1523,7 @@ class MicrosoftCalendarTool(Tool):
                     pending_subject=rendered_subject,
                 )
                 self._track(call_id, tracked)
-                updated = client.update_event(
-                    event_id, update_body, event.get("@odata.etag")
-                )
+                updated = client.update_event(event_id, update_body, etag)
                 if not isinstance(updated, dict) or updated.get("id") != event_id:
                     return self._uncertain("rescheduling")
                 tracked.update(

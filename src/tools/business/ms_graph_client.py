@@ -127,6 +127,13 @@ class MicrosoftGraphClient:
             )
             accounts = app.get_accounts(username=self.account.user_principal_name)
             if not accounts:
+                # Even a single cached account is not proof that it is the configured user.
+                if app.get_accounts():
+                    raise MicrosoftGraphApiError(
+                        "Configured Microsoft identity does not match the signed-in cache. Verify the intended account and correct user_principal_name; no cached-account fallback is allowed.",
+                        error_code="account_identity_mismatch",
+                        status=401,
+                    )
                 raise MicrosoftGraphApiError(
                     "Microsoft Calendar reconnect required. No signed-in account exists in the token cache.",
                     error_code="auth_expired",

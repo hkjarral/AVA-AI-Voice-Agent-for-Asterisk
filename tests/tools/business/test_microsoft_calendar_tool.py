@@ -1866,3 +1866,68 @@ async def test_multiple_bookings_do_not_broaden_account_ownership(phoenix):
         assert result["error_code"] == "staff_assistance_required"
         # The second account must not be queried using an ID owned by the first calendar.
         assert client.call_count == 1 and not fake.deleted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("etag", [None, "", "   ", "*", " * ", 42, {}])
+async def test_reschedule_without_concrete_version_never_writes_or_leaves_pending_state(
+    phoenix, etag
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    args = {
+        "action": "reschedule_event",
+        "booking_confirmed": True,
+        "start_datetime": "2026-04-29T14:00:00-07:00",
+        "end_datetime": "2026-04-29T14:30:00-07:00",
+    }
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(booking(), phoenix)
+        original = copy.deepcopy(fake.events[0])
+        fake.events[0]["@odata.etag"] = etag
+        result = await tool.execute(args, phoenix)
+        assert result["error_code"] == "booking_changed" and not fake.updated
+        record = tool._call_bookings(phoenix.call_id)[0]
+        assert record["state"] == "active" and not record.get("pending_operation")
+        assert not record.get("pending_target") and not record.get("pending_body")
+        assert fake.events[0]["start"] == original["start"]
+        assert fake.events[0]["end"] == original["end"]
+        # Refusal must not poison later confirmed attempts with a concrete fresh version.
+        fake.events[0]["@odata.etag"] = 'W/"fresh-version"'
+        assert (await tool.execute(args, phoenix))[
+            "reservation_status"
+        ] == "rescheduled"
+        assert fake.updated[0][2] == 'W/"fresh-version"'
+
+
+@pytest.mark.asyncio
+async def test_reschedule_version_conflict_keeps_original_time_and_clears_pending(
+    phoenix,
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    attempts = []
+    args = {
+        "action": "reschedule_event",
+        "booking_confirmed": True,
+        "start_datetime": "2026-04-29T14:00:00-07:00",
+        "end_datetime": "2026-04-29T14:30:00-07:00",
+    }
+
+    def conflict(event_id, body, etag=None):
+        attempts.append((event_id, etag))
+        fake.events[0]["subject"] = "Staff changed this booking after the guard read"
+        fake.events[0]["@odata.etag"] = 'W/"version2"'
+        raise MicrosoftGraphApiError(
+            "synthetic conflict", error_code="booking_changed", status=412
+        )
+
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(booking(), phoenix)
+        original_start = copy.deepcopy(fake.events[0]["start"])
+        fake.update_event = conflict
+        assert (await tool.execute(args, phoenix))["error_code"] == "booking_changed"
+        tracked = tool._call_bookings(phoenix.call_id)[0]
+        assert tracked["state"] == "active" and tracked["pending_operation"] is None
+        assert tracked["pending_target"] is None
+        assert (await tool.execute(args, phoenix))["error_code"] == "booking_changed"
+    assert fake.events[0]["start"] == original_start
+    assert attempts == [("ms_event_123", 'W/"version1"')]
