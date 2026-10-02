@@ -88,3 +88,15 @@ describe('Microsoft numeric field editing', () => {
         expect(saved.mock.calls.at(-1)?.[0].microsoft_calendar.booking_horizon_days).toBe(0);
     });
 });
+
+it('keeps upgrade settings unchanged until the operator explicitly adopts booking limits', () => {
+    const saved = vi.fn();
+    render(<Harness saved={saved} />);
+    expect(screen.getByLabelText('Enforce working hours and booking horizon')).not.toBeChecked();
+    expect(screen.getByLabelText('Allow caller invitations')).not.toBeChecked();
+    expect(saved).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByLabelText('Enforce working hours and booking horizon'));
+    expect(saved.mock.calls.at(-1)?.[0].microsoft_calendar.enforce_booking_limits).toBe(true);
+    expect(saved.mock.calls.at(-1)?.[0].microsoft_calendar.accounts.default.calendar_id).toBe('named-calendar');
+    expect(saved.mock.calls.at(-1)?.[0].microsoft_calendar.invitations_enabled).toBeUndefined();
+});

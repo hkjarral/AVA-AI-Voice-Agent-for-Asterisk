@@ -1200,3 +1200,103 @@ async def test_pipeline_farewell_without_tool_waits_for_audio_drain(monkeypatch)
     finally:
         drain_release.set()
         await engine._cleanup_call(session.call_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowed", [True, False])
+async def test_pipeline_open_receives_calendar_policy_from_call_snapshot_without_rewriting_saved_prompt(
+    monkeypatch, allowed
+):
+    from src.tools.business.microsoft_calendar import MicrosoftCalendarTool
+    from src.core.models import CallSession
+
+    saved_prompt = (
+        "Existing agent instructions: keep our qualification and transfer procedure."
+    )
+    cfg = AppConfig(
+        **{
+            "default_provider": "local",
+            "providers": {"local": {"enabled": True}},
+            "asterisk": {
+                "host": "127.0.0.1",
+                "port": 8088,
+                "username": "synthetic",
+                "password": "synthetic",
+                "app_name": "test",
+            },
+            "llm": {"prompt": saved_prompt, "initial_greeting": ""},
+            "pipelines": {"synthetic": {}},
+            "active_pipeline": "synthetic",
+            "audio_transport": "externalmedia",
+        }
+    )
+    engine = Engine(cfg)
+    registry = ToolRegistry.isolated()
+    registry.register_instance(MicrosoftCalendarTool())
+    registry.get_tools_for_context = lambda *args, **kwargs: (
+        [registry.get("microsoft_calendar")] if allowed else []
+    )
+    scoped = {
+        "tools": {
+            "microsoft_calendar": {
+                "invitations_enabled": False,
+                "enforce_booking_limits": False,
+                "selected_accounts": ["allowed"],
+                "accounts": {
+                    "allowed": {"timezone": "America/Phoenix"},
+                    "unselected": {"timezone": "Europe/London"},
+                },
+            }
+        }
+    }
+    # A different live generation must not affect the prompt of this call.
+    engine.config.tools = {"microsoft_calendar": {"invitations_enabled": True}}
+    monkeypatch.setattr(engine, "_tool_config_for_session", lambda session: scoped)
+    monkeypatch.setattr(engine, "_tool_registry_for_session", lambda session: registry)
+    monkeypatch.setattr(
+        engine.transport_orchestrator,
+        "get_context_config",
+        lambda *args: SimpleNamespace(
+            prompt=saved_prompt,
+            tools=["microsoft_calendar"],
+            disable_global_in_call_tools=[],
+            greeting="",
+        ),
+    )
+
+    class CapturingLLM(_StubLLM):
+        def __init__(self):
+            self.options = None
+
+        async def open_call(self, call_id, options):
+            self.options = dict(options)
+            raise asyncio.CancelledError()  # Stop after capture, before audio/network/tool execution.
+
+    llm = CapturingLLM()
+    resolution = _StubResolution(llm_adapter=llm)
+    monkeypatch.setattr(
+        engine.pipeline_orchestrator, "get_pipeline", lambda *args: resolution
+    )
+    session = CallSession(
+        call_id="synthetic-upgrade-pipeline", caller_channel_id="synthetic-channel"
+    )
+    session.context_name = "existing-agent"
+    session.pipeline_name = "synthetic"
+    await engine.session_store.upsert_call(session)
+    try:
+        await engine._pipeline_runner(session.call_id)
+    except asyncio.CancelledError:
+        pass
+    assert llm.options is not None
+    prompt = llm.options["system_prompt"]
+    assert prompt.startswith(saved_prompt)
+    assert cfg.llm.prompt == saved_prompt
+    if allowed:
+        assert "Microsoft Calendar booking rules:" in prompt
+        assert "invitations are disabled" in prompt
+        assert "enforcement is disabled" in prompt
+        assert "America/Phoenix" in prompt and "Europe/London" not in prompt
+        assert "reschedule_event" in prompt and "cancellation_confirmed=true" in prompt
+        assert prompt.count("Microsoft Calendar booking rules:") == 1
+    else:
+        assert "Microsoft Calendar booking rules:" not in prompt

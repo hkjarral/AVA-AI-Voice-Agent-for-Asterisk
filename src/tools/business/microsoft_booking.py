@@ -72,6 +72,15 @@ def strict_datetime(value: str, timezone_name: str) -> datetime:
         raise BookingValidationError("invalid_datetime", str(exc)) from exc
 
 
+def booking_limits_enabled(config: dict) -> bool:
+    enabled = config.get("enforce_booking_limits", False)
+    if type(enabled) is not bool:
+        raise BookingValidationError(
+            "invalid_configuration", "enforce_booking_limits must be a boolean."
+        )
+    return enabled
+
+
 def booking_interval(
     parameters: dict, config: dict, timezone_name: str, *, enforce_future: bool = True
 ):
@@ -84,7 +93,11 @@ def booking_interval(
         )
     try:
         maximum = int(config.get("max_event_duration_minutes", 240))
-        horizon = int(config.get("booking_horizon_days", 365))
+        horizon = (
+            int(config.get("booking_horizon_days", 365))
+            if booking_limits_enabled(config)
+            else 0
+        )
     except (ValueError, TypeError) as exc:
         raise BookingValidationError(
             "invalid_configuration",
@@ -109,7 +122,9 @@ def booking_interval(
     return start, end, int(minutes)
 
 
-def working_policy(config: dict):
+def working_policy(config: dict, *, for_booking: bool = False):
+    if for_booking and not booking_limits_enabled(config):
+        return 0, 24, set(range(7))
     try:
         start = int(config.get("working_hours_start", 9))
         end = int(config.get("working_hours_end", 17))
@@ -133,7 +148,9 @@ def working_policy(config: dict):
 def within_working_hours(
     start: datetime, end: datetime, timezone_name: str, config: dict
 ) -> bool:
-    work_start, work_end, days = working_policy(config)
+    if not booking_limits_enabled(config):
+        return True
+    work_start, work_end, days = working_policy(config, for_booking=True)
     return any(
         a <= start and end <= b
         for a, b in working_hours_mask(

@@ -44,6 +44,7 @@ from src.tools.business.microsoft_booking import (
     CALLER_FIELDS,
     OPERATOR_FIELDS,
     utc_now,
+    booking_limits_enabled,
 )
 from src.tools.context import ToolExecutionContext, resolve_scoped_tool_config
 
@@ -95,7 +96,7 @@ _MICROSOFT_CALENDAR_INPUT_SCHEMA = {
         },
         "event_id": {
             "type": "string",
-            "description": "For reads, the Graph id. For delete_event/reschedule_event omit it: only the booking created in this same call may be changed. Older bookings require staff.",
+            "description": "For reads, the Graph id. For delete_event/reschedule_event omit it for the most recently selected booking, or supply an ID returned for another booking created in this same call. Older/untracked bookings require staff.",
         },
         "attendee_emails": {
             "type": "array",
@@ -155,6 +156,7 @@ class MicrosoftCalendarTool(Tool):
         self._clients_lock = threading.Lock()
         self._last_event_per_call: "OrderedDict[str, dict]" = OrderedDict()
         self._last_event_lock = threading.Lock()
+        self._owned_bookings: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
 
     @property
     def definition(self) -> ToolDefinition:
@@ -483,7 +485,7 @@ class MicrosoftCalendarTool(Tool):
                 "invalid_duration",
                 "duration must be a positive integer number of minutes, at most 1440.",
             )
-        work_start, work_end, work_days = working_policy(config)
+        work_start, work_end, work_days = working_policy(config, for_booking=exact)
         exact_results = []
         per_account_intervals: list[list[tuple[datetime, datetime]]] = []
         failed_keys: list[str] = []
@@ -529,7 +531,11 @@ class MicrosoftCalendarTool(Tool):
             else:
                 range_start = max(range_start, utc_now().astimezone(ZoneInfo(tz_name)))
                 try:
-                    horizon = int(config.get("booking_horizon_days", 365))
+                    horizon = (
+                        int(config.get("booking_horizon_days", 365))
+                        if booking_limits_enabled(config)
+                        else 0
+                    )
                 except (TypeError, ValueError):
                     raise BookingValidationError(
                         "invalid_configuration", "Invalid booking horizon."
@@ -555,6 +561,7 @@ class MicrosoftCalendarTool(Tool):
                     config,
                     free_prefix,
                     busy_prefix,
+                    for_booking=exact,
                 )
                 if exact:
                     exact_results.append(
@@ -735,6 +742,7 @@ class MicrosoftCalendarTool(Tool):
         free_prefix=None,
         busy_prefix=None,
         exclude_id=None,
+        for_booking=False,
     ):
         # calendarView uses the SAME selected calendar as create/update/delete.
         events = client.list_calendar_view(to_utc(start), to_utc(end))
@@ -765,8 +773,12 @@ class MicrosoftCalendarTool(Tool):
                 )
             ):
                 busy.append((a, b))
-        work_start, work_end, days = working_policy(config)
-        windows = working_hours_mask(start, end, tz_name, work_start, work_end, days)
+        work_start, work_end, days = working_policy(config, for_booking=for_booking)
+        windows = (
+            [(start, end)]
+            if for_booking and not booking_limits_enabled(config)
+            else working_hours_mask(start, end, tz_name, work_start, work_end, days)
+        )
         if prefix:
             windows = intersect_intervals(union_intervals([opened]), windows)
         return subtract_busy(windows, busy), len(windows), len(busy)
@@ -856,12 +868,29 @@ class MicrosoftCalendarTool(Tool):
             ).encode()
         ).hexdigest()
 
+    def _call_bookings(self, call_id):
+        with self._last_event_lock:
+            return [
+                dict(record)
+                for (owner, _), record in self._owned_bookings.items()
+                if owner == call_id
+            ]
+
     def _track(self, call_id, record):
         with self._last_event_lock:
+            identity = (call_id, record["transaction"])
+            self._owned_bookings[identity] = record
+            self._owned_bookings.move_to_end(identity)
             self._last_event_per_call[call_id] = record
             self._last_event_per_call.move_to_end(call_id)
-            while len(self._last_event_per_call) > self._LAST_EVENT_CACHE_CAP:
-                self._last_event_per_call.popitem(last=False)
+            # Bound records, not merely calls. Evicted ownership cannot authorize a mutation.
+            while len(self._owned_bookings) > self._LAST_EVENT_CACHE_CAP:
+                (owner, transaction), _ = self._owned_bookings.popitem(last=False)
+                if (
+                    self._last_event_per_call.get(owner, {}).get("transaction")
+                    == transaction
+                ):
+                    self._last_event_per_call.pop(owner, None)
 
     def _mutation_result(
         self,
@@ -893,7 +922,7 @@ class MicrosoftCalendarTool(Tool):
             "delivery_status": "unknown" if invited else "not_applicable",
             "attendee_acceptance_status": "unknown" if invited else "not_applicable",
             "reconciled": reconciled,
-            "agent_hint": "Report the booking result. With attendees, Microsoft accepted the invitation/update request; do not claim delivery or acceptance. To cancel or reschedule this booking, obtain caller agreement and use delete_event or reschedule_event with NO event_id. Later-call changes require staff. Never delete first to reschedule.",
+            "agent_hint": "Report the booking result. With attendees, Microsoft accepted the invitation/update request; do not claim delivery or acceptance. To cancel or reschedule this booking, obtain caller agreement and use delete_event or reschedule_event with NO event_id for the most recently selected booking; for another current-call booking use its returned event_id. Read back the selected booking before obtaining agreement. Later-call changes require staff. Never delete first to reschedule.",
         }
 
     def _uncertain(self, operation):
@@ -999,22 +1028,19 @@ class MicrosoftCalendarTool(Tool):
         )
         transaction = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
         with self._mutation_lock(cancelled, deadline):
-            with self._last_event_lock:
-                tracked = dict(self._last_event_per_call.get(call_id) or {})
-            if tracked.get("pending_operation"):
-                return self._uncertain(tracked["pending_operation"])
-            if (
-                tracked
-                and (
-                    tracked.get("state") == "uncertain"
-                    or tracked.get("state") == "active"
-                )
-                and tracked.get("transaction") != transaction
-            ):
-                raise BookingValidationError(
-                    "existing_booking",
-                    "This call already has a booking or an uncertain operation. Reconcile it or use reschedule_event; do not create another event.",
-                )
+            records = self._call_bookings(call_id)
+            tracked = next((r for r in records if r["transaction"] == transaction), {})
+            for record in records:
+                if record.get("pending_operation"):
+                    return self._uncertain(record["pending_operation"])
+                if (
+                    record.get("state") == "uncertain"
+                    and record["transaction"] != transaction
+                ):
+                    raise BookingValidationError(
+                        "existing_booking",
+                        "A booking outcome is uncertain. Reconcile the identical operation before creating another appointment.",
+                    )
             if (
                 tracked.get("state") == "cancelled"
                 and tracked.get("transaction") == transaction
@@ -1091,7 +1117,7 @@ class MicrosoftCalendarTool(Tool):
                         "The requested interval is outside configured working hours; offer alternatives.",
                     )
                 intervals, _, _ = self._available_intervals(
-                    client, start, end, account.timezone, config
+                    client, start, end, account.timezone, config, for_booking=True
                 )
                 if not any(a <= start and end <= b for a, b in intervals):
                     raise BookingValidationError(
@@ -1166,8 +1192,43 @@ class MicrosoftCalendarTool(Tool):
                 "Read back the booking and obtain caller agreement to cancel or reschedule it first.",
             )
         with self._mutation_lock(cancelled, deadline):
+            records = self._call_bookings(call_id)
             with self._last_event_lock:
-                tracked = dict(self._last_event_per_call.get(call_id) or {})
+                latest = self._last_event_per_call.get(call_id, {}).get("transaction")
+            requested_id = parameters.get("event_id")
+            tracked = next(
+                (
+                    r
+                    for r in records
+                    if (
+                        (
+                            r.get("event_id") == requested_id
+                            and r.get("binding") == self._binding(account)
+                            and r.get("account_key") == key
+                        )
+                        if requested_id
+                        else r["transaction"] == latest
+                    )
+                ),
+                {},
+            )
+            if (
+                requested_id
+                and not tracked
+                and any(r.get("binding") == self._binding(account) for r in records)
+            ):
+                raise BookingValidationError(
+                    "booking_mismatch",
+                    "event_id does not match a booking owned by this call. Omit it for the most recently selected booking.",
+                )
+            for record in records:
+                if record["transaction"] != tracked.get("transaction") and (
+                    record.get("pending_operation")
+                    or record.get("state") == "uncertain"
+                ):
+                    return self._uncertain(
+                        record.get("pending_operation") or "creation"
+                    )
             if (
                 not call_id
                 or not tracked.get("event_id")
@@ -1415,7 +1476,13 @@ class MicrosoftCalendarTool(Tool):
                     return self._uncertain("rescheduling")
                 booking_interval(parameters, config, account.timezone)
                 intervals, _, _ = self._available_intervals(
-                    client, start, end, account.timezone, config, exclude_id=event_id
+                    client,
+                    start,
+                    end,
+                    account.timezone,
+                    config,
+                    exclude_id=event_id,
+                    for_booking=True,
                 )
                 if not any(a <= start and end <= b for a, b in intervals):
                     raise BookingValidationError(

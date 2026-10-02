@@ -15986,6 +15986,21 @@ class Engine:
             except Exception:
                 logger.debug("Pipeline tool injection failed", call_id=call_id, exc_info=True)
 
+            # Use the same immutable configuration/allowlist as schema and execution.
+            # Existing saved Agent prompts retain their text; current tool policy is appended.
+            from src.tools.runtime_guidance import build_in_call_tool_runtime_guidance
+            runtime_guidance = build_in_call_tool_runtime_guidance(
+                self._tool_config_for_session(session),
+                ["microsoft_calendar"]
+                if "microsoft_calendar" in (llm_options.get("tools") or [])
+                else [],
+            )
+            if runtime_guidance:
+                llm_options = dict(llm_options)
+                base_prompt = str(llm_options.get("system_prompt") or "").strip()
+                if runtime_guidance not in base_prompt:
+                    llm_options["system_prompt"] = f"{base_prompt}\n\n{runtime_guidance}".strip()
+
             # Outbound lead context injection (structured JSON, not template substitution).
             try:
                 if getattr(session, "is_outbound", False) and getattr(session, "outbound_custom_vars", None):

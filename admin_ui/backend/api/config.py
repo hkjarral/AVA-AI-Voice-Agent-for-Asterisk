@@ -5325,7 +5325,9 @@ async def verify_microsoft_calendar(req: _MicrosoftVerifyRequest):
     client = MicrosoftGraphClient(account)
     try:
         me = await asyncio.to_thread(client.me)
-        calendars = await asyncio.to_thread(client.list_calendars)
+        # Graph may enumerate a different ID representation for the same calendar.
+        # The configured endpoint is authoritative; never choose a default/name match.
+        matched = await asyncio.to_thread(client.get_calendar)
     except MicrosoftGraphApiError as exc:
         raise HTTPException(
             status_code=exc.status or 400,
@@ -5334,8 +5336,7 @@ async def verify_microsoft_calendar(req: _MicrosoftVerifyRequest):
                 "message": str(exc),
             },
         )
-    matched = next((cal for cal in calendars if cal.get("id") == calendar_id), None)
-    if not matched:
+    if not isinstance(matched, dict) or not matched.get("id"):
         raise HTTPException(
             status_code=404,
             detail={

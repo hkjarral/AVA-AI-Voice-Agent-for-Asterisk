@@ -34,7 +34,9 @@ authorize changing an earlier booking.
    marked read-only. It creates no event or invitation.
 3. Configure hours, working days, duration and booking horizon. For the scoped
    example: `America/Phoenix`, Monday–Friday, **08:00–17:00**, 30 minutes.
-   Existing installations retain the 09:00 start default until configured.
+   Hours guide suggestions. Explicitly enable **Enforce working hours and booking
+   horizon** to apply them to exact checks, creation and rescheduling. It defaults
+   off for existing installations; the suggestion start remains 09:00 until configured.
 4. Enable **Allow caller invitations** when desired. The default is disabled;
    appointment-only installations do not acquire attendees implicitly.
 5. Edit business/location/contact details and subject/body templates. Preview
@@ -48,6 +50,44 @@ authorize changing an earlier booking.
    code requires an AI engine restart; active calls retain their captured
    configuration. Do not upgrade in the middle of a booking conversation.
 
+## Upgrading existing installations
+
+Keep the existing OAuth connection, token cache, user identity and saved calendar
+ID. This upgrade requires no database migration or calendar re-registration.
+Verify reads the explicitly configured calendar directly, so a different ID
+representation in calendar discovery does not reject an otherwise valid saved
+ID. It never selects a different/default calendar or matches by name. Calendar
+discovery excludes immutable-ID preferences; event reads, pagination and writes
+retain them. Missing, forbidden and explicitly read-only calendars still fail.
+Reconnect only when authorization actually expires or is revoked, rather than
+as an upgrade workaround.
+
+When `enforce_booking_limits` is absent or false, existing working-hour values
+continue to guide suggestions, while exact checks, creation and rescheduling
+allow other hours/days and dates beyond the displayed horizon. Enable the switch
+in Tools after reviewing the intended policy. Disabling it retains the saved
+hours/horizon values. Maximum duration remains a separate setting (default 240
+minutes, as before). Invitations stay off until explicitly enabled; upgrading or
+opening the form neither adds attendees nor changes the saved calendar ID.
+
+Existing appointment-only creation arguments remain supported. Multiple distinct
+appointments can be booked during one call, with separate agreement for each.
+Runtime calendar guidance reaches both full-agent providers and modular/hybrid
+pipelines using the call's captured Agent account scope and tool allowlist;
+saved business prompts are not rewritten.
+
+The following safeguards intentionally affect older integrations: new bookings
+must use future, whole-minute, unambiguous times; availability and conflict checks
+use the selected calendar rather than mailbox-wide schedules; cancellation and
+rescheduling require explicit agreement and current-call ownership. Earlier-call
+or untracked bookings require staff. Generic event reads omit invitation bodies
+to protect caller notes. Integrations that used arbitrary-ID deletion or relied
+on private body text must adapt their workflow before rollout.
+
+Restart the engine outside active booking calls. Existing Outlook events remain
+in place. A rollback needs no ID/cache conversion; prior code ignores the new
+opt-in settings, and staff must handle changes whose in-memory ownership was lost.
+
 ## Caller conversation
 
 1. Determine the desired appointment date, time, timezone, duration and purpose.
@@ -55,7 +95,8 @@ authorize changing an earlier booking.
    ambiguous requests and read back an explicit date/time.
 2. Call **`check_availability`** using `start_datetime` and `end_datetime` for the
    exact requested interval. Offer alternatives only if it is busy or outside
-   working hours. Invalid/past/beyond-horizon times must be corrected first.
+   enforced working hours. Invalid/past times and times beyond an enabled horizon
+   must be corrected first.
 3. If the caller wants an invitation and invitations are enabled, ask them to
    spell each email, read it back and obtain agreement to create the meeting
    and send invitations. Syntax validation does not verify mailbox ownership
@@ -99,9 +140,9 @@ availability. Busy, tentative, out-of-office, working-elsewhere and unknown
 statuses block bookings; cancelled/free events do not. Malformed intervals and
 unavailable calendars fail closed.
 
-With blank `free_prefix`, available intervals are working hours minus busy
-calendar events. With a configured prefix, matching events define open windows,
-clipped to working hours; other non-free events also block bookings even without
+With blank `free_prefix`, available intervals are suggestion/booking-policy windows
+minus busy calendar events. With a configured prefix, matching events define open windows,
+clipped to the applicable policy windows; other non-free events also block bookings even without
 a “Busy” title. The model cannot enable prefix mode when the operator chose
 blank. Both availability actions and mutations use the operator's configured
 prefixes; legacy tool arguments cannot override them.
@@ -112,13 +153,15 @@ complete suggestion list does not represent every possible off-grid start.
 **Absence from suggestions is never proof that a requested interval is busy.**
 For example, 08:00/08:30/09:00 plus `slots_truncated: true` says nothing about
 13:00; check 13:00–13:30 explicitly. Queries are bounded to 93 days; split a wider
-search into smaller ranges. Suggestions omit past/beyond-horizon intervals.
+search into smaller ranges. Suggestions omit past intervals and, when enforcement
+is enabled, intervals beyond the horizon.
 
 ISO offsets are respected, naive times use the configured IANA timezone, and
 Graph is requested in UTC. Invalid timezones, date-only values, subminute times,
 nonexistent daylight-saving times and ambiguous naive times are rejected.
-Ambiguous local times need an explicit UTC offset. End must be after start;
-16:30–17:00 is allowed under 08:00–17:00, while 16:45–17:15 is not.
+Ambiguous local times need an explicit UTC offset. End must be after start.
+With enforcement enabled, 16:30–17:00 is allowed under 08:00–17:00,
+while 16:45–17:15 is not.
 
 ## Invitation templates
 
@@ -147,15 +190,16 @@ and body while preserving the confirmed caller details and attendees.
 
 ## Same-call cancellation and rescheduling
 
-- One active booking is tracked per call. Obtain explicit agreement to cancel
+- Each current-call booking is tracked independently. Obtain explicit agreement to cancel
   or reschedule the exact booking, including updates/cancellation notices to
   existing attendees. Do not expose opaque Graph IDs in speech.
 - **Cancel:** `{"action":"delete_event","cancellation_confirmed":true}`.
-  Omit `event_id`; the tool uses the current call's tracked immutable ID and
-  verifies its account/calendar binding. A supplied mismatching ID is rejected
-  without trying it. Arbitrary older event IDs are not accepted for mutations.
+  Omit `event_id` for the most recently selected booking, or pass an ID returned
+  for another booking created during this call. The tool verifies current-call
+  ownership and account/calendar binding. An untracked ID is rejected without
+  trying it. Arbitrary older event IDs are not accepted for mutations.
 - **Reschedule:** call `reschedule_event` with new start/end and
-  `booking_confirmed:true`, omitting `event_id`. The tool checks the new interval,
+  `booking_confirmed:true`, selecting the booking as above. The tool checks the new interval,
   excludes its own event, and PATCHes the same event. It preserves attendees and
   updates the template's date/time wording. A busy new interval leaves the
   original event intact. Do not delete then create.
@@ -242,6 +286,7 @@ tools:
     min_slot_duration_minutes: 30
     max_slots_returned: 3
     max_event_duration_minutes: 240
+    enforce_booking_limits: true  # explicit adoption of hours/days/horizon
     booking_horizon_days: 365
     working_hours_start: 8
     working_hours_end: 17
@@ -261,8 +306,8 @@ tools:
         timezone: America/Phoenix
 ```
 
-Zero disables the duration/horizon limit. Empty working days, invalid hours or
-invalid timezones fail closed. Configuration supplies no production credentials
+Zero disables the duration/horizon limit. Empty working days or invalid hours
+fail closed wherever those settings apply; invalid timezones always fail closed. Configuration supplies no production credentials
 in this repository. No database migration is required; same-call tracking is a
 bounded in-memory cache, not an authorization mechanism for later calls.
 
@@ -273,7 +318,8 @@ Automated tests use only synthetic fixtures/mocked Graph HTTP. Before production
 1. Obtain separate explicit approval identifying a **test organizer mailbox,
    named test calendar, recipient address, subject, date/time and invitation**.
    Connect/verify only that approved test account; enable invitations there.
-2. Configure Phoenix weekdays 08:00–17:00 and 30 minutes. Request 13:00 after a
+2. Configure Phoenix weekdays 08:00–17:00 and 30 minutes; enable hours/horizon
+   enforcement. Request 13:00 after a
    day query yields only three morning suggestions. Confirm exact availability,
    email readback and consent. Inspect exactly one event in the named calendar.
 3. Inspect the test recipient's mailbox separately for the invitation, correct
@@ -289,7 +335,11 @@ Automated tests use only synthetic fixtures/mocked Graph HTTP. Before production
    externally, then attempt DELETE with the stale ETag. Verify Graph rejects it
    with 412 and retains the event; confirm the tool routes the conflict to staff.
    Do not enable automated cancellation until this provider behavior is verified.
-7. Record test evidence before approving rollout. Do not edit existing production
+7. Verify the original saved calendar ID without an alias workaround after the
+   approved test upgrade, including a non-default named calendar. Check repeated
+   Verify/read-only availability with the existing cache; do not reconnect or
+   rewrite an ID to mask a verification failure.
+8. Record test evidence before approving rollout. Do not edit existing production
    appointments. No live invitation is authorized merely by this plan.
 
 After merge approval, deploy the reviewed engine/backend/frontend together,
@@ -306,6 +356,7 @@ rollback outside active booking calls; do not delete events as rollback cleanup.
 ## Microsoft references
 
 - [Create event and automatic invitations](https://learn.microsoft.com/en-us/graph/api/user-post-events?view=graph-rest-1.0)
+- [Immutable ID support excludes calendar containers](https://learn.microsoft.com/en-us/graph/outlook-immutable-id)
 - [Event transactionId and immutable IDs](https://learn.microsoft.com/en-us/graph/api/resources/event?view=graph-rest-1.0)
 - [Selected calendarView](https://learn.microsoft.com/en-us/graph/api/calendar-list-calendarview?view=graph-rest-1.0)
 - [Update event](https://learn.microsoft.com/en-us/graph/api/event-update?view=graph-rest-1.0)

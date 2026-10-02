@@ -26,6 +26,10 @@ export function MicrosoftBookingSettings({ config, onChange }: Props) {
     const days: number[] = config.working_days ?? [0, 1, 2, 3, 4];
     const values = { ...callerPreview, ...Object.fromEntries(operatorFields.map(key => [key, config[key] || ''])) };
     return <div className="space-y-4 mt-4">
+        <FormSwitch label="Enforce working hours and booking horizon" checked={config.enforce_booking_limits === true}
+            onChange={event => onChange({ enforce_booking_limits: event.target.checked })}
+            tooltip="Opt in to reject bookings outside these hours or beyond the horizon. Existing installations keep hours/horizon enforcement off until enabled; availability suggestions still use these hours." />
+        <p className="text-xs text-muted-foreground">Working hours guide suggestions. Enable enforcement to apply hours and the booking horizon to exact availability, creation and rescheduling. Maximum duration always applies.</p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {[
                 ['working_hours_start', 'Working hours start (0–23)', 9, 0, 23],

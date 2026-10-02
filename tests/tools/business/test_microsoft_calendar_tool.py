@@ -354,7 +354,10 @@ def busy_event(
 @pytest.fixture
 def phoenix(ms_context, ms_config):
     ms_config.update(
-        working_hours_start=8, working_hours_end=17, working_days=[0, 1, 2, 3, 4]
+        enforce_booking_limits=True,
+        working_hours_start=8,
+        working_hours_end=17,
+        working_days=[0, 1, 2, 3, 4],
     )
     ms_config["accounts"]["default"]["timezone"] = "America/Phoenix"
     return ms_context
@@ -1542,3 +1545,324 @@ async def test_cancel_version_conflict_retains_booking_without_retry(phoenix):
     assert retry["error_code"] == "booking_changed"
     assert attempts == [("ms_event_123", 'W/"version1"')]
     assert len(fake.events) == 1 and not fake.deleted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "start,end",
+    [
+        ("2026-04-29T18:00:00-07:00", "2026-04-29T18:30:00-07:00"),
+        ("2026-05-02T13:00:00-07:00", "2026-05-02T13:30:00-07:00"),
+        ("2027-04-29T13:00:00-07:00", "2027-04-29T13:30:00-07:00"),
+    ],
+)
+async def test_unchanged_legacy_settings_keep_exact_and_create_limits_unrestricted(
+    ms_context, ms_config, start, end
+):
+    original = copy.deepcopy(ms_config)
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        available = await tool.execute(
+            {
+                "action": "check_availability",
+                "start_datetime": start,
+                "end_datetime": end,
+            },
+            ms_context,
+        )
+        created = await tool.execute(
+            booking(start_datetime=start, end_datetime=end), ms_context
+        )
+    assert available["available"] is True and created["reservation_status"] == "created"
+    assert created["invitation_status"] == "not_requested"
+    assert fake.created[0][4]["attendee_emails"] == []
+    assert ms_config == original and "enforce_booking_limits" not in ms_config
+
+
+@pytest.mark.asyncio
+async def test_limit_adoption_and_rollback_preserve_saved_values_and_conflict_guards(
+    ms_context, ms_config
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    ms_config.update(
+        working_hours_start=8, working_hours_end=17, booking_horizon_days=365
+    )
+    original = copy.deepcopy(ms_config)
+    args = booking(
+        start_datetime="2026-05-02T13:00:00-07:00",
+        end_datetime="2026-05-02T13:30:00-07:00",
+    )
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        ms_config["enforce_booking_limits"] = True
+        assert (await tool.execute(args, ms_context))[
+            "error_code"
+        ] == "outside_working_hours"
+        ms_config["enforce_booking_limits"] = False
+        assert (await tool.execute(args, ms_context))["reservation_status"] == "created"
+        other = copy.copy(ms_context)
+        other.call_id = "another-synthetic-call"
+        assert (await tool.execute(args, other))["error_code"] == "slot_busy"
+    assert {
+        k: v for k, v in ms_config.items() if k != "enforce_booking_limits"
+    } == original
+
+
+@pytest.mark.asyncio
+async def test_multiple_same_call_bookings_retry_and_mutate_only_owned_events(phoenix):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    second_args = booking(
+        summary="Separate appointment",
+        start_datetime="2026-04-29T14:00:00-07:00",
+        end_datetime="2026-04-29T14:30:00-07:00",
+    )
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        first = await tool.execute(booking(), phoenix)
+        second = await tool.execute(second_args, phoenix)
+        assert second["reservation_status"] == "created"
+        assert (await tool.execute(booking(), phoenix))["event_id"] == first["event_id"]
+        assert (await tool.execute(second_args, phoenix))["event_id"] == second[
+            "event_id"
+        ]
+        assert len(fake.created) == 2
+        moved = await tool.execute(
+            {
+                "action": "reschedule_event",
+                "event_id": first["event_id"],
+                "booking_confirmed": True,
+                "start_datetime": "2026-04-29T15:00:00-07:00",
+                "end_datetime": "2026-04-29T15:30:00-07:00",
+            },
+            phoenix,
+        )
+        assert moved["event_id"] == first["event_id"]
+        # An explicit older owned event may be selected. Omitted ID follows the most recent successful selection.
+        cancelled = await tool.execute(
+            {"action": "delete_event", "cancellation_confirmed": True}, phoenix
+        )
+        assert cancelled["event_id"] == first["event_id"]
+        assert fake.get_event(second["event_id"]) is not None
+        later = copy.copy(phoenix)
+        later.call_id = "later-synthetic-call"
+        assert (
+            await tool.execute(
+                {
+                    "action": "delete_event",
+                    "event_id": second["event_id"],
+                    "cancellation_confirmed": True,
+                },
+                later,
+            )
+        )["error_code"] == "staff_assistance_required"
+        assert (
+            await tool.execute(
+                {
+                    "action": "delete_event",
+                    "event_id": "untracked-event",
+                    "cancellation_confirmed": True,
+                },
+                phoenix,
+            )
+        )["error_code"] == "booking_mismatch"
+        assert (
+            await tool.execute(
+                {
+                    "action": "delete_event",
+                    "event_id": second["event_id"],
+                    "cancellation_confirmed": True,
+                },
+                phoenix,
+            )
+        )["reservation_status"] == "cancelled"
+    assert fake.deleted == [first["event_id"], second["event_id"]]
+
+
+@pytest.mark.asyncio
+async def test_an_uncertain_owned_booking_blocks_mutations_of_other_same_call_events(
+    phoenix,
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        first = await tool.execute(booking(), phoenix)
+        fake.creation_error = MicrosoftGraphApiError(
+            "synthetic timeout", error_code="graph_unavailable"
+        )
+        second_args = booking(
+            start_datetime="2026-04-29T14:00:00-07:00",
+            end_datetime="2026-04-29T14:30:00-07:00",
+        )
+        assert (await tool.execute(second_args, phoenix))[
+            "error_code"
+        ] == "mutation_uncertain"
+        assert (
+            await tool.execute(
+                {
+                    "action": "delete_event",
+                    "event_id": first["event_id"],
+                    "cancellation_confirmed": True,
+                },
+                phoenix,
+            )
+        )["error_code"] == "mutation_uncertain"
+        assert not fake.deleted
+        assert (await tool.execute(second_args, phoenix))["reconciled"] is True
+        assert (
+            await tool.execute(
+                {
+                    "action": "delete_event",
+                    "event_id": first["event_id"],
+                    "cancellation_confirmed": True,
+                },
+                phoenix,
+            )
+        )["reservation_status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_evicted_same_call_record_never_authorizes_an_explicit_id(phoenix):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    tool._LAST_EVENT_CACHE_CAP = 1
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        first = await tool.execute(booking(), phoenix)
+        await tool.execute(
+            booking(
+                start_datetime="2026-04-29T14:00:00-07:00",
+                end_datetime="2026-04-29T14:30:00-07:00",
+            ),
+            phoenix,
+        )
+        result = await tool.execute(
+            {
+                "action": "delete_event",
+                "event_id": first["event_id"],
+                "cancellation_confirmed": True,
+            },
+            phoenix,
+        )
+    assert result["error_code"] == "booking_mismatch" and not fake.deleted
+    assert len(tool._owned_bookings) == len(tool._last_event_per_call) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("account_shape", ["flat", "default", "named"])
+async def test_persisted_legacy_upgrade_reloads_preserve_bindings_and_active_call_policy(
+    tmp_path, account_shape
+):
+    import yaml
+    from src.config.loaders import load_yaml_with_local_override
+    from src.tools.context import ToolExecutionContext
+    from src.tools.runtime_config import resolve_agent_tool_config
+
+    cache = tmp_path / "microsoft-calendar-default-token-cache.json"
+    cache.write_text('{"Account":{"synthetic":{"username":"scheduler@example.com"}}}')
+    cache.chmod(0o600)
+    account = {
+        "tenant_id": "contoso.onmicrosoft.com",
+        "client_id": "11111111-1111-1111-1111-111111111111",
+        "token_cache_path": str(cache),
+        "user_principal_name": "scheduler@example.com",
+        "calendar_id": "A" * 152,
+        "timezone": "America/Phoenix",
+    }
+    key = "dispatch" if account_shape == "named" else "default"
+    legacy = {"enabled": True, "working_hours_start": 9, "working_hours_end": 17}
+    legacy.update(account if account_shape == "flat" else {"accounts": {key: account}})
+    if account_shape == "named":
+        legacy["accounts"]["unselected"] = {**account, "calendar_id": "unselected"}
+    base = tmp_path / "ai-agent.yaml"
+    local = tmp_path / "ai-agent.local.yaml"
+    base.write_text(yaml.safe_dump({"tools": {"microsoft_calendar": legacy}}))
+    local.write_text(
+        yaml.safe_dump({"tools": {"microsoft_calendar": {"free_prefix": ""}}})
+    )
+    original = base.read_bytes(), local.read_bytes(), cache.read_bytes()
+    loaded = load_yaml_with_local_override(str(base))
+    policy = {
+        "microsoft_calendar": {"account_policy": "selected", "account_keys": [key]}
+    }
+    snapshot = resolve_agent_tool_config(loaded, policy).config
+    assert snapshot["tools"]["microsoft_calendar"]["selected_accounts"] == [key]
+    context = ToolExecutionContext(call_id="legacy-upgrade-call", config=snapshot)
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    # Overnight booking crossed midnight before this PR; opting out must not introduce a daily boundary.
+    args = booking(
+        account_key=key,
+        start_datetime="2026-05-02T23:30:00-07:00",
+        end_datetime="2026-05-03T00:30:00-07:00",
+    )
+
+    def selected_client(binding):
+        assert binding.calendar_id == account["calendar_id"]
+        assert binding.token_cache_path == str(cache)
+        assert binding.user_principal_name == account["user_principal_name"]
+        return fake
+
+    with patch.object(tool, "_client_for_config", side_effect=selected_client):
+        assert (await tool.execute({**args, "action": "check_availability"}, context))[
+            "available"
+        ] is True
+        created = await tool.execute(args, context)
+        assert created["reservation_status"] == "created"
+        assert created["invitation_status"] == "not_requested"
+        assert fake.created[0][4]["attendee_emails"] == []
+        # Repeated config loads do not migrate storage or implicitly adopt the new policy.
+        assert load_yaml_with_local_override(str(base)) == loaded
+        assert (await tool.execute(args, context))["reconciled"] is True
+        assert len(fake.created) == 1
+        adopted = copy.deepcopy(loaded)
+        adopted["tools"]["microsoft_calendar"]["enforce_booking_limits"] = True
+        new_context = ToolExecutionContext(
+            call_id="new-policy-call",
+            config=resolve_agent_tool_config(adopted, policy).config,
+        )
+        assert (await tool.execute(args, new_context))[
+            "error_code"
+        ] == "outside_working_hours"
+        # An active call still uses its captured legacy policy after a new generation opts in.
+        moved = await tool.execute(
+            {
+                "action": "reschedule_event",
+                "account_key": key,
+                "booking_confirmed": True,
+                "start_datetime": "2026-05-03T23:30:00-07:00",
+                "end_datetime": "2026-05-04T00:30:00-07:00",
+            },
+            context,
+        )
+        assert moved["event_id"] == created["event_id"]
+        assert (
+            await tool.execute(
+                {
+                    "action": "delete_event",
+                    "account_key": key,
+                    "cancellation_confirmed": True,
+                },
+                context,
+            )
+        )["reservation_status"] == "cancelled"
+    assert (base.read_bytes(), local.read_bytes(), cache.read_bytes()) == original
+    assert load_yaml_with_local_override(str(base)) == loaded
+
+
+@pytest.mark.asyncio
+async def test_multiple_bookings_do_not_broaden_account_ownership(phoenix):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake) as client:
+        first = await tool.execute(booking(), phoenix)
+        scoped = phoenix.get_config_value.return_value
+        scoped["accounts"]["other"] = {
+            **scoped["accounts"]["default"],
+            "calendar_id": "other-calendar",
+        }
+        scoped["selected_accounts"] = ["default", "other"]
+        result = await tool.execute(
+            {
+                "action": "delete_event",
+                "account_key": "other",
+                "event_id": first["event_id"],
+                "cancellation_confirmed": True,
+            },
+            phoenix,
+        )
+        assert result["error_code"] == "staff_assistance_required"
+        # The second account must not be queried using an ID owned by the first calendar.
+        assert client.call_count == 1 and not fake.deleted

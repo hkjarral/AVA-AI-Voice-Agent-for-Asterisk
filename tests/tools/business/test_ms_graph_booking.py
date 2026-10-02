@@ -186,3 +186,116 @@ def test_conditional_delete_version_conflict_is_typed_without_retry():
     )
     assert caught.value.error_code == "booking_changed" and caught.value.status == 412
     assert send.call_count == 1
+
+
+def test_container_discovery_and_direct_calendar_keep_legacy_ids_without_event_preferences():
+    graph = client()
+    original = graph.account
+    next_link = "https://graph.microsoft.com/v1.0/me/calendars?$skip=1"
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=[
+            response({"id": "synthetic-user"}),
+            response(
+                {
+                    "value": [{"id": "different-representation"}],
+                    "@odata.nextLink": next_link,
+                }
+            ),
+            response({"value": [{"id": "named-calendar"}]}),
+            response({"id": "different-representation", "canEdit": True}),
+        ],
+    ) as send:
+        graph.me()
+        assert len(graph.list_calendars()) == 2
+        assert graph.get_calendar()["canEdit"] is True
+    assert graph.account == original
+    assert (
+        send.call_args_list[-1]
+        .args[0]
+        .full_url.endswith("/me/calendars/named%2Fcalendar")
+    )
+    for call in send.call_args_list:
+        prefer = call.args[0].get_header("Prefer")
+        assert "ImmutableId" not in prefer and "body-content-type" not in prefer
+
+
+def test_event_preferences_survive_pagination_and_all_conditional_mutations():
+    graph = client()
+    next_link = "https://graph.microsoft.com/v1.0/me/calendars/named%2Fcalendar/calendarView?$skip=1"
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=[
+            response({"value": [], "@odata.nextLink": next_link}),
+            response({"value": []}),
+            response({"id": "event"}),
+            response({"id": "event"}),
+            response({"id": "event"}),
+            response({}),
+        ],
+    ) as send:
+        start = datetime(2026, 10, 5, 20, tzinfo=timezone.utc)
+        end = datetime(2026, 10, 5, 20, 30, tzinfo=timezone.utc)
+        graph.list_calendar_view(start, end)
+        graph.create_event(
+            "Synthetic", "Notes", start, end, transaction_id="synthetic-transaction"
+        )
+        graph.get_event("event")
+        graph.update_event("event", {"subject": "Synthetic"}, etag='W/"version1"')
+        graph.delete_event("event", etag='W/"version2"')
+    for call in send.call_args_list:
+        request = call.args[0]
+        assert 'IdType="ImmutableId"' in request.get_header("Prefer")
+        assert 'outlook.body-content-type="text"' in request.get_header("Prefer")
+        assert "/me/calendars/named%2Fcalendar/" in request.full_url
+    assert send.call_args_list[-2].args[0].get_header("If-match") == 'W/"version1"'
+    assert send.call_args_list[-1].args[0].get_header("If-match") == 'W/"version2"'
+
+
+@pytest.mark.parametrize("matched", [True, False])
+def test_existing_cache_loads_unchanged_and_never_falls_back_to_another_identity(
+    tmp_path, matched
+):
+    import msal
+    from dataclasses import replace
+
+    graph = MicrosoftGraphClient(
+        replace(
+            client().account, token_cache_path=str(tmp_path / "synthetic-cache.json")
+        )
+    )
+    cache_data = {
+        "Account": {
+            "synthetic-account": {
+                "username": "scheduler@example.com" if matched else "other@example.com",
+                "home_account_id": "synthetic-home",
+                "environment": "login.microsoftonline.com",
+                "realm": "synthetic",
+            }
+        }
+    }
+    original = json.dumps(cache_data).encode()
+    (tmp_path / "synthetic-cache.json").write_bytes(original)
+    app = Mock()
+
+    def application(*args, **kwargs):
+        cache = kwargs["token_cache"]
+        app.get_accounts.side_effect = lambda username=None: [
+            a
+            for a in cache.find(msal.TokenCache.CredentialType.ACCOUNT)
+            if username is None or a["username"] == username
+        ]
+        app.acquire_token_silent.return_value = {"access_token": "synthetic-token"}
+        return app
+
+    with patch.object(graph._msal, "PublicClientApplication", side_effect=application):
+        if matched:
+            assert graph.acquire_token() == "synthetic-token"
+        else:
+            with pytest.raises(MicrosoftGraphApiError) as caught:
+                graph.acquire_token()
+            assert caught.value.error_code == "auth_expired"
+            app.acquire_token_silent.assert_not_called()
+    app.get_accounts.assert_called_once_with(username="scheduler@example.com")
+    assert (tmp_path / "synthetic-cache.json").read_bytes() == original
+    assert graph.account.calendar_id == "named/calendar"

@@ -153,6 +153,8 @@ class MicrosoftGraphClient:
         body: dict[str, Any] | None = None,
         query: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
+        *,
+        event_resource: bool = False,
     ) -> Any:
         token = self.acquire_token()
         if path_or_url.startswith("https://"):
@@ -173,7 +175,11 @@ class MicrosoftGraphClient:
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
-                "Prefer": 'outlook.timezone="UTC", IdType="ImmutableId", outlook.body-content-type="text"',
+                "Prefer": (
+                    'outlook.timezone="UTC", IdType="ImmutableId", outlook.body-content-type="text"'
+                    if event_resource
+                    else 'outlook.timezone="UTC"'
+                ),
                 **(headers or {}),
             },
         )
@@ -222,6 +228,13 @@ class MicrosoftGraphClient:
     def me(self) -> dict[str, Any]:
         return self._request("GET", "/me")
 
+    def get_calendar(self) -> dict[str, Any]:
+        """Read precisely the saved calendar ID, without container ID preferences."""
+        return self._request(
+            "GET",
+            f"/me/calendars/{urllib.parse.quote(self.account.calendar_id, safe='')}",
+        )
+
     def list_calendars(self) -> list[dict[str, Any]]:
         calendars: list[dict[str, Any]] = []
         url: str | None = "/me/calendars"
@@ -241,7 +254,10 @@ class MicrosoftGraphClient:
             "$orderby": "start/dateTime",
         }
         while url:
-            result = self._request("GET", url, query=query if url.startswith("/") else None)
+            result = self._request(
+                "GET", url, query=query if url.startswith("/") else None,
+                event_resource=True,
+            )
             events.extend(result.get("value") or [])
             url = result.get("@odata.nextLink")
             query = None
@@ -286,6 +302,7 @@ class MicrosoftGraphClient:
             return self._request(
                 "GET",
                 f"/me/calendars/{urllib.parse.quote(self.account.calendar_id, safe='')}/events/{urllib.parse.quote(event_id, safe='')}",
+                event_resource=True,
             )
         except MicrosoftGraphApiError as exc:
             if exc.status == 404:
@@ -317,6 +334,7 @@ class MicrosoftGraphClient:
             "POST",
             f"/me/calendars/{urllib.parse.quote(self.account.calendar_id, safe='')}/events",
             body=body,
+            event_resource=True,
         )
 
     def delete_event(self, event_id: str, etag: str | None = None) -> bool:
@@ -324,6 +342,7 @@ class MicrosoftGraphClient:
             self._request(
                 "DELETE",
                 f"/me/calendars/{urllib.parse.quote(self.account.calendar_id, safe='')}/events/{urllib.parse.quote(event_id, safe='')}",
+                event_resource=True,
                 headers={"If-Match": etag} if etag else None,
             )
             return True
@@ -336,6 +355,7 @@ class MicrosoftGraphClient:
         return self._request(
             "PATCH",
             f"/me/calendars/{urllib.parse.quote(self.account.calendar_id, safe='')}/events/{urllib.parse.quote(event_id, safe='')}",
+            event_resource=True,
             body=body,
             headers={"If-Match": etag} if etag else None,
         )
