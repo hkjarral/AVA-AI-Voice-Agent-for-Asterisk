@@ -993,3 +993,109 @@ async def test_graph_crlf_body_normalization_does_not_block_rescheduling(
             phoenix,
         )
     assert result["reservation_status"] == "rescheduled" and len(fake.updated) == 1
+
+
+@pytest.mark.parametrize(
+    ("raw", "hour"),
+    [
+        ("2026-04-29T20:00:00.1234567", 13),
+        ("2026-04-29T20:00:00.1234567Z", 13),
+        ("2026-04-29T13:00:00.1234567-07:00", 13),
+        ("2026-04-29T22:00:00.1234567+02:00", 13),
+    ],
+)
+def test_graph_seven_digit_fraction_preserves_instant(raw, hour):
+    parsed = MicrosoftCalendarTool()._parse_event_dt(
+        {"dateTime": raw, "timeZone": "UTC"}, "America/Phoenix"
+    )
+    assert parsed == datetime(2026, 4, 29, 20, 0, 0, 123456, tzinfo=timezone.utc)
+    assert parsed.hour == hour
+
+
+@pytest.mark.asyncio
+async def test_graph_seven_digit_event_blocks_booking(phoenix):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    fake.events = [
+        busy_event("2026-04-29T20:00:00.0000000", "2026-04-29T20:30:00.0000000")
+    ]
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        checked = await tool.execute(
+            {**booking(), "action": "check_availability"}, phoenix
+        )
+        created = await tool.execute(booking(), phoenix)
+    assert checked["available"] is False
+    assert created["error_code"] == "slot_busy"
+    assert not fake.created
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["check_availability", "get_free_slots"])
+@pytest.mark.parametrize("override", ["free_prefix", "busy_prefix"])
+async def test_availability_prefix_overrides_cannot_bypass_operator_policy(
+    phoenix, ms_config, action, override
+):
+    ms_config.update(free_prefix="Open", busy_prefix="Reserved")
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    # Reserved is marked free in Graph but explicitly blocked by operator policy.
+    # A free-prefix override would instead turn it into an open window.
+    fake.events = [busy_event(showAs="free")]
+    if override == "busy_prefix":
+        fake.events.append(
+            busy_event(
+                "2026-04-29T15:00:00Z",
+                "2026-04-30T00:00:00Z",
+                id="open-window",
+                subject="Open",
+                showAs="free",
+            )
+        )
+    params = {
+        "action": action,
+        override: "Reserved" if override == "free_prefix" else "Busy",
+        "start_datetime": booking()["start_datetime"],
+        "end_datetime": booking()["end_datetime"],
+        "time_min": booking()["start_datetime"],
+        "time_max": booking()["end_datetime"],
+        "duration": 30,
+    }
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        checked = await tool.execute(params, phoenix)
+        created = await tool.execute(booking(), phoenix)
+    assert checked["status"] == "success"
+    if action == "check_availability":
+        assert checked["available"] is False
+    else:
+        assert checked["slots"] == []
+    assert created["error_code"] == "slot_busy"
+    assert not fake.created
+
+
+@pytest.mark.asyncio
+async def test_generic_event_read_never_exposes_another_callers_invitation_body(
+    phoenix,
+):
+    from src.tools.adapters.sanitize import sanitize_tool_result_for_json_string
+
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    private_body = "Caller: Synthetic Example; reason: confidential appointment notes"
+    fake.events = [busy_event(body={"contentType": "text", "content": private_body})]
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        listed = await tool.execute(
+            {
+                "action": "list_events",
+                "time_min": "2026-04-29T00:00:00",
+                "time_max": "2026-04-30T00:00:00",
+            },
+            phoenix,
+        )
+        result = await tool.execute(
+            {"action": "get_event", "event_id": listed["events"][0]["id"]}, phoenix
+        )
+    assert result["status"] == "success"
+    assert result["id"] == "other-event"
+    assert result["summary"] == "Reserved"
+    assert "description" not in result
+    assert private_body not in str(result)
+    assert private_body not in str(
+        sanitize_tool_result_for_json_string(result, tool_name="microsoft_calendar")
+    )

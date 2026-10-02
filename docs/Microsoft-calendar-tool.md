@@ -103,7 +103,8 @@ With blank `free_prefix`, available intervals are working hours minus busy
 calendar events. With a configured prefix, matching events define open windows,
 clipped to working hours; other non-free events also block bookings even without
 a “Busy” title. The model cannot enable prefix mode when the operator chose
-blank. Mutations always use the operator's configured prefixes.
+blank. Both availability actions and mutations use the operator's configured
+prefixes; legacy tool arguments cannot override them.
 
 `get_free_slots` returns grid-based suggestions, normally the first three. It
 includes `slots_returned`, `total_slots_available` and `slots_truncated`. Even a
@@ -137,6 +138,9 @@ text, never executable content or another template. Subject limit: 255
 characters; rendered body: 8,000; at most ten attendee addresses, deduplicated
 case-insensitively. Caller email formats outside the supported ordinary ASCII
 address syntax require staff assistance.
+
+Generic `get_event` reads return the title, interval and calendar identifier,
+but never the invitation body, which may contain another caller's private notes.
 
 ## Same-call cancellation and rescheduling
 

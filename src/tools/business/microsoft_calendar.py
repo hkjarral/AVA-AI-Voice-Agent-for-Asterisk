@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import threading
@@ -77,14 +78,14 @@ _MICROSOFT_CALENDAR_INPUT_SCHEMA = {
         "free_prefix": {
             "type": "string",
             "description": (
-                "Optional. Omit by default. When configured by the operator, events whose "
-                "subjects start with this value define open windows. Blank uses the selected "
-                "calendar event availability plus working hours."
+                "Legacy argument accepted for compatibility; operator configuration is authoritative. "
+                "Omit this argument. The configured prefix defines open windows; blank uses "
+                "selected-calendar event availability plus working hours."
             ),
         },
         "busy_prefix": {
             "type": "string",
-            "description": "Optional title-prefix busy marker.",
+            "description": "Legacy argument accepted for compatibility; omit it. The operator configures busy markers.",
         },
         "duration": {
             "type": "integer",
@@ -293,6 +294,9 @@ class MicrosoftCalendarTool(Tool):
             raise BookingValidationError(
                 "malformed_calendar_event", "Calendar returned an invalid event time."
             )
+        # Graph can return seven fractional digits; Python stores microseconds.
+        # Normalize only the seconds fraction, leaving timezone offsets intact.
+        dt_raw = re.sub(r"([Tt ]\d{2}:\d{2}:\d{2}\.\d{6})\d+", r"\1", dt_raw)
         parsed = parse_iso_datetime(dt_raw)
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=ZoneInfo(tz_name))
@@ -457,15 +461,9 @@ class MicrosoftCalendarTool(Tool):
                     "message": f"Microsoft Calendar account '{key}' is not available for this context.",
                 }
 
-        config_free = (config.get("free_prefix") or "").strip()
-        free_prefix = (
-            (parameters.get("free_prefix") or config_free).strip()
-            if config_free
-            else ""
-        )
-        busy_prefix = (
-            parameters.get("busy_prefix") or config.get("busy_prefix") or "Busy"
-        ).strip() or "Busy"
+        # Reads and mutations must apply the same operator booking policy.
+        free_prefix = (config.get("free_prefix") or "").strip()
+        busy_prefix = (config.get("busy_prefix") or "Busy").strip() or "Busy"
         availability_mode = "title_prefix" if free_prefix else "freebusy"
 
         try:
@@ -834,7 +832,6 @@ class MicrosoftCalendarTool(Tool):
             "message": "Event retrieved.",
             "id": event.get("id"),
             "summary": event.get("subject"),
-            "description": ((event.get("body") or {}).get("content") or ""),
             "start": (event.get("start") or {}).get("dateTime"),
             "end": (event.get("end") or {}).get("dateTime"),
             "calendar": key,
