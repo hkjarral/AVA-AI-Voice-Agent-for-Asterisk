@@ -184,7 +184,12 @@ process restart when the original call ID and arguments remain available.
 Later calls have different call IDs and do not gain mutation authority.
 
 Within a process, mutation workers share a lock through read/check/write/state
-tracking, including when the awaiting coroutine is cancelled. Competing AVA
+tracking, including when an already-dispatched write's awaiting coroutine is
+cancelled. Lock acquisition waits at most ten seconds; a contended attempt
+returns `calendar_busy` without reading or changing the calendar. Cancellation and
+expiry are checked before acquiring the lock and before requesting each write;
+the 30-second deadline starts before executor submission. An in-flight HTTP write cannot be undone by cancellation,
+so the worker retains the lock and reconciles its result as before. Competing AVA
 calls recheck the slot serially. This is **not a distributed reservation lock**;
 other engine processes or Outlook users can still race the check. Graph event
 creation is not an atomic “create only if free” operation. Use one scheduling

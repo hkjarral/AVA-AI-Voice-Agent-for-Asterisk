@@ -10,6 +10,8 @@ import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import threading
 from collections import OrderedDict
+from contextlib import contextmanager
+from time import monotonic
 from datetime import datetime, timedelta
 from typing import Any, Dict
 
@@ -145,6 +147,7 @@ class MicrosoftCalendarTool(Tool):
     # Held inside the worker through read/check/write/cache, even if its awaiting
     # coroutine is cancelled. Shared by registry generations in this process.
     _MUTATION_LOCK = threading.Lock()
+    _MUTATION_LOCK_WAIT_SECONDS = 10
 
     def __init__(self):
         super().__init__()
@@ -394,7 +397,7 @@ class MicrosoftCalendarTool(Tool):
                 key, err = _target_key("delete_event")
                 if err:
                     return err
-                return await asyncio.to_thread(
+                return await self._run_mutation(
                     self._change_booking,
                     parameters,
                     config,
@@ -407,7 +410,7 @@ class MicrosoftCalendarTool(Tool):
                 key, err = _target_key("reschedule_event")
                 if err:
                     return err
-                return await asyncio.to_thread(
+                return await self._run_mutation(
                     self._change_booking,
                     parameters,
                     config,
@@ -905,11 +908,44 @@ class MicrosoftCalendarTool(Tool):
         }
 
     async def _handle_create_event(self, parameters, config, cfg, key, call_id):
-        return await asyncio.to_thread(
+        return await self._run_mutation(
             self._create_booking, parameters, config, cfg, key, call_id
         )
 
-    def _create_booking(self, parameters, config, cfg, key, call_id):
+    async def _run_mutation(self, worker, *args):
+        cancelled = threading.Event()
+        deadline = monotonic() + self.definition.max_execution_time
+        try:
+            return await asyncio.to_thread(worker, *args, cancelled, deadline)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    def _check_mutation_active(self, cancelled, deadline):
+        if cancelled.is_set() or monotonic() >= deadline:
+            raise BookingValidationError(
+                "calendar_busy",
+                "This calendar attempt expired or was cancelled before requesting a change. Retry identical arguments shortly.",
+            )
+
+    @contextmanager
+    def _mutation_lock(self, cancelled, deadline):
+        self._check_mutation_active(cancelled, deadline)
+        timeout = min(self._MUTATION_LOCK_WAIT_SECONDS, max(0, deadline - monotonic()))
+        if not self._MUTATION_LOCK.acquire(timeout=timeout):
+            raise BookingValidationError(
+                "calendar_busy",
+                "Another calendar change is in progress; this attempt made no change. Retry shortly.",
+            )
+        try:
+            self._check_mutation_active(cancelled, deadline)
+            yield
+        finally:
+            self._MUTATION_LOCK.release()
+
+    def _create_booking(
+        self, parameters, config, cfg, key, call_id, cancelled, deadline
+    ):
         if not call_id:
             raise BookingValidationError(
                 "missing_call_context", "Booking requires an active call context."
@@ -961,7 +997,7 @@ class MicrosoftCalendarTool(Tool):
             sort_keys=True,
         )
         transaction = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
-        with self._MUTATION_LOCK:
+        with self._mutation_lock(cancelled, deadline):
             with self._last_event_lock:
                 tracked = dict(self._last_event_per_call.get(call_id) or {})
             if tracked.get("pending_operation"):
@@ -1084,6 +1120,7 @@ class MicrosoftCalendarTool(Tool):
                 "end_utc": to_utc(end).isoformat(),
                 "subject": summary,
             }
+            self._check_mutation_active(cancelled, deadline)
             self._track(call_id, record)
             try:
                 event = client.create_event(
@@ -1108,7 +1145,9 @@ class MicrosoftCalendarTool(Tool):
             self._track(call_id, record)
             return self._mutation_result(event, key, account, start, end, attendees)
 
-    def _change_booking(self, parameters, config, cfg, key, call_id, operation):
+    def _change_booking(
+        self, parameters, config, cfg, key, call_id, operation, cancelled, deadline
+    ):
         account = self._account_config(cfg)
         error = self._validate_account(account)
         if error:
@@ -1125,7 +1164,7 @@ class MicrosoftCalendarTool(Tool):
                 "confirmation_required",
                 "Read back the booking and obtain caller agreement to cancel or reschedule it first.",
             )
-        with self._MUTATION_LOCK:
+        with self._mutation_lock(cancelled, deadline):
             with self._last_event_lock:
                 tracked = dict(self._last_event_per_call.get(call_id) or {})
             if (
@@ -1228,6 +1267,7 @@ class MicrosoftCalendarTool(Tool):
                 if operation == "delete_event":
                     if tracked.get("pending_operation") not in {None, "delete_event"}:
                         return self._uncertain("rescheduling")
+                    self._check_mutation_active(cancelled, deadline)
                     tracked["pending_operation"] = operation
                     self._track(call_id, tracked)
                     # DELETE on an organizer meeting generates cancellation notices.
@@ -1372,6 +1412,7 @@ class MicrosoftCalendarTool(Tool):
                         "contentType": "text",
                         "content": rendered_body,
                     }
+                self._check_mutation_active(cancelled, deadline)
                 tracked.update(
                     pending_operation=operation,
                     pending_target=target,

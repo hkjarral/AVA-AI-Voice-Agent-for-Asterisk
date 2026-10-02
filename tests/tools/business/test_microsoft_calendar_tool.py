@@ -1249,3 +1249,180 @@ async def test_uncertain_subject_update_never_authorizes_external_subject_edits(
         result = await tool.execute(move, phoenix)
     assert result["error_code"] == "booking_changed"
     assert len(fake.updated) == 1
+
+
+def mutation_args(action):
+    if action == "create_event":
+        return booking()
+    if action == "delete_event":
+        return {"action": action, "cancellation_confirmed": True}
+    return {
+        "action": action,
+        "booking_confirmed": True,
+        "start_datetime": "2026-04-29T14:00:00-07:00",
+        "end_datetime": "2026-04-29T14:30:00-07:00",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["create_event", "delete_event", "reschedule_event"])
+async def test_contended_mutation_lock_returns_busy_without_calendar_access(
+    phoenix, action
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake) as factory:
+        if action != "create_event":
+            await tool.execute(booking(), phoenix)
+        before = copy.deepcopy(tool._last_event_per_call)
+        factory.reset_mock()
+        assert tool._MUTATION_LOCK.acquire(timeout=1)
+        try:
+            with patch.object(tool, "_MUTATION_LOCK_WAIT_SECONDS", 0.02):
+                result = await asyncio.wait_for(
+                    tool.execute(mutation_args(action), phoenix), 1
+                )
+        finally:
+            tool._MUTATION_LOCK.release()
+    assert result["error_code"] == "calendar_busy"
+    factory.assert_not_called()
+    assert tool._last_event_per_call == before
+    assert len(fake.created) == (0 if action == "create_event" else 1)
+    assert not fake.updated and not fake.deleted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["create_event", "delete_event", "reschedule_event"])
+async def test_cancelled_lock_waiter_cannot_mutate_after_lock_release(phoenix, action):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    lock = tool._MUTATION_LOCK
+    entered, finished = threading.Event(), threading.Event()
+
+    class ObservedLock:
+        def acquire(self, *, timeout):
+            entered.set()
+            return lock.acquire(timeout=timeout)
+
+        def release(self):
+            lock.release()
+            finished.set()
+
+    with patch.object(tool, "_client_for_config", return_value=fake) as factory:
+        if action != "create_event":
+            await tool.execute(booking(), phoenix)
+        before = copy.deepcopy(tool._last_event_per_call)
+        factory.reset_mock()
+        assert lock.acquire(timeout=1)
+        try:
+            with patch.object(tool, "_MUTATION_LOCK", ObservedLock()):
+                task = asyncio.create_task(tool.execute(mutation_args(action), phoenix))
+                assert await asyncio.to_thread(entered.wait, 3)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                lock.release()
+                assert await asyncio.to_thread(finished.wait, 3)
+        finally:
+            if lock.locked():
+                lock.release()
+    factory.assert_not_called()
+    assert tool._last_event_per_call == before
+    assert len(fake.created) == (0 if action == "create_event" else 1)
+    assert not fake.updated and not fake.deleted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["create_event", "delete_event", "reschedule_event"])
+async def test_worker_deadline_starts_before_executor_submission(phoenix, action):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake) as factory:
+        if action != "create_event":
+            await tool.execute(booking(), phoenix)
+        factory.reset_mock()
+        # Simulate a worker starting only after the declared tool deadline elapsed.
+        with patch(
+            "src.tools.business.microsoft_calendar.monotonic", side_effect=[0, 31]
+        ):
+            result = await tool.execute(mutation_args(action), phoenix)
+    assert result["error_code"] == "calendar_busy"
+    factory.assert_not_called()
+    assert not fake.updated and not fake.deleted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["create_event", "delete_event", "reschedule_event"])
+async def test_cancelled_preflight_does_not_start_a_new_write_and_releases_lock(
+    phoenix, action
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        if action != "create_event":
+            await tool.execute(booking(), phoenix)
+        before = copy.deepcopy(tool._last_event_per_call)
+        method = "list_calendar_view" if action == "create_event" else "get_event"
+        original_read = getattr(fake, method)
+        original_worker = (
+            tool._create_booking if action == "create_event" else tool._change_booking
+        )
+        worker_name = (
+            "_create_booking" if action == "create_event" else "_change_booking"
+        )
+
+        def delayed_read(*args, **kwargs):
+            entered.set()
+            assert release.wait(3)
+            return original_read(*args, **kwargs)
+
+        def observed_worker(*args):
+            try:
+                return original_worker(*args)
+            finally:
+                finished.set()
+
+        with patch.object(fake, method, delayed_read), patch.object(
+            tool, worker_name, observed_worker
+        ):
+            task = asyncio.create_task(tool.execute(mutation_args(action), phoenix))
+            try:
+                assert await asyncio.to_thread(entered.wait, 3)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            finally:
+                release.set()
+            assert await asyncio.to_thread(finished.wait, 3)
+        assert tool._MUTATION_LOCK.acquire(timeout=1)
+        tool._MUTATION_LOCK.release()
+    assert tool._last_event_per_call == before
+    assert len(fake.created) == (0 if action == "create_event" else 1)
+    assert not fake.updated and not fake.deleted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["create_event", "delete_event", "reschedule_event"])
+async def test_slow_preflight_deadline_does_not_dispatch_write(phoenix, action):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        if action != "create_event":
+            await tool.execute(booking(), phoenix)
+        before = copy.deepcopy(tool._last_event_per_call)
+        method = "list_calendar_view" if action == "create_event" else "get_event"
+        read = getattr(fake, method)
+        now = [0]
+
+        def slow_read(*args, **kwargs):
+            value = read(*args, **kwargs)
+            now[0] = 31
+            return value
+
+        with patch.object(fake, method, slow_read), patch(
+            "src.tools.business.microsoft_calendar.monotonic",
+            side_effect=lambda: now[0],
+        ):
+            result = await tool.execute(mutation_args(action), phoenix)
+    assert result["error_code"] == "calendar_busy"
+    assert tool._last_event_per_call == before
+    assert len(fake.created) == (0 if action == "create_event" else 1)
+    assert not fake.updated and not fake.deleted
+    assert tool._MUTATION_LOCK.acquire(timeout=1)
+    tool._MUTATION_LOCK.release()
