@@ -53,7 +53,7 @@ Tool calling enables AI agents to perform real-world actions during conversation
 |----------|--------|-------|
 | **OpenAI Realtime** | ✅ Full Support | Production validated (Nov 9, 2025) |
 | **Deepgram Voice Agent** | ✅ Full Support | Production validated (Nov 9, 2025) |
-| **Google Gemini Live** | ✅ Full Support | Production validated (Nov 2025) |
+| **Google Gemini Live** | ✅ Full Support (provider-level) | General provider support; historical production validation dated Nov 2025. Gemini 3.8 live validation is limited to documented Vertex paths, not broader Developer API qualification. |
 | **xAI Grok Voice Agent** | ✅ Full Support (v6.5.2) | Custom function-tools identical to OpenAI Realtime schema. xAI-native tools (`web_search`, `x_search`, `file_search`, `mcp`) accepted via YAML `extra_tools` escape hatch — forwarded verbatim to the session. |
 | **ElevenLabs Agent** | ✅ Full Support | Full-agent provider |
 | **Modular Pipelines (local_hybrid)** | ✅ Full Support | Production validated (Nov 19, 2025) - AAVA-85 |
