@@ -15,7 +15,7 @@ It is self-contained: everything an external contributor's assistant needs is ei
 this file or in the committed docs it links to. If this file ever contradicts the code or
 the docs, trust the code, then the docs — and please open an issue so we can fix it here.
 
-> Last verified against: **v7.6.1 candidate** (2026-09). Freshness is
+> Last verified against: **v7.6.2 candidate** (2026-10). Freshness is
 > checked as part of the release checklist (`docs/RELEASE_CHECKLIST.md`).
 
 ## What This Project Is
@@ -102,7 +102,17 @@ Use these terms consistently and tie every change back to them:
     instances of the same provider type are supported.
   - **Modular pipelines** — separate STT/LLM/TTS adapters resolved by
     `PipelineOrchestrator` (`src/pipelines/orchestrator.py`): OpenAI, Deepgram (+ Flux),
-    Google, Azure, ElevenLabs, Groq, Ollama, Telnyx (LLM), MiniMax (LLM), CambAI, Local.
+    Google, Azure, ElevenLabs, Groq, Ollama, Telnyx (LLM), MiniMax (LLM), CambAI,
+    Fish Audio (HTTP and opt-in realtime WebSocket TTS), Local.
+- **Gemini 3.8 Live (v7.6.2+)**: opt-in on Developer API and Vertex; shipped model
+  defaults remain unchanged. AUDIO-only setup, ID-matched tool responses and
+  cancellation-safe task cleanup apply to 3.8. Call-control tools stay blocking;
+  only read-only extension checks run non-blocking. Attached live evidence covers
+  Vertex `us-central1` 3.8/2.5, not blanket Developer API/region qualification.
+- **Farewell timing (v7.6.2+)**: `farewell_hangup_delay_sec` is deprecated and
+  ignored, while existing YAML/API values remain compatible. Terminal hangup is
+  owned by the caller-audio drain path, not a fixed sleep; Local AI's separate
+  farewell modes/timeouts remain supported.
 - **Voice selection (v7.3.0+)**: voice belongs to Agents. Precedence: per-call override >
   Agent voice in `agents.db` > provider default. Resolution lives
   in `resolve_effective_voice()`/`apply_context_voice()` (`src/core/transport_orchestrator.py`);
@@ -129,6 +139,14 @@ Use these terms consistently and tie every change back to them:
   provider receives the webhook's isolated summary prompt and transcript job, never the live
   Agent persona; explicit selections fail closed without provider fallback while the webhook
   still runs with an empty summary.
+- **Microsoft booking lifecycle (v7.6.2+)**: invitations and hours/horizon
+  enforcement are opt-in. Preserve OAuth caches, saved calendar IDs, account
+  identity and captured Agent scope. Confirm attendee emails/consent; creation
+  success does not prove delivery or acceptance. Reschedule/cancel only tracked
+  current-call bookings with observed ETags; later-call, untracked or restart-lost
+  ownership requires staff. Stable Graph transaction IDs reconcile creation
+  retries, but availability checks are not distributed exclusive reservations.
+  See `docs/Microsoft-calendar-tool.md` for acceptance and rollback boundaries.
 - **Per-call overrides**: channel variables `AI_AGENT` (preferred — routes by agent slug,
   slug-first lookup), `AI_PROVIDER`, and `AI_AUDIO_PROFILE` override defaults per call.
   `AI_CONTEXT` is the legacy equivalent of `AI_AGENT` (display-name lookup) and keeps
@@ -148,7 +166,10 @@ Use these terms consistently and tie every change back to them:
   caller identity, credentials, prompts, greetings, instructions, or secret values to a
   support bundle; keep legacy export compatibility routed through the safe bounded path.
 - **Live status & call history**: push-based live-status hub feeds the Admin UI dashboard;
-  call history persists to SQLite (`src/core/call_history.py`).
+  call history persists to SQLite (`src/core/call_history.py`). In v7.6.2, list,
+  statistics and CSV/JSON exports share active filters (including multi-outcome
+  inclusion/exclusion, tool usage, durations, transcript and metadata). The UI
+  ignores obsolete list/statistics responses; no schema migration is required.
 
 ## Engineering Guardrails (Non-Negotiable)
 

@@ -1,8 +1,8 @@
 # Tool Calling Guide
 
-**Version**: 4.2  
-**Status**: Production Ready  
-**Last Updated**: January 2026
+**Version**: 7.6.2<br>
+**Status**: Provider-specific qualification (see setup guides)<br>
+**Last Updated**: October 2026
 
 Complete guide to AI tool calling in Asterisk AI Voice Agent—enabling AI agents to perform actions like call transfers and email management.
 
@@ -14,6 +14,7 @@ Complete guide to AI tool calling in Asterisk AI Voice Agent—enabling AI agent
 - [Supported Providers](#supported-providers)
 - [Post-Call Reporting Contract](#post-call-reporting-contract)
 - [Available Tools](#available-tools)
+- [Calendar Booking Boundaries](#calendar-booking-boundaries)
 - [Pre-Call Tools (HTTP Lookups)](#pre-call-tools-http-lookups)
 - [In-Call HTTP Tools](#in-call-http-tools)
 - [Post-Call Tools (Webhooks)](#post-call-tools-webhooks)
@@ -57,7 +58,31 @@ Tool calling enables AI agents to perform real-world actions during conversation
 | **ElevenLabs Agent** | ✅ Full Support | Full-agent provider |
 | **Modular Pipelines (local_hybrid)** | ✅ Full Support | Production validated (Nov 19, 2025) - AAVA-85 |
 
-All tools work identically across supported providers—no code changes needed when switching providers.
+The shared tool registry adapts tools to each provider, but schema, concurrency
+and model qualification differ. Gemini 3.8 keeps call-state actions blocking
+and permits only read-only extension checks to run non-blocking; its attached
+live validation is limited to the documented Vertex paths. See the
+[Google Live guide](Provider-Google-Setup.md) before changing a model.
+
+## Calendar Booking Boundaries
+
+- [Microsoft Calendar](Microsoft-calendar-tool.md) supports exact-interval
+  availability, caller-confirmed invitations and tracked same-call
+  reschedule/cancel. Invitations and working-hours/horizon enforcement are
+  opt-in; preserve existing OAuth caches, identities and saved calendar IDs on
+  upgrade. Consent and ownership checks apply to full-agent and modular/hybrid
+  paths without rewriting saved Agent prompts.
+- A created event is not proof of invitation delivery or attendee acceptance.
+  Creation retries reconcile stable transaction IDs; observed ETags guard
+  mutations. Later-call, untracked, externally edited or restart-lost bookings
+  require staff. Availability checks are not atomic/distributed reservations.
+- The maintainer confirmed #686's acceptance plan tested and validated for
+  v7.6.2. This is release-scoped evidence, not authorization to send invitations
+  or edit a production calendar. Follow the guide's per-installation rollout
+  and rollback boundaries.
+- [Google Calendar](Google-calendar-tool.md) retains its own configuration and
+  supported actions; do not infer Microsoft invitation/lifecycle behavior from
+  the shared tool name or reporting contract.
 
 ## Post-Call Reporting Contract
 
@@ -1669,6 +1694,6 @@ Tools written once, work with any provider.
 
 ---
 
-**Last Updated**: January 2026  
-**Version**: 4.2.0  
-**Status**: ✅ Production Ready
+**Last Updated**: October 2026<br>
+**Version**: 7.6.2<br>
+**Status**: Provider-specific qualification (see setup guides)

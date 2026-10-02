@@ -326,6 +326,14 @@ bounded in-memory cache, not an authorization mechanism for later calls.
 
 ## Acceptance plan and rollout
 
+For v7.6.2, the maintainer confirmed this acceptance plan tested and validated
+on 2026-10-02, including the stale-ETag cancellation scenario. The
+[release matrix](baselines/golden/v7.6.2-validation-matrix.md) records this as
+maintainer-confirmed evidence without publishing mailbox/recipient details or
+inventing a call ID/test revision. This is not blanket tenant qualification or
+authorization to change a production calendar; the per-installation rollout
+requirements below remain applicable.
+
 Automated tests use only synthetic fixtures/mocked Graph HTTP. Before production:
 
 1. Obtain separate explicit approval identifying a **test organizer mailbox,

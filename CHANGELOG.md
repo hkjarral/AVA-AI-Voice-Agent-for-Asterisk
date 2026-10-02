@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.6.2] - 2026-10-02
+
+Release scope: merged PRs #674, #678, #681, #682, #684, #686 and #683. Open
+feature PRs and Dependabot updates are excluded. No database migration or
+provider/transport/model-default change is introduced by this release.
+
 ### Fixed
 
 - **Shared Admin UI empty states** ([#342](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/342)): Call History, raw Logs, and Docker now use a reusable EmptyState component. Call History retains its existing appearance and filter-specific message; Logs keeps its dark-console styling and filter/debug guidance; Docker keeps loading and errors separate from empty results.
@@ -26,6 +32,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Microsoft Calendar invitations and same-call booking lifecycle**: adds caller-confirmed attendee emails, plain-text invitation templates/preview, operator working-hours controls, exact-interval availability and pre-creation conflict checks against the selected calendar. Creation retries reconcile stable Graph transaction IDs; same-call cancellation is scoped to the tracked booking and rescheduling updates it in place. Later-call changes require staff; delivery and attendee acceptance remain unknown. Invitations default off and existing appointment-only create arguments remain supported. Upgrades retain existing OAuth caches and calendar IDs: verification reads the saved calendar directly, and immutable-ID preferences apply only to event operations. Hours/horizon enforcement requires explicit opt-in; multiple distinct same-call bookings remain supported. Modular/hybrid pipelines receive calendar guidance without rewriting saved Agent prompts. Rescheduling requires a concrete event ETag, and new connections save the canonical cached MSAL identity; mismatched legacy identities fail with operator-correction guidance.
 
 - **Gemini 3.8 Live on Developer API and Vertex AI** ([#673](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/673)): adds model selection on both surfaces, AUDIO-only setup, ID-matched function responses, and cancellation-aware tool execution. Read-only extension status checks can run non-blocking; call-state and telephony actions remain blocking. The Admin UI shows model-aware Vertex regions, resets an incompatible region to the shared `us-central1` default when switching models, and locks 3.8 response modality to Audio Only. Gemini 3.8 uses full-duplex caller audio for barge-in and drains a spoken farewell without forwarding a post-hangup model continuation. Shared attended-transfer cleanup now resumes the caller when an agent leg ends before answer. A Vertex `us-central1` 3.8 call (`1790560988.243`) exercised interruption, tools, unanswered-transfer recovery, and hangup; a Vertex 2.5 retest (`1790561587.250`) exercised the existing model path and the same recovery. Broader production and Developer API qualification remains outstanding. Shipped model defaults are unchanged.
+
+### Contributors
+
+- [@arnavp27](https://github.com/arnavp27) — Admin UI numeric alignment,
+  accessibility and shared empty states
+  ([#681](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/681),
+  [#682](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/682),
+  [#684](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/684)).
+- [@Rea-PC08](https://github.com/Rea-PC08) — shared Call History filters and
+  analytics/export parity
+  ([#683](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/683)).
+- [@hkjarral](https://github.com/hkjarral) — Gemini 3.8 Live, farewell-delay
+  deprecation, Microsoft Calendar booking lifecycle, review fixes and release
+  maintenance
+  ([#674](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/674),
+  [#678](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/678),
+  [#686](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/686)).
+- README badges and `CONTRIBUTORS.md` also restore historical credit for Alce
+  (`alceops`), Joey Roth (`Genmin`) and Ivan Garcia, update the renamed
+  `Ai-chan-0411` profile, and preserve existing contributor/co-author credit.
+  These are attribution corrections, not newly shipped runtime features.
 
 ## [7.6.1] - 2026-09-20
 
