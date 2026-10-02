@@ -97,7 +97,7 @@ class GrokToolAdapter:
         try:
             parameters = json.loads(arguments_str) if isinstance(arguments_str, str) else arguments_str
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Grok function arguments: {e}", arguments=arguments_str)
+            logger.error(f"Failed to parse Grok function arguments: {e}", argument_length=len(arguments_str) if isinstance(arguments_str, str) else 0)
             parameters = {}
 
         parameter_keys: List[str] = []
@@ -116,7 +116,7 @@ class GrokToolAdapter:
             call_id=context.get("call_id"),
             function_call_id=function_call_id,
             tool=function_name,
-            parameters=parameters,
+            parameter_keys=parameter_keys,
         )
 
         tool = self.registry.get(function_name)
@@ -176,7 +176,7 @@ class GrokToolAdapter:
                 call_id=context.get("call_id"),
                 function_call_id=function_call_id,
                 tool=function_name,
-                result=sanitized,
+                result_keys=sorted(sanitized),
             )
             sanitized['call_id'] = function_call_id
             sanitized['function_name'] = function_name

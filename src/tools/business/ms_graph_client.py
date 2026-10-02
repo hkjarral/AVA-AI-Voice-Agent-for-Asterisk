@@ -125,7 +125,7 @@ class MicrosoftGraphClient:
                 authority=self.authority,
                 token_cache=cache,
             )
-            accounts = app.get_accounts(username=self.account.user_principal_name) or app.get_accounts()
+            accounts = app.get_accounts(username=self.account.user_principal_name)
             if not accounts:
                 raise MicrosoftGraphApiError(
                     "Microsoft Calendar reconnect required. No signed-in account exists in the token cache.",
@@ -152,10 +152,14 @@ class MicrosoftGraphClient:
         path_or_url: str,
         body: dict[str, Any] | None = None,
         query: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> Any:
         token = self.acquire_token()
         if path_or_url.startswith("https://"):
             url = path_or_url
+            parsed = urllib.parse.urlsplit(url)
+            if parsed.netloc != "graph.microsoft.com" or not parsed.path.startswith("/v1.0/"):
+                raise MicrosoftGraphApiError("Unexpected Graph pagination URL.", error_code="invalid_graph_url")
         else:
             url = f"{GRAPH_BASE_URL}{path_or_url}"
         if query:
@@ -169,7 +173,8 @@ class MicrosoftGraphClient:
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
-                "Prefer": 'outlook.timezone="UTC"',
+                "Prefer": 'outlook.timezone="UTC", IdType="ImmutableId", outlook.body-content-type="text"',
+                **(headers or {}),
             },
         )
         try:
@@ -187,7 +192,7 @@ class MicrosoftGraphClient:
             raise
         except Exception as exc:
             raise MicrosoftGraphApiError(
-                f"Microsoft Graph request failed: {exc}",
+                "Microsoft Graph request failed; its outcome may be uncertain.",
                 error_code="graph_unavailable",
             ) from exc
 
@@ -291,6 +296,9 @@ class MicrosoftGraphClient:
         description: str,
         start_utc: datetime,
         end_utc: datetime,
+        *,
+        attendee_emails: list[str] | None = None,
+        transaction_id: str | None = None,
     ) -> dict[str, Any]:
         body = {
             "subject": summary,
@@ -298,6 +306,11 @@ class MicrosoftGraphClient:
             "start": {"dateTime": graph_datetime(start_utc), "timeZone": "UTC"},
             "end": {"dateTime": graph_datetime(end_utc), "timeZone": "UTC"},
         }
+        if attendee_emails:
+            body["attendees"] = [{"emailAddress": {"address": email}, "type": "required"} for email in attendee_emails]
+        if transaction_id:
+            body["transactionId"] = transaction_id
+        body["showAs"] = "busy"
         return self._request(
             "POST",
             f"/me/calendars/{urllib.parse.quote(self.account.calendar_id, safe='')}/events",
@@ -315,3 +328,11 @@ class MicrosoftGraphClient:
             if exc.status == 404:
                 return False
             raise
+
+    def update_event(self, event_id: str, body: dict[str, Any], etag: str | None = None) -> dict[str, Any]:
+        return self._request(
+            "PATCH",
+            f"/me/calendars/{urllib.parse.quote(self.account.calendar_id, safe='')}/events/{urllib.parse.quote(event_id, safe='')}",
+            body=body,
+            headers={"If-Match": etag} if etag else None,
+        )

@@ -53,6 +53,14 @@ TOOL_CALENDAR_KEYS: Tuple[str, ...] = (
     "calendar",
     "link",
     "agent_hint",
+    "available",
+    "slots_returned",
+    "unavailable_accounts",
+    "reservation_status",
+    "invitation_status",
+    "delivery_status",
+    "attendee_acceptance_status",
+    "reconciled",
 )
 
 CALENDAR_EVENT_KEYS: Tuple[str, ...] = (
@@ -203,6 +211,7 @@ def sanitize_tool_result_for_json_string(
                 if isinstance(slots_with_end, list) and slots_with_end:
                     slots_with_end.pop()
                 payload["slots_truncated"] = True
+                payload["slots_returned"] = len(payload.get("slots") or [])
             else:
                 payload["calendars_without_open_windows"].pop()
 

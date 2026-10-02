@@ -188,7 +188,9 @@ class GoogleToolAdapter:
             Tool execution result
         """
         logger.info(
-            f"🔧 Google tool call: {function_name}({arguments})",
+            "Google tool call",
+            tool=function_name,
+            parameter_keys=sorted(arguments) if isinstance(arguments, dict) else [],
             call_id=context.call_id,
         )
         

@@ -5343,8 +5343,11 @@ async def verify_microsoft_calendar(req: _MicrosoftVerifyRequest):
                 "message": "The connected Microsoft account cannot see the configured calendar_id.",
             },
         )
+    if matched.get("canEdit") is False:
+        raise HTTPException(status_code=403, detail={"error_code": "calendar_read_only", "message": "The selected calendar is read-only; choose an editable calendar."})
     return {
         "status": "ok",
+        "can_edit": matched.get("canEdit"),
         "user_principal_name": me.get("userPrincipalName") or user_principal_name,
         "display_name": me.get("displayName") or "",
         "calendar_id": calendar_id,

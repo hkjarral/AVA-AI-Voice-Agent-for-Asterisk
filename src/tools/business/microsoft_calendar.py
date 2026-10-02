@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import uuid
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import threading
 from collections import OrderedDict
 from datetime import datetime, timedelta
@@ -12,12 +16,9 @@ import structlog
 
 from src.tools.base import Tool, ToolCategory, ToolDefinition
 from src.tools.business._calendar_utils import (
+    graph_datetime,
     build_slot_starts,
-    coerce_hour,
-    coerce_working_days,
-    get_zoneinfo,
     intersect_intervals,
-    normalize_to_tz,
     parse_iso_datetime,
     subtract_busy,
     to_utc,
@@ -29,6 +30,18 @@ from src.tools.business.ms_graph_client import (
     MicrosoftGraphApiError,
     MicrosoftGraphClient,
 )
+from src.tools.business.microsoft_booking import (
+    BookingValidationError,
+    booking_interval,
+    invitation_content,
+    strict_datetime,
+    validated_attendees,
+    within_working_hours,
+    working_policy,
+    CALLER_FIELDS,
+    OPERATOR_FIELDS,
+    utc_now,
+)
 from src.tools.context import ToolExecutionContext, resolve_scoped_tool_config
 
 logger = structlog.get_logger(__name__)
@@ -39,7 +52,15 @@ _MICROSOFT_CALENDAR_INPUT_SCHEMA = {
     "properties": {
         "action": {
             "type": "string",
-            "enum": ["list_events", "get_event", "create_event", "delete_event", "get_free_slots"],
+            "enum": [
+                "list_events",
+                "get_event",
+                "create_event",
+                "delete_event",
+                "get_free_slots",
+                "check_availability",
+                "reschedule_event",
+            ],
             "description": "The calendar operation to perform.",
         },
         "account_key": {
@@ -57,27 +78,62 @@ _MICROSOFT_CALENDAR_INPUT_SCHEMA = {
             "type": "string",
             "description": (
                 "Optional. Omit by default. When configured by the operator, events whose "
-                "subjects start with this value define open windows. Blank uses Microsoft "
-                "Graph native free/busy plus working hours."
+                "subjects start with this value define open windows. Blank uses the selected "
+                "calendar event availability plus working hours."
             ),
         },
-        "busy_prefix": {"type": "string", "description": "Optional title-prefix busy marker."},
-        "duration": {"type": "integer", "description": "Appointment duration in minutes."},
+        "busy_prefix": {
+            "type": "string",
+            "description": "Optional title-prefix busy marker.",
+        },
+        "duration": {
+            "type": "integer",
+            "description": "Appointment duration in minutes.",
+        },
         "event_id": {
             "type": "string",
-            "description": (
-                "Microsoft Graph event id. Required for get_event. For delete_event you can "
-                "OMIT this if you want to delete the event you just created in this same "
-                "call (e.g. the typical reschedule flow: create → user changes their mind → "
-                "delete → create with new time). The tool will look up the most recently "
-                "created event_id automatically. Only pass an event_id explicitly if you "
-                "need to delete a specific older event."
-            ),
+            "description": "For reads, the Graph id. For delete_event/reschedule_event omit it: only the booking created in this same call may be changed. Older bookings require staff.",
+        },
+        "attendee_emails": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 10,
+            "description": "Email addresses spelled out and confirmed by the caller. Omit for an appointment without invitations.",
+        },
+        "booking_confirmed": {
+            "type": "boolean",
+            "description": "True only after the caller agrees to the exact date, time, timezone and duration. Required for invitation bookings and rescheduling.",
+        },
+        "invitation_confirmed": {
+            "type": "boolean",
+            "description": "True only after the caller confirms every attendee address and agrees to send invitations. Required when attendees are supplied.",
+        },
+        "cancellation_confirmed": {
+            "type": "boolean",
+            "description": "True only after reading back the current-call booking and obtaining agreement to cancel it and its invitations.",
+        },
+        "caller_name": {
+            "type": "string",
+            "description": "Caller-confirmed name for the invitation body.",
+        },
+        "meeting_purpose": {
+            "type": "string",
+            "description": "Caller-confirmed reason for the appointment.",
+        },
+        "confirmed_notes": {
+            "type": "string",
+            "description": "Relevant notes confirmed by the caller for inclusion in the invitation.",
         },
         "summary": {"type": "string", "description": "Event title for create_event."},
         "description": {"type": "string", "description": "Optional event description."},
-        "start_datetime": {"type": "string", "description": "ISO 8601 start time for create_event."},
-        "end_datetime": {"type": "string", "description": "ISO 8601 end time for create_event."},
+        "start_datetime": {
+            "type": "string",
+            "description": "ISO 8601 start time for create_event.",
+        },
+        "end_datetime": {
+            "type": "string",
+            "description": "ISO 8601 end time for create_event.",
+        },
     },
     "required": ["action"],
 }
@@ -85,6 +141,9 @@ _MICROSOFT_CALENDAR_INPUT_SCHEMA = {
 
 class MicrosoftCalendarTool(Tool):
     _LAST_EVENT_CACHE_CAP = 1024
+    # Held inside the worker through read/check/write/cache, even if its awaiting
+    # coroutine is cancelled. Shared by registry generations in this process.
+    _MUTATION_LOCK = threading.Lock()
 
     def __init__(self):
         super().__init__()
@@ -99,7 +158,9 @@ class MicrosoftCalendarTool(Tool):
             name="microsoft_calendar",
             description=(
                 "Interact with a Microsoft 365 Outlook calendar. Use this to list events, "
-                "get a specific event, create events, delete events, or find free slots."
+                "check_availability for an exact requested interval before suggesting free slots. "
+                "Confirm bookings and attendee emails before creating invitations. Cancel or "
+                "reschedule only a booking created in this call; older bookings require staff."
             ),
             category=ToolCategory.BUSINESS,
             requires_channel=False,
@@ -120,12 +181,19 @@ class MicrosoftCalendarTool(Tool):
                 if not isinstance(value, dict):
                     continue
                 accounts[str(key)] = {
-                    "tenant_id": value.get("tenant_id", "") or config.get("tenant_id", ""),
-                    "client_id": value.get("client_id", "") or config.get("client_id", ""),
-                    "token_cache_path": value.get("token_cache_path", "") or config.get("token_cache_path", ""),
-                    "user_principal_name": value.get("user_principal_name", "") or config.get("user_principal_name", ""),
-                    "calendar_id": value.get("calendar_id", "") or config.get("calendar_id", ""),
-                    "timezone": value.get("timezone", "") or config.get("timezone", "") or "UTC",
+                    "tenant_id": value.get("tenant_id", "")
+                    or config.get("tenant_id", ""),
+                    "client_id": value.get("client_id", "")
+                    or config.get("client_id", ""),
+                    "token_cache_path": value.get("token_cache_path", "")
+                    or config.get("token_cache_path", ""),
+                    "user_principal_name": value.get("user_principal_name", "")
+                    or config.get("user_principal_name", ""),
+                    "calendar_id": value.get("calendar_id", "")
+                    or config.get("calendar_id", ""),
+                    "timezone": value.get("timezone", "")
+                    or config.get("timezone", "")
+                    or "UTC",
                 }
         else:
             accounts["default"] = {
@@ -157,7 +225,9 @@ class MicrosoftCalendarTool(Tool):
             timezone=(cfg.get("timezone") or "UTC").strip() or "UTC",
         )
 
-    def _client_for_config(self, account: MicrosoftAccountConfig) -> MicrosoftGraphClient:
+    def _client_for_config(
+        self, account: MicrosoftAccountConfig
+    ) -> MicrosoftGraphClient:
         key = (
             account.tenant_id,
             account.client_id,
@@ -174,61 +244,93 @@ class MicrosoftCalendarTool(Tool):
 
     def _validate_account(self, account: MicrosoftAccountConfig) -> str | None:
         missing = []
-        for attr in ("tenant_id", "client_id", "token_cache_path", "user_principal_name", "calendar_id"):
+        for attr in (
+            "tenant_id",
+            "client_id",
+            "token_cache_path",
+            "user_principal_name",
+            "calendar_id",
+        ):
             if not getattr(account, attr):
                 missing.append(attr)
         if missing:
             return f"Microsoft Calendar account is missing: {', '.join(missing)}."
+        try:
+            ZoneInfo(account.timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            return "Microsoft Calendar has an invalid timezone; ask an operator to correct it."
         return None
 
-    def _map_api_error(self, exc: MicrosoftGraphApiError, prefix: str) -> dict[str, Any]:
-        message = str(exc)
-        if exc.error_code == "auth_expired":
-            message = (
-                "Microsoft Calendar is not configured for runtime use because credentials "
-                "expired or no credentials are available. Ask an operator to reconnect "
-                "the account in Tools before booking."
-            )
-        elif exc.error_code == "forbidden_calendar":
-            message = f"Microsoft Calendar access is forbidden (403): {message}"
-        elif exc.error_code == "calendar_not_found":
-            message = f"Microsoft Calendar is not configured correctly: calendar not found. {message}"
-        elif exc.error_code in {"graph_unavailable", "rate_limited"}:
-            message = f"Microsoft Graph is currently unavailable: {message}"
-        elif exc.error_code in {"msal_not_installed", "portalocker_not_installed", "missing_token_cache_path", "token_cache_unreadable"}:
-            message = f"Microsoft Calendar is not configured correctly: {message}"
+    def _map_api_error(
+        self, exc: MicrosoftGraphApiError, prefix: str
+    ) -> dict[str, Any]:
+        messages = {
+            "auth_expired": "Microsoft Calendar is not configured for runtime use: reconnect required.",
+            "auth_failed": "Microsoft Calendar authorization failed; ask an operator to reconnect.",
+            "forbidden_calendar": "Microsoft Calendar access is forbidden (403).",
+            "calendar_not_found": "Microsoft Calendar is not configured correctly: calendar not found.",
+            "graph_unavailable": "Microsoft Graph is currently unavailable.",
+            "rate_limited": "Microsoft Graph is rate limited; wait before trying again.",
+        }
         return {
             "status": "error",
             "error_code": exc.error_code,
-            "message": f"{prefix}: {message}",
+            "message": f"{prefix}: {messages.get(exc.error_code, 'Microsoft Calendar request failed; ask an operator to investigate.')}",
             "http_status": exc.status,
         }
 
-    def _parse_event_dt(self, value: dict[str, Any], fallback_tz: str) -> datetime | None:
+    def _parse_event_dt(
+        self, value: dict[str, Any], fallback_tz: str
+    ) -> datetime | None:
         dt_raw = (value or {}).get("dateTime")
         if not dt_raw:
             return None
         # Graph requests use Prefer UTC, but old events can carry timezone names.
         tz_name = (value or {}).get("timeZone") or fallback_tz or "UTC"
-        if dt_raw.endswith("Z") or "+" in dt_raw[10:]:
-            return parse_iso_datetime(dt_raw).astimezone(get_zoneinfo(fallback_tz))
-        return parse_iso_datetime(dt_raw).replace(tzinfo=get_zoneinfo(tz_name)).astimezone(get_zoneinfo(fallback_tz))
+        # Respect both positive and negative offsets. Prefer UTC governs naive
+        # response values; an unrecognised event timezone fails closed.
+        if not isinstance(dt_raw, str):
+            raise BookingValidationError(
+                "malformed_calendar_event", "Calendar returned an invalid event time."
+            )
+        parsed = parse_iso_datetime(dt_raw)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ZoneInfo(tz_name))
+        return parsed.astimezone(ZoneInfo(fallback_tz))
 
-    async def execute(self, parameters: Dict[str, Any], context: ToolExecutionContext) -> Dict[str, Any]:
+    async def execute(
+        self, parameters: Dict[str, Any], context: ToolExecutionContext
+    ) -> Dict[str, Any]:
+        if not isinstance(parameters, dict) or set(parameters) - set(
+            _MICROSOFT_CALENDAR_INPUT_SCHEMA["properties"]
+        ):
+            return {
+                "status": "error",
+                "error_code": "invalid_parameters",
+                "message": "Use only the documented Microsoft Calendar arguments.",
+            }
         call_id = getattr(context, "call_id", None) or ""
         action = parameters.get("action")
-        logger.info("MicrosoftCalendarTool execution triggered", call_id=call_id, action=action)
+        logger.info(
+            "MicrosoftCalendarTool execution triggered", call_id=call_id, action=action
+        )
 
         config = self._get_config(context)
         if config.get("enabled") is False:
             return {"status": "error", "message": "Microsoft Calendar is disabled."}
         if not action:
-            return {"status": "error", "message": "Error: 'action' parameter is missing."}
+            return {
+                "status": "error",
+                "message": "Error: 'action' parameter is missing.",
+            }
 
         accounts = self._resolve_accounts(config)
         selected_keys = self._selected_account_keys(config)
         if not selected_keys:
-            return {"status": "error", "message": "No Microsoft Calendar accounts are selected or configured."}
+            return {
+                "status": "error",
+                "message": "No Microsoft Calendar accounts are selected or configured.",
+            }
 
         account_key = parameters.get("account_key")
 
@@ -246,7 +348,12 @@ class MicrosoftCalendarTool(Tool):
                         "message": f"Account '{key}' is not selected for this context.",
                     }
                 return key, None
-            if len(selected_keys) > 1 and action_name in {"create_event", "delete_event", "get_event"}:
+            if len(selected_keys) > 1 and action_name in {
+                "create_event",
+                "delete_event",
+                "get_event",
+                "reschedule_event",
+            }:
                 return None, {
                     "status": "error",
                     "message": "account_key is required when multiple Microsoft Calendar accounts are selected.",
@@ -254,8 +361,14 @@ class MicrosoftCalendarTool(Tool):
             return selected_keys[0], None
 
         try:
+            if action == "check_availability":
+                return await self._handle_get_free_slots(
+                    parameters, config, accounts, selected_keys, call_id, exact=True
+                )
             if action == "get_free_slots":
-                return await self._handle_get_free_slots(parameters, config, accounts, selected_keys, call_id)
+                return await self._handle_get_free_slots(
+                    parameters, config, accounts, selected_keys, call_id
+                )
             if action == "list_events":
                 key, err = _target_key("list_events")
                 if err:
@@ -270,16 +383,46 @@ class MicrosoftCalendarTool(Tool):
                 key, err = _target_key("create_event")
                 if err:
                     return err
-                return await self._handle_create_event(parameters, config, accounts[key], key, call_id)
+                return await self._handle_create_event(
+                    parameters, config, accounts[key], key, call_id
+                )
             if action == "delete_event":
                 key, err = _target_key("delete_event")
                 if err:
                     return err
-                return await self._handle_delete_event(parameters, accounts[key], key, call_id)
+                return await asyncio.to_thread(
+                    self._change_booking,
+                    parameters,
+                    config,
+                    accounts[key],
+                    key,
+                    call_id,
+                    "delete_event",
+                )
+            if action == "reschedule_event":
+                key, err = _target_key("reschedule_event")
+                if err:
+                    return err
+                return await asyncio.to_thread(
+                    self._change_booking,
+                    parameters,
+                    config,
+                    accounts[key],
+                    key,
+                    call_id,
+                    action,
+                )
             return {"status": "error", "message": f"Error: Unknown action '{action}'."}
-        except Exception as exc:
-            logger.error("MicrosoftCalendarTool failed", call_id=call_id, action=action, error=str(exc), exc_info=True)
-            return {"status": "error", "message": "An unexpected Microsoft Calendar error occurred."}
+        except MicrosoftGraphApiError as exc:
+            return self._map_api_error(exc, "Microsoft Calendar request failed")
+        except BookingValidationError as exc:
+            return {"status": "error", "error_code": exc.code, "message": str(exc)}
+        except Exception:
+            logger.error("MicrosoftCalendarTool failed", call_id=call_id, action=action)
+            return {
+                "status": "error",
+                "message": "An unexpected Microsoft Calendar error occurred.",
+            }
 
     async def _handle_get_free_slots(
         self,
@@ -288,14 +431,19 @@ class MicrosoftCalendarTool(Tool):
         accounts: dict[str, dict[str, str]],
         selected_keys: list[str],
         call_id: str,
+        exact: bool = False,
     ) -> dict[str, Any]:
-        time_min = parameters.get("time_min")
-        time_max = parameters.get("time_max")
+        time_min = (
+            parameters.get("start_datetime") if exact else parameters.get("time_min")
+        )
+        time_max = (
+            parameters.get("end_datetime") if exact else parameters.get("time_max")
+        )
         if not time_min or not time_max:
             return {
                 "status": "error",
                 "error_code": "missing_parameters",
-                "message": "Missing required parameters: 'time_min' and 'time_max' are required for get_free_slots.",
+                "message": "Provide start_datetime/end_datetime for check_availability, or time_min/time_max for get_free_slots.",
             }
         aggregate_mode = (parameters.get("aggregate_mode") or "all").lower()
         if aggregate_mode not in {"all", "any"}:
@@ -304,26 +452,38 @@ class MicrosoftCalendarTool(Tool):
         keys_to_use = [str(account_key)] if account_key else list(selected_keys)
         for key in keys_to_use:
             if key not in accounts or key not in selected_keys:
-                return {"status": "error", "message": f"Microsoft Calendar account '{key}' is not available for this context."}
+                return {
+                    "status": "error",
+                    "message": f"Microsoft Calendar account '{key}' is not available for this context.",
+                }
 
         config_free = (config.get("free_prefix") or "").strip()
-        free_prefix = (parameters.get("free_prefix") or config_free).strip() if config_free else ""
-        busy_prefix = (parameters.get("busy_prefix") or config.get("busy_prefix") or "Busy").strip() or "Busy"
+        free_prefix = (
+            (parameters.get("free_prefix") or config_free).strip()
+            if config_free
+            else ""
+        )
+        busy_prefix = (
+            parameters.get("busy_prefix") or config.get("busy_prefix") or "Busy"
+        ).strip() or "Busy"
         availability_mode = "title_prefix" if free_prefix else "freebusy"
 
-        duration_raw = parameters.get("duration") or config.get("min_slot_duration_minutes", 30)
         try:
-            duration_minutes = max(1, int(duration_raw))
+            duration_minutes = parameters.get(
+                "duration", config.get("min_slot_duration_minutes", 30)
+            )
+            if type(duration_minutes) is not int or not 1 <= duration_minutes <= 1440:
+                raise ValueError()
         except (TypeError, ValueError):
-            duration_minutes = 30
-        work_start = coerce_hour(config.get("working_hours_start"), 9)
-        work_end = coerce_hour(config.get("working_hours_end"), 17)
-        if work_end <= work_start:
-            work_start, work_end = 9, 17
-        work_days = coerce_working_days(config.get("working_days"))
-
+            raise BookingValidationError(
+                "invalid_duration",
+                "duration must be a positive integer number of minutes, at most 1440.",
+            )
+        work_start, work_end, work_days = working_policy(config)
+        exact_results = []
         per_account_intervals: list[list[tuple[datetime, datetime]]] = []
         failed_keys: list[str] = []
+        failures: dict[str, dict[str, Any]] = {}
         total_free_blocks = 0
         total_busy_blocks = 0
         per_account_free_counts: dict[str, int] = {}
@@ -333,45 +493,79 @@ class MicrosoftCalendarTool(Tool):
             validation_error = self._validate_account(account)
             if validation_error:
                 failed_keys.append(key)
-                logger.warning("Invalid Microsoft Calendar account config", call_id=call_id, account_key=key, error=validation_error)
+                failures[key] = {
+                    "status": "error",
+                    "error_code": "invalid_configuration",
+                    "message": validation_error,
+                }
+                logger.warning(
+                    "Invalid Microsoft Calendar account config",
+                    call_id=call_id,
+                    account_key=key,
+                    error=validation_error,
+                )
                 continue
             client = self._client_for_config(account)
             tz_name = account.timezone or "UTC"
-            range_start = normalize_to_tz(time_min, tz_name, respect_offset=True)
-            range_end = normalize_to_tz(time_max, tz_name, respect_offset=True)
-            try:
-                if availability_mode == "freebusy":
-                    busy_blocks = await asyncio.to_thread(
-                        self._get_schedule_busy_blocks_chunked,
-                        client,
-                        range_start,
+            range_start = strict_datetime(time_min, tz_name)
+            range_end = strict_datetime(time_max, tz_name)
+            if to_utc(range_end) <= to_utc(range_start) or to_utc(range_end) - to_utc(
+                range_start
+            ) > timedelta(days=93):
+                raise BookingValidationError(
+                    "invalid_range",
+                    "Use an increasing calendar range of at most 93 days.",
+                )
+            if exact:
+                booking_interval(
+                    {"start_datetime": time_min, "end_datetime": time_max},
+                    config,
+                    tz_name,
+                )
+            else:
+                range_start = max(range_start, utc_now().astimezone(ZoneInfo(tz_name)))
+                try:
+                    horizon = int(config.get("booking_horizon_days", 365))
+                except (TypeError, ValueError):
+                    raise BookingValidationError(
+                        "invalid_configuration", "Invalid booking horizon."
+                    )
+                if horizon > 0:
+                    range_end = min(
                         range_end,
-                        tz_name,
+                        (utc_now() + timedelta(days=horizon)).astimezone(
+                            ZoneInfo(tz_name)
+                        ),
                     )
-                    free_blocks = working_hours_mask(range_start, range_end, tz_name, work_start, work_end, work_days)
-                    intervals = subtract_busy(free_blocks, busy_blocks)
-                    free_count = len(free_blocks)
-                    busy_count = len(busy_blocks)
-                else:
-                    events = await asyncio.to_thread(
-                        client.list_calendar_view,
-                        to_utc(range_start),
-                        to_utc(range_end),
-                    )
-                    intervals, free_count, busy_count = self._intervals_from_prefix_events(
-                        events,
-                        free_prefix,
-                        busy_prefix,
-                        tz_name,
+            try:
+                if range_end <= range_start:
+                    per_account_intervals.append([])
+                    per_account_free_counts[key] = 0
+                    continue
+                intervals, free_count, busy_count = await asyncio.to_thread(
+                    self._available_intervals,
+                    client,
+                    range_start,
+                    range_end,
+                    tz_name,
+                    config,
+                    free_prefix,
+                    busy_prefix,
+                )
+                if exact:
+                    exact_results.append(
+                        any(a <= range_start and range_end <= b for a, b in intervals)
                     )
             except MicrosoftGraphApiError as exc:
                 failed_keys.append(key)
+                failures[key] = self._map_api_error(
+                    exc, "Could not check Microsoft Calendar availability"
+                )
                 logger.warning(
                     "Microsoft Calendar API failed during get_free_slots",
                     call_id=call_id,
                     account_key=key,
                     error_code=exc.error_code,
-                    error=str(exc),
                 )
                 continue
             per_account_intervals.append(intervals)
@@ -380,7 +574,13 @@ class MicrosoftCalendarTool(Tool):
             total_busy_blocks += busy_count
 
         if not per_account_intervals:
-            return {"status": "error", "message": f"All selected Microsoft Calendar accounts are unavailable: {', '.join(failed_keys)}."}
+            if len(keys_to_use) == 1:
+                return failures[keys_to_use[0]]
+            return {
+                "error_code": "calendars_unavailable",
+                "status": "error",
+                "message": f"All selected Microsoft Calendar accounts are unavailable: {', '.join(failed_keys)}.",
+            }
         if failed_keys and aggregate_mode != "any" and len(keys_to_use) > 1:
             return {
                 "status": "error",
@@ -395,12 +595,52 @@ class MicrosoftCalendarTool(Tool):
         else:
             available_intervals = per_account_intervals[0]
             for intervals in per_account_intervals[1:]:
-                available_intervals = intersect_intervals(available_intervals, intervals)
+                available_intervals = intersect_intervals(
+                    available_intervals, intervals
+                )
+
+        if exact:
+            available = (
+                any(exact_results) if aggregate_mode == "any" else all(exact_results)
+            )
+            outside_hours = any(
+                not within_working_hours(
+                    strict_datetime(time_min, accounts[k]["timezone"]),
+                    strict_datetime(time_max, accounts[k]["timezone"]),
+                    accounts[k]["timezone"],
+                    config,
+                )
+                for k in keys_to_use
+                if k not in failed_keys
+            )
+            return {
+                "status": "success",
+                "available": available,
+                "reason": (
+                    "available"
+                    if available
+                    else "outside_working_hours" if outside_hours else "busy"
+                ),
+                "message": (
+                    "The requested interval is available."
+                    if available
+                    else "The requested interval is unavailable; offer alternatives."
+                ),
+                "start": time_min,
+                "end": time_max,
+                "calendar_timezone": accounts[keys_to_use[0]]["timezone"],
+                "unavailable_accounts": failed_keys,
+                "agent_hint": "This checks the exact interval. Confirm it with the caller before creation; creation rechecks availability.",
+            }
 
         slot_starts = build_slot_starts(available_intervals, duration_minutes)
-        tz_set = {self._account_config(accounts[k]).timezone or "UTC" for k in keys_to_use if k not in failed_keys}
+        tz_set = {
+            self._account_config(accounts[k]).timezone or "UTC"
+            for k in keys_to_use
+            if k not in failed_keys
+        }
         output_tz_name = next(iter(tz_set)) if len(tz_set) == 1 else "UTC"
-        output_tz = get_zoneinfo(output_tz_name)
+        output_tz = ZoneInfo(output_tz_name)
         tz_disagreement = len(tz_set) > 1
         slot_starts = sorted([slot.astimezone(output_tz) for slot in slot_starts])
 
@@ -411,18 +651,29 @@ class MicrosoftCalendarTool(Tool):
         total_slots = len(slot_starts)
         if max_slots and max_slots > 0 and total_slots > max_slots:
             slot_starts = slot_starts[:max_slots]
-        slot_pairs = [(slot, slot + timedelta(minutes=duration_minutes)) for slot in slot_starts]
-        slots_with_end = [{"start": start.isoformat(), "end": end.isoformat()} for start, end in slot_pairs]
+        slot_pairs = [
+            (slot, slot + timedelta(minutes=duration_minutes)) for slot in slot_starts
+        ]
+        slots_with_end = [
+            {"start": start.isoformat(), "end": end.isoformat()}
+            for start, end in slot_pairs
+        ]
         slots = [start.isoformat() for start, _end in slot_pairs]
-        readable = [f"{start.strftime('%Y-%m-%d %H:%M')}-{end.strftime('%H:%M')}" for start, end in slot_pairs]
+        readable = [
+            f"{start.strftime('%Y-%m-%d %H:%M')}-{end.strftime('%H:%M')}"
+            for start, end in slot_pairs
+        ]
         cals_without_open = [
-            key for key in keys_to_use
+            key
+            for key in keys_to_use
             if key not in failed_keys and per_account_free_counts.get(key, 0) == 0
         ]
 
         if slots:
             reason = "available"
-            starts_only = [start.strftime("%Y-%m-%d %H:%M") for start, _end in slot_pairs]
+            starts_only = [
+                start.strftime("%Y-%m-%d %H:%M") for start, _end in slot_pairs
+            ]
             message = (
                 "Free slot starts: "
                 + ", ".join(starts_only)
@@ -453,6 +704,9 @@ class MicrosoftCalendarTool(Tool):
         return {
             "status": "success",
             "message": message,
+            "agent_hint": "These are suggestions, not the complete availability map. Never infer that an omitted time is busy, even when slots_truncated is false: suggestions use a slot grid. Check the caller's requested start/end with check_availability first; offer alternatives only if it is busy or outside permitted hours.",
+            "unavailable_accounts": failed_keys,
+            "slots_returned": len(slots),
             "slots": slots,
             "slots_with_end": slots_with_end,
             "slot_duration_minutes": duration_minutes,
@@ -467,86 +721,114 @@ class MicrosoftCalendarTool(Tool):
             "calendars_without_open_windows": cals_without_open,
         }
 
-    def _get_schedule_busy_blocks_chunked(
+    def _available_intervals(
         self,
-        client: MicrosoftGraphClient,
-        range_start: datetime,
-        range_end: datetime,
-        tz_name: str,
-    ) -> list[tuple[datetime, datetime]]:
-        busy: list[tuple[datetime, datetime]] = []
-        cursor = range_start
-        max_span = timedelta(days=31)
-        while cursor < range_end:
-            chunk_end = min(cursor + max_span, range_end)
-            for start_iso, end_iso in client.get_schedule(to_utc(cursor), to_utc(chunk_end)):
-                start = parse_iso_datetime(start_iso).replace(tzinfo=get_zoneinfo("UTC")).astimezone(get_zoneinfo(tz_name))
-                end = parse_iso_datetime(end_iso).replace(tzinfo=get_zoneinfo("UTC")).astimezone(get_zoneinfo(tz_name))
-                busy.append((start, end))
-            cursor = chunk_end
-        return busy
-
-    def _intervals_from_prefix_events(
-        self,
-        events: list[dict[str, Any]],
-        free_prefix: str,
-        busy_prefix: str,
-        tz_name: str,
-    ) -> tuple[list[tuple[datetime, datetime]], int, int]:
-        free_blocks: list[tuple[datetime, datetime]] = []
-        busy_blocks: list[tuple[datetime, datetime]] = []
+        client,
+        start,
+        end,
+        tz_name,
+        config,
+        free_prefix=None,
+        busy_prefix=None,
+        exclude_id=None,
+    ):
+        # calendarView uses the SAME selected calendar as create/update/delete.
+        events = client.list_calendar_view(to_utc(start), to_utc(end))
+        prefix = (
+            (config.get("free_prefix") or "").strip()
+            if free_prefix is None
+            else free_prefix
+        )
+        busy = []
+        opened = []
         for event in events:
-            subject = (event.get("subject") or "").strip()
-            start = self._parse_event_dt(event.get("start") or {}, tz_name)
-            end = self._parse_event_dt(event.get("end") or {}, tz_name)
-            if not start or not end:
+            if event.get("isCancelled") or event.get("id") == exclude_id:
                 continue
-            if subject.startswith(free_prefix):
-                free_blocks.append((start, end))
-            elif subject.startswith(busy_prefix):
-                busy_blocks.append((start, end))
-        return subtract_busy(free_blocks, busy_blocks), len(free_blocks), len(busy_blocks)
+            a = self._parse_event_dt(event.get("start") or {}, tz_name)
+            b = self._parse_event_dt(event.get("end") or {}, tz_name)
+            if a is None or b is None or to_utc(b) <= to_utc(a):
+                raise BookingValidationError(
+                    "malformed_calendar_event",
+                    "Calendar returned an invalid event interval; availability cannot be confirmed.",
+                )
+            subject = event.get("subject") or ""
+            if prefix and subject.startswith(prefix) and not event.get("transactionId"):
+                opened.append((a, b))
+            elif (event.get("showAs") or "busy").lower() != "free" or (
+                prefix
+                and subject.startswith(
+                    busy_prefix or config.get("busy_prefix") or "Busy"
+                )
+            ):
+                busy.append((a, b))
+        work_start, work_end, days = working_policy(config)
+        windows = working_hours_mask(start, end, tz_name, work_start, work_end, days)
+        if prefix:
+            windows = intersect_intervals(union_intervals([opened]), windows)
+        return subtract_busy(windows, busy), len(windows), len(busy)
 
-    async def _handle_list_events(self, parameters: dict[str, Any], cfg: dict[str, str], key: str) -> dict[str, Any]:
+    async def _handle_list_events(
+        self, parameters: dict[str, Any], cfg: dict[str, str], key: str
+    ) -> dict[str, Any]:
         time_min = parameters.get("time_min")
         time_max = parameters.get("time_max")
         if not time_min or not time_max:
-            return {"status": "error", "message": "Error: 'time_min' and 'time_max' are required for list_events."}
+            return {
+                "status": "error",
+                "message": "Error: 'time_min' and 'time_max' are required for list_events.",
+            }
         account = self._account_config(cfg)
         validation_error = self._validate_account(account)
         if validation_error:
             return {"status": "error", "message": validation_error}
-        start = normalize_to_tz(time_min, account.timezone, respect_offset=True)
-        end = normalize_to_tz(time_max, account.timezone, respect_offset=True)
+        start = strict_datetime(time_min, account.timezone)
+        end = strict_datetime(time_max, account.timezone)
         try:
-            events = await asyncio.to_thread(self._client_for_config(account).list_calendar_view, to_utc(start), to_utc(end))
+            events = await asyncio.to_thread(
+                self._client_for_config(account).list_calendar_view,
+                to_utc(start),
+                to_utc(end),
+            )
         except MicrosoftGraphApiError as exc:
             return self._map_api_error(exc, "Could not list Microsoft Calendar events")
         simplified = []
         for event in events:
-            simplified.append({
-                "id": event.get("id"),
-                "summary": event.get("subject", "No Title"),
-                "start": event.get("start", {}).get("dateTime"),
-                "end": event.get("end", {}).get("dateTime"),
-                "calendar": key,
-            })
+            simplified.append(
+                {
+                    "id": event.get("id"),
+                    "summary": event.get("subject", "No Title"),
+                    "start": event.get("start", {}).get("dateTime"),
+                    "end": event.get("end", {}).get("dateTime"),
+                    "calendar": key,
+                }
+            )
         return {"status": "success", "message": "Events listed.", "events": simplified}
 
-    async def _handle_get_event(self, parameters: dict[str, Any], cfg: dict[str, str], key: str) -> dict[str, Any]:
+    async def _handle_get_event(
+        self, parameters: dict[str, Any], cfg: dict[str, str], key: str
+    ) -> dict[str, Any]:
         event_id = parameters.get("event_id")
         if not event_id:
-            return {"status": "error", "message": "Error: 'event_id' is required for get_event."}
+            return {
+                "status": "error",
+                "message": "Error: 'event_id' is required for get_event.",
+            }
         account = self._account_config(cfg)
         validation_error = self._validate_account(account)
         if validation_error:
             return {"status": "error", "message": validation_error}
         try:
-            event = await asyncio.to_thread(self._client_for_config(account).get_event, event_id)
+            event = await asyncio.to_thread(
+                self._client_for_config(account).get_event, event_id
+            )
         except MicrosoftGraphApiError as exc:
             return self._map_api_error(exc, "Could not get Microsoft Calendar event")
         if not event:
-            return {"status": "error", "error_code": "event_not_found", "message": "Event not found."}
+            return {
+                "status": "error",
+                "error_code": "event_not_found",
+                "message": "Event not found.",
+            }
         return {
             "status": "success",
             "message": "Event retrieved.",
@@ -558,168 +840,568 @@ class MicrosoftCalendarTool(Tool):
             "calendar": key,
         }
 
-    async def _handle_create_event(
+    def _binding(self, account):
+        return hashlib.sha256(
+            json.dumps(
+                [
+                    account.tenant_id,
+                    account.client_id,
+                    account.token_cache_path,
+                    account.user_principal_name,
+                    account.calendar_id,
+                ]
+            ).encode()
+        ).hexdigest()
+
+    def _track(self, call_id, record):
+        with self._last_event_lock:
+            self._last_event_per_call[call_id] = record
+            self._last_event_per_call.move_to_end(call_id)
+            while len(self._last_event_per_call) > self._LAST_EVENT_CACHE_CAP:
+                self._last_event_per_call.popitem(last=False)
+
+    def _mutation_result(
         self,
-        parameters: dict[str, Any],
-        config: dict[str, Any],
-        cfg: dict[str, str],
-        key: str,
-        call_id: str,
-    ) -> dict[str, Any]:
-        summary = parameters.get("summary")
-        start_raw = parameters.get("start_datetime")
-        end_raw = parameters.get("end_datetime")
-        if not summary or not start_raw or not end_raw:
-            return {"status": "error", "message": "Error: 'summary', 'start_datetime', and 'end_datetime' are required for create_event."}
-        account = self._account_config(cfg)
-        validation_error = self._validate_account(account)
-        if validation_error:
-            return {"status": "error", "message": validation_error}
-        try:
-            start_local = normalize_to_tz(start_raw, account.timezone, respect_offset=True)
-            end_local = normalize_to_tz(end_raw, account.timezone, respect_offset=True)
-        except ValueError as exc:
-            return {"status": "error", "message": str(exc)}
-        actual_minutes = (end_local - start_local).total_seconds() / 60.0
-        try:
-            max_duration = int(config.get("max_event_duration_minutes", 240))
-        except (TypeError, ValueError):
-            max_duration = 240
-        if actual_minutes <= 0:
-            return {
-                "status": "error",
-                "error_code": "invalid_duration",
-                "message": "Invalid event duration: end_datetime must be after start_datetime.",
-            }
-        if max_duration > 0 and actual_minutes > max_duration:
-            return {
-                "status": "error",
-                "error_code": "duration_too_long",
-                "message": (
-                    f"Event duration {int(actual_minutes)} minutes exceeds the allowed "
-                    f"maximum of {max_duration} minutes. Retry with end_datetime equal "
-                    "to start_datetime plus the meeting length."
-                ),
-            }
-        try:
-            event = await asyncio.to_thread(
-                self._client_for_config(account).create_event,
-                summary,
-                parameters.get("description", "") or "",
-                to_utc(start_local),
-                to_utc(end_local),
-            )
-        except MicrosoftGraphApiError as exc:
-            return self._map_api_error(exc, "Failed to create Microsoft Calendar event")
-        event_id = event.get("id")
-        if call_id and event_id:
-            with self._last_event_lock:
-                if call_id in self._last_event_per_call:
-                    self._last_event_per_call.move_to_end(call_id)
-                self._last_event_per_call[call_id] = {"event_id": event_id, "account_key": key}
-                while len(self._last_event_per_call) > self._LAST_EVENT_CACHE_CAP:
-                    self._last_event_per_call.popitem(last=False)
+        event,
+        key,
+        account,
+        start,
+        end,
+        attendees,
+        *,
+        operation="created",
+        reconciled=False,
+    ):
+        invited = bool(attendees)
         return {
             "status": "success",
-            "message": "Event created.",
-            "agent_hint": (
-                "If the caller later corrects the date or time, call delete_event with NO "
-                "event_id parameter (the tool will delete the event you just created), "
-                "then call create_event with the corrected time. Do NOT try to echo back "
-                "the event_id — the tool tracks it server-side for this call."
+            "message": (
+                "Event created." if operation == "created" else "Event rescheduled."
             ),
-            "id": event_id,
-            "event_id": event_id,
+            "id": event["id"],
+            "event_id": event["id"],
             "link": event.get("webLink"),
             "calendar": key,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "calendar_timezone": account.timezone,
+            "reservation_status": operation,
+            "invitation_status": "request_accepted" if invited else "not_requested",
+            "delivery_status": "unknown" if invited else "not_applicable",
+            "attendee_acceptance_status": "unknown" if invited else "not_applicable",
+            "reconciled": reconciled,
+            "agent_hint": "Report the booking result. With attendees, Microsoft accepted the invitation/update request; do not claim delivery or acceptance. To cancel or reschedule this booking, obtain caller agreement and use delete_event or reschedule_event with NO event_id. Later-call changes require staff. Never delete first to reschedule.",
         }
 
-    async def _handle_delete_event(self, parameters: dict[str, Any], cfg: dict[str, str], key: str, call_id: str) -> dict[str, Any]:
-        event_id = parameters.get("event_id")
-        # Real-time speech-to-speech models can't reliably echo opaque Graph
-        # event ids back across conversation turns (we observed Gemini hallucinating
-        # base64, Deepgram passing the literal "event_id_here", and OpenAI passing
-        # "1"). For the common single-call reschedule flow — where create_event
-        # ran a few turns earlier in the same call — the authoritative id lives
-        # in `_last_event_per_call[call_id]`. If the model omits event_id, use
-        # that. Belt-and-suspenders: if it passes a wrong id, the malformed-id
-        # fallback below still rescues the call.
-        if not event_id and call_id:
-            with self._last_event_lock:
-                tracked = self._last_event_per_call.get(call_id)
-            if tracked and tracked.get("event_id"):
-                event_id = tracked["event_id"]
-        if not event_id:
-            return {
-                "status": "error",
-                "message": (
-                    "Error: 'event_id' is required for delete_event when no event was "
-                    "created in this call to fall back on."
-                ),
-            }
+    def _uncertain(self, operation):
+        return {
+            "status": "error",
+            "error_code": "mutation_uncertain",
+            "reservation_status": "unknown",
+            "invitation_status": "unknown",
+            "delivery_status": "unknown",
+            "attendee_acceptance_status": "unknown",
+            "message": f"Calendar {operation} outcome is uncertain.",
+            "agent_hint": "Do not promise success or send another booking with changed arguments. Retry the identical operation to reconcile; if uncertainty remains, ask staff to check Outlook.",
+        }
+
+    async def _handle_create_event(self, parameters, config, cfg, key, call_id):
+        return await asyncio.to_thread(
+            self._create_booking, parameters, config, cfg, key, call_id
+        )
+
+    def _create_booking(self, parameters, config, cfg, key, call_id):
+        if not call_id:
+            raise BookingValidationError(
+                "missing_call_context", "Booking requires an active call context."
+            )
+        summary = parameters.get("summary")
+        description = parameters.get("description", "") or ""
+        if (
+            not isinstance(summary, str)
+            or not summary.strip()
+            or len(summary) > 255
+            or not isinstance(description, str)
+            or len(description) > 8000
+        ):
+            raise BookingValidationError(
+                "invalid_parameters",
+                "Provide an event summary (at most 255 characters) and description (at most 8000).",
+            )
         account = self._account_config(cfg)
-        validation_error = self._validate_account(account)
-        if validation_error:
-            return {"status": "error", "message": validation_error}
-        client = self._client_for_config(account)
-
-        def _tracked_fallback_id() -> str | None:
-            if not call_id:
-                return None
+        error = self._validate_account(account)
+        if error:
+            return {"status": "error", "message": error}
+        start, end, _ = booking_interval(
+            parameters, config, account.timezone, enforce_future=False
+        )
+        attendees = validated_attendees(parameters, config)
+        if (
+            config.get("invitations_enabled") is True
+            and parameters.get("booking_confirmed") is not True
+        ):
+            raise BookingValidationError(
+                "confirmation_required",
+                "Obtain caller agreement to the exact booking details first.",
+            )
+        if attendees:
+            summary, description = invitation_content(
+                parameters, config, start, end, account.timezone
+            )
+        binding = self._binding(account)
+        identity = json.dumps(
+            [
+                binding,
+                call_id,
+                summary,
+                description,
+                to_utc(start).isoformat(),
+                to_utc(end).isoformat(),
+                sorted(email.casefold() for email in attendees),
+            ],
+            sort_keys=True,
+        )
+        transaction = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
+        with self._MUTATION_LOCK:
             with self._last_event_lock:
-                tracked = self._last_event_per_call.get(call_id)
-            if tracked and tracked.get("event_id") and tracked["event_id"] != event_id:
-                return tracked["event_id"]
-            return None
+                tracked = dict(self._last_event_per_call.get(call_id) or {})
+            if tracked.get("pending_operation"):
+                return self._uncertain(tracked["pending_operation"])
+            if (
+                tracked
+                and (
+                    tracked.get("state") == "uncertain"
+                    or tracked.get("state") == "active"
+                )
+                and tracked.get("transaction") != transaction
+            ):
+                raise BookingValidationError(
+                    "existing_booking",
+                    "This call already has a booking or an uncertain operation. Reconcile it or use reschedule_event; do not create another event.",
+                )
+            if (
+                tracked.get("state") == "cancelled"
+                and tracked.get("transaction") == transaction
+            ):
+                raise BookingValidationError(
+                    "cancelled_booking",
+                    "This booking was cancelled. Ask staff to rebook the identical appointment.",
+                )
+            client = self._client_for_config(account)
+            try:
+                events = client.list_calendar_view(to_utc(start), to_utc(end))
+                existing = [
+                    e
+                    for e in events
+                    if e.get("transactionId") == transaction
+                    and not e.get("isCancelled")
+                ]
+                if len(existing) > 1:
+                    return self._uncertain("creation")
+                if existing:
+                    event = existing[0]
+                    if not event.get("id"):
+                        return self._uncertain("creation")
+                    if (
+                        self._parse_event_dt(event.get("start") or {}, account.timezone)
+                        != start
+                        or self._parse_event_dt(
+                            event.get("end") or {}, account.timezone
+                        )
+                        != end
+                    ):
+                        raise BookingValidationError(
+                            "booking_changed",
+                            "The booking changed in Outlook; ask staff to verify it.",
+                        )
+                    # A retry reconciles the same event, never creates a duplicate.
+                    self._track(
+                        call_id,
+                        {
+                            "event_id": event["id"],
+                            "account_key": key,
+                            "binding": binding,
+                            "transaction": transaction,
+                            "state": "active",
+                            "attendees": attendees,
+                            "template_parameters": {
+                                f: parameters.get(f, "")
+                                for f in CALLER_FIELDS + ("summary", "description")
+                            },
+                            "template_config": {
+                                f: config[f]
+                                for f in OPERATOR_FIELDS
+                                + (
+                                    "invitation_subject_template",
+                                    "invitation_body_template",
+                                )
+                                if f in config
+                            },
+                            "rendered_body": description,
+                            "start_utc": to_utc(start).isoformat(),
+                            "end_utc": to_utc(end).isoformat(),
+                            "subject": summary,
+                        },
+                    )
+                    return self._mutation_result(
+                        event, key, account, start, end, attendees, reconciled=True
+                    )
+                if tracked.get("state") in {"active", "uncertain"}:
+                    return self._uncertain("creation")
+                booking_interval(parameters, config, account.timezone)
+                if not within_working_hours(start, end, account.timezone, config):
+                    raise BookingValidationError(
+                        "outside_working_hours",
+                        "The requested interval is outside configured working hours; offer alternatives.",
+                    )
+                intervals, _, _ = self._available_intervals(
+                    client, start, end, account.timezone, config
+                )
+                if not any(a <= start and end <= b for a, b in intervals):
+                    raise BookingValidationError(
+                        "slot_busy",
+                        "The chosen interval is now busy. Check alternatives and obtain caller agreement again.",
+                    )
+            except MicrosoftGraphApiError as exc:
+                return self._map_api_error(exc, "Could not verify the booking")
+            record = {
+                "account_key": key,
+                "binding": binding,
+                "transaction": transaction,
+                "state": "uncertain",
+                "attendees": attendees,
+                "template_parameters": {
+                    f: parameters.get(f, "")
+                    for f in CALLER_FIELDS + ("summary", "description")
+                },
+                "template_config": {
+                    f: config[f]
+                    for f in OPERATOR_FIELDS
+                    + ("invitation_subject_template", "invitation_body_template")
+                    if f in config
+                },
+                "rendered_body": description,
+                "start_utc": to_utc(start).isoformat(),
+                "end_utc": to_utc(end).isoformat(),
+                "subject": summary,
+            }
+            self._track(call_id, record)
+            try:
+                event = client.create_event(
+                    summary,
+                    description,
+                    to_utc(start),
+                    to_utc(end),
+                    attendee_emails=attendees,
+                    transaction_id=transaction,
+                )
+            except MicrosoftGraphApiError as exc:
+                if exc.error_code == "graph_unavailable" or exc.status is None:
+                    return self._uncertain("creation")
+                record["state"] = "failed"
+                self._track(call_id, record)
+                return self._map_api_error(
+                    exc, "Failed to create Microsoft Calendar event"
+                )
+            if not isinstance(event, dict) or not event.get("id"):
+                return self._uncertain("creation")
+            record.update(event_id=event["id"], state="active")
+            self._track(call_id, record)
+            return self._mutation_result(event, key, account, start, end, attendees)
 
-        # Two failure modes need the tracked-id fallback:
-        #   * 404 — `client.delete_event` returns False (the model gave us an id
-        #     that's well-formed but not present in this mailbox).
-        #   * 400 "The Id is invalid." — `client.delete_event` raises
-        #     MicrosoftGraphApiError because the id is structurally malformed
-        #     (e.g. an LLM hallucination with a different mailbox prefix).
-        # In both cases, if we already created an event for this call we know
-        # the authoritative id; retry with it before surfacing an error.
-        initial_exc: MicrosoftGraphApiError | None = None
-        success = False
-        try:
-            success = await asyncio.to_thread(client.delete_event, event_id)
-        except MicrosoftGraphApiError as exc:
-            if exc.status == 400:
-                initial_exc = exc
-            else:
-                return self._map_api_error(exc, "Failed to delete Microsoft Calendar event")
-        if not success:
-            fallback_id = _tracked_fallback_id()
-            if fallback_id:
-                try:
-                    retry_success = await asyncio.to_thread(client.delete_event, fallback_id)
-                except MicrosoftGraphApiError as exc:
-                    return self._map_api_error(exc, "Failed to delete Microsoft Calendar event during fallback retry")
-                if retry_success:
-                    with self._last_event_lock:
-                        self._last_event_per_call.pop(call_id, None)
+    def _change_booking(self, parameters, config, cfg, key, call_id, operation):
+        account = self._account_config(cfg)
+        error = self._validate_account(account)
+        if error:
+            return {"status": "error", "message": error}
+        if (
+            parameters.get(
+                "cancellation_confirmed"
+                if operation == "delete_event"
+                else "booking_confirmed"
+            )
+            is not True
+        ):
+            raise BookingValidationError(
+                "confirmation_required",
+                "Read back the booking and obtain caller agreement to cancel or reschedule it first.",
+            )
+        with self._MUTATION_LOCK:
+            with self._last_event_lock:
+                tracked = dict(self._last_event_per_call.get(call_id) or {})
+            if (
+                not call_id
+                or not tracked.get("event_id")
+                or tracked.get("binding") != self._binding(account)
+                or tracked.get("account_key") != key
+            ):
+                raise BookingValidationError(
+                    "staff_assistance_required",
+                    "No booking from this call is available for this calendar. An event_id does not authorize changes; ask staff to handle earlier bookings.",
+                )
+            event_id = tracked["event_id"]
+            if parameters.get("event_id") and parameters["event_id"] != event_id:
+                raise BookingValidationError(
+                    "booking_mismatch",
+                    "event_id does not match this call's booking. Omit it and confirm the current-call booking.",
+                )
+            if operation == "delete_event" and tracked.get("state") == "cancelled":
+                return {
+                    "status": "success",
+                    "message": "Event already cancelled.",
+                    "reservation_status": "cancelled",
+                    "calendar": key,
+                    "event_id": event_id,
+                    "invitation_status": tracked.get("cancellation_status", "unknown"),
+                    "delivery_status": (
+                        "unknown" if tracked.get("attendees") else "not_applicable"
+                    ),
+                }
+            client = self._client_for_config(account)
+            try:
+                event = client.get_event(event_id)
+                if event is None or event.get("isCancelled"):
+                    if operation == "delete_event":
+                        tracked["state"] = "cancelled"
+                        self._track(call_id, tracked)
+                        return {
+                            "status": "success",
+                            "message": "Event is no longer present.",
+                            "reservation_status": "cancelled",
+                            "calendar": key,
+                            "invitation_status": "unknown",
+                            "delivery_status": "unknown",
+                            "event_id": event_id,
+                        }
+                    raise BookingValidationError(
+                        "event_not_found",
+                        "Booking no longer exists; ask staff to investigate.",
+                    )
+                if event.get("type", "singleInstance") != "singleInstance":
+                    raise BookingValidationError(
+                        "unsupported_event",
+                        "Recurring bookings require staff assistance.",
+                    )
+                actual_start = self._parse_event_dt(
+                    event.get("start") or {}, account.timezone
+                )
+                actual_end = self._parse_event_dt(
+                    event.get("end") or {}, account.timezone
+                )
+                observed = (
+                    [to_utc(actual_start).isoformat(), to_utc(actual_end).isoformat()]
+                    if actual_start and actual_end
+                    else None
+                )
+                expected = [tracked.get("start_utc"), tracked.get("end_utc")]
+                if (
+                    observed is None
+                    or (
+                        observed != expected
+                        and observed != tracked.get("pending_target")
+                    )
+                    or event.get("subject") != tracked.get("subject")
+                ):
+                    raise BookingValidationError(
+                        "booking_changed",
+                        "The booking time changed in Outlook; ask staff to verify it before making changes.",
+                    )
+                attendees = event.get("attendees") or []
+                current_emails = sorted(
+                    str(
+                        (item.get("emailAddress") or {}).get("address") or ""
+                    ).casefold()
+                    for item in attendees
+                )
+                if current_emails != sorted(
+                    email.casefold() for email in tracked.get("attendees", [])
+                ):
+                    raise BookingValidationError(
+                        "booking_changed",
+                        "Attendees changed in Outlook; ask staff to verify consent before making changes.",
+                    )
+                if attendees and event.get("isOrganizer") is not True:
+                    raise BookingValidationError(
+                        "not_organizer",
+                        "This calendar is not the meeting organizer; ask staff to handle the change.",
+                    )
+                if operation == "delete_event":
+                    if tracked.get("pending_operation") not in {None, "delete_event"}:
+                        return self._uncertain("rescheduling")
+                    tracked["pending_operation"] = operation
+                    self._track(call_id, tracked)
+                    # DELETE on an organizer meeting generates cancellation notices.
+                    deleted = client.delete_event(event_id)
+                    tracked.update(
+                        state="cancelled",
+                        pending_operation=None,
+                        cancellation_status=(
+                            (
+                                "cancellation_request_accepted"
+                                if attendees
+                                else "not_requested"
+                            )
+                            if deleted
+                            else "unknown"
+                        ),
+                    )
+                    self._track(call_id, tracked)
                     return {
                         "status": "success",
-                        "message": "Event deleted.",
-                        "id": fallback_id,
-                        "event_id": fallback_id,
+                        "message": "Event cancelled.",
+                        "id": event_id,
+                        "event_id": event_id,
                         "calendar": key,
+                        "reservation_status": "cancelled",
+                        "invitation_status": tracked["cancellation_status"],
+                        "delivery_status": "unknown" if attendees else "not_applicable",
+                        "agent_hint": "Report cancellation. Do not claim cancellation-message delivery. Later-call booking changes require staff.",
                     }
-            if initial_exc is not None:
-                return self._map_api_error(initial_exc, "Failed to delete Microsoft Calendar event")
-            return {"status": "error", "error_code": "event_not_found", "message": "Failed to delete event (not found)."}
-        if call_id:
-            with self._last_event_lock:
-                tracked = self._last_event_per_call.get(call_id)
-                if tracked and tracked.get("event_id") == event_id:
-                    self._last_event_per_call.pop(call_id, None)
-        # Match the fallback retry's response shape: surface both `id` and
-        # `event_id` for callers that key by either name.
-        return {
-            "status": "success",
-            "message": "Event deleted.",
-            "id": event_id,
-            "event_id": event_id,
-            "calendar": key,
-        }
+                if tracked.get("state") == "cancelled":
+                    raise BookingValidationError(
+                        "event_not_found",
+                        "This booking was cancelled; ask staff to rebook it.",
+                    )
+                if any(
+                    field in parameters
+                    for field in (
+                        "attendee_emails",
+                        "summary",
+                        "description",
+                        "caller_name",
+                        "meeting_purpose",
+                        "confirmed_notes",
+                    )
+                ):
+                    raise BookingValidationError(
+                        "unsupported_change",
+                        "reschedule_event changes only the time and template date fields; attendees and other details are preserved.",
+                    )
+                start, end, _ = booking_interval(
+                    parameters, config, account.timezone, enforce_future=False
+                )
+                if not within_working_hours(start, end, account.timezone, config):
+                    raise BookingValidationError(
+                        "outside_working_hours",
+                        "The new interval is outside working hours; the original booking is retained.",
+                    )
+                target = [to_utc(start).isoformat(), to_utc(end).isoformat()]
+                if tracked.get("pending_operation") and (
+                    tracked.get("pending_operation") != operation
+                    or tracked.get("pending_target") != target
+                ):
+                    return self._uncertain("rescheduling")
+                current_start = self._parse_event_dt(
+                    event.get("start") or {}, account.timezone
+                )
+                current_end = self._parse_event_dt(
+                    event.get("end") or {}, account.timezone
+                )
+                if current_start is None or current_end is None:
+                    raise BookingValidationError(
+                        "malformed_calendar_event",
+                        "Cannot verify the existing booking time; ask staff.",
+                    )
+                if to_utc(current_start) == to_utc(start) and to_utc(
+                    current_end
+                ) == to_utc(end):
+                    tracked.update(
+                        pending_operation=None,
+                        pending_target=None,
+                        rendered_body=tracked.get("pending_body")
+                        or tracked.get("rendered_body", ""),
+                        pending_body=None,
+                        start_utc=target[0],
+                        end_utc=target[1],
+                    )
+                    self._track(call_id, tracked)
+                    return self._mutation_result(
+                        event,
+                        key,
+                        account,
+                        start,
+                        end,
+                        attendees,
+                        operation="rescheduled",
+                        reconciled=True,
+                    )
+                if tracked.get("pending_operation"):
+                    return self._uncertain("rescheduling")
+                booking_interval(parameters, config, account.timezone)
+                intervals, _, _ = self._available_intervals(
+                    client, start, end, account.timezone, config, exclude_id=event_id
+                )
+                if not any(a <= start and end <= b for a, b in intervals):
+                    raise BookingValidationError(
+                        "slot_busy",
+                        "The new interval is busy; the original booking is retained.",
+                    )
+                update_body = {
+                    "start": {"dateTime": graph_datetime(start), "timeZone": "UTC"},
+                    "end": {"dateTime": graph_datetime(end), "timeZone": "UTC"},
+                }
+                rendered_body = tracked.get("rendered_body", "")
+                if attendees:
+                    current_body = event.get("body") or {}
+                    if (
+                        event.get("isOnlineMeeting")
+                        or current_body.get("contentType", "text").lower() != "text"
+                        or current_body.get("content", "")
+                        .replace("\r\n", "\n")
+                        .replace("\r", "\n")
+                        .strip()
+                        != rendered_body.strip()
+                    ):
+                        raise BookingValidationError(
+                            "booking_changed",
+                            "The invitation body changed in Outlook; ask staff to reschedule it safely.",
+                        )
+                    _, rendered_body = invitation_content(
+                        tracked["template_parameters"],
+                        tracked["template_config"],
+                        start,
+                        end,
+                        account.timezone,
+                    )
+                    update_body["body"] = {
+                        "contentType": "text",
+                        "content": rendered_body,
+                    }
+                tracked.update(
+                    pending_operation=operation,
+                    pending_target=target,
+                    pending_body=rendered_body,
+                )
+                self._track(call_id, tracked)
+                updated = client.update_event(
+                    event_id, update_body, event.get("@odata.etag")
+                )
+                if not isinstance(updated, dict) or updated.get("id") != event_id:
+                    return self._uncertain("rescheduling")
+                tracked.update(
+                    pending_operation=None,
+                    pending_target=None,
+                    rendered_body=rendered_body,
+                    pending_body=None,
+                    start_utc=target[0],
+                    end_utc=target[1],
+                )
+                self._track(call_id, tracked)
+                return self._mutation_result(
+                    updated,
+                    key,
+                    account,
+                    start,
+                    end,
+                    attendees,
+                    operation="rescheduled",
+                )
+            except MicrosoftGraphApiError as exc:
+                if tracked.get("pending_operation"):
+                    if exc.error_code == "graph_unavailable" or exc.status is None:
+                        return self._uncertain(operation)
+                    tracked.update(pending_operation=None, pending_target=None)
+                    self._track(call_id, tracked)
+                return self._map_api_error(
+                    exc, "Could not change the current-call booking"
+                )

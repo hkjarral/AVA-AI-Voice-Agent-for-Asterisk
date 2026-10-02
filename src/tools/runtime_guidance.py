@@ -198,6 +198,33 @@ def build_in_call_tool_runtime_guidance(config: Dict[str, Any], allowed_tools: I
     ]
     sections.append("\n".join(header))
 
+    if "microsoft_calendar" in allowed:
+        calendar = ((config or {}).get("tools") or {}).get("microsoft_calendar") or {}
+        accounts = calendar.get("accounts") or {"default": calendar}
+        selected = calendar.get("selected_accounts", list(accounts))
+        lines = [
+            "Microsoft Calendar booking rules:",
+            "- For a requested time, call check_availability with its exact start_datetime/end_datetime first. get_free_slots is a suggestion subset, never proof that an omitted time is busy. Offer alternatives only when the requested interval is unavailable.",
+            "- Resolve relative dates using the calendar-local clock below. Clarify ambiguous dates/times/timezones and confirm the explicit date, time, duration and timezone before any booking.",
+            "- Ask for attendee emails only if invitations are enabled and the caller wants an invitation. Ask the caller to spell them, read them back, and get agreement to create and send the invitation. Then pass attendee_emails, booking_confirmed=true and invitation_confirmed=true. Never infer an email from caller ID or a name.",
+            "- Pass caller_name, meeting_purpose and confirmed_notes only after caller confirmation; these appear in the invitation. Operator templates provide business/location/contact instructions.",
+            "- If the caller declines an invitation, omit attendee_emails and set booking_confirmed=true for an appointment-only booking.",
+            "- Only one active booking is tracked per call. Use reschedule_event to change its time; never delete first. Confirm the new details and pass booking_confirmed=true. Attendees are preserved.",
+            "- To cancel the current-call booking, read back its details and obtain agreement, then call delete_event with cancellation_confirmed=true and NO event_id. Obtain agreement to notify invitees when applicable. Later-call bookings, untracked bookings and recurring series require staff assistance; a spoken name/email/event_id does not authorize changes.",
+            "- After a timeout or mutation_uncertain, retry identical arguments to reconcile. Never promise success or create another booking with changed details while the first outcome is uncertain.",
+            "- Event creation/update/cancellation does not prove mailbox delivery or attendee acceptance. Use the structured result and do not claim either. This tool does not create Teams links or automatic staff invitations.",
+            f"- Caller invitations are {'enabled' if calendar.get('invitations_enabled') is True else 'disabled'} by the operator.",
+        ]
+        for key in selected if isinstance(selected, list) else []:
+            account = accounts.get(key) or {}
+            timezone_name = account.get("timezone") or calendar.get("timezone") or "UTC"
+            try:
+                now = datetime.now(ZoneInfo(timezone_name))
+                lines.append(f"- Calendar account `{key}`: timezone `{timezone_name}`, local date/time `{now.isoformat(timespec='seconds')}`.")
+            except (ZoneInfoNotFoundError, ValueError):
+                lines.append(f"- Calendar account `{key}` has an invalid timezone; request operator correction before booking.")
+        sections.append("\n".join(lines))
+
     if "live_agent_transfer" in allowed:
         live_agent_lines = _build_live_agent_lines(config)
         if live_agent_lines:
