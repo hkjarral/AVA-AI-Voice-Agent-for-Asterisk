@@ -142,6 +142,9 @@ address syntax require staff assistance.
 Generic `get_event` reads return the title, interval and calendar identifier,
 but never the invitation body, which may contain another caller's private notes.
 
+Rescheduling refreshes date/time placeholders in both the invitation subject
+and body while preserving the confirmed caller details and attendees.
+
 ## Same-call cancellation and rescheduling
 
 - One active booking is tracked per call. Obtain explicit agreement to cancel

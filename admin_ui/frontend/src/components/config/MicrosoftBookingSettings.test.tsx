@@ -51,3 +51,40 @@ describe('Microsoft calendar booking settings', () => {
         expect(previewMicrosoftTemplate('{{unsupported}}', {})).toContain('Unsupported placeholder');
     });
 });
+
+
+describe('Microsoft numeric field editing', () => {
+    it.each([
+        ['Working hours start (0–23)', 'working_hours_start', 8, 9],
+        ['Working hours end (1–24)', 'working_hours_end', 18, 17],
+        ['Maximum booking duration (minutes)', 'max_event_duration_minutes', 60, 240],
+        ['Booking horizon (days)', 'booking_horizon_days', 90, 365],
+    ])('keeps %s empty until replacement or blur', (label, key, replacement, fallback) => {
+        const saved = vi.fn();
+        render(<Harness saved={saved} />);
+        const input = screen.getByLabelText(String(label));
+        saved.mockClear();
+        fireEvent.change(input, { target: { value: '' } });
+        expect(input).toHaveValue(null);
+        expect(saved).not.toHaveBeenCalled();
+        fireEvent.change(input, { target: { value: String(replacement) } });
+        expect(input).toHaveValue(replacement);
+        expect(saved.mock.calls.at(-1)?.[0].microsoft_calendar[String(key)]).toBe(replacement);
+        fireEvent.change(input, { target: { value: '' } });
+        expect(input).toHaveValue(null);
+        fireEvent.blur(input);
+        expect(input).toHaveValue(fallback);
+        expect(saved.mock.calls.at(-1)?.[0].microsoft_calendar[String(key)]).toBeUndefined();
+    });
+
+    it('persists zero for disabled limits', () => {
+        const saved = vi.fn();
+        render(<Harness saved={saved} />);
+        const input = screen.getByLabelText('Booking horizon (days)');
+        fireEvent.change(input, { target: { value: '' } });
+        fireEvent.change(input, { target: { value: '0' } });
+        fireEvent.blur(input);
+        expect(input).toHaveValue(0);
+        expect(saved.mock.calls.at(-1)?.[0].microsoft_calendar.booking_horizon_days).toBe(0);
+    });
+});

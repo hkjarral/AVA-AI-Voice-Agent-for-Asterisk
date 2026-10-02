@@ -470,6 +470,8 @@ class MicrosoftCalendarTool(Tool):
             duration_minutes = parameters.get(
                 "duration", config.get("min_slot_duration_minutes", 30)
             )
+            if isinstance(duration_minutes, float) and duration_minutes.is_integer():
+                duration_minutes = int(duration_minutes)
             if type(duration_minutes) is not int or not 1 <= duration_minutes <= 1440:
                 raise ValueError()
         except (TypeError, ValueError):
@@ -1191,14 +1193,15 @@ class MicrosoftCalendarTool(Tool):
                     else None
                 )
                 expected = [tracked.get("start_utc"), tracked.get("end_utc")]
-                if (
-                    observed is None
-                    or (
-                        observed != expected
-                        and observed != tracked.get("pending_target")
-                    )
-                    or event.get("subject") != tracked.get("subject")
-                ):
+                matches_expected = observed == expected and event.get(
+                    "subject"
+                ) == tracked.get("subject")
+                matches_pending = (
+                    tracked.get("pending_operation") == "reschedule_event"
+                    and observed == tracked.get("pending_target")
+                    and event.get("subject") == tracked.get("pending_subject")
+                )
+                if observed is None or not (matches_expected or matches_pending):
                     raise BookingValidationError(
                         "booking_changed",
                         "The booking time changed in Outlook; ask staff to verify it before making changes.",
@@ -1308,6 +1311,9 @@ class MicrosoftCalendarTool(Tool):
                         rendered_body=tracked.get("pending_body")
                         or tracked.get("rendered_body", ""),
                         pending_body=None,
+                        subject=tracked.get("pending_subject")
+                        or tracked.get("subject"),
+                        pending_subject=None,
                         start_utc=target[0],
                         end_utc=target[1],
                     )
@@ -1338,6 +1344,7 @@ class MicrosoftCalendarTool(Tool):
                     "end": {"dateTime": graph_datetime(end), "timeZone": "UTC"},
                 }
                 rendered_body = tracked.get("rendered_body", "")
+                rendered_subject = tracked.get("subject")
                 if attendees:
                     current_body = event.get("body") or {}
                     if (
@@ -1353,13 +1360,14 @@ class MicrosoftCalendarTool(Tool):
                             "booking_changed",
                             "The invitation body changed in Outlook; ask staff to reschedule it safely.",
                         )
-                    _, rendered_body = invitation_content(
+                    rendered_subject, rendered_body = invitation_content(
                         tracked["template_parameters"],
                         tracked["template_config"],
                         start,
                         end,
                         account.timezone,
                     )
+                    update_body["subject"] = rendered_subject
                     update_body["body"] = {
                         "contentType": "text",
                         "content": rendered_body,
@@ -1368,6 +1376,7 @@ class MicrosoftCalendarTool(Tool):
                     pending_operation=operation,
                     pending_target=target,
                     pending_body=rendered_body,
+                    pending_subject=rendered_subject,
                 )
                 self._track(call_id, tracked)
                 updated = client.update_event(
@@ -1380,6 +1389,8 @@ class MicrosoftCalendarTool(Tool):
                     pending_target=None,
                     rendered_body=rendered_body,
                     pending_body=None,
+                    subject=rendered_subject,
+                    pending_subject=None,
                     start_utc=target[0],
                     end_utc=target[1],
                 )
@@ -1397,7 +1408,12 @@ class MicrosoftCalendarTool(Tool):
                 if tracked.get("pending_operation"):
                     if exc.error_code == "graph_unavailable" or exc.status is None:
                         return self._uncertain(operation)
-                    tracked.update(pending_operation=None, pending_target=None)
+                    tracked.update(
+                        pending_operation=None,
+                        pending_target=None,
+                        pending_body=None,
+                        pending_subject=None,
+                    )
                     self._track(call_id, tracked)
                 return self._map_api_error(
                     exc, "Could not change the current-call booking"

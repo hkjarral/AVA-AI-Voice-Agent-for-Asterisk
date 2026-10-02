@@ -913,6 +913,7 @@ async def test_provider_to_tool_to_graph_complete_invitation_lifecycle(
             "microsoft_calendar",
             {
                 "action": "check_availability",
+                "duration": 30.0,
                 "start_datetime": "2026-04-29T13:00:00",
                 "end_datetime": "2026-04-29T13:30:00",
             },
@@ -1099,3 +1100,152 @@ async def test_generic_event_read_never_exposes_another_callers_invitation_body(
     assert private_body not in str(
         sanitize_tool_result_for_json_string(result, tool_name="microsoft_calendar")
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["get_free_slots", "check_availability"])
+@pytest.mark.parametrize("duration", [30, 30.0])
+async def test_integral_duration_from_provider_numbers_is_accepted(
+    phoenix, action, duration
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        result = await tool.execute(
+            {
+                "action": action,
+                "duration": duration,
+                "time_min": booking()["start_datetime"],
+                "time_max": booking()["end_datetime"],
+                "start_datetime": booking()["start_datetime"],
+                "end_datetime": booking()["end_datetime"],
+            },
+            phoenix,
+        )
+    assert result["status"] == "success"
+    if action == "check_availability":
+        assert result["available"] is True
+    else:
+        assert result["slot_duration_minutes"] == 30
+        assert type(result["slot_duration_minutes"]) is int
+        assert len(result["slots"]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "duration", [True, False, 30.5, "30", 0.0, 1441.0, float("nan"), float("inf")]
+)
+async def test_invalid_duration_values_still_fail_closed(phoenix, duration):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        result = await tool.execute(
+            {
+                "action": "get_free_slots",
+                "duration": duration,
+                "time_min": booking()["start_datetime"],
+                "time_max": booking()["end_datetime"],
+            },
+            phoenix,
+        )
+    assert result["error_code"] == "invalid_duration"
+    assert not fake.created
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_reschedule_refreshes_subject_and_reconciles_uncertain_update(
+    phoenix, ms_config, uncertain
+):
+    ms_config.update(
+        invitations_enabled=True,
+        invitation_subject_template="{{meeting_purpose}}: {{appointment_date}} {{start_time}}–{{end_time}}",
+    )
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    move = {
+        "action": "reschedule_event",
+        "booking_confirmed": True,
+        "start_datetime": "2026-04-29T14:00:00-07:00",
+        "end_datetime": "2026-04-29T14:30:00-07:00",
+    }
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        created = await tool.execute(
+            booking(
+                attendee_emails=["caller@example.com"],
+                booking_confirmed=True,
+                invitation_confirmed=True,
+                caller_name="Pat",
+            ),
+            phoenix,
+        )
+        original_subject = fake.events[0]["subject"]
+        if uncertain:
+            fake.update_error = MicrosoftGraphApiError(
+                "synthetic timeout", error_code="graph_unavailable"
+            )
+        moved = await tool.execute(move, phoenix)
+        if uncertain:
+            assert moved["error_code"] == "mutation_uncertain"
+            fake.update_error = None
+            moved = await tool.execute(move, phoenix)
+            assert moved["reconciled"] is True
+        assert moved["event_id"] == created["event_id"]
+        assert len(fake.updated) == 1
+        assert (
+            fake.events[0]["subject"]
+            == "Consultation: Wednesday, 2026-04-29 14:00–14:30"
+        )
+        assert original_subject != fake.events[0]["subject"]
+        assert fake.updated[0][1]["subject"] == fake.events[0]["subject"]
+        assert "14:00–14:30" in fake.events[0]["body"]["content"]
+        # A second move exercises the promoted subject/body snapshot after reconciliation.
+        again = await tool.execute(
+            {
+                **move,
+                "start_datetime": "2026-04-29T15:00:00-07:00",
+                "end_datetime": "2026-04-29T15:30:00-07:00",
+            },
+            phoenix,
+        )
+        assert again["status"] == "success"
+        assert fake.events[0]["subject"].endswith("15:00–15:30")
+        cancelled = await tool.execute(
+            {"action": "delete_event", "cancellation_confirmed": True}, phoenix
+        )
+    assert cancelled["reservation_status"] == "cancelled"
+    assert len(fake.updated) == 2 and len(fake.created) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changed_subject", ["Externally edited title", "13:00 appointment"]
+)
+async def test_uncertain_subject_update_never_authorizes_external_subject_edits(
+    phoenix, ms_config, changed_subject
+):
+    ms_config.update(
+        invitations_enabled=True,
+        invitation_subject_template="{{start_time}} appointment",
+    )
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    move = {
+        "action": "reschedule_event",
+        "booking_confirmed": True,
+        "start_datetime": "2026-04-29T14:00:00-07:00",
+        "end_datetime": "2026-04-29T14:30:00-07:00",
+    }
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(
+            booking(
+                attendee_emails=["caller@example.com"],
+                booking_confirmed=True,
+                invitation_confirmed=True,
+            ),
+            phoenix,
+        )
+        fake.update_error = MicrosoftGraphApiError(
+            "synthetic timeout", error_code="graph_unavailable"
+        )
+        assert (await tool.execute(move, phoenix))["error_code"] == "mutation_uncertain"
+        fake.events[0]["subject"] = changed_subject
+        result = await tool.execute(move, phoenix)
+    assert result["error_code"] == "booking_changed"
+    assert len(fake.updated) == 1

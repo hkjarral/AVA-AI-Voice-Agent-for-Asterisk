@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { FormInput, FormSwitch } from '../ui/FormComponents';
 
 export const MICROSOFT_INVITATION_SUBJECT = '{{meeting_purpose}}';
@@ -21,6 +22,7 @@ interface Props {
 }
 
 export function MicrosoftBookingSettings({ config, onChange }: Props) {
+    const [emptyNumericFields, setEmptyNumericFields] = useState<Record<string, boolean>>({});
     const days: number[] = config.working_days ?? [0, 1, 2, 3, 4];
     const values = { ...callerPreview, ...Object.fromEntries(operatorFields.map(key => [key, config[key] || ''])) };
     return <div className="space-y-4 mt-4">
@@ -32,8 +34,18 @@ export function MicrosoftBookingSettings({ config, onChange }: Props) {
                 ['booking_horizon_days', 'Booking horizon (days)', 365, 0, undefined],
             ].map(([key, label, fallback, min, max]) => <FormInput key={String(key)} label={String(label)} type="number"
                 min={min as number} max={max as number | undefined} step={1}
-                value={String(config[String(key)] ?? fallback)}
-                onChange={event => onChange({ [String(key)]: event.target.value === '' ? undefined : Number(event.target.value) })}
+                value={emptyNumericFields[String(key)] ? '' : String(config[String(key)] ?? fallback)}
+                onChange={event => {
+                    const empty = event.target.value === '';
+                    setEmptyNumericFields(previous => ({ ...previous, [String(key)]: empty }));
+                    if (!empty) onChange({ [String(key)]: Number(event.target.value) });
+                }}
+                onBlur={event => {
+                    if (event.target.value === '') {
+                        setEmptyNumericFields(previous => ({ ...previous, [String(key)]: false }));
+                        onChange({ [String(key)]: undefined });
+                    }
+                }}
                 tooltip="Hours use the configured calendar timezone. Zero disables the duration/horizon limit." />)}
         </div>
         <fieldset className="space-y-2">
