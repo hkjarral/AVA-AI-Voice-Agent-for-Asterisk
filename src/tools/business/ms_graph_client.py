@@ -207,6 +207,8 @@ class MicrosoftGraphClient:
             code = "forbidden_calendar"
         elif status == 404:
             code = "calendar_not_found"
+        elif status == 412:
+            code = "booking_changed"
         elif status == 429:
             code = "rate_limited"
         elif status >= 500:
@@ -317,11 +319,12 @@ class MicrosoftGraphClient:
             body=body,
         )
 
-    def delete_event(self, event_id: str) -> bool:
+    def delete_event(self, event_id: str, etag: str | None = None) -> bool:
         try:
             self._request(
                 "DELETE",
                 f"/me/calendars/{urllib.parse.quote(self.account.calendar_id, safe='')}/events/{urllib.parse.quote(event_id, safe='')}",
+                headers={"If-Match": etag} if etag else None,
             )
             return True
         except MicrosoftGraphApiError as exc:

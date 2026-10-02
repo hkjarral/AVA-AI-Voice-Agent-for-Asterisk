@@ -275,6 +275,7 @@ class MicrosoftCalendarTool(Tool):
             "calendar_not_found": "Microsoft Calendar is not configured correctly: calendar not found.",
             "graph_unavailable": "Microsoft Graph is currently unavailable.",
             "rate_limited": "Microsoft Graph is rate limited; wait before trying again.",
+            "booking_changed": "The booking changed in Outlook; ask staff to verify it before making changes.",
         }
         return {
             "status": "error",
@@ -1200,7 +1201,14 @@ class MicrosoftCalendarTool(Tool):
                 event = client.get_event(event_id)
                 if event is None or event.get("isCancelled"):
                     if operation == "delete_event":
-                        tracked["state"] = "cancelled"
+                        tracked.update(
+                            state="cancelled",
+                            pending_operation=None,
+                            pending_target=None,
+                            pending_body=None,
+                            pending_subject=None,
+                            cancellation_status="unknown",
+                        )
                         self._track(call_id, tracked)
                         return {
                             "status": "success",
@@ -1264,17 +1272,52 @@ class MicrosoftCalendarTool(Tool):
                         "not_organizer",
                         "This calendar is not the meeting organizer; ask staff to handle the change.",
                     )
+                if attendees or operation == "delete_event":
+                    expected_body = (
+                        tracked.get("pending_body", "")
+                        if matches_pending
+                        else tracked.get("rendered_body", "")
+                    )
+                    current_body = event.get("body") or {}
+                    if (
+                        event.get("isOnlineMeeting")
+                        or current_body.get("contentType", "text").lower() != "text"
+                        or current_body.get("content", "")
+                        .replace("\r\n", "\n")
+                        .replace("\r", "\n")
+                        .strip()
+                        != expected_body.replace("\r\n", "\n")
+                        .replace("\r", "\n")
+                        .strip()
+                    ):
+                        raise BookingValidationError(
+                            "booking_changed",
+                            "The invitation body changed in Outlook; ask staff to handle it safely.",
+                        )
                 if operation == "delete_event":
                     if tracked.get("pending_operation") not in {None, "delete_event"}:
                         return self._uncertain("rescheduling")
+                    etag = event.get("@odata.etag")
+                    if (
+                        not isinstance(etag, str)
+                        or not etag.strip()
+                        or etag.strip() == "*"
+                    ):
+                        raise BookingValidationError(
+                            "booking_changed",
+                            "Cannot verify the booking version; ask staff to handle cancellation.",
+                        )
                     self._check_mutation_active(cancelled, deadline)
                     tracked["pending_operation"] = operation
                     self._track(call_id, tracked)
                     # DELETE on an organizer meeting generates cancellation notices.
-                    deleted = client.delete_event(event_id)
+                    deleted = client.delete_event(event_id, etag=etag)
                     tracked.update(
                         state="cancelled",
                         pending_operation=None,
+                        pending_target=None,
+                        pending_body=None,
+                        pending_subject=None,
                         cancellation_status=(
                             (
                                 "cancellation_request_accepted"
@@ -1386,20 +1429,6 @@ class MicrosoftCalendarTool(Tool):
                 rendered_body = tracked.get("rendered_body", "")
                 rendered_subject = tracked.get("subject")
                 if attendees:
-                    current_body = event.get("body") or {}
-                    if (
-                        event.get("isOnlineMeeting")
-                        or current_body.get("contentType", "text").lower() != "text"
-                        or current_body.get("content", "")
-                        .replace("\r\n", "\n")
-                        .replace("\r", "\n")
-                        .strip()
-                        != rendered_body.strip()
-                    ):
-                        raise BookingValidationError(
-                            "booking_changed",
-                            "The invitation body changed in Outlook; ask staff to reschedule it safely.",
-                        )
                     rendered_subject, rendered_body = invitation_content(
                         tracked["template_parameters"],
                         tracked["template_config"],

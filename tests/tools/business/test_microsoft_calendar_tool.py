@@ -22,6 +22,7 @@ class FakeMicrosoftClient:
         self.deleted = []
         self.updated = []
         self.delete_results = []
+        self.delete_etags = []
         self.events = []
         self.creation_error = None
         self.update_error = None
@@ -66,8 +67,9 @@ class FakeMicrosoftClient:
             raise self.creation_error
         return copy.deepcopy(event)
 
-    def delete_event(self, event_id):
+    def delete_event(self, event_id, etag=None):
         self.deleted.append(event_id)
+        self.delete_etags.append(etag)
         if self.delete_results:
             outcome = self.delete_results.pop(0)
             if isinstance(outcome, Exception):
@@ -1426,3 +1428,117 @@ async def test_slow_preflight_deadline_does_not_dispatch_write(phoenix, action):
     assert not fake.updated and not fake.deleted
     assert tool._MUTATION_LOCK.acquire(timeout=1)
     tool._MUTATION_LOCK.release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", [True, False])
+@pytest.mark.parametrize("status", [None, 503])
+async def test_applied_uncertain_cancel_reconciles_and_allows_new_slot(
+    phoenix, ms_config, missing, status
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    ms_config["invitations_enabled"] = True
+    args = booking(
+        attendee_emails=["caller@example.com"],
+        booking_confirmed=True,
+        invitation_confirmed=True,
+    )
+    cancel = {"action": "delete_event", "cancellation_confirmed": True}
+    original_delete = fake.delete_event
+
+    def applied_delete(event_id, etag=None):
+        if missing:
+            original_delete(event_id, etag)
+        else:
+            fake.deleted.append(event_id)
+            fake.delete_etags.append(etag)
+            fake.events[0]["isCancelled"] = True
+        raise MicrosoftGraphApiError(
+            "synthetic lost response", error_code="graph_unavailable", status=status
+        )
+
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(args, phoenix)
+        fake.delete_event = applied_delete
+        uncertain = await tool.execute(cancel, phoenix)
+        assert uncertain["error_code"] == "mutation_uncertain"
+        reconciled = await tool.execute(cancel, phoenix)
+        assert reconciled["reservation_status"] == "cancelled"
+        assert reconciled["invitation_status"] == "unknown"
+        tracked = tool._last_event_per_call[phoenix.call_id]
+        assert all(
+            tracked.get(key) is None
+            for key in (
+                "pending_operation",
+                "pending_target",
+                "pending_body",
+                "pending_subject",
+            )
+        )
+        assert (await tool.execute(args, phoenix))["error_code"] == "cancelled_booking"
+        fresh = await tool.execute(
+            {
+                **args,
+                "start_datetime": "2026-04-29T14:00:00-07:00",
+                "end_datetime": "2026-04-29T14:30:00-07:00",
+            },
+            phoenix,
+        )
+    assert fresh["reservation_status"] == "created"
+    assert len(fake.created) == 2 and len(fake.deleted) == 1
+    assert fake.delete_etags == ['W/"version1"']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("etag", [None, "", "*"])
+async def test_cancel_without_concrete_version_requires_staff(phoenix, etag):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(booking(), phoenix)
+        fake.events[0]["@odata.etag"] = etag
+        result = await tool.execute(
+            {"action": "delete_event", "cancellation_confirmed": True}, phoenix
+        )
+    assert result["error_code"] == "booking_changed" and not fake.deleted
+
+
+@pytest.mark.asyncio
+async def test_cancel_external_body_edit_requires_staff(phoenix):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(booking(), phoenix)
+        fake.events[0]["body"]["content"] = "Staff edited this appointment"
+        result = await tool.execute(
+            {"action": "delete_event", "cancellation_confirmed": True}, phoenix
+        )
+    assert result["error_code"] == "booking_changed" and not fake.deleted
+
+
+@pytest.mark.asyncio
+async def test_cancel_version_conflict_retains_booking_without_retry(phoenix):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    attempts = []
+
+    def conflict(event_id, etag=None):
+        attempts.append((event_id, etag))
+        fake.events[0]["subject"] = "Staff changed this booking after the guard read"
+        fake.events[0]["@odata.etag"] = 'W/"version2"'
+        raise MicrosoftGraphApiError(
+            "synthetic conflict", error_code="booking_changed", status=412
+        )
+
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(booking(), phoenix)
+        fake.delete_event = conflict
+        result = await tool.execute(
+            {"action": "delete_event", "cancellation_confirmed": True}, phoenix
+        )
+        assert result["error_code"] == "booking_changed"
+        tracked = tool._last_event_per_call[phoenix.call_id]
+        assert tracked["state"] == "active" and tracked["pending_operation"] is None
+        retry = await tool.execute(
+            {"action": "delete_event", "cancellation_confirmed": True}, phoenix
+        )
+    assert retry["error_code"] == "booking_changed"
+    assert attempts == [("ms_event_123", 'W/"version1"')]
+    assert len(fake.events) == 1 and not fake.deleted

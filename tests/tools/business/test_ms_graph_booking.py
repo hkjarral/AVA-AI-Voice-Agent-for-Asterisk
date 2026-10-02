@@ -166,3 +166,23 @@ def test_delete_204_and_deleted_resource_404():
     )
     with patch("urllib.request.urlopen", side_effect=failure):
         assert graph.delete_event("event") is False
+
+
+def test_conditional_delete_version_conflict_is_typed_without_retry():
+    graph = client()
+    failure = urllib.error.HTTPError(
+        "https://graph.microsoft.com",
+        412,
+        "conflict",
+        {},
+        io.BytesIO(b'{"error":{"code":"ErrorPreconditionFailed"}}'),
+    )
+    with patch("urllib.request.urlopen", side_effect=failure) as send:
+        with pytest.raises(MicrosoftGraphApiError) as caught:
+            graph.delete_event("event", etag='W/"version1"')
+    request = send.call_args.args[0]
+    assert (
+        request.method == "DELETE" and request.get_header("If-match") == 'W/"version1"'
+    )
+    assert caught.value.error_code == "booking_changed" and caught.value.status == 412
+    assert send.call_count == 1

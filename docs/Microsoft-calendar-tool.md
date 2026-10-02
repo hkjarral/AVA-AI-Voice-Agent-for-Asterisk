@@ -174,6 +174,13 @@ and body while preserving the confirmed caller details and attendees.
   retry identity; staff can rebook it. A changed slot can be booked anew after
   cancellation, with fresh caller agreement.
 
+Cancellation sends the freshly observed event ETag in `If-Match`. A missing
+version or a 412 precondition failure requires staff; there is no unconditional
+retry. Subject/time/attendee/body edits detected before the request also stop
+the change. Provider enforcement of conditional event requests must be checked
+in the approved mailbox acceptance test; this does not establish a distributed
+reservation guarantee.
+
 ## Failures, concurrency and restart recovery
 
 Creation supplies a deterministic Graph `transactionId` based on the call,
@@ -278,7 +285,11 @@ Automated tests use only synthetic fixtures/mocked Graph HTTP. Before production
 5. Test invitation refusal, malformed email, missing consent, occupied slots,
    closing boundary, authorization expiry, timeout/retry and later-call change
    refusal. Use synthetic errors; do not invalidate production credentials.
-6. Record test evidence before approving rollout. Do not edit existing production
+6. On a synthetic event in the approved test calendar, read its ETag, edit it
+   externally, then attempt DELETE with the stale ETag. Verify Graph rejects it
+   with 412 and retains the event; confirm the tool routes the conflict to staff.
+   Do not enable automated cancellation until this provider behavior is verified.
+7. Record test evidence before approving rollout. Do not edit existing production
    appointments. No live invitation is authorized merely by this plan.
 
 After merge approval, deploy the reviewed engine/backend/frontend together,
