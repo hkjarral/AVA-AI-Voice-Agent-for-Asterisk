@@ -562,14 +562,15 @@ Modular OpenAI pipeline components use `type: openai` provider blocks:
 - `openai_stt`: Speech-to-Text via `audio/transcriptions` (`stt_base_url`, `stt_model`)
 - `openai_tts`: Text-to-Speech via `audio/speech` (`tts_base_url`, `tts_model`, `voice`, `response_format`)
 
-Requirements:
-
-- `OPENAI_API_KEY` must be set in the environment.
+Public OpenAI endpoints require an API key. Configure a provider-scoped
+`api_key_file`, `api_key_env`, or an `api_key` reference such as
+`${OPENAI_API_KEY}`. Custom OpenAI-compatible servers use their own credentials
+or the `not-needed` sentinel when authentication is disabled.
 
 ### Admin UI modular HTTP provider tests
 
 **Test Connection** tests the current provider form, including unsaved edits.
-The saved-provider `/credentials/verify` API uses the saved configuration.
+The saved-provider credential verification API uses the saved configuration.
 OpenAI-compatible, Telnyx (including legacy `telenyx`), MiniMax and Groq Speech
 connection tests use the declared type and capability; names containing
 `local`, `telnyx` or `elevenlabs` do not override an explicit modular type.
@@ -588,6 +589,7 @@ connection tests use the declared type and capability; names containing
   A custom OpenAI-compatible instance does not inherit an unrelated
   `OPENAI_API_KEY`. Set `api_key: not-needed` for a custom no-auth endpoint;
   the test sends no Authorization header and still probes that endpoint.
+  The sentinel is rejected for the recognized public provider service hosts.
 - HTTP(S) URLs must be absolute, with valid hosts/ports and without embedded
   credentials, whitespace, queries or fragments. Public custom endpoints
   require HTTPS. HTTP is permitted for loopback, RFC1918 LAN and IPv6 ULA
@@ -599,7 +601,40 @@ connection tests use the declared type and capability; names containing
   twenty-second total budget and ten-second per-operation timeouts. Results
   and logs show the destination origin (scheme/host/port), not arbitrary paths,
   credentials, headers, response bodies or exception internals. Editor results
-  disappear when configuration changes, and late responses are ignored.
+  disappear when configuration changes, and late responses after an edit or
+  closing the editor are ignored. Testing does not save or apply the form.
+
+The authenticated routes are:
+
+| Route | Configuration tested | Successful validation level |
+| --- | --- | --- |
+| `POST /api/config/providers/test` | Submitted `{name, config}`, including unsaved editor changes | `authentication` for keyed LLM model lists, `connectivity` for no-auth model lists, `inference` for the additional Telnyx chat probe, or `reachability` for speech |
+| `POST /api/config/providers/{provider_key}/credentials/verify` | Saved modular OpenAI-compatible, Telnyx/Telenyx or MiniMax provider | Model-list `authentication`/`connectivity`, or speech `reachability`; no chat probe |
+
+Groq LLM instances use `type: openai` with their Groq `chat_base_url` and
+credential source. Groq speech connection tests use `type: groq`.
+
+For example, this disabled provider probes
+`http://127.0.0.1:8088/custom/api/v2/models` without authentication:
+
+```yaml
+providers:
+  private_llm:
+    type: openai
+    capabilities: [llm]
+    enabled: false
+    chat_base_url: http://127.0.0.1:8088/custom/api/v2
+    chat_model: your-served-model
+    api_key: not-needed
+```
+
+Use this example only for a server that intentionally accepts unauthenticated
+requests. For a keyed server, replace `api_key: not-needed` with an explicit
+`api_key_env` or managed `api_key_file`. The endpoint must be reachable from the
+Admin UI container; loopback refers to that container's network namespace,
+not the computer running the browser. See the
+[provider test troubleshooting guide](TROUBLESHOOTING_GUIDE.md#modular-provider-connection-tests)
+for interpreting failures.
 
 These APIs require Admin UI authentication. Custom hostname checks resolve
 DNS separately from HTTP connection establishment, leaving a DNS-rebinding

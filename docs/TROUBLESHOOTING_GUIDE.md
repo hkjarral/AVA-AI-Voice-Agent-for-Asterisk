@@ -1084,6 +1084,40 @@ STREAMING_LOG_LEVEL=debug  # Detailed streaming logs
 
 ## Provider-Specific Issues
 
+### Modular Provider Connection Tests
+
+In **Providers → Edit**, **Test Connection** uses the current form, including
+unsaved changes. Credential verification uses saved settings. The displayed
+destination contains the scheme, host and port; resource paths are deliberately
+omitted from diagnostics. Check the configured URL field for the full path.
+
+| Result | What to check |
+| --- | --- |
+| Cannot connect or timed out | Confirm the configured server and port are reachable from the Admin UI container. Loopback refers to its network namespace, not the browser computer. Start the inference server or correct routing/firewall settings. The test does not substitute another provider. |
+| HTTP 401/403 | Check that this provider's managed key file or explicit environment reference resolves to a key for this destination. Custom OpenAI-compatible instances do not inherit an unrelated `OPENAI_API_KEY`. |
+| Redirects are disabled | Configure the final API URL directly, including its complete API prefix. The test does not forward credentials to a redirect destination. |
+| Invalid OpenAI-compatible model list | The LLM probe expects `GET {chat_base_url}/models` to return a JSON object with a `data` array. Check that the URL is an API root rather than a web console or a complete `/chat/completions` resource. |
+| Provider URL rejected | Use an absolute HTTP(S) URL without embedded credentials, whitespace, query or fragment. Public endpoints require HTTPS; LAN/loopback HTTP is supported. Metadata and special-use destinations are blocked. |
+| Speech endpoint reachable; authentication and transcription/synthesis were not verified | The GET/405 probe reached the configured speech resource. Validate actual speech behavior with the saved/applied configuration and a call. |
+
+For custom servers that intentionally require no authentication, configure
+`type: openai` and `api_key: not-needed`; the probe still contacts that server
+and sends no Authorization header. An empty key is not the no-auth sentinel.
+An editor result disappears after settings change; retest the new settings.
+
+Safe probe diagnostics are in the **Admin UI** container logs:
+
+```bash
+docker compose -p asterisk-ai-voice-agent logs --since 10m admin_ui \
+  | grep 'Provider validation'
+```
+
+These events record provider, implementation kind, role, destination origin,
+outcome, HTTP status, validation level and elapsed time. They exclude keys,
+headers, response bodies and arbitrary endpoint paths. See the
+[configuration reference](Configuration-Reference.md#admin-ui-modular-http-provider-tests)
+for credential precedence and timeout limits.
+
 ### OpenAI Realtime
 
 #### Common Issues
