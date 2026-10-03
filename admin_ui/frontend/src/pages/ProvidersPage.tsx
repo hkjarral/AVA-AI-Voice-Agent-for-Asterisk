@@ -54,16 +54,17 @@ const ProvidersPage: React.FC = () => {
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [editingProvider, setEditingProvider] = useState<string | null>(null);
     const editingProviderRef = useRef<string | null>(null);
+    const editorGenerationRef = useRef(0);
     const [providerForm, setProviderForm] = useState<any>({});
     const deletedProviderFieldsRef = useRef<Set<string>>(new Set());
     const [isNewProvider, setIsNewProvider] = useState(false);
-    const [testingProvider, setTestingProvider] = useState<string | null>(null);
+    const [testingProviders, setTestingProviders] = useState<Set<string>>(new Set());
     const [testResults, setTestResults] = useState<{ [key: string]: { success: boolean; message: string; fingerprint: string } | undefined }>({});
     const providerFormRef = useRef(providerForm);
     const configRef = useRef(config);
     providerFormRef.current = providerForm;
     configRef.current = config;
-    const testRequestRef = useRef(0);
+    const testRequestRef = useRef(new Map<string, number>());
     const getTestResult = (name: string, provider: any) => {
         const result = testResults[name];
         return result?.fingerprint === testFingerprint(provider) ? result : undefined;
@@ -131,6 +132,7 @@ const ProvidersPage: React.FC = () => {
 
     const updateEditingProvider = (providerKey: string | null) => {
         deletedProviderFieldsRef.current.clear();
+        editorGenerationRef.current += 1;
         editingProviderRef.current = providerKey;
         setEditingProvider(providerKey);
     };
@@ -765,15 +767,18 @@ const ProvidersPage: React.FC = () => {
     };
 
     const handleTestConnection = async (name: string, providerData: any) => {
-        const requestId = ++testRequestRef.current;
+        const requestId = (testRequestRef.current.get(name) || 0) + 1;
+        testRequestRef.current.set(name, requestId);
         const fingerprint = testFingerprint(providerData);
         const submittedEditor = editingProviderRef.current;
+        const editorGeneration = editorGenerationRef.current;
         const isCurrent = () => {
-            if (testRequestRef.current !== requestId || editingProviderRef.current !== submittedEditor) return false;
+            if (testRequestRef.current.get(name) !== requestId) return false;
+            if (submittedEditor && (editingProviderRef.current !== submittedEditor || editorGenerationRef.current !== editorGeneration)) return false;
             const current = submittedEditor ? providerFormRef.current : configRef.current.providers?.[name];
             return testFingerprint(current) === fingerprint;
         };
-        setTestingProvider(name);
+        setTestingProviders(prev => new Set(prev).add(name));
         setTestResults(prev => ({ ...prev, [name]: undefined }));
         try {
             const response = await axios.post('/api/config/providers/test', { name, config: providerData });
@@ -795,7 +800,13 @@ const ProvidersPage: React.FC = () => {
                 }));
             }
         } finally {
-            if (testRequestRef.current === requestId) setTestingProvider(null);
+            if (testRequestRef.current.get(name) === requestId) {
+                setTestingProviders(prev => {
+                    const pending = new Set(prev);
+                    pending.delete(name);
+                    return pending;
+                });
+            }
         }
     };
 
@@ -1119,12 +1130,12 @@ const ProvidersPage: React.FC = () => {
                                     )}
                                     <button
                                         onClick={() => handleTestConnection(name, providerData)}
-                                        disabled={testingProvider === name}
+                                        disabled={testingProviders.has(name)}
                                         className="p-1.5 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground disabled:opacity-50 transition-colors"
                                         aria-label={`Test connection for ${name}`}
                                         title={`Test connection for ${name}`}
                                     >
-                                        {testingProvider === name ? (
+                                        {testingProviders.has(name) ? (
                                             <Loader2 className="w-4 h-4 animate-spin" />
                                         ) : getTestResult(name, providerData)?.success ? (
                                             <CheckCircle2 className="w-4 h-4 text-green-500" />
@@ -1213,12 +1224,12 @@ const ProvidersPage: React.FC = () => {
                                 <div className="flex items-center gap-1">
                                     <button
                                         onClick={() => handleTestConnection(name, providerData)}
-                                        disabled={testingProvider === name}
+                                        disabled={testingProviders.has(name)}
                                         className="p-1.5 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground disabled:opacity-50 transition-colors"
                                         aria-label={`Test connection for ${name}`}
                                         title={`Test connection for ${name}`}
                                     >
-                                        {testingProvider === name ? (
+                                        {testingProviders.has(name) ? (
                                             <Loader2 className="w-4 h-4 animate-spin" />
                                         ) : getTestResult(name, providerData)?.success ? (
                                             <CheckCircle2 className="w-4 h-4 text-green-500" />
@@ -1277,10 +1288,10 @@ const ProvidersPage: React.FC = () => {
                         <div className="flex items-center gap-2">
                             <button
                                 onClick={() => handleTestConnection(providerForm.name || 'new_provider', providerForm)}
-                                disabled={!!testingProvider || !providerForm.name}
+                                disabled={testingProviders.has(providerForm.name) || !providerForm.name}
                                 className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"
                             >
-                                {testingProvider === (providerForm.name || 'new_provider') ? (
+                                {testingProviders.has(providerForm.name || 'new_provider') ? (
                                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                                 ) : (
                                     <Server className="w-4 h-4 mr-2" />

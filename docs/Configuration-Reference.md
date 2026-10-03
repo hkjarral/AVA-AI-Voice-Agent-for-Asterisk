@@ -602,7 +602,9 @@ connection tests use the declared type and capability; names containing
   and logs show the destination origin (scheme/host/port), not arbitrary paths,
   credentials, headers, response bodies or exception internals. Editor results
   disappear when configuration changes, and late responses after an edit or
-  closing the editor are ignored. Testing does not save or apply the form.
+  closing/reopening the editor are ignored. Separate provider cards can test
+  concurrently without clearing each other's results. Testing does not save
+  or apply the form.
 
 The authenticated routes are:
 
@@ -613,6 +615,9 @@ The authenticated routes are:
 
 Groq LLM instances use `type: openai` with their Groq `chat_base_url` and
 credential source. Groq speech connection tests use `type: groq`.
+For backward compatibility, a submitted `groq_llm` configuration without an
+explicit type or endpoint defaults to `https://api.groq.com/openai/v1`.
+An explicit type, `chat_base_url` or `base_url` keeps its configured behavior.
 
 For example, this disabled provider probes
 `http://127.0.0.1:8088/custom/api/v2/models` without authentication:

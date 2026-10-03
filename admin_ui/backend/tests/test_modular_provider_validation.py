@@ -115,6 +115,75 @@ async def test_exact_legacy_keys_remain_supported(monkeypatch, name):
 
 
 @pytest.mark.asyncio
+async def test_legacy_groq_without_type_or_url_uses_groq_with_scoped_key(monkeypatch):
+    calls = mock_http(monkeypatch)
+    monkeypatch.setenv("GROQ_API_KEY", "synthetic-groq-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "unrelated-openai-key")
+    result = await run_api(monkeypatch, {}, name="groq_llm")
+    assert result["success"]
+    assert calls == [("GET", "https://api.groq.com/openai/v1/models", {"headers": {"Authorization": "Bearer synthetic-groq-key"}})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["chat_base_url", "base_url"])
+async def test_legacy_groq_keeps_explicit_url(monkeypatch, field):
+    calls = mock_http(monkeypatch)
+    monkeypatch.setenv("GROQ_API_KEY", "synthetic-groq-key")
+    await run_api(monkeypatch, {field: "http://127.0.0.1:8080/custom/v2"}, name="groq_llm")
+    assert calls == [("GET", "http://127.0.0.1:8080/custom/v2/models", {"headers": {"Authorization": "Bearer synthetic-groq-key"}})]
+
+
+@pytest.mark.asyncio
+async def test_legacy_groq_name_does_not_override_explicit_openai_type(monkeypatch):
+    calls = mock_http(monkeypatch)
+    await run_api(monkeypatch, {"type": "openai", "api_key": "explicit-key"}, name="groq_llm")
+    assert calls[0][1] == "https://api.openai.com/v1/models"
+
+
+@pytest.mark.parametrize("reference,expected", [
+    ("${CUSTOM_API_KEY}", ""), ("${CUSTOM_API_KEY:-fallback}", "fallback"),
+    ("${CUSTOM_API_KEY:=fallback}", "fallback"), ("${CUSTOM_API_KEY:-}", ""),
+    ("${CUSTOM_API_KEY:-a:b=c}", "a:b=c"),
+])
+@pytest.mark.parametrize("value", ["", "fresh-key"])
+def test_inline_key_references_preserve_environment_and_default_precedence(reference, expected, value):
+    assert config_api._modular_validation_key("custom_llm", {"api_key": reference}, lambda _name: value) == (value or expected)
+
+
+@pytest.mark.parametrize("reference", [
+    "${1INVALID}", "${NON_ASCII_é}", "${KEY:invalid}", "${KEY:-nested}extra}",
+    "prefix${KEY}", "${{A:-" + "${{A:-|" * 10000,
+])
+def test_malformed_key_references_remain_literal_without_lookup(reference):
+    def no_lookup(_name):
+        pytest.fail("Malformed key references must not look up environment variables")
+    assert config_api._modular_validation_key("custom_llm", {"api_key": reference}, no_lookup) == reference
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("saved", [False, True])
+async def test_diagnostic_logs_are_single_line_bounded_and_secret_safe(monkeypatch, caplog, saved):
+    mock_http(monkeypatch)
+    name = "synthetic-key_llm" if saved else "synthetic-key\r\nFORGED\n" + "x" * 1000 + "_llm"
+    with caplog.at_level(logging.INFO, logger=validation.__name__):
+        await run_api(monkeypatch, {"type": "openai", "chat_base_url": "http://127.0.0.1:8080/private-path", "api_key": "synthetic-key"}, saved=saved, name=name)
+    records = [r for r in caplog.records if r.name == validation.__name__]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "\r" not in message and "\n" not in message
+    assert "synthetic-key" not in message and "private-path" not in message
+    assert len(message.split("provider=", 1)[1].split(" kind=", 1)[0]) <= 64
+
+
+@pytest.mark.asyncio
+async def test_saved_verification_rejects_log_injection_in_provider_key(monkeypatch):
+    calls = mock_http(monkeypatch)
+    with pytest.raises(HTTPException, match="Provider key may only contain"):
+        await run_api(monkeypatch, {"type": "openai", "api_key": "synthetic-key"}, saved=True, name="custom\r\nFORGED_llm")
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_undefined_explicit_env_does_not_fall_back_to_other_credentials(monkeypatch):
     calls = mock_http(monkeypatch)
     monkeypatch.setenv("CUSTOM_API_KEY", "legacy-key")

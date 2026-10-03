@@ -154,6 +154,11 @@ def safe_destination(target: ProbeTarget, key: str = "") -> str:
     return destination.replace(key, "[redacted]") if key else destination
 
 
+def _log_field(value: str, limit: int = 256) -> str:
+    """Bound diagnostic fields and remove line breaks at the logging boundary."""
+    return value[:limit].replace("\r", "").replace("\n", "")
+
+
 async def test_modular_provider(
     name: str, config: Mapping[str, Any], key: str, *, exercise_chat: bool = False,
 ) -> dict[str, Any]:
@@ -244,9 +249,9 @@ async def test_modular_provider(
         # model IDs, headers, or raw config in this diagnostic event.
         logger.info(
             "Provider validation provider=%s kind=%s role=%s destination=%s outcome=%s status=%s level=%s elapsed_ms=%d",
-            re.sub(r"[^A-Za-z0-9_.-]", "?", name.replace(key, "redacted") if key else name)[:64],
-            target.kind if target else "unknown", target.role if target else "unknown",
-            safe_destination(target, key) if target else "invalid", outcome, status, level,
+            _log_field(re.sub(r"[^A-Za-z0-9_.-]", "?", name.replace(key, "redacted") if key else name), 64),
+            _log_field(target.kind if target else "unknown"), _log_field(target.role if target else "unknown"),
+            _log_field(safe_destination(target, key) if target else "invalid"), outcome, status, level,
             int((time.monotonic() - started) * 1000),
         )
     destination = safe_destination(target, key) if target else ""

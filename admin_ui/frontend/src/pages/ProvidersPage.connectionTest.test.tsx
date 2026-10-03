@@ -69,6 +69,59 @@ describe('provider connection results', () => {
         expect(screen.queryByText('Obsolete success')).not.toBeInTheDocument();
     });
 
+    it('does not reuse a pending result after closing and reopening the same editor', async () => {
+        const dialog = await openEditor();
+        let resolve: (value: unknown) => void = () => undefined;
+        vi.mocked(axios.post).mockReturnValueOnce(new Promise(r => { resolve = r; }));
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Test Connection' }));
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Settings for custom_llm', exact: true }));
+        const reopened = await screen.findByRole('dialog', { name: 'Edit Provider: custom_llm' });
+        await act(async () => resolve({ data: { success: true, message: 'Obsolete reopened success' } }));
+        expect(within(reopened).queryByRole('status')).not.toBeInTheDocument();
+        expect(screen.queryByText('Obsolete reopened success')).not.toBeInTheDocument();
+        expect(within(reopened).getByRole('button', { name: 'Test Connection' })).toBeEnabled();
+    });
+
+    it('keeps concurrent card requests, loading states and results independent', async () => {
+        mocks.config.providers.other_llm = { ...mocks.config.providers.custom_llm, chat_base_url: editedUrl };
+        let resolveFirst: (value: unknown) => void = () => undefined;
+        let rejectSecond: (value: unknown) => void = () => undefined;
+        vi.mocked(axios.post)
+            .mockReturnValueOnce(new Promise(r => { resolveFirst = r; }))
+            .mockReturnValueOnce(new Promise((_resolve, reject) => { rejectSecond = reject; }));
+        render(<MemoryRouter><ProvidersPage /></MemoryRouter>);
+        const first = await screen.findByRole('button', { name: 'Test connection for custom_llm', exact: true });
+        const second = screen.getByRole('button', { name: 'Test connection for other_llm', exact: true });
+        fireEvent.click(first);
+        fireEvent.click(second);
+        expect(first).toBeDisabled();
+        expect(second).toBeDisabled();
+        await act(async () => rejectSecond({ response: { data: { detail: 'Other endpoint unavailable' } } }));
+        expect(first).toBeDisabled();
+        expect(second).toBeEnabled();
+        expect(screen.getByText('Other endpoint unavailable')).toBeInTheDocument();
+        await act(async () => resolveFirst({ data: { success: true, message: 'First endpoint connected' } }));
+        expect(first).toBeEnabled();
+        expect(screen.getByText('First endpoint connected')).toBeInTheDocument();
+        expect(screen.getByText('Other endpoint unavailable')).toBeInTheDocument();
+    });
+
+    it('preserves a card request when another provider editor opens', async () => {
+        mocks.config.providers.other_llm = { ...mocks.config.providers.custom_llm, chat_base_url: editedUrl };
+        let resolve: (value: unknown) => void = () => undefined;
+        vi.mocked(axios.post).mockReturnValueOnce(new Promise(r => { resolve = r; }));
+        render(<MemoryRouter><ProvidersPage /></MemoryRouter>);
+        fireEvent.click(await screen.findByRole('button', { name: 'Test connection for custom_llm', exact: true }));
+        fireEvent.click(screen.getByRole('button', { name: 'Settings for other_llm', exact: true }));
+        const dialog = await screen.findByRole('dialog', { name: 'Edit Provider: other_llm' });
+        expect(within(dialog).getByRole('button', { name: 'Test Connection' })).toBeEnabled();
+        await act(async () => resolve({ data: { success: true, message: 'Card connected independently' } }));
+        expect(within(dialog).queryByRole('status')).not.toBeInTheDocument();
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+        expect(screen.getByText('Card connected independently')).toBeInTheDocument();
+    });
+
     it('renders structured backend errors as readable messages', async () => {
         const dialog = await openEditor();
         vi.mocked(axios.post).mockRejectedValueOnce({ response: { data: { detail: { message: 'Blocked metadata destination' } } } });

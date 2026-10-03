@@ -666,6 +666,24 @@ def strip_ansi_codes(text: str) -> str:
     """Remove ANSI escape codes from text for clean log files."""
     return ANSI_ESCAPE.sub('', text)
 
+def _parse_api_key_reference(value: str):
+    """Parse one ${NAME}, ${NAME:-default} or ${NAME:=default} in linear time."""
+    if not value.startswith("${") or not value.endswith("}"):
+        return None
+    body = value[2:-1]
+    name, separator, default = body.partition(":")
+    if separator:
+        if not default.startswith(("-", "=")) or "}" in default:
+            return None
+        default = default[1:]
+    if (
+        not name or not name.isascii() or not (name[0].isalpha() or name[0] == "_")
+        or not all(c.isalnum() or c == "_" for c in name)
+    ):
+        return None
+    return name, default
+
+
 def _modular_validation_key(provider_name: str, provider_config: Dict[str, Any], env_lookup=None) -> str:
     """Match provider-scoped runtime key precedence, using fresh Admin .env values."""
     if env_lookup is None:
@@ -684,9 +702,9 @@ def _modular_validation_key(provider_name: str, provider_config: Dict[str, Any],
         return str(env_lookup(env_name) or "").strip()
     inline = str(provider_config.get("api_key") or "").strip()
     if inline:
-        match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::[-=]([^}]*))?\}", inline)
-        if match:
-            return str(env_lookup(match.group(1)) or match.group(2) or "").strip()
+        reference = _parse_api_key_reference(inline)
+        if reference:
+            return str(env_lookup(reference[0]) or reference[1] or "").strip()
         return inline
     prefix = re.sub(r"_(stt|llm|tts)$", "", provider_name, flags=re.IGNORECASE).upper()
     kind = str(provider_config.get("type") or "").strip().lower()
@@ -1898,6 +1916,8 @@ async def test_provider_connection(request: ProviderTestRequest):
             provider_type = legacy_kinds.get(provider_name, '')
             if provider_type:
                 provider_config['type'] = provider_type
+            if provider_name == 'groq_llm' and not (provider_config.get('chat_base_url') or provider_config.get('base_url')):
+                provider_config['chat_base_url'] = 'https://api.groq.com/openai/v1'
         # Explicit modular types take precedence over names and full-agent
         # leftover fields. Test the submitted form, not the persisted provider.
         if provider_type in MODULAR_HTTP_KINDS:

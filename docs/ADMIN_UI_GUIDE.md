@@ -50,6 +50,8 @@ For a modular HTTP provider, edit its endpoint and credential source, then click
 **Test Connection** to test the current form before saving. Custom hosts, ports
 and API paths are preserved. Results show the tested destination origin and a
 readable success or failure reason; changing settings clears the old result.
+Tests on separate provider cards keep their own loading states and results.
+Closing or reopening an editor discards responses from its previous session.
 The credential verification action tests the saved provider configuration.
 
 A successful LLM model list does not prove that the selected model can perform
