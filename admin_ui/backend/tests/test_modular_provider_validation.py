@@ -134,10 +134,45 @@ async def test_legacy_groq_keeps_explicit_url(monkeypatch, field):
 
 
 @pytest.mark.asyncio
-async def test_legacy_groq_name_does_not_override_explicit_openai_type(monkeypatch):
+async def test_legacy_groq_name_preserves_explicit_openai_endpoint(monkeypatch):
     calls = mock_http(monkeypatch)
-    await run_api(monkeypatch, {"type": "openai", "api_key": "explicit-key"}, name="groq_llm")
+    await run_api(monkeypatch, {"type": "openai", "chat_base_url": "https://api.openai.com/v1", "api_key": "explicit-key"}, name="groq_llm")
     assert calls[0][1] == "https://api.openai.com/v1/models"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("saved", [False, True])
+@pytest.mark.parametrize("source", ["legacy", "env", "inline", "file"])
+async def test_explicit_openai_groq_without_endpoint_rejects_before_sending_key(monkeypatch, tmp_path, saved, source):
+    calls = mock_http(monkeypatch)
+    monkeypatch.setenv("GROQ_API_KEY", "synthetic-groq-key")
+    cfg = {"type": "openai", "capabilities": ["llm"]}
+    if source == "env":
+        cfg["api_key_env"] = "GROQ_API_KEY"
+    elif source == "inline":
+        cfg["api_key"] = "synthetic-groq-key"
+    elif source == "file":
+        path = tmp_path / "key"
+        path.write_text("synthetic-groq-key")
+        cfg["api_key_file"] = str(path)
+    if saved:
+        with pytest.raises(HTTPException, match="requires an explicit"):
+            await run_api(monkeypatch, cfg, saved=True, name="groq_llm")
+    else:
+        result = await run_api(monkeypatch, cfg, name="groq_llm")
+        assert not result["success"] and "requires an explicit" in result["message"]
+    assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("saved", [False, True])
+@pytest.mark.parametrize("field", ["chat_base_url", "base_url"])
+async def test_explicit_openai_groq_preserves_configured_endpoint(monkeypatch, saved, field):
+    calls = mock_http(monkeypatch)
+    monkeypatch.setenv("GROQ_API_KEY", "synthetic-groq-key")
+    result = await run_api(monkeypatch, {"type": "openai", field: "http://127.0.0.1:8080/custom/v2"}, saved=saved, name="groq_llm")
+    assert result.get("success", result.get("status") == "success")
+    assert calls == [("GET", "http://127.0.0.1:8080/custom/v2/models", {"headers": {"Authorization": "Bearer synthetic-groq-key"}})]
 
 
 @pytest.mark.parametrize("reference,expected", [

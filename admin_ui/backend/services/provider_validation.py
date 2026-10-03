@@ -69,6 +69,11 @@ def probe_target(name: str, config: Mapping[str, Any]) -> ProbeTarget:
     if kind not in MODULAR_HTTP_KINDS:
         raise ProviderValidationError("Unsupported modular HTTP provider type")
     role = provider_role(name, config)
+    if (
+        name.lower() == "groq_llm" and kind == "openai" and role == "llm"
+        and not (config.get("chat_base_url") or config.get("base_url"))
+    ):
+        raise ProviderValidationError("groq_llm with type 'openai' requires an explicit chat_base_url or base_url")
     default = DEFAULT_BASES[kind]
     if role == "llm":
         value = config.get("chat_base_url") or config.get("base_url") or default

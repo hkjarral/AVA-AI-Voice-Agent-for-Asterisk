@@ -617,7 +617,10 @@ Groq LLM instances use `type: openai` with their Groq `chat_base_url` and
 credential source. Groq speech connection tests use `type: groq`.
 For backward compatibility, a submitted `groq_llm` configuration without an
 explicit type or endpoint defaults to `https://api.groq.com/openai/v1`.
-An explicit type, `chat_base_url` or `base_url` keeps its configured behavior.
+Explicit types and supplied URLs remain authoritative.
+An explicitly typed `groq_llm` with `type: openai` must supply `chat_base_url` or
+`base_url` for either validation API. Missing URLs are rejected before sending
+credentials, so a Groq key cannot be sent to OpenAI through an ambiguous default.
 
 For example, this disabled provider probes
 `http://127.0.0.1:8088/custom/api/v2/models` without authentication:
