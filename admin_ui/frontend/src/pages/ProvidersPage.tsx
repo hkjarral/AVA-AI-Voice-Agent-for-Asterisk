@@ -1155,7 +1155,7 @@ const ProvidersPage: React.FC = () => {
                             {getTestResult(name, providerData) && (
                                 <div className={`mt-2 p-2 rounded text-xs ${getTestResult(name, providerData)?.success
                                     ? 'bg-green-500/10 text-green-600 dark:text-green-400'
-                                    : 'bg-destructive/10 text-destructive'
+                                    : 'bg-red-500/10 text-red-700 dark:text-red-400'
                                     }`}>
                                     {getTestResult(name, providerData)?.message}
                                 </div>
@@ -1249,7 +1249,7 @@ const ProvidersPage: React.FC = () => {
                             {getTestResult(name, providerData) && (
                                 <div className={`mt-2 p-2 rounded text-xs ${getTestResult(name, providerData)?.success
                                     ? 'bg-green-500/10 text-green-600 dark:text-green-400'
-                                    : 'bg-destructive/10 text-destructive'
+                                    : 'bg-red-500/10 text-red-700 dark:text-red-400'
                                     }`}>
                                     {getTestResult(name, providerData)?.message}
                                 </div>
@@ -1308,7 +1308,7 @@ const ProvidersPage: React.FC = () => {
             >
                 <div className="space-y-4">
                     {getTestResult(providerForm.name || 'new_provider', providerForm) && (
-                        <div role="status" className={`rounded-lg border p-3 text-sm break-words ${getTestResult(providerForm.name || 'new_provider', providerForm)?.success ? 'border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-400' : 'border-destructive/30 bg-destructive/10 text-destructive'}`}>
+                        <div role="status" className={`rounded-lg border p-3 text-sm break-words ${getTestResult(providerForm.name || 'new_provider', providerForm)?.success ? 'border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-400' : 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400'}`}>
                             {getTestResult(providerForm.name || 'new_provider', providerForm)?.message}
                         </div>
                     )}
