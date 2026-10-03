@@ -150,6 +150,23 @@ def test_inline_key_references_preserve_environment_and_default_precedence(refer
     assert config_api._modular_validation_key("custom_llm", {"api_key": reference}, lambda _name: value) == (value or expected)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("saved", [False, True])
+@pytest.mark.parametrize("operator", [":-", ":="])
+@pytest.mark.parametrize("configured", [False, True])
+async def test_both_apis_resolve_key_reference_defaults_consistently(monkeypatch, tmp_path, saved, operator, configured):
+    calls = mock_http(monkeypatch)
+    if configured:
+        (tmp_path / ".env").write_text("CUSTOM_API_KEY=fresh-key\n")
+    result = await run_api(monkeypatch, {
+        "type": "openai", "chat_base_url": "http://127.0.0.1:8080/v1",
+        "api_key": "${CUSTOM_API_KEY" + operator + "not-needed}",
+    }, saved=saved)
+    assert result.get("success", result.get("status") == "success")
+    assert calls[0][2]["headers"] == ({"Authorization": "Bearer fresh-key"} if configured else {})
+    assert result["validation_level"] == ("authentication" if configured else "connectivity")
+
+
 @pytest.mark.parametrize("reference", [
     "${1INVALID}", "${NON_ASCII_é}", "${KEY:invalid}", "${KEY:-nested}extra}",
     "prefix${KEY}", "${{A:-" + "${{A:-|" * 10000,

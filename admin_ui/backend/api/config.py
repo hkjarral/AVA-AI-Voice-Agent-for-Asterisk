@@ -1921,6 +1921,9 @@ async def test_provider_connection(request: ProviderTestRequest):
         # Explicit modular types take precedence over names and full-agent
         # leftover fields. Test the submitted form, not the persisted provider.
         if provider_type in MODULAR_HTTP_KINDS:
+            # Let the scoped resolver interpret the original whole-key reference.
+            # The legacy form substituter treats ':-'/':=' defaults differently.
+            provider_config['api_key'] = request.config.get('api_key')
             api_key = _modular_validation_key(
                 provider_name, provider_config,
                 lambda name: get_env_key(name) or os.getenv(name, ''),
