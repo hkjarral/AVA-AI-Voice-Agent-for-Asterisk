@@ -23,7 +23,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, Union
-from urllib.parse import urlparse
 import settings
 
 PROJECT_SOURCE_ROOT = Path(settings.PROJECT_ROOT)
@@ -42,6 +41,9 @@ from src.fish_audio_url import (
     fish_audio_verification_url,
 )
 from src.tools.execution_history import CALL_HISTORY_TOOL_REDACTION_MODES
+from services.provider_validation import (
+    MODULAR_HTTP_KINDS, test_modular_provider,
+)
 
 # A11: Maximum number of backups to keep
 MAX_BACKUPS = 5
@@ -664,39 +666,39 @@ def strip_ansi_codes(text: str) -> str:
     """Remove ANSI escape codes from text for clean log files."""
     return ANSI_ESCAPE.sub('', text)
 
-def _url_host(url: str) -> str:
-    try:
-        return (urlparse(str(url)).hostname or "").lower()
-    except Exception:
-        return ""
-
-
-# SECURITY: Hardcoded base URLs for provider validation requests.
-# Maps hostname → canonical base URL.  This prevents SSRF via user-supplied
-# chat_base_url in YAML config by never forwarding the raw user string.
-_SAFE_BASE_URLS: dict[str, str] = {
-    "api.telnyx.com": "https://api.telnyx.com/v2/ai",
-    "api.openai.com": "https://api.openai.com/v1",
-    "api.groq.com": "https://api.groq.com/openai/v1",
-    "openrouter.ai": "https://openrouter.ai/api/v1",
-    "api.deepseek.com": "https://api.deepseek.com/v1",
-    "api.minimax.io": "https://api.minimax.io/v1",
-    "api.minimaxi.com": "https://api.minimaxi.com/v1",
-    "api.anthropic.com": "https://api.anthropic.com/v1",
-    "api.deepgram.com": "https://api.deepgram.com/v1",
-    "api.elevenlabs.io": "https://api.elevenlabs.io/v1",
-    "generativelanguage.googleapis.com": "https://generativelanguage.googleapis.com/v1beta",
-}
-
-
-def _safe_base_url(user_url: str, fallback: str) -> str:
-    """Return a hardcoded base URL for a known provider host, or *fallback*.
-
-    The returned string is NEVER derived from *user_url* — only the hostname
-    is extracted for lookup.  This breaks the CodeQL taint chain.
-    """
-    host = _url_host(user_url)
-    return _SAFE_BASE_URLS.get(host, fallback)
+def _modular_validation_key(provider_name: str, provider_config: Dict[str, Any], env_lookup=None) -> str:
+    """Match provider-scoped runtime key precedence, using fresh Admin .env values."""
+    if env_lookup is None:
+        from dotenv import dotenv_values
+        values = dotenv_values(settings.ENV_PATH) if os.path.exists(settings.ENV_PATH) else {}
+        env_lookup = lambda name: values.get(name) or os.getenv(name, "")
+    helpers = _provider_instances_module()
+    file_value = helpers["resolve_secret_value"](
+        {"api_key_file": provider_config.get("api_key_file")},
+        file_field="api_key_file", env_field="api_key_env", inline_field="api_key",
+    )
+    if file_value:
+        return file_value
+    env_name = str(provider_config.get("api_key_env") or "").strip()
+    if env_name:
+        return str(env_lookup(env_name) or "").strip()
+    inline = str(provider_config.get("api_key") or "").strip()
+    if inline:
+        match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::[-=]([^}]*))?\}", inline)
+        if match:
+            return str(env_lookup(match.group(1)) or match.group(2) or "").strip()
+        return inline
+    prefix = re.sub(r"_(stt|llm|tts)$", "", provider_name, flags=re.IGNORECASE).upper()
+    kind = str(provider_config.get("type") or "").strip().lower()
+    names = [f"{prefix}_API_KEY"]
+    canonical = {"groq": "GROQ_API_KEY", "telnyx": "TELNYX_API_KEY", "telenyx": "TELNYX_API_KEY", "minimax": "MINIMAX_API_KEY"}.get(kind)
+    if canonical:
+        names.append(canonical)
+    for name in names:
+        value = str(env_lookup(name) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _rotate_backups(base_path: str) -> None:
@@ -1882,6 +1884,31 @@ async def test_provider_connection(request: ProviderTestRequest):
         # Apply substitution to the config
         provider_config = substitute_env_vars(request.config)
         provider_name = request.name.lower()
+        provider_type = str(provider_config.get('type') or '').strip().lower()
+        if not provider_type:
+            # Preserve exact legacy modular keys; do not infer from arbitrary
+            # substrings in operator-chosen instance names.
+            legacy_kinds = {
+                'openai_llm': 'openai', 'openai_stt': 'openai', 'openai_tts': 'openai',
+                'groq_llm': 'openai', 'groq_stt': 'groq', 'groq_tts': 'groq',
+                'telnyx': 'telnyx', 'telnyx_llm': 'telnyx',
+                'telenyx': 'telenyx', 'telenyx_llm': 'telenyx',
+                'minimax': 'minimax', 'minimax_llm': 'minimax',
+            }
+            provider_type = legacy_kinds.get(provider_name, '')
+            if provider_type:
+                provider_config['type'] = provider_type
+        # Explicit modular types take precedence over names and full-agent
+        # leftover fields. Test the submitted form, not the persisted provider.
+        if provider_type in MODULAR_HTTP_KINDS:
+            api_key = _modular_validation_key(
+                provider_name, provider_config,
+                lambda name: get_env_key(name) or os.getenv(name, ''),
+            )
+            return await test_modular_provider(
+                provider_name, provider_config, api_key,
+                exercise_chat=provider_type in ('telnyx', 'telenyx'),
+            )
         # Saved provider instances may keep credentials in owner-only files.
         # Resolve the key in memory for this verification request without ever
         # returning it to the browser or writing it back into YAML.
@@ -2077,161 +2104,6 @@ async def test_provider_connection(request: ProviderTestRequest):
                     return {"success": True, "message": f"Connected to OpenAI (HTTP {response.status_code})"}
                 return {"success": False, "message": f"OpenAI API error: HTTP {response.status_code}"}
 
-        # ============================================================
-        # TELNYX (OpenAI-compatible) - validate /models + a tiny /chat/completions
-        # ============================================================
-        chat_base_url = (provider_config.get('chat_base_url') or provider_config.get('base_url') or '').rstrip('/')
-        host = _url_host(chat_base_url)
-        is_telnyx = provider_type in ('telnyx', 'telenyx') or ('telnyx' in provider_name) or host == 'api.telnyx.com'
-        if is_telnyx:
-            base_url = _safe_base_url(chat_base_url, 'https://api.telnyx.com/v2/ai')
-            api_key = (
-                str(provider_config.get('api_key') or '').strip()
-                or get_env_key('TELNYX_API_KEY')
-                or os.getenv('TELNYX_API_KEY')
-                or ''
-            )
-            if not api_key:
-                return {"success": False, "message": "TELNYX_API_KEY not set in .env"}
-
-            # Prefer explicit model config; if unset, use a safe default for testing.
-            model = (provider_config.get('chat_model') or provider_config.get('model') or '').strip()
-            if not model:
-                model = "Qwen/Qwen3-235B-A22B"
-
-            api_key_ref = (provider_config.get('api_key_ref') or '').strip()
-            if model.startswith('openai/') and not api_key_ref:
-                return {
-                    "success": False,
-                    "message": "Telnyx external models like openai/* require api_key_ref (Integration Secret identifier).",
-                }
-
-            def _telnyx_error_summary(resp: httpx.Response) -> str:
-                try:
-                    j = resp.json()
-                    if isinstance(j, dict) and isinstance(j.get("errors"), list) and j["errors"]:
-                        e0 = j["errors"][0] if isinstance(j["errors"][0], dict) else {}
-                        code = e0.get("code")
-                        title = e0.get("title")
-                        detail = e0.get("detail")
-                        parts = [p for p in [code, title, detail] if p]
-                        if parts:
-                            return " / ".join(str(p) for p in parts)
-                except Exception:
-                    pass
-                text = (resp.text or "").strip().replace("\n", " ")
-                return text[:180] if text else f"HTTP {resp.status_code}"
-
-            try:
-                async with httpx.AsyncClient(timeout=20.0) as client:
-                    models_resp = await client.get(
-                        f"{base_url}/models",
-                        headers={"Authorization": f"Bearer {api_key}"},
-                    )
-                    if models_resp.status_code != 200:
-                        return {"success": False, "message": f"Telnyx /models failed: {_telnyx_error_summary(models_resp)}"}
-
-                    payload: Dict[str, Any] = {
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": "You are a test assistant."},
-                            {"role": "user", "content": "Reply with exactly: OK"},
-                        ],
-                        "temperature": 0.0,
-                        "max_tokens": 16,
-                    }
-                    if api_key_ref:
-                        payload["api_key_ref"] = api_key_ref
-
-                    chat_resp = await client.post(
-                        f"{base_url}/chat/completions",
-                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                        json=payload,
-                    )
-                    if chat_resp.status_code == 200:
-                        return {"success": True, "message": f"Connected to Telnyx. Chat completion OK with model: {model}"}
-                    return {"success": False, "message": f"Telnyx chat completion failed: {_telnyx_error_summary(chat_resp)}"}
-            except Exception as e:
-                logger.debug("Telnyx provider validation failed", error=str(e), exc_info=True)
-                return {"success": False, "message": f"Cannot connect to Telnyx at {base_url} (see server logs)"}
-
-        # ============================================================
-        # OPENAI-COMPATIBLE (OpenAI / Groq / OpenRouter / etc.) - validate /models
-        # ============================================================
-        if provider_type == 'openai':
-            chat_base_url = _safe_base_url(
-                provider_config.get('chat_base_url') or '', 'https://api.openai.com/v1'
-            )
-            api_key = provider_config.get('api_key')
-            if not api_key:
-                inferred_env = None
-                host = _url_host(chat_base_url)
-                if 'groq' in provider_name or host == 'api.groq.com':
-                    inferred_env = 'GROQ_API_KEY'
-                elif 'openai' in provider_name or host == 'api.openai.com':
-                    inferred_env = 'OPENAI_API_KEY'
-
-                if inferred_env:
-                    api_key = get_env_key(inferred_env) or os.getenv(inferred_env) or ''
-
-            if not api_key:
-                return {"success": False, "message": "API key missing for OpenAI-compatible provider (set api_key or env var)"}
-
-            try:
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(
-                        f"{chat_base_url}/models",
-                        headers={"Authorization": f"Bearer {api_key}"},
-                        timeout=10.0,
-                    )
-                    if response.status_code == 200:
-                        try:
-                            data = response.json()
-                            models = data.get('data') or []
-                            return {"success": True, "message": f"Connected (OpenAI-compatible). Found {len(models)} models."}
-                        except Exception:
-                            return {"success": True, "message": f"Connected (OpenAI-compatible) (HTTP {response.status_code})"}
-                    if response.status_code == 401:
-                        return {"success": False, "message": "Invalid API key (401)"}
-                    return {"success": False, "message": f"Provider API error: HTTP {response.status_code}"}
-            except Exception as e:
-                # Avoid leaking exception internals in API responses (CodeQL).
-                logger.debug("OpenAI-compatible provider validation failed", error=str(e), exc_info=True)
-                return {"success": False, "message": f"Cannot connect to provider at {chat_base_url} (see server logs)"}
-
-        # ============================================================
-        # GROQ SPEECH (STT/TTS) - validate via /models (OpenAI-compatible)
-        # ============================================================
-        if provider_config.get('type') == 'groq':
-            api_key = provider_config.get('api_key') or get_env_key('GROQ_API_KEY') or os.getenv('GROQ_API_KEY') or ''
-            if not api_key:
-                return {"success": False, "message": "GROQ_API_KEY not set (set api_key or env var)"}
-
-            # SECURITY: For provider validation, do not call user-provided base URLs.
-            # Keep this check pinned to the official Groq OpenAI-compatible endpoint.
-            base_url = 'https://api.groq.com/openai/v1'
-
-            try:
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(
-                        f"{base_url}/models",
-                        headers={"Authorization": f"Bearer {api_key}"},
-                        timeout=10.0,
-                    )
-                    if response.status_code == 200:
-                        try:
-                            data = response.json()
-                            models = data.get('data') or []
-                            return {"success": True, "message": f"Connected (Groq Speech). Found {len(models)} models."}
-                        except Exception:
-                            return {"success": True, "message": f"Connected (Groq Speech) (HTTP {response.status_code})"}
-                    if response.status_code == 401:
-                        return {"success": False, "message": "Invalid API key (401)"}
-                    return {"success": False, "message": f"Provider API error: HTTP {response.status_code}"}
-            except Exception as e:
-                logger.debug("Groq Speech provider validation failed", error=str(e), exc_info=True)
-                return {"success": False, "message": f"Cannot connect to provider at {base_url} (see server logs)"}
-                
         elif 'google_live' in provider_config or ('llm_model' in provider_config and 'gemini' in provider_config.get('llm_model', '')):
             # Google Live
             api_key = provider_config.get('api_key') or get_env_key('GOOGLE_API_KEY')
@@ -3532,6 +3404,16 @@ async def verify_provider_credentials(provider_key: str):
 
     _merged, provider_cfg, kind = _get_provider_block(provider_key)
     helpers = _provider_instances_module()
+    if kind in {"openai", "telnyx", "telenyx", "minimax"}:
+        effective_config = {**provider_cfg, "type": kind}
+        api_key = _modular_validation_key(provider_key, effective_config)
+        result = await test_modular_provider(provider_key, effective_config, api_key)
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=f"{kind} verification failed: {result['message']}")
+        return {
+            "status": "success", "message": result["message"],
+            "endpoint": result["endpoint"], "validation_level": result["validation_level"],
+        }
     legacy_env_names = {
         "openai_realtime": ("OPENAI_API_KEY",),
         "openai": (f"{provider_key.rsplit('_llm', 1)[0].upper()}_API_KEY", "OPENAI_API_KEY"),
@@ -3654,48 +3536,6 @@ async def verify_provider_credentials(provider_key: str):
             if resp.status_code >= 400:
                 raise HTTPException(status_code=400, detail="Google API key verification failed")
             return {"status": "success", "message": "Google API key verified"}
-        if kind in {"openai", "telnyx", "telenyx", "minimax"}:
-            if not api_key:
-                raise HTTPException(status_code=400, detail=f"{kind} API key is not configured")
-            if api_key.lower() == "not-needed":
-                if kind != "openai":
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"{kind} API key is not configured",
-                    )
-                return {
-                    "status": "success",
-                    "message": "No-auth provider credential configuration accepted",
-                }
-            if kind == "openai":
-                configured_base = provider_cfg.get("chat_base_url") or provider_cfg.get("base_url") or ""
-                fallback_base = "https://api.openai.com/v1"
-                label = "OpenAI-compatible"
-            elif kind in {"telnyx", "telenyx"}:
-                configured_base = provider_cfg.get("chat_base_url") or provider_cfg.get("base_url") or ""
-                fallback_base = "https://api.telnyx.com/v2/ai"
-                label = "Telnyx"
-            else:
-                configured_base = provider_cfg.get("chat_base_url") or provider_cfg.get("base_url") or ""
-                fallback_base = "https://api.minimax.io/v1"
-                label = "MiniMax"
-            if configured_base:
-                base_url = _safe_base_url(str(configured_base), "")
-                if not base_url or _url_host(base_url) != _url_host(str(configured_base)):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"{label} verification URL is not allowlisted",
-                    )
-            else:
-                base_url = fallback_base
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    f"{base_url}/models",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-            if resp.status_code >= 400:
-                raise HTTPException(status_code=400, detail=f"{label} API key verification failed")
-            return {"status": "success", "message": f"{label} API key verified"}
     except HTTPException:
         raise
     except Exception as exc:

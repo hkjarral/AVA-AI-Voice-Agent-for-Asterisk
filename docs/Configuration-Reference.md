@@ -566,6 +566,48 @@ Requirements:
 
 - `OPENAI_API_KEY` must be set in the environment.
 
+### Admin UI modular HTTP provider tests
+
+**Test Connection** tests the current provider form, including unsaved edits.
+The saved-provider `/credentials/verify` API uses the saved configuration.
+OpenAI-compatible, Telnyx (including legacy `telenyx`), MiniMax and Groq Speech
+connection tests use the declared type and capability; names containing
+`local`, `telnyx` or `elevenlabs` do not override an explicit modular type.
+
+- LLM tests select `chat_base_url`, then legacy `base_url`, then the provider
+  default, and request `/models`. Configured ports and API paths are preserved.
+  A successful model list establishes connectivity/authentication, not model
+  entitlement or chat inference. Telnyx **Test Connection** additionally makes
+  its existing minimal chat-completion probe; credential verification does not.
+- OpenAI/Groq speech tests select `stt_base_url` or `tts_base_url` as complete
+  resource URLs. A successful GET or HTTP 405 establishes endpoint reachability
+  only; it does not verify authentication, transcription or synthesis.
+- Credentials resolve from the provider's key file, explicit key environment
+  variable, inline value/reference, then applicable legacy provider variables.
+  Admin tests read fresh `.env` values before container environment values.
+  A custom OpenAI-compatible instance does not inherit an unrelated
+  `OPENAI_API_KEY`. Set `api_key: not-needed` for a custom no-auth endpoint;
+  the test sends no Authorization header and still probes that endpoint.
+- HTTP(S) URLs must be absolute, with valid hosts/ports and without embedded
+  credentials, whitespace, queries or fragments. Public custom endpoints
+  require HTTPS. HTTP is permitted for loopback, RFC1918 LAN and IPv6 ULA
+  targets, including hostnames resolving exclusively to those addresses.
+  Metadata/link-local, multicast, unspecified and other special-use targets
+  are blocked. Redirects are disabled. Rejected or failed explicit endpoints
+  never trigger requests to alternate providers.
+- Custom hostname resolution has a three-second budget. HTTP probes have a
+  twenty-second total budget and ten-second per-operation timeouts. Results
+  and logs show the destination origin (scheme/host/port), not arbitrary paths,
+  credentials, headers, response bodies or exception internals. Editor results
+  disappear when configuration changes, and late responses are ignored.
+
+These APIs require Admin UI authentication. Custom hostname checks resolve
+DNS separately from HTTP connection establishment, leaving a DNS-rebinding
+TOCTOU limitation. Admin UI already has host-level access through its project
+and Docker-socket mounts; keep it on a trusted network and use network egress
+controls where a hard destination boundary is required. No global SSRF bypass
+or new configuration setting is introduced by these provider-test changes.
+
 ### Telnyx AI Inference (pipelines)
 
 Telnyx AI Inference is supported as a modular LLM component:

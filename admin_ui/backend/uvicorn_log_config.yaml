@@ -34,8 +34,14 @@ loggers:
     handlers: [access]
     level: INFO
     propagate: false
+  # HTTPX's INFO request lines contain full operator URLs; HTTP core debug
+  # traces are similarly unsuitable for credential-bearing validation probes.
+  # The provider validator emits its own safe origin/status/timing summary.
+  httpx:
+    level: WARNING
+  httpcore:
+    level: WARNING
 
 root:
   level: INFO
   handlers: [default]
-

@@ -35,6 +35,16 @@ import { enforceOpenAIRealtimeGaAudioContract } from '../utils/providerAudioCont
 const stripModularSuffix = (name: string): string => (name || '').replace(/_(stt|llm|tts)$/i, '');
 const FULL_AGENT_TYPES = ['openai_realtime', 'deepgram', 'google_live', 'elevenlabs_agent', 'grok', 'local'];
 const providerLabel = (name: string, provider: any): string => provider?.display_name || provider?.customer || name;
+const testFingerprint = (provider: any): string => {
+    const { name: _name, ...values } = provider || {};
+    return JSON.stringify(values);
+};
+const testErrorMessage = (error: any): string => {
+    const detail = error?.response?.data?.detail;
+    if (typeof detail === 'string') return detail;
+    if (detail && typeof detail.message === 'string') return detail.message;
+    return 'Connection failed';
+};
 
 const ProvidersPage: React.FC = () => {
     const { confirm } = useConfirmDialog();
@@ -48,7 +58,16 @@ const ProvidersPage: React.FC = () => {
     const deletedProviderFieldsRef = useRef<Set<string>>(new Set());
     const [isNewProvider, setIsNewProvider] = useState(false);
     const [testingProvider, setTestingProvider] = useState<string | null>(null);
-    const [testResults, setTestResults] = useState<{ [key: string]: { success: boolean; message: string } | undefined }>({});
+    const [testResults, setTestResults] = useState<{ [key: string]: { success: boolean; message: string; fingerprint: string } | undefined }>({});
+    const providerFormRef = useRef(providerForm);
+    const configRef = useRef(config);
+    providerFormRef.current = providerForm;
+    configRef.current = config;
+    const testRequestRef = useRef(0);
+    const getTestResult = (name: string, provider: any) => {
+        const result = testResults[name];
+        return result?.fingerprint === testFingerprint(provider) ? result : undefined;
+    };
     const [showAddProvidersModal, setShowAddProvidersModal] = useState(false);
     const [selectedTemplates, setSelectedTemplates] = useState<string[]>([]);
     const { restartRequired, refetch } = useRestartRequired();
@@ -746,21 +765,37 @@ const ProvidersPage: React.FC = () => {
     };
 
     const handleTestConnection = async (name: string, providerData: any) => {
+        const requestId = ++testRequestRef.current;
+        const fingerprint = testFingerprint(providerData);
+        const submittedEditor = editingProviderRef.current;
+        const isCurrent = () => {
+            if (testRequestRef.current !== requestId || editingProviderRef.current !== submittedEditor) return false;
+            const current = submittedEditor ? providerFormRef.current : configRef.current.providers?.[name];
+            return testFingerprint(current) === fingerprint;
+        };
         setTestingProvider(name);
         setTestResults(prev => ({ ...prev, [name]: undefined }));
         try {
             const response = await axios.post('/api/config/providers/test', { name, config: providerData });
-            setTestResults(prev => ({
-                ...prev,
-                [name]: { success: response.data.success, message: response.data.message || 'Connection successful!' }
-            }));
+            if (isCurrent()) {
+                setTestResults(prev => ({
+                    ...prev,
+                    [name]: {
+                        success: response.data.success === true,
+                        message: response.data.message || 'Provider returned no test details',
+                        fingerprint,
+                    },
+                }));
+            }
         } catch (err: any) {
-            setTestResults(prev => ({
-                ...prev,
-                [name]: { success: false, message: err.response?.data?.detail || 'Connection failed' }
-            }));
+            if (isCurrent()) {
+                setTestResults(prev => ({
+                    ...prev,
+                    [name]: { success: false, message: testErrorMessage(err), fingerprint },
+                }));
+            }
         } finally {
-            setTestingProvider(null);
+            if (testRequestRef.current === requestId) setTestingProvider(null);
         }
     };
 
@@ -1091,9 +1126,9 @@ const ProvidersPage: React.FC = () => {
                                     >
                                         {testingProvider === name ? (
                                             <Loader2 className="w-4 h-4 animate-spin" />
-                                        ) : testResults[name]?.success ? (
+                                        ) : getTestResult(name, providerData)?.success ? (
                                             <CheckCircle2 className="w-4 h-4 text-green-500" />
-                                        ) : testResults[name]?.success === false ? (
+                                        ) : getTestResult(name, providerData)?.success === false ? (
                                             <AlertCircle className="w-4 h-4 text-destructive" />
                                         ) : (
                                             <Server className="w-4 h-4" />
@@ -1117,12 +1152,12 @@ const ProvidersPage: React.FC = () => {
                                     </button>
                                 </div>
                             </div>
-                            {testResults[name] && (
-                                <div className={`mt-2 p-2 rounded text-xs ${testResults[name]?.success
+                            {getTestResult(name, providerData) && (
+                                <div className={`mt-2 p-2 rounded text-xs ${getTestResult(name, providerData)?.success
                                     ? 'bg-green-500/10 text-green-600 dark:text-green-400'
                                     : 'bg-destructive/10 text-destructive'
                                     }`}>
-                                    {testResults[name]?.message}
+                                    {getTestResult(name, providerData)?.message}
                                 </div>
                             )}
                         </ConfigCard>
@@ -1185,9 +1220,9 @@ const ProvidersPage: React.FC = () => {
                                     >
                                         {testingProvider === name ? (
                                             <Loader2 className="w-4 h-4 animate-spin" />
-                                        ) : testResults[name]?.success ? (
+                                        ) : getTestResult(name, providerData)?.success ? (
                                             <CheckCircle2 className="w-4 h-4 text-green-500" />
-                                        ) : testResults[name]?.success === false ? (
+                                        ) : getTestResult(name, providerData)?.success === false ? (
                                             <AlertCircle className="w-4 h-4 text-destructive" />
                                         ) : (
                                             <Server className="w-4 h-4" />
@@ -1211,12 +1246,12 @@ const ProvidersPage: React.FC = () => {
                                     </button>
                                 </div>
                             </div>
-                            {testResults[name] && (
-                                <div className={`mt-2 p-2 rounded text-xs ${testResults[name]?.success
+                            {getTestResult(name, providerData) && (
+                                <div className={`mt-2 p-2 rounded text-xs ${getTestResult(name, providerData)?.success
                                     ? 'bg-green-500/10 text-green-600 dark:text-green-400'
                                     : 'bg-destructive/10 text-destructive'
                                     }`}>
-                                    {testResults[name]?.message}
+                                    {getTestResult(name, providerData)?.message}
                                 </div>
                             )}
                         </ConfigCard>
@@ -1252,11 +1287,7 @@ const ProvidersPage: React.FC = () => {
                                 )}
                                 Test Connection
                             </button>
-                            {testResults[providerForm.name || 'new_provider'] && (
-                                <span className={`text-xs ${testResults[providerForm.name || 'new_provider']?.success ? 'text-green-500' : 'text-destructive'}`}>
-                                    {testResults[providerForm.name || 'new_provider']?.success ? 'Success' : 'Failed'}
-                                </span>
-                            )}
+
                         </div>
                         <div className="flex gap-2">
                             <button
@@ -1276,6 +1307,11 @@ const ProvidersPage: React.FC = () => {
                 }
             >
                 <div className="space-y-4">
+                    {getTestResult(providerForm.name || 'new_provider', providerForm) && (
+                        <div role="status" className={`rounded-lg border p-3 text-sm break-words ${getTestResult(providerForm.name || 'new_provider', providerForm)?.success ? 'border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-400' : 'border-destructive/30 bg-destructive/10 text-destructive'}`}>
+                            {getTestResult(providerForm.name || 'new_provider', providerForm)?.message}
+                        </div>
+                    )}
                     <div className="rounded-lg border border-border bg-card/40 p-4 space-y-3">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div className="space-y-2">

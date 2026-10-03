@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Authoritative modular provider validation** ([#688](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/688)): Admin UI connection and credential checks preserve configured OpenAI-compatible, Telnyx and MiniMax destinations, ports and paths instead of silently substituting public endpoints. Explicit types and speech roles take precedence over provider-name heuristics. Provider-scoped credentials and custom no-auth endpoints are supported consistently; unsafe targets, redirects and malformed model lists fail explicitly. The provider editor displays test details and ignores obsolete results after edits. Validation logs contain bounded, credential-free diagnostics.
+
 ## [7.6.2] - 2026-10-02
 
 Release scope: merged PRs #674, #678, #681, #682, #684, #686 and #683. Open
