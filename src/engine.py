@@ -35,6 +35,7 @@ except ImportError:
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest, Histogram, Counter, Gauge
 
 from .ari_client import ARIClient
+from .core.audio_backlog import AudioBacklogQueue
 from aiohttp import web
 from pydantic import ValidationError
 
@@ -1476,6 +1477,75 @@ class Engine:
         if operation and operation.get("output_id") == output_id:
             operations.pop(call_id, None)
 
+    def _google_long_audio_provider(self, session):
+        provider = getattr(self, "_call_providers", {}).get(session.call_id)
+        if (
+            self._get_provider_kind(getattr(session, "provider_name", None)) == "google_live"
+            and isinstance(provider, GoogleLiveProvider)
+            and provider.long_audio_playback_enabled
+        ):
+            return provider
+        return None
+
+    def _new_provider_audio_queue(self, call_id, session):
+        provider = self._google_long_audio_provider(session)
+        if provider is None:
+            return asyncio.Queue(maxsize=256)
+        fmt = self._provider_stream_formats.get(call_id, {})
+        encoding = self._canonicalize_encoding(fmt.get("playback_encoding") or fmt.get("encoding"))
+        rate = int(fmt.get("playback_sample_rate") or fmt.get("sample_rate") or session.transport_profile.wire_sample_rate)
+        bytes_per_sample = 1 if encoding in ("ulaw", "mulaw", "alaw", "g711_alaw") else 2
+        budget_sec = provider.config.long_audio_backlog_sec
+        queue = AudioBacklogQueue(int(rate * bytes_per_sample * budget_sec))
+        logger.info("Google Developer audio backlog enabled", call_id=call_id,
+                    budget_sec=budget_sec, max_bytes=queue.max_bytes,
+                    sample_rate=rate, encoding=encoding)
+        return queue
+
+    def _close_google_audio_backlog(self, call_id, *, remove=False):
+        queue = getattr(self, "_provider_stream_queues", {}).get(call_id)
+        if isinstance(queue, AudioBacklogQueue):
+            queue.close()
+            if remove:
+                self._provider_stream_queues.pop(call_id, None)
+
+    async def _fail_google_audio_playback(self, call_id, reason):
+        self._close_google_audio_backlog(call_id)
+        await self.streaming_playback_manager.stop_streaming_playback(call_id)
+        await self._terminate_call_after_audio(call_id, reason=reason, audio_already_drained=True)
+
+    def _google_audio_backlog_overflow(self, call_id, session):
+        provider = self._google_long_audio_provider(session)
+        if provider is None or provider._long_audio_failed:
+            return
+        provider._long_audio_failed = True
+        queue = self._provider_stream_queues.get(call_id)
+        logger.error("Google audio backlog exceeded; terminating test call", call_id=call_id,
+                     pending_bytes=getattr(queue, "pending_bytes", 0),
+                     max_bytes=getattr(queue, "max_bytes", 0))
+        self._close_google_audio_backlog(call_id)
+        self._fire_and_forget_for_call(call_id,
+            self._fail_google_audio_playback(call_id, "google_audio_backlog_overflow"),
+            name=f"google-audio-overflow-{call_id}")
+
+    async def _complete_google_audio_terminal_actions(self, call_id):
+        session = await self.session_store.get_by_call_id(call_id)
+        if not session or bool(getattr(session, "cleanup_in_progress", False)):
+            return
+        farewell = getattr(self, "_farewell_done_events", {}).get(f"farewell_done_{call_id}")
+        if farewell is not None:
+            farewell.set()
+        if isinstance(getattr(session, "pending_deferred_transfer", None), dict):
+            self._fire_and_forget_for_call(
+                call_id, self._commit_pending_deferred_transfer_for_call(call_id, session),
+                name=f"deferred-transfer-commit-{call_id}",
+            )
+        elif getattr(session, "cleanup_after_tts", False):
+            await self._terminate_call_after_audio(
+                call_id, reason="cleanup_after_tts", call_outcome="agent_hangup",
+                drain_timeout_sec=150.0,
+            )
+
     async def _note_provider_output_start(self, call_id: str) -> None:
         """Observe real caller-facing provider audio without changing AEC gating."""
         operations = getattr(self, "_provider_output_operations", {})
@@ -1583,10 +1653,13 @@ class Engine:
     ) -> None:
         """Clear provider-output state only after queued caller audio is emitted."""
         current_task = asyncio.current_task()
+        session = await self.session_store.get_by_call_id(call_id)
+        google_provider = self._google_long_audio_provider(session) if session else None
+        timeout_sec = google_provider.config.long_audio_backlog_sec + 30.0 if google_provider else 30.0
         try:
             drained = await self._wait_for_call_audio_drain(
                 call_id,
-                timeout_sec=30.0,
+                timeout_sec=timeout_sec,
                 quiet_sec=self._terminal_transport_quiet_sec(),
                 reason="provider_output",
             )
@@ -1599,7 +1672,14 @@ class Engine:
         drain_tasks = getattr(self, "_provider_output_drain_tasks", {})
         if drain_tasks.get(call_id) is not current_task:
             return
-        drain_tasks.pop(call_id, None)
+        if not google_provider:
+            drain_tasks.pop(call_id, None)
+        if google_provider and not drained:
+            drain_tasks.pop(call_id, None)
+            google_provider._long_audio_failed = True
+            logger.error("Google audio playback failed to drain", call_id=call_id)
+            await self._fail_google_audio_playback(call_id, "google_audio_drain_timeout")
+            return
         getattr(self, "_agent_output_active_calls", set()).discard(call_id)
 
         session = await self.session_store.get_by_call_id(call_id)
@@ -1633,6 +1713,8 @@ class Engine:
             reset_timer=reset_timer,
             preserve_policy_state=preserve_policy_state,
         )
+        if google_provider and drain_tasks.get(call_id) is current_task:
+            drain_tasks.pop(call_id, None)
 
     async def _clear_tts_gating_after_provider_drain(
         self,
@@ -10224,6 +10306,7 @@ class Engine:
                 logger.debug("Pipeline cleanup failed", call_id=call_id, exc_info=True)
 
             # Stop any active streaming playback.
+            self._close_google_audio_backlog(call_id, remove=True)
             try:
                 await self.streaming_playback_manager.stop_streaming_playback(call_id)
             except Exception:
@@ -11340,7 +11423,24 @@ class Engine:
                 # Other native full-agent providers remain unchanged.
                 full_duplex_barge_in = self._google_live_full_duplex_barge_in(provider_name, provider)
                 needs_gating = self._get_provider_kind(provider_name) == "google_live" and not full_duplex_barge_in
-                
+                # Keep normalized caller PCM for Google's local detector while
+                # upstream receives silence. Other providers and ungated frames
+                # retain their existing post-squelch detector input.
+                pcm_for_barge_in = (
+                    pcm_bytes if needs_gating and not session.audio_capture_enabled else None
+                )
+                if pcm_for_barge_in:
+                    try:
+                        import audioop as caller_audioop
+
+                        # Residual DC bias is not caller speech. Condition only
+                        # this detector copy, without changing provider payloads.
+                        dc_offset = caller_audioop.avg(pcm_for_barge_in, 2)
+                        if dc_offset:
+                            pcm_for_barge_in = caller_audioop.bias(pcm_for_barge_in, 2, -dc_offset)
+                    except (caller_audioop.error, ValueError):
+                        logger.debug("Google fallback PCM conditioning failed", call_id=caller_channel_id)
+
                 if needs_gating and not session.audio_capture_enabled:
                     # Send silence instead of blocking so Google Live's continuous
                     # input timing and VAD state remain stable.
@@ -11522,7 +11622,7 @@ class Engine:
                     try:
                         await self._maybe_provider_barge_in_fallback(
                             session,
-                            pcm16=pcm_bytes,
+                            pcm16=pcm_for_barge_in if pcm_for_barge_in is not None else pcm_bytes,
                             pcm_rate_hz=pcm_rate,
                             audiosocket_wire=audio_bytes,
                             source="audiosocket",
@@ -12667,6 +12767,7 @@ class Engine:
                     )
 
             # Stop/flush streaming playback first (prevents tail audio).
+            self._close_google_audio_backlog(call_id)
             # Mark end_reason so cleanup skips remainder flush (avoids oversized RTP packets).
             playback_position_ms = 0
             try:
@@ -12686,6 +12787,11 @@ class Engine:
                 self._provider_stream_queues.pop(call_id, None)
                 self._provider_stream_formats.pop(call_id, None)
                 self._provider_coalesce_buf.pop(call_id, None)
+                if self._google_long_audio_provider(session):
+                    self._segment_tts_active.discard(call_id)
+                    await self._note_provider_output_end(
+                        call_id, session, clear_tts_gating_after_drain=True,
+                    )
             except Exception:
                 logger.debug("Failed to clear provider stream buffers during barge-in", call_id=call_id, exc_info=True)
 
@@ -13950,6 +14056,10 @@ class Engine:
             if not session:
                 logger.warning("Provider event for unknown call", event_type=etype, call_id=call_id)
                 return
+            if bool(getattr(session, "cleanup_in_progress", False)) and (
+                "audio_response_id" in event or etype == "GoogleAudioGenerationComplete"
+            ):
+                return
 
             # Normalize provider-native caller activity before any barge-in guards.
             # A speech-start event is useful to the inactivity watchdog even when
@@ -14211,6 +14321,14 @@ class Engine:
                 await self._stop_connection_audio(session, reason="first-provider-audio")
                 # This is real audio that will enter the caller-facing playback
                 # path.  Track it independently from echo/AEC gating state.
+                google_audio_provider = self._google_long_audio_provider(session)
+                if google_audio_provider:
+                    if google_audio_provider._long_audio_failed:
+                        return
+                    response_id = int(event.get("audio_response_id") or 0)
+                    if response_id < google_audio_provider._playback_response_id:
+                        return
+                    google_audio_provider._playback_response_id = response_id
                 await self._note_provider_output_start(call_id)
                 encoding = event.get("encoding")
                 if isinstance(encoding, bytes):
@@ -14418,7 +14536,7 @@ class Engine:
                         return
                     # Start streaming now with coalesced buffer
                     try:
-                        q = asyncio.Queue(maxsize=256)
+                        q = self._new_provider_audio_queue(call_id, session)
                         self._provider_stream_queues[call_id] = q
                         playback_type = "greeting" if getattr(session, "conversation_state", "") == "greeting" else "streaming-response"
                         fmt_info = self._provider_stream_formats.get(call_id, {})
@@ -14504,6 +14622,7 @@ class Engine:
                                 pass
                         except asyncio.QueueFull:
                             logger.debug("Coalesced enqueue dropped (queue full)", call_id=call_id)
+                            self._google_audio_backlog_overflow(call_id, session)
                         self._provider_coalesce_buf.pop(call_id, None)
                         return
                     except Exception:
@@ -14514,7 +14633,7 @@ class Engine:
                     # Normal path: ensure stream and enqueue
                     if q is None:
                         # No existing queue - create new one
-                        q = asyncio.Queue(maxsize=256)
+                        q = self._new_provider_audio_queue(call_id, session)
                         self._provider_stream_queues[call_id] = q
                         try:
                             playback_type = "greeting" if getattr(session, "conversation_state", "") == "greeting" else "streaming-response"
@@ -14626,12 +14745,39 @@ class Engine:
                             self._enqueued_bytes[call_id] = int(self._enqueued_bytes.get(call_id, 0)) + len(out_chunk)
                     except asyncio.QueueFull:
                         logger.debug("Provider streaming queue full; dropping chunk", call_id=call_id)
-            elif etype == "AgentAudioDone":
+                        self._google_audio_backlog_overflow(call_id, session)
+            elif etype in ("AgentAudioDone", "GoogleAudioGenerationComplete"):
+                generation_only = etype == "GoogleAudioGenerationComplete"
+                google_audio_provider = self._google_long_audio_provider(session)
+                media_already_complete = False
+                if google_audio_provider:
+                    response_id = int(event.get("audio_response_id") or 0)
+                    if google_audio_provider._long_audio_failed:
+                        return
+                    if generation_only and not response_id:
+                        return
+                    if response_id and response_id != google_audio_provider._playback_response_id:
+                        return  # Delayed completion of an older/cancelled response.
+                    media_already_complete = bool(
+                        response_id and response_id == google_audio_provider._playback_completed_response_id
+                    )
+                    if generation_only and media_already_complete:
+                        return
+                    if response_id:
+                        google_audio_provider._playback_completed_response_id = response_id
+                elif generation_only:
+                    return  # Experimental events cannot affect other providers.
+                if media_already_complete:
+                    # The generation boundary already handled playback. Only
+                    # the real turn boundary may advance terminal intent.
+                    if event.get("streaming_done"):
+                        await self._complete_google_audio_terminal_actions(call_id)
+                    return
                 # Provider generation has ended. The downstream transport may
                 # still hold seconds of audio, so lifecycle completion and drain
                 # completion remain separate signals.
                 defer_gating_until_drain = bool(
-                    event.get("defer_tts_gating_until_drain", False)
+                    generation_only or event.get("defer_tts_gating_until_drain", False)
                     or getattr(self.config, "audio_transport", None) == "websocket"
                 )
                 # If we were suppressing output due to barge-in, end suppression at a segment boundary.
@@ -14735,15 +14881,16 @@ class Engine:
                 # Publish generation completion only after the stream boundary
                 # or sentinel is in place. The lifecycle observer then keeps raw
                 # VAD/watchdog output state active until those buffers drain.
-                await self._note_provider_output_end(
-                    call_id,
-                    session,
-                    clear_tts_gating_after_drain=defer_gating_until_drain,
-                )
+                if google_audio_provider is None:
+                    await self._note_provider_output_end(
+                        call_id,
+                        session,
+                        clear_tts_gating_after_drain=defer_gating_until_drain,
+                    )
 
                 # Signal farewell done event if we're waiting for hangup
                 farewell_key = f"farewell_done_{call_id}"
-                if hasattr(self, '_farewell_done_events') and farewell_key in self._farewell_done_events:
+                if not generation_only and hasattr(self, '_farewell_done_events') and farewell_key in self._farewell_done_events:
                     self._farewell_done_events[farewell_key].set()
                     logger.info("✅ Farewell audio done - signaling hangup", call_id=call_id)
                 
@@ -14816,7 +14963,7 @@ class Engine:
                     elif buf:
                         # Stream coalesced buffer now as a short segment
                         try:
-                            q2 = asyncio.Queue(maxsize=256)
+                            q2 = self._new_provider_audio_queue(call_id, session)
                             self._provider_stream_queues[call_id] = q2
                             playback_type = "streaming-response"
                             fmt_info = self._provider_stream_formats.get(call_id, {})
@@ -14857,9 +15004,17 @@ class Engine:
                                 q2.put_nowait(None)
                             except asyncio.QueueFull:
                                 logger.debug("Coalesced enqueue dropped at end (queue full)", call_id=call_id)
+                                self._google_audio_backlog_overflow(call_id, session)
                         except Exception:
                             logger.error("Coalesced streaming failed at segment end", call_id=call_id, exc_info=True)
                 
+                if google_audio_provider is not None:
+                    await self._note_provider_output_end(
+                        call_id, session, clear_tts_gating_after_drain=True,
+                    )
+                if generation_only:
+                    return
+
                 # Check if hangup was requested after TTS completion
                 # Only check when streaming_done is True (complete response ended, not just segment boundary)
                 streaming_done = event.get("streaming_done", False)
@@ -15322,6 +15477,9 @@ class Engine:
             spm = getattr(self, "streaming_playback_manager", None)
             stream_info = (getattr(spm, "active_streams", {}) or {}).get(call_id) if spm else None
             if stream_info:
+                source_queue = stream_info.get("audio_source_queue")
+                if isinstance(source_queue, AudioBacklogQueue):
+                    pending_provider_chunks = max(pending_provider_chunks, source_queue.qsize())
                 pending_stream_bytes = int(stream_info.get("buffered_bytes", 0) or 0)
                 emit_ts = stream_info.get("last_real_emit_ts")
                 if emit_ts is not None:
@@ -15395,7 +15553,9 @@ class Engine:
         frame remainder, so terminal actions must wait for those buffers and a
         short post-emit quiet window.
         """
-        timeout_sec = max(0.0, min(float(timeout_sec), 120.0))
+        session = await self.session_store.get_by_call_id(call_id)
+        timeout_cap = 150.0 if session and self._google_long_audio_provider(session) else 120.0
+        timeout_sec = max(0.0, min(float(timeout_sec), timeout_cap))
         quiet_sec = max(0.0, min(float(quiet_sec), 5.0))
         if timeout_sec <= 0.0:
             return True
@@ -15501,6 +15661,9 @@ class Engine:
 
             drained = True
             if not audio_already_drained:
+                google_provider = self._google_long_audio_provider(session)
+                if google_provider:
+                    drain_timeout_sec = max(drain_timeout_sec, google_provider.config.long_audio_backlog_sec + 30.0)
                 drained = await self._wait_for_call_audio_drain(
                     call_id,
                     timeout_sec=drain_timeout_sec,

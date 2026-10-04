@@ -233,6 +233,13 @@ class GoogleLiveProvider(AIProviderInterface):
         self._setup_complete: bool = False
         self._greeting_completed: bool = False
         self._in_audio_burst: bool = False
+        self._audio_response_id = 0
+        self._last_audio_turn_completed_id = 0
+        self._generated_audio_turns = []
+        # Engine-owned playback correlation lives on this per-call instance.
+        self._playback_response_id = 0
+        self._playback_completed_response_id = 0
+        self._long_audio_failed = False
         self._setup_ack_event: Optional[asyncio.Event] = None  # ACK gate like Deepgram
         self._hangup_after_response: bool = False  # Flag to trigger hangup after next response
         self._farewell_in_progress: bool = False  # Track if farewell is being spoken
@@ -1608,6 +1615,56 @@ class GoogleLiveProvider(AIProviderInterface):
             self._greeting_completed = True
             await self._send_greeting()
 
+    @property
+    def long_audio_playback_enabled(self) -> bool:
+        return bool(
+            self.config.long_audio_playback_enabled
+            and not getattr(self, "_vertex_active", self.config.use_vertex_ai)
+        )
+
+    async def _finalize_generated_audio_text(self):
+        """Persist generation text without advancing terminal tool actions."""
+        user_text = self._input_transcription_buffer
+        assistant_text = (self._output_transcription_buffer or self._model_text_buffer or "").strip()
+        if user_text:
+            self._last_final_user_text = user_text
+            await self._track_conversation_message("user", user_text)
+            self._input_transcription_buffer = ""
+            self._last_input_transcription_fragment = ""
+        if assistant_text:
+            self._last_final_assistant_text = assistant_text
+            await self._track_conversation_message("assistant", assistant_text)
+            self._output_transcription_buffer = ""
+            self._last_output_transcription_fragment = ""
+            self._model_text_buffer = ""
+        return (user_text or self._last_final_user_text, assistant_text)
+
+    async def _handle_audio_generation_complete(self):
+        if not self._in_audio_burst:
+            return  # Duplicate generationComplete or a tool-only turn.
+        if len(self._generated_audio_turns) >= 8:
+            await self._emit_provider_disconnected(code=1011, reason="audio turn completion backlog exceeded")
+            return
+        user_text, assistant_text = await self._finalize_generated_audio_text()
+        self._generated_audio_turns.append({
+            "response_id": self._audio_response_id,
+            "assistant": self._turn_has_assistant_output,
+            "user_text": user_text,
+            "assistant_text": assistant_text,
+        })
+        self._in_audio_burst = False
+        self._turn_has_assistant_output = False
+        self._turn_start_time = None
+        self._turn_first_audio_received = False
+        self._output_resample_state = None
+        self._output_resampler_logged = False
+        if self.on_event:
+            await self.on_event({
+                "type": "GoogleAudioGenerationComplete",
+                "call_id": self._call_id,
+                "audio_response_id": self._audio_response_id,
+            })
+
     async def _handle_server_content(self, data: Dict[str, Any]) -> None:
         """Handle serverContent message (audio, text, etc.)."""
         content = data.get("serverContent", {})
@@ -1631,6 +1688,10 @@ class GoogleLiveProvider(AIProviderInterface):
         # so this rarely fires. Local VAD fallback is the primary barge-in mechanism.
         # When it does fire, emit ProviderBargeIn so the engine flushes playback.
         if content.get("interrupted") is True:
+            if self.long_audio_playback_enabled:
+                for completed in self._generated_audio_turns:
+                    if completed["response_id"] == self._audio_response_id:
+                        completed["interrupted"] = True
             logger.info(
                 "Google Live server-side interruption detected",
                 call_id=self._call_id,
@@ -1735,7 +1796,7 @@ class GoogleLiveProvider(AIProviderInterface):
         turn_complete = content.get("turnComplete", False)
 
         # Save final transcriptions when turn completes (per API recommendation)
-        if turn_complete:
+        if turn_complete and not self.long_audio_playback_enabled:
             self._hangup_fallback_turn_complete_seen = True
             # Save user speech if buffered
             if self._input_transcription_buffer:
@@ -1800,6 +1861,10 @@ class GoogleLiveProvider(AIProviderInterface):
                 # reasoning/metadata. Do NOT use it for end-of-call detection or cleanup arming,
                 # otherwise we can hang up mid-conversation (e.g., during transcript email capture).
                 self._model_text_buffer += text
+
+        # Audio in a multi-part envelope must be admitted before its boundary.
+        if self.long_audio_playback_enabled and content.get("generationComplete"):
+            await self._handle_audio_generation_complete()
 
         # Handle turn completion
         if turn_complete:
@@ -2056,6 +2121,8 @@ class GoogleLiveProvider(AIProviderInterface):
             # Emit audio event (matching OpenAI Realtime pattern)
             if not self._in_audio_burst:
                 self._in_audio_burst = True
+                if self.long_audio_playback_enabled:
+                    self._audio_response_id += 1
             
             if self.on_event:
                 await self.on_event(
@@ -2065,6 +2132,7 @@ class GoogleLiveProvider(AIProviderInterface):
                         "call_id": self._call_id,
                         "encoding": target_encoding,  # Tell engine what format we're sending
                         "sample_rate": target_rate,  # Tell engine what rate we're sending
+                        **({"audio_response_id": self._audio_response_id} if self.long_audio_playback_enabled else {}),
                     }
                 )
 
@@ -2080,19 +2148,56 @@ class GoogleLiveProvider(AIProviderInterface):
         """Handle turn completion."""
         had_audio = self._in_audio_burst
         turn_was_assistant = self._turn_has_assistant_output
-        self._turn_has_assistant_output = False
+        response_id = self._audio_response_id
+        generation_already_complete = False
+        if self.long_audio_playback_enabled:
+            if (
+                not self._generated_audio_turns and self._in_audio_burst
+                and self._last_audio_turn_completed_id > 0
+                and self._audio_response_id > self._last_audio_turn_completed_id
+            ):
+                # A normal audio turn must have generationComplete before
+                # turnComplete. Ignore a repeated old boundary during new audio.
+                return
+            # Google sends ordered turn boundaries. Keep locally assigned IDs so
+            # a delayed boundary for A cannot finish the engine's playback of B.
+            if self._generated_audio_turns:
+                completed = self._generated_audio_turns.pop(0)
+                response_id = completed["response_id"]
+                had_audio = not completed.get("interrupted", False)
+                turn_was_assistant = completed["assistant"]
+                generation_already_complete = True
+                user_text, assistant_text = completed["user_text"], completed["assistant_text"]
+                self._last_audio_turn_completed_id = response_id
+                if response_id != self._audio_response_id:
+                    if self.on_event and had_audio:
+                        await self.on_event({
+                            "type": "AgentAudioDone", "call_id": self._call_id,
+                            "streaming_done": True, "audio_response_id": response_id,
+                        })
+                    return  # Old terminal intent must not act on a newer turn.
+            else:
+                user_text, assistant_text = await self._finalize_generated_audio_text()
+                if had_audio:
+                    self._last_audio_turn_completed_id = response_id
+            if assistant_text and had_audio:
+                await self._maybe_arm_cleanup_after_tts(user_text=user_text, assistant_text=assistant_text)
+        if response_id == self._audio_response_id:
+            self._turn_has_assistant_output = False
 
         # Note: Transcription is now saved in _handle_server_content when turnComplete=true
         # No need to flush here - it's already been handled
 
-        if self._in_audio_burst:
-            self._in_audio_burst = False
+        if had_audio:
+            if response_id == self._audio_response_id:
+                self._in_audio_burst = False
             if self.on_event:
                 await self.on_event(
                     {
                         "type": "AgentAudioDone",
                         "call_id": self._call_id,
                         "streaming_done": True,
+                        **({"audio_response_id": response_id, "media_already_complete": generation_already_complete} if self.long_audio_playback_enabled else {}),
                     }
                 )
             # If we armed cleanup_after_tts, the engine will handle hangup on AgentAudioDone.
@@ -2100,7 +2205,7 @@ class GoogleLiveProvider(AIProviderInterface):
             if self._hangup_fallback_armed:
                 self._hangup_fallback_emitted = True
 
-        if had_audio:
+        if had_audio and response_id == self._audio_response_id:
             self._output_resample_state = None
             self._output_resampler_logged = False
 
