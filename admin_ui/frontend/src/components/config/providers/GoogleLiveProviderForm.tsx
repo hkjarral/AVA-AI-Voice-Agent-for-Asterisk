@@ -325,6 +325,27 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                         </div>
                     </div>
 
+                    {!config.use_vertex_ai && (
+                        <div className="flex items-start gap-3 p-3 rounded-md border border-input bg-muted/30">
+                            <input
+                                type="checkbox"
+                                id="long_audio_playback_enabled"
+                                className="mt-1 rounded border-input"
+                                checked={config.long_audio_playback_enabled ?? false}
+                                onChange={(e) => handleChange('long_audio_playback_enabled', e.target.checked)}
+                            />
+                            <div>
+                                <label htmlFor="long_audio_playback_enabled" className="text-sm font-medium cursor-pointer">
+                                    Enable long-response playback
+                                </label>
+                                <p className="text-xs text-muted-foreground mt-0.5">
+                                    Opt in to improved playback and interruption handling for long answers on the Developer API.
+                                    Off by default. Takes effect after saving and applying provider settings.
+                                </p>
+                            </div>
+                        </div>
+                    )}
+
                     {/* Vertex AI project + location — shown when Vertex AI is ON */}
                     {config.use_vertex_ai && (
                         <div className="space-y-4 p-3 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50/40 dark:bg-blue-900/10">

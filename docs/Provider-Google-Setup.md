@@ -407,7 +407,9 @@ An absent Google interruption event during silence-gated playback does not estab
 
 #### Experimental long-response playback
 
-The Google Developer API can deliver many small audio chunks faster than telephony plays them. The opt-in source backlog stores audio by byte budget and separates generation completion from actual playback drain:
+The Google Developer API can deliver many small audio chunks faster than telephony plays them. In **Providers → Google Live → API Mode**, select **Enable long-response playback** to opt in, then save and apply provider settings. The checkbox appears only in Developer API mode. It is off by default, including on upgrades with existing configurations; switching API mode preserves the saved preference, but Vertex ignores it. Named Google provider instances have their own setting.
+
+The opt-in source backlog stores audio by byte budget and separates generation completion from actual playback drain:
 
 ```yaml
 providers:
@@ -418,7 +420,9 @@ providers:
 
 This experiment follows the actual connected backend: Vertex retains the existing source queue even if the flag is enabled. The AudioSocket interruption detection correction above is independent of this queue flag. Keep Vertex validation separate from Developer API testing.
 
-The backlog is bounded by audio bytes and item count. Overflow or failed drain produces an explicit test-call failure instead of dropping arbitrary speech chunks. Playback drain, rather than generation completion, releases input gating. Barge-in discards the queued response and clears playback-owned gating so subsequent caller input can resume. Terminal tool actions retain their protocol completion boundary.
+The backlog is bounded by audio bytes and item count. Overflow or failed drain produces an explicit test-call failure instead of dropping arbitrary speech chunks. Playback drain, rather than generation completion, releases input gating. Barge-in discards the queued response and clears playback-owned gating so subsequent caller input can resume. Terminal tool actions retain their protocol completion boundary. On opted-in, silence-gated Developer calls, local fallback accepts 120 ms of qualifying speech within a 200-ms window, tolerating quiet gaps up to 40 ms; the existing energy threshold, enhanced-VAD votes, greeting protection, cooldown and media isolation still apply. Vertex and opt-out timing are unchanged; Gemini 3.8 native full-duplex interruption continues to use the provider signal.
+
+An interrupted terminal response cannot reuse its old audio or completion boundary to hang up. If the Developer connection closes abnormally, already-accepted audio receives at most eight seconds to drain before cleanup, with transfer/caller teardown taking priority. This may preserve a short buffered farewell; it does not fix an upstream API error or recover audio that Google never generated. Overflows and stalled playback remain explicit failures. Setting the checkbox off restores the original queue/completion path after saving and applying.
 
 Validate a complete long answer, a follow-up question, interruptions both while generation is active and after generation finishes with audio still queued, repeated interruptions, normal hangup, and transfer/farewell before enabling broadly. These checks also need to establish that discarded output does not restart after the interruption.
 

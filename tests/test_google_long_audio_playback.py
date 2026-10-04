@@ -580,14 +580,15 @@ async def test_google_gated_audiosocket_detects_speech_without_changing_upstream
     await e.session_store.set_gating_token(s.call_id, 'speaking')
     e._apply_barge_in_action = AsyncMock()
     frame = caller_frame(rate=rate)
-    for _ in range(12):
+    trigger_frames = 6 if enabled and not vertex else 13
+    for _ in range(trigger_frames - 1):
         await e._audiosocket_handle_audio('ingress', frame)
     e._apply_barge_in_action.assert_not_awaited()
     await e._audiosocket_handle_audio('ingress', frame)
     e._apply_barge_in_action.assert_awaited_once_with(
         s.call_id, source='local_vad_fallback', reason='google-test:audiosocket',
     )
-    assert p.send_audio.await_count == 13
+    assert p.send_audio.await_count == trigger_frames
     assert all(not any(c.args[0]) for c in p.send_audio.await_args_list)
     assert not s.audio_capture_enabled
     assert e.config.vad.vad_mode == 'auto'
@@ -600,7 +601,7 @@ async def test_google_companded_ingress_detects_normalized_speech():
     await e.session_store.upsert_call(s)
     await e.session_store.set_gating_token(s.call_id, 'speaking')
     e._apply_barge_in_action = AsyncMock()
-    for _ in range(13):
+    for _ in range(6):
         await e._audiosocket_handle_audio('ingress', caller_frame(rate=8000, ulaw=True))
     e._apply_barge_in_action.assert_awaited_once()
     assert all(not any(c.args[0]) for c in p.send_audio.await_args_list)
@@ -731,7 +732,7 @@ async def test_detected_google_interruption_flushes_backlog_and_accepts_followup
     async def stop(call_id):
         assert q.closed and q.pending_bytes == 0
     e.streaming_playback_manager.stop_streaming_playback.side_effect = stop
-    for _ in range(13):
+    for _ in range(6):
         await e._audiosocket_handle_audio('ingress', caller_frame())
     task = e._provider_output_drain_tasks.get(s.call_id)
     if task:

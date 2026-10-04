@@ -1674,6 +1674,13 @@ class Engine:
             return
         if not google_provider:
             drain_tasks.pop(call_id, None)
+        if google_provider:
+            session = await self.session_store.get_by_call_id(call_id)
+            if drain_tasks.get(call_id) is not current_task:
+                return
+            if not session or bool(getattr(session, "cleanup_in_progress", False)):
+                drain_tasks.pop(call_id, None)
+                return  # Teardown is cancellation, not a playback timeout.
         if google_provider and not drained:
             drain_tasks.pop(call_id, None)
             google_provider._long_audio_failed = True
@@ -12515,6 +12522,11 @@ class Engine:
                 vad_speech = bool(getattr(vad_result, "is_speech", False))
                 webrtc_positive = bool(getattr(vad_result, "webrtc_result", False))
 
+            google_short_speech = bool(
+                self._google_long_audio_provider(session)
+                and not self._google_live_full_duplex_barge_in(provider_name, provider)
+            )
+            speech_window = session.vad_state.setdefault("google_short_speech", {}) if google_short_speech else None
             threshold = int(getattr(cfg, "energy_threshold", 1000))
             criteria_met = 0
             if vad_speech:
@@ -12532,6 +12544,14 @@ class Engine:
             # In provider-fallback mode, require energy above threshold to avoid false positives on near-silence
             # (webrtc-vad can occasionally fire "speech" on low-energy telephony noise).
             if energy < threshold:
+                if speech_window is not None:
+                    gap_ms = int(speech_window.get("gap_ms", 0)) + frame_ms
+                    speech_window["gap_ms"] = gap_ms
+                    # Permit at most two 20-ms inter-syllable gaps. Larger
+                    # pauses, stale windows and noise reset the candidate.
+                    if gap_ms <= 40 and now - float(speech_window.get("started_at", 0)) <= 0.2:
+                        return
+                    speech_window.clear()
                 session.barge_in_candidate_ms = 0
                 return
 
@@ -12547,6 +12567,15 @@ class Engine:
                 or vad_result is None
                 or criteria_met >= 2
             )
+            if speech_window is not None:
+                if now - float(speech_window.get("started_at", 0)) > 0.2:
+                    session.barge_in_candidate_ms = 0
+                    speech_window.clear()
+                if not speech_window:
+                    speech_window["started_at"] = now
+                speech_window["gap_ms"] = 0
+                if not qualifies:
+                    speech_window.clear()
             if qualifies:
                 if int(getattr(session, "barge_in_candidate_ms", 0) or 0) == 0:
                     session.barge_start_ts = now
@@ -12572,6 +12601,10 @@ class Engine:
             in_cooldown = (now - last_barge_in_ts) * 1000 < cooldown_ms if last_barge_in_ts else False
 
             min_ms = self._provider_fallback_min_ms(cfg, provider_name)
+            if google_short_speech:
+                # Scoped to the Developer long-response opt-in. Preserve the
+                # configured energy/VAD votes and all existing protections.
+                min_ms = min(min_ms, 120)
             if local_energy_authoritative:
                 # Local full-agent speech consists of short telephony syllable
                 # bursts separated by natural sub-threshold gaps.  Reuse the
@@ -12595,6 +12628,8 @@ class Engine:
             except Exception:
                 pass
 
+            if speech_window is not None:
+                speech_window.clear()
             await self._apply_barge_in_action(
                 call_id,
                 source="local_vad_fallback",
@@ -14204,11 +14239,40 @@ class Engine:
                     reason=reason,
                 )
                 await self._stop_connection_audio(session, reason="provider-disconnected")
-                try:
-                    session.provider_session_active = False
-                    await self._save_session(session)
-                except Exception:
-                    logger.debug("Failed to mark provider_session_active=false", call_id=call_id, exc_info=True)
+                google_disconnect_drain = bool(self._google_long_audio_provider(session))
+                if not google_disconnect_drain:
+                    try:
+                        session.provider_session_active = False
+                        await self._save_session(session)
+                    except Exception:
+                        logger.debug("Failed to mark provider_session_active=false", call_id=call_id, exc_info=True)
+
+                if google_disconnect_drain:
+                    # The socket has closed, but accepted audio is still valid.
+                    # Give short responses/farewells a bounded chance to drain;
+                    # never keep a failed connection alive for the full backlog.
+                    while True:
+                        current_session = await self.session_store.get_by_call_id(call_id)
+                        if not current_session or current_session.cleanup_in_progress or self._session_was_transferred(current_session):
+                            return
+                        if self._session_has_pending_attended_transfer(current_session):
+                            # The transfer has its own deadline and owns routing.
+                            # A declined/failed attempt still needs disconnect cleanup.
+                            await asyncio.sleep(0.1)
+                            continue
+                        await self._terminate_call_after_audio(
+                            call_id, reason="google_provider_disconnected",
+                            drain_timeout_cap_sec=8.0,
+                        )
+                        current_session = await self.session_store.get_by_call_id(call_id)
+                        if current_session and self._session_has_pending_attended_transfer(current_session):
+                            continue
+                        break
+                    remaining_session = await self.session_store.get_by_call_id(call_id)
+                    if remaining_session and not remaining_session.cleanup_in_progress:
+                        remaining_session.provider_session_active = False
+                        await self._save_session(remaining_session)
+                    return
 
                 # Optional: play configured fallback media (same knob as hangup_call fallback).
                 try:
@@ -15624,6 +15688,7 @@ class Engine:
         call_outcome: Optional[str] = None,
         audio_already_drained: bool = False,
         drain_timeout_sec: float = 30.0,
+        drain_timeout_cap_sec: Optional[float] = None,
     ) -> bool:
         """Idempotently drain caller-facing audio and hang up the caller leg.
 
@@ -15664,6 +15729,8 @@ class Engine:
                 google_provider = self._google_long_audio_provider(session)
                 if google_provider:
                     drain_timeout_sec = max(drain_timeout_sec, google_provider.config.long_audio_backlog_sec + 30.0)
+                if drain_timeout_cap_sec is not None:
+                    drain_timeout_sec = min(drain_timeout_sec, max(0.0, drain_timeout_cap_sec))
                 drained = await self._wait_for_call_audio_drain(
                     call_id,
                     timeout_sec=drain_timeout_sec,
@@ -15673,6 +15740,12 @@ class Engine:
 
             session = await self.session_store.get_by_call_id(call_id)
             if not session or self._session_was_transferred(session):
+                return False
+            if drain_timeout_cap_sec is not None and (
+                bool(getattr(session, "cleanup_in_progress", False))
+                or self._session_has_pending_attended_transfer(session)
+            ):
+                started.discard(call_id)
                 return False
             if call_outcome:
                 session.call_outcome = call_outcome
