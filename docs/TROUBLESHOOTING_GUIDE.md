@@ -1084,6 +1084,16 @@ STREAMING_LOG_LEVEL=debug  # Detailed streaming logs
 
 ## Provider-Specific Issues
 
+### Google Live: Long Responses Skip Audio or End Early
+
+For a Google Developer API call, check for `Provider streaming queue full; dropping chunk`. Small audio chunks can fill the original queue when Google generates speech faster than telephony plays it. Enable **Providers → Google Live → API Mode → Enable long-response playback**, click **Save Changes**, and restart the AI Engine once calls have finished. Existing installations keep this option off until explicitly enabled.
+
+The option is hidden in Vertex mode and ignored by actual Vertex connections. It does not change another provider or modular pipeline's queue. See the [Google setup guide](Provider-Google-Setup.md#long-response-playback-developer-api-opt-in) for the advanced capacity setting, backend fallback behavior, interruption handling and tested limits.
+
+If a farewell still cuts off, distinguish a queue/drop or drain error from an upstream WebSocket close. The opt-in path can drain already-accepted audio for up to eight seconds after an abnormal close; it cannot prevent Google's error or recover missing audio. `BARGE-IN action applied` marks local playback cancellation, while a later model reply measures a separate response delay.
+
+Collect the affected call through **Call History → Troubleshoot → Download Support Package**. Include the call ID, model/API mode, whether the option was enabled, and whether the problem involved uninterrupted speech, interruption, farewell or transfer. See [per-call support packages](#export-a-support-package-for-one-call).
+
 ### Modular Provider Connection Tests
 
 In **Providers → Edit**, **Test Connection** uses the current form, including

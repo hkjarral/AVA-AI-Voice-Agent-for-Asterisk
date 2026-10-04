@@ -712,6 +712,8 @@ Config notes:
 - `providers.google_live.llm_model`: Live LLM model name (see `config/ai-agent.yaml` for shipped defaults).
 - `providers.google_live.tts_voice_name`: Live voice name (provider-specific).
 - `providers.google_live.response_modalities`: `audio`, `text`, or `audio_text` (provider behavior varies by model generation).
+- `providers.google_live.long_audio_playback_enabled`: boolean, default `false`. Opts this instance into bounded long-response playback on the actual Developer API connection only. UI: **Providers → Google Live → API Mode → Enable long-response playback**; hidden in Vertex mode. Existing installations are not automatically opted in. Save and restart the AI Engine to enable or disable it.
+- `providers.google_live.long_audio_backlog_sec`: seconds of queued-audio capacity, default `120`, inclusive range `10–120`. Advanced YAML setting used only when long-response playback is enabled on Developer API; not a total response-duration limit. Overflow or stalled drain terminates the call with an explicit error. See [long-response setup, limits and validation](Provider-Google-Setup.md#long-response-playback-developer-api-opt-in).
 - `providers.google_live.hangup_fallback_audio_idle_sec`: idle-audio timeout after hangup is armed.
 - `providers.google_live.hangup_fallback_min_armed_sec`: minimum armed duration before fallback can fire.
 - `providers.google_live.hangup_fallback_no_audio_timeout_sec`: timeout when provider emits no farewell audio.

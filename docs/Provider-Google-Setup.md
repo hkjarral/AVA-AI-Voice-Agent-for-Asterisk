@@ -405,11 +405,22 @@ The local fallback honors `barge_in.enabled`, `provider_fallback_enabled`, the p
 
 An absent Google interruption event during silence-gated playback does not establish a model or API limitation: the server is receiving silence. Check the local fallback events as well. Test sustained noise and phone/microphone echo alongside intentional interruptions before rollout.
 
-#### Experimental long-response playback
+#### Long-response playback (Developer API opt-in)
 
-The Google Developer API can deliver many small audio chunks faster than telephony plays them. In **Providers → Google Live → API Mode**, select **Enable long-response playback** to opt in, then save and apply provider settings. The checkbox appears only in Developer API mode. It is off by default, including on upgrades with existing configurations; switching API mode preserves the saved preference, but Vertex ignores it. Named Google provider instances have their own setting.
+The Google Developer API can deliver many small audio chunks faster than telephony plays them. The original source queue can fill and discard chunks, causing a long answer to skip speech or end early. **Enable long-response playback** retains queued audio within a bounded budget and waits for it to reach the caller before releasing playback gating or completing terminal actions.
 
-The opt-in source backlog stores audio by byte budget and separates generation completion from actual playback drain:
+**Enable or disable in the Admin UI:**
+
+1. Open **Providers**, edit the Google Live provider instance used by your Agent, and select Developer API mode under **API Mode**.
+2. Select **Enable long-response playback**, or clear it to restore the original queue/completion path.
+3. Click **Save Changes**, then **Restart AI Engine** once active calls have finished. Saving alone does not activate provider changes.
+4. Reopen the provider to confirm the saved setting, then test a new call.
+
+The checkbox defaults **off**, including after upgrading an existing installation. There is no automatic opt-in or data migration, and shipped model defaults stay the same. Existing Developer API users who need long responses must enable it explicitly; leaving it off retains the original queue limit. Named Google provider instances have independent settings.
+
+The checkbox is hidden when Vertex is selected. Switching API mode preserves the saved preference; the feature runs only when the actual connected backend is the Developer API. If Vertex authentication falls back to Developer API, that saved preference governs the fallback connection. The AudioSocket microphone detection correction above applies to both Google backends independently of this option. Other providers and modular pipelines do not use the long-response queue.
+
+For headless configuration, merge these fields into the existing provider entry and restart `ai_engine`:
 
 ```yaml
 providers:
@@ -418,13 +429,21 @@ providers:
     long_audio_backlog_sec: 120       # Allowed range: 10–120 seconds.
 ```
 
-This experiment follows the actual connected backend: Vertex retains the existing source queue even if the flag is enabled. The AudioSocket interruption detection correction above is independent of this queue flag. Keep Vertex validation separate from Developer API testing.
+`long_audio_backlog_sec` defaults to **120 seconds** and accepts **10–120**. It controls queued audio capacity, not total response duration or how long Google is asked to speak. The checkbox is the UI control; the advanced budget is configured in YAML. See the [configuration reference](Configuration-Reference.md#google-live-monolithic-agent).
 
-The backlog is bounded by audio bytes and item count. Overflow or failed drain produces an explicit test-call failure instead of dropping arbitrary speech chunks. Playback drain, rather than generation completion, releases input gating. Barge-in discards the queued response and clears playback-owned gating so subsequent caller input can resume. Terminal tool actions retain their protocol completion boundary. On opted-in, silence-gated Developer calls, local fallback accepts 120 ms of qualifying speech within a 200-ms window, tolerating quiet gaps up to 40 ms; the existing energy threshold, enhanced-VAD votes, greeting protection, cooldown and media isolation still apply. Vertex and opt-out timing are unchanged; Gemini 3.8 native full-duplex interruption continues to use the provider signal.
+The backlog is bounded by audio bytes and item count. Overflow or failed drain ends the call with an explicit error instead of silently dropping speech chunks. Playback drain, rather than generation completion, releases input gating. Barge-in discards the queued response and clears playback-owned gating so subsequent caller input can resume. Terminal tool actions retain their protocol completion boundary. On opted-in, silence-gated Developer calls, local fallback caps the required qualifying speech at 120 ms (or a shorter configured duration) within a 200-ms window, tolerating quiet gaps up to 40 ms; the existing energy threshold, enhanced-VAD votes, greeting protection, cooldown and media isolation still apply. Vertex and opt-out timing are unchanged; Gemini 3.8 native full-duplex interruption continues to use the provider signal.
 
-An interrupted terminal response cannot reuse its old audio or completion boundary to hang up. If the Developer connection closes abnormally, already-accepted audio receives at most eight seconds to drain before cleanup, with transfer/caller teardown taking priority. This may preserve a short buffered farewell; it does not fix an upstream API error or recover audio that Google never generated. Overflows and stalled playback remain explicit failures. Setting the checkbox off restores the original queue/completion path after saving and applying.
+An interrupted terminal response cannot reuse its old audio or completion boundary to hang up. If the Developer connection closes abnormally, already-accepted audio receives at most eight seconds to drain before cleanup, with transfer/caller teardown taking priority. This may preserve a short buffered farewell; it does not fix an upstream API error or recover audio that Google never generated. Overflows and stalled playback remain explicit failures. Disabling the checkbox restores the original queue/completion path after saving and restarting. Stopping old playback locally and receiving Google's next response are separate events; the option cannot guarantee the model's response latency.
 
-Validate a complete long answer, a follow-up question, interruptions both while generation is active and after generation finishes with audio still queued, repeated interruptions, normal hangup, and transfer/farewell before enabling broadly. These checks also need to establish that discarded output does not restart after the interruption.
+**Live validation on voiprnd (2026-10-03, Google 2.5 / AudioSocket):**
+
+| Call | Setting | Evidence |
+|---|---|---|
+| `1791083954.400` | Developer, off | Received 92.08 seconds of long-answer audio; the original queue dropped 1,173 chunks and emitted 45.18 seconds. |
+| `1791084141.404` | Developer, on | Received 91.48 seconds and emitted 91.50 seconds including frame padding over 93.605 seconds, with zero drops. The long answer drained fully before the next caller turn; farewell/hangup also drained. |
+| `1791083429.375` | Vertex | Connected to the Vertex endpoint, exercised interruptions and farewell/hangup, and never activated the opt-in queue. |
+
+These calls establish the tested backend/transport behavior, not every model or deployment. Live successful/failed transfer and interrupted-farewell replacement remain qualification checks; automated tests cover their ownership and completion boundaries. Before enabling broadly, test an uninterrupted long answer, follow-up input, early/late and repeated interruptions, background noise/echo, normal and interrupted farewell, and transfer success/failure. Confirm discarded speech never resumes. For a failed call, use **Call History → Troubleshoot → Download Support Package** as described in the [troubleshooting guide](TROUBLESHOOTING_GUIDE.md#export-a-support-package-for-one-call).
 
 ### 2. Function Calling
 

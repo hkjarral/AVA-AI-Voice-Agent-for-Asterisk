@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Google Developer long-response option:** **Providers → Google Live → API Mode → Enable long-response playback** enables a bounded audio backlog for that provider instance. It defaults off on new and existing installations, requires saving and restarting the AI Engine, and is hidden in Vertex mode. The saved preference is ignored on actual Vertex connections; other providers and modular pipelines do not use it. See the [Google setup guide](docs/Provider-Google-Setup.md#long-response-playback-developer-api-opt-in) for configuration and upgrade instructions.
+
 ### Fixed
 
-- **Google Developer long-response playback (opt-in):** adds a Developer-only Google provider checkbox, bounded audio backlog and transport drain, short-speech interruption handling, and protection against interrupted-farewell and disconnect cleanup races. Existing configurations remain opted out. Vertex retains its existing queue and completion behavior; other providers and modular pipelines are unchanged by this option.
+- **Google Developer long-response playback (opt-in):** prevents the original source queue from dropping small audio chunks when generation runs ahead of telephony playback. Enabled calls wait for playback drain, cancel queued speech on interruption, and reject stale farewell completion. Abnormal disconnects allow accepted audio up to eight seconds to drain before cleanup, respecting caller teardown and transfer ownership. This cannot prevent upstream Google errors or recover audio that was never received.
+- **Google AudioSocket interruption detection:** silence-gated Google calls inspect normalized caller audio before upstream silence substitution, so local barge-in can detect speech during playback. This correction applies to Developer API and Vertex independently of the long-response option; native Gemini 3.8 full-duplex interruption keeps its provider-driven path. Other providers' detector inputs are unchanged.
 
 - **Authoritative modular provider validation** ([#688](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/688)): Admin UI connection and credential checks preserve configured OpenAI-compatible, Telnyx and MiniMax destinations, ports and paths instead of silently substituting public endpoints. Explicit types and speech roles take precedence over provider-name heuristics. Provider-scoped credentials and custom no-auth endpoints are supported consistently; unsafe targets, redirects and malformed model lists fail explicitly. Speech probes clearly report reachability-only validation. Logs contain bounded, credential-free diagnostics.
 - **Provider test results** ([#688](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/688)): The editor displays detailed results for unsaved settings, clears obsolete results after edits, and ignores late responses after edits, closing or reopening. Concurrent provider tests retain independent loading states and results. Failure details remain readable in both light and dark themes.

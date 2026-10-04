@@ -14,6 +14,8 @@ The `google_live` provider can connect via **two authentication modes**:
 
 This guide walks you through obtaining the service account JSON and enabling Vertex AI mode. For dialplan, pipeline, and advanced configuration, see [Provider-Google-Setup.md](Provider-Google-Setup.md).
 
+The **Enable long-response playback** checkbox is a Developer API opt-in and is hidden in Vertex mode. An actual Vertex connection ignores `long_audio_playback_enabled` and `long_audio_backlog_sec`; its queue and completion behavior remain unchanged by that option. Switching modes preserves the saved preference, so a later Developer connection (including authentication fallback) uses it if enabled. The Google AudioSocket microphone detection correction is separate and applies to both backends. See [long-response setup and validation](Provider-Google-Setup.md#long-response-playback-developer-api-opt-in).
+
 ## Quick Setup (recommended)
 
 **Run this on your AAVA host** (the FreePBX / Asterisk box where `docker compose` runs) — not on your laptop. The script writes `secrets/gcp-service-account.json` and patches `.env`, both of which need to be on the host that runs the `ai_engine` container.
