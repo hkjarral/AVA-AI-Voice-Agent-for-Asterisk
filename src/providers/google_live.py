@@ -1675,6 +1675,8 @@ class GoogleLiveProvider(AIProviderInterface):
         if not self._in_audio_burst:
             return  # Duplicate generationComplete or a tool-only turn.
         if len(self._generated_audio_turns) >= 8:
+            # Revoke tool admission before the disconnect callback can yield.
+            self._long_audio_transport_failed = True
             await self._emit_provider_disconnected(code=1011, reason="audio turn completion backlog exceeded")
             return
         user_text, assistant_text = await self._finalize_generated_audio_text()

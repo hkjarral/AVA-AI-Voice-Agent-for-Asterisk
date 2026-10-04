@@ -78,6 +78,7 @@ async def test_disconnect_drain_is_scoped_and_bounded(vertex, enabled):
     e.ari_client = SimpleNamespace(hangup_channel=AsyncMock())
     await e.on_provider_event({'type':'ProviderDisconnected','call_id':s.call_id,'code':1007,'reason':'test'})
     if enabled and not vertex:
+        await asyncio.gather(*e._call_bg_tasks[s.call_id])
         e._terminate_call_after_audio.assert_awaited_once_with(
             s.call_id, reason='google_provider_disconnected', drain_timeout_cap_sec=8.0)
         e.ari_client.hangup_channel.assert_not_awaited()
@@ -209,6 +210,7 @@ async def test_abnormal_close_drains_real_accepted_queue_before_hangup(interrupt
     else:
         while not q.empty():q.get_nowait()
     await asyncio.wait_for(task,timeout=1)
+    await asyncio.wait_for(asyncio.gather(*e._call_bg_tasks[s.call_id]),timeout=1)
     e.ari_client.hangup_channel.assert_awaited_once()
     drain=e._provider_output_drain_tasks.get(s.call_id)
     if drain:await drain
@@ -243,9 +245,12 @@ async def test_disconnect_waits_for_transfer_and_closes_only_on_failure(accepted
     task=asyncio.create_task(e.on_provider_event({'type':'ProviderDisconnected','call_id':s.call_id,'code':1007}))
     await asyncio.sleep(0.02)
     e._terminate_call_after_audio.assert_not_awaited()
+    assert task.done()  # Serial event dispatch is free while routing is pending.
+    worker = next(iter(e._call_bg_tasks[s.call_id]))
     s.current_action={'type':'attended_transfer','decision':'accepted' if accepted else 'declined'}
     if accepted:s.transfer_active=True
     await asyncio.wait_for(task,timeout=1)
+    await asyncio.wait_for(worker,timeout=1)
     assert e._terminate_call_after_audio.await_count==int(not accepted)
 
 
@@ -256,3 +261,65 @@ async def test_google_transport_failure_rejects_new_tool_work():
     p._tool_adapter=SimpleNamespace(execute_tool=AsyncMock())
     await p._handle_tool_call({'toolCall':{'functionCalls':[{'id':'late','name':'hangup_call','args':{}}]}})
     p._tool_adapter.execute_tool.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_observer_is_deduplicated_and_bounds_stalled_transfer():
+    e,s=bare_engine(provider())
+    s.current_action={'type':'attended_transfer','decision':'pending'}
+    await e.session_store.upsert_call(s)
+    e._google_disconnect_transfer_wait_sec=lambda:0.02
+    event={'type':'ProviderDisconnected','call_id':s.call_id,'code':1007}
+    await e.on_provider_event(event)
+    await e.on_provider_event(event)
+    assert len(e._call_bg_tasks[s.call_id])==1
+    await asyncio.wait_for(asyncio.gather(*e._call_bg_tasks[s.call_id]),timeout=0.5)
+    e._terminate_call_after_audio.assert_not_awaited()
+    assert s.current_action['decision']=='pending'
+
+
+@pytest.mark.asyncio
+async def test_disconnect_observer_exits_when_cleanup_starts():
+    e,s=bare_engine(provider())
+    s.current_action={'type':'attended_transfer','decision':'pending'}
+    await e.session_store.upsert_call(s)
+    await e.on_provider_event({'type':'ProviderDisconnected','call_id':s.call_id,'code':1007})
+    worker=next(iter(e._call_bg_tasks[s.call_id]))
+    await asyncio.sleep(0)
+    s.cleanup_in_progress=True
+    await asyncio.wait_for(worker,timeout=0.5)
+    e._terminate_call_after_audio.assert_not_awaited()
+
+
+def test_disconnect_observer_budget_covers_configured_transfer_phases():
+    e,_=bare_engine(provider())
+    e.config.tools={'attended_transfer':{'dial_timeout_seconds':60,'caller_screening_max_seconds':12,
+        'ai_briefing_timeout_seconds':4,'agent_accept_timeout_seconds':30,'tts_timeout_seconds':10}}
+    assert e._google_disconnect_transfer_wait_sec()==316
+    e.config.tools['attended_transfer']['accept_timeout_seconds']=20
+    assert e._google_disconnect_transfer_wait_sec()==306
+    e.config.tools["attended_transfer"]["dial_timeout_seconds"]=1e308
+    assert e._google_disconnect_transfer_wait_sec()==600
+
+
+@pytest.mark.asyncio
+async def test_completion_overflow_revokes_tools_before_disconnect_callback_yields():
+    p=provider()
+    p._in_audio_burst=True
+    p._generated_audio_turns=[{}]*8
+    entered=asyncio.Event()
+    release=asyncio.Event()
+    async def disconnect(**kwargs):
+        entered.set()
+        await release.wait()
+    p._emit_provider_disconnected=disconnect
+    p._tool_adapter=SimpleNamespace(execute_tool=AsyncMock())
+    task=asyncio.create_task(p._handle_audio_generation_complete())
+    await asyncio.wait_for(entered.wait(),timeout=0.5)
+    try:
+        assert p._long_audio_transport_failed
+        await p._handle_tool_call({'toolCall':{'functionCalls':[{'id':'late','name':'hangup_call','args':{}}]}})
+        p._tool_adapter.execute_tool.assert_not_awaited()
+    finally:
+        release.set()
+        await task

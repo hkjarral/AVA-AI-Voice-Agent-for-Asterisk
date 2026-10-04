@@ -340,7 +340,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                 </label>
                                 <p className="text-xs text-muted-foreground mt-0.5">
                                     Opt in to improved playback and interruption handling for long answers on the Developer API.
-                                    Off by default. Takes effect after saving and applying provider settings.
+                                    Off by default. Save, then restart the AI Engine for the change to take effect.
                                 </p>
                             </div>
                         </div>

@@ -14248,30 +14248,16 @@ class Engine:
                         logger.debug("Failed to mark provider_session_active=false", call_id=call_id, exc_info=True)
 
                 if google_disconnect_drain:
-                    # The socket has closed, but accepted audio is still valid.
-                    # Give short responses/farewells a bounded chance to drain;
-                    # never keep a failed connection alive for the full backlog.
-                    while True:
-                        current_session = await self.session_store.get_by_call_id(call_id)
-                        if not current_session or current_session.cleanup_in_progress or self._session_was_transferred(current_session):
-                            return
-                        if self._session_has_pending_attended_transfer(current_session):
-                            # The transfer has its own deadline and owns routing.
-                            # A declined/failed attempt still needs disconnect cleanup.
-                            await asyncio.sleep(0.1)
-                            continue
-                        await self._terminate_call_after_audio(
-                            call_id, reason="google_provider_disconnected",
-                            drain_timeout_cap_sec=8.0,
+                    # Do not block the provider's serial event dispatcher during
+                    # playback drain or an attended transfer's routing decision.
+                    task_name = f"google-disconnect-{call_id}"
+                    if not any(
+                        not task.done() and task.get_name() == task_name
+                        for task in self._call_bg_tasks.get(call_id, set())
+                    ):
+                        self._fire_and_forget_for_call(
+                            call_id, self._finish_google_provider_disconnect(call_id), name=task_name,
                         )
-                        current_session = await self.session_store.get_by_call_id(call_id)
-                        if current_session and self._session_has_pending_attended_transfer(current_session):
-                            continue
-                        break
-                    remaining_session = await self.session_store.get_by_call_id(call_id)
-                    if remaining_session and not remaining_session.cleanup_in_progress:
-                        remaining_session.provider_session_active = False
-                        await self._save_session(remaining_session)
                     return
 
                 # Optional: play configured fallback media (same knob as hangup_call fallback).
@@ -15679,6 +15665,59 @@ class Engine:
             **last_snapshot,
         )
         return False
+
+    def _google_disconnect_transfer_wait_sec(self) -> float:
+        """Bound transfer observation using configured phase budgets plus grace."""
+        tools = getattr(self.config, "tools", {}) or {}
+        cfg = tools.get("attended_transfer", {}) if isinstance(tools, dict) else {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+
+        def seconds(key: str, default: float) -> float:
+            try:
+                value = float(cfg.get(key, default) or default)
+                return value if math.isfinite(value) and value >= 0 else default
+            except (TypeError, ValueError):
+                return default
+
+        # Three TTS/playback phases and a possible recovery prompt each allow
+        # synthesis plus up to four times the TTS timeout for file playback.
+        # Cap observation at ten minutes even for unreasonable YAML budgets.
+        accept_key = "accept_timeout_seconds" if "accept_timeout_seconds" in cfg else "agent_accept_timeout_seconds"
+        return min(600.0, (
+            seconds("dial_timeout_seconds", 30) + seconds("caller_screening_max_seconds", 6)
+            + seconds("ai_briefing_timeout_seconds", 2) + seconds(accept_key, 15)
+            + 20 * seconds("tts_timeout_seconds", 8) + 10
+        ))
+
+    async def _finish_google_provider_disconnect(self, call_id: str) -> None:
+        """Drain failed Google playback without taking routing from a transfer."""
+        deadline = time.monotonic() + self._google_disconnect_transfer_wait_sec()
+        while True:
+            session = await self.session_store.get_by_call_id(call_id)
+            if not session or session.cleanup_in_progress or self._session_was_transferred(session):
+                return
+            if self._session_has_pending_attended_transfer(session):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    # The transfer owner must decide routing; a stalled action
+                    # cannot hold this observer or the event dispatcher forever.
+                    logger.warning("Google disconnect transfer wait timed out; preserving transfer ownership", call_id=call_id)
+                    return
+                await asyncio.sleep(min(0.1, remaining))
+                continue
+            # Accepted audio remains valid after socket close. Keep the drain
+            # short, even when the configured long-response backlog is large.
+            await self._terminate_call_after_audio(
+                call_id, reason="google_provider_disconnected", drain_timeout_cap_sec=8.0,
+            )
+            session = await self.session_store.get_by_call_id(call_id)
+            if session and self._session_has_pending_attended_transfer(session):
+                continue
+            if session and not session.cleanup_in_progress:
+                session.provider_session_active = False
+                await self._save_session(session)
+            return
 
     async def _terminate_call_after_audio(
         self,
