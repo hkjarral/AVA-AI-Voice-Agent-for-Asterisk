@@ -173,10 +173,19 @@ timing when interruption is not already authorized.
 Example **after** identifying affected services and the deployment's Compose
 configuration, on the deployment host in its repository directory:
 
+Replace the example project name and `-f` paths with the running stack's complete
+file list in the same order, including any override files. Omit the second `-f`
+only if the stack uses no overlay; add further `-f` arguments when needed. Preserve
+any deployment-specific `--env-file`, `--profile`, and `--project-directory` options
+for both commands. See the [official Compose CLI reference](https://docs.docker.com/reference/cli/docker/compose/).
+
 ```bash
 # Example only: substitute the discovered Compose project/files and affected services.
-docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui ai_engine
-docker compose -p asterisk-ai-voice-agent ps
+docker compose -p asterisk-ai-voice-agent \
+  -f docker-compose.yml -f /path/to/deployment-overlay.yml \
+  up -d --build --force-recreate admin_ui ai_engine
+docker compose -p asterisk-ai-voice-agent \
+  -f docker-compose.yml -f /path/to/deployment-overlay.yml ps
 agent check
 ```
 
