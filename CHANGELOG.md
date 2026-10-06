@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Reworked `AVA.mdc` as the shared AI-assistant entry point for project questions,
+  development, deployment, call troubleshooting, and contribution. Linked root
+  `AGENTS.md`, refreshed beginner onboarding, and added portable SSH/deployment
+  guidance, user-controlled diagnostics, evidence-based call analysis, and a live
+  validation handoff for contributors without a PBX.
+
 ### Added
 
 - **Google Developer long-response option:** **Providers → Google Live → API Mode → Enable long-response playback** enables a bounded audio backlog for that provider instance. It defaults off on new and existing installations, requires saving and restarting the AI Engine, and is hidden in Vertex mode. The saved preference is ignored on actual Vertex connections; other providers and modular pipelines do not use it. See the [Google setup guide](docs/Provider-Google-Setup.md#long-response-playback-developer-api-opt-in) for configuration and upgrade instructions.

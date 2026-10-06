@@ -1,6 +1,23 @@
-# Repository review guidance
+# Repository instructions
 
 These instructions apply to the entire repository.
+
+## Project context and working workflow
+
+Before answering project questions, implementing changes, or troubleshooting a
+deployment, read [AVA.mdc](AVA.mdc). It is the shared entry point for architecture,
+research, development, deployment, call analysis, and contribution guidance.
+Read the linked guides relevant to the task, and any additional applicable
+instructions in the current project folder. Preserve existing local instructions
+such as `CLAUDE.md`; do not replace them with a second copy of the project context.
+
+Work against the user's actual deployment, whether development or production;
+establish the target and access first. Diagnostic logging and audio capture are
+user-controlled: explain the exact enable/restore steps and let the user apply
+them. Keep private raw evidence separate from sanitized public reports.
+
+Use the current repository policy below for reviews; older chats and optional
+local skills are supporting context and may contain superseded commands.
 
 ## Review priorities
 

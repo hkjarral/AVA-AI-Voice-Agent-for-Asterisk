@@ -219,16 +219,25 @@ filters.
 
 ### Bounded Diagnostic Audio Capture
 
+For assistant-guided investigations, follow the
+[diagnostic playbook](contributing/debugging-guide.md): the user controls enabling
+and restoring logging/audio capture, and the assistant verifies the effective
+settings and analyzes privately archived evidence.
+
 Diagnostic WAVs can contain caller audio, agent audio, names, phone numbers, or
 other sensitive content. Enable them only for a short, controlled reproduction
 and handle the resulting files according to your retention policy.
 
-1. Set `DIAG_ENABLE_TAPS=true`, rebuild or restart `ai_engine`, and reproduce the
-   issue once. Playback taps use `/tmp/ai-engine-taps`; full-call RCA streams use
+1. Set `DIAG_ENABLE_TAPS=true`, recreate `ai_engine` to load the changed environment,
+   and reproduce the issue once. Playback taps use `/tmp/ai-engine-taps`; full-call RCA streams use
    `/tmp/ai-engine-captures/<call_id>/`.
-2. Collect only the required call with `agent rca` or `scripts/rca_collect.sh`.
-3. Set `DIAG_ENABLE_TAPS=false` and restart `ai_engine` before returning the
-   system to normal service.
+2. Privately collect only the required call's audio and bounded logs using the
+   [diagnostic collection workflow](contributing/debugging-guide.md#archive-before-analyzing).
+   `agent rca <call_id>` produces a report, not a raw audio archive.
+   Review `scripts/rca_collect.sh` before using it: it can collect broader history,
+   configuration, transcripts, and recordings.
+3. Restore the previous diagnostic settings (normally `DIAG_ENABLE_TAPS=false`)
+   and recreate `ai_engine` before returning the system to normal service.
 4. Remove retained WAVs explicitly when the investigation is complete.
 
 Disabling diagnostics prevents new per-call writes; it never deletes historical
@@ -1068,6 +1077,12 @@ docker logs ai_engine | grep -i "error"
 ```
 
 ### Log Levels
+
+For AI-assisted troubleshooting, the user applies and restores these settings;
+see the [step-by-step diagnostic workflow](contributing/debugging-guide.md#user-controlled-debug-logging).
+Preserve existing evidence first. Changes to `.env` require recreation of the
+affected container; a plain restart does not reload its environment. Record the
+previous values, collect a bounded reproduction, then restore and verify them.
 
 Adjust logging in `.env`:
 ```bash

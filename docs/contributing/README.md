@@ -20,6 +20,7 @@ Welcome to Asterisk AI Voice Agent development! This directory contains everythi
 
 ### Core Development
 
+- **[AI-Assisted Workflow](ai-assisted-workflow.md)** - Research, SSH access, scoped implementation, deployment, browser/call verification, and contribution handoff
 - **[Tool Development](tool-development.md)** - Create telephony/business tools and pre/in/post-call hooks (hangup, transfer, email, CRM lookups, webhooks)
 - **[Provider Development](provider-development.md)** - Add full-agent providers and STT/LLM/TTS adapters
 - **[Pipeline Development](pipeline-development.md)** - Build custom audio processing pipelines
