@@ -1972,6 +1972,7 @@ async def test_provider_connection(request: ProviderTestRequest):
             auth_token = str(
                 provider_config.get("auth_token")
                 or get_env_key("LOCAL_WS_AUTH_TOKEN")
+                or os.getenv("LOCAL_WS_AUTH_TOKEN")
                 or ""
             ).strip()
             

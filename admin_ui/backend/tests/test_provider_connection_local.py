@@ -87,6 +87,35 @@ async def test_local_provider_authenticates_before_status(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_local_provider_uses_process_env_when_auth_token_omitted(monkeypatch, tmp_path):
+    sent_messages = []
+    monkeypatch.setattr(config.settings, "ENV_PATH", str(tmp_path / ".env"))
+    monkeypatch.setenv("LOCAL_WS_AUTH_TOKEN", "process-secret")
+    monkeypatch.setattr(
+        websockets,
+        "connect",
+        _connect_factory(sent_messages, _status_payload()),
+    )
+
+    result = await config.test_provider_connection(
+        config.ProviderTestRequest(
+            name="local_stt",
+            config={
+                "type": "local",
+                "capabilities": ["stt"],
+                "ws_url": "ws://127.0.0.1:8765",
+            },
+        )
+    )
+
+    assert result["success"] is True
+    assert sent_messages == [
+        {"type": "auth", "auth_token": "process-secret"},
+        {"type": "status"},
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "auth_reference",
     ["${LOCAL_WS_AUTH_TOKEN:-}", "${LOCAL_WS_AUTH_TOKEN:=}"],
