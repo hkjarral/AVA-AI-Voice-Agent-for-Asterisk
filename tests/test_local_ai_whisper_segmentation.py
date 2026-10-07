@@ -534,3 +534,75 @@ async def test_teardown_quarantines_claimed_idle_decode_and_lets_decoder_finish(
     instance._send_json.assert_not_awaited()
     assert session.stt_segment_buffer == b""
     assert session.idle_task is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frames,expected_final", [(1, False), (2, True)])
+async def test_elapsed_idle_timer_resolves_short_or_ready_whisper_buffer(
+    monkeypatch, frames, expected_final
+):
+    server_mod = _load("server")
+    session_mod = _load("session")
+    instance, session, backend = _server_and_session(server_mod, session_mod)
+    monkeypatch.setattr(server_mod, "monotonic", lambda: 1.0)
+    await instance._process_stt_stream_whisper_segmented(
+        session, _frame(2000) * frames, 16000, backend_name="faster_whisper"
+    )
+
+    assert session.stt_segment_in_speech
+    assert await instance._finalize_whisper_segment_if_due(
+        session, backend_name="faster_whisper"
+    ) == []
+    events = await instance._finalize_whisper_segment_if_due(
+        session, backend_name="faster_whisper", idle_elapsed=True
+    )
+
+    assert bool(events) is expected_final
+    assert len(backend.segments) == int(expected_final)
+    assert session.stt_segment_in_speech is False
+    assert session.stt_segment_buffer == b""
+
+
+@pytest.mark.asyncio
+async def test_idle_promoted_llm_turn_replaces_and_registers_response_task(monkeypatch):
+    server_mod = _load("server")
+    session_mod = _load("session")
+    instance, session, _backend = _server_and_session(server_mod, session_mod)
+    now = 1.0
+    original_sleep = asyncio.sleep
+    monkeypatch.setattr(server_mod, "monotonic", lambda: now)
+    instance.stt_backend = "faster_whisper"
+    instance.buffer_timeout_ms = 500
+    await instance._process_stt_stream_whisper_segmented(
+        session, _frame(2000) * 2, 16000, backend_name="faster_whisper"
+    )
+    previous = asyncio.create_task(asyncio.Event().wait())
+    session.response_tasks.add(previous)
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def handle_final(*_args, **_kwargs):
+        started.set()
+        await release.wait()
+
+    instance._handle_final_transcript = handle_final
+
+    async def advance_clock(delay):
+        nonlocal now
+        now += delay
+
+    monkeypatch.setattr(server_mod.asyncio, "sleep", advance_clock)
+    instance._schedule_idle_finalizer(object(), session, None, "llm")
+    idle = session.idle_task
+    await original_sleep(0)
+    await idle
+    await started.wait()
+
+    assert previous.cancelled()
+    active = [task for task in session.response_tasks if task is not previous]
+    assert len(active) == 1
+    assert not active[0].done()
+    release.set()
+    await active[0]
+    await original_sleep(0)
+    assert active[0] not in session.response_tasks
