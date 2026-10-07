@@ -123,8 +123,9 @@ def sanitize_secrets(logger, method_name, event_dict):
         if isinstance(value, (list, tuple)):
             return [redact_value(v) for v in value]
         if isinstance(value, dict):
-            return {k: redact_value(v) if k.lower() in SENSITIVE_KEYS else v 
-                    for k, v in value.items()}
+            sanitized_value = sanitize_dict(value)
+            return {k: redact_value(v) if k.lower() in SENSITIVE_KEYS else v
+                    for k, v in sanitized_value.items()}
         return "***REDACTED***"
     
     def sanitize_value(value):

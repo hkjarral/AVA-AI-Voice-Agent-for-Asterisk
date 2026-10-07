@@ -156,3 +156,20 @@ def test_structured_dtmf_values_are_fully_redacted_without_mutating_input(key):
     render.info("call", payload=event["payload"])
     assert "987654" not in stream.getvalue()
     assert "98***REDACTED***" not in stream.getvalue()
+
+
+def test_dtmf_nested_under_sensitive_dictionary_is_not_logged():
+    event = {"credentials": {"digit": "987654", "label": "test"}}
+    before = copy.deepcopy(event)
+    sanitized = sanitize_secrets(None, "info", event)
+
+    assert event == before
+    assert sanitized["credentials"]["digit"] == "***REDACTED***"
+    assert sanitized["credentials"]["label"] == "test"
+    stream = io.StringIO()
+    render = structlog.wrap_logger(
+        structlog.PrintLogger(stream),
+        processors=[sanitize_secrets, structlog.processors.JSONRenderer()],
+    )
+    render.info("call", credentials=event["credentials"])
+    assert "987654" not in stream.getvalue()
