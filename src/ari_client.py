@@ -595,8 +595,8 @@ class ARIClient:
                             for handler in self.event_handlers[event_type]:
                                 # Call the handler with just the event data
                                 asyncio.create_task(handler(event_data))
-                    except json.JSONDecodeError:
-                        logger.warning("Failed to decode ARI event JSON", message=message)
+                    except json.JSONDecodeError as exc:
+                        logger.warning("Failed to decode ARI event JSON", error_type=type(exc).__name__)
 
                 # A clean iterator end is still a disconnect. Without this branch the outer
                 # loop immediately re-enters with the stale websocket and spams listener logs.
@@ -617,8 +617,7 @@ class ARIClient:
                 should_continue = await self._mark_disconnected_and_backoff(
                     "ARI listener error, will reconnect",
                     level="error",
-                    error=str(e),
-                    exc_info=True,
+                    error=type(e).__name__,
                 )
                 if not should_continue:
                     break
