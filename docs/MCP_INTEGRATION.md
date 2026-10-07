@@ -27,8 +27,49 @@ This document describes how AVA integrates Model Context Protocol (MCP) tools in
 
 MCP servers can be configured via **Admin UI → Core Configuration → MCP** page (`/mcp`). This provides:
 - Server list with status indicators
-- Add/edit/remove MCP server configurations
-- Hot-reload without container restart
+- Add/edit/remove stdio MCP server configurations
+- MCP connection changes require an AI Engine restart; the HTTP draft is YAML-only
+
+## Streamable HTTP backend draft
+
+The AI Engine can connect to an explicitly configured Streamable HTTP MCP endpoint.
+This is a backend-only contribution slice. The Admin UI's MCP editor does not yet
+create or edit HTTP entries, and this is not a live-call acceptance claim. Configure
+the engine YAML directly, then restart the AI Engine in a controlled window.
+
+~~~yaml
+mcp:
+  enabled: true
+  servers:
+    remote_tools:
+      transport: streamable_http
+      url: https://mcp.example.org/mcp
+      headers:
+        Authorization: "Bearer ${MCP_REMOTE_TOKEN}"
+      defaults:
+        timeout_ms: 10000
+      tools:
+        - name: lookup
+          expose_as: mcp_remote_tools_lookup
+~~~
+
+Set the named environment variable in the AI Engine's runtime environment; do
+not put a token in YAML. Authentication headers require an environment reference.
+URL userinfo, query strings and fragments are rejected. The server URL and
+resolved headers are omitted from the MCP status response.
+
+The official Python MCP SDK negotiates the current protocol or a supported
+legacy version, supplies protocol/session headers, and handles JSON or
+request-scoped SSE responses. Tool listings are paginated with a bounded limit.
+A call uses one negotiated session and one tools/call request. On a timeout,
+disconnect or expired session during a call, its outcome is unknown: AVA does
+not automatically re-execute it. A later, separate operation establishes a
+new session. The server must provide its own idempotency or reconciliation
+contract if a caller chooses to retry an effectful tool.
+
+Existing stdio servers and Agent tool filtering remain unchanged. The test
+endpoint in the Admin UI can perform discovery only; it does not prove a tool's
+side effects, a caller-heard response, or live-call readiness.
 
 ## How This Fits the Current Tool Architecture
 
@@ -260,7 +301,7 @@ This is important because the current engine execution path can execute any regi
 
 ### Secrets
 
-- Use environment expansion in YAML (`${VAR}`) and pass secrets to stdio servers through environment variables.
+- Pass stdio secrets through the configured environment. For HTTP authentication headers, reference runtime environment variables with the form shown above; never store raw tokens in YAML.
 - Do not log env var values.
 - Prefer running stdio MCP servers inside the same container only when required; otherwise connect to an external MCP server via a controlled interface.
 
@@ -273,10 +314,7 @@ For stdio servers:
 - Restart on crash with backoff, with a max restart limit.
 - Stop gracefully on engine shutdown.
 
-For hot reload:
-
-- `/reload` can reload MCP servers/tools when there are **no active calls** (it restarts MCP stdio subprocesses and re-registers MCP tools).
-- If there are active calls, MCP reload is deferred (plan a restart or reload during an idle window).
+For connection configuration changes, plan an AI Engine restart in an idle window. Editing an Agent's existing tool access affects new calls; it does not reinitialize an MCP connection.
 
 ## Observability
 

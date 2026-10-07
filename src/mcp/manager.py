@@ -11,6 +11,7 @@ from prometheus_client import Counter, Histogram, Gauge
 from src.config import MCPConfig, MCPServerConfig, MCPToolConfig
 from src.mcp.naming import make_exposed_tool_name, is_provider_safe_tool_name
 from src.mcp.stdio_client import MCPStdioClient
+from src.mcp.streamable_http_client import MCPStreamableHTTPClient
 from src.tools.mcp_tool import MCPTool, MCPToolBehavior
 
 logger = structlog.get_logger(__name__)
@@ -44,7 +45,7 @@ class MCPClientManager:
 
     def __init__(self, config: MCPConfig):
         self.config = config
-        self._clients: Dict[str, MCPStdioClient] = {}
+        self._clients: Dict[str, MCPStdioClient | MCPStreamableHTTPClient] = {}
         self._discovered: Dict[str, Dict[str, _DiscoveredTool]] = {}
         self._tool_routes: Dict[str, Tuple[str, str]] = {}  # exposed_name -> (server_id, tool_name)
         self._server_up: Dict[str, bool] = {}
@@ -81,7 +82,8 @@ class MCPClientManager:
         start = time.perf_counter()
         try:
             result = await client.call_tool(name=tool_name, arguments=arguments or {}, timeout_ms=timeout_ms)
-            _MCP_TOOL_CALLS_TOTAL.labels(server_id, tool_name, "success").inc()
+            outcome = "error" if result.get("isError") or result.get("is_error") else "success"
+            _MCP_TOOL_CALLS_TOTAL.labels(server_id, tool_name, outcome).inc()
             return result
         except Exception:
             _MCP_TOOL_CALLS_TOTAL.labels(server_id, tool_name, "error").inc()
@@ -155,8 +157,8 @@ class MCPClientManager:
             servers[server_id] = {
                 "enabled": bool(getattr(server_cfg, "enabled", True)),
                 "transport": getattr(server_cfg, "transport", "stdio"),
-                "command": list(getattr(server_cfg, "command", []) or []),
-                "cwd": getattr(server_cfg, "cwd", None),
+                "command": list(getattr(server_cfg, "command", []) or []) if server_cfg.transport == "stdio" else [],
+                "cwd": getattr(server_cfg, "cwd", None) if server_cfg.transport == "stdio" else None,
                 "up": bool(self._server_up.get(server_id, False)),
                 "last_error": self._server_errors.get(server_id),
                 "discovered_tools": sorted(list(discovered.keys())),
@@ -192,7 +194,8 @@ class MCPClientManager:
                     names.append(str(t["name"]))
             return {"ok": True, "tools": sorted(names)}
         except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+            error = str(exc) if server_cfg.transport == "stdio" else type(exc).__name__
+            return {"ok": False, "error": error}
 
     async def _start_servers_and_discover(self) -> None:
         if not self.is_enabled():
@@ -204,30 +207,31 @@ class MCPClientManager:
                 self._server_up[server_id] = False
                 _MCP_SERVER_UP.labels(server_id).set(0)
                 return
-            if (server_cfg.transport or "stdio") != "stdio":
-                logger.warning("Unsupported MCP transport (only stdio supported)", server=server_id, transport=server_cfg.transport)
-                self._server_up[server_id] = False
-                self._server_errors[server_id] = f"Unsupported transport: {server_cfg.transport}"
-                return
-            if not server_cfg.command:
-                logger.warning("MCP server missing command", server=server_id)
-                self._server_up[server_id] = False
-                self._server_errors[server_id] = "Missing command"
-                return
-
-            client = MCPStdioClient(
-                server_id=server_id,
-                command=server_cfg.command,
-                cwd=server_cfg.cwd,
-                env=server_cfg.env,
-                restart_enabled=server_cfg.restart.enabled,
-                max_restarts=server_cfg.restart.max_restarts,
-                backoff_ms=server_cfg.restart.backoff_ms,
-                default_timeout_ms=server_cfg.defaults.timeout_ms,
-            )
-            self._clients[server_id] = client
-
+            transport = server_cfg.transport or "stdio"
             try:
+                if transport == "stdio":
+                    if not server_cfg.command:
+                        raise ValueError("Missing command")
+                    client = MCPStdioClient(
+                        server_id=server_id,
+                        command=server_cfg.command,
+                        cwd=server_cfg.cwd,
+                        env=server_cfg.env,
+                        restart_enabled=server_cfg.restart.enabled,
+                        max_restarts=server_cfg.restart.max_restarts,
+                        backoff_ms=server_cfg.restart.backoff_ms,
+                        default_timeout_ms=server_cfg.defaults.timeout_ms,
+                    )
+                elif transport == "streamable_http":
+                    client = MCPStreamableHTTPClient(
+                        server_id=server_id,
+                        url=server_cfg.url or "",
+                        headers=server_cfg.headers,
+                        default_timeout_ms=server_cfg.defaults.timeout_ms,
+                    )
+                else:
+                    raise ValueError("Unsupported transport")
+                self._clients[server_id] = client
                 await client.start()
                 tools = await client.list_tools()
                 _MCP_SERVER_UP.labels(server_id).set(1)
@@ -249,8 +253,14 @@ class MCPClientManager:
             except Exception as exc:
                 _MCP_SERVER_UP.labels(server_id).set(0)
                 self._server_up[server_id] = False
-                self._server_errors[server_id] = str(exc)
-                logger.warning("Failed to start/discover MCP server", server=server_id, error=str(exc), exc_info=True)
+                self._server_errors[server_id] = str(exc) if transport == "stdio" else type(exc).__name__
+                logger.warning("Failed to start/discover MCP server", server=server_id, transport=transport, error_type=type(exc).__name__)
+                failed_client = self._clients.pop(server_id, None)
+                if failed_client:
+                    try:
+                        await failed_client.stop()
+                    except Exception:
+                        logger.debug("Failed stopping MCP client after discovery error", server=server_id)
 
         await asyncio.gather(*(start_one(sid, scfg) for sid, scfg in (self.config.servers or {}).items()))
 

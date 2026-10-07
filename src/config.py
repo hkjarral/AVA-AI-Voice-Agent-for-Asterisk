@@ -924,10 +924,12 @@ class MCPServerConfig(BaseModel):
     """Configuration for a single MCP server."""
 
     enabled: bool = Field(default=True)
-    transport: str = Field(default="stdio")  # currently: stdio
+    transport: str = Field(default="stdio")  # stdio or streamable_http
     command: List[str] = Field(default_factory=list)  # e.g., ["python3", "-m", "my_mcp_server"]
     cwd: Optional[str] = None
     env: Dict[str, str] = Field(default_factory=dict)
+    url: Optional[str] = None  # streamable_http endpoint
+    headers: Dict[str, str] = Field(default_factory=dict)  # use environment references for secrets
     restart: MCPServerRestartConfig = Field(default_factory=MCPServerRestartConfig)
     defaults: MCPServerDefaultsConfig = Field(default_factory=MCPServerDefaultsConfig)
     tools: List[MCPToolConfig] = Field(default_factory=list)  # optional allowlist; if empty => expose all discovered

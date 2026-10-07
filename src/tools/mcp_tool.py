@@ -110,9 +110,10 @@ class MCPTool(Tool):
             timeout_ms=timeout_ms,
         )
 
-        message = self._build_speech_message(result)
+        failed = bool(result.get("isError") or result.get("is_error"))
+        message = "The tool reported an error." if failed else self._build_speech_message(result)
         return {
-            "status": "success",
+            "status": "error" if failed else "success",
             "message": message,
             # Keep structured data for follow-up reasoning/tool chaining, but avoid adding
             # extra metadata fields into provider tool responses (log routing metadata instead).

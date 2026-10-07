@@ -101,6 +101,9 @@ every service. Host `./data/` mounts at `/app/data/`; defaults include
   active calls. Agent permissions can narrow global resources, never widen them.
   Explicit post-call summary-provider selection must not fall back to another
   provider; its isolated summary job must not inherit the live Agent persona.
+  MCP stdio remains supported. The Streamable HTTP backend draft uses explicit
+  engine YAML and the official SDK; Admin UI editing and live-call validation
+  remain pending, and connection changes require an engine restart.
 - **Sensitive state:** preserve telephony ownership, consent/DNC, callbacks,
   dispositions, and transfer boundaries. Outbound `AAVA_CUSTOM_VARS_JSON` must be
   bounded and confirmed before AMD/provider startup; invalid authoritative state

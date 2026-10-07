@@ -2,6 +2,7 @@
 ari==0.1.3
 websockets==16.1.1
 aiohttp==3.14.3
+mcp==2.3.0  # Official Streamable HTTP client; Python 3.11-compatible
 # MessagePack: Fish Audio realtime (websocket) transport only
 msgpack==1.2.1
 
