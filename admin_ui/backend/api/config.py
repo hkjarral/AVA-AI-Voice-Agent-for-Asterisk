@@ -1879,7 +1879,7 @@ async def test_provider_connection(request: ProviderTestRequest):
             elif isinstance(item, str):
                 # Match ${VAR} or ${VAR:-default} or ${VAR:=default}
                 # Capture group 1: Var name, Group 2: Default value (optional)
-                pattern = r'\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?:[:=-]([^}]*))?\}'
+                pattern = r'\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::[-=]([^}]*))?\}'
                 
                 def replace(match):
                     var_name = match.group(1)

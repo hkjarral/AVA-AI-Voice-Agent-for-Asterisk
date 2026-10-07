@@ -87,6 +87,39 @@ async def test_local_provider_authenticates_before_status(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "auth_reference",
+    ["${LOCAL_WS_AUTH_TOKEN:-}", "${LOCAL_WS_AUTH_TOKEN:=}"],
+)
+async def test_local_provider_unset_empty_default_skips_auth(
+    monkeypatch, tmp_path, auth_reference
+):
+    sent_messages = []
+    monkeypatch.setattr(config.settings, "ENV_PATH", str(tmp_path / ".env"))
+    monkeypatch.delenv("LOCAL_WS_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(
+        websockets,
+        "connect",
+        _connect_factory(sent_messages, _status_payload()),
+    )
+
+    result = await config.test_provider_connection(
+        config.ProviderTestRequest(
+            name="local_stt",
+            config={
+                "type": "local",
+                "capabilities": ["stt"],
+                "auth_token": auth_reference,
+                "ws_url": "ws://127.0.0.1:8765",
+            },
+        )
+    )
+
+    assert result["success"] is True
+    assert sent_messages == [{"type": "status"}]
+
+
+@pytest.mark.asyncio
 async def test_local_provider_requires_only_declared_capabilities(monkeypatch, tmp_path):
     sent_messages = []
     monkeypatch.setattr(config.settings, "ENV_PATH", str(tmp_path / ".env"))
