@@ -43,11 +43,13 @@ class MCPStreamableHTTPClient:
         url: str,
         headers: Dict[str, str],
         default_timeout_ms: int = 10000,
+        allow_resolved_auth_headers: bool = False,
     ):
         self.server_id = server_id
         self.url = str(url or "").strip()
         self.headers = dict(headers or {})
         self.default_timeout_ms = int(default_timeout_ms)
+        self.allow_resolved_auth_headers = allow_resolved_auth_headers
         self._closing = False
         self._validate_url()
 
@@ -82,7 +84,11 @@ class MCPStreamableHTTPClient:
                 or not isinstance(template, str)
             ):
                 raise MCPError(f"MCP server '{self.server_id}' has an invalid header configuration")
-            if name.lower() in _SECRET_HEADERS and not _ENV_REFERENCE.search(template):
+            if (
+                name.lower() in _SECRET_HEADERS
+                and not self.allow_resolved_auth_headers
+                and not _ENV_REFERENCE.search(template)
+            ):
                 raise MCPError(f"MCP server '{self.server_id}' requires an environment reference for authentication")
 
             def expand(match: re.Match[str]) -> str:

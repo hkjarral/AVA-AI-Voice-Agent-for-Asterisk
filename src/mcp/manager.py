@@ -207,7 +207,7 @@ class MCPClientManager:
                 self._server_up[server_id] = False
                 _MCP_SERVER_UP.labels(server_id).set(0)
                 return
-            transport = server_cfg.transport or "stdio"
+            transport = (server_cfg.transport or "stdio").strip().lower().replace("-", "_")
             try:
                 if transport == "stdio":
                     if not server_cfg.command:
@@ -228,6 +228,8 @@ class MCPClientManager:
                         url=server_cfg.url or "",
                         headers=server_cfg.headers,
                         default_timeout_ms=server_cfg.defaults.timeout_ms,
+                        # The protected YAML loader resolves ${VAR} before Pydantic.
+                        allow_resolved_auth_headers=True,
                     )
                 else:
                     raise ValueError("Unsupported transport")

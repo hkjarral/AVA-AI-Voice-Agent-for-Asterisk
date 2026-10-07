@@ -12,6 +12,7 @@ from mcp.server import MCPServer
 from starlette.responses import JSONResponse, PlainTextResponse
 
 from src.config import MCPConfig, MCPServerConfig
+from src.config.loaders import _expand_env_vars_with_defaults
 from src.mcp.errors import MCPError, MCPProtocolError
 from src.mcp.manager import MCPClientManager
 from src.mcp.streamable_http_client import MCPStreamableHTTPClient
@@ -61,7 +62,8 @@ async def test_official_sdk_negotiates_json_and_sse(json_response):
 
 
 @pytest.mark.asyncio
-async def test_auth_header_is_resolved_but_never_exposed(monkeypatch):
+@pytest.mark.parametrize("transport", ["streamable_http", "streamable-http"])
+async def test_auth_header_is_resolved_but_never_exposed(monkeypatch, transport):
     monkeypatch.setenv("MCP_TEST_SECRET", "private-sentinel")
     server = MCPServer("local-test")
 
@@ -86,9 +88,11 @@ async def test_auth_header_is_resolved_but_never_exposed(monkeypatch):
             enabled=True,
             servers={
                 "remote": MCPServerConfig(
-                    transport="streamable_http",
+                    transport=transport,
                     url=url,
-                    headers={"Authorization": "Bearer ${MCP_TEST_SECRET}"},
+                    headers={
+                        "Authorization": _expand_env_vars_with_defaults("Bearer ${MCP_TEST_SECRET}")
+                    },
                     command=[],
                 )
             },

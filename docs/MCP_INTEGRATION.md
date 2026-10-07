@@ -54,7 +54,8 @@ mcp:
 ~~~
 
 Set the named environment variable in the AI Engine's runtime environment; do
-not put a token in YAML. Authentication headers require an environment reference.
+not put a token in YAML. The protected YAML loader expands the reference before
+the manager constructs the client. Direct client use still requires a reference.
 URL userinfo, query strings and fragments are rejected. The server URL and
 resolved headers are omitted from the MCP status response.
 
