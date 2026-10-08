@@ -228,8 +228,6 @@ class MCPClientManager:
                         url=server_cfg.url or "",
                         headers=server_cfg.headers,
                         default_timeout_ms=server_cfg.defaults.timeout_ms,
-                        # The protected YAML loader resolves ${VAR} before Pydantic.
-                        allow_resolved_auth_headers=True,
                     )
                 else:
                     raise ValueError("Unsupported transport")

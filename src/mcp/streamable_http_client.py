@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
 import re
+from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 from urllib.parse import urlsplit
 
+import anyio
 import httpx2
 import structlog
 from mcp.client import Client
-from mcp.client.streamable_http import streamable_http_client
+from mcp.client.streamable_http import StreamableHTTPTransport
+from mcp.shared._compat import resync_tracer
+from mcp.shared._context_streams import create_context_streams
+from mcp.shared.message import SessionMessage
+from mcp_types import JSONRPCError, JSONRPCResponse, jsonrpc_message_adapter
 from mcp.types import CallToolResult, Implementation
 
 from .errors import MCPError, MCPProtocolError, MCPServerExited
@@ -18,8 +26,8 @@ logger = structlog.get_logger(__name__)
 
 _T = TypeVar("_T")
 _ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_AUTH_SCHEME_REFERENCE = re.compile(r"[A-Za-z][A-Za-z0-9_-]* \$\{[A-Za-z_][A-Za-z0-9_]*\}")
 _HEADER_NAME = re.compile(r"^[A-Za-z0-9-]+$")
-_SECRET_HEADERS = {"authorization", "proxy-authorization", "x-api-key", "api-key"}
 _PROTOCOL_HEADERS = {
     "accept",
     "content-type",
@@ -27,6 +35,60 @@ _PROTOCOL_HEADERS = {
     "mcp-session-id",
     "host",
 }
+
+
+class _ValidatingStreamableHTTPTransport(StreamableHTTPTransport):
+    """Reject SSE replies whose JSON-RPC ID is not the request being answered."""
+
+    async def _handle_sse_event(
+        self, sse, read_stream_writer, original_request_id=None, resumption_callback=None
+    ) -> bool:
+        if original_request_id is not None and sse.event == "message" and sse.data:
+            try:
+                message = jsonrpc_message_adapter.validate_json(sse.data, by_name=False)
+            except ValueError:
+                # Leave malformed-response handling to the SDK.
+                message = None
+            if isinstance(message, (JSONRPCResponse, JSONRPCError)) and message.id != original_request_id:
+                raise httpx2.SSEError("MCP SSE response ID did not match the request")
+        return await super()._handle_sse_event(
+            sse,
+            read_stream_writer,
+            original_request_id=original_request_id,
+            resumption_callback=resumption_callback,
+        )
+
+
+@asynccontextmanager
+async def _validated_streamable_http_client(url: str, *, http_client: httpx2.AsyncClient):
+    """Use the SDK transport with one response-ID guard until upstream fixes it.
+
+    The SDK factory always constructs its own transport, so this small lifecycle
+    wrapper retains its stream/task behavior while installing the guarded class.
+    """
+    transport = _ValidatingStreamableHTTPTransport(url)
+    read_writer, read_stream = create_context_streams[SessionMessage | Exception](0)
+    write_stream, write_reader = create_context_streams[SessionMessage](0)
+    async with read_writer, read_stream, write_stream, write_reader, anyio.create_task_group() as tg:
+        def start_get_stream() -> None:
+            tg.start_soon(transport.handle_get_stream, http_client, read_writer)
+
+        tg.start_soon(
+            transport.post_writer,
+            http_client,
+            write_reader,
+            read_writer,
+            write_stream,
+            start_get_stream,
+            tg,
+        )
+        try:
+            yield read_stream, write_stream
+        finally:
+            if transport.session_id:
+                await transport.terminate_session(http_client)
+            tg.cancel_scope.cancel()
+    await resync_tracer()
 
 
 class MCPStreamableHTTPClient:
@@ -43,13 +105,11 @@ class MCPStreamableHTTPClient:
         url: str,
         headers: Dict[str, str],
         default_timeout_ms: int = 10000,
-        allow_resolved_auth_headers: bool = False,
     ):
         self.server_id = server_id
         self.url = str(url or "").strip()
         self.headers = dict(headers or {})
         self.default_timeout_ms = int(default_timeout_ms)
-        self.allow_resolved_auth_headers = allow_resolved_auth_headers
         self._closing = False
         self._validate_url()
 
@@ -84,12 +144,14 @@ class MCPStreamableHTTPClient:
                 or not isinstance(template, str)
             ):
                 raise MCPError(f"MCP server '{self.server_id}' has an invalid header configuration")
-            if (
-                name.lower() in _SECRET_HEADERS
-                and not self.allow_resolved_auth_headers
-                and not _ENV_REFERENCE.search(template)
-            ):
-                raise MCPError(f"MCP server '{self.server_id}' requires an environment reference for authentication")
+            # Any custom header could carry credentials, including vendor-specific
+            # names such as X-Auth-Token. Require the whole value to come from an
+            # environment reference; only HTTP auth permits a literal scheme.
+            env_only = _ENV_REFERENCE.fullmatch(template)
+            if name.lower() in {"authorization", "proxy-authorization"}:
+                env_only = env_only or _AUTH_SCHEME_REFERENCE.fullmatch(template)
+            if not env_only:
+                raise MCPError(f"MCP server '{self.server_id}' requires an environment-only header")
 
             def expand(match: re.Match[str]) -> str:
                 value = os.environ.get(match.group(1))
@@ -162,14 +224,31 @@ class MCPStreamableHTTPClient:
         if self._closing:
             raise MCPServerExited(f"MCP server '{self.server_id}' is shutting down")
         headers = self._resolve_headers()
+        # The SDK logs raw messages, SSE data and session IDs at DEBUG/INFO.
+        # Our own failure log below contains only server and exception type.
+        logging.getLogger("mcp.client.streamable_http").setLevel(logging.CRITICAL + 1)
+        tool_post_attempted = False
+
+        async def note_request(request: httpx2.Request) -> None:
+            nonlocal tool_post_attempted
+            if operation != "tools/call" or request.method != "POST":
+                return
+            try:
+                envelope = json.loads(request.content)
+            except (ValueError, TypeError, httpx2.RequestNotRead):
+                return
+            if isinstance(envelope, dict) and envelope.get("method") == "tools/call":
+                tool_post_attempted = True
+
         try:
             async with asyncio.timeout(max(0.001, float(timeout_ms) / 1000.0)):
                 async with httpx2.AsyncClient(
                     headers=headers,
                     timeout=httpx2.Timeout(300.0, connect=5.0, write=5.0, pool=5.0),
                     follow_redirects=False,
+                    event_hooks={"request": [note_request]},
                 ) as http_client:
-                    transport = streamable_http_client(self.url, http_client=http_client)
+                    transport = _validated_streamable_http_client(self.url, http_client=http_client)
                     async with Client(
                         transport,
                         mode="auto",
@@ -186,8 +265,10 @@ class MCPStreamableHTTPClient:
                 operation=operation,
                 error_type=type(exc).__name__,
             )
-            if operation == "tools/call":
+            if operation == "tools/call" and tool_post_attempted:
                 raise MCPError(
                     f"MCP server '{self.server_id}' tool outcome unknown; do not retry without reconciliation"
                 ) from exc
+            if operation == "tools/call":
+                raise MCPError(f"MCP server '{self.server_id}' tool was not invoked ({type(exc).__name__})") from exc
             raise MCPError(f"MCP server '{self.server_id}' discovery failed ({type(exc).__name__})") from exc

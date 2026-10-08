@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import socket
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -9,10 +10,9 @@ from types import SimpleNamespace
 import pytest
 import uvicorn
 from mcp.server import MCPServer
-from starlette.responses import JSONResponse, PlainTextResponse
+from starlette.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from src.config import MCPConfig, MCPServerConfig
-from src.config.loaders import _expand_env_vars_with_defaults
 from src.mcp.errors import MCPError, MCPProtocolError
 from src.mcp.manager import MCPClientManager
 from src.mcp.streamable_http_client import MCPStreamableHTTPClient
@@ -62,8 +62,7 @@ async def test_official_sdk_negotiates_json_and_sse(json_response):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("transport", ["streamable_http", "streamable-http"])
-async def test_auth_header_is_resolved_but_never_exposed(monkeypatch, transport):
+async def test_auth_header_is_resolved_but_never_exposed(monkeypatch):
     monkeypatch.setenv("MCP_TEST_SECRET", "private-sentinel")
     server = MCPServer("local-test")
 
@@ -88,11 +87,9 @@ async def test_auth_header_is_resolved_but_never_exposed(monkeypatch, transport)
             enabled=True,
             servers={
                 "remote": MCPServerConfig(
-                    transport=transport,
+                    transport="streamable_http",
                     url=url,
-                    headers={
-                        "Authorization": _expand_env_vars_with_defaults("Bearer ${MCP_TEST_SECRET}")
-                    },
+                    headers={"Authorization": "Bearer ${MCP_TEST_SECRET}"},
                     command=[],
                 )
             },
@@ -110,6 +107,27 @@ async def test_auth_header_is_resolved_but_never_exposed(monkeypatch, transport)
         assert result["content"][0]["text"] == "ok"
         assert seen_auth and all(value == b"Bearer private-sentinel" for value in seen_auth)
         await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_manager_rejects_literal_auth_header_without_network_use():
+    manager = MCPClientManager(
+        MCPConfig(
+            enabled=True,
+            servers={
+                "remote": MCPServerConfig(
+                    transport="streamable_http",
+                    url="http://127.0.0.1:9/mcp",
+                    headers={"Authorization": "Bearer private-sentinel"},
+                )
+            },
+        )
+    )
+    await manager.start()
+    status = manager.get_status()
+    assert status["servers"]["remote"]["up"] is False
+    assert "private-sentinel" not in str(status)
+    await manager.stop()
 
 
 @pytest.mark.asyncio
@@ -188,7 +206,42 @@ async def test_lost_mutating_response_is_not_replayed():
 
 
 @pytest.mark.asyncio
-async def test_mismatched_tool_response_does_not_trigger_second_call():
+async def test_missing_tool_is_not_reported_as_unknown_outcome():
+    server = MCPServer("local-discovery")
+
+    @server.tool()
+    def echo(value: str) -> str:
+        return value
+
+    app = server.streamable_http_app(host="127.0.0.1", stateless_http=True, json_response=True)
+    async with local_http(app) as url:
+        client = MCPStreamableHTTPClient(server_id="remote", url=url, headers={})
+        with pytest.raises(MCPError, match="tool was not invoked"):
+            await client.call_tool(name="not-advertised", arguments={}, timeout_ms=3000)
+
+
+@pytest.mark.asyncio
+async def test_sdk_message_debug_logging_cannot_emit_tool_payload(caplog, monkeypatch):
+    server = MCPServer("local-log-boundary")
+
+    @server.tool()
+    def echo(value: str) -> str:
+        return value
+
+    app = server.streamable_http_app(host="127.0.0.1", stateless_http=True, json_response=False)
+    sdk_logger = logging.getLogger("mcp.client.streamable_http")
+    monkeypatch.setattr(sdk_logger, "level", logging.DEBUG)
+    caplog.set_level(logging.DEBUG)
+    async with local_http(app) as url:
+        client = MCPStreamableHTTPClient(server_id="remote", url=url, headers={})
+        result = await client.call_tool(name="echo", arguments={"value": "private-mcp-payload"})
+        assert result["content"][0]["text"] == "private-mcp-payload"
+    assert "private-mcp-payload" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response_mode", ["json", "sse"])
+async def test_mismatched_tool_response_does_not_trigger_second_call(response_mode):
     server = MCPServer("local-mismatch")
 
     @server.tool()
@@ -212,9 +265,12 @@ async def test_mismatched_tool_response_does_not_trigger_second_call():
         request = json.loads(body)
         if request.get("method") == "tools/call":
             calls.append(request["id"])
-            await JSONResponse(
-                {"jsonrpc": "2.0", "id": "not-the-request", "result": {"content": []}}
-            )(scope, receive, send)
+            mismatch = {"jsonrpc": "2.0", "id": "not-the-request", "result": {"content": []}}
+            if response_mode == "sse":
+                event = f"event: message\ndata: {json.dumps(mismatch)}\n\n".encode()
+                await StreamingResponse(iter([event]), media_type="text/event-stream")(scope, receive, send)
+            else:
+                await JSONResponse(mismatch)(scope, receive, send)
             return
         sent = False
 
@@ -396,7 +452,17 @@ def test_requires_secret_environment_reference_and_rejects_protocol_headers(monk
         url="https://example.test/mcp",
         headers={"Authorization": "Bearer literal-secret"},
     )
-    with pytest.raises(MCPError, match="environment reference"):
+    with pytest.raises(MCPError, match="environment-only"):
+        client._resolve_headers()
+    monkeypatch.setenv("MCP_AUTH_SUFFIX", "suffix")
+    client.headers = {"Authorization": "Bearer literal-secret-${MCP_AUTH_SUFFIX}"}
+    with pytest.raises(MCPError, match="environment-only"):
+        client._resolve_headers()
+    client.headers = {"Authorization": "Bearer ${MISSING_SECRET:-literal}"}
+    with pytest.raises(MCPError, match="environment-only"):
+        client._resolve_headers()
+    client.headers = {"X-Auth-Token": "literal-secret"}
+    with pytest.raises(MCPError, match="environment-only"):
         client._resolve_headers()
     client.headers = {"MCP-Protocol-Version": "2024-11-05"}
     with pytest.raises(MCPError, match="invalid header configuration"):

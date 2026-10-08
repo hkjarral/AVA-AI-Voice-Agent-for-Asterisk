@@ -110,6 +110,20 @@ missing: ${NONEXISTENT_VAR}
         
         # os.expandvars leaves undefined vars unchanged (this is correct behavior)
         assert result['missing'] == '${NONEXISTENT_VAR}'
+
+    def test_mcp_header_template_remains_unexpanded_until_client(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AVA_MCP_SECRET", "private-sentinel")
+        monkeypatch.setenv("AVA_MCP_HOST", "mcp.example")
+        config_file = tmp_path / "test.yaml"
+        config_file.write_text(
+            'mcp:\n  servers:\n    remote:\n      url: "https://${AVA_MCP_HOST}/mcp"\n'
+            '      headers:\n        Authorization: "Bearer ${AVA_MCP_SECRET}"\n'
+        )
+        result = load_yaml_with_env_expansion(str(config_file))
+        assert result["mcp"]["servers"]["remote"]["url"] == "https://mcp.example/mcp"
+        assert result["mcp"]["servers"]["remote"]["headers"] == {
+            "Authorization": "Bearer ${AVA_MCP_SECRET}"
+        }
     
     def test_mixed_env_and_literal(self, tmp_path, monkeypatch):
         """Should handle mix of env vars and literal values."""
