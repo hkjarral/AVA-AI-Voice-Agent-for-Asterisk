@@ -3584,6 +3584,7 @@ class LocalAIServer:
         session.last_final_text = last_text
         session.last_final_norm = _normalize_text(last_text)
         session.last_final_at = monotonic()
+        session.last_final_segment_generation = None
         # Note: Kroko WebSocket is kept open for session reuse, closed on disconnect
 
     async def _flush_sherpa_offline_trailing(self, websocket, session: SessionContext) -> None:
@@ -5672,6 +5673,7 @@ class LocalAIServer:
             or segment_generation == session.stt_segment_generation
         ):
             self._reset_stt_session(session, text)
+            session.last_final_segment_generation = segment_generation
             return
 
         # A prior Whisper decode may finish after the next utterance starts.
@@ -5679,6 +5681,7 @@ class LocalAIServer:
         session.last_final_text = text
         session.last_final_norm = _normalize_text(text)
         session.last_final_at = monotonic()
+        session.last_final_segment_generation = segment_generation
 
     async def _handle_final_transcript(
         self,
@@ -5741,6 +5744,7 @@ class LocalAIServer:
         last_final_text = session.last_final_text
         last_final_norm = session.last_final_norm
         last_final_at = session.last_final_at
+        last_final_segment_generation = session.last_final_segment_generation
         recent_empty = (
             last_final_text == ""
             and last_final_at > 0.0
@@ -5807,7 +5811,15 @@ class LocalAIServer:
                 )
                 return
 
-        if idle_promoted and normalized_text and normalized_text == last_final_norm:
+        if (
+            idle_promoted
+            and normalized_text
+            and normalized_text == last_final_norm
+            and (
+                segment_generation is None
+                or segment_generation == last_final_segment_generation
+            )
+        ):
             logging.info(
                 "📝 STT FINAL SUPPRESSED - Duplicate idle transcript call_id=%s mode=%s text=%s",
                 session.call_id,
@@ -5851,7 +5863,10 @@ class LocalAIServer:
                     last_user_text = (message.get("content") or "").strip()
                     break
             last_turn_norm = _normalize_text(last_user_text) if last_user_text else ""
-            if normalized_text == last_turn_norm:
+            if normalized_text == last_turn_norm and (
+                segment_generation is None
+                or segment_generation == last_final_segment_generation
+            ):
                 logging.info(
                     "🧠 LLM SKIPPED - Duplicate final transcript call_id=%s mode=%s text=%s",
                     session.call_id,
@@ -6498,6 +6513,7 @@ class LocalAIServer:
                         text=text,
                         confidence=confidence,
                         idle_promoted=False,
+                        segment_generation=event.get("_segment_generation"),
                     )
                     if mode == "stt":
                         await final_coro

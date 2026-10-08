@@ -173,6 +173,101 @@ async def test_whisper_segmenter_finalizes_speech_burst_without_followup_frames(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("backend_name", ["faster_whisper", "whisper_cpp"])
+async def test_distinct_identical_whisper_idle_finals_are_both_emitted(
+    monkeypatch, backend_name
+):
+    server_mod = _load("server")
+    session_mod = _load("session")
+    instance, session, backend = _server_and_session(server_mod, session_mod)
+    now = 1.0
+    original_sleep = asyncio.sleep
+
+    monkeypatch.setattr(server_mod, "monotonic", lambda: now)
+    instance.stt_backend = backend_name
+    instance.whisper_cpp_backend = backend
+    instance._whisper_cpp_lock = asyncio.Lock()
+    instance.mock_models = False
+    instance._ingress_rms_count = 0
+    instance.buffer_timeout_ms = 500
+    instance._send_json = AsyncMock(return_value=True)
+
+    async def advance_clock(delay: float):
+        nonlocal now
+        now += delay
+
+    monkeypatch.setattr(server_mod.asyncio, "sleep", advance_clock)
+
+    for _ in range(2):
+        for _ in range(2):
+            now += 0.16
+            await instance._handle_audio_payload(
+                object(), session, {"mode": "stt", "rate": 16000},
+                incoming_bytes=_frame(2000),
+            )
+        idle_task = session.idle_task
+        assert idle_task is not None
+        await original_sleep(0)
+        await idle_task
+
+    assert len(backend.segments) == 2
+    assert instance._send_json.await_count == 2
+    assert session.last_final_segment_generation == 2
+
+
+@pytest.mark.asyncio
+async def test_duplicate_idle_final_from_one_whisper_segment_is_suppressed(monkeypatch):
+    server_mod = _load("server")
+    session_mod = _load("session")
+    instance, session, _backend = _server_and_session(server_mod, session_mod)
+    monkeypatch.setattr(server_mod, "monotonic", lambda: 1.0)
+    instance.stt_backend = "faster_whisper"
+    instance._send_json = AsyncMock(return_value=True)
+    session.stt_segment_generation = 1
+
+    for _ in range(2):
+        await instance._handle_final_transcript(
+            object(), session, None, mode="stt", text="complete utterance",
+            confidence=None, idle_promoted=True, segment_generation=1,
+        )
+
+    instance._send_json.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_repeated_words_from_new_whisper_segment_reach_llm(monkeypatch):
+    server_mod = _load("server")
+    session_mod = _load("session")
+    instance, session, _backend = _server_and_session(server_mod, session_mod)
+    monkeypatch.setattr(server_mod, "monotonic", lambda: 1.0)
+    instance.stt_backend = "faster_whisper"
+    instance._send_json = AsyncMock(return_value=True)
+    instance._text_has_end_call_intent = lambda *_args: False
+    instance._start_output_generation = lambda _session: 1
+    session.stt_segment_generation = 2
+    session.last_final_text = "complete utterance"
+    session.last_final_norm = "complete utterance"
+    session.last_final_segment_generation = 1
+    session.llm_messages = [{"role": "user", "content": "complete utterance"}]
+
+    class ReachedLLM(Exception):
+        pass
+
+    def stop_at_prompt(*_args):
+        raise ReachedLLM
+
+    instance._prepare_llm_prompt = stop_at_prompt
+
+    with pytest.raises(ReachedLLM):
+        await instance._handle_final_transcript(
+            object(), session, None, mode="llm", text="complete utterance",
+            confidence=None, idle_promoted=True, segment_generation=2,
+        )
+
+    instance._send_json.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_whisper_segmenter_finalizes_when_transport_continues_silence(monkeypatch):
     server_mod = _load("server")
     session_mod = _load("session")

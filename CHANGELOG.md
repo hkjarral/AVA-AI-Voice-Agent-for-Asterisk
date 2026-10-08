@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Whisper idle finalization:** finalize buffered speech after per-session silence without requiring another audio frame, while preserving newer speech that arrives during a slow decode or backend-lock wait.
+- **Whisper idle finalization:** finalize buffered speech after per-session silence without requiring another audio frame, while preserving newer speech that arrives during a slow decode or backend-lock wait. Repeated words in distinct speech segments remain separate turns; duplicate finalization of one segment stays suppressed.
 
 - **Google Developer long-response playback (opt-in):** prevents the original source queue from dropping small audio chunks when generation runs ahead of telephony playback. Enabled calls wait for playback drain, cancel queued speech on interruption, and reject stale farewell completion. Abnormal disconnects allow accepted audio up to eight seconds to drain before cleanup, respecting caller teardown and transfer ownership. Disconnect drain runs in a cleanup-cancelled call task, with a bounded transfer wait, so provider event dispatch remains responsive; completion backlog overflow immediately rejects new tool work. This cannot prevent upstream Google errors or recover audio that was never received.
 - **Google AudioSocket interruption detection:** silence-gated Google calls inspect normalized caller audio before upstream silence substitution, so local barge-in can detect speech during playback. This correction applies to Developer API and Vertex independently of the long-response option; native Gemini 3.8 full-duplex interruption keeps its provider-driven path. Other providers' detector inputs are unchanged.
