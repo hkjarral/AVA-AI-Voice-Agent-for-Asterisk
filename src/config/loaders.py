@@ -11,49 +11,59 @@ import os
 import re
 import yaml
 from pathlib import Path
+from typing import Callable, Optional
 
 
 # Project root directory (parent of src/)
 _PROJ_DIR = Path(__file__).parent.parent.parent.resolve()
 
-# Pattern to match ${VAR:-default} or ${VAR:=default} shell-style syntax
-_ENV_VAR_PATTERN = re.compile(r'\$\{([^}:]+)(:-|:=)?([^}]*)?\}')
+# Only find delimiter tokens with regex. Parsing the body ourselves avoids
+# backtracking over malformed, operator-supplied configuration text.
+_ENV_BRACE_TOKENS = re.compile(r"\$\{|\}")
+
+
+def substitute_braced_env_vars(
+    text: str,
+    resolve: Callable[[str, Optional[str], str, str], str],
+) -> str:
+    """Substitute complete ${NAME[operator]default} references in linear time."""
+    parts = []
+    copied_until = 0
+    opening = None
+    for token in _ENV_BRACE_TOKENS.finditer(text):
+        if token.group() == "${":
+            # A nested opening invalidates the earlier incomplete reference.
+            opening = token.start()
+            continue
+        if opening is None:
+            continue
+
+        body = text[opening + 2:token.start()]
+        var_name, separator, suffix = body.partition(":")
+        valid_name = var_name.isascii() and var_name.isidentifier()
+        valid_operator = not separator or (bool(suffix) and suffix[0] in "-=")
+        if valid_name and valid_operator:
+            operator = ":" + suffix[0] if separator else None
+            default_value = suffix[1:] if operator else ""
+            original = text[opening:token.end()]
+            replacement = resolve(var_name, operator, default_value, original)
+            parts.extend((text[copied_until:opening], replacement))
+            copied_until = token.end()
+        opening = None
+
+    parts.append(text[copied_until:])
+    return "".join(parts)
 
 
 def _expand_env_vars_with_defaults(text: str) -> str:
-    """
-    Expand environment variables with support for shell-style defaults.
-    
-    Supports:
-    - ${VAR} - Basic expansion
-    - ${VAR:-default} - Use default if VAR is unset or empty
-    - ${VAR:=default} - Use default if VAR is unset or empty (same as :- for our purposes)
-    - $VAR - Simple expansion (handled by os.path.expandvars)
-    
-    Args:
-        text: String containing environment variable references
-        
-    Returns:
-        String with environment variables expanded
-    """
-    def replace_match(match):
-        var_name = match.group(1)
-        operator = match.group(2)  # :- or := or None
-        default_value = match.group(3) or ""
-        
+    """Expand braced references, then the historical simple $VAR form."""
+    def resolve(var_name: str, operator: Optional[str], default_value: str, original: str) -> str:
         env_value = os.environ.get(var_name)
-        
-        if operator in (":-", ":="):
-            # Use default if env var is unset or empty
-            if env_value is None or env_value == "":
-                return default_value
-            return env_value
-        else:
-            # No default operator, just expand ${VAR}
-            return env_value if env_value is not None else match.group(0)
-    
-    # First handle ${VAR:-default} and ${VAR:=default} patterns
-    result = _ENV_VAR_PATTERN.sub(replace_match, text)
+        if operator:
+            return env_value if env_value else default_value
+        return env_value if env_value is not None else original
+
+    result = substitute_braced_env_vars(text, resolve)
     
     # Then handle any remaining simple $VAR patterns
     result = os.path.expandvars(result)
