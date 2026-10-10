@@ -74,9 +74,12 @@ services:
   ai_engine:
     environment:
       wss_proxy: http://127.0.0.1:18766
+      no_proxy: localhost,127.0.0.1,::1
 ```
 
-Confirm the container has Python websockets 15+ proxy support and the hostname is not bypassed by `no_proxy`. The proxy address above requires host networking; bridge-network installations need a reachable host address and a separately secured listener.
+Preserve any existing `no_proxy` exclusions and add the exact ARI/PBX and Local AI hostnames or IP addresses for your installation. The example covers loopback endpoints only. An engine-wide `wss_proxy` also applies to a TLS ARI WebSocket; without a bypass the cloud-only proxy rejects it and ARI cannot reconnect. Before placing calls, confirm ARI and Local AI select direct connections, the selected cloud hostname selects the proxy, and engine health reports ARI connected with no active calls.
+
+Confirm the container has Python websockets 15+ proxy support and the cloud hostname is not bypassed by `no_proxy`. The proxy address above requires host networking; bridge-network installations need a reachable host address and a separately secured listener.
 
 Start the proxy in a separate SSH terminal and independent container, targeting the exact provider host. This uses the bundled Python 3.11 runtime; voiprnd’s host Python 3.6 is too old for the tool:
 
