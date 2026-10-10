@@ -35,6 +35,16 @@ _PROTOCOL_HEADERS = {
     "mcp-session-id",
     "host",
 }
+_UNSAFE_TRANSPORT_LOGGERS = (
+    "mcp.client.streamable_http",
+    "httpx2",
+    "httpcore2",
+    "httpcore2.connection",
+    "httpcore2.http11",
+    "httpcore2.http2",
+    "httpcore2.proxy",
+    "httpcore2.socks",
+)
 
 
 class _ValidatingStreamableHTTPTransport(StreamableHTTPTransport):
@@ -224,9 +234,11 @@ class MCPStreamableHTTPClient:
         if self._closing:
             raise MCPServerExited(f"MCP server '{self.server_id}' is shutting down")
         headers = self._resolve_headers()
-        # The SDK logs raw messages, SSE data and session IDs at DEBUG/INFO.
-        # Our own failure log below contains only server and exception type.
-        logging.getLogger("mcp.client.streamable_http").setLevel(logging.CRITICAL + 1)
+        # The SDK and HTTP transport log raw messages, response headers,
+        # session IDs and endpoint URLs at DEBUG/INFO. Keep only our bounded
+        # failure log below, regardless of the application's log level.
+        for logger_name in _UNSAFE_TRANSPORT_LOGGERS:
+            logging.getLogger(logger_name).setLevel(logging.CRITICAL + 1)
         tool_post_attempted = False
 
         async def note_request(request: httpx2.Request) -> None:
@@ -268,7 +280,7 @@ class MCPStreamableHTTPClient:
             if operation == "tools/call" and tool_post_attempted:
                 raise MCPError(
                     f"MCP server '{self.server_id}' tool outcome unknown; do not retry without reconciliation"
-                ) from exc
+                ) from None
             if operation == "tools/call":
-                raise MCPError(f"MCP server '{self.server_id}' tool was not invoked ({type(exc).__name__})") from exc
-            raise MCPError(f"MCP server '{self.server_id}' discovery failed ({type(exc).__name__})") from exc
+                raise MCPError(f"MCP server '{self.server_id}' tool was not invoked ({type(exc).__name__})") from None
+            raise MCPError(f"MCP server '{self.server_id}' discovery failed ({type(exc).__name__})") from None

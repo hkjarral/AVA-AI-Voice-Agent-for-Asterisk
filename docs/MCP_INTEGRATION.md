@@ -332,6 +332,13 @@ Also add structured logs that include:
 - `server`, `tool`, `exposed_name`
 - timing + timeout vs success
 
+For Streamable HTTP, keep diagnostics at the operation/type boundary. The MCP
+SDK and HTTP transport may include session headers, endpoint URLs, payloads,
+or server-provided error text in their INFO/DEBUG traces. AVA suppresses raw
+transport traces even when application DEBUG logging is enabled. A failed tool
+call after dispatch remains **outcome unknown** and must be reconciled at the MCP
+server; a sanitized error log does not make retry safe.
+
 ## Testing on a Development Server
 
 ### Suggested approach

@@ -1,21 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import socket
+import sys
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
+import structlog
 import uvicorn
 from mcp.server import MCPServer
 from starlette.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from src.config import MCPConfig, MCPServerConfig
+from src.logging_config import configure_logging
 from src.mcp.errors import MCPError, MCPProtocolError
 from src.mcp.manager import MCPClientManager
-from src.mcp.streamable_http_client import MCPStreamableHTTPClient
+from src.mcp.streamable_http_client import MCPStreamableHTTPClient, _UNSAFE_TRANSPORT_LOGGERS
 from src.tools.registry import ToolRegistry
 
 
@@ -39,6 +43,26 @@ async def local_http(app):
     finally:
         server.should_exit = True
         await asyncio.wait_for(task, timeout=5)
+
+
+@asynccontextmanager
+async def capture_ava_debug_logs(monkeypatch):
+    """Exercise the application formatter, including its foreign-logger path."""
+    root = logging.getLogger()
+    prior_handlers = root.handlers[:]
+    prior_level = root.level
+    prior_structlog = structlog.get_config()
+    output = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    monkeypatch.setenv("LOG_SHOW_TRACEBACKS", "always")
+    configure_logging()
+    try:
+        yield output
+    finally:
+        root.handlers[:] = prior_handlers
+        root.setLevel(prior_level)
+        structlog.configure(**prior_structlog)
 
 
 @pytest.mark.asyncio
@@ -237,6 +261,108 @@ async def test_sdk_message_debug_logging_cannot_emit_tool_payload(caplog, monkey
         result = await client.call_tool(name="echo", arguments={"value": "private-mcp-payload"})
         assert result["content"][0]["text"] == "private-mcp-payload"
     assert "private-mcp-payload" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_session_header_stays_out_of_debug_formatter(monkeypatch):
+    server = MCPServer("local-session-log-boundary")
+
+    @server.tool()
+    def echo(value: str) -> str:
+        return value
+
+    app = server.streamable_http_app(host="127.0.0.1", stateless_http=True, json_response=True)
+    session_id = "private-session-id-sentinel"
+    endpoint_path = "private-endpoint-path-sentinel"
+
+    async def observe_headers(scope, receive, send):
+        if scope["type"] == "http":
+            scope = dict(scope)
+            scope["path"] = "/mcp"
+            scope["raw_path"] = b"/mcp"
+
+        async def observe(message):
+            if message["type"] == "http.response.start":
+                # Exercise the real HTTP formatter with a synthetic session
+                # header; no live server session is needed for this boundary.
+                message = dict(message)
+                message["headers"] = list(message.get("headers", [])) + [
+                    (b"mcp-session-id", session_id.encode("ascii"))
+                ]
+            await send(message)
+
+        await app(scope, receive, observe)
+
+    for name in _UNSAFE_TRANSPORT_LOGGERS:
+        target = logging.getLogger(name)
+        monkeypatch.setattr(target, "level", logging.DEBUG)
+    async with capture_ava_debug_logs(monkeypatch) as output:
+        async with local_http(observe_headers) as url:
+            client = MCPStreamableHTTPClient(
+                server_id="remote", url=url.replace("/mcp", f"/{endpoint_path}"), headers={}
+            )
+            tools = await client.list_tools()
+            assert [tool["name"] for tool in tools] == ["echo"]
+    assert session_id not in output.getvalue()
+    assert endpoint_path not in output.getvalue()
+    assert '"logger": "httpx2"' not in output.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_remote_rpc_error_stays_out_of_engine_traceback(monkeypatch):
+    server = MCPServer("local-remote-error")
+
+    @server.tool()
+    def echo(value: str) -> str:
+        return value
+
+    app = server.streamable_http_app(host="127.0.0.1", stateless_http=True, json_response=True)
+    calls = []
+
+    async def remote_error(scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST":
+            await app(scope, receive, send)
+            return
+        chunks = []
+        while True:
+            message = await receive()
+            chunks.append(message.get("body", b""))
+            if not message.get("more_body", False):
+                break
+        body = b"".join(chunks)
+        request = json.loads(body)
+        if request.get("method") == "tools/call":
+            calls.append(request["id"])
+            await JSONResponse(
+                {"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32603, "message": "private-rpc-error-sentinel"}}
+            )(scope, receive, send)
+            return
+        sent = False
+
+        async def replay():
+            nonlocal sent
+            if not sent:
+                sent = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return {"type": "http.disconnect"}
+
+        await app(scope, replay, send)
+
+    for name in _UNSAFE_TRANSPORT_LOGGERS:
+        target = logging.getLogger(name)
+        monkeypatch.setattr(target, "level", logging.DEBUG)
+    async with capture_ava_debug_logs(monkeypatch) as output:
+        async with local_http(remote_error) as url:
+            client = MCPStreamableHTTPClient(server_id="remote", url=url, headers={})
+            with pytest.raises(MCPError, match="outcome unknown") as caught:
+                await client.call_tool(name="echo", arguments={"value": "once"}, timeout_ms=3000)
+            assert "private-rpc-error-sentinel" not in str(caught.value)
+            structlog.get_logger("src.engine").error(
+                "Tool execution failed", tool="mcp_remote_echo", error=str(caught.value), exc_info=caught.value
+            )
+    assert len(calls) == 1
+    assert "private-rpc-error-sentinel" not in output.getvalue()
+    assert "MCP HTTP operation failed" in output.getvalue()
 
 
 @pytest.mark.asyncio
