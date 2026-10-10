@@ -1,6 +1,67 @@
 # Migration Guide
 
-This guide covers upgrading between major versions of Asterisk AI Voice Agent.
+This guide covers upgrading between releases of Asterisk AI Voice Agent.
+
+## v7.6.1 to v7.6.2
+
+v7.6.2 is an in-place feature and reliability release. It adds opt-in Gemini 3.8
+Live, Microsoft Calendar invitations and same-call booking changes, shared Call
+History filters, and Admin UI accessibility/readability improvements. There is
+no database migration, dependency update, or change to saved Agent assignments,
+selected providers, transport, Audio Profiles, or shipped Google Live model
+defaults in this release.
+
+Before upgrading, drain active calls and back up operator configuration, SQLite
+data and calendar token caches using the [installation guide](INSTALLATION.md#upgrade-to-v762-existing-checkout).
+Then:
+
+1. Rebuild/recreate `ai_engine` and `admin_ui` together. The bundled
+   `local_ai_server` is unchanged; do not start/recreate it solely for this
+   release. Do not interrupt an active calendar booking conversation.
+2. Preserve Microsoft account identities, OAuth caches, saved calendar IDs and
+   Agent tool scopes. Verification reads the saved calendar directly and never
+   chooses another/default calendar. A legacy `account_identity_mismatch`
+   requires an operator to confirm the intended account and correct its
+   configured identity to the cached MSAL username, not select a different user
+   or reconnect as a workaround. Expired/revoked authorization still requires
+   reconnecting.
+3. Microsoft invitations remain disabled until explicitly enabled. Working
+   hours guide suggestions; enforcing hours/days/horizon is a separate opt-in.
+   Existing appointment-only create arguments remain supported. Review any
+   integrations using arbitrary-ID deletion or private event bodies: mutations
+   now require consent and tracked current-call ownership, and generic event
+   reads omit invitation bodies. Later-call/untracked mutations require staff.
+   Saved Agent prompts are not rewritten; calendar runtime guidance applies to
+   full-agent and modular/hybrid providers. See the
+   [calendar guide](Microsoft-calendar-tool.md#upgrading-existing-installations).
+4. Gemini 3.8 Live is opt-in and Audio Only, with model-aware Vertex regions.
+   Existing model defaults remain unchanged. Attached calls qualify the scoped
+   Vertex `us-central1` paths, not every region, Developer API workload or
+   provider/transport combination. Review the
+   [Google](Provider-Google-Setup.md) and [Vertex](Provider-Vertex-Setup.md) guides
+   before changing a production model.
+5. Call History list, statistics and CSV/JSON exports now share all active
+   filters. Multiple outcomes and **Only / Hide**, tool usage and duration
+   filters are available; hiding outcomes retains calls with no outcome. A
+   single `outcome` parameter remains compatible. No historical data is rewritten.
+6. `farewell_hangup_delay_sec` is deprecated and ignored. Existing YAML values
+   and the tools API remain accepted; its UI controls and shipped value are
+   removed. Hangup still drains caller-facing audio, including the modular
+   pipeline farewell fallback; Local AI's separate farewell controls remain.
+
+Rollback requires no database downgrade. Drain calls and restore the v7.6.1
+images/code and pre-update configuration backup, especially after adopting
+Gemini 3.8-specific settings. Microsoft calendar IDs/caches need no conversion.
+Existing Graph events and invitations remain: never delete appointments as
+rollback cleanup. Same-call booking ownership is bounded/in-memory and cannot
+survive a restart or code rollback; staff must handle untracked changes.
+Invitation request success still does not establish delivery or acceptance, and
+availability checks are not distributed exclusive reservations.
+
+The maintainer confirmed the [#686 acceptance plan](Microsoft-calendar-tool.md#acceptance-plan-and-rollout)
+was tested and validated for this release on 2026-10-02. See the
+[v7.6.2 matrix](baselines/golden/v7.6.2-validation-matrix.md) for evidence and
+qualification boundaries; this confirmation is not a blanket provider sweep.
 
 ## v7.6.0 to v7.6.1
 
@@ -284,7 +345,7 @@ does not alter historical Call History records.
 ## v7.4.1 to v7.5.0
 
 Released 2026-07-22. Follow the
-[v7.5.0 upgrade procedure](INSTALLATION.md#upgrade-to-v750-existing-checkout),
+[current upgrade procedure](INSTALLATION.md),
 including the local-change decision, Compose validation, backup, and post-update checks.
 
 ### Audio transport and profiles
@@ -349,7 +410,7 @@ v7.4 removes Contexts as a product and runtime model. Agents in
 
 ### Before upgrading
 
-1. Follow the [current upgrade procedure](INSTALLATION.md#upgrade-to-v754-existing-checkout),
+1. Follow the [current upgrade procedure](INSTALLATION.md),
    including the documented older-installation updater recovery path.
 2. Back up `data/operator/agents.db`, `data/call_history.db`, `.env`, operator YAML,
    `config/users.json`, and any legacy `config/contexts/` files.

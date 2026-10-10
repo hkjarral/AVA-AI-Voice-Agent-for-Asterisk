@@ -6,6 +6,7 @@ import yaml from 'js-yaml';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
 import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
 import { Plus, Settings, Trash2, Copy, ArrowRight, Workflow, AlertTriangle, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
+import { IconButton } from '../components/ui/IconButton';
 import { YamlErrorBanner, YamlErrorInfo } from '../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
@@ -514,26 +515,26 @@ const PipelinesPage = () => {
                                     )}
                                 </div>
                                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <button
+                                    <IconButton
+                                        icon={Copy}
                                         onClick={() => handleClonePipeline(name)}
                                         className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
-                                        aria-label={`Clone pipeline ${name}`}
+                                        label={`Clone pipeline ${name}`}
                                         title="Clone pipeline"
-                                    >
-                                        <Copy className="w-4 h-4" />
-                                    </button>
-                                    <button
+                                    />
+                                    <IconButton
+                                        icon={Settings}
+                                        label={`Edit pipeline ${name}`}
                                         onClick={() => handleEditPipeline(name)}
                                         className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
-                                    >
-                                        <Settings className="w-4 h-4" />
-                                    </button>
-                                    <button
+                                    />
+                                    <IconButton
+                                        icon={Trash2}
+                                        variant="destructive"
+                                        label={`Delete pipeline ${name}`}
                                         onClick={() => handleDeletePipeline(name)}
                                         className="p-2 hover:bg-destructive/10 rounded-md text-destructive"
-                                    >
-                                        <Trash2 className="w-4 h-4" />
-                                    </button>
+                                    />
                                 </div>
                             </div>
 

@@ -43,7 +43,24 @@ The wizard writes to `config/ai-agent.local.yaml` (operator overrides), so upstr
 Create and edit operator-managed agents, select their provider or pipeline, configure prompts/tools/voice, and copy a ready-to-use dialplan snippet. Resource access for transfers, Google Calendar, Microsoft Calendar, and voicemail can inherit the global inventory, allow selected resource keys, or deny that family. Under **Caller Inactivity Overrides**, an agent can partially override the global watchdog timing/messages. Inbound agents inherit the global policy; outbound agents must explicitly enable it here.
 
 #### Providers
-Configure full-agent providers and their settings (model, voice, API version, etc.). Each provider card shows its current status.
+Configure full-agent providers and modular STT/LLM/TTS components. Each provider
+card shows its current status.
+
+For a modular HTTP provider, edit its endpoint and credential source, then click
+**Test Connection** to test the current form before saving. Custom hosts, ports
+and API paths are preserved. Results show the tested destination origin and a
+readable success or failure reason; changing settings clears the old result.
+Tests on separate provider cards keep their own loading states and results.
+Closing or reopening an editor discards responses from its previous session.
+The credential verification action tests the saved provider configuration.
+
+A successful LLM model list does not prove that the selected model can perform
+inference. Telnyx connection testing additionally exercises a minimal chat
+request. Speech endpoint success establishes reachability only and explicitly
+does not verify authentication or transcription/synthesis. Save the intended
+settings and follow any apply/restart prompt before validating call behavior.
+See [modular HTTP provider tests](Configuration-Reference.md#admin-ui-modular-http-provider-tests)
+for endpoint selection, scoped credentials, no-auth servers and test limits.
 
 #### Pipelines
 Configure modular STT/LLM/TTS pipelines for mix-and-match provider combinations.
@@ -70,6 +87,8 @@ Per-call debugging and analytics:
 - Tool call history with parameters and results
 - Opt-in call metadata with pre-call/updated-during-call provenance badges
 - Exact call metadata field/value filtering and CSV/JSON export
+- Multi-outcome filter with **Only** / **Hide** modes (for example, hide abandoned calls), plus tool usage and duration range filters
+- Summary statistics, the list and CSV/JSON exports all follow the same active filters; the panel reads **Call Statistics (filtered)** while any filter is set
 - Call quality metrics
 - A distinct **No input timeout** outcome for calls ended by the inactivity policy
 

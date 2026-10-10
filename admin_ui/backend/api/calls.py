@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from zoneinfo import ZoneInfo
@@ -485,10 +485,7 @@ async def get_providers_health():
     return ProviderHealthResponse(providers=result)
 
 
-@router.get("/calls", response_model=CallListResponse)
-async def list_calls(
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+def call_history_filters(
     start_date: Optional[str] = Query(None, description="Filter by start date (ISO format)"),
     end_date: Optional[str] = Query(None, description="Filter by end date (ISO format)"),
     caller_number: Optional[str] = Query(None, description="Filter by caller number (partial match)"),
@@ -496,23 +493,19 @@ async def list_calls(
     provider_name: Optional[str] = Query(None, description="Filter by provider"),
     pipeline_name: Optional[str] = Query(None, description="Filter by pipeline"),
     context_name: Optional[str] = Query(None, description="Filter by context"),
-    outcome: Optional[str] = Query(None, description="Filter by outcome"),
+    outcome: Optional[str] = Query(None, max_length=512, description="Keep only these outcomes (comma-separated)"),
+    exclude_outcome: Optional[str] = Query(None, max_length=512, description="Hide these outcomes (comma-separated)"),
     has_tool_calls: Optional[bool] = Query(None, description="Filter calls with tool executions"),
     min_duration: Optional[float] = Query(None, description="Minimum duration in seconds"),
     max_duration: Optional[float] = Query(None, description="Maximum duration in seconds"),
     transcript_search: Optional[str] = Query(None, min_length=1, max_length=256, description="Search within conversation transcripts (case-insensitive substring match)"),
     call_metadata_key: Optional[str] = Query(None, max_length=64, description="Exact call metadata field name"),
     call_metadata_value: Optional[str] = Query(None, max_length=1024, description="Exact call metadata value"),
-    order_by: str = Query("start_time", description="Column to order by"),
-    order_dir: str = Query("DESC", description="Order direction (ASC/DESC)"),
-):
+) -> Dict[str, Any]:
+    """Shared call-history filters, so the list, the stats and the exports always agree.
+
+    Returns keyword arguments for CallHistoryStore.list/count/get_stats.
     """
-    List call history records with pagination and filtering.
-    """
-    store = _get_call_history_store()
-    
-    parsed_start = _parse_datetime_param(start_date, end_of_day_if_date_only=False)
-    parsed_end = _parse_datetime_param(end_date, end_of_day_if_date_only=True)
     if (call_metadata_key is None) != (call_metadata_value is None):
         raise HTTPException(status_code=422, detail="call_metadata_key and call_metadata_value must be provided together")
     if call_metadata_key is not None:
@@ -522,49 +515,53 @@ async def list_calls(
             call_metadata_key = validate_call_metadata_key(call_metadata_key)
         except CallMetadataValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-    
+
+    return {
+        "start_date": _parse_datetime_param(start_date, end_of_day_if_date_only=False),
+        "end_date": _parse_datetime_param(end_date, end_of_day_if_date_only=True),
+        "caller_number": caller_number,
+        "caller_name": caller_name,
+        "provider_name": provider_name,
+        "pipeline_name": pipeline_name,
+        "context_name": context_name,
+        "outcome": outcome,
+        "exclude_outcome": exclude_outcome,
+        "has_tool_calls": has_tool_calls,
+        "min_duration": min_duration,
+        "max_duration": max_duration,
+        "transcript_search": transcript_search,
+        "call_metadata_key": call_metadata_key,
+        "call_metadata_value": call_metadata_value,
+    }
+
+
+@router.get("/calls", response_model=CallListResponse)
+async def list_calls(
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    order_by: str = Query("start_time", description="Column to order by"),
+    order_dir: str = Query("DESC", description="Order direction (ASC/DESC)"),
+    filters: Dict[str, Any] = Depends(call_history_filters),
+):
+    """
+    List call history records with pagination and filtering.
+    """
+    store = _get_call_history_store()
+
     # Get total count (with all filters for accurate pagination)
-    total = await store.count(
-        start_date=parsed_start,
-        end_date=parsed_end,
-        caller_number=caller_number,
-        caller_name=caller_name,
-        provider_name=provider_name,
-        pipeline_name=pipeline_name,
-        context_name=context_name,
-        outcome=outcome,
-        has_tool_calls=has_tool_calls,
-        min_duration=min_duration,
-        max_duration=max_duration,
-        transcript_search=transcript_search,
-        call_metadata_key=call_metadata_key,
-        call_metadata_value=call_metadata_value,
-    )
-    
+    total = await store.count(**filters)
+
     # Get paginated records
     offset = (page - 1) * page_size
     records = await store.list(
         limit=page_size,
         offset=offset,
-        start_date=parsed_start,
-        end_date=parsed_end,
-        caller_number=caller_number,
-        caller_name=caller_name,
-        provider_name=provider_name,
-        pipeline_name=pipeline_name,
-        context_name=context_name,
-        outcome=outcome,
-        has_tool_calls=has_tool_calls,
-        min_duration=min_duration,
-        max_duration=max_duration,
-        transcript_search=transcript_search,
-        call_metadata_key=call_metadata_key,
-        call_metadata_value=call_metadata_value,
         order_by=order_by,
         order_dir=order_dir,
         include_details=False,
+        **filters,
     )
-    
+
     total_pages = (total + page_size - 1) // page_size if total > 0 else 1
 
     agent_names = _agent_name_map()  # one best-effort lookup for the whole page
@@ -579,19 +576,18 @@ async def list_calls(
 
 @router.get("/calls/stats", response_model=CallStatsResponse)
 async def get_call_stats(
-    start_date: Optional[str] = Query(None, description="Filter by start date (ISO format)"),
-    end_date: Optional[str] = Query(None, description="Filter by end date (ISO format)"),
+    filters: Dict[str, Any] = Depends(call_history_filters),
 ):
     """
     Get aggregate statistics for the dashboard.
+
+    Accepts the same filters as the call list so the summary cards describe
+    exactly the calls the operator is looking at.
     """
     store = _get_call_history_store()
-    
-    parsed_start = _parse_datetime_param(start_date, end_of_day_if_date_only=False)
-    parsed_end = _parse_datetime_param(end_date, end_of_day_if_date_only=True)
-    
-    stats = await store.get_stats(start_date=parsed_start, end_date=parsed_end)
-    
+
+    stats = await store.get_stats(**filters)
+
     # Fetch active calls from ai_engine health endpoint (Milestone 21)
     active_calls = 0
     try:
@@ -983,54 +979,19 @@ async def bulk_delete_calls(
 
 @router.get("/calls/export/csv")
 async def export_calls_csv(
-    start_date: Optional[str] = Query(None, description="Filter by start date (ISO format)"),
-    end_date: Optional[str] = Query(None, description="Filter by end date (ISO format)"),
-    caller_number: Optional[str] = Query(None, description="Filter by caller number"),
-    caller_name: Optional[str] = Query(None, description="Filter by caller name"),
-    provider_name: Optional[str] = Query(None, description="Filter by provider"),
-    pipeline_name: Optional[str] = Query(None, description="Filter by pipeline"),
-    context_name: Optional[str] = Query(None, description="Filter by context"),
-    outcome: Optional[str] = Query(None, description="Filter by outcome"),
-    has_tool_calls: Optional[bool] = Query(None, description="Filter by tool usage"),
-    min_duration: Optional[float] = Query(None, description="Minimum duration in seconds"),
-    max_duration: Optional[float] = Query(None, description="Maximum duration in seconds"),
-    call_metadata_key: Optional[str] = Query(None, max_length=64),
-    call_metadata_value: Optional[str] = Query(None, max_length=1024),
+    filters: Dict[str, Any] = Depends(call_history_filters),
 ):
     """
     Export call records as CSV with all filters matching the UI.
     """
     store = _get_call_history_store()
-    
-    parsed_start = _parse_datetime_param(start_date, end_of_day_if_date_only=False)
-    parsed_end = _parse_datetime_param(end_date, end_of_day_if_date_only=True)
-    if (call_metadata_key is None) != (call_metadata_value is None):
-        raise HTTPException(status_code=422, detail="call_metadata_key and call_metadata_value must be provided together")
-    if call_metadata_key is not None:
-        from src.core.call_metadata import CallMetadataValidationError, validate_call_metadata_key
-        try:
-            call_metadata_key = validate_call_metadata_key(call_metadata_key)
-        except CallMetadataValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-    
+
     # Get all matching records (limit to 10000 for safety)
     records = await store.list(
         limit=10000,
         offset=0,
-        start_date=parsed_start,
-        end_date=parsed_end,
-        caller_number=caller_number,
-        caller_name=caller_name,
-        provider_name=provider_name,
-        pipeline_name=pipeline_name,
-        context_name=context_name,
-        outcome=outcome,
-        has_tool_calls=has_tool_calls,
-        min_duration=min_duration,
-        max_duration=max_duration,
-        call_metadata_key=call_metadata_key,
-        call_metadata_value=call_metadata_value,
         include_details=True,
+        **filters,
     )
     
     # Generate CSV
@@ -1075,54 +1036,19 @@ async def export_calls_csv(
 
 @router.get("/calls/export/json")
 async def export_calls_json(
-    start_date: Optional[str] = Query(None, description="Filter by start date (ISO format)"),
-    end_date: Optional[str] = Query(None, description="Filter by end date (ISO format)"),
-    caller_number: Optional[str] = Query(None, description="Filter by caller number"),
-    caller_name: Optional[str] = Query(None, description="Filter by caller name"),
-    provider_name: Optional[str] = Query(None, description="Filter by provider"),
-    pipeline_name: Optional[str] = Query(None, description="Filter by pipeline"),
-    context_name: Optional[str] = Query(None, description="Filter by context"),
-    outcome: Optional[str] = Query(None, description="Filter by outcome"),
-    has_tool_calls: Optional[bool] = Query(None, description="Filter by tool usage"),
-    min_duration: Optional[float] = Query(None, description="Minimum duration in seconds"),
-    max_duration: Optional[float] = Query(None, description="Maximum duration in seconds"),
-    call_metadata_key: Optional[str] = Query(None, max_length=64),
-    call_metadata_value: Optional[str] = Query(None, max_length=1024),
+    filters: Dict[str, Any] = Depends(call_history_filters),
 ):
     """
     Export call records as JSON with all filters matching the UI.
     """
     store = _get_call_history_store()
-    
-    parsed_start = _parse_datetime_param(start_date, end_of_day_if_date_only=False)
-    parsed_end = _parse_datetime_param(end_date, end_of_day_if_date_only=True)
-    if (call_metadata_key is None) != (call_metadata_value is None):
-        raise HTTPException(status_code=422, detail="call_metadata_key and call_metadata_value must be provided together")
-    if call_metadata_key is not None:
-        from src.core.call_metadata import CallMetadataValidationError, validate_call_metadata_key
-        try:
-            call_metadata_key = validate_call_metadata_key(call_metadata_key)
-        except CallMetadataValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-    
+
     # Get all matching records (limit to 10000 for safety)
     records = await store.list(
         limit=10000,
         offset=0,
-        start_date=parsed_start,
-        end_date=parsed_end,
-        caller_number=caller_number,
-        caller_name=caller_name,
-        provider_name=provider_name,
-        pipeline_name=pipeline_name,
-        context_name=context_name,
-        outcome=outcome,
-        has_tool_calls=has_tool_calls,
-        min_duration=min_duration,
-        max_duration=max_duration,
-        call_metadata_key=call_metadata_key,
-        call_metadata_value=call_metadata_value,
         include_details=True,
+        **filters,
     )
     
     # Convert to JSON-serializable format

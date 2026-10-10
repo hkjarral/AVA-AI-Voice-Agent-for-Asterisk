@@ -7,16 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Reworked `AVA.mdc` as the shared AI-assistant entry point for project questions,
+  development, deployment, call troubleshooting, and contribution. Linked root
+  `AGENTS.md`, refreshed beginner onboarding, and added portable SSH/deployment
+  guidance, user-controlled diagnostics, evidence-based call analysis, and a live
+  validation handoff for contributors without a PBX.
+
+### Added
+
+- **Opt-in cloud provider startup connection recovery** ([#676](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/676)): Google Live/Vertex, OpenAI Realtime, Grok, Deepgram Agent, and ElevenLabs Agent can retry transient initial connection failures with configurable opening and total connection deadlines. Provider forms expose the controls under Expert settings. Upgrades retain a 10-second opening timeout, zero retries, and no added aggregate deadline; setup, mid-call recovery, keepalive, terminal failure routing, and Local behavior are unchanged. See [connection recovery and real-call verification](docs/Provider-Connection-Recovery.md).
+
+- **Google Developer long-response option:** **Providers → Google Live → API Mode → Enable long-response playback** enables a bounded audio backlog for that provider instance. It defaults off on new and existing installations, requires saving and restarting the AI Engine, and is hidden in Vertex mode. The saved preference is ignored on actual Vertex connections; other providers and modular pipelines do not use it. See the [Google setup guide](docs/Provider-Google-Setup.md#long-response-playback-developer-api-opt-in) for configuration and upgrade instructions.
+
+### Fixed
+
+- **Google Developer long-response playback (opt-in):** prevents the original source queue from dropping small audio chunks when generation runs ahead of telephony playback. Enabled calls wait for playback drain, cancel queued speech on interruption, and reject stale farewell completion. Abnormal disconnects allow accepted audio up to eight seconds to drain before cleanup, respecting caller teardown and transfer ownership. Disconnect drain runs in a cleanup-cancelled call task, with a bounded transfer wait, so provider event dispatch remains responsive; completion backlog overflow immediately rejects new tool work. This cannot prevent upstream Google errors or recover audio that was never received.
+- **Google AudioSocket interruption detection:** silence-gated Google calls inspect normalized caller audio before upstream silence substitution, so local barge-in can detect speech during playback. This correction applies to Developer API and Vertex independently of the long-response option; native Gemini 3.8 full-duplex interruption keeps its provider-driven path. Other providers' detector inputs are unchanged.
+
+- **Authoritative modular provider validation** ([#688](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/688)): Admin UI connection and credential checks preserve configured OpenAI-compatible, Telnyx and MiniMax destinations, ports and paths instead of silently substituting public endpoints. Explicit types and speech roles take precedence over provider-name heuristics. Provider-scoped credentials and custom no-auth endpoints are supported consistently; unsafe targets, redirects and malformed model lists fail explicitly. Speech probes clearly report reachability-only validation. Logs contain bounded, credential-free diagnostics.
+- **Provider test results** ([#688](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/688)): The editor displays detailed results for unsaved settings, clears obsolete results after edits, and ignores late responses after edits, closing or reopening. Concurrent provider tests retain independent loading states and results. Failure details remain readable in both light and dark themes.
+- **Provider validation review fixes** ([#689](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/689)): Legacy untyped `groq_llm` tests default to Groq when no endpoint is configured; an explicitly typed OpenAI-compatible `groq_llm` requires an explicit URL in both validation APIs to prevent ambiguous credential routing. API-key references use linear parsing and consistent defaults for saved and unsaved checks, and diagnostic fields remove line breaks at the logging boundary.
+
+## [7.6.2] - 2026-10-02
+
+Release scope: merged PRs #674, #678, #681, #682, #684, #686 and #683. Open
+feature PRs and Dependabot updates are excluded. No database migration or
+provider/transport/model-default change is introduced by this release.
+
+### Fixed
+
+- **Shared Admin UI empty states** ([#342](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/342)): Call History, raw Logs, and Docker now use a reusable EmptyState component. Call History retains its existing appearance and filter-specific message; Logs keeps its dark-console styling and filter/debug guidance; Docker keeps loading and errors separate from empty results.
+
+- **Accessible Admin UI icon controls** ([#340](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/340), [#341](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/341)): adds a shared IconButton for Call History, Pipeline, Profile, and guarded legacy Context actions, and fills missing accessible names across pages and nested System controls. Dynamic playback and fullscreen labels follow the current action; existing deletion safeguards and disabled-state tooltips are preserved.
+
+- **Aligned Admin UI numeric displays** ([#343](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/343)): Call History numeric table cells and summary values, Call Scheduling duration and attempt cells, and Dashboard resource metric values and subvalues now use tabular numerals. Existing columns and number formatting are unchanged.
+
 ### Deprecated
 
 - **Unused farewell hangup delay** ([#677](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/677)): `farewell_hangup_delay_sec` is deprecated and ignored. Removed its misleading Admin UI controls and shipped YAML value; existing global/provider YAML values and the tools settings API remain compatible. Terminal hangups continue to drain caller-facing audio, including the pipeline fallback when an LLM speaks a farewell without invoking `hangup_call`. Historical 2.5/3/5-second defaults no longer describe runtime behavior.
 
 ### Added
 
-- **Opt-in cloud provider startup connection recovery** ([#676](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/676)): Google Live/Vertex, OpenAI Realtime, Grok, Deepgram Agent, and ElevenLabs Agent can retry transient initial connection failures with configurable opening and total connection deadlines. Provider forms expose the controls under Expert settings. Upgrades retain a 10-second opening timeout, zero retries, and no added aggregate deadline; setup, mid-call recovery, keepalive, terminal failure routing, and Local behavior are unchanged. See [connection recovery and real-call verification](docs/Provider-Connection-Recovery.md).
+- **Call History filters drive the statistics** (contributed by [@Rea-PC08](https://github.com/Rea-PC08)): the outcome filter accepts several outcomes and an **Only** / **Hide** mode, so operators can, for example, list every answered call while hiding abandoned ones. Tool usage and minimum/maximum duration filters are now exposed in the UI. `/api/calls/stats` and both exports accept the same filters as `/api/calls` through one shared FastAPI dependency, and the store builds list, count and statistics queries from a single filter builder, so the summary cards always describe the calls being listed. The single `outcome` query parameter stays backward compatible; a new `exclude_outcome` parameter keeps records without an outcome.
 
+- **Microsoft Calendar invitations and same-call booking lifecycle**: adds caller-confirmed attendee emails, plain-text invitation templates/preview, operator working-hours controls, exact-interval availability and pre-creation conflict checks against the selected calendar. Creation retries reconcile stable Graph transaction IDs; same-call cancellation is scoped to the tracked booking and rescheduling updates it in place. Later-call changes require staff; delivery and attendee acceptance remain unknown. Invitations default off and existing appointment-only create arguments remain supported. Upgrades retain existing OAuth caches and calendar IDs: verification reads the saved calendar directly, and immutable-ID preferences apply only to event operations. Hours/horizon enforcement requires explicit opt-in; multiple distinct same-call bookings remain supported. Modular/hybrid pipelines receive calendar guidance without rewriting saved Agent prompts. Rescheduling requires a concrete event ETag, and new connections save the canonical cached MSAL identity; mismatched legacy identities fail with operator-correction guidance.
 
 - **Gemini 3.8 Live on Developer API and Vertex AI** ([#673](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/673)): adds model selection on both surfaces, AUDIO-only setup, ID-matched function responses, and cancellation-aware tool execution. Read-only extension status checks can run non-blocking; call-state and telephony actions remain blocking. The Admin UI shows model-aware Vertex regions, resets an incompatible region to the shared `us-central1` default when switching models, and locks 3.8 response modality to Audio Only. Gemini 3.8 uses full-duplex caller audio for barge-in and drains a spoken farewell without forwarding a post-hangup model continuation. Shared attended-transfer cleanup now resumes the caller when an agent leg ends before answer. A Vertex `us-central1` 3.8 call (`1790560988.243`) exercised interruption, tools, unanswered-transfer recovery, and hangup; a Vertex 2.5 retest (`1790561587.250`) exercised the existing model path and the same recovery. Broader production and Developer API qualification remains outstanding. Shipped model defaults are unchanged.
+
+### Contributors
+
+- [@arnavp27](https://github.com/arnavp27) — Admin UI numeric alignment,
+  accessibility and shared empty states
+  ([#681](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/681),
+  [#682](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/682),
+  [#684](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/684)).
+- [@Rea-PC08](https://github.com/Rea-PC08) — shared Call History filters and
+  analytics/export parity
+  ([#683](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/683)).
+- [@hkjarral](https://github.com/hkjarral) — Gemini 3.8 Live, farewell-delay
+  deprecation, Microsoft Calendar booking lifecycle, review fixes and release
+  maintenance
+  ([#674](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/674),
+  [#678](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/678),
+  [#686](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/686)).
+- README badges and `CONTRIBUTORS.md` also restore historical credit for Alce
+  (`alceops`), Joey Roth (`Genmin`) and Ivan Garcia, update the renamed
+  `Ai-chan-0411` profile, and preserve existing contributor/co-author credit.
+  These are attribution corrections, not newly shipped runtime features.
 
 ## [7.6.1] - 2026-09-20
 

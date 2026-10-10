@@ -6,6 +6,7 @@ import { FormInput, FormSwitch, FormSelect, FormLabel } from '../ui/FormComponen
 import { Modal } from '../ui/Modal';
 import { EmailTemplateModal } from './EmailTemplateModal';
 import HelpTooltip from '../ui/HelpTooltip';
+import { MicrosoftBookingSettings } from './MicrosoftBookingSettings';
 
 interface ToolFormProps {
     config: any;
@@ -3579,7 +3580,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                             <div>
                                 <div className="text-sm font-medium mb-1">Availability defaults</div>
                                 <div className="text-xs text-muted-foreground mb-3">
-                                    Blank Free prefix uses Microsoft Graph free/busy plus working hours (Mon-Fri 09:00-17:00 by default).
+                                    Blank Free prefix checks events in the selected calendar plus the configured working hours.
                                     Set Free prefix only if you want title-prefix "Open" events instead.
                                 </div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -3587,8 +3588,8 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                         label="Free prefix"
                                         value={config.microsoft_calendar?.free_prefix ?? ''}
                                         onChange={(e) => updateNestedConfig('microsoft_calendar', 'free_prefix', e.target.value)}
-                                        placeholder="(blank = use Microsoft free/busy)"
-                                        tooltip="Leave blank for native Microsoft free/busy mode. Set a value only for title-prefix availability windows."
+                                        placeholder="(blank = selected calendar availability)"
+                                        tooltip="Leave blank to check busy events in the selected calendar. Set a value only for title-prefix availability windows."
                                     />
                                     <FormInput
                                         label="Busy prefix"
@@ -3623,6 +3624,11 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                     />
                                 </div>
                             </div>
+
+                            <MicrosoftBookingSettings config={config.microsoft_calendar || {}} onChange={patch => onChange({
+                                ...config,
+                                microsoft_calendar: { ...(config.microsoft_calendar || {}), ...patch },
+                            })} />
 
                             <div>
                                 <div className="text-sm font-medium mb-1">Microsoft 365 account</div>

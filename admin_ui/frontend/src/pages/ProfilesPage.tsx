@@ -5,6 +5,7 @@ import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import yaml from 'js-yaml';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
 import { Settings, Radio, Star, AlertCircle, RefreshCw, Loader2, Plus, Trash2, Copy } from 'lucide-react';
+import { IconButton } from '../components/ui/IconButton';
 import { YamlErrorBanner, YamlErrorInfo } from '../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
@@ -582,33 +583,34 @@ const ProfilesPage = () => {
 	                                            compact
 	                                            onResetComplete={(response) => handleProfileAudioResetComplete(profileName, response)}
 	                                        />
-	                                        <button
+	                                        <IconButton
+	                                            icon={Copy}
 	                                            onClick={(e) => {
 	                                                e.stopPropagation();
 	                                                handleCloneProfile(profileName);
 	                                            }}
 	                                            className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
-	                                            aria-label={`Clone profile ${profileName}`}
+	                                            label={`Clone profile ${profileName}`}
 	                                            title="Clone profile"
-	                                        >
-	                                            <Copy className="w-4 h-4" />
-	                                        </button>
-	                                        <button
+	                                        />
+	                                        <IconButton
+	                                            icon={Settings}
+	                                            label={`Edit profile ${profileName}`}
 	                                            onClick={(e) => {
 	                                                e.stopPropagation();
 	                                                handleEditProfile(profileName);
 	                                            }}
 	                                            className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
-	                                        >
-	                                            <Settings className="w-4 h-4" />
-	                                        </button>
-                                            <button
+	                                        />
+                                            <IconButton
+                                                icon={Trash2}
+                                                variant="destructive"
                                                 onClick={(e) => {
                                                     e.stopPropagation();
                                                     handleDeleteProfile(profileName);
                                                 }}
                                                 disabled={!canDelete}
-                                                aria-label={`Delete profile ${profileName}`}
+                                                label={`Delete profile ${profileName}`}
                                                 title={!canDelete
                                                     ? agentsLoading || agentsLoadFailed
                                                         ? 'Agent usage must be verified before deleting a profile'
@@ -618,11 +620,9 @@ const ProfilesPage = () => {
                                                     "p-2 rounded-md",
                                                     canDelete
                                                         ? "hover:bg-destructive/10 text-destructive"
-                                                        : "text-muted-foreground/50 cursor-not-allowed"
+                                                        : "text-muted-foreground/50 cursor-not-allowed hover:bg-transparent disabled:opacity-100"
                                                 ].join(' ')}
-                                            >
-                                                <Trash2 className="w-4 h-4" />
-                                            </button>
+                                            />
 	                                    </div>
 	                                </div>
 

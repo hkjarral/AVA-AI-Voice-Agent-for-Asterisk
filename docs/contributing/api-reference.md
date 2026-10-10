@@ -115,6 +115,17 @@ curl -H "Authorization: Bearer eyJ..." \
 | GET | `/api/calls/export/csv` | Export calls as CSV |
 | GET | `/api/calls/export/json` | Export calls as JSON |
 
+**Shared filters (v7.6.2):** `/api/calls`, `/api/calls/stats`, and both exports
+use the same filter dependency. They accept date range, provider, pipeline,
+Agent/context, outcome inclusion/exclusion, tool usage, duration, transcript
+search and exact metadata field/value filters; consult the live OpenAPI schema
+for parameter names and types. `outcome` accepts comma-separated
+values while a single value remains compatible. `exclude_outcome` hides the
+chosen outcomes but retains records with no outcome. Metadata key/value must
+be supplied together (otherwise 422). List pagination does not limit the
+statistics to the current page, and exports apply the filters rather than page
+selection. An unfiltered statistics request keeps its existing response shape.
+
 > **Agent on a call record (v7).** Each call record reports the resolved agent as
 > `context_name` (the agent/context slug) plus `routing_method`
 > (`ai_agent` \| `ai_context` \| `default` \| `null`). v7.0.x adds two **additive**

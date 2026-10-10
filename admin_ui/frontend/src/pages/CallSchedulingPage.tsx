@@ -1541,8 +1541,8 @@ const CallSchedulingPage = () => {
                                             <td className="py-2 px-3 font-mono">{effectiveAgent}</td>
                                             <td className="py-2 px-3 font-mono">{provider}</td>
                                             <td className="py-2 px-3">{renderLeadTime(l.last_started_at_utc || l.last_attempt_at_utc)}</td>
-                                            <td className="py-2 px-3">{renderDuration(l.last_duration_seconds ?? null)}</td>
-                                            <td className="py-2 px-3">{l.attempt_count}</td>
+                                            <td className="py-2 px-3 tabular-nums">{renderDuration(l.last_duration_seconds ?? null)}</td>
+                                            <td className="py-2 px-3 tabular-nums">{l.attempt_count}</td>
                                             <td className="py-2 px-3">{outcome}</td>
                                             <td className="py-2 px-3 font-mono">{amd}</td>
                                             <td className="py-2 px-3 font-mono">{dtmf}</td>

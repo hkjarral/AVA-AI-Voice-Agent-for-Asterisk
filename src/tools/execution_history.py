@@ -86,6 +86,8 @@ _PII_PARAMETER_KEYS = {
     "email_address",
     "caller_email",
     "recipient_email",
+    "attendee_emails",
+    "meeting_purpose",
     "phone",
     "phone_number",
     "mobile",

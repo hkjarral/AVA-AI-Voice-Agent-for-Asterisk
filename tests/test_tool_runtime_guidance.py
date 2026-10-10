@@ -186,3 +186,40 @@ def test_runtime_guidance_requires_explicit_callback_clock_when_timezone_missing
     assert "timezone is unavailable" in guidance
     assert "Do not infer relative dates" in guidance
     assert "offset-aware ISO 8601" in guidance
+
+
+@pytest.mark.unit
+def test_microsoft_calendar_guidance_covers_exact_requests_consent_and_same_call_scope():
+    from src.tools.runtime_guidance import build_in_call_tool_runtime_guidance
+    config = {"tools": {"microsoft_calendar": {"invitations_enabled": True, "selected_accounts": ["dispatch"], "accounts": {"dispatch": {"timezone": "America/Phoenix"}, "private": {"timezone": "UTC"}}}}}
+    guidance = build_in_call_tool_runtime_guidance(config, ["microsoft_calendar"])
+    assert "check_availability" in guidance and "suggestion subset" in guidance
+    assert "invitation_confirmed=true" in guidance and "reschedule_event" in guidance
+    assert "Later-call bookings" in guidance and "America/Phoenix" in guidance
+    assert "`private`" not in guidance
+    assert "Microsoft Calendar booking rules" not in build_in_call_tool_runtime_guidance(config, ["hangup_call"])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("selected,expected", [
+    (None, {"dispatch", "billing"}),
+    (("dispatch",), {"dispatch"}),
+    (["billing", "stale"], {"billing"}),
+    ([], set()),
+    ("dispatch", set()),
+])
+def test_calendar_guidance_clock_selection_matches_tool_scope(selected, expected):
+    from src.tools.business.microsoft_calendar import MicrosoftCalendarTool
+    from src.tools.runtime_guidance import build_in_call_tool_runtime_guidance
+    calendar = {"selected_accounts": selected, "accounts": {
+        "dispatch": {"timezone": "America/Phoenix"},
+        "billing": {"timezone": "Europe/London"},
+    }}
+    guidance = build_in_call_tool_runtime_guidance(
+        {"tools": {"microsoft_calendar": calendar}}, ["microsoft_calendar"]
+    )
+    assert set(MicrosoftCalendarTool()._selected_account_keys(calendar)) == expected
+    for key, account in calendar["accounts"].items():
+        assert (f"Calendar account `{key}`" in guidance) is (key in expected)
+        assert (f"timezone `{account['timezone']}`" in guidance) is (key in expected)
+    assert "`stale`" not in guidance

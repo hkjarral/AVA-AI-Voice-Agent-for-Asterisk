@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useConfirmDialog } from '../../hooks/useConfirmDialog';
 import { Container, RefreshCw, AlertCircle, Clock, CheckCircle2, XCircle, HardDrive, Trash2, Database, Layers, Box } from 'lucide-react';
 import { ConfigSection } from '../../components/ui/ConfigSection';
+import { EmptyState } from '../../components/ui/EmptyState';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import axios from 'axios';
 import { ApiErrorInfo, buildDockerAccessHints, describeApiError } from '../../utils/apiErrors';
@@ -315,7 +316,7 @@ const DockerPage = () => {
                     {loading && containers.length === 0 ? (
                         <div className="text-center p-8 text-muted-foreground">Loading container status...</div>
                     ) : containers.length === 0 && !error ? (
-                        <div className="text-center p-8 text-muted-foreground">No containers found.</div>
+                        <EmptyState icon={Container} title="No containers found." heading="h4" className="border-0 bg-transparent p-8" />
                     ) : (
                         containers.map(container => {
                             const containerName = container.name.replace(/^\//, '');
@@ -375,7 +376,8 @@ const DockerPage = () => {
                                                 onClick={() => handleRestart(containerName, containerName)}
                                                 disabled={isRestarting}
                                                 className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground disabled:opacity-50"
-                                                title="Restart container"
+                                                aria-label={`Restart container ${containerName}`}
+                                                title={`Restart container ${containerName}`}
                                             >
                                                 <RefreshCw className={`w-4 h-4 ${isRestarting ? 'animate-spin' : ''}`} />
                                             </button>

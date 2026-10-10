@@ -465,3 +465,12 @@ async def test_late_tool_result_does_not_resurrect_removed_session():
     assert recorded is None
     assert await store.get_by_call_id("ended") is None
     assert session.tool_calls == []
+
+
+def test_microsoft_attendee_list_and_booking_notes_are_redacted():
+    parameters = {"action": "create_event", "attendee_emails": ["caller@example.com"], "meeting_purpose": "Private reason", "confirmed_notes": "Private details"}
+    record = build_in_call_tool_record(call_id="synthetic", tool_call_id="synthetic-operation", tool_name="microsoft_calendar", parameters=parameters, result={"status": "success"})
+    assert record["params"]["attendee_emails"] == "***REDACTED***"
+    assert record["params"]["meeting_purpose"] == "***REDACTED***"
+    assert record["params"]["confirmed_notes"] == "***REDACTED***"
+    assert parameters["attendee_emails"] == ["caller@example.com"]

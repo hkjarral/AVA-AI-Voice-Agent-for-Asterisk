@@ -3532,6 +3532,7 @@ exten => s,1,NoOp(AI Agent - Local Full)
                                                     .catch(() => showToast('Failed to copy to clipboard', 'error'));
                                             }}
                                             className="absolute top-2 right-2 p-1 bg-white/10 rounded hover:bg-white/20 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                                            aria-label="Copy to clipboard"
                                             title="Copy to clipboard"
                                         >
                                             <Copy className="w-4 h-4" />

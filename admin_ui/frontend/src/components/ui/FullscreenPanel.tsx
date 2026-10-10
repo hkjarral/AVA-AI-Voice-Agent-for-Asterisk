@@ -60,6 +60,7 @@ export const FullscreenPanel = ({ title, titleNode, headerRight, children, class
                 <button
                     onClick={() => setIsFullscreen(!isFullscreen)}
                     className="p-1.5 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                    aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
                     title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
                 >
                     {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}

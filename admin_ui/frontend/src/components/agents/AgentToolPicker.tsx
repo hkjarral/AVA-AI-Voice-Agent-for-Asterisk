@@ -147,7 +147,7 @@ const AgentToolPicker: React.FC<Props> = ({
                                         {tool.name === 'microsoft_calendar' && checked && (
                                             <ResourceAccessEditor
                                                 title="Microsoft Calendar access"
-                                                description="Choose which globally configured Microsoft account/calendar bindings this Agent can use."
+                                                description="Choose this Agent’s Microsoft calendar access. Invitation policy, templates and hours are configured in Tools. Caller-confirmed emails are supplied per booking. Only bookings created in the current call can be cancelled or rescheduled; later-call requests require staff."
                                                 resourceName="account"
                                                 options={microsoftAccounts}
                                                 policy={state.microsoftCalendarPolicy}

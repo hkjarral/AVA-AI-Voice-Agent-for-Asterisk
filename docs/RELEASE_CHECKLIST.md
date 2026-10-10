@@ -143,3 +143,6 @@ remains visible in the validation matrix rather than being rewritten as a pass.
 - [ ] README, CHANGELOG, migration notes, and the release validation matrix describe the same scope and compatibility boundaries
 - [ ] Provider, PBX, tool, and architecture examples use `AI_AGENT`; `AI_CONTEXT` remains only where deprecation/legacy behavior is being explained
 - [ ] `AVA.mdc` is reviewed for Agent-only routing, tool generations, provider roster, guardrails, and its verification stamp
+- [ ] Merged human contributors have matching README avatars/badges and `CONTRIBUTORS.md` credit; renamed profiles and historical omissions are reconciled without inventing identities
+- [ ] Release notes credit the shipped PR authors and preserve co-authors; historical credit corrections are not presented as new runtime features
+- [ ] GitHub-rendered README is visually checked for readable contributor badges and a Core-first Quick Start; homepage/demo and Operator preview boundaries are unchanged

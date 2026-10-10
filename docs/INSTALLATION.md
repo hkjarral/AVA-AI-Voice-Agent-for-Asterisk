@@ -1,15 +1,15 @@
 # Asterisk AI Voice Agent - Installation and Upgrade Guide (v7.6)
 
-This guide covers fresh installations and the supported upgrade path to v7.6.1.
+This guide covers fresh installations and the supported upgrade path to v7.6.2.
 For release-specific behavior changes, also read the
-[v7.6.1 migration notes](MIGRATION.md#v760-to-v761). Operators upgrading from
+[v7.6.2 migration notes](MIGRATION.md#v761-to-v762). Operators upgrading from
 v7.3.x or earlier must also follow the [v7.4 Agent migration](MIGRATION.md#v73x-to-v740).
 
 ## Three Setup Paths
 
 Choose the path that best fits your experience level:
 
-## Upgrade to v7.6.1 (Existing Checkout)
+## Upgrade to v7.6.2 (Existing Checkout)
 
 This section is for operators upgrading an existing repo checkout (not a fresh install).
 
@@ -37,13 +37,13 @@ Run these commands from your actual checkout path. Do not assume it is `/root/..
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 git status --short
-git diff --binary > ../aava-pre-v761-working-tree.patch
-git diff --binary --cached > ../aava-pre-v761-staged.patch
+git diff --binary > ../aava-pre-v762-working-tree.patch
+git diff --binary --cached > ../aava-pre-v762-staged.patch
 docker compose config --quiet
 if ! docker compose -p asterisk-ai-voice-agent ps --services --status running \
-  > ../aava-pre-v761-running-services.txt; then
+  > ../aava-pre-v762-running-services.txt; then
   docker compose -p asterisk-ai-voice-agent ps --services \
-    > ../aava-pre-v761-running-services.txt || exit 1
+    > ../aava-pre-v762-running-services.txt || exit 1
 fi
 ```
 
@@ -53,6 +53,12 @@ Back up at least:
 - custom files under `config/contexts/` while upgrading from a Context-based release;
 - `data/operator/agents.db` and `data/call_history.db` when present; and
 - any custom secrets, certificates, recordings, or media stored outside those paths.
+
+For Microsoft Calendar, preserve the configured account identity, saved calendar
+ID and OAuth token cache; do not reconnect or replace IDs merely to upgrade.
+Review the [calendar upgrade boundaries](Microsoft-calendar-tool.md#upgrading-existing-installations)
+before enabling invitations or changing booking limits. Drain active calls,
+especially booking conversations, before updating.
 
 The v7.6 updater also creates a per-job backup under `.agent/update-backups/`.
 While `ai_engine` is running, it uses SQLite's online backup API for `agents.db`
@@ -79,7 +85,7 @@ Preferred CLI path:
 
 ```bash
 git fetch origin --prune --tags
-agent update --ref v7.6.1 --include-ui --local-changes=retain
+agent update --ref v7.6.2 --include-ui --local-changes=retain
 ```
 
 Replace `retain` with your explicit `overwrite` or `abort` decision. In an interactive
@@ -110,7 +116,7 @@ Run the host recovery script from an SSH shell on the AAVA server. This path doe
 depend on the failing Admin UI planner container:
 
 ```bash
-AAVA_RECOVERY_REF=v7.6.1
+AAVA_RECOVERY_REF=v7.6.2
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -146,7 +152,7 @@ terminal:
 For non-interactive recovery, pass the decision explicitly:
 
 ```bash
-AAVA_RECOVERY_REF=v7.6.1
+AAVA_RECOVERY_REF=v7.6.2
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -161,7 +167,7 @@ Use `overwrite` only when the operator accepts that tracked local code changes w
 discarded:
 
 ```bash
-AAVA_RECOVERY_REF=v7.6.1
+AAVA_RECOVERY_REF=v7.6.2
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -255,14 +261,14 @@ explicit policy. Never use `git reset --hard` as generic upgrade advice.
 
 Do not treat a second update run as proof that the containers were updated. If the first
 job reached **Fast-forwarding code** and then failed during Docker Compose, the checkout may
-already be at v7.6.1 while the old containers are still running. Save the failed job log and
+already be at v7.6.2 while the old containers are still running. Save the failed job log and
 either use its **Rollback** action or, after fixing the reported Compose/build error, reconcile
 only the services that were running before the update:
 
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 docker compose config --quiet
-AAVA_RUNNING_SERVICES_FILE=../aava-pre-v761-running-services.txt
+AAVA_RUNNING_SERVICES_FILE=../aava-pre-v762-running-services.txt
 test -f "${AAVA_RUNNING_SERVICES_FILE}" || exit 1
 AAVA_RECOVERY_SERVICES=()
 for AAVA_SERVICE in ai_engine admin_ui local_ai_server; do

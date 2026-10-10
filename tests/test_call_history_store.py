@@ -369,3 +369,78 @@ async def test_store_warmup_initializes_off_loop(tmp_path, monkeypatch):
     # Initialized off-loop: subsequent persist sees a ready store, no sync init.
     assert store._initialized is True
     assert ch.get_call_history_store() is store
+
+
+async def _seed_outcomes(store, CallRecord):
+    now = datetime.now(timezone.utc)
+    rows = [
+        ("o-1", "completed", 30.0, [{"name": "hangup_call", "params": {}, "result": "success"}]),
+        ("o-2", "completed", 60.0, []),
+        ("o-3", "transferred", 90.0, [{"name": "blind_transfer", "params": {}, "result": "success"}]),
+        ("o-4", "abandoned", 2.0, []),
+        ("o-5", None, 4.0, []),
+    ]
+    for index, (call_id, outcome, duration, tools) in enumerate(rows):
+        assert await store.save(CallRecord(
+            call_id=call_id,
+            caller_number=f"10{index}",
+            start_time=now + timedelta(minutes=index),
+            end_time=now + timedelta(minutes=index, seconds=duration),
+            duration_seconds=duration,
+            provider_name="deepgram",
+            context_name="demo",
+            outcome=outcome,
+            tool_calls=tools,
+        )) is True
+
+
+@pytest.mark.asyncio
+async def test_call_history_multi_outcome_and_exclusion_filters(tmp_path, monkeypatch):
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    from src.core.call_history import CallHistoryStore, CallRecord
+
+    store = CallHistoryStore(db_path=str(tmp_path / "outcomes.db"))
+    await _seed_outcomes(store, CallRecord)
+
+    async def ids(**filters):
+        listed = await store.list(include_details=False, **filters)
+        assert await store.count(**filters) == len(listed)
+        return sorted(r.call_id for r in listed)
+
+    # Single value stays backward compatible.
+    assert await ids(outcome="transferred") == ["o-3"]
+    # Comma-separated string and list both select several outcomes.
+    assert await ids(outcome="completed,transferred") == ["o-1", "o-2", "o-3"]
+    assert await ids(outcome=["completed", " abandoned "]) == ["o-1", "o-2", "o-4"]
+    # Exclusion hides the listed outcomes but keeps records without an outcome.
+    assert await ids(exclude_outcome="abandoned") == ["o-1", "o-2", "o-3", "o-5"]
+    assert await ids(exclude_outcome="abandoned,completed") == ["o-3", "o-5"]
+    # Empty values are ignored rather than matching nothing.
+    assert await ids(outcome=" , ") == ["o-1", "o-2", "o-3", "o-4", "o-5"]
+    # Filters combine.
+    assert await ids(exclude_outcome="abandoned", min_duration=10, has_tool_calls=False) == ["o-2"]
+
+
+@pytest.mark.asyncio
+async def test_call_history_stats_follow_the_same_filters(tmp_path, monkeypatch):
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    from src.core.call_history import CallHistoryStore, CallRecord
+
+    store = CallHistoryStore(db_path=str(tmp_path / "stats.db"))
+    await _seed_outcomes(store, CallRecord)
+
+    unfiltered = await store.get_stats()
+    assert unfiltered["total_calls"] == 5
+    assert unfiltered["outcomes"]["abandoned"] == 1
+
+    stats = await store.get_stats(exclude_outcome="abandoned", min_duration=10)
+    assert stats["total_calls"] == await store.count(exclude_outcome="abandoned", min_duration=10) == 3
+    assert stats["outcomes"] == {"completed": 2, "transferred": 1}
+    assert stats["avg_duration_seconds"] == 60.0
+    assert stats["calls_with_tools"] == 2
+    assert stats["top_tools"] == {"hangup_call": 1, "blind_transfer": 1}
+    assert {c["number"] for c in stats["top_callers"]} == {"100", "101", "102"}
+
+    only_transfers = await store.get_stats(outcome="transferred")
+    assert only_transfers["total_calls"] == 1
+    assert only_transfers["providers"] == {"deepgram": 1}

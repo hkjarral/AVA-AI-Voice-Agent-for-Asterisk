@@ -219,16 +219,25 @@ filters.
 
 ### Bounded Diagnostic Audio Capture
 
+For assistant-guided investigations, follow the
+[diagnostic playbook](contributing/debugging-guide.md): the user controls enabling
+and restoring logging/audio capture, and the assistant verifies the effective
+settings and analyzes privately archived evidence.
+
 Diagnostic WAVs can contain caller audio, agent audio, names, phone numbers, or
 other sensitive content. Enable them only for a short, controlled reproduction
 and handle the resulting files according to your retention policy.
 
-1. Set `DIAG_ENABLE_TAPS=true`, rebuild or restart `ai_engine`, and reproduce the
-   issue once. Playback taps use `/tmp/ai-engine-taps`; full-call RCA streams use
+1. Set `DIAG_ENABLE_TAPS=true`, recreate `ai_engine` to load the changed environment,
+   and reproduce the issue once. Playback taps use `/tmp/ai-engine-taps`; full-call RCA streams use
    `/tmp/ai-engine-captures/<call_id>/`.
-2. Collect only the required call with `agent rca` or `scripts/rca_collect.sh`.
-3. Set `DIAG_ENABLE_TAPS=false` and restart `ai_engine` before returning the
-   system to normal service.
+2. Privately collect only the required call's audio and bounded logs using the
+   [diagnostic collection workflow](contributing/debugging-guide.md#archive-before-analyzing).
+   `agent rca <call_id>` produces a report, not a raw audio archive.
+   Review `scripts/rca_collect.sh` before using it: it can collect broader history,
+   configuration, transcripts, and recordings.
+3. Restore the previous diagnostic settings (normally `DIAG_ENABLE_TAPS=false`)
+   and recreate `ai_engine` before returning the system to normal service.
 4. Remove retained WAVs explicitly when the investigation is complete.
 
 Disabling diagnostics prevents new per-call writes; it never deletes historical
@@ -1069,6 +1078,12 @@ docker logs ai_engine | grep -i "error"
 
 ### Log Levels
 
+For AI-assisted troubleshooting, the user applies and restores these settings;
+see the [step-by-step diagnostic workflow](contributing/debugging-guide.md#user-controlled-debug-logging).
+Preserve existing evidence first. Changes to `.env` require recreation of the
+affected container; a plain restart does not reload its environment. Record the
+previous values, collect a bounded reproduction, then restore and verify them.
+
 Adjust logging in `.env`:
 ```bash
 LOG_LEVEL=debug    # Most verbose (use for troubleshooting)
@@ -1083,6 +1098,50 @@ STREAMING_LOG_LEVEL=debug  # Detailed streaming logs
 ---
 
 ## Provider-Specific Issues
+
+### Google Live: Long Responses Skip Audio or End Early
+
+For a Google Developer API call, check for `Provider streaming queue full; dropping chunk`. Small audio chunks can fill the original queue when Google generates speech faster than telephony plays it. Enable **Providers → Google Live → API Mode → Enable long-response playback**, click **Save Changes**, and restart the AI Engine once calls have finished. Existing installations keep this option off until explicitly enabled.
+
+The option is hidden in Vertex mode and ignored by actual Vertex connections. It does not change another provider or modular pipeline's queue. See the [Google setup guide](Provider-Google-Setup.md#long-response-playback-developer-api-opt-in) for the advanced capacity setting, backend fallback behavior, interruption handling and tested limits.
+
+If a farewell still cuts off, distinguish a queue/drop or drain error from an upstream WebSocket close. The opt-in path can drain already-accepted audio for up to eight seconds after an abnormal close; it cannot prevent Google's error or recover missing audio. `BARGE-IN action applied` marks local playback cancellation, while a later model reply measures a separate response delay.
+
+Collect the affected call through **Call History → Troubleshoot → Download Support Package**. Include the call ID, model/API mode, whether the option was enabled, and whether the problem involved uninterrupted speech, interruption, farewell or transfer. See [per-call support packages](#export-a-support-package-for-one-call).
+
+### Modular Provider Connection Tests
+
+In **Providers → Edit**, **Test Connection** uses the current form, including
+unsaved changes. Credential verification uses saved settings. The displayed
+destination contains the scheme, host and port; resource paths are deliberately
+omitted from diagnostics. Check the configured URL field for the full path.
+
+| Result | What to check |
+| --- | --- |
+| Cannot connect or timed out | Confirm the configured server and port are reachable from the Admin UI container. Loopback refers to its network namespace, not the browser computer. Start the inference server or correct routing/firewall settings. The test does not substitute another provider. |
+| HTTP 401/403 | Check that this provider's managed key file or explicit environment reference resolves to a key for this destination. Custom OpenAI-compatible instances do not inherit an unrelated `OPENAI_API_KEY`. |
+| Redirects are disabled | Configure the final API URL directly, including its complete API prefix. The test does not forward credentials to a redirect destination. |
+| Invalid OpenAI-compatible model list | The LLM probe expects `GET {chat_base_url}/models` to return a JSON object with a `data` array. Check that the URL is an API root rather than a web console or a complete `/chat/completions` resource. |
+| Provider URL rejected | Use an absolute HTTP(S) URL without embedded credentials, whitespace, query or fragment. Public endpoints require HTTPS; LAN/loopback HTTP is supported. Metadata and special-use destinations are blocked. |
+| Speech endpoint reachable; authentication and transcription/synthesis were not verified | The GET/405 probe reached the configured speech resource. Validate actual speech behavior with the saved/applied configuration and a call. |
+
+For custom servers that intentionally require no authentication, configure
+`type: openai` and `api_key: not-needed`; the probe still contacts that server
+and sends no Authorization header. An empty key is not the no-auth sentinel.
+An editor result disappears after settings change; retest the new settings.
+
+Safe probe diagnostics are in the **Admin UI** container logs:
+
+```bash
+docker compose -p asterisk-ai-voice-agent logs --since 10m admin_ui \
+  | grep 'Provider validation'
+```
+
+These events record provider, implementation kind, role, destination origin,
+outcome, HTTP status, validation level and elapsed time. They exclude keys,
+headers, response bodies and arbitrary endpoint paths. See the
+[configuration reference](Configuration-Reference.md#admin-ui-modular-http-provider-tests)
+for credential precedence and timeout limits.
 
 ### OpenAI Realtime
 

@@ -562,9 +562,94 @@ Modular OpenAI pipeline components use `type: openai` provider blocks:
 - `openai_stt`: Speech-to-Text via `audio/transcriptions` (`stt_base_url`, `stt_model`)
 - `openai_tts`: Text-to-Speech via `audio/speech` (`tts_base_url`, `tts_model`, `voice`, `response_format`)
 
-Requirements:
+Public OpenAI endpoints require an API key. Configure a provider-scoped
+`api_key_file`, `api_key_env`, or an `api_key` reference such as
+`${OPENAI_API_KEY}`. Custom OpenAI-compatible servers use their own credentials
+or the `not-needed` sentinel when authentication is disabled.
 
-- `OPENAI_API_KEY` must be set in the environment.
+### Admin UI modular HTTP provider tests
+
+**Test Connection** tests the current provider form, including unsaved edits.
+The saved-provider credential verification API uses the saved configuration.
+OpenAI-compatible, Telnyx (including legacy `telenyx`), MiniMax and Groq Speech
+connection tests use the declared type and capability; names containing
+`local`, `telnyx` or `elevenlabs` do not override an explicit modular type.
+
+- LLM tests select `chat_base_url`, then legacy `base_url`, then the provider
+  default, and request `/models`. Configured ports and API paths are preserved.
+  A successful model list establishes connectivity/authentication, not model
+  entitlement or chat inference. Telnyx **Test Connection** additionally makes
+  its existing minimal chat-completion probe; credential verification does not.
+- OpenAI/Groq speech tests select `stt_base_url` or `tts_base_url` as complete
+  resource URLs. A successful GET or HTTP 405 establishes endpoint reachability
+  only; it does not verify authentication, transcription or synthesis.
+- Credentials resolve from the provider's key file, explicit key environment
+  variable, inline value/reference, then applicable legacy provider variables.
+  Admin tests read fresh `.env` values before container environment values.
+  A custom OpenAI-compatible instance does not inherit an unrelated
+  `OPENAI_API_KEY`. Set `api_key: not-needed` for a custom no-auth endpoint;
+  the test sends no Authorization header and still probes that endpoint.
+  The sentinel is rejected for the recognized public provider service hosts.
+- HTTP(S) URLs must be absolute, with valid hosts/ports and without embedded
+  credentials, whitespace, queries or fragments. Public custom endpoints
+  require HTTPS. HTTP is permitted for loopback, RFC1918 LAN and IPv6 ULA
+  targets, including hostnames resolving exclusively to those addresses.
+  Metadata/link-local, multicast, unspecified and other special-use targets
+  are blocked. Redirects are disabled. Rejected or failed explicit endpoints
+  never trigger requests to alternate providers.
+- Custom hostname resolution has a three-second budget. HTTP probes have a
+  twenty-second total budget and ten-second per-operation timeouts. Results
+  and logs show the destination origin (scheme/host/port), not arbitrary paths,
+  credentials, headers, response bodies or exception internals. Editor results
+  disappear when configuration changes, and late responses after an edit or
+  closing/reopening the editor are ignored. Separate provider cards can test
+  concurrently without clearing each other's results. Testing does not save
+  or apply the form.
+
+The authenticated routes are:
+
+| Route | Configuration tested | Successful validation level |
+| --- | --- | --- |
+| `POST /api/config/providers/test` | Submitted `{name, config}`, including unsaved editor changes | `authentication` for keyed LLM model lists, `connectivity` for no-auth model lists, `inference` for the additional Telnyx chat probe, or `reachability` for speech |
+| `POST /api/config/providers/{provider_key}/credentials/verify` | Saved modular OpenAI-compatible, Telnyx/Telenyx or MiniMax provider | Model-list `authentication`/`connectivity`, or speech `reachability`; no chat probe |
+
+Groq LLM instances use `type: openai` with their Groq `chat_base_url` and
+credential source. Groq speech connection tests use `type: groq`.
+For backward compatibility, a submitted `groq_llm` configuration without an
+explicit type or endpoint defaults to `https://api.groq.com/openai/v1`.
+Explicit types and supplied URLs remain authoritative.
+An explicitly typed `groq_llm` with `type: openai` must supply `chat_base_url` or
+`base_url` for either validation API. Missing URLs are rejected before sending
+credentials, so a Groq key cannot be sent to OpenAI through an ambiguous default.
+
+For example, this disabled provider probes
+`http://127.0.0.1:8088/custom/api/v2/models` without authentication:
+
+```yaml
+providers:
+  private_llm:
+    type: openai
+    capabilities: [llm]
+    enabled: false
+    chat_base_url: http://127.0.0.1:8088/custom/api/v2
+    chat_model: your-served-model
+    api_key: not-needed
+```
+
+Use this example only for a server that intentionally accepts unauthenticated
+requests. For a keyed server, replace `api_key: not-needed` with an explicit
+`api_key_env` or managed `api_key_file`. The endpoint must be reachable from the
+Admin UI container; loopback refers to that container's network namespace,
+not the computer running the browser. See the
+[provider test troubleshooting guide](TROUBLESHOOTING_GUIDE.md#modular-provider-connection-tests)
+for interpreting failures.
+
+These APIs require Admin UI authentication. Custom hostname checks resolve
+DNS separately from HTTP connection establishment, leaving a DNS-rebinding
+TOCTOU limitation. Admin UI already has host-level access through its project
+and Docker-socket mounts; keep it on a trusted network and use network egress
+controls where a hard destination boundary is required. No global SSRF bypass
+or new configuration setting is introduced by these provider-test changes.
 
 ### Telnyx AI Inference (pipelines)
 
@@ -627,6 +712,8 @@ Config notes:
 - `providers.google_live.llm_model`: Live LLM model name (see `config/ai-agent.yaml` for shipped defaults).
 - `providers.google_live.tts_voice_name`: Live voice name (provider-specific).
 - `providers.google_live.response_modalities`: `audio`, `text`, or `audio_text` (provider behavior varies by model generation).
+- `providers.google_live.long_audio_playback_enabled`: boolean, default `false`. Opts this instance into bounded long-response playback on the actual Developer API connection only. UI: **Providers → Google Live → API Mode → Enable long-response playback**; hidden in Vertex mode. Existing installations are not automatically opted in. Save and restart the AI Engine to enable or disable it.
+- `providers.google_live.long_audio_backlog_sec`: seconds of queued-audio capacity, default `120`, inclusive range `10–120`. Advanced YAML setting used only when long-response playback is enabled on Developer API; not a total response-duration limit. Overflow or stalled drain terminates the call with an explicit error. See [long-response setup, limits and validation](Provider-Google-Setup.md#long-response-playback-developer-api-opt-in).
 - `providers.google_live.hangup_fallback_audio_idle_sec`: idle-audio timeout after hangup is armed.
 - `providers.google_live.hangup_fallback_min_armed_sec`: minimum armed duration before fallback can fire.
 - `providers.google_live.hangup_fallback_no_audio_timeout_sec`: timeout when provider emits no farewell audio.

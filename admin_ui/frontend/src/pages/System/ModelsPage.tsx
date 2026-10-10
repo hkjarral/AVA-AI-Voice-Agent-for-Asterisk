@@ -1031,6 +1031,7 @@ const ModelsPage = () => {
                                 }}
                                 disabled={restarting}
                                 className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground transition-colors"
+                                aria-label="Restart"
                                 title="Restart"
                             >
                                 <RefreshCw className={`w-4 h-4 ${restarting ? 'animate-spin' : ''}`} />
@@ -1744,6 +1745,7 @@ const ModelsPage = () => {
                             onClick={fetchModels}
                             disabled={loading}
                             className="p-2 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                            aria-label="Refresh"
                             title="Refresh"
                         >
                             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
@@ -1876,6 +1878,8 @@ const ModelsPage = () => {
                                                                 </div>
                                                             </div>
                                                             <button
+                                                                aria-label={deletingModel === model.name ? `Deleting model ${model.name}` : `Delete model ${model.name}`}
+                                                                title={deletingModel === model.name ? `Deleting model ${model.name}` : `Delete model ${model.name}`}
                                                                 onClick={() => handleDelete(model)}
                                                                 disabled={deletingModel === model.name}
                                                                 className="p-2 rounded-md bg-red-100 dark:bg-red-900/30 text-red-600 hover:bg-red-200 dark:hover:bg-red-900/50 transition-colors"

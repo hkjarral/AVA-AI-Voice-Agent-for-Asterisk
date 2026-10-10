@@ -36,6 +36,16 @@ import { enforceOpenAIRealtimeGaAudioContract } from '../utils/providerAudioCont
 const stripModularSuffix = (name: string): string => (name || '').replace(/_(stt|llm|tts)$/i, '');
 const FULL_AGENT_TYPES = ['openai_realtime', 'deepgram', 'google_live', 'elevenlabs_agent', 'grok', 'local'];
 const providerLabel = (name: string, provider: any): string => provider?.display_name || provider?.customer || name;
+const testFingerprint = (provider: any): string => {
+    const { name: _name, ...values } = provider || {};
+    return JSON.stringify(values);
+};
+const testErrorMessage = (error: any): string => {
+    const detail = error?.response?.data?.detail;
+    if (typeof detail === 'string') return detail;
+    if (detail && typeof detail.message === 'string') return detail.message;
+    return 'Connection failed';
+};
 
 const ProvidersPage: React.FC = () => {
     const { confirm } = useConfirmDialog();
@@ -45,11 +55,21 @@ const ProvidersPage: React.FC = () => {
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [editingProvider, setEditingProvider] = useState<string | null>(null);
     const editingProviderRef = useRef<string | null>(null);
+    const editorGenerationRef = useRef(0);
     const [providerForm, setProviderForm] = useState<any>({});
     const deletedProviderFieldsRef = useRef<Set<string>>(new Set());
     const [isNewProvider, setIsNewProvider] = useState(false);
-    const [testingProvider, setTestingProvider] = useState<string | null>(null);
-    const [testResults, setTestResults] = useState<{ [key: string]: { success: boolean; message: string } | undefined }>({});
+    const [testingProviders, setTestingProviders] = useState<Set<string>>(new Set());
+    const [testResults, setTestResults] = useState<{ [key: string]: { success: boolean; message: string; fingerprint: string } | undefined }>({});
+    const providerFormRef = useRef(providerForm);
+    const configRef = useRef(config);
+    providerFormRef.current = providerForm;
+    configRef.current = config;
+    const testRequestRef = useRef(new Map<string, number>());
+    const getTestResult = (name: string, provider: any) => {
+        const result = testResults[name];
+        return result?.fingerprint === testFingerprint(provider) ? result : undefined;
+    };
     const [showAddProvidersModal, setShowAddProvidersModal] = useState(false);
     const [selectedTemplates, setSelectedTemplates] = useState<string[]>([]);
     const { restartRequired, refetch } = useRestartRequired();
@@ -113,6 +133,7 @@ const ProvidersPage: React.FC = () => {
 
     const updateEditingProvider = (providerKey: string | null) => {
         deletedProviderFieldsRef.current.clear();
+        editorGenerationRef.current += 1;
         editingProviderRef.current = providerKey;
         setEditingProvider(providerKey);
     };
@@ -754,21 +775,46 @@ const ProvidersPage: React.FC = () => {
     };
 
     const handleTestConnection = async (name: string, providerData: any) => {
-        setTestingProvider(name);
+        const requestId = (testRequestRef.current.get(name) || 0) + 1;
+        testRequestRef.current.set(name, requestId);
+        const fingerprint = testFingerprint(providerData);
+        const submittedEditor = editingProviderRef.current;
+        const editorGeneration = editorGenerationRef.current;
+        const isCurrent = () => {
+            if (testRequestRef.current.get(name) !== requestId) return false;
+            if (submittedEditor && (editingProviderRef.current !== submittedEditor || editorGenerationRef.current !== editorGeneration)) return false;
+            const current = submittedEditor ? providerFormRef.current : configRef.current.providers?.[name];
+            return testFingerprint(current) === fingerprint;
+        };
+        setTestingProviders(prev => new Set(prev).add(name));
         setTestResults(prev => ({ ...prev, [name]: undefined }));
         try {
             const response = await axios.post('/api/config/providers/test', { name, config: providerData });
-            setTestResults(prev => ({
-                ...prev,
-                [name]: { success: response.data.success, message: response.data.message || 'Connection successful!' }
-            }));
+            if (isCurrent()) {
+                setTestResults(prev => ({
+                    ...prev,
+                    [name]: {
+                        success: response.data.success === true,
+                        message: response.data.message || 'Provider returned no test details',
+                        fingerprint,
+                    },
+                }));
+            }
         } catch (err: any) {
-            setTestResults(prev => ({
-                ...prev,
-                [name]: { success: false, message: err.response?.data?.detail || 'Connection failed' }
-            }));
+            if (isCurrent()) {
+                setTestResults(prev => ({
+                    ...prev,
+                    [name]: { success: false, message: testErrorMessage(err), fingerprint },
+                }));
+            }
         } finally {
-            setTestingProvider(null);
+            if (testRequestRef.current.get(name) === requestId) {
+                setTestingProviders(prev => {
+                    const pending = new Set(prev);
+                    pending.delete(name);
+                    return pending;
+                });
+            }
         }
     };
 
@@ -1084,22 +1130,24 @@ const ProvidersPage: React.FC = () => {
                                         <button
                                             onClick={() => handleSetAsDefault(name)}
                                             className="p-1.5 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground transition-colors"
-                                            title="Set as Default"
+                                            aria-label={`Set as default for ${name}`}
+                                            title={`Set as default for ${name}`}
                                         >
                                             <Star className="w-4 h-4" />
                                         </button>
                                     )}
                                     <button
                                         onClick={() => handleTestConnection(name, providerData)}
-                                        disabled={testingProvider === name}
+                                        disabled={testingProviders.has(name)}
                                         className="p-1.5 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground disabled:opacity-50 transition-colors"
-                                        title="Test Connection"
+                                        aria-label={`Test connection for ${name}`}
+                                        title={`Test connection for ${name}`}
                                     >
-                                        {testingProvider === name ? (
+                                        {testingProviders.has(name) ? (
                                             <Loader2 className="w-4 h-4 animate-spin" />
-                                        ) : testResults[name]?.success ? (
+                                        ) : getTestResult(name, providerData)?.success ? (
                                             <CheckCircle2 className="w-4 h-4 text-green-500" />
-                                        ) : testResults[name]?.success === false ? (
+                                        ) : getTestResult(name, providerData)?.success === false ? (
                                             <AlertCircle className="w-4 h-4 text-destructive" />
                                         ) : (
                                             <Server className="w-4 h-4" />
@@ -1108,25 +1156,27 @@ const ProvidersPage: React.FC = () => {
                                     <button
                                         onClick={() => handleEditProvider(name)}
                                         className="p-1.5 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground transition-colors"
-                                        title="Settings"
+                                        aria-label={`Settings for ${name}`}
+                                        title={`Settings for ${name}`}
                                     >
                                         <Settings className="w-4 h-4" />
                                     </button>
                                     <button
                                         onClick={() => handleDeleteProvider(name)}
                                         className="p-1.5 hover:bg-destructive/10 rounded-md text-destructive transition-colors"
-                                        title="Delete"
+                                        aria-label={`Delete provider ${name}`}
+                                        title={`Delete provider ${name}`}
                                     >
                                         <Trash2 className="w-4 h-4" />
                                     </button>
                                 </div>
                             </div>
-                            {testResults[name] && (
-                                <div className={`mt-2 p-2 rounded text-xs ${testResults[name]?.success
+                            {getTestResult(name, providerData) && (
+                                <div className={`mt-2 p-2 rounded text-xs ${getTestResult(name, providerData)?.success
                                     ? 'bg-green-500/10 text-green-600 dark:text-green-400'
-                                    : 'bg-destructive/10 text-destructive'
+                                    : 'bg-red-500/10 text-red-700 dark:text-red-400'
                                     }`}>
-                                    {testResults[name]?.message}
+                                    {getTestResult(name, providerData)?.message}
                                 </div>
                             )}
                         </ConfigCard>
@@ -1182,15 +1232,16 @@ const ProvidersPage: React.FC = () => {
                                 <div className="flex items-center gap-1">
                                     <button
                                         onClick={() => handleTestConnection(name, providerData)}
-                                        disabled={testingProvider === name}
+                                        disabled={testingProviders.has(name)}
                                         className="p-1.5 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground disabled:opacity-50 transition-colors"
-                                        title="Test Connection"
+                                        aria-label={`Test connection for ${name}`}
+                                        title={`Test connection for ${name}`}
                                     >
-                                        {testingProvider === name ? (
+                                        {testingProviders.has(name) ? (
                                             <Loader2 className="w-4 h-4 animate-spin" />
-                                        ) : testResults[name]?.success ? (
+                                        ) : getTestResult(name, providerData)?.success ? (
                                             <CheckCircle2 className="w-4 h-4 text-green-500" />
-                                        ) : testResults[name]?.success === false ? (
+                                        ) : getTestResult(name, providerData)?.success === false ? (
                                             <AlertCircle className="w-4 h-4 text-destructive" />
                                         ) : (
                                             <Server className="w-4 h-4" />
@@ -1199,25 +1250,27 @@ const ProvidersPage: React.FC = () => {
                                     <button
                                         onClick={() => handleEditProvider(name)}
                                         className="p-1.5 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground transition-colors"
-                                        title="Settings"
+                                        aria-label={`Settings for ${name}`}
+                                        title={`Settings for ${name}`}
                                     >
                                         <Settings className="w-4 h-4" />
                                     </button>
                                     <button
                                         onClick={() => handleDeleteProvider(name)}
                                         className="p-1.5 hover:bg-destructive/10 rounded-md text-destructive transition-colors"
-                                        title="Delete"
+                                        aria-label={`Delete provider ${name}`}
+                                        title={`Delete provider ${name}`}
                                     >
                                         <Trash2 className="w-4 h-4" />
                                     </button>
                                 </div>
                             </div>
-                            {testResults[name] && (
-                                <div className={`mt-2 p-2 rounded text-xs ${testResults[name]?.success
+                            {getTestResult(name, providerData) && (
+                                <div className={`mt-2 p-2 rounded text-xs ${getTestResult(name, providerData)?.success
                                     ? 'bg-green-500/10 text-green-600 dark:text-green-400'
-                                    : 'bg-destructive/10 text-destructive'
+                                    : 'bg-red-500/10 text-red-700 dark:text-red-400'
                                     }`}>
-                                    {testResults[name]?.message}
+                                    {getTestResult(name, providerData)?.message}
                                 </div>
                             )}
                         </ConfigCard>
@@ -1243,21 +1296,17 @@ const ProvidersPage: React.FC = () => {
                         <div className="flex items-center gap-2">
                             <button
                                 onClick={() => handleTestConnection(providerForm.name || 'new_provider', providerForm)}
-                                disabled={!!testingProvider || !providerForm.name}
+                                disabled={testingProviders.has(providerForm.name) || !providerForm.name}
                                 className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"
                             >
-                                {testingProvider === (providerForm.name || 'new_provider') ? (
+                                {testingProviders.has(providerForm.name || 'new_provider') ? (
                                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                                 ) : (
                                     <Server className="w-4 h-4 mr-2" />
                                 )}
                                 Test Connection
                             </button>
-                            {testResults[providerForm.name || 'new_provider'] && (
-                                <span className={`text-xs ${testResults[providerForm.name || 'new_provider']?.success ? 'text-green-500' : 'text-destructive'}`}>
-                                    {testResults[providerForm.name || 'new_provider']?.success ? 'Success' : 'Failed'}
-                                </span>
-                            )}
+
                         </div>
                         <div className="flex gap-2">
                             <button
@@ -1277,6 +1326,11 @@ const ProvidersPage: React.FC = () => {
                 }
             >
                 <div className="space-y-4">
+                    {getTestResult(providerForm.name || 'new_provider', providerForm) && (
+                        <div role="status" className={`rounded-lg border p-3 text-sm break-words ${getTestResult(providerForm.name || 'new_provider', providerForm)?.success ? 'border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-400' : 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400'}`}>
+                            {getTestResult(providerForm.name || 'new_provider', providerForm)?.message}
+                        </div>
+                    )}
                     <div className="rounded-lg border border-border bg-card/40 p-4 space-y-3">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div className="space-y-2">

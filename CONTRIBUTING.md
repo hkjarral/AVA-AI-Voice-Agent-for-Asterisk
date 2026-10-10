@@ -6,11 +6,13 @@ By participating, you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Why Contribute?
 
-**You don't need to know how to code.** Our AI assistant AVA writes the code for you.
+**You can start without coding or Git experience.** Your AI coding assistant can
+help you understand the project, make changes, and prepare a contribution; tests
+and review establish readiness.
 
 - **You know telephony better than most developers** — your Asterisk experience is rare and valuable
-- **AI does the coding** — any AI coding assistant (Claude, Cursor, Windsurf, Codex, Copilot, …) handles Python, React, Go — you just describe what you want
-- **Your server IS your test lab** — test features on your actual phone system with real calls
+- **Get help with code and Git** — describe your goal to a repository-aware AI assistant and work through the relevant steps
+- **Validate on your deployment** — use your server with an agreed test/restart window, build a lab, or request live validation from a willing community tester
 - **One file to get your AI up to speed** — load [AVA.mdc](AVA.mdc) into your assistant; it carries the project map, guardrails, and workflow
 - **Get recognized** — your name in our Contributors list, release notes, and Discord
 - **Shape YOUR tool** — contribute features YOU actually need in your day-to-day operations
@@ -54,10 +56,8 @@ These are reserved for contributors making their first PR to AVA. If you've alre
 
 ## Branches and Workflow
 
-Active branches:
-- `develop`: Feature work and ongoing development
-- `staging`: Release prep and GA readiness
-- `main`: Stable releases
+Start contributions from current upstream `main`. `staging` is used for release
+preparation; the former `develop` contribution workflow is no longer maintained.
 
 Recommended flow:
 
@@ -78,14 +78,22 @@ git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
 cd AVA-AI-Voice-Agent-for-Asterisk
 ```
 
-Then open the folder in your AI coding assistant (Claude, Cursor, Windsurf, Codex, Copilot, …), load [AVA.mdc](AVA.mdc) as context, and tell it what you want to contribute — it knows the project map, guardrails, and PR workflow.
+Then open the folder in your AI coding assistant, reference [AVA.mdc](AVA.mdc),
+and describe your goal. Ask it to read the applicable `AGENTS.md` and any existing
+`CLAUDE.md`, inspect the checkout, and establish access to your actual deployment.
+Follow the [beginner quickstart](docs/contributing/quickstart.md) for forks/branches,
+IDE loading, and options without a PBX, and the
+[development workflow](docs/contributing/ai-assisted-workflow.md) for SSH, deployment,
+browser/call verification, and merge readiness. For call problems, use the
+[diagnostic playbook](docs/contributing/debugging-guide.md); logging changes are
+user-controlled and raw evidence stays private.
 
 ### Option B: Traditional Setup (For Developers)
 
 ```bash
 git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
 cd AVA-AI-Voice-Agent-for-Asterisk
-./install.sh   # guided setup; or follow README for manual steps
+./install.sh   # fresh installation only; inspect existing deployments first
 ```
 
 For Local/Hybrid profiles, run `make model-setup` when prompted to download models.
@@ -129,6 +137,8 @@ See [GOVERNANCE.md](GOVERNANCE.md) for the full decision-making process.
 
 ## Review Expectations
 
+- Follow the [PR and CI workflow](docs/contributing/PULL_REQUEST_WORKFLOW.md): coherent draft, completed validation/docs, frozen final head, and one final review cycle with cohesive fixes.
+- If live testing is unavailable, a coherent draft may request it explicitly; required live evidence remains a readiness condition.
 - PRs are typically reviewed within a few days
 - The maintainer may request changes or suggest a different approach
 - CI must pass before merge

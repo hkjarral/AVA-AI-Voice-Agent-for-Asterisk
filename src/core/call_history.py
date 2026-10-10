@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +145,101 @@ class CallHistoryStore:
             .replace("%", "\\%")
             .replace("_", "\\_")
         )
+
+    @staticmethod
+    def _split_values(value: Union[str, Iterable[str], None]) -> List[str]:
+        """Normalize a single value, a comma-separated string, or a list into distinct values."""
+        if value is None:
+            return []
+        items = value.split(",") if isinstance(value, str) else list(value)
+        values: List[str] = []
+        for item in items:
+            item = str(item).strip()
+            if item and item not in values:
+                values.append(item)
+        return values
+
+    @classmethod
+    def _build_filter_conditions(
+        cls,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        caller_number: Optional[str] = None,
+        caller_name: Optional[str] = None,
+        provider_name: Optional[str] = None,
+        pipeline_name: Optional[str] = None,
+        context_name: Optional[str] = None,
+        outcome: Union[str, Iterable[str], None] = None,
+        exclude_outcome: Union[str, Iterable[str], None] = None,
+        has_tool_calls: Optional[bool] = None,
+        min_duration: Optional[float] = None,
+        max_duration: Optional[float] = None,
+        transcript_search: Optional[str] = None,
+        call_metadata_key: Optional[str] = None,
+        call_metadata_value: Optional[str] = None,
+    ) -> Tuple[List[str], List[Any]]:
+        """Build the WHERE conditions shared by list(), count() and get_stats().
+
+        ``outcome`` keeps only the given outcomes and ``exclude_outcome`` drops
+        them; both accept one value, a comma-separated string or a list.
+        Records without an outcome are kept by ``exclude_outcome``.
+        """
+        conditions: List[str] = []
+        params: List[Any] = []
+
+        if start_date:
+            conditions.append("start_time >= ?")
+            params.append(start_date.isoformat())
+        if end_date:
+            conditions.append("start_time <= ?")
+            params.append(end_date.isoformat())
+        if caller_number:
+            conditions.append("caller_number LIKE ?")
+            params.append(f"%{caller_number}%")
+        if caller_name:
+            conditions.append("caller_name LIKE ?")
+            params.append(f"%{caller_name}%")
+        if provider_name:
+            # LOW-CH3: case-insensitive match so mixed-case legacy rows
+            # bucket together with normalized writes.
+            conditions.append("LOWER(provider_name) = ?")
+            params.append(provider_name.lower())
+        if pipeline_name:
+            conditions.append("pipeline_name = ?")
+            params.append(pipeline_name)
+        if context_name:
+            conditions.append("context_name = ?")
+            params.append(context_name)
+        outcomes = cls._split_values(outcome)
+        if outcomes:
+            conditions.append(f"outcome IN ({', '.join('?' for _ in outcomes)})")
+            params.extend(outcomes)
+        excluded = cls._split_values(exclude_outcome)
+        if excluded:
+            conditions.append(f"(outcome IS NULL OR outcome NOT IN ({', '.join('?' for _ in excluded)}))")
+            params.extend(excluded)
+        if has_tool_calls is not None:
+            if has_tool_calls:
+                conditions.append("tool_calls IS NOT NULL AND tool_calls != '[]'")
+            else:
+                conditions.append("(tool_calls IS NULL OR tool_calls = '[]')")
+        if min_duration is not None:
+            conditions.append("duration_seconds >= ?")
+            params.append(min_duration)
+        if max_duration is not None:
+            conditions.append("duration_seconds <= ?")
+            params.append(max_duration)
+        if transcript_search:
+            escaped = cls._escape_like(transcript_search)
+            conditions.append("LOWER(conversation_history) LIKE LOWER(?) ESCAPE '\\'")
+            params.append(f"%{escaped}%")
+        if call_metadata_key is not None and call_metadata_value is not None:
+            from src.core.call_metadata import call_metadata_json_path
+
+            conditions.append("CAST(json_extract(call_metadata, ?) AS TEXT) = ?")
+            params.extend([call_metadata_json_path(call_metadata_key), call_metadata_value])
+
+        return conditions, params
 
     _CREATE_TABLE_SQL = """
     CREATE TABLE IF NOT EXISTS call_records (
@@ -670,7 +765,8 @@ class CallHistoryStore:
         provider_name: Optional[str] = None,
         pipeline_name: Optional[str] = None,
         context_name: Optional[str] = None,
-        outcome: Optional[str] = None,
+        outcome: Union[str, Iterable[str], None] = None,
+        exclude_outcome: Union[str, Iterable[str], None] = None,
         has_tool_calls: Optional[bool] = None,
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
@@ -694,10 +790,12 @@ class CallHistoryStore:
             provider_name: Filter by provider
             pipeline_name: Filter by pipeline
             context_name: Filter by context
-            outcome: Filter by outcome
+            outcome: Keep only these outcomes (single value, comma list or list)
+            exclude_outcome: Drop these outcomes (records without outcome are kept)
             has_tool_calls: Filter calls with/without tool calls
             min_duration: Minimum duration in seconds
             max_duration: Maximum duration in seconds
+            transcript_search: Case-insensitive search in the transcript
             order_by: Column to order by
             order_dir: ASC or DESC
             include_details: If False, excludes large payload fields (transcript/tool JSON)
@@ -712,56 +810,23 @@ class CallHistoryStore:
             with self._lock:
                 conn = self._get_connection()
                 try:
-                    # Build query with filters
-                    conditions = []
-                    params = []
-                    
-                    if start_date:
-                        conditions.append("start_time >= ?")
-                        params.append(start_date.isoformat())
-                    if end_date:
-                        conditions.append("start_time <= ?")
-                        params.append(end_date.isoformat())
-                    if caller_number:
-                        conditions.append("caller_number LIKE ?")
-                        params.append(f"%{caller_number}%")
-                    if caller_name:
-                        conditions.append("caller_name LIKE ?")
-                        params.append(f"%{caller_name}%")
-                    if provider_name:
-                        # LOW-CH3: case-insensitive match so mixed-case legacy rows
-                        # bucket together with normalized writes.
-                        conditions.append("LOWER(provider_name) = ?")
-                        params.append(provider_name.lower())
-                    if pipeline_name:
-                        conditions.append("pipeline_name = ?")
-                        params.append(pipeline_name)
-                    if context_name:
-                        conditions.append("context_name = ?")
-                        params.append(context_name)
-                    if outcome:
-                        conditions.append("outcome = ?")
-                        params.append(outcome)
-                    if has_tool_calls is not None:
-                        if has_tool_calls:
-                            conditions.append("tool_calls IS NOT NULL AND tool_calls != '[]'")
-                        else:
-                            conditions.append("(tool_calls IS NULL OR tool_calls = '[]')")
-                    if min_duration is not None:
-                        conditions.append("duration_seconds >= ?")
-                        params.append(min_duration)
-                    if max_duration is not None:
-                        conditions.append("duration_seconds <= ?")
-                        params.append(max_duration)
-                    if transcript_search:
-                        escaped = self._escape_like(transcript_search)
-                        conditions.append("LOWER(conversation_history) LIKE LOWER(?) ESCAPE '\\'")
-                        params.append(f"%{escaped}%")
-                    if call_metadata_key is not None and call_metadata_value is not None:
-                        from src.core.call_metadata import call_metadata_json_path
-
-                        conditions.append("CAST(json_extract(call_metadata, ?) AS TEXT) = ?")
-                        params.extend([call_metadata_json_path(call_metadata_key), call_metadata_value])
+                    conditions, params = self._build_filter_conditions(
+                        start_date=start_date,
+                        end_date=end_date,
+                        caller_number=caller_number,
+                        caller_name=caller_name,
+                        provider_name=provider_name,
+                        pipeline_name=pipeline_name,
+                        context_name=context_name,
+                        outcome=outcome,
+                        exclude_outcome=exclude_outcome,
+                        has_tool_calls=has_tool_calls,
+                        min_duration=min_duration,
+                        max_duration=max_duration,
+                        transcript_search=transcript_search,
+                        call_metadata_key=call_metadata_key,
+                        call_metadata_value=call_metadata_value,
+                    )
 
                     # Validate order_by to prevent SQL injection
                     valid_columns = [
@@ -903,7 +968,8 @@ class CallHistoryStore:
         provider_name: Optional[str] = None,
         pipeline_name: Optional[str] = None,
         context_name: Optional[str] = None,
-        outcome: Optional[str] = None,
+        outcome: Union[str, Iterable[str], None] = None,
+        exclude_outcome: Union[str, Iterable[str], None] = None,
         has_tool_calls: Optional[bool] = None,
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
@@ -919,55 +985,23 @@ class CallHistoryStore:
             with self._lock:
                 conn = self._get_connection()
                 try:
-                    conditions = []
-                    params = []
-                    
-                    if start_date:
-                        conditions.append("start_time >= ?")
-                        params.append(start_date.isoformat())
-                    if end_date:
-                        conditions.append("start_time <= ?")
-                        params.append(end_date.isoformat())
-                    if caller_number:
-                        conditions.append("caller_number LIKE ?")
-                        params.append(f"%{caller_number}%")
-                    if caller_name:
-                        conditions.append("caller_name LIKE ?")
-                        params.append(f"%{caller_name}%")
-                    if provider_name:
-                        # LOW-CH3: case-insensitive match so mixed-case legacy rows
-                        # bucket together with normalized writes.
-                        conditions.append("LOWER(provider_name) = ?")
-                        params.append(provider_name.lower())
-                    if pipeline_name:
-                        conditions.append("pipeline_name = ?")
-                        params.append(pipeline_name)
-                    if context_name:
-                        conditions.append("context_name = ?")
-                        params.append(context_name)
-                    if outcome:
-                        conditions.append("outcome = ?")
-                        params.append(outcome)
-                    if has_tool_calls is not None:
-                        if has_tool_calls:
-                            conditions.append("tool_calls IS NOT NULL AND tool_calls != '[]'")
-                        else:
-                            conditions.append("(tool_calls IS NULL OR tool_calls = '[]')")
-                    if min_duration is not None:
-                        conditions.append("duration_seconds >= ?")
-                        params.append(min_duration)
-                    if max_duration is not None:
-                        conditions.append("duration_seconds <= ?")
-                        params.append(max_duration)
-                    if transcript_search:
-                        escaped = self._escape_like(transcript_search)
-                        conditions.append("LOWER(conversation_history) LIKE LOWER(?) ESCAPE '\\'")
-                        params.append(f"%{escaped}%")
-                    if call_metadata_key is not None and call_metadata_value is not None:
-                        from src.core.call_metadata import call_metadata_json_path
-
-                        conditions.append("CAST(json_extract(call_metadata, ?) AS TEXT) = ?")
-                        params.extend([call_metadata_json_path(call_metadata_key), call_metadata_value])
+                    conditions, params = self._build_filter_conditions(
+                        start_date=start_date,
+                        end_date=end_date,
+                        caller_number=caller_number,
+                        caller_name=caller_name,
+                        provider_name=provider_name,
+                        pipeline_name=pipeline_name,
+                        context_name=context_name,
+                        outcome=outcome,
+                        exclude_outcome=exclude_outcome,
+                        has_tool_calls=has_tool_calls,
+                        min_duration=min_duration,
+                        max_duration=max_duration,
+                        transcript_search=transcript_search,
+                        call_metadata_key=call_metadata_key,
+                        call_metadata_value=call_metadata_value,
+                    )
 
                     where_clause = " AND ".join(conditions) if conditions else "1=1"
                     query = f"SELECT COUNT(*) FROM call_records WHERE {where_clause}"
@@ -1026,9 +1060,13 @@ class CallHistoryStore:
         self,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
+        **filters: Any,
     ) -> Dict[str, Any]:
         """
         Get aggregate statistics for the dashboard.
+
+        Accepts the same filters as list()/count() so the statistics always
+        describe the records the operator is currently looking at.
         
         Returns:
             Dictionary with stats: total_calls, avg_duration, outcomes, providers, etc.
@@ -1042,15 +1080,10 @@ class CallHistoryStore:
                 try:
                     cursor = conn.cursor()
                     
-                    # Build date filter
-                    date_filter = "1=1"
-                    params = []
-                    if start_date:
-                        date_filter += " AND start_time >= ?"
-                        params.append(start_date.isoformat())
-                    if end_date:
-                        date_filter += " AND start_time <= ?"
-                        params.append(end_date.isoformat())
+                    conditions, params = self._build_filter_conditions(
+                        start_date=start_date, end_date=end_date, **filters
+                    )
+                    where_clause = " AND ".join(conditions) if conditions else "1=1"
                     
                     # Total calls and duration stats
                     cursor.execute(f"""
@@ -1063,7 +1096,7 @@ class CallHistoryStore:
                             AVG(avg_turn_latency_ms) as avg_latency,
                             SUM(total_turns) as total_turns,
                             SUM(barge_in_count) as total_barge_ins
-                        FROM call_records WHERE {date_filter}
+                        FROM call_records WHERE {where_clause}
                     """, params)
                     row = cursor.fetchone()
                     stats = {
@@ -1080,7 +1113,7 @@ class CallHistoryStore:
                     # Outcome breakdown
                     cursor.execute(f"""
                         SELECT outcome, COUNT(*) as count
-                        FROM call_records WHERE {date_filter}
+                        FROM call_records WHERE {where_clause}
                         GROUP BY outcome
                     """, params)
                     stats["outcomes"] = {row[0]: row[1] for row in cursor.fetchall()}
@@ -1088,7 +1121,7 @@ class CallHistoryStore:
                     # Provider usage
                     cursor.execute(f"""
                         SELECT provider_name, COUNT(*) as count
-                        FROM call_records WHERE {date_filter}
+                        FROM call_records WHERE {where_clause}
                         GROUP BY provider_name
                     """, params)
                     stats["providers"] = {row[0]: row[1] for row in cursor.fetchall()}
@@ -1096,7 +1129,7 @@ class CallHistoryStore:
                     # Pipeline usage
                     cursor.execute(f"""
                         SELECT pipeline_name, COUNT(*) as count
-                        FROM call_records WHERE {date_filter} AND pipeline_name IS NOT NULL
+                        FROM call_records WHERE {where_clause} AND pipeline_name IS NOT NULL
                         GROUP BY pipeline_name
                     """, params)
                     stats["pipelines"] = {row[0]: row[1] for row in cursor.fetchall()}
@@ -1104,7 +1137,7 @@ class CallHistoryStore:
                     # Context usage
                     cursor.execute(f"""
                         SELECT context_name, COUNT(*) as count
-                        FROM call_records WHERE {date_filter} AND context_name IS NOT NULL
+                        FROM call_records WHERE {where_clause} AND context_name IS NOT NULL
                         GROUP BY context_name
                     """, params)
                     stats["contexts"] = {row[0]: row[1] for row in cursor.fetchall()}
@@ -1113,7 +1146,7 @@ class CallHistoryStore:
                     cursor.execute(f"""
                         SELECT DATE(start_time) as day, COUNT(*) as count
                         FROM call_records 
-                        WHERE {date_filter}
+                        WHERE {where_clause}
                         GROUP BY DATE(start_time)
                         ORDER BY day DESC
                         LIMIT 30
@@ -1127,7 +1160,7 @@ class CallHistoryStore:
                     cursor.execute(f"""
                         SELECT caller_number, COUNT(*) as count
                         FROM call_records 
-                        WHERE {date_filter} AND caller_number IS NOT NULL
+                        WHERE {where_clause} AND caller_number IS NOT NULL
                         GROUP BY caller_number
                         ORDER BY count DESC
                         LIMIT 10
@@ -1140,14 +1173,14 @@ class CallHistoryStore:
                     # Tool usage stats
                     cursor.execute(f"""
                         SELECT COUNT(*) FROM call_records 
-                        WHERE {date_filter} AND tool_calls != '[]'
+                        WHERE {where_clause} AND tool_calls != '[]'
                     """, params)
                     stats["calls_with_tools"] = cursor.fetchone()[0]
                     
                     # Top tools aggregation (parse JSON tool_calls field)
                     cursor.execute(f"""
                         SELECT tool_calls FROM call_records 
-                        WHERE {date_filter} AND tool_calls != '[]'
+                        WHERE {where_clause} AND tool_calls != '[]'
                     """, params)
                     tool_counts: Dict[str, int] = {}
                     for row in cursor.fetchall():

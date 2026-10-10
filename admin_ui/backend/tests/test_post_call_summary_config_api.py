@@ -259,7 +259,7 @@ async def test_modular_provider_credentials_verify_success(
 
         async def get(self, url, **kwargs):
             calls.append((url, kwargs))
-            return type("Response", (), {"status_code": 200})()
+            return httpx.Response(200, json={"data": []})
 
     monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(
@@ -647,7 +647,7 @@ async def test_key_required_provider_rejects_no_auth_sentinel(monkeypatch, provi
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider_type", ["openai", "telnyx", "minimax"])
-async def test_modular_verification_rejects_unallowlisted_configured_host(
+async def test_modular_verification_rejects_metadata_target(
     monkeypatch, provider_type
 ):
     provider_key = f"{provider_type}_llm"
@@ -676,7 +676,7 @@ async def test_modular_verification_rejects_unallowlisted_configured_host(
                 provider_key: {
                     "type": provider_type,
                     "api_key": "provider-secret",
-                    "chat_base_url": "https://untrusted.example/v1",
+                    "chat_base_url": "http://169.254.169.254/v1",
                 }
             }
         },
@@ -686,5 +686,5 @@ async def test_modular_verification_rejects_unallowlisted_configured_host(
         await config_api.verify_provider_credentials(provider_key)
 
     assert exc_info.value.status_code == 400
-    assert "not allowlisted" in str(exc_info.value.detail).lower()
+    assert "blocked" in str(exc_info.value.detail).lower()
     assert calls == []

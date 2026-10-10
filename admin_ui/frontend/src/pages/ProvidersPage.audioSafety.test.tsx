@@ -78,7 +78,7 @@ describe('ProvidersPage OpenAI Realtime save contract', () => {
             return { data: {}, status: 200 };
         });
         render(<MemoryRouter><ProvidersPage /></MemoryRouter>);
-        fireEvent.click(await screen.findByTitle('Settings'));
+        fireEvent.click(await screen.findByRole('button', { name: 'Settings for openai_realtime', exact: true }));
         const dialog = await screen.findByRole('dialog', { name: 'Edit Provider: openai_realtime' });
         fireEvent.change(within(dialog).getByLabelText(label), { target: { value: '' } });
         expect(within(dialog).getByLabelText(label)).toHaveValue(fallback);
@@ -97,7 +97,7 @@ describe('ProvidersPage OpenAI Realtime save contract', () => {
             if (otherField !== field) expect(providers.openai_realtime[otherField]).toBe(value);
         }
         await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-        fireEvent.click(screen.getByTitle('Settings'));
+        fireEvent.click(screen.getByRole('button', { name: 'Settings for openai_realtime', exact: true }));
         const reopened = await screen.findByRole('dialog', { name: 'Edit Provider: openai_realtime' });
         expect(within(reopened).getByLabelText(label)).toHaveValue(fallback);
     });
@@ -148,7 +148,7 @@ describe('ProvidersPage OpenAI Realtime save contract', () => {
             </MemoryRouter>,
         );
 
-        fireEvent.click(await screen.findByTitle('Settings'));
+        fireEvent.click(await screen.findByRole('button', { name: 'Settings for openai_realtime', exact: true }));
         const dialog = await screen.findByRole('dialog', {
             name: 'Edit Provider: openai_realtime',
         });
@@ -201,8 +201,7 @@ describe('ProvidersPage OpenAI Realtime save contract', () => {
             </MemoryRouter>,
         );
 
-        const settings = await screen.findAllByTitle('Settings');
-        fireEvent.click(settings[0]);
+        fireEvent.click(await screen.findByRole('button', { name: 'Settings for provider_a', exact: true }));
         const providerADialog = await screen.findByRole('dialog', {
             name: 'Edit Provider: provider_a',
         });
@@ -213,7 +212,7 @@ describe('ProvidersPage OpenAI Realtime save contract', () => {
         await waitFor(() => expect(mocks.loadConfigYaml).toHaveBeenCalledTimes(2));
 
         fireEvent.click(within(providerADialog).getByRole('button', { name: 'Cancel' }));
-        fireEvent.click(screen.getAllByTitle('Settings')[1]);
+        fireEvent.click(screen.getByRole('button', { name: 'Settings for provider_b', exact: true }));
         const providerBDialog = await screen.findByRole('dialog', {
             name: 'Edit Provider: provider_b',
         });
@@ -287,7 +286,7 @@ describe('ProvidersPage OpenAI Realtime save contract', () => {
             </MemoryRouter>,
         );
 
-        fireEvent.click(await screen.findByTitle('Settings'));
+        fireEvent.click(await screen.findByRole('button', { name: 'Settings for google_live', exact: true }));
         const dialog = await screen.findByRole('dialog', {
             name: 'Edit Provider: google_live',
         });
@@ -337,7 +336,7 @@ describe('ProvidersPage OpenAI Realtime save contract', () => {
             </MemoryRouter>,
         );
 
-        fireEvent.click(await screen.findByTitle('Settings'));
+        fireEvent.click(await screen.findByRole('button', { name: 'Settings for deepgram', exact: true }));
         const dialog = await screen.findByRole('dialog', {
             name: 'Edit Provider: deepgram',
         });
@@ -386,7 +385,7 @@ describe('ProvidersPage OpenAI Realtime save contract', () => {
             </MemoryRouter>,
         );
 
-        fireEvent.click(await screen.findByTitle('Settings'));
+        fireEvent.click(await screen.findByRole('button', { name: 'Settings for deepgram', exact: true }));
         const dialog = await screen.findByRole('dialog', {
             name: 'Edit Provider: deepgram',
         });

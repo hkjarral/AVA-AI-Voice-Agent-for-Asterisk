@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-7.6.1-blue.svg)
+![Version](https://img.shields.io/badge/version-7.6.2-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -171,6 +171,48 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>v7.6.2 — Gemini 3.8 Live, Microsoft bookings, and clearer call analytics</b></summary>
+
+v7.6.2 is an in-place feature and reliability release. It does not migrate
+databases, reassign Agents, or change the selected provider, transport, Audio
+Profile, or shipped Google Live model defaults.
+
+- **Gemini 3.8 Live is opt-in on Developer API and Vertex AI** — model-aware
+  regions, Audio Only output, ID-matched tool responses, and full-duplex
+  interruption handling. An unanswered attended transfer returns the caller to
+  AI. Attached Vertex 3.8/2.5 calls validate the changed paths; broader production
+  and Developer API qualification remains outstanding
+  ([#674](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/674)).
+- **Microsoft Calendar supports caller-confirmed invitations and same-call
+  booking changes** — check an exact requested interval, reconcile creation
+  retries, and reschedule or cancel the tracked booking with consent. Invitations
+  and hours/horizon enforcement remain opt-in; saved OAuth caches, calendar IDs,
+  and Agent prompts are preserved. Later-call changes require staff; creation
+  does not prove invitation delivery or acceptance
+  ([#686](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/686)).
+- **Call History filters now agree with statistics and exports** — multi-outcome
+  **Only / Hide**, tool usage, duration, transcript, and metadata filters apply
+  consistently, with stale responses ignored
+  ([#683](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/683),
+  contributed by [@Rea-PC08](https://github.com/Rea-PC08)).
+- **Admin UI is easier to read and navigate** — aligned numeric displays,
+  accessible icon controls, and shared empty states
+  ([#681](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/681),
+  [#682](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/682),
+  [#684](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/684),
+  contributed by [@arnavp27](https://github.com/arnavp27)).
+- **The ignored farewell delay is deprecated** — existing YAML/API values remain
+  compatible, but misleading controls are removed. Terminal hangup still drains
+  caller-facing audio rather than sleeping for a fixed delay
+  ([#678](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/678)).
+
+See the [v7.6.2 changelog](CHANGELOG.md#762---2026-10-02),
+[migration notes](docs/MIGRATION.md#v761-to-v762), and
+[validation matrix](docs/baselines/golden/v7.6.2-validation-matrix.md).
+
+</details>
+
+<details>
 <summary><b>v7.6.1 — Fish Audio streaming and safer transfer/calendar operations</b></summary>
 
 v7.6.1 is an in-place feature, reliability, and security release. It does not
@@ -513,7 +555,7 @@ voicemail mailboxes it should be allowed to use.**
   working.
 
 Before upgrading—especially from v7.3.0–v7.3.3—read the
-[current upgrade procedure](docs/INSTALLATION.md#upgrade-to-v761-existing-checkout)
+[current upgrade procedure](docs/INSTALLATION.md#upgrade-to-v762-existing-checkout)
 and [Contexts → Agents migration guide](docs/OPERATOR_MIGRATION.md).
 
 </details>
@@ -1255,13 +1297,19 @@ Then load **[AVA.mdc](AVA.mdc)** into your AI coding assistant (Claude, Cursor, 
 <td align="center"><a href="https://github.com/gcsuri"><img src="https://github.com/gcsuri.png" width="60" alt="gcsuri"><br><sub><b>gcsuri</b></sub></a><br>Code — Google Calendar</td>
 <td align="center"><a href="https://github.com/octo-patch"><img src="https://github.com/octo-patch.png" width="60" alt="octo-patch"><br><sub><b>octo-patch</b></sub></a><br>MiniMax LLM Provider</td>
 <td align="center"><a href="https://github.com/neilruaro-camb"><img src="https://github.com/neilruaro-camb.png" width="60" alt="neilruaro-camb"><br><sub><b>neilruaro-camb</b></sub></a><br>CAMB AI TTS Provider</td>
-<td align="center"><a href="https://github.com/aoi-dev-0411"><img src="https://github.com/aoi-dev-0411.png" width="60" alt="aoi-dev-0411"><br><sub><b>aoi-dev-0411</b></sub></a><br>Transcript Search, Health Badges</td>
+<td align="center"><a href="https://github.com/Ai-chan-0411"><img src="https://github.com/Ai-chan-0411.png" width="60" alt="Ai-chan-0411"><br><sub><b>Ai-chan-0411</b></sub></a><br>Transcript Search, Health Badges</td>
 </tr>
 <tr>
 <td align="center"><a href="https://github.com/exaland"><img src="https://github.com/exaland.png" width="60" alt="exaland"><br><sub><b>exaland</b></sub></a><br>Outbound .ULAW Compatibility</td>
 <td align="center"><a href="https://github.com/YosefAdPro"><img src="https://github.com/YosefAdPro.png" width="60" alt="YosefAdPro"><br><sub><b>YosefAdPro</b></sub></a><br>Agents API/OpenAPI</td>
 <td align="center"><a href="https://github.com/cswilsnetex"><img src="https://github.com/cswilsnetex.png" width="60" alt="cswilsnetex"><br><sub><b>Chris Wilson</b></sub></a><br>Google Live Key Handling, Admin UI Accessibility</td>
-<td align="center"><a href="https://github.com/Rea-PC08"><img src="https://github.com/Rea-PC08.png" width="60" alt="Rea-PC08"><br><sub><b>Rea-PC08</b></sub></a><br>Fish Audio TTS</td>
+<td align="center"><a href="https://github.com/Rea-PC08"><img src="https://github.com/Rea-PC08.png" width="60" alt="Rea-PC08"><br><sub><b>Rea-PC08</b></sub></a><br>Fish Audio TTS, Call History Filters</td>
+<td align="center"><a href="https://github.com/arnavp27"><img src="https://github.com/arnavp27.png" width="60" alt="arnavp27"><br><sub><b>Arnav Patil</b></sub></a><br>Admin UI Accessibility, Numeric Alignment, Empty States</td>
+</tr>
+<tr>
+<td align="center"><a href="https://github.com/alceops"><img src="https://github.com/alceops.png" width="60" alt="alceops"><br><sub><b>Alce</b></sub></a><br>OpenAI Streaming Timeouts</td>
+<td align="center"><a href="https://github.com/Genmin"><img src="https://github.com/Genmin.png" width="60" alt="Genmin"><br><sub><b>Joey Roth</b></sub></a><br>OpenAI Tool-call Tests</td>
+<td align="center"><a href="https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/3053c616"><img src="https://img.shields.io/badge/contributor-Ivan%20Garcia-blue" alt="Ivan Garcia contributor badge"><br><sub><b>Ivan Garcia</b></sub></a><br>Azure STT/TTS, OpenAI GA Tools</td>
 </tr>
 </table>
 

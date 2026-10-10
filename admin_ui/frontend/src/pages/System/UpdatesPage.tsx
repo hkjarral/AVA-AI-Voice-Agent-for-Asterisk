@@ -634,6 +634,7 @@ const UpdatesPage = () => {
             onClick={() => fetchPlan()}
             disabled={!initialized || planLoading}
             className="p-1.5 hover:bg-accent rounded-lg transition-colors disabled:opacity-50"
+            aria-label="Refresh preview"
             title="Refresh preview"
           >
             <RefreshCw className={`w-4 h-4 ${planLoading ? 'animate-spin' : ''}`} />
@@ -995,6 +996,7 @@ const UpdatesPage = () => {
             onClick={fetchHistory}
             disabled={historyLoading}
             className="p-1.5 hover:bg-accent rounded-lg transition-colors disabled:opacity-50"
+            aria-label="Refresh history"
             title="Refresh history"
           >
             <RefreshCw className={`w-4 h-4 ${historyLoading ? 'animate-spin' : ''}`} />

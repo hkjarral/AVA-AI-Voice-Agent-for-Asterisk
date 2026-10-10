@@ -125,8 +125,15 @@ class MicrosoftGraphClient:
                 authority=self.authority,
                 token_cache=cache,
             )
-            accounts = app.get_accounts(username=self.account.user_principal_name) or app.get_accounts()
+            accounts = app.get_accounts(username=self.account.user_principal_name)
             if not accounts:
+                # Even a single cached account is not proof that it is the configured user.
+                if app.get_accounts():
+                    raise MicrosoftGraphApiError(
+                        "Configured Microsoft identity does not match the signed-in cache. Verify the intended account and correct user_principal_name; no cached-account fallback is allowed.",
+                        error_code="account_identity_mismatch",
+                        status=401,
+                    )
                 raise MicrosoftGraphApiError(
                     "Microsoft Calendar reconnect required. No signed-in account exists in the token cache.",
                     error_code="auth_expired",
@@ -152,10 +159,16 @@ class MicrosoftGraphClient:
         path_or_url: str,
         body: dict[str, Any] | None = None,
         query: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        *,
+        event_resource: bool = False,
     ) -> Any:
         token = self.acquire_token()
         if path_or_url.startswith("https://"):
             url = path_or_url
+            parsed = urllib.parse.urlsplit(url)
+            if parsed.netloc != "graph.microsoft.com" or not parsed.path.startswith("/v1.0/"):
+                raise MicrosoftGraphApiError("Unexpected Graph pagination URL.", error_code="invalid_graph_url")
         else:
             url = f"{GRAPH_BASE_URL}{path_or_url}"
         if query:
@@ -169,7 +182,12 @@ class MicrosoftGraphClient:
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
-                "Prefer": 'outlook.timezone="UTC"',
+                "Prefer": (
+                    'outlook.timezone="UTC", IdType="ImmutableId", outlook.body-content-type="text"'
+                    if event_resource
+                    else 'outlook.timezone="UTC"'
+                ),
+                **(headers or {}),
             },
         )
         try:
@@ -187,7 +205,7 @@ class MicrosoftGraphClient:
             raise
         except Exception as exc:
             raise MicrosoftGraphApiError(
-                f"Microsoft Graph request failed: {exc}",
+                "Microsoft Graph request failed; its outcome may be uncertain.",
                 error_code="graph_unavailable",
             ) from exc
 
@@ -202,6 +220,8 @@ class MicrosoftGraphClient:
             code = "forbidden_calendar"
         elif status == 404:
             code = "calendar_not_found"
+        elif status == 412:
+            code = "booking_changed"
         elif status == 429:
             code = "rate_limited"
         elif status >= 500:
@@ -214,6 +234,13 @@ class MicrosoftGraphClient:
 
     def me(self) -> dict[str, Any]:
         return self._request("GET", "/me")
+
+    def get_calendar(self) -> dict[str, Any]:
+        """Read precisely the saved calendar ID, without container ID preferences."""
+        return self._request(
+            "GET",
+            f"/me/calendars/{urllib.parse.quote(self.account.calendar_id, safe='')}",
+        )
 
     def list_calendars(self) -> list[dict[str, Any]]:
         calendars: list[dict[str, Any]] = []
@@ -234,7 +261,10 @@ class MicrosoftGraphClient:
             "$orderby": "start/dateTime",
         }
         while url:
-            result = self._request("GET", url, query=query if url.startswith("/") else None)
+            result = self._request(
+                "GET", url, query=query if url.startswith("/") else None,
+                event_resource=True,
+            )
             events.extend(result.get("value") or [])
             url = result.get("@odata.nextLink")
             query = None
@@ -279,6 +309,7 @@ class MicrosoftGraphClient:
             return self._request(
                 "GET",
                 f"/me/calendars/{urllib.parse.quote(self.account.calendar_id, safe='')}/events/{urllib.parse.quote(event_id, safe='')}",
+                event_resource=True,
             )
         except MicrosoftGraphApiError as exc:
             if exc.status == 404:
@@ -291,6 +322,9 @@ class MicrosoftGraphClient:
         description: str,
         start_utc: datetime,
         end_utc: datetime,
+        *,
+        attendee_emails: list[str] | None = None,
+        transaction_id: str | None = None,
     ) -> dict[str, Any]:
         body = {
             "subject": summary,
@@ -298,20 +332,37 @@ class MicrosoftGraphClient:
             "start": {"dateTime": graph_datetime(start_utc), "timeZone": "UTC"},
             "end": {"dateTime": graph_datetime(end_utc), "timeZone": "UTC"},
         }
+        if attendee_emails:
+            body["attendees"] = [{"emailAddress": {"address": email}, "type": "required"} for email in attendee_emails]
+        if transaction_id:
+            body["transactionId"] = transaction_id
+        body["showAs"] = "busy"
         return self._request(
             "POST",
             f"/me/calendars/{urllib.parse.quote(self.account.calendar_id, safe='')}/events",
             body=body,
+            event_resource=True,
         )
 
-    def delete_event(self, event_id: str) -> bool:
+    def delete_event(self, event_id: str, etag: str | None = None) -> bool:
         try:
             self._request(
                 "DELETE",
                 f"/me/calendars/{urllib.parse.quote(self.account.calendar_id, safe='')}/events/{urllib.parse.quote(event_id, safe='')}",
+                event_resource=True,
+                headers={"If-Match": etag} if etag else None,
             )
             return True
         except MicrosoftGraphApiError as exc:
             if exc.status == 404:
                 return False
             raise
+
+    def update_event(self, event_id: str, body: dict[str, Any], etag: str | None = None) -> dict[str, Any]:
+        return self._request(
+            "PATCH",
+            f"/me/calendars/{urllib.parse.quote(self.account.calendar_id, safe='')}/events/{urllib.parse.quote(event_id, safe='')}",
+            event_resource=True,
+            body=body,
+            headers={"If-Match": etag} if etag else None,
+        )

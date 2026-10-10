@@ -127,7 +127,7 @@ const TerminalPage = () => {
                         autoFocus
                         disabled={loading}
                     />
-                    <button type="submit" disabled={loading || !input} className="p-1 hover:text-primary transition-colors">
+                    <button aria-label="Send command" title="Send command" type="submit" disabled={loading || !input} className="p-1 hover:text-primary transition-colors">
                         <Send className="w-4 h-4" />
                     </button>
                 </form>

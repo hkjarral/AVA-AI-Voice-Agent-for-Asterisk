@@ -427,7 +427,8 @@ const MCPPage = () => {
                                         <button
                                             onClick={() => deleteServer(id)}
                                             className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring border border-input bg-background shadow-sm hover:bg-destructive/10 hover:text-destructive h-9 px-3 py-2"
-                                            title="Delete server from config"
+                                            aria-label={`Delete server ${id} from config`}
+                                            title={`Delete server ${id} from config`}
                                         >
                                             <Trash2 className="w-4 h-4" />
                                         </button>
@@ -613,7 +614,8 @@ const MCPPage = () => {
                                                 const next = serverForm.env.filter((_, i) => i !== idx);
                                                 setServerForm({ ...serverForm, env: next });
                                             }}
-                                            title="Remove"
+                                            aria-label={`Remove ${row.key || `environment variable ${idx + 1}`}`}
+                                            title={`Remove ${row.key || `environment variable ${idx + 1}`}`}
                                         >
                                             <Trash2 className="w-4 h-4" />
                                         </button>
@@ -644,7 +646,8 @@ const MCPPage = () => {
                                                     const next = serverForm.tools.filter((_, i) => i !== idx);
                                                     setServerForm({ ...serverForm, tools: next });
                                                 }}
-                                                title="Remove tool override"
+                                                aria-label={`Remove tool override ${t.name || idx + 1}`}
+                                                title={`Remove tool override ${t.name || idx + 1}`}
                                             >
                                                 <Trash2 className="w-4 h-4" />
                                             </button>

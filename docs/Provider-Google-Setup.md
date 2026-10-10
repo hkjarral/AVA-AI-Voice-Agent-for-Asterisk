@@ -357,7 +357,7 @@ Google publishes Gemini Live models on two surfaces with different lifecycles. P
 - **Production voice agents** → keep the established **Vertex AI mode** (`use_vertex_ai: true`) with `gemini-live-2.5-flash-native-audio` until 3.8 has broader production qualification. See the **Barge-In (Interruption)** section below and [Provider-Vertex-Setup.md](Provider-Vertex-Setup.md).
 - **Evaluating Gemini 3.8 Live** → select `gemini-3.8-live` with either API mode. It is [GA on Vertex AI](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/live-api) and [available on the Developer API](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live). The Admin UI locks Response Modalities to Audio Only for this model; enable output transcription separately if text is needed. Google defaults its function calls to non-blocking; AAVA keeps call-control tools blocking and allows only read-only extension status checks to run asynchronously. Test greeting, transcription, interruption, tools, transfer, and farewell before production use; the existing 2.5 default is unchanged.
 
-- **Developer API evaluation / non-prod** → the shipped `gemini-2.5-flash-native-audio-latest` works for basic conversation flow but server-side barge-in is unreliable. Acceptable for demos and feature evaluation; not recommended for production telephony where mid-utterance interruption matters.
+- **Developer API evaluation / non-prod** → test the shipped `gemini-2.5-flash-native-audio-latest` with the local interruption path described below. Validate complete long responses, intentional interruptions and follow-up input on your transport before production rollout.
 - **Pinned snapshot for reproducibility** → use `gemini-2.5-flash-native-audio-preview-12-2025` (or dated `-09-2025`) instead of the floating `-latest` alias.
 - **Evaluating Gemini 3.1** → swap to `gemini-3.1-flash-live-preview` in a non-prod context first; tool-calling and barge-in parity not yet validated for AAVA — report back via Discord/issues.
 
@@ -377,7 +377,7 @@ End-to-end testing on 2026-05-09 with `llm_model: gemini-3.1-flash-live-preview`
 
 **Caveats** (same as the 2.5 native-audio family on Developer API):
 
-- Server-side `interrupted` VAD is preview-tier; mid-utterance barge-in is unreliable even on 3.1. For production-grade barge-in, switch to Vertex AI mode and use `gemini-live-2.5-flash-native-audio` (GA).
+- AAVA uses the gated Google input path for 3.1 as well. Check local fallback detection during playback; an absent server-side `interrupted` event while the server receives silence does not identify an API/model failure.
 - AAVA's `clientContent` callsites (the `_send_greeting` helper and the post-tool farewell handler in `src/providers/google_live.py`) work today but should be migrated to `realtimeInput` with a text field if Google tightens enforcement of the 3.1 history-only restriction in a future release.
 
 Investigation logs and timeline are captured in the [#350 / #356 verification discussion on PR #384](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/384).
@@ -396,22 +396,54 @@ The fallback watchdog protects against stuck calls:
 
 ### 1. Barge-In (Interruption)
 
-Barge-in on Google Live is driven by **server-side VAD** that fires `serverContent.interrupted=true` when the model detects the caller speaking during agent audio output. AAVA's engine receives this signal as a `ProviderBargeIn` event and flushes pending TTS.
+Google Live has two interruption paths in AAVA:
 
-**Reliability depends on which Google model surface you're using:**
+- **Gemini 3.8 with `full_duplex_barge_in_3_8: true`** receives real caller audio during playback and uses Google's native `serverContent.interrupted` signal. The engine flushes pending playback when that signal arrives.
+- **Other Google Live models, or 3.8 with full duplex disabled**, retain silence substitution during TTS to limit self-echo. Local fallback detection inspects the original normalized caller audio before silence substitution, matching the ExternalMedia/RTP path. This applies to Developer API and Vertex instances, including named provider aliases.
 
-| Surface | Model | Server-side `interrupted` reliability |
-|---------|-------|---------------------------------------|
-| **Vertex AI** | `gemini-live-2.5-flash-native-audio` (**GA**) | Reliable — production-grade |
-| Developer API | `gemini-2.5-flash-native-audio-latest` (preview alias) | **Unreliable** — server-side `interrupted` may not fire on this preview model variant |
-| Developer API | `gemini-2.5-flash-native-audio-preview-12-2025` (dated preview) | Unverified — preview-tier; behavior may change without notice |
-| Developer API | `gemini-3.1-flash-live-preview` | New preview generation; tool-calling parity not yet validated for AAVA |
+The local fallback honors `barge_in.enabled`, `provider_fallback_enabled`, the provider allowlist, greeting/start protection, cooldown, and media isolation. With enhanced local VAD available, it uses the existing speech criteria. With local VAD disabled, it uses the existing energy threshold and sustained-frame requirement. `vad_mode: auto` combined with legacy `use_provider_vad: true` still selects provider mode; the fallback can inspect caller energy without enabling local VAD globally.
 
-**Recommendation for production voice agents: use Vertex AI mode** (`use_vertex_ai: true` + the GA model). This is not a workaround — it reflects Google's current product state where only Vertex publishes a GA Live native-audio model. See [Provider-Vertex-Setup.md](Provider-Vertex-Setup.md).
+An absent Google interruption event during silence-gated playback does not establish a model or API limitation: the server is receiving silence. Check the local fallback events as well. Test sustained noise and phone/microphone echo alongside intentional interruptions before rollout.
 
-**Status: documented limitation, not a code fix.** Issue [#351](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/351) is resolved in v6.5.0 by recommending Vertex AI mode for production, not by code changes. AAVA's TTS-input gating (which mutes caller audio during agent speech to prevent self-echo on Google Live) still applies unconditionally to all Google Live providers and modes — `vad_mode: provider` does not yet skip this gating despite the UI's documented intent. A v6.6 follow-up tracks the architectural fix (refactor silence-gating to honor `vad_mode`); the attempt that landed and was reverted on this branch (`1763a441` → `cead273a`) demonstrated that the audio-forwarding path on AudioSocket has downstream dependencies on either silence injection or `vad_manager` being non-None that aren't safely refactored without a broader audio-path overhaul.
+#### Long-response playback (Developer API opt-in)
 
-**Why the Dev API preview path is unreliable empirically:** Side-by-side testing showed that with the same VAD config, same audio path, and same client gating logic, Vertex's GA model fires `serverContent.interrupted` reliably during caller overlap, while Dev API's `*-native-audio-latest` alias does not. The differentiator is the model variant, not AAVA's code path.
+The Google Developer API can deliver many small audio chunks faster than telephony plays them. The original source queue can fill and discard chunks, causing a long answer to skip speech or end early. **Enable long-response playback** retains queued audio within a bounded budget and waits for it to reach the caller before releasing playback gating or completing terminal actions.
+
+**Enable or disable in the Admin UI:**
+
+1. Open **Providers**, edit the Google Live provider instance used by your Agent, and select Developer API mode under **API Mode**.
+2. Select **Enable long-response playback**, or clear it to restore the original queue/completion path.
+3. Click **Save Changes**, then **Restart AI Engine** once active calls have finished. Saving alone does not activate provider changes.
+4. Reopen the provider to confirm the saved setting, then test a new call.
+
+The checkbox defaults **off**, including after upgrading an existing installation. There is no automatic opt-in or data migration, and shipped model defaults stay the same. Existing Developer API users who need long responses must enable it explicitly; leaving it off retains the original queue limit. Named Google provider instances have independent settings.
+
+The checkbox is hidden when Vertex is selected. Switching API mode preserves the saved preference; the feature runs only when the actual connected backend is the Developer API. If Vertex authentication falls back to Developer API, that saved preference governs the fallback connection. The AudioSocket microphone detection correction above applies to both Google backends independently of this option. Other providers and modular pipelines do not use the long-response queue.
+
+For headless configuration, merge these fields into the existing provider entry and restart `ai_engine`:
+
+```yaml
+providers:
+  google_live:
+    long_audio_playback_enabled: true  # Default false; enable on a test instance first.
+    long_audio_backlog_sec: 120       # Allowed range: 10–120 seconds.
+```
+
+`long_audio_backlog_sec` defaults to **120 seconds** and accepts **10–120**. It controls queued audio capacity, not total response duration or how long Google is asked to speak. The checkbox is the UI control; the advanced budget is configured in YAML. See the [configuration reference](Configuration-Reference.md#google-live-monolithic-agent).
+
+The backlog is bounded by audio bytes and item count. Overflow or failed drain ends the call with an explicit error instead of silently dropping speech chunks. Playback drain, rather than generation completion, releases input gating. Barge-in discards the queued response and clears playback-owned gating so subsequent caller input can resume. Terminal tool actions retain their protocol completion boundary. On opted-in, silence-gated Developer calls, local fallback caps the required qualifying speech at 120 ms (or a shorter configured duration) within a 200-ms window, tolerating quiet gaps up to 40 ms; the existing energy threshold, enhanced-VAD votes, greeting protection, cooldown and media isolation still apply. Vertex and opt-out timing are unchanged; Gemini 3.8 native full-duplex interruption continues to use the provider signal.
+
+An interrupted terminal response cannot reuse its old audio or completion boundary to hang up. If the Developer connection closes abnormally, already-accepted audio receives at most eight seconds to drain before cleanup, with transfer/caller teardown taking priority. This may preserve a short buffered farewell; it does not fix an upstream API error or recover audio that Google never generated. Overflows and stalled playback remain explicit failures. Disabling the checkbox restores the original queue/completion path after saving and restarting. Stopping old playback locally and receiving Google's next response are separate events; the option cannot guarantee the model's response latency.
+
+**Live validation on voiprnd (2026-10-03, Google 2.5 / AudioSocket):**
+
+| Call | Setting | Evidence |
+|---|---|---|
+| `1791083954.400` | Developer, off | Received 92.08 seconds of long-answer audio; the original queue dropped 1,173 chunks and emitted 45.18 seconds. |
+| `1791084141.404` | Developer, on | Received 91.48 seconds and emitted 91.50 seconds including frame padding over 93.605 seconds, with zero drops. The long answer drained fully before the next caller turn; farewell/hangup also drained. |
+| `1791083429.375` | Vertex | Connected to the Vertex endpoint, exercised interruptions and farewell/hangup, and never activated the opt-in queue. |
+
+These calls establish the tested backend/transport behavior, not every model or deployment. Live successful/failed transfer and interrupted-farewell replacement remain qualification checks; automated tests cover their ownership and completion boundaries. Before enabling broadly, test an uninterrupted long answer, follow-up input, early/late and repeated interruptions, background noise/echo, normal and interrupted farewell, and transfer success/failure. Confirm discarded speech never resumes. For a failed call, use **Call History → Troubleshoot → Download Support Package** as described in the [troubleshooting guide](TROUBLESHOOTING_GUIDE.md#export-a-support-package-for-one-call).
 
 ### 2. Function Calling
 
@@ -505,14 +537,11 @@ Pricing changes frequently; verify current rates and quotas in your Google Cloud
 
 ### Issue: Barge-In Not Working
 
-Barge-in on Google Live depends on `serverContent.interrupted=true` firing from Google's server-side VAD. As documented in the **Barge-In (Interruption)** section above, this is reliable on Vertex AI's GA model but **unreliable on the Developer API preview models**.
-
-**If barge-in is not working:**
-
-1. **Confirm provider**: `AI_PROVIDER=google_live` (not a pipeline)
-2. **Confirm Vertex mode for production**: Set `use_vertex_ai: true` and use `gemini-live-2.5-flash-native-audio` (the GA model). See [Provider-Vertex-Setup.md](Provider-Vertex-Setup.md).
-3. **Inspect engine logs** for `Google Live server-side interruption detected`. If those entries are absent during a call where you deliberately overlapped caller speech with agent TTS, Google's server-side VAD is not firing — on Dev API previews this is expected; switch to Vertex GA.
-4. **Verify caller audio energy** — telephony callers often have low input RMS (~25). Local-VAD fallback uses `vad_energy_threshold` (default `1500`) which is calibrated for clean studio audio. For pure-telephony deployments, server-side VAD on Vertex's GA model is the path that actually works; local VAD is unlikely to fire.
+1. Confirm which path the selected model uses in the **Barge-In (Interruption)** section. Verify that `barge_in.enabled`, `provider_fallback_enabled`, and the provider allowlist permit local detection for a gated Google instance.
+2. Check engine startup for `Using provider-managed VAD; local VAD disabled`. The legacy `use_provider_vad: true` override selects that mode when `vad_mode` is `auto`; changing the global VAD mode affects other call paths and is not required for the normalized-PCM fallback.
+3. Look for `Google Live server-side interruption detected` on a native full-duplex call, or `BARGE-IN (provider fallback) triggered` and `BARGE-IN action applied` on a locally detected interruption. Silence sent upstream during gated playback prevents server-side speech detection.
+4. Compare original caller input energy with `barge_in.energy_threshold` (default 1,000) and the configured sustained-speech duration. Preserve greeting protection and cooldown; test speech, silence, background noise and microphone echo before adjusting thresholds.
+5. Confirm queued audio stops, capture re-enables, the next question is heard, and an old response/completion event cannot resume discarded speech or release a newer response's gate.
 
 ## Migration from Pipeline to Live
 
