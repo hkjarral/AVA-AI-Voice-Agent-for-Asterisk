@@ -1,3 +1,4 @@
+import { connectionRecoveryError } from '../utils/connectionRecovery';
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -642,6 +643,13 @@ const ProvidersPage: React.FC = () => {
             if (!fullAgentKind || !FULL_AGENT_TYPES.includes(fullAgentKind)) {
                 toast.error('Select a full-agent provider type.');
                 return;
+            }
+            if (fullAgentKind !== 'local') {
+                const recoveryError = connectionRecoveryError(providerForm);
+                if (recoveryError) {
+                    toast.error(recoveryError);
+                    return;
+                }
             }
             capabilities = ['stt', 'llm', 'tts'];
         }
