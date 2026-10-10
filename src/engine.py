@@ -661,6 +661,9 @@ class Engine:
         self._agent_output_active_calls: Set[str] = set()
         self._provider_output_drain_tasks: Dict[str, asyncio.Task] = {}
         self._deferred_transfer_commit_locks: Dict[str, asyncio.Lock] = {}
+        # Deferred transfer commits in flight, per call: one marker per commit
+        # attempt, stamped with the action id it is committing once known.
+        self._deferred_transfer_committing: Dict[str, List[Dict[str, Any]]] = {}
         # All terminal paths converge on one idempotent drain-and-hangup owner.
         self._terminal_hangup_locks: Dict[str, asyncio.Lock] = {}
         self._terminal_hangup_started: Set[str] = set()
@@ -14295,6 +14298,23 @@ class Engine:
                 chunk: bytes = event.get("data") or b""
                 if not chunk:
                     return
+                if self._provider_audio_blocked_by_transfer_commit(call_id, session):
+                    # The handoff line has finished and the transfer is
+                    # draining. New provider speech here is a follow-up turn
+                    # (Google Live answers its own tool response with a repeat
+                    # of the handoff line), so it must not reach the caller.
+                    dropped = session.vad_state.setdefault(
+                        "transfer_commit_dropped", {"chunks": 0, "bytes": 0}
+                    )
+                    dropped["chunks"] += 1
+                    dropped["bytes"] += len(chunk)
+                    if dropped["chunks"] == 1:
+                        logger.info(
+                            "Dropped provider audio: deferred transfer is committing",
+                            call_id=call_id,
+                            provider=getattr(session, "provider_name", None),
+                        )
+                    return
                 source_mode = str(event.get("source_mode") or "").strip().lower()
                 local_farewell_pending = getattr(self, "_local_tts_farewell_pending", set())
                 is_local_farewell_audio = (
@@ -21771,10 +21791,62 @@ class Engine:
         
         return result
 
+    def _provider_audio_blocked_by_transfer_commit(
+        self,
+        call_id: str,
+        session: Optional["CallSession"],
+    ) -> bool:
+        """Return True while provider audio must not play because a transfer commits.
+
+        Audio is blocked only while the call's pending action is the one a
+        commit in flight is committing. The drain-timeout recovery clears the
+        pending action before it asks the provider for an apology, so the
+        apology plays; an action that replaced the one being committed (for
+        example after cancel_transfer, or a different transfer tool) keeps its
+        own handoff audio until its own commit starts.
+        """
+        pending = getattr(session, "pending_deferred_transfer", None)
+        if not isinstance(pending, dict):
+            return False
+        action_id = pending.get("id")
+        if action_id is None:
+            return False
+        markers = (getattr(self, "_deferred_transfer_committing", None) or {}).get(call_id) or ()
+        return any(marker.get("action_id") == action_id for marker in markers)
+
     async def _commit_pending_deferred_transfer_for_call(
         self,
         call_id: str,
         session: Optional["CallSession"] = None,
+    ) -> Optional[Dict[str, Any]]:
+        # Register this attempt for the whole commit, including the audio
+        # drain wait, so on_provider_event drops provider speech that starts
+        # after the handoff line. The inner routine stamps the action id once
+        # it has read it under the per-call lock; an unstamped marker blocks
+        # nothing. Removed in finally so a failed commit cannot mute the call.
+        committing = getattr(self, "_deferred_transfer_committing", None)
+        if committing is None:
+            committing = {}
+            self._deferred_transfer_committing = committing
+        marker: Dict[str, Any] = {"action_id": None}
+        committing.setdefault(call_id, []).append(marker)
+        try:
+            return await self._commit_pending_deferred_transfer_for_call_inner(
+                call_id, session, commit_marker=marker
+            )
+        finally:
+            markers = committing.get(call_id) or []
+            if marker in markers:
+                markers.remove(marker)
+            if not markers:
+                committing.pop(call_id, None)
+
+    async def _commit_pending_deferred_transfer_for_call_inner(
+        self,
+        call_id: str,
+        session: Optional["CallSession"] = None,
+        *,
+        commit_marker: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         from src.tools.context import ToolExecutionContext
         from src.tools.telephony.deferred_transfer import commit_pending_deferred_transfer
@@ -21799,6 +21871,8 @@ class Engine:
             ):
                 return None
             action_id = action.get("id")
+            if commit_marker is not None:
+                commit_marker["action_id"] = action_id
 
             local_handoff_played = await self._play_deferred_transfer_local_handoff(call_id, session)
             if not local_handoff_played:
