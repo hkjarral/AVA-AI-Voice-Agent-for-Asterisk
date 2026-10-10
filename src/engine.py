@@ -661,6 +661,9 @@ class Engine:
         self._agent_output_active_calls: Set[str] = set()
         self._provider_output_drain_tasks: Dict[str, asyncio.Task] = {}
         self._deferred_transfer_commit_locks: Dict[str, asyncio.Lock] = {}
+        # Calls with a deferred transfer commit in flight, counted because a
+        # second completion event can start another commit attempt.
+        self._deferred_transfer_committing: Dict[str, int] = {}
         # All terminal paths converge on one idempotent drain-and-hangup owner.
         self._terminal_hangup_locks: Dict[str, asyncio.Lock] = {}
         self._terminal_hangup_started: Set[str] = set()
@@ -14295,6 +14298,23 @@ class Engine:
                 chunk: bytes = event.get("data") or b""
                 if not chunk:
                     return
+                if self._provider_audio_blocked_by_transfer_commit(call_id, session):
+                    # The handoff line has finished and the transfer is
+                    # draining. New provider speech here is a follow-up turn
+                    # (Google Live answers its own tool response with a repeat
+                    # of the handoff line), so it must not reach the caller.
+                    dropped = session.vad_state.setdefault(
+                        "transfer_commit_dropped", {"chunks": 0, "bytes": 0}
+                    )
+                    dropped["chunks"] += 1
+                    dropped["bytes"] += len(chunk)
+                    if dropped["chunks"] == 1:
+                        logger.info(
+                            "Dropped provider audio: deferred transfer is committing",
+                            call_id=call_id,
+                            provider=getattr(session, "provider_name", None),
+                        )
+                    return
                 source_mode = str(event.get("source_mode") or "").strip().lower()
                 local_farewell_pending = getattr(self, "_local_tts_farewell_pending", set())
                 is_local_farewell_audio = (
@@ -21771,7 +21791,46 @@ class Engine:
         
         return result
 
+    def _provider_audio_blocked_by_transfer_commit(
+        self,
+        call_id: str,
+        session: Optional["CallSession"],
+    ) -> bool:
+        """Return True while provider audio must not play because a transfer commits.
+
+        Both conditions are required. The drain-timeout recovery clears the
+        pending action before it asks the provider for an apology, and that
+        apology must reach the caller even though the commit routine is still
+        running.
+        """
+        committing = getattr(self, "_deferred_transfer_committing", None) or {}
+        if not committing.get(call_id):
+            return False
+        return isinstance(getattr(session, "pending_deferred_transfer", None), dict)
+
     async def _commit_pending_deferred_transfer_for_call(
+        self,
+        call_id: str,
+        session: Optional["CallSession"] = None,
+    ) -> Optional[Dict[str, Any]]:
+        # Mark the call for the whole commit, including the audio drain wait,
+        # so on_provider_event drops provider speech that starts after the
+        # handoff line. Counted: overlapping attempts share one marker.
+        committing = getattr(self, "_deferred_transfer_committing", None)
+        if committing is None:
+            committing = {}
+            self._deferred_transfer_committing = committing
+        committing[call_id] = committing.get(call_id, 0) + 1
+        try:
+            return await self._commit_pending_deferred_transfer_for_call_inner(call_id, session)
+        finally:
+            remaining = committing.get(call_id, 1) - 1
+            if remaining > 0:
+                committing[call_id] = remaining
+            else:
+                committing.pop(call_id, None)
+
+    async def _commit_pending_deferred_transfer_for_call_inner(
         self,
         call_id: str,
         session: Optional["CallSession"] = None,
