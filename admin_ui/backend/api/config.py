@@ -40,6 +40,7 @@ from src.fish_audio_url import (
     fish_audio_synthesis_test_url,
     fish_audio_verification_url,
 )
+from src.config.loaders import substitute_braced_env_vars
 from src.tools.execution_history import CALL_HISTORY_TOOL_REDACTION_MODES
 from services.provider_validation import (
     MODULAR_HTTP_KINDS, test_modular_provider,
@@ -1830,6 +1831,9 @@ class ProviderTestRequest(BaseModel):
     name: str
     config: Dict[str, Any]
 
+class _LocalAIAuthenticationError(RuntimeError):
+    pass
+
 class SmtpTestRequest(BaseModel):
     to_email: str
     from_email: Optional[str] = None
@@ -1868,19 +1872,12 @@ async def test_provider_connection(request: ProviderTestRequest):
         
         # Helper to substitute environment variables in config values
         def substitute_env_vars(item):
-            import re
             if isinstance(item, dict):
                 return {k: substitute_env_vars(v) for k, v in item.items()}
             elif isinstance(item, list):
                 return [substitute_env_vars(i) for i in item]
             elif isinstance(item, str):
-                # Match ${VAR} or ${VAR:-default} or ${VAR:=default}
-                # Capture group 1: Var name, Group 2: Default value (optional)
-                pattern = r'\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?:[:=-]([^}]*))?\}'
-                
-                def replace(match):
-                    var_name = match.group(1)
-                    default_value = match.group(2)
+                def replace(var_name, operator, default_value, original):
                     # Check .env file FIRST - this has the latest values from UI edits
                     # The Admin UI container's os.environ may be stale (from container start)
                     val = get_env_key(var_name)
@@ -1891,12 +1888,12 @@ async def test_provider_connection(request: ProviderTestRequest):
                     if val is not None and val != "":
                         return val
                     # Then check if we have a default value
-                    if default_value is not None:
+                    if operator is not None:
                         return default_value
                     # If neither, return empty string (standard shell behavior)
-                    return "" 
-                
-                return re.sub(pattern, replace, item)
+                    return ""
+
+                return substitute_braced_env_vars(item, replace)
             return item
 
         # Apply substitution to the config
@@ -1965,6 +1962,13 @@ async def test_provider_connection(request: ProviderTestRequest):
             # Handle env var format
             if '${' in ws_url:
                 ws_url = 'ws://127.0.0.1:8765'  # Default fallback
+
+            auth_token = str(
+                provider_config.get("auth_token")
+                or get_env_key("LOCAL_WS_AUTH_TOKEN")
+                or os.getenv("LOCAL_WS_AUTH_TOKEN")
+                or ""
+            ).strip()
             
             try:
                 def _fallback_ws_url(url: str) -> str:
@@ -1981,6 +1985,18 @@ async def test_provider_connection(request: ProviderTestRequest):
 
                 async def _try_connect(url: str):
                     async with websockets.connect(url, open_timeout=5.0) as ws:
+                        if auth_token:
+                            await ws.send(json.dumps({"type": "auth", "auth_token": auth_token}))
+                            response = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                            auth_response = json.loads(response)
+                            if (
+                                auth_response.get("type") != "auth_response"
+                                or auth_response.get("status") != "ok"
+                            ):
+                                raise _LocalAIAuthenticationError(
+                                    "Local AI Server authentication failed"
+                                )
+
                         # Send status request to check models
                         await ws.send(json.dumps({"type": "status"}))
                         response = await asyncio.wait_for(ws.recv(), timeout=5.0)
@@ -1990,6 +2006,8 @@ async def test_provider_connection(request: ProviderTestRequest):
                 try:
                     data = await _try_connect(ws_url)
                     effective_url = ws_url
+                except _LocalAIAuthenticationError:
+                    raise
                 except Exception as e:
                     alt = _fallback_ws_url(ws_url)
                     if alt != ws_url:
@@ -2013,9 +2031,28 @@ async def test_provider_connection(request: ProviderTestRequest):
                     status_parts.append(f"LLM: {llm_model} ✓" if llm_loaded else "LLM: not loaded")
                     status_parts.append(f"TTS: {tts_backend} ✓" if tts_loaded else "TTS: not loaded")
 
-                    all_loaded = stt_loaded and llm_loaded and tts_loaded
+                    declared_capabilities = provider_config.get("capabilities") or []
+                    if isinstance(declared_capabilities, str):
+                        declared_capabilities = [declared_capabilities]
+                    loaded_by_capability = {
+                        "stt": stt_loaded,
+                        "llm": llm_loaded,
+                        "tts": tts_loaded,
+                    }
+                    required_capabilities = {
+                        str(capability).strip().lower()
+                        for capability in declared_capabilities
+                        if str(capability).strip().lower() in loaded_by_capability
+                    }
+                    if not required_capabilities:
+                        required_capabilities = set(loaded_by_capability)
+
+                    provider_ready = all(
+                        loaded_by_capability[capability]
+                        for capability in required_capabilities
+                    )
                     return {
-                        "success": all_loaded,
+                        "success": provider_ready,
                         "message": f"Local AI Server connected ({effective_url}). {' | '.join(status_parts)}",
                     }
                 return {"success": False, "message": "Local AI Server responded but status invalid"}
