@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Local AI provider test environment expansion:** shared YAML and Admin test paths now parse braced environment references in linear time, including empty `:-` and `:=` defaults, without stalling on malformed operator-supplied values. Existing authenticated WebSocket test ordering and modular capability checks remain unchanged.
+
 - **Google Developer long-response playback (opt-in):** prevents the original source queue from dropping small audio chunks when generation runs ahead of telephony playback. Enabled calls wait for playback drain, cancel queued speech on interruption, and reject stale farewell completion. Abnormal disconnects allow accepted audio up to eight seconds to drain before cleanup, respecting caller teardown and transfer ownership. Disconnect drain runs in a cleanup-cancelled call task, with a bounded transfer wait, so provider event dispatch remains responsive; completion backlog overflow immediately rejects new tool work. This cannot prevent upstream Google errors or recover audio that was never received.
 - **Google AudioSocket interruption detection:** silence-gated Google calls inspect normalized caller audio before upstream silence substitution, so local barge-in can detect speech during playback. This correction applies to Developer API and Vertex independently of the long-response option; native Gemini 3.8 full-duplex interruption keeps its provider-driven path. Other providers' detector inputs are unchanged.
 
@@ -137,6 +139,7 @@ provider/transport/model-default change is introduced by this release.
 
 ### Fixed
 
+- **Local AI provider connection tests honor authenticated and modular deployments:** the Admin UI now performs the configured WebSocket authentication handshake before requesting status and evaluates only each provider's declared STT, LLM, or TTS capabilities, so intentionally unloaded components no longer make an otherwise healthy modular provider appear unavailable.
 - **`check_extension_status` now preserves full provider-compatible availability data** ([#577](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/577)): the tool now returns a stable `message` and retains key availability fields (`extension`, `device_state_name`, `device_state`, `available`, `availability_source`, `endpoint_state`, `tech`) through JSON sanitization for all tool adapters, while still filtering internal debug fields. It also cross-checks active ARI channels when device state reports `NOT_INUSE` but endpoint/channel activity is present, preventing false "available" signals during live transfers.
 - **`check_extension_status` guardrail no longer bypassed by an unmapped `device_state_id`** ([#577](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/577)): previously, a `device_state_id` parameter without a `/` (e.g. `Custom:HACK`) fell back to the `extension` parameter and could bypass `restrict_to_configured_extensions`. Such a parameter must now resolve to a configured extension or exactly match one of that extension's own configured `device_states`.
 
