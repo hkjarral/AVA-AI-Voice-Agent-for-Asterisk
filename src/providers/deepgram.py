@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import json
 import websockets
+from .connection_recovery import connect_with_recovery
 import time
 import array
 import re
@@ -783,7 +784,10 @@ class DeepgramProvider(AIProviderInterface):
 
         try:
             logger.info("Connecting to Deepgram Voice Agent...", url=ws_url)
-            self.websocket = await websockets.connect(ws_url, additional_headers=list(headers.items()))
+            self.websocket = await connect_with_recovery(
+                lambda timeout: websockets.connect(ws_url, additional_headers=list(headers.items()), open_timeout=timeout),
+                self.config, provider=self.provider_event_name(), call_id=call_id,
+            )
             logger.info("✅ Successfully connected to Deepgram Voice Agent.")
 
             # Persist call context for downstream events

@@ -5,6 +5,8 @@ import logging
 from dataclasses import dataclass, field, fields
 from typing import List, Optional, Dict, Any
 
+from src.config.connection_recovery import CloudConnectionConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +39,17 @@ class ElevenLabsVoiceSettings:
 @dataclass
 class ElevenLabsAgentConfig:
     """Configuration for ElevenLabs Conversational AI (Full Agent) provider."""
+    connect_timeout_sec: float = 10.0
+    connect_max_retries: int = 0
+    connect_total_timeout_sec: Optional[float] = None
+
+    def __post_init__(self):
+        policy = CloudConnectionConfig.model_validate({
+            name: getattr(self, name) for name in CloudConnectionConfig.model_fields
+        })
+        for name in CloudConnectionConfig.model_fields:
+            setattr(self, name, getattr(policy, name))
+
     # Authentication
     api_key: str = ""
     agent_id: str = ""  # Pre-created agent ID from ElevenLabs dashboard
@@ -93,6 +106,9 @@ class ElevenLabsAgentConfig:
         _warn_unknown_keys(cls, data)
 
         return cls(
+            connect_timeout_sec=data.get("connect_timeout_sec", 10.0),
+            connect_max_retries=data.get("connect_max_retries", 0),
+            connect_total_timeout_sec=data.get("connect_total_timeout_sec"),
             api_key=data.get("api_key", ""),
             agent_id=data.get("agent_id", ""),
             api_key_file=data.get("api_key_file", ""),

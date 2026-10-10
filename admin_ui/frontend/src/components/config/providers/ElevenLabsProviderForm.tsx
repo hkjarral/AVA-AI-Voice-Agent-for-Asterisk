@@ -1,3 +1,4 @@
+import ConnectionRecoveryFields from './ConnectionRecoveryFields';
 import React from 'react';
 import { Info, Mic } from 'lucide-react';
 import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
@@ -19,7 +20,7 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
     // type: 'full' indicates Conversational Agent (matches GenericProviderForm pattern)
     // agent_id also indicates Agent mode
     // Otherwise defaults to TTS mode
-    const mode = config.mode || ((config.agent_id || config.type === 'full') ? 'agent' : 'tts');
+    const mode = config.mode || ((config.agent_id || config.type === 'full' || config.type === 'elevenlabs_agent') ? 'agent' : 'tts');
 
     const handleModeChange = (newMode: 'agent' | 'tts') => {
         if (newMode === 'agent') {
@@ -428,6 +429,7 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                 />
             </div>
 
+            {mode === 'agent' && <ConnectionRecoveryFields config={config} onChange={onChange} />}
         </div>
     );
 };
