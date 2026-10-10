@@ -1,3 +1,4 @@
+import ConnectionRecoveryFields from './ConnectionRecoveryFields';
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -1478,6 +1479,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                 </div>
             </div>
 
+            <ConnectionRecoveryFields config={config} onChange={onChange} />
         </div>
     );
 };
