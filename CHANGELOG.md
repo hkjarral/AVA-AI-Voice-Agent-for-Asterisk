@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Opt-in cloud provider startup connection recovery** ([#676](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/676)): Google Live/Vertex, OpenAI Realtime, Grok, Deepgram Agent, and ElevenLabs Agent can retry transient initial connection failures with configurable opening and total connection deadlines. Provider forms expose the controls under Expert settings. Upgrades retain a 10-second opening timeout, zero retries, and no added aggregate deadline; setup, mid-call recovery, keepalive, terminal failure routing, and Local behavior are unchanged. See [connection recovery and real-call verification](docs/Provider-Connection-Recovery.md). Reported and supported with production evidence by [@MVECoder](https://github.com/MVECoder).
+
 - **Google Developer long-response option:** **Providers → Google Live → API Mode → Enable long-response playback** enables a bounded audio backlog for that provider instance. It defaults off on new and existing installations, requires saving and restarting the AI Engine, and is hidden in Vertex mode. The saved preference is ignored on actual Vertex connections; other providers and modular pipelines do not use it. See the [Google setup guide](docs/Provider-Google-Setup.md#long-response-playback-developer-api-opt-in) for configuration and upgrade instructions.
 
 ### Fixed

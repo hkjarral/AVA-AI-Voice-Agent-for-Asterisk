@@ -20,6 +20,7 @@ import audioop
 from typing import Any, Dict, Optional, List
 
 import websockets
+from .connection_recovery import connect_with_recovery
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
@@ -458,7 +459,10 @@ class OpenAIRealtimeProvider(AIProviderInterface):
 
         logger.info("Connecting to OpenAI Realtime", url=url, call_id=call_id, api_version="beta" if use_beta else "ga")
         try:
-            self.websocket = await websockets.connect(url, additional_headers=headers)
+            self.websocket = await connect_with_recovery(
+                lambda timeout: websockets.connect(url, additional_headers=headers, open_timeout=timeout),
+                self.config, provider=self.provider_event_name(), call_id=call_id,
+            )
         except Exception:
             logger.error("Failed to connect to OpenAI Realtime", call_id=call_id, exc_info=True)
             raise

@@ -30,6 +30,7 @@ import audioop
 from typing import Any, Dict, Optional, List
 
 import websockets
+from .connection_recovery import connect_with_recovery
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
@@ -470,7 +471,10 @@ class GrokProvider(AIProviderInterface):
 
         logger.info("Connecting to Grok Voice Agent", url=url, call_id=call_id, provider_key=self.provider_key)
         try:
-            self.websocket = await websockets.connect(url, additional_headers=headers)
+            self.websocket = await connect_with_recovery(
+                lambda timeout: websockets.connect(url, additional_headers=headers, open_timeout=timeout),
+                self.config, provider=self.provider_event_name(), call_id=call_id,
+            )
         except Exception:
             logger.error("Failed to connect to Grok Voice Agent", call_id=call_id, provider_key=self.provider_key, exc_info=True)
             raise

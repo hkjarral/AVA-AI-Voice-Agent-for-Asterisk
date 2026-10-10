@@ -994,3 +994,8 @@ instead. The request text also carries hooks — `FISH_MOCK_401`,
 
 The integration test is skipped unless both `FISH_AUDIO_API_KEY` and
 `FISH_AUDIO_REFERENCE_ID` are set.
+
+
+## Cloud full-agent startup connection recovery
+
+Google Live/Vertex, OpenAI Realtime, Grok, Deepgram Agent, and ElevenLabs Agent support optional `connect_timeout_sec` (default 10), `connect_max_retries` (default 0, maximum 3), and `connect_total_timeout_sec` (default unset). Missing fields preserve existing behavior. Configure them per provider in **Providers → Startup connection recovery (Expert)**, then restart AI Engine. These fields affect initial connection establishment, separately from session setup, keepalive, and mid-call recovery. See [configuration, upgrade compatibility, rollback, and real-call verification](Provider-Connection-Recovery.md).

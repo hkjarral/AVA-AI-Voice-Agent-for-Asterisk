@@ -160,3 +160,8 @@ xAI's published rate is $3/hr per session (`$0.05/min`). Materially cheaper than
 - **"Grok Voice Agent provider requires XAI_API_KEY"**: the engine couldn't resolve a credential. Verify `api_key`, `api_key_file`, or the `XAI_API_KEY` env var (legacy single-instance fallback).
 - **No audio coming back**: confirm caller input is `audio/pcmu` at 8 kHz and provider output is declared as `linear16` at 24 kHz with an 8 kHz μ-law transport target. If rates disagree, inspect the call's `RCA_CALL_START` and Grok session-assumption logs before changing YAML.
 - **Session drops near 30 min**: this is no longer the current documented xAI limit. Archive the call and check provider close/error events, account policy, and whether an older endpoint or organization limit applies. The 28-minute AAVA warning is intentionally conservative.
+
+
+## Optional startup connection recovery
+
+This full-agent provider supports bounded retries before session setup. Upgrades preserve a 10-second opening timeout and zero retries. Enable recovery per provider under **Startup connection recovery (Expert)** in the Admin UI, then restart AI Engine. Setup, keepalive, and mid-call behavior remain separate. See [connection recovery configuration and real-call tests](Provider-Connection-Recovery.md) for deadlines, rollback, and qualification steps.

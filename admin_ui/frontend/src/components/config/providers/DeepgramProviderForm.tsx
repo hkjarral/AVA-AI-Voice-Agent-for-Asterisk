@@ -1,3 +1,4 @@
+import ConnectionRecoveryFields from './ConnectionRecoveryFields';
 import React, { useEffect, useState } from 'react';
 import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 import HelpTooltip from '../../ui/HelpTooltip';
@@ -1238,6 +1239,7 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
                     </label>
                 </div>
             </div>
+            <ConnectionRecoveryFields config={config} onChange={onChange} />
         </div>
     );
 };

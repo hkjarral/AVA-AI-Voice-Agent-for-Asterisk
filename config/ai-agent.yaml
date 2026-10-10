@@ -256,6 +256,13 @@ providers:
     tts_model: aura-2-thalia-en
     type: full
   google_live:
+    # Cloud full-agent startup recovery is opt-in (Google/Vertex, OpenAI Realtime,
+    # Grok, Deepgram Agent, ElevenLabs Agent). Use these fields on the chosen provider:
+    # connect_timeout_sec: 10         # opening timeout per socket attempt (0 < value <= 60)
+    # connect_max_retries: 0          # 0 = one attempt; maximum 3 retries
+    # connect_total_timeout_sec: null # optional connection/auth/backoff budget, <= 180s
+    # Missing fields retain legacy behavior. To test recovery, set retries to 1.
+    # See docs/Provider-Connection-Recovery.md; setup and keepalive are separate.
     api_key: ${GOOGLE_API_KEY}
     name: google_live
     capabilities:

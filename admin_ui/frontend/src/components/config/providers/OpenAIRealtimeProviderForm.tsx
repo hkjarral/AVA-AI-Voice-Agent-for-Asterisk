@@ -1,3 +1,4 @@
+import ConnectionRecoveryFields from './ConnectionRecoveryFields';
 import React from 'react';
 import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 import HelpTooltip from '../../ui/HelpTooltip';
@@ -930,6 +931,7 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                     </div>
                 </div>
             </div>
+            <ConnectionRecoveryFields config={config} onChange={onChange} />
         </div>
     );
 };

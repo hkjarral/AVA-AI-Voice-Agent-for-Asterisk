@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional
 from dataclasses import dataclass
 
 import websockets
+from .connection_recovery import connect_with_recovery, ConnectionHTTPError
 from websockets.asyncio.client import ClientConnection
 
 from .base import AIProviderInterface, ProviderCapabilities, ProviderCapabilitiesMixin
@@ -208,19 +209,26 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         
         logger.info(f"[elevenlabs] [{call_id}] Connecting to ElevenLabs Conversational AI...")
         
-        # For authenticated agents, get a signed URL first
-        signed_url = await self._get_signed_url(api_key, agent_id, call_id)
-        
-        try:
-            self._ws = await asyncio.wait_for(
+        async def open_connection(timeout):
+            # Refresh authentication for each attempt; the helper's optional
+            # total deadline also covers this provider-owned HTTP request.
+            signed_url = await self._get_signed_url(api_key, agent_id, call_id)
+            return await asyncio.wait_for(
                 websockets.connect(
                     signed_url,
-                    max_size=16 * 1024 * 1024,  # 16MB max message size
+                    open_timeout=timeout,
+                    max_size=16 * 1024 * 1024,
                     ping_interval=20,
                     ping_timeout=20,
                     close_timeout=5,
                 ),
-                timeout=10.0,
+                timeout=timeout,
+            )
+
+        try:
+            self._ws = await connect_with_recovery(
+                open_connection, self.config,
+                provider=self.provider_event_name(), call_id=call_id,
             )
             self._connected = True
             logger.info(f"[elevenlabs] [{call_id}] WebSocket connected")
@@ -264,22 +272,23 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     if response.status != 200:
-                        error_text = await response.text()
-                        logger.error(f"[elevenlabs] [{call_id}] Failed to get signed URL: {response.status} - {error_text}")
-                        raise ConnectionError(f"Failed to get signed URL: {response.status}")
+                        logger.error(f"[elevenlabs] [{call_id}] Failed to get signed URL: HTTP {response.status}")
+                        raise ConnectionHTTPError(response.status)
                     
                     data = await response.json()
                     signed_url = data.get("signed_url")
                     
                     if not signed_url:
-                        raise ConnectionError("No signed_url in response")
+                        raise ValueError("No signed_url in response")
                     
                     logger.info(f"[elevenlabs] [{call_id}] Got signed URL for authenticated agent")
                     return signed_url
                     
         except aiohttp.ClientError as e:
-            logger.error(f"[elevenlabs] [{call_id}] HTTP error getting signed URL: {e}")
-            raise ConnectionError(f"HTTP error: {e}")
+            # Preserve error type for transient/permanent classification;
+            # never log a signed URL or the HTTP response body.
+            logger.error(f"[elevenlabs] [{call_id}] HTTP error getting signed URL: {type(e).__name__}")
+            raise
     
     async def _send_session_config(self, context: Dict[str, Any]) -> None:
         """Send session configuration to ElevenLabs."""
