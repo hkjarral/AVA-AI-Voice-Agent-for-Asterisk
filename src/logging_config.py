@@ -74,6 +74,9 @@ def sanitize_secrets(logger, method_name, event_dict):
     
     Values are replaced with '***REDACTED***' while preserving log context.
     """
+    # DTMF may contain authentication material; never retain a prefix or value.
+    DTMF_KEYS = {'digit', 'digits', 'dtmf', 'dtmfdigit', 'dtmfdigits',
+                 'consentdtmf', 'decisiondigit'}
     # List of keys that should be redacted (case-insensitive)
     SENSITIVE_KEYS = {
         'api_key', 'apikey', 'api-key', 'api_keys',
@@ -120,8 +123,9 @@ def sanitize_secrets(logger, method_name, event_dict):
         if isinstance(value, (list, tuple)):
             return [redact_value(v) for v in value]
         if isinstance(value, dict):
-            return {k: redact_value(v) if k.lower() in SENSITIVE_KEYS else v 
-                    for k, v in value.items()}
+            sanitized_value = sanitize_dict(value)
+            return {k: redact_value(v) if k.lower() in SENSITIVE_KEYS else v
+                    for k, v in sanitized_value.items()}
         return "***REDACTED***"
     
     def sanitize_value(value):
@@ -136,6 +140,8 @@ def sanitize_secrets(logger, method_name, event_dict):
 
     def sanitize_dict(d):
         """Recursively sanitize dictionary keys."""
+        if isinstance(d, (list, tuple)):
+            return [sanitize_dict(v) for v in d]
         if not isinstance(d, dict):
             return d
 
@@ -153,6 +159,9 @@ def sanitize_secrets(logger, method_name, event_dict):
 
             # Normalize key for comparison (remove separators, lowercase)
             key_normalized = str(key).lower().replace('_', '').replace('-', '')
+            if key_normalized in DTMF_KEYS:
+                sanitized[key] = '***REDACTED***'
+                continue
             
             # Check if key matches any sensitive pattern (exact match only)
             # This prevents false positives like "passthrough" matching "pass"
