@@ -851,7 +851,8 @@ class GoogleLiveProvider(AIProviderInterface):
                 call_id=call_id,
             )
 
-        connection_started = asyncio.get_running_loop().time()
+        connection_loop = asyncio.get_running_loop()
+        connection_started = connection_loop.time()
         connection_budget = self.config.connect_total_timeout_sec
 
         # Build WebSocket URL and headers — Vertex AI vs Developer API (AAVA-191)
@@ -892,7 +893,9 @@ class GoogleLiveProvider(AIProviderInterface):
                 auth_req = google.auth.transport.requests.Request()
                 if connection_budget is not None:
                     from functools import partial
-                    remaining = connection_budget - (time.monotonic() - connection_started)
+                    # The worker must use the same clock/epoch as the outer
+                    # connection deadline, including on alternative event loops.
+                    remaining = connection_budget - (connection_loop.time() - connection_started)
                     if remaining <= 0:
                         raise TimeoutError("Provider connection budget exhausted")
                     auth_req = partial(auth_req, timeout=remaining)
@@ -900,11 +903,11 @@ class GoogleLiveProvider(AIProviderInterface):
                 return credentials.token
 
             try:
-                token_future = asyncio.get_running_loop().run_in_executor(None, _get_vertex_token)
+                token_future = connection_loop.run_in_executor(None, _get_vertex_token)
                 if connection_budget is None:
                     bearer_token = await token_future
                 else:
-                    remaining = connection_budget - (asyncio.get_running_loop().time() - connection_started)
+                    remaining = connection_budget - (connection_loop.time() - connection_started)
                     bearer_token = await asyncio.wait_for(token_future, timeout=max(0, remaining))
             except Exception as vertex_err:
                 # ADC failed — fall back to Developer API if an API key exists

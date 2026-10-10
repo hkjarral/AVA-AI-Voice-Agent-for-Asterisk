@@ -265,3 +265,101 @@ def test_premature_handshake_disconnect_is_transient_but_bad_http_is_not():
     disconnected.__cause__ = EOFError("connection closed")
     assert is_transient_connect_error(disconnected)
     assert not is_transient_connect_error(InvalidMessage("invalid HTTP response"))
+
+
+@pytest.mark.parametrize("clock_offset", [-1000, 1000])
+@pytest.mark.asyncio
+async def test_vertex_auth_budget_uses_connection_clock(monkeypatch, clock_offset):
+    """An independent worker clock must neither expire nor inflate the budget."""
+    import time
+    from unittest.mock import MagicMock
+    from src.config import GoogleProviderConfig
+    from src.providers import google_live
+
+    request = Mock()
+    credentials = SimpleNamespace(
+        token="test-token",
+        refresh=Mock(side_effect=lambda transport: transport("https://oauth.invalid")),
+    )
+    monkeypatch.setattr(google_live.google.auth, "default", Mock(return_value=(credentials, None)))
+    monkeypatch.setattr(google_live.google.auth.transport.requests, "Request", Mock(return_value=request))
+    # Replace only the provider's clock reference, leaving asyncio's clock intact.
+    monkeypatch.setattr(google_live, "time", SimpleNamespace(
+        time=time.time, monotonic=lambda: time.monotonic() + clock_offset,
+    ))
+    ws = MagicMock()
+    ws.close = AsyncMock()
+    ws.state.name = "OPEN"
+    connect = AsyncMock(return_value=ws)
+    monkeypatch.setattr(google_live.websockets, "connect", connect)
+    provider = google_live.GoogleLiveProvider(GoogleProviderConfig(
+        use_vertex_ai=True, vertex_project="test-project",
+        connect_total_timeout_sec=2,
+    ), AsyncMock())
+
+    class SetupBoundary(Exception):
+        pass
+
+    provider._send_setup = AsyncMock(side_effect=SetupBoundary())
+    try:
+        with pytest.raises(SetupBoundary):
+            await provider.start_session("vertex-clock", context={"tools": []})
+        credentials.refresh.assert_called_once()
+        assert 0 < request.call_args.kwargs["timeout"] <= 2
+        connect.assert_awaited_once()
+        assert 0 < connect.call_args.kwargs["open_timeout"] <= 2
+        provider._send_setup.assert_awaited_once()
+    finally:
+        await provider.stop_session()
+
+
+@pytest.mark.parametrize("total_budget", [None, 0.03])
+@pytest.mark.asyncio
+async def test_elevenlabs_auth_keeps_legacy_limit_unless_total_budget_set(monkeypatch, total_budget):
+    """The opening timeout covers the socket; total wait also bounds signing."""
+    from unittest.mock import MagicMock
+    from src.providers import elevenlabs_agent
+    from src.providers.elevenlabs_config import ElevenLabsAgentConfig
+
+    cancelled = asyncio.Event()
+
+    async def signing(*args):
+        try:
+            await asyncio.sleep(0.05)  # Longer than the socket-opening limit.
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return "wss://example.invalid?token=test"
+
+    ws = MagicMock()
+    ws.close = AsyncMock()
+    connect = AsyncMock(return_value=ws)
+    monkeypatch.setattr(elevenlabs_agent.websockets, "connect", connect)
+    provider = elevenlabs_agent.ElevenLabsAgentProvider(ElevenLabsAgentConfig(
+        api_key="test", agent_id="test-agent", connect_timeout_sec=0.02,
+        connect_max_retries=1, connect_total_timeout_sec=total_budget,
+    ), AsyncMock())
+    provider._get_signed_url = AsyncMock(side_effect=signing)
+    provider._receive_loop = AsyncMock()
+
+    class SetupBoundary(Exception):
+        pass
+
+    provider._send_session_config = AsyncMock(side_effect=SetupBoundary())
+    try:
+        if total_budget is None:
+            with pytest.raises(SetupBoundary):
+                await provider.start_session("signing-budget", context={"tools": []})
+            connect.assert_awaited_once()
+            assert connect.call_args.kwargs["open_timeout"] == 0.02
+            assert not cancelled.is_set()
+            provider._send_session_config.assert_awaited_once()
+        else:
+            with pytest.raises(ConnectionError, match="ElevenLabs connection timeout"):
+                await provider.start_session("signing-budget", context={"tools": []})
+            assert cancelled.is_set()
+            connect.assert_not_awaited()
+            provider._send_session_config.assert_not_awaited()
+        provider._get_signed_url.assert_awaited_once()
+    finally:
+        await provider.stop_session()
