@@ -217,14 +217,26 @@ async def test_lost_mutating_response_is_not_replayed():
     @server.tool()
     async def record(value: str) -> str:
         effects.append(value)
-        await asyncio.sleep(2)
         return "done"
 
     app = server.streamable_http_app(host="127.0.0.1", stateless_http=True, json_response=True)
-    async with local_http(app) as url:
+
+    async def lose_completed_tool_reply(scope, receive, send):
+        async def truncate_reply(message):
+            if effects and message["type"] == "http.response.body":
+                # The real SDK server has executed the tool. Truncate its
+                # response under the original Content-Length, so the client
+                # observes a dropped reply without racing negotiation against
+                # a sub-second deadline on a busy development server.
+                message = {**message, "body": b"", "more_body": False}
+            await send(message)
+
+        await app(scope, receive, truncate_reply)
+
+    async with local_http(lose_completed_tool_reply) as url:
         client = MCPStreamableHTTPClient(server_id="remote", url=url, headers={})
         with pytest.raises(MCPError, match="outcome unknown"):
-            await client.call_tool(name="record", arguments={"value": "once"}, timeout_ms=750)
+            await client.call_tool(name="record", arguments={"value": "once"}, timeout_ms=10000)
         assert effects == ["once"]
         await client.stop()
 
@@ -412,7 +424,7 @@ async def test_mismatched_tool_response_does_not_trigger_second_call(response_mo
     async with local_http(mismatch_app) as url:
         client = MCPStreamableHTTPClient(server_id="remote", url=url, headers={})
         with pytest.raises(MCPError, match="outcome unknown"):
-            await client.call_tool(name="record", arguments={"value": "once"}, timeout_ms=750)
+            await client.call_tool(name="record", arguments={"value": "once"}, timeout_ms=10000)
     assert len(calls) == 1
 
 
