@@ -529,3 +529,41 @@ def test_profile_usage_guard_fails_closed_when_agent_store_is_invalid(
         config._assert_in_use_audio_profiles_unchanged(old, new)
 
     assert exc_info.value.status_code == 503
+
+
+@pytest.mark.parametrize("kind", ["google_live", "openai_realtime", "grok", "deepgram", "elevenlabs_agent"])
+@pytest.mark.parametrize("values", [
+    {"connect_timeout_sec": 0}, {"connect_max_retries": 4},
+    {"connect_max_retries": 1.5}, {"connect_total_timeout_sec": -1},
+])
+def test_config_validation_rejects_invalid_named_cloud_recovery(kind, values):
+    parsed = yaml.safe_load(Path(config.settings.CONFIG_PATH).read_text())
+    parsed["providers"]["customer_recovery"] = {"type": kind, **values}
+    with pytest.raises(HTTPException) as exc_info:
+        config._validate_ai_agent_config(yaml.safe_dump(parsed, sort_keys=False))
+    assert exc_info.value.status_code == 400
+    assert "customer_recovery" in str(exc_info.value.detail)
+
+
+def test_unrelated_config_save_preserves_absent_and_zero_recovery_fields(tmp_path, monkeypatch):
+    parsed = yaml.safe_load(Path(config.settings.CONFIG_PATH).read_text())
+    parsed["providers"]["google_live"].pop("connect_max_retries", None)
+    parsed["providers"]["customer_recovery"] = {
+        "type": "google_live", "connect_max_retries": 0,
+        "connect_timeout_sec": 10, "connect_total_timeout_sec": None,
+    }
+    original = deepcopy(parsed["providers"])
+    monkeypatch.setattr(config, "_migrate_inline_provider_secrets", lambda _cfg: False)
+    monkeypatch.setattr(config, "_assert_in_use_audio_profiles_unchanged", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(config, "_read_merged_config_dict", lambda: deepcopy(parsed))
+    monkeypatch.setattr(config, "_read_base_config_dict", lambda: {})
+    written = []
+    monkeypatch.setattr(config, "_write_local_config", written.append)
+    config.persist_config_content(yaml.safe_dump(parsed, sort_keys=False))
+    saved = yaml.safe_load(written[0])
+    assert saved["providers"] == original
+    assert "connect_max_retries" not in saved["providers"]["google_live"]
+    assert saved["providers"]["customer_recovery"]["connect_max_retries"] == 0
+    assert parsed["providers"] == original
+    assert "connect_max_retries" not in parsed["providers"]["google_live"]
+    assert parsed["providers"]["customer_recovery"]["connect_max_retries"] == 0

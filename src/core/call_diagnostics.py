@@ -31,6 +31,9 @@ def _pick(source: Any, keys: Iterable[str]) -> Dict[str, Any]:
 
 
 PROVIDER_FIELDS = (
+    "connect_timeout_sec",
+    "connect_max_retries",
+    "connect_total_timeout_sec",
     "type",
     "model",
     "llm_model",
