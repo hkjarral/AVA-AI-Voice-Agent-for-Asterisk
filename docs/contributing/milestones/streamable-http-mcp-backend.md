@@ -1,6 +1,6 @@
 # Milestone — Streamable HTTP MCP backend
 
-> **Status**: In Progress (backend draft; not operator-ready)
+> **Status**: Backend/YAML slice awaiting maintainer acceptance; operator UI tracked separately
 > **Author**: pi0n00r
 > **Date**: 2026-10-07
 
@@ -56,14 +56,18 @@ AI Engine. MCP status omits the URL and resolved headers.
 - [x] Modern and legacy negotiation, auth failure, pagination, and session expiry
 - [x] Concurrent calls, tool error propagation, and lost/mismatched response no-replay
 - [x] Existing stdio, naming, and Agent filtering tests
-- [x] Root Python suite with one independently known baseline test deselected
-- [ ] Admin UI entry creation, edit, validation and save/readback
+- [ ] Refreshed current-head root suite evidence, including response-task cancellation
+- [ ] Admin UI entry creation, edit, validation and save/readback — separate follow-up #703
 - [ ] Live PBX call with an explicitly configured test MCP server
 - [ ] Maintainer CI and security checks on the frozen draft head
 
-The unchecked items prevent this draft from being called operator-ready or
-merge-ready. Authentication/header values, tool arguments/results, and private
-deployment details must not enter public diagnostics.
+Backend merge acceptance requires the current-head automated gate, authenticated
+container/runtime verification, and live Agent-call evidence above. Admin UI
+editing is agreed follow-up scope in [#703](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/703);
+it does not block an otherwise accepted backend/YAML slice. The full UI-managed
+feature remains incomplete until that follow-up passes its operator acceptance.
+Authentication/header values, tool arguments/results, and private deployment
+details must not enter public diagnostics.
 
 ## Risks and open questions
 
@@ -71,5 +75,7 @@ deployment details must not enter public diagnostics.
   reconciliation must be supplied by that MCP server before any manual retry.
 - The official SDK adds dependencies to the AI Engine image; image-size and
   Docker build gates remain for maintainer CI.
-- Admin UI editing should be completed in a separately reviewed follow-up
+- Admin UI editing and the remaining API/observability/documentation work are
+  tracked in #703. Live MCP replacement remains separately tracked in #582.
+  Admin UI editing should be completed in a separately reviewed follow-up
   before advertising Streamable HTTP as a normal UI-managed option.
