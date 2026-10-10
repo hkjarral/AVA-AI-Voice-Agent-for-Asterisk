@@ -82,6 +82,13 @@ def _record_stream_starts(engine: Engine, monkeypatch) -> list:
     return streams
 
 
+def _mark_committing(engine: Engine, call_id: str, action_id) -> dict:
+    """Register a commit in flight for action_id, as the commit wrapper does."""
+    marker = {"action_id": action_id}
+    engine._deferred_transfer_committing.setdefault(call_id, []).append(marker)
+    return marker
+
+
 def _agent_audio(call_id: str, data: bytes = b"\x7f" * 320) -> dict:
     return {
         "type": "AgentAudio",
@@ -103,7 +110,11 @@ async def test_commit_audio_gate_requires_committing_marker_and_pending_action()
     # Armed, but the commit has not started: the handoff line must play.
     assert engine._provider_audio_blocked_by_transfer_commit("call-gate", armed) is False
 
-    engine._deferred_transfer_committing["call-gate"] = 1
+    # A commit attempt that has not read its action yet blocks nothing.
+    unstamped = _mark_committing(engine, "call-gate", None)
+    assert engine._provider_audio_blocked_by_transfer_commit("call-gate", armed) is False
+
+    unstamped["action_id"] = armed.pending_deferred_transfer["id"]
     assert engine._provider_audio_blocked_by_transfer_commit("call-gate", armed) is True
     # Only the committing call is affected.
     assert engine._provider_audio_blocked_by_transfer_commit(other.call_id, other) is False
@@ -118,8 +129,9 @@ async def test_commit_marker_is_set_during_commit_and_cleared_after(monkeypatch)
     session = await _armed_session(engine, "call-marker")
     observed = []
 
-    async def fake_inner(call_id, target_session=None):
-        observed.append(dict(engine._deferred_transfer_committing))
+    async def fake_inner(call_id, target_session=None, *, commit_marker=None):
+        commit_marker["action_id"] = session.pending_deferred_transfer["id"]
+        observed.append([dict(m) for m in engine._deferred_transfer_committing[call_id]])
         observed.append(engine._provider_audio_blocked_by_transfer_commit(call_id, session))
         return {"status": "success"}
 
@@ -128,7 +140,7 @@ async def test_commit_marker_is_set_during_commit_and_cleared_after(monkeypatch)
     result = await engine._commit_pending_deferred_transfer_for_call("call-marker", session)
 
     assert result == {"status": "success"}
-    assert observed == [{"call-marker": 1}, True]
+    assert observed == [[{"action_id": "action-call-marker"}], True]
     assert "call-marker" not in engine._deferred_transfer_committing
 
 
@@ -137,8 +149,9 @@ async def test_commit_marker_is_cleared_when_commit_raises(monkeypatch):
     engine = _build_engine()
     session = await _armed_session(engine, "call-marker-error")
 
-    async def failing_inner(call_id, target_session=None):
-        assert engine._deferred_transfer_committing[call_id] == 1
+    async def failing_inner(call_id, target_session=None, *, commit_marker=None):
+        commit_marker["action_id"] = session.pending_deferred_transfer["id"]
+        assert len(engine._deferred_transfer_committing[call_id]) == 1
         raise RuntimeError("ari unavailable")
 
     monkeypatch.setattr(engine, "_commit_pending_deferred_transfer_for_call_inner", failing_inner)
@@ -159,8 +172,9 @@ async def test_overlapping_commits_keep_marker_until_the_last_one_finishes(monke
     started = {"first": asyncio.Event(), "second": asyncio.Event()}
     order = iter(("first", "second"))
 
-    async def blocking_inner(target_call_id, target_session=None):
+    async def blocking_inner(target_call_id, target_session=None, *, commit_marker=None):
         name = next(order)
+        commit_marker["action_id"] = session.pending_deferred_transfer["id"]
         started[name].set()
         await release[name].wait()
         return None
@@ -171,11 +185,11 @@ async def test_overlapping_commits_keep_marker_until_the_last_one_finishes(monke
     await asyncio.wait_for(started["first"].wait(), timeout=1)
     second = asyncio.create_task(engine._commit_pending_deferred_transfer_for_call(call_id, session))
     await asyncio.wait_for(started["second"].wait(), timeout=1)
-    assert engine._deferred_transfer_committing[call_id] == 2
+    assert len(engine._deferred_transfer_committing[call_id]) == 2
 
     release["first"].set()
     await asyncio.wait_for(first, timeout=1)
-    assert engine._deferred_transfer_committing[call_id] == 1
+    assert len(engine._deferred_transfer_committing[call_id]) == 1
     assert engine._provider_audio_blocked_by_transfer_commit(call_id, session) is True
 
     release["second"].set()
@@ -189,7 +203,7 @@ async def test_agent_audio_is_dropped_while_commit_is_in_progress(monkeypatch):
     call_id = "call-drop"
     session = await _armed_session(engine, call_id)
     streams = _record_stream_starts(engine, monkeypatch)
-    engine._deferred_transfer_committing[call_id] = 1
+    _mark_committing(engine, call_id, session.pending_deferred_transfer["id"])
 
     await engine.on_provider_event(_agent_audio(call_id, b"\x7f" * 320))
     await engine.on_provider_event(_agent_audio(call_id, b"\x7f" * 160))
@@ -208,8 +222,27 @@ async def test_agent_audio_plays_once_the_pending_transfer_is_cleared(monkeypatc
     streams = _record_stream_starts(engine, monkeypatch)
     # Drain-timeout recovery: still inside the commit routine, but the action
     # has been cleared before the provider is asked to apologise.
-    engine._deferred_transfer_committing[call_id] = 1
+    _mark_committing(engine, call_id, session.pending_deferred_transfer["id"])
     session.pending_deferred_transfer = None
+    await engine.session_store.upsert_call(session)
+
+    await engine.on_provider_event(_agent_audio(call_id))
+
+    assert [stream_call_id for stream_call_id, _ in streams] == [call_id]
+    assert "transfer_commit_dropped" not in session.vad_state
+
+
+@pytest.mark.asyncio
+async def test_replacement_transfer_keeps_its_handoff_audio(monkeypatch):
+    """A pending action that replaced the one being committed must still play."""
+    engine = _build_engine()
+    call_id = "call-replaced"
+    session = await _armed_session(engine, call_id)
+    streams = _record_stream_starts(engine, monkeypatch)
+    # A commit is draining for the original action...
+    _mark_committing(engine, call_id, session.pending_deferred_transfer["id"])
+    # ...when the transfer is cancelled and a different one is armed.
+    session.pending_deferred_transfer = _pending_action("action-replacement")
     await engine.session_store.upsert_call(session)
 
     await engine.on_provider_event(_agent_audio(call_id))
