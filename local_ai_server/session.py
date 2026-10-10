@@ -23,6 +23,9 @@ class SessionContext:
     last_final_text: str = ""
     last_final_norm: str = ""
     last_final_at: float = 0.0
+    # Whisper segment identity for deduplicating one final without dropping a
+    # later, separate utterance that happens to have the same words.
+    last_final_segment_generation: Optional[int] = None
     llm_user_turns: List[str] = field(default_factory=list)
     llm_messages: List[Dict[str, str]] = field(default_factory=list)
     # Set when caller barge-in abandons the active exchange.  The next
@@ -76,6 +79,8 @@ class SessionContext:
     stt_segment_buffer: bytes = b""
     stt_segment_last_voice_mono: float = 0.0
     stt_segment_in_speech: bool = False
+    stt_segment_generation: int = 0
+    stt_segment_cancel_generation: int = 0
     # Optional per-session Whisper segmenter policy supplied by the modular
     # pipeline. None inherits the Local AI Server environment/default.
     stt_segment_energy_threshold: Optional[int] = None

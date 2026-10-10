@@ -3567,6 +3567,7 @@ class LocalAIServer:
         session.stt_segment_buffer = b""
         session.stt_segment_last_voice_mono = 0.0
         session.stt_segment_in_speech = False
+        session.stt_segment_cancel_generation += 1
         # Legacy per-backend buffers (kept for safety; segmenter no longer uses them).
         if hasattr(session, "fw_audio_buffer"):
             session.fw_audio_buffer = b""
@@ -3583,6 +3584,7 @@ class LocalAIServer:
         session.last_final_text = last_text
         session.last_final_norm = _normalize_text(last_text)
         session.last_final_at = monotonic()
+        session.last_final_segment_generation = None
         # Note: Kroko WebSocket is kept open for session reuse, closed on disconnect
 
     async def _flush_sherpa_offline_trailing(self, websocket, session: SessionContext) -> None:
@@ -3852,6 +3854,7 @@ class LocalAIServer:
         if is_voice:
             session.stt_segment_last_voice_mono = now
             if not session.stt_segment_in_speech:
+                session.stt_segment_generation += 1
                 session.stt_segment_in_speech = True
                 session.stt_segment_buffer = prior_preroll + pcm16
             else:
@@ -3865,6 +3868,32 @@ class LocalAIServer:
                 session.stt_segment_preroll = (prior_preroll + pcm16)[-preroll_max:]
             else:
                 session.stt_segment_preroll = b""
+            return []
+
+        return await self._finalize_whisper_segment_if_due(
+            session,
+            backend_name=backend_name,
+        )
+
+    async def _finalize_whisper_segment_if_due(
+        self,
+        session: SessionContext,
+        *,
+        backend_name: str,
+        idle_elapsed: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Decode a buffered Whisper utterance once its per-session endpoint is due."""
+        if backend_name == "faster_whisper":
+            backend = self.faster_whisper_backend
+            lock = self._faster_whisper_lock
+        elif backend_name == "whisper_cpp":
+            backend = self.whisper_cpp_backend
+            lock = self._whisper_cpp_lock
+        else:  # pragma: no cover - defensive guard
+            logging.error("Unknown Whisper backend: %s", backend_name)
+            return []
+
+        if not backend or not session.stt_segment_in_speech:
             return []
 
         buf_len = len(session.stt_segment_buffer)
@@ -3881,14 +3910,19 @@ class LocalAIServer:
             )
         )
         last_voice = float(session.stt_segment_last_voice_mono or 0.0)
+        now = monotonic()
         since_voice_ms = (now - last_voice) * 1000.0 if last_voice > 0.0 else 0.0
 
-        end_due_to_silence = buf_ms >= min_ms and since_voice_ms >= silence_ms
+        end_due_to_silence = idle_elapsed or (
+            buf_ms >= min_ms and since_voice_ms >= silence_ms
+        )
         end_due_to_max = buf_ms >= max_ms
         if not (end_due_to_silence or end_due_to_max):
             return []
 
         # Finalize this utterance and reset segmenter state before decoding.
+        segment_generation = session.stt_segment_generation
+        cancel_generation = session.stt_segment_cancel_generation
         segment_pcm16 = session.stt_segment_buffer
         session.stt_segment_preroll = b""
         session.stt_segment_buffer = b""
@@ -3940,6 +3974,8 @@ class LocalAIServer:
                 "is_final": True,
                 "text": transcript,
                 "transcript": transcript,
+                "_segment_generation": segment_generation,
+                "_segment_cancel_generation": cancel_generation,
             }
         ]
 
@@ -5626,6 +5662,27 @@ class LocalAIServer:
             reason,
         )
 
+    def _complete_stt_final(
+        self,
+        session: SessionContext,
+        text: str,
+        segment_generation: Optional[int],
+    ) -> None:
+        if (
+            segment_generation is None
+            or segment_generation == session.stt_segment_generation
+        ):
+            self._reset_stt_session(session, text)
+            session.last_final_segment_generation = segment_generation
+            return
+
+        # A prior Whisper decode may finish after the next utterance starts.
+        # Record its final without cancelling or clearing the newer segment.
+        session.last_final_text = text
+        session.last_final_norm = _normalize_text(text)
+        session.last_final_at = monotonic()
+        session.last_final_segment_generation = segment_generation
+
     async def _handle_final_transcript(
         self,
         websocket,
@@ -5636,6 +5693,7 @@ class LocalAIServer:
         text: str,
         confidence: Optional[float],
         idle_promoted: bool = False,
+        segment_generation: Optional[int] = None,
     ) -> None:
         clean_text = (text or "").strip()
         # DEBUG: trace non-linguistic check
@@ -5672,7 +5730,7 @@ class LocalAIServer:
                     is_partial=False,
                     confidence=confidence,
                 ):
-                    self._reset_stt_session(session, "")
+                    self._complete_stt_final(session, "", segment_generation)
                 return
             logging.info(
                 "📝 STT FINAL SUPPRESSED - Non-linguistic transcript call_id=%s mode=%s reason=%s text=%s",
@@ -5686,6 +5744,7 @@ class LocalAIServer:
         last_final_text = session.last_final_text
         last_final_norm = session.last_final_norm
         last_final_at = session.last_final_at
+        last_final_segment_generation = session.last_final_segment_generation
         recent_empty = (
             last_final_text == ""
             and last_final_at > 0.0
@@ -5718,7 +5777,7 @@ class LocalAIServer:
                     is_partial=False,
                     confidence=confidence,
                 ):
-                    self._reset_stt_session(session, "")
+                    self._complete_stt_final(session, "", segment_generation)
                 return
             # For llm/full modes, continue suppressing empty finals to avoid downstream work
             logging.info(
@@ -5752,7 +5811,15 @@ class LocalAIServer:
                 )
                 return
 
-        if idle_promoted and normalized_text and normalized_text == last_final_norm:
+        if (
+            idle_promoted
+            and normalized_text
+            and normalized_text == last_final_norm
+            and (
+                segment_generation is None
+                or segment_generation == last_final_segment_generation
+            )
+        ):
             logging.info(
                 "📝 STT FINAL SUPPRESSED - Duplicate idle transcript call_id=%s mode=%s text=%s",
                 session.call_id,
@@ -5783,7 +5850,7 @@ class LocalAIServer:
         )
 
         if stt_sent:
-            self._reset_stt_session(session, clean_text)
+            self._complete_stt_final(session, clean_text, segment_generation)
 
         if mode == "stt":
             return
@@ -5796,7 +5863,10 @@ class LocalAIServer:
                     last_user_text = (message.get("content") or "").strip()
                     break
             last_turn_norm = _normalize_text(last_user_text) if last_user_text else ""
-            if normalized_text == last_turn_norm:
+            if normalized_text == last_turn_norm and (
+                segment_generation is None
+                or segment_generation == last_final_segment_generation
+            ):
                 logging.info(
                     "🧠 LLM SKIPPED - Duplicate final transcript call_id=%s mode=%s text=%s",
                     session.call_id,
@@ -6206,10 +6276,60 @@ class LocalAIServer:
 
         async def _idle_promote() -> None:
             try:
-                timeout_sec = max(self.buffer_timeout_ms / 1000.0, 0.1)
+                whisper_pending = (
+                    self.stt_backend in {"faster_whisper", "whisper_cpp"}
+                    and session.stt_segment_in_speech
+                )
+                if whisper_pending:
+                    session_silence_ms = getattr(session, "stt_segment_silence_ms", None)
+                    timeout_ms = max(
+                        100,
+                        int(session_silence_ms)
+                        if session_silence_ms is not None
+                        else int(self.config.stt_segment_silence_ms),
+                    )
+                else:
+                    timeout_ms = self.buffer_timeout_ms
+                timeout_sec = max(timeout_ms / 1000.0, 0.1)
                 await asyncio.sleep(timeout_sec)
+                if session.closed:
+                    return
                 recognizer = session.recognizer
                 if recognizer is None:
+                    if not whisper_pending:
+                        return
+                    if session.idle_task is asyncio.current_task():
+                        # The buffered utterance is now claimed. New voice owns a
+                        # replacement timer and must not cancel this decode.
+                        session.idle_task = None
+                    events = await self._finalize_whisper_segment_if_due(
+                        session,
+                        backend_name=self.stt_backend,
+                        idle_elapsed=True,
+                    )
+                    if session.closed:
+                        return
+                    for event in events:
+                        if not event.get("is_final"):
+                            continue
+                        if event.get("_segment_cancel_generation") != session.stt_segment_cancel_generation:
+                            continue
+                        final_coro = self._handle_final_transcript(
+                            websocket,
+                            session,
+                            request_id,
+                            mode=mode,
+                            text=event.get("text", ""),
+                            confidence=event.get("confidence"),
+                            idle_promoted=True,
+                            segment_generation=event.get("_segment_generation"),
+                        )
+                        if mode == "stt":
+                            await final_coro
+                        else:
+                            self._start_session_response_task(
+                                session, final_coro, reason="idle-final-transcript"
+                            )
                     return
                 try:
                     result = json.loads(recognizer.FinalResult() or "{}")
@@ -6236,7 +6356,8 @@ class LocalAIServer:
             except asyncio.CancelledError:
                 return
             finally:
-                session.idle_task = None
+                if session.idle_task is asyncio.current_task():
+                    session.idle_task = None
 
         session.idle_task = asyncio.create_task(_idle_promote())
 
@@ -6392,6 +6513,7 @@ class LocalAIServer:
                         text=text,
                         confidence=confidence,
                         idle_promoted=False,
+                        segment_generation=event.get("_segment_generation"),
                     )
                     if mode == "stt":
                         await final_coro
@@ -6404,7 +6526,14 @@ class LocalAIServer:
                 return
 
             # No final yet; keep an idle finalizer running so short utterances resolve.
-            if session.recognizer is not None or partial_seen:
+            if (
+                session.recognizer is not None
+                or partial_seen
+                or (
+                    self.stt_backend in {"faster_whisper", "whisper_cpp"}
+                    and session.stt_segment_in_speech
+                )
+            ):
                 self._schedule_idle_finalizer(websocket, session, request_id, mode)
             return
 
