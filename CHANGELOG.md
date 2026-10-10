@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   include session headers or endpoint URLs, and keep remote RPC error text out
   of application traceback logs. Tool-outcome classification and no-replay
   behavior are unchanged.
+- **DTMF log privacy:** omit raw ARI/AudioSocket digits and payload-bearing exception bodies from structured logs while preserving native digit delivery to attended-transfer and AudioSocket handlers. Nested DTMF fields are fully redacted rather than retaining a prefix.
 - **Local AI provider test environment expansion:** shared YAML and Admin test paths now parse braced environment references in linear time, including empty `:-` and `:=` defaults, without stalling on malformed operator-supplied values. Existing authenticated WebSocket test ordering and modular capability checks remain unchanged.
 
 - **Google Developer long-response playback (opt-in):** prevents the original source queue from dropping small audio chunks when generation runs ahead of telephony playback. Enabled calls wait for playback drain, cancel queued speech on interruption, and reject stale farewell completion. Abnormal disconnects allow accepted audio up to eight seconds to drain before cleanup, respecting caller teardown and transfer ownership. Disconnect drain runs in a cleanup-cancelled call task, with a bounded transfer wait, so provider event dispatch remains responsive; completion backlog overflow immediately rejects new tool work. This cannot prevent upstream Google errors or recover audio that was never received.

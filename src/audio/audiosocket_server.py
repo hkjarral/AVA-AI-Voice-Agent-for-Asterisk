@@ -242,7 +242,7 @@ class AudioSocketServer:
                         try:
                             digit = payload.decode("ascii", errors="ignore")
                         except Exception as e:
-                            logger.debug("Failed to decode DTMF digit", conn_id=conn_id, error=str(e), payload_len=len(payload))
+                            logger.debug("Failed to decode DTMF digit", conn_id=conn_id, error_type=type(e).__name__, payload_len=len(payload))
                             digit = ""
                         if digit:
                             await self._on_dtmf(conn_id, digit[0])
@@ -263,7 +263,7 @@ class AudioSocketServer:
         except asyncio.IncompleteReadError:
             logger.info("AudioSocket client closed connection", conn_id=conn_id)
         except Exception as exc:  # noqa: BLE001
-            logger.error("AudioSocket connection error", conn_id=conn_id, error=str(exc), exc_info=True)
+            logger.error("AudioSocket connection error", conn_id=conn_id, error_type=type(exc).__name__)
         finally:
             writer.close()
             with contextlib.suppress(Exception):
