@@ -38,5 +38,5 @@ google-auth>=2.0.0
 google-api-python-client>=2.0.0
 
 # Microsoft Calendar device-code OAuth and cross-process token-cache locking
-msal>=1.28.0
+msal>=1.39.0
 portalocker>=2.8.0
