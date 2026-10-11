@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Update the pinned Codex review action to 1.12 and align the workflow-policy regression assertion with its new commit SHA.
+
 - Reworked `AVA.mdc` as the shared AI-assistant entry point for project questions,
   development, deployment, call troubleshooting, and contribution. Linked root
   `AGENTS.md`, refreshed beginner onboarding, and added portable SSH/deployment
