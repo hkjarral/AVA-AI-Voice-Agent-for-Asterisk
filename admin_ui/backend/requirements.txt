@@ -35,7 +35,7 @@ openpyxl==3.1.5
 # misleading — it's a *minimum-version range*, not an exact pin, and the
 # intent is to track the root requirements.
 google-auth>=2.0.0
-google-api-python-client>=2.0.0
+google-api-python-client>=2.201.0
 
 # Microsoft Calendar device-code OAuth and cross-process token-cache locking
 msal>=1.28.0
