@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Update CPU WebSocket clients/server to websockets 17.0.1 (Python 3.11 or newer) and raise the Azure Speech SDK minimum to 1.51.1. Provider, model, transport, and runtime configuration defaults are unchanged.
+
 - Reworked `AVA.mdc` as the shared AI-assistant entry point for project questions,
   development, deployment, call troubleshooting, and contribution. Linked root
   `AGENTS.md`, refreshed beginner onboarding, and added portable SSH/deployment

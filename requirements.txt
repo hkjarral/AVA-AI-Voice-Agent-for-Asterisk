@@ -1,6 +1,6 @@
 # Core ARI and WebSocket dependencies
 ari==0.1.3
-websockets==16.1.1
+websockets==17.0.1
 aiohttp==3.14.3
 mcp==2.3.0  # Official Streamable HTTP client; Python 3.11-compatible
 # MessagePack: Fish Audio realtime (websocket) transport only
@@ -40,4 +40,4 @@ google-api-python-client>=2.198.0
 # Microsoft Calendar API client for business calendar tool
 msal>=1.37.0
 portalocker>=3.2.0
-azure-cognitiveservices-speech>=1.41.0
+azure-cognitiveservices-speech>=1.51.1
