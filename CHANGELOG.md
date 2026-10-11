@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   include session headers or endpoint URLs, and keep remote RPC error text out
   of application traceback logs. Tool-outcome classification and no-replay
   behavior are unchanged.
+- **Whisper idle finalization:** finalize buffered speech after per-session silence without requiring another audio frame, while preserving newer speech that arrives during a slow decode or backend-lock wait. Repeated words in distinct speech segments remain separate turns; duplicate finalization of one segment stays suppressed.
 - **DTMF log privacy:** omit raw ARI/AudioSocket digits and payload-bearing exception bodies from structured logs while preserving native digit delivery to attended-transfer and AudioSocket handlers. Nested DTMF fields are fully redacted rather than retaining a prefix.
 - **Local AI provider test environment expansion:** shared YAML and Admin test paths now parse braced environment references in linear time, including empty `:-` and `:=` defaults, without stalling on malformed operator-supplied values. Existing authenticated WebSocket test ordering and modular capability checks remain unchanged.
 
