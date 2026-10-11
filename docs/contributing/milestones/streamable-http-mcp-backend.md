@@ -1,6 +1,6 @@
 # Milestone — Streamable HTTP MCP backend
 
-> **Status**: Backend/YAML slice awaiting maintainer acceptance; operator UI tracked separately
+> **Status**: Backend/YAML live in-call acceptance complete; final review/CI in progress; operator UI tracked separately
 > **Author**: pi0n00r
 > **Date**: 2026-10-07
 
@@ -28,9 +28,12 @@ in place. Stdio behavior is unchanged.
 
 The adapter establishes a fresh session for each operation. It sends one
 tools/call request per invocation using the SDK's low-level session method, not
-the high-level auto-retry helper. A timeout, disconnect, or mismatched response
-therefore reports an unknown outcome; AVA never blindly replays a possibly
-effectful call. Subsequent independent operations establish new sessions.
+the high-level auto-retry helper. Setup or discovery failures before a
+tools/call POST attempt report that the tool was not invoked. Once that POST
+is attempted, a timeout, disconnect, expired session or mismatched response
+reports an unknown outcome: the request may have reached the server. AVA never
+blindly replays a possibly effectful call. Subsequent independent operations
+establish new sessions.
 
 The only new runtime dependency is the pinned official mcp Python SDK. No new
 database, API route, background worker, or persistence is introduced.
@@ -56,10 +59,15 @@ AI Engine. MCP status omits the URL and resolved headers.
 - [x] Modern and legacy negotiation, auth failure, pagination, and session expiry
 - [x] Concurrent calls, tool error propagation, and lost/mismatched response no-replay
 - [x] Existing stdio, naming, and Agent filtering tests
-- [ ] Refreshed current-head root suite evidence, including response-task cancellation
+- [ ] Refreshed final-head root CI gate; focused cancellation/Whisper and transport tests must remain included
 - [ ] Admin UI entry creation, edit, validation and save/readback — separate follow-up #703
-- [ ] Live PBX call with an explicitly configured test MCP server
-- [ ] Maintainer CI and security checks on the frozen draft head
+- [x] Live allowed/denied Agent calls with an explicitly configured harmless MCP server; one allowed execution, zero denied executions, caller-confirmed output/audio, and complete cleanup
+- [ ] Maintainer final CI and security checks on the frozen ready head
+
+Live pre/post phase execution is not claimed: the maintainer's private test
+Agents had boolean opt-outs where lists are required. No phase tool ran. The
+fixture was corrected and both unchanged phase handlers were verified with
+synthetic sessions; in-call MCP allow/deny acceptance above remains valid.
 
 Backend merge acceptance requires the current-head automated gate, authenticated
 container/runtime verification, and live Agent-call evidence above. Admin UI

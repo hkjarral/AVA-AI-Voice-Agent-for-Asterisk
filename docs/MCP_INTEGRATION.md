@@ -63,11 +63,20 @@ resolved headers are omitted from the MCP status response.
 The official Python MCP SDK negotiates the current protocol or a supported
 legacy version, supplies protocol/session headers, and handles JSON or
 request-scoped SSE responses. Tool listings are paginated with a bounded limit.
-A call uses one negotiated session and one tools/call request. On a timeout,
-disconnect or expired session during a call, its outcome is unknown: AVA does
-not automatically re-execute it. A later, separate operation establishes a
-new session. The server must provide its own idempotency or reconciliation
-contract if a caller chooses to retry an effectful tool.
+A call uses one negotiated session and one tools/call request. Setup or
+discovery failures before a tools/call POST attempt report that the tool was not
+invoked. After that POST is attempted, a timeout, disconnect, expired session or
+mismatched response has an unknown outcome because the request may have reached
+the server; AVA does not automatically re-execute it. A later, separate operation
+establishes a new session. The server must provide its own idempotency or
+reconciliation contract before a caller retries an effectful tool.
+
+Environment expansion may make a flow-style YAML value valid when the raw
+file cannot be parsed. The engine still loads that expanded configuration.
+If raw MCP header references cannot be recovered, headered HTTP servers fail
+closed before connecting; unrelated servers and the engine remain available.
+Keep header values quoted and flow-style environment references quoted so the
+raw YAML remains parseable.
 
 Existing stdio servers and Agent tool filtering remain unchanged. The test
 endpoint in the Admin UI can perform discovery only; it does not prove a tool's

@@ -130,6 +130,49 @@ missing: ${NONEXISTENT_VAR}
         assert result["mcp"]["servers"]["remote"]["headers"] == {
             "Authorization": "Bearer ${AVA_MCP_SECRET}"
         }
+
+    @pytest.mark.parametrize(
+        "flow, expected",
+        [("[${AVA_FLOW_PORT}]", [8080]), ("{port: ${AVA_FLOW_PORT}}", {"port": 8080})],
+    )
+    def test_flow_env_expansion_with_mcp_does_not_require_raw_yaml(self, tmp_path, monkeypatch, flow, expected):
+        monkeypatch.setenv("AVA_FLOW_PORT", "8080")
+        config_file = tmp_path / "test.yaml"
+        config_file.write_text(
+            "ports: " + flow + "\nmcp:\n  enabled: true\n  servers:\n"
+            '    local:\n      transport: stdio\n      command: ["python", "server.py"]\n'
+        )
+        result = load_yaml_with_env_expansion(str(config_file))
+        assert result["ports"] == expected
+        assert result["mcp"]["servers"]["local"] == {
+            "transport": "stdio", "command": ["python", "server.py"]
+        }
+
+    @pytest.mark.parametrize("secret", ["private-sentinel", "${AVA_MCP_LATE}"])
+    def test_unparseable_raw_yaml_cannot_grant_header_provenance(self, tmp_path, monkeypatch, secret):
+        from src.mcp.errors import MCPError
+        from src.mcp.streamable_http_client import MCPStreamableHTTPClient
+
+        monkeypatch.setenv("AVA_FLOW_PORT", "8080")
+        monkeypatch.setenv("AVA_MCP_SECRET", secret)
+        monkeypatch.delenv("AVA_MCP_LATE", raising=False)
+        config_file = tmp_path / "test.yaml"
+        config_file.write_text(
+            'ports: [${AVA_FLOW_PORT}]\nmcp:\n  servers:\n    remote:\n'
+            '      url: "https://mcp.example/mcp"\n'
+            '      headers:\n        Authorization: "Bearer ${AVA_MCP_SECRET}"\n'
+        )
+        result = load_yaml_with_env_expansion(str(config_file))
+        assert result["ports"] == [8080]
+        remote = result["mcp"]["servers"]["remote"]
+        assert remote["headers"] == {"Authorization": ""}
+        # Even if expansion produces a new reference that later resolves, it
+        # must not acquire the original template's credential provenance.
+        monkeypatch.setenv("AVA_MCP_LATE", "another-private-sentinel")
+        client = MCPStreamableHTTPClient(server_id="remote", url=remote["url"], headers=remote["headers"])
+        with pytest.raises(MCPError, match="environment-only header"):
+            client._resolve_headers()
+
     def test_shell_style_defaults_and_empty_value(self, monkeypatch):
         monkeypatch.delenv("AVA_LOADER_MISSING", raising=False)
         monkeypatch.setenv("AVA_LOADER_EMPTY", "")
