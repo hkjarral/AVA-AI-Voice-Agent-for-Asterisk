@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, startTransition } from 'react';
 import {
     Phone, Filter, Download, Trash2,
     ChevronLeft, ChevronRight, RefreshCw, X, MessageSquare,
@@ -291,7 +291,7 @@ const CallHistoryPage = () => {
     const [pageSize] = useState(20);
     const [total, setTotal] = useState(0);
     const [totalPages, setTotalPages] = useState(1);
-    
+
     // Filters
     const [filters, setFilters] = useState<CallHistoryFilters>(EMPTY_FILTERS);
     const [showFilters, setShowFilters] = useState(false);
@@ -501,23 +501,27 @@ const CallHistoryPage = () => {
 
     const closeCallDetails = useCallback(() => {
         cleanupAudio();
-        setRecordingInfo(null);
-        setSelectedCall(null);
-        setSelectedCallSummary(null);
+        // Keep the modal state and Router 7 URL transition in the same update.
+        // Clearing only local state first can replay the still-present deep link.
+        startTransition(() => {
+            setRecordingInfo(null);
+            setSelectedCall(null);
+            setSelectedCallSummary(null);
 
-        const params = new URLSearchParams(location.search);
-        if (params.has('id')) {
-            params.delete('id');
-            const search = params.toString();
-            navigate(
-                {
-                    pathname: location.pathname,
-                    search: search ? `?${search}` : '',
-                    hash: location.hash,
-                },
-                { replace: true }
-            );
-        }
+            const params = new URLSearchParams(location.search);
+            if (params.has('id')) {
+                params.delete('id');
+                const search = params.toString();
+                navigate(
+                    {
+                        pathname: location.pathname,
+                        search: search ? `?${search}` : '',
+                        hash: location.hash,
+                    },
+                    { replace: true }
+                );
+            }
+        });
     }, [cleanupAudio, location.hash, location.pathname, location.search, navigate]);
 
     useEffect(() => {
@@ -628,7 +632,7 @@ const CallHistoryPage = () => {
                 params: filterParams,
                 responseType: 'blob'
             });
-            
+
             const url = window.URL.createObjectURL(res.data);
             const a = document.createElement('a');
             a.href = url;
@@ -1158,7 +1162,7 @@ return (
                             <tbody className="divide-y divide-border">
                                 {calls.map((call) => (
 	                                    <tr
-	                                        key={call.id} 
+	                                        key={call.id}
 	                                        className="hover:bg-muted/30 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
 	                                        tabIndex={0}
 	                                        aria-label={`Open call details for ${call.caller_number || call.call_id}`}
@@ -1527,8 +1531,8 @@ return (
                                             selectedCall.conversation_history.map((msg, i) => (
                                                 <div key={i} className={`flex ${msg.role === 'assistant' ? 'justify-start' : 'justify-end'}`}>
                                                     <div className={`max-w-[80%] rounded-lg px-3 py-2 ${
-                                                        msg.role === 'assistant' 
-                                                            ? 'bg-primary/10 text-foreground' 
+                                                        msg.role === 'assistant'
+                                                            ? 'bg-primary/10 text-foreground'
                                                             : 'bg-muted text-foreground'
                                                     }`}>
                                                         <div className="text-xs text-muted-foreground mb-1 capitalize">{msg.role}</div>

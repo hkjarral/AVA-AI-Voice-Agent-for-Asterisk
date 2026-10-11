@@ -98,7 +98,7 @@ def test_targeted_codex_review_pins_model_and_tooling() -> None:
     codex_step = steps["run_codex"]
     assert (
         codex_step["uses"]
-        == "openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56"
+        == "openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e"
     )
     assert codex_step["with"]["model"] == "${{ steps.openai.outputs.model }}"
     assert codex_step["with"]["codex-version"] == "0.145.0"
