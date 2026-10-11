@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Update the pinned Codex review action to 1.12 and align the workflow-policy regression assertion with its new commit SHA.
+
 - Reworked `AVA.mdc` as the shared AI-assistant entry point for project questions,
   development, deployment, call troubleshooting, and contribution. Linked root
   `AGENTS.md`, refreshed beginner onboarding, and added portable SSH/deployment
@@ -27,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Admin frontend security follow-up:** adopt React Router 7.18.4 and patched DOMPurify, selector-parser, and brace-expansion transitive versions, including nested parser copies used by Tailwind typography. Keep call-detail closure and URL removal in the same transition so Router 7 cannot reopen a dismissed deep link.
 
 - **Admin frontend dependencies:** update Axios, js-yaml, Nano ID, source-map-js, Vitest, and Browserslist metadata; reconcile the overlapping browser-mapping updates without discarding either update.
+- **Admin HTTP redirect credentials:** update aiohttp to 3.14.5 so cross-origin redirects strip every duplicate Authorization, Cookie, and Proxy-Authorization header. Regression tests retain same-origin credentials and ordinary request headers.
 
 - **Replacement transfer handoff:** bind deferred completion callbacks to their original transfer before scheduling or waiting on the per-call lock. A queued completion from a cancelled/replaced transfer no longer starts committing the replacement or suppresses its unfinished handoff audio. Original repeat suppression contributed by [@cswilsnetex](https://github.com/cswilsnetex) in [#702](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/702).
 
