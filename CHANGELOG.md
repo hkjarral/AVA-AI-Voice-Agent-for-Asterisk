@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Admin frontend dependencies:** update Axios, js-yaml, Nano ID, source-map-js, Vitest, and Browserslist metadata; reconcile the overlapping browser-mapping updates without discarding either update.
+
 - **Replacement transfer handoff:** bind deferred completion callbacks to their original transfer before scheduling or waiting on the per-call lock. A queued completion from a cancelled/replaced transfer no longer starts committing the replacement or suppresses its unfinished handoff audio. Original repeat suppression contributed by [@cswilsnetex](https://github.com/cswilsnetex) in [#702](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/702).
 
 - Preserve expanded YAML compatibility when raw flow-style environment references cannot be parsed for MCP header restoration; credentialed HTTP servers fail closed without exposing expanded header values.
