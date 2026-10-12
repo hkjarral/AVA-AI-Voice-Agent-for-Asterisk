@@ -28,14 +28,21 @@ This document describes how AVA integrates Model Context Protocol (MCP) tools in
 MCP servers can be configured via **Admin UI → Core Configuration → MCP** page (`/mcp`). This provides:
 - Server list with status indicators
 - Add/edit/remove stdio MCP server configurations
-- MCP connection changes require an AI Engine restart; the HTTP draft is YAML-only
+- MCP connection changes require an AI Engine restart; Streamable HTTP is YAML-only
 
-## Streamable HTTP backend draft
+## Streamable HTTP backend
 
 The AI Engine can connect to an explicitly configured Streamable HTTP MCP endpoint.
-This is a backend-only contribution slice. The Admin UI's MCP editor does not yet
-create or edit HTTP entries, and this is not a live-call acceptance claim. Configure
-the engine YAML directly, then restart the AI Engine in a controlled window.
+This is a backend/YAML integration. The Admin UI's MCP editor does not yet create
+or edit HTTP entries; that work remains [#703](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/703).
+Configure the engine YAML directly, then restart the AI Engine in a controlled window.
+
+[#696](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/696)
+records live in-call allowed/denied acceptance on `090ddfe0`: one authorized
+invocation and no invocation for the denied Agent, with caller-heard results and
+clean teardown. Its final loader-only fixes have additional automated coverage.
+This is scoped feature evidence, not an exact-v7.6.3 full-provider sweep. MCP tools
+remain in-call only; no live pre/post-call MCP execution is claimed.
 
 ~~~yaml
 mcp:

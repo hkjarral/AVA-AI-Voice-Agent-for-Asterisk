@@ -2,6 +2,53 @@
 
 This guide covers upgrading between releases of Asterisk AI Voice Agent.
 
+## v7.6.2 to v7.6.3
+
+v7.6.3 is an in-place reliability, security, and operator-documentation release.
+It does not migrate databases, reassign Agents, or change saved provider,
+transport, Audio Profile, or Google model selections.
+
+Drain calls and back up configuration, SQLite stores, calendar OAuth caches,
+provider secrets and local Compose overlays using the
+[upgrade guide](INSTALLATION.md#upgrade-to-v763-existing-checkout). Then:
+
+1. Rebuild/recreate `ai_engine` and `admin_ui`. Rebuild/recreate
+   `local_ai_server` **if your deployment uses it**: Whisper idle-finalization
+   code changed. Preserve your CPU/GPU build profile and model volumes; do not
+   start the optional local service on a cloud-only installation.
+2. Cloud startup connection recovery is opt-in. Existing installations retain
+   a 10-second opening timeout, zero retries and no aggregate deadline.
+   Expert controls affect initial connection only, not established-call
+   recovery or terminal failure routing. See [connection recovery](Provider-Connection-Recovery.md).
+3. Google Developer long-response playback defaults off, requires a saved
+   provider setting and engine restart, and is ignored on Vertex connections.
+   It cannot recover audio never received from Google. See the
+   [Google guide](Provider-Google-Setup.md#long-response-playback-developer-api-opt-in).
+4. Provider tests now honor explicit endpoints, roles and provider-scoped
+   credentials. Fix invalid/custom endpoint configuration instead of relying
+   on an implicit fallback to a public service. Speech probes may establish
+   reachability only, not transcription or synthesis quality.
+5. Streamable HTTP MCP is configured in YAML with environment-referenced auth
+   headers; the Admin UI editor still supports stdio only. Restart the engine
+   outside calls after connection changes. Ambiguous remote tool outcomes are
+   not replayed automatically; reconcile side effects on the remote service
+   before retrying. See [MCP integration](MCP_INTEGRATION.md).
+6. Admin dependency/security updates include React Router 7. Hard-refresh the
+   rebuilt UI and confirm Call History deep-link opening/closing. DTMF remains
+   delivered to native handlers but no longer appears as raw digits in logs.
+   Google deferred-transfer repeat suppression does not remove a duplicate
+   transcript or prevent a repeat queued before an opt-in playback drain.
+
+Rollback requires no database downgrade. Drain calls, restore the v7.6.2
+code/images and pre-upgrade configuration, and remove any newly adopted HTTP MCP
+or optional provider settings not supported by the older code. Preserve model
+volumes, Agent data, calendar identities and OAuth caches. External tool effects,
+appointments and invitations are not undone by a code rollback.
+
+The [v7.6.3 validation matrix](baselines/golden/v7.6.3-validation-matrix.md)
+separates merged-feature evidence from pending exact-candidate tag acceptance.
+Previous-release acceptance is not silently carried forward as a new pass.
+
 ## v7.6.1 to v7.6.2
 
 v7.6.2 is an in-place feature and reliability release. It adds opt-in Gemini 3.8

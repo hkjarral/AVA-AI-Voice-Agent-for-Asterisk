@@ -717,10 +717,12 @@ def _load_backend_main():
         pytest.skip(f"admin_ui backend main.py not importable: {exc}")
     return module
 
-def test_main_app_openapi_version_and_tag():
+def test_main_app_openapi_version_and_tag(monkeypatch):
     """version literal + agents tag description live in admin_ui/backend/main.py."""
+    # Schema inspection must not create/rotate credentials in a developer checkout.
+    monkeypatch.setattr("auth.ensure_default_user", lambda: None)
     main = _load_backend_main()
-    assert main.app.version == "7.6.2"
+    assert main.app.version == "7.6.3"
     spec = main.app.openapi()
     tags = {t["name"]: t.get("description", "") for t in spec.get("tags", [])}
     assert tags.get("agents")  # present with a non-empty description

@@ -1,17 +1,26 @@
 # Asterisk AI Voice Agent - Installation and Upgrade Guide (v7.6)
 
-This guide covers fresh installations and the supported upgrade path to v7.6.2.
+This guide covers fresh installations and the supported upgrade path to v7.6.3.
 For release-specific behavior changes, also read the
-[v7.6.2 migration notes](MIGRATION.md#v761-to-v762). Operators upgrading from
+[v7.6.3 migration notes](MIGRATION.md#v762-to-v763). Operators upgrading from
 v7.3.x or earlier must also follow the [v7.4 Agent migration](MIGRATION.md#v73x-to-v740).
 
 ## Three Setup Paths
 
 Choose the path that best fits your experience level:
 
-## Upgrade to v7.6.2 (Existing Checkout)
+<a id="upgrade-to-v762-existing-checkout"></a>
+
+## Upgrade to v7.6.3 (Existing Checkout)
 
 This section is for operators upgrading an existing repo checkout (not a fresh install).
+
+For v7.6.3, rebuild/recreate the engine and Admin UI, and also the Local AI server
+**if it is already part of your deployment** (Whisper code changed). Preserve your
+CPU/GPU profile and model volumes. Cloud-only installs must not enable the optional
+local service solely to upgrade. New cloud startup recovery, Google Developer
+long-response playback, and HTTP MCP connections require explicit opt-in;
+see the [migration notes](MIGRATION.md#v762-to-v763) for defaults and rollback.
 
 > ### ⚠️ Upgrading from 6.x? v7.0.0 introduced breaking changes — read first
 > (v7.6 includes them; if you are already on 7.x this is an in-place upgrade.)
@@ -37,13 +46,13 @@ Run these commands from your actual checkout path. Do not assume it is `/root/..
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 git status --short
-git diff --binary > ../aava-pre-v762-working-tree.patch
-git diff --binary --cached > ../aava-pre-v762-staged.patch
+git diff --binary > ../aava-pre-v763-working-tree.patch
+git diff --binary --cached > ../aava-pre-v763-staged.patch
 docker compose config --quiet
 if ! docker compose -p asterisk-ai-voice-agent ps --services --status running \
-  > ../aava-pre-v762-running-services.txt; then
+  > ../aava-pre-v763-running-services.txt; then
   docker compose -p asterisk-ai-voice-agent ps --services \
-    > ../aava-pre-v762-running-services.txt || exit 1
+    > ../aava-pre-v763-running-services.txt || exit 1
 fi
 ```
 
@@ -85,7 +94,7 @@ Preferred CLI path:
 
 ```bash
 git fetch origin --prune --tags
-agent update --ref v7.6.2 --include-ui --local-changes=retain
+agent update --ref v7.6.3 --include-ui --local-changes=retain
 ```
 
 Replace `retain` with your explicit `overwrite` or `abort` decision. In an interactive
@@ -116,7 +125,7 @@ Run the host recovery script from an SSH shell on the AAVA server. This path doe
 depend on the failing Admin UI planner container:
 
 ```bash
-AAVA_RECOVERY_REF=v7.6.2
+AAVA_RECOVERY_REF=v7.6.3
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -152,7 +161,7 @@ terminal:
 For non-interactive recovery, pass the decision explicitly:
 
 ```bash
-AAVA_RECOVERY_REF=v7.6.2
+AAVA_RECOVERY_REF=v7.6.3
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -167,7 +176,7 @@ Use `overwrite` only when the operator accepts that tracked local code changes w
 discarded:
 
 ```bash
-AAVA_RECOVERY_REF=v7.6.2
+AAVA_RECOVERY_REF=v7.6.3
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -261,14 +270,14 @@ explicit policy. Never use `git reset --hard` as generic upgrade advice.
 
 Do not treat a second update run as proof that the containers were updated. If the first
 job reached **Fast-forwarding code** and then failed during Docker Compose, the checkout may
-already be at v7.6.2 while the old containers are still running. Save the failed job log and
+already be at v7.6.3 while the old containers are still running. Save the failed job log and
 either use its **Rollback** action or, after fixing the reported Compose/build error, reconcile
 only the services that were running before the update:
 
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 docker compose config --quiet
-AAVA_RUNNING_SERVICES_FILE=../aava-pre-v762-running-services.txt
+AAVA_RUNNING_SERVICES_FILE=../aava-pre-v763-running-services.txt
 test -f "${AAVA_RUNNING_SERVICES_FILE}" || exit 1
 AAVA_RECOVERY_SERVICES=()
 for AAVA_SERVICE in ai_engine admin_ui local_ai_server; do

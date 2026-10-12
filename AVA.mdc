@@ -16,7 +16,7 @@ You do not need to understand the whole codebase or already know Git to get help
 Try: “Read AVA.mdc. I want to [understand / build / fix / investigate] ___. Help me
 through the relevant steps and explain unfamiliar terms.”
 
-> Reviewed against the v7.6.2 release and subsequent `main` guidance on 2026-10-06.
+> Reviewed for v7.6.3 preparation against `main` cutoff `4f9195fa` on 2026-10-11.
 > Check the actual checkout and deployed revision before relying on any behavior.
 
 ## Assistant: Establish Context First

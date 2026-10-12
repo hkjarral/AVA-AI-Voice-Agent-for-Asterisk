@@ -14,6 +14,12 @@ CI is the hard gate for code quality (unit tests + lint/compile checks). Real-ca
 
 ## Manual Golden Baselines (Must Pass Before Tagging)
 
+For v7.6.3, use the [current validation matrix](baselines/golden/v7.6.3-validation-matrix.md).
+The README and fork-review PRs may become merge-ready before tag acceptance.
+Keep exact-candidate runtime/upgrade acceptance, the post-merge fork-review smoke,
+and explicit merge/tag authorization separate; do not convert older feature
+evidence or prior-release waivers into new candidate passes.
+
 Run at least one successful call for each baseline you intend to claim as supported.
 
 **A call “passes” if:**

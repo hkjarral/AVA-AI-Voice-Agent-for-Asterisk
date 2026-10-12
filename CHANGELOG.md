@@ -7,12 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.6.3] - 2026-10-11
+
+Release scope: #689, #690, #692, #679, #597, #694, #695, #696, #702, #706,
+#707, #708, #709, #710 and #729, plus the reviewed README/release preparation
+and fork-review workflow fix. Open Dependabot and unrelated feature PRs remain
+excluded. No database migration or provider/transport/model-default change.
+See [migration notes](docs/MIGRATION.md#v762-to-v763) and the
+[validation matrix](docs/baselines/golden/v7.6.3-validation-matrix.md).
+
+Contributors: [@pi0n00r](https://github.com/pi0n00r) (Local AI, Whisper, DTMF,
+MCP), [@cswilsnetex](https://github.com/cswilsnetex) (Google transfer handoff),
+[@hkjarral](https://github.com/hkjarral) (implementation, review, maintenance
+and release work), NC (Local AI co-author), and
+[@MVECoder](https://github.com/MVECoder) (startup-recovery report,
+investigation and production evidence). Commit authorship and existing credits
+are preserved; see [CONTRIBUTORS.md](CONTRIBUTORS.md).
+
 ### Changed
 
-- **Compatible dependency maintenance:** update the Codex review action to 1.13 with its workflow-policy assertion; refresh Admin backend dependencies and Calendar client floors, aligning the shared HTTPX test pin; update compatible Admin frontend packages and React Testing Library. Retain the existing Node/ESLint toolchain and defer incompatible plugin, runtime, model, NumPy, and Piper upgrades.
+- **Compatible dependency maintenance:** refresh Admin backend dependencies and Calendar client floors, aligning the shared HTTPX test pin; update compatible Admin frontend packages and React Testing Library. Retain the existing Node/ESLint toolchain and defer incompatible plugin, runtime, model, NumPy, and Piper upgrades. Earlier Codex action pin updates are superseded by the separately reviewed fork-safe workflow.
+
+- **Project overview and release documentation:** shorten the README to one setup
+  path, concise capabilities and canonical documentation links. Preserve demo
+  endpoints, Core's MIT/independence boundary and Operator's early-access preview.
+  Refresh upgrade/recovery references and contributor badges, including verified
+  co-author and investigation credit.
 
 - **Dependabot maintenance:** cover Admin frontend/backend and Local AI manifests with weekly compatible version/security groups; keep model-stack, NumPy, Piper and major migrations individual, and reduce version-update PR limits without suppressing security fixes.
-- Update the pinned Codex review action to 1.12 and align the workflow-policy regression assertion with its new commit SHA.
 
 - Reworked `AVA.mdc` as the shared AI-assistant entry point for project questions,
   development, deployment, call troubleshooting, and contribution. Linked root
@@ -22,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Streamable HTTP MCP backend draft:** explicit YAML endpoint and environment-referenced authentication headers use the official Python MCP SDK for protocol negotiation, session headers, JSON/SSE responses and paginated tool discovery. Existing stdio and Agent filtering remain intact. A timed-out tool call is not automatically replayed; its effect may require server-side reconciliation. Live in-call allowed/denied acceptance is complete; Admin UI creation/editing remains follow-up #703.
+- **Streamable HTTP MCP backend:** explicit YAML endpoint and environment-referenced authentication headers use the official Python MCP SDK for protocol negotiation, session headers, JSON/SSE responses and paginated tool discovery. Existing stdio and Agent filtering remain intact. A timed-out tool call is not automatically replayed; its effect may require server-side reconciliation. Live in-call allowed/denied acceptance is complete; Admin UI creation/editing remains follow-up #703.
 - **Opt-in cloud provider startup connection recovery** ([#676](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/676)): Google Live/Vertex, OpenAI Realtime, Grok, Deepgram Agent, and ElevenLabs Agent can retry transient initial connection failures with configurable opening and total connection deadlines. Provider forms expose the controls under Expert settings. Upgrades retain a 10-second opening timeout, zero retries, and no added aggregate deadline; setup, mid-call recovery, keepalive, terminal failure routing, and Local behavior are unchanged. See [connection recovery and real-call verification](docs/Provider-Connection-Recovery.md). Reported and supported with production evidence by [@MVECoder](https://github.com/MVECoder).
 
 - **Google Developer long-response option:** **Providers → Google Live → API Mode → Enable long-response playback** enables a bounded audio backlog for that provider instance. It defaults off on new and existing installations, requires saving and restarting the AI Engine, and is hidden in Vertex mode. The saved preference is ignored on actual Vertex connections; other providers and modular pipelines do not use it. See the [Google setup guide](docs/Provider-Google-Setup.md#long-response-playback-developer-api-opt-in) for configuration and upgrade instructions.

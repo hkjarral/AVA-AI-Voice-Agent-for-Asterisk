@@ -1,260 +1,107 @@
-# Architecture Quick Start (10-Minute Overview)
+# Architecture Quick Start
 
-Quick mental model of how Asterisk AI Voice Agent works. For complete details, see [Architecture Deep Dive](architecture-deep-dive.md).
+AVA connects an Asterisk call to an AI provider or a modular speech pipeline.
+ARI controls the call; a separately configured media transport carries audio.
 
-## Core Concept
-
-```
-Caller → Asterisk → AI Engine → Asterisk → Caller
-         (ARI)      (STT→LLM→TTS)  (Audio)
-```
-
-**Two execution modes**:
-1. **Monolithic Providers**: All-in-one (OpenAI Realtime, Deepgram, Google Live)
-2. **Modular Pipelines**: Mix & match STT + LLM + TTS components
-
-## Key Components
-
-### 1. Asterisk Integration (ARI)
-
-**Asterisk Stasis** → Python engine via **ARI (Asterisk REST Interface)**
-
-**Dialplan Entry**:
-```
-exten => _X.,1,NoOp(AI Voice Agent)
- same => n,Stasis(asterisk-ai-voice-agent)
- same => n,Hangup()
+```text
+Caller ↔ Asterisk ↔ AI Engine ↔ Voice provider or STT → LLM → TTS
+           ARI + media             Tools and per-call state
 ```
 
-**What Happens**:
-- Call enters Stasis application
-- Engine receives `StasisStart` event
-- Engine creates AudioSocket or ExternalMedia channel
-- Bidirectional audio streaming begins
+For detailed implementation contracts, start with [AVA.mdc](../../AVA.mdc)
+and the [architecture deep dive](architecture-deep-dive.md).
 
-### 2. Audio Transports
+## Services and ownership
 
-**Two Options**:
+| Component | Responsibility |
+| --- | --- |
+| `ai_engine` | ARI events, call routing, media, provider/pipeline sessions, tools and Call History |
+| `admin_ui` | Provider/Agent configuration, diagnostics, history and update controls |
+| `local_ai_server` (optional) | Local STT, LLM and TTS inference for local/hybrid configurations |
+| `updater` (optional) | Reviewed update plans, backups, service recreation and recovery |
 
-**ExternalMedia RTP** (Shipped default config):
-- RTP streams on port 18080
-- Configurable codecs (μ-law, PCM16)
-- Best for: Production, distributed deployments, clusters
+Run only the services required by the actual deployment. Models and operator
+data persist outside disposable container layers; preserve their volumes and
+configured paths during upgrades.
 
-**AudioSocket** (Simpler alternative):
-- TCP connection on port 8090
-- **Validated wire format**: `slin` (16-bit signed linear @ 8 kHz)
-- Best for: Getting started, simple setups, debugging
+## Call selection and lifecycle
 
-**Format Flow**:
-```
-Caller (μ-law/various) → Asterisk → Transport (e.g., `slin`) → Engine
-```
+Calls enter `Stasis(asterisk-ai-voice-agent)`. The dialplan's `AI_AGENT`
+selects an Agent slug from `agents.db`; legacy `AI_CONTEXT` remains a
+display-name-first compatibility selector, not a live YAML persona source.
 
-### 3. Engine Core (`src/engine.py`)
+Provider selection follows the explicit `AI_PROVIDER` override, the selected
+Agent, then the configured global default. Named pipelines use
+`PipelineOrchestrator`; see [selection and precedence](../Configuration-Reference.md#call-selection--precedence-provider--pipeline--agent)
+rather than assuming that every pipeline always uses one global setting.
 
-**Main responsibilities**:
-- Accept ARI events (calls, audio)
-- Route audio to providers/pipelines
-- Manage playback (TTS → caller)
-- Execute tools (transfer, hangup, etc.)
-- Handle session state
+A typical call proceeds through routing, media/provider setup, conversation,
+tool execution, terminal audio drain, hangup and cleanup. Failure, cancellation,
+transfer and retry paths must preserve the same call ownership.
+See [Agents](../AGENTS.md) and the [FreePBX guide](../FreePBX-Integration-Guide.md)
+for dialplan examples and configuration.
 
-**Key Methods**:
-- `_on_stasis_start()`: New call
-- `_audiosocket_handle_audio()`: Audio from AudioSocket
-- `_on_rtp_audio()`: Audio from RTP
-- `run_turn()`: Pipeline orchestration
+## Audio transports
 
-### 4. Providers vs Pipelines
+| Transport | Configuration and boundaries |
+| --- | --- |
+| AudioSocket | Shipped `audio_transport` default; TCP listener (8090 by default), with codecs/rates governed by the selected Audio Profile |
+| ExternalMedia RTP | Optional UDP media (18080 by default); provider/playback combinations require matching configuration |
+| Media WebSocket | Opt-in per-call Asterisk media leg, authenticated listener and version/module requirements |
 
-**Monolithic Providers**:
-```python
-# OpenAI Realtime, Deepgram, Google Live
-Audio → [Provider does everything] → Audio
-```
-- Single WebSocket/API connection
-- Provider handles STT, LLM, TTS internally
-- Built-in tool calling
-- Lower latency (single hop)
+Transport choice is independent of full-agent versus pipeline execution.
+[TransportOrchestrator](../../src/core/transport_orchestrator.py) resolves media
+settings; provider wire formats must not be inferred from PBX codec names.
+Use the [compatibility matrix](../Transport-Mode-Compatibility.md) and
+[WebSocket guide](../WebSocket-Transport.md) for qualified combinations and
+version floors. Historical baseline passes do not certify every new candidate.
 
-**Modular Pipelines**:
-```python
-# Example: Deepgram STT + OpenAI LLM + Piper TTS
-Audio → STT → Text → LLM → Text → TTS → Audio
-```
-- Mix and match components
-- More flexibility
-- Local options (privacy, offline)
-- Slightly higher latency (multiple hops)
+## Providers and pipelines
 
-### 5. Tool Execution
+Full-agent providers in `src/providers/` own their upstream voice sessions:
+OpenAI Realtime, Deepgram, Google Live/Vertex, ElevenLabs, Grok and Local.
+They differ in tool schemas, turn-taking, codecs and lifecycle events.
 
-**Tools** = Actions AI can take (hangup, transfer, email, voicemail)
+Modular adapters in `src/pipelines/` separate STT, LLM and TTS. They can combine
+local and cloud backends; hybrid mode does not imply that all data stays local.
+Latency depends on models, hardware, network and turn detection, not just mode.
 
-**Flow**:
-1. User: "Transfer me to sales"
-2. LLM detects intent → `tool_call`
-3. Engine executes via `ToolRegistry`
-4. Tool performs action (ARI redirect)
-5. Result returned to conversation
+## Shared state and tools
 
-**Schema Formats** (CRITICAL):
-- OpenAI Realtime: **Flat** `{type, name, description, parameters}`
-- OpenAI Chat: **Nested** `{type, function: {name, ...}}`
-- Deepgram: **Array** `[{name, description, parameters}]`
+- `SessionStore` owns shared call state; `agent_store.py` stores Agent
+  definitions, and `call_history.py` handles persistent call records.
+- Playback managers emit audio. `ConversationCoordinator` and
+  `AudioGatingManager` coordinate capture, playback and interruption. Do not add
+  competing per-call state stores or assume one gating rule fits all providers.
+- `ToolRegistry` and provider adapters expose authorized tool schemas. The
+  engine dispatches pre-, in- and post-call tools according to their definitions.
+  MCP tools remain in-call only.
+- Each call captures its tool generation. Tools **Save & Apply** changes new
+  calls; existing calls retain their snapshot. Agent permissions may narrow
+  global resources but cannot expand them.
+- Transfer, calendar and other effectful tools must preserve authorization,
+  call ownership, cancellation and idempotency. A timeout does not prove that
+  an external effect did not occur.
+- The engine coordinates terminal audio drain and cleanup. Optional post-call
+  tools run only when configured; ending a call does not automatically send email.
 
-See [Common Pitfalls](COMMON_PITFALLS.md#tool-execution-issues) for details.
+See the [tool guide](../TOOL_CALLING_GUIDE.md), [MCP integration](../MCP_INTEGRATION.md)
+and [development workflow](ai-assisted-workflow.md) for complete lifecycle and
+verification requirements.
 
-### 6. Audio Gating (VAD)
+## Source map
 
-**Problem**: Agent must not hear itself speaking
+- [Engine](../../src/engine.py): call orchestration and dispatch.
+- [Core](../../src/core/): Agent/session/history stores, media and playback owners.
+- [Providers](../../src/providers/): full-agent sessions.
+- [Pipelines](../../src/pipelines/): modular adapters and orchestrator.
+- [Tools](../../src/tools/): registry, schemas, telephony/business/HTTP/MCP tools.
+- [Admin UI](../../admin_ui/): React frontend and FastAPI backend.
+- [Configuration reference](../Configuration-Reference.md): baseline YAML,
+  local overrides, managed credentials and Agent-store boundaries.
 
-**Solution**: Audio gate controlled by Voice Activity Detection
+## Next steps
 
-**States**:
-- **Gate Open**: User audio flows to AI
-- **Gate Closed**: User audio blocked (agent speaking)
-
-**Controlled by**:
-- WebRTC VAD (detects user speech start/stop)
-- TTS playback events (close during agent speech)
-- Provider events (response.audio.delta, etc.)
-
-**Critical Setting** (OpenAI Realtime):
-```yaml
-vad:
-  webrtc_aggressiveness: 1  # Level 0 detects echo as speech!
-```
-
-### 7. Session Management
-
-**SessionStore** (`src/core/session_store.py`):
-- Tracks conversation history
-- Stores call metadata
-- Manages transcripts
-- Persists for email summaries
-
-**Lifecycle**:
-1. Call starts → Session created
-2. Each turn → Added to history
-3. Tool execution → Saved in session
-4. Call ends → Session finalized → Email sent
-
-## Configuration Flow
-
-```yaml
-# config/ai-agent.yaml
-default_provider: openai_realtime
-active_pipeline: local_hybrid
-# Per-Agent provider/profile selection lives in agents.db (Admin UI → Agents).
-# `contexts:` is one-time v7.4 migration input only; see docs/AGENTS.md.
-```
-
-**Lookup Order**:
-1. Dialplan override: `AI_PROVIDER` (if set)
-2. Agent override: provider stored on the selected Agent in `agents.db`
-3. Global default: `default_provider`
-
-If the selected provider path is a pipeline-based configuration, the engine uses `active_pipeline`.
-
-## Data Flow Example (Pipeline)
-
-**User says "Hello"**:
-
-1. **Audio In**: Caller → Asterisk → AudioSocket → Engine (`slin`, 16-bit PCM @ 8 kHz)
-2. **STT**: Engine → Vosk → "Hello" (text)
-3. **LLM**: Text + history → OpenAI API → "Hi! How can I help you?"
-4. **TTS**: Text → Piper → audio bytes (PCM16)
-5. **Playback**: audio → Asterisk → Caller
-6. **Session**: Turn saved to SessionStore
-
-**User says "Transfer me to sales"**:
-
-1-3. Same (Audio → STT → LLM)
-4. **LLM Output**: `tool_calls: [{name: "transfer", args: {destination: "sales"}}]`
-5. **Tool Execution**: `UnifiedTransferTool.execute()` → ARI redirect
-6. **Call Transferred**: Control returned to dialplan
-
-## File Structure (Important Files)
-
-```
-src/
-  engine.py              # Core orchestrator
-  ari_client.py          # Asterisk ARI communication
-  
-  providers/
-    openai.py            # OpenAI Realtime provider
-    deepgram.py          # Deepgram Voice Agent
-    google.py            # Google Live API
-  
-  pipelines/
-    deepgram.py          # Deepgram STT/TTS adapters
-    openai.py            # OpenAI LLM adapter (Chat API)
-    local.py             # Vosk, Phi-3, Piper adapters
-  
-  tools/
-    base.py              # Tool base class, schema generation
-    registry.py          # Tool registry, schema export
-    telephony/           # Transfer, hangup, voicemail
-    business/            # Email summary, transcript
-  
-  core/
-    session_store.py     # Conversation state
-    playback_manager.py  # Audio playback (file-based)
-    streaming_playback_manager.py  # Real-time streaming
-    adaptive_streaming.py  # Pacing, gating
-    vad.py               # Voice activity detection
-
-config/
-  ai-agent.yaml          # Main configuration (git-tracked baseline)
-  ai-agent.local.yaml    # Operator overrides (git-ignored, deep-merged on top)
-  contexts/              # System prompts
-```
-
-## Common Patterns
-
-### Adding a New Tool
-
-1. Create tool class in `src/tools/telephony/` or `src/tools/business/`
-2. Inherit from `Tool` base class
-3. Implement `execute()` method
-4. Register in `src/tools/registry.py`
-5. Add to config `tools:` list
-6. Test with real call
-
-### Adding a New Provider
-
-1. Create adapter in `src/pipelines/{name}.py`
-2. Implement required methods: `transcribe()`, `generate()`, `synthesize()`
-3. Add config section in `ai-agent.yaml`
-4. Register in Engine's provider lookup
-5. Test audio format compatibility
-
-### Debugging a Call
-
-1. **Get call ID** from logs: `call_id=1763584609.6250`
-2. **Collect logs**: `./scripts/rca_collect.sh {call_id}`
-3. **Analyze**: Check STT output, LLM responses, tool execution, audio metrics
-4. **Common issues**: Schema format, VAD settings, audio codec mismatch
-
-## Next Steps
-
-- **Hands-on**: [Quick Start Guide](quickstart.md) - Set up dev environment
-- **Avoid mistakes**: [Common Pitfalls](COMMON_PITFALLS.md) - Real issues & fixes
-- **Deep dive**: [Architecture Deep Dive](architecture-deep-dive.md) - Complete technical details
-- **Build tools**: [Tool Development](tool-development.md) - Create custom tools
-- **Add providers**: [Provider Development](provider-development.md) - Integrate new APIs
-
-## Questions?
-
-- **Tool not working?** → [Common Pitfalls: Tool Execution](COMMON_PITFALLS.md#tool-execution-issues)
-- **Audio issues?** → [Common Pitfalls: Audio & Codecs](COMMON_PITFALLS.md#audio--codec-issues)
-- **Provider errors?** → [Common Pitfalls: Provider-Specific](COMMON_PITFALLS.md#provider-specific-issues)
-- **Still stuck?** → [Debugging Guide](debugging-guide.md)
-
----
-
-**Estimated reading time: 10 minutes** ⏱️
-
-Ready to start developing? Continue to [Quick Start Guide](quickstart.md) →
+[Developer setup](quickstart.md) · [Provider development](provider-development.md) ·
+[Pipeline development](pipeline-development.md) · [Tool development](tool-development.md) ·
+[Debugging](debugging-guide.md) · [Testing](testing-guide.md)
