@@ -41,8 +41,9 @@ def test_contributor_badges_and_operator_boundary_are_preserved():
     assert 'AVA Core remains MIT-licensed, free, and fully functional on its own.' in readme
     assert readme.count('utm_source=github&utm_medium=readme&utm_campaign=ava_operator_preview&utm_content=core_readme') == 2
     assert 'currently available as an early-access preview' in readme
-    assert 'https://youtu.be/fDZ_yMNenJc' in readme
-    assert 'https://demo.agent6789.com' in readme
+    links = set(re.findall(r'\]\(([^\s)]+)', readme))
+    # Match complete destinations, not substrings that could hide a changed host.
+    assert {'https://youtu.be/fDZ_yMNenJc', 'https://demo.agent6789.com'}.issubset(links)
     assert '(925) 736-6718' in readme and '(909) 788-2282' in readme
 
 
