@@ -1,5 +1,5 @@
 name: Codex Review Request
-run-name: ${{ github.event.label.name == 'codex-review' && format('Codex request #{0} {1}', github.event.pull_request.number, github.event.pull_request.head.sha) || 'No Codex review requested' }}
+run-name: "${{ github.event.label.name == 'codex-review' && format('Codex request #{0} {1}', github.event.pull_request.number, github.event.pull_request.head.sha) || 'No Codex review requested' }}"
 
 on:
   pull_request:

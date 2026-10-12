@@ -87,6 +87,8 @@ def test_targeted_codex_review_separates_untrusted_request_and_credentials() -> 
     request = _load_yaml(ROOT / ".github" / "workflows" / "codex-review-request.yml")
     assert set(workflow["on"]) == {"workflow_run", "workflow_dispatch"}
     assert request["on"]["pull_request"]["types"] == ["labeled"]
+    assert "Codex request #{0} {1}" in request["run-name"]
+    assert request["run-name"].endswith("}}")
     assert workflow["permissions"] == request["permissions"] == {}
     assert "secrets." not in str(request)
     assert "checkout" not in str(request)
