@@ -1804,6 +1804,11 @@ class GoogleLiveProvider(AIProviderInterface):
                 # Measures: last user speech → first AI audio response
                 self._turn_start_time = time.time()
                 self._turn_first_audio_received = False
+                # A new user turn invalidates any farewell the assistant spoke in an earlier
+                # turn. Without this, a greeting like "thank you for calling" latches
+                # _assistant_farewell_intent for the whole call and every later weak user
+                # end marker (e.g. "goodbye") arms cleanup_after_tts, ending real calls.
+                self._assistant_farewell_intent = None
                 self._input_transcription_buffer, self._last_input_transcription_fragment = _merge_transcription_fragment(
                     self._input_transcription_buffer, text, self._last_input_transcription_fragment
                 )

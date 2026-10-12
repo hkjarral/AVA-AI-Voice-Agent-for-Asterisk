@@ -15139,7 +15139,27 @@ class Engine:
                     reason=reason,
                     had_audio=had_audio
                 )
-                
+
+                # A blind transfer may have been deferred while the farewell response was
+                # finishing. Hung up first, the channel is released and the deferred commit
+                # would 404 with "Channel not found". Commit it before any hangup, mirroring
+                # the AgentAudioDone branch.
+                try:
+                    session = await self.session_store.get_by_call_id(call_id)
+                    if session and isinstance(getattr(session, "pending_deferred_transfer", None), dict):
+                        self._fire_and_forget_for_call(
+                            call_id,
+                            self._commit_pending_deferred_transfer_for_call(
+                                call_id,
+                                session,
+                                expected_action_id=session.pending_deferred_transfer.get("id"),
+                            ),
+                            name=f"deferred-transfer-commit-hangup-ready-{call_id}",
+                        )
+                        return
+                except Exception:
+                    logger.debug("Error checking pending deferred transfer on HangupReady", call_id=call_id, exc_info=True)
+
                 # If no farewell audio was produced (common when the model emits hangup_call but never
                 # follows up with an assistant turn), play a minimal server-side goodbye prompt so the
                 # call doesn't end abruptly.

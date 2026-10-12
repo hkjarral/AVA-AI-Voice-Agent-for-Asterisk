@@ -156,3 +156,51 @@ async def test_google_live_blocks_hangup_tool_during_pending_attended_transfer(m
     assert event["tool_call_id"] == "tc-1"
     assert event["name"] == "hangup_call"
     assert event["status"] == "failure"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_google_live_farewell_does_not_latch_across_turns():
+    """A greeting like 'thank you for calling' must not latch the farewell for the whole call."""
+    provider = GoogleLiveProvider(
+        config=GoogleProviderConfig(hangup_markers_enabled=True),
+        on_event=lambda e: None,
+    )
+    provider._call_id = "call-1"
+    provider._session_store = _DummySessionStore()
+    # Simulate the greeting latching the farewell in an earlier turn.
+    provider._assistant_farewell_intent = "thank you for calling"
+
+    # A new user turn begins (input transcription fragment).
+    await provider._handle_server_content(
+        {"serverContent": {"inputTranscription": {"text": "goodbye"}}}
+    )
+
+    # The greeting must not survive the turn boundary.
+    assert provider._assistant_farewell_intent is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_google_live_greeting_farewell_does_not_arm_cleanup_on_later_goodbye():
+    """A weak 'goodbye' after a greeting-latched farewell must not end a real call."""
+    provider = GoogleLiveProvider(
+        config=GoogleProviderConfig(hangup_markers_enabled=True),
+        on_event=lambda e: None,
+    )
+    provider._call_id = "call-1"
+    provider._session_store = _DummySessionStore()
+    # Greeting latched the farewell in an earlier turn.
+    provider._assistant_farewell_intent = "thank you for calling"
+
+    # New user turn: the caller says "goodbye" (a weak marker) and the assistant
+    # responds with a normal line, not a farewell.
+    await provider._handle_server_content(
+        {"serverContent": {"inputTranscription": {"text": "goodbye"}}}
+    )
+    await provider._maybe_arm_cleanup_after_tts(
+        user_text="goodbye", assistant_text="I can help you with that."
+    )
+
+    assert provider._session_store.session.cleanup_after_tts is False
+    assert provider._hangup_fallback_armed is False
