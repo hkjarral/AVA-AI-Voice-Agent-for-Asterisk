@@ -1,0 +1,18 @@
+name: Codex Review Request
+run-name: "${{ github.event.label.name == 'codex-review' && format('Codex request #{0} {1}', github.event.pull_request.number, github.event.pull_request.head.sha) || 'No Codex review requested' }}"
+
+on:
+  pull_request:
+    types: [labeled]
+
+# Fork context: no secrets, checkout, artifacts, caches or comment permissions.
+permissions: {}
+
+jobs:
+  request:
+    if: github.event.label.name == 'codex-review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Record request
+        run: echo 'A trusted default-branch workflow will validate maintainer authorization and review the frozen public diff.' >> "$GITHUB_STEP_SUMMARY"
