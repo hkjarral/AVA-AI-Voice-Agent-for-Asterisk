@@ -43,6 +43,14 @@ jobs:
         run: |
           python scripts/check_release_docs.py
 
+      - name: Set up Node for workflow helper tests
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Test fork-review trust boundaries
+        run: node --test tests/codex_review.test.cjs
+
       - name: Check provider model catalogs
         run: |
           python scripts/check_provider_models.py

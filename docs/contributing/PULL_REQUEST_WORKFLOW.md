@@ -30,7 +30,46 @@ Path-scoped security and image workflows continue to run when their files change
 - `@coderabbitai full review` — request a fresh CodeRabbit review of the frozen final diff.
 - `@coderabbitai pause` / `@coderabbitai resume` — override automatic CodeRabbit review behavior when needed.
 
-The optional targeted Codex workflow requires the `OPENAI_API_KEY` repository secret and a `CODEX_REVIEW_MODEL` repository variable naming a model available to that key's API project. The action and CLI versions are pinned so model defaults cannot change between review runs.
+The optional targeted Codex workflow requires the `OPENAI_API_KEY` repository
+secret and a `CODEX_REVIEW_MODEL` repository variable naming a Responses API model
+available to that key's project (currently `gpt-5`). It is an advisory, bounded
+**diff-only** review, not a test run or whole-repository/caller-lifecycle review.
+The model receives public PR changes as data through the OpenAI Responses API,
+with tools disabled and response storage disabled. It cannot execute PR code,
+load PR-controlled agent instructions, or access runner credentials.
+
+### Fork reviews and trust boundaries
+
+- A maintainer with write permission applies `codex-review` on the frozen head.
+  **Codex Review Request** runs without secrets, checkout, artifacts or write
+  permissions. Its completion starts **Codex Targeted Review** from the default
+  branch. The trusted workflow checks the source run, original/rerun actors,
+  label and exact PR head before using the model key.
+- Alternatively, dispatch **Codex Targeted Review** from **main**, supplying the
+  PR number. Manual runs from another branch are skipped. Reapply the label or
+  dispatch again after a material fix; requests are not automatically refreshed.
+- Only the public `hkjarral/AVA-AI-Voice-Agent-for-Asterisk` repository and public
+  PR heads are supported. A visibility change causes refusal, not transmission
+  of private code. The helper reads the diff through GitHub, never checks out,
+  installs, builds or executes fork content, and ignores PR titles as instructions.
+- Read-only analysis and write-capable publication run in separate jobs. The
+  publisher has no model key, rechecks the exact base/head, suppresses duplicate
+  comments for that pair, and never posts a successful review after failure.
+  A late push can still make an already-published comment historical: always
+  compare the displayed SHA with the current PR head.
+- Missing configuration, unavailable models, oversized diffs (180 KB), incomplete
+  responses, permission errors and changed revisions fail with an Actions error.
+  A failed/absent review is not approval. Review large changes manually or split
+  them into coherent PRs; do not silently truncate them.
+
+The label handoff becomes active only after both workflow files are on the default
+branch. Before merge, run the helper's synthetic trust-boundary tests; after an
+authorized merge, smoke-test the label route on a maintainer-approved public fork
+PR and confirm the published base/head. Do not use `pull_request_target` to run
+fork scripts with secrets.
+
+References: [GitHub privileged-workflow security](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
+and [OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create).
 
 CodeRabbit and Codex reviews are advisory. The protected branch requires the consolidated CI gate, CodeQL, a pull request, and resolved conversations. Maintainers retain an emergency administrator bypass; force pushes and branch deletion remain blocked.
 

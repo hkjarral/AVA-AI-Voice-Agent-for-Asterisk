@@ -53,6 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Deferred transfer handoff line no longer replayed during the commit** ([#701](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/701)): Google Live can answer a `blind_transfer` tool response with a second model turn that repeats the handoff line. Once the handoff audio completes and the deferred transfer starts committing, the engine now drops new provider audio for that call while the pending transfer is the one being committed, so the repeat is not played and does not delay the transfer. The drain-timeout apology still plays because the pending transfer is cleared before it is requested, and a transfer that replaces the one being committed keeps its own handoff audio. Local handoff audio and pipeline transfer prompts are unaffected. In the opt-in Developer long-response mode the commit starts only after playback finishes, so a repeat queued before then can still be heard. The provider still generates the repeat, so Google Live call history can show the line twice.
 - **Provider validation review fixes** ([#689](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/689)): Legacy untyped `groq_llm` tests default to Groq when no endpoint is configured; an explicitly typed OpenAI-compatible `groq_llm` requires an explicit URL in both validation APIs to prevent ambiguous credential routing. API-key references use linear parsing and consistent defaults for saved and unsaved checks, and diagnostic fields remove line breaks at the logging boundary.
 
+### Security
+
+- Isolate opt-in Codex reviews of public fork PRs: a secret-free label request
+  hands off to default-branch code, verifies maintainer permission and exact
+  base/head revisions, and separates read-only model analysis from comment
+  publication. No fork checkout or model execution tools receive credentials.
+  Oversized, incomplete, private, unauthorized and stale reviews fail closed.
+
 ## [7.6.2] - 2026-10-02
 
 Release scope: merged PRs #674, #678, #681, #682, #684, #686 and #683. Open

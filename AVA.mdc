@@ -184,7 +184,9 @@ evidence, and remaining work so another assistant can continue.
    tests, sanitized call evidence, and explicit limitations. Complete the coherent
    slice and its documentation first. A draft can request missing live validation.
 6. **Finish reviews:** freeze the head, mark ready for final CI, request one
-   `@coderabbitai full review`; use opt-in Codex review when useful. Do not push
+   `@coderabbitai full review`; use opt-in Codex review when useful. Its trusted
+   default-branch workflow reads public PR diffs without execution tools; a
+   diff-only result does not replace caller/lifecycle review. Do not push
    while final reviews are pending. Triage current findings together and make a
    cohesive fix batch. Rerun affected validation after fixes; avoid review loops.
 7. **Report merge readiness:** identify the exact final SHA, required CI/security
