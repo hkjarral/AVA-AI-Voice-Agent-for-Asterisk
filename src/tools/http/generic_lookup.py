@@ -16,6 +16,7 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 
 from src.tools.http.path_utils import extract_path
+from src.tools.http.template import render_body, render_headers, render_template, render_url
 
 import aiohttp
 
@@ -295,11 +296,9 @@ class GenericHTTPLookupTool(PreCallTool):
         
         try:
             # Build request
-            url = self._substitute_variables(self.config.url, context)
-            headers = {
-                k: self._substitute_variables(v, context)
-                for k, v in self.config.headers.items()
-            }
+            values = self._template_values(context)
+            url = render_url(self.config.url, values)
+            headers = render_headers(self.config.headers, values)
             params = {
                 k: self._substitute_variables(v, context)
                 for k, v in self.config.query_params.items()
@@ -308,7 +307,9 @@ class GenericHTTPLookupTool(PreCallTool):
             method = str(self.config.method or "GET").strip().upper()
             body = None
             if method in BODY_CAPABLE_HTTP_METHODS and self.config.body_template:
-                body = self._substitute_variables(self.config.body_template, context)
+                if not any(key.lower() == "content-type" for key in headers):
+                    headers["Content-Type"] = "application/json"
+                body = render_body(self.config.body_template, values, headers)
 
             if debug_enabled(logger):
                 used_brace = extract_used_brace_vars(
@@ -558,31 +559,19 @@ class GenericHTTPLookupTool(PreCallTool):
         - {call_id} - Call identifier
         - ${ENV_VAR} - Environment variable
         """
-        result = template
-        
-        # Context variables
-        replacements = {
-            "{caller_number}": context.caller_number or "",
-            "{called_number}": context.called_number or "",
-            "{caller_name}": context.caller_name or "",
-            "{context_name}": context.context_name or "",
-            "{call_id}": context.call_id or "",
-            "{campaign_id}": context.campaign_id or "",
-            "{lead_id}": context.lead_id or "",
+        return render_template(template, self._template_values(context))
+
+    @staticmethod
+    def _template_values(context: PreCallContext) -> Dict[str, str]:
+        return {
+            "caller_number": context.caller_number or "",
+            "called_number": context.called_number or "",
+            "caller_name": context.caller_name or "",
+            "context_name": context.context_name or "",
+            "call_id": context.call_id or "",
+            "campaign_id": context.campaign_id or "",
+            "lead_id": context.lead_id or "",
         }
-        
-        for placeholder, value in replacements.items():
-            result = result.replace(placeholder, value)
-        
-        # Environment variables: ${VAR_NAME}
-        env_pattern = r'\$\{([A-Z_][A-Z0-9_]*)\}'
-        def env_replacer(match):
-            var_name = match.group(1)
-            return os.environ.get(var_name, "")
-        
-        result = re.sub(env_pattern, env_replacer, result)
-        
-        return result
     
     def _extract_output_variables(self, data: Any) -> Dict[str, str]:
         """

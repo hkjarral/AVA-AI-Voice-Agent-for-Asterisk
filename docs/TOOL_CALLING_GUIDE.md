@@ -420,6 +420,49 @@ AI: I'd be happy to help. Let me transfer you to support.
 
 ---
 
+## HTTP Template Safety and Compatibility
+
+The engine's pre-call lookups, in-call HTTP tools, and post-call webhooks resolve
+`${ENV_VAR}` and `{variable}` only in the original operator-authored template.
+Inserted caller data, model arguments, enrichment, transcripts, summaries, and
+environment values are never interpreted as additional placeholders. Environment
+names use uppercase letters, digits, and underscores; data names also support
+dots and hyphens. Missing environment variables become empty strings. Unknown
+data placeholders remain literal in text; a missing JSON placeholder fails the
+request before any HTTP call.
+
+**Request bodies:** operator-configured Content-Type selects the format; per-call
+placeholders cannot select Content-Type. Absent Content-Type means
+`application/json`. JSON and `application/*+json` templates must produce valid
+JSON. Inside a quoted JSON string, substitutions are escaped as text. An unquoted
+placeholder represents one complete JSON value: native numbers, booleans, null,
+arrays, and objects retain their type; serialized strings must parse as exactly
+one JSON value. For example, `{"note":"{notes}","count":{count}}` escapes notes
+and accepts a numeric count. Invalid JSON is an error, never a raw-body fallback.
+The serialized `transcript_json`, `summary_json`, `tool_calls_json`,
+`pre_call_results_json`, and `call_metadata_json` placeholders remain supported.
+A custom name ending in `_json` does not bypass validation or string escaping.
+
+Explicit `text/plain` bodies use literal single-pass substitution.
+`application/x-www-form-urlencoded` bodies are parsed into template fields before
+substitution and encoded afterward, so inserted ampersands cannot add fields.
+Other template body formats fail closed. Existing raw-text templates must declare
+`Content-Type: text/plain`; XML, multipart, and other structured formats need a
+dedicated serializer instead of arbitrary text substitution. GET and HEAD still
+send no body; POST, PUT, PATCH, DELETE, and OPTIONS retain body support.
+
+**URLs and headers:** use operator configuration or `${BASE_URL}` for the origin.
+Per-call placeholders may supply URL components, not a scheme, host, or port.
+Their slashes, query delimiters, percent signs, and fragments are encoded; dot
+path segments are rejected. Use fixed path separators in the template rather
+than a per-call value containing a whole URL or multiple path segments. Pass
+query values through `query_params` without pre-encoding them. Header CR/LF is
+replaced with spaces; legitimate environment-backed authorization remains valid.
+
+The Admin UI's HTTP **Test** endpoint is a separate operator-only implementation;
+its preview is not acceptance evidence for the engine's runtime renderer. Verify
+configured tools against these engine rules before enabling them.
+
 ## Pre-Call Tools (HTTP Lookups)
 
 **New in v4.2** — Pre-call tools run after call answer but before AI speaks, enabling CRM enrichment and caller data lookup.
@@ -631,12 +674,28 @@ contexts:
 
 ### Variable Substitution (Precedence)
 
-In-call HTTP tools have access to three types of variables:
+In-call HTTP tools have access to four sources, in this precedence order:
 
 1. **Context variables** (auto-injected): `{caller_number}`, `{called_number}`, `{call_id}`, etc.
 2. **Effective call metadata**, when selected: corrected values such as `{customer_id}`
 3. **Pre-call variables** (from pre-call HTTP lookups): `{customer_id}`, `{customer_name}`, etc.
-4. **AI parameters** (provided at runtime): Whatever the AI passes when invoking the tool
+4. **AI parameters**: only names declared in the tool's `parameters` configuration,
+   and only when the name is absent from the preceding sources
+
+Built-ins cannot be overwritten by enrichment, metadata, or model arguments.
+Existing enrichment keys remain protected even when empty; declaring a same-named
+parameter does not grant permission to replace them. Undeclared and shadowing
+arguments are ignored with a value-free warning. If the session/enrichment lookup
+fails or the session no longer exists, the HTTP request fails closed.
+
+Metadata retains its existing precedence over the corresponding pre-call value.
+Only operator-selected fields can enter this namespace, and caller corrections
+must use `update_call_metadata` with its configured correction policy. These
+values are non-authoritative: do not mark identity/authorization identifiers as
+correctable or use caller-correctable values as credentials or routing authority.
+Use separate parameter names for newly collected data instead of shadowing CRM
+fields. Renaming parameters may require updating the tool template and Agent
+instructions together.
 
 This means you can use data fetched by pre-call tools in your in-call tool requests. For example, if a pre-call lookup fetches `customer_id`, you can use `{customer_id}` in the in-call tool's body template.
 

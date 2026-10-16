@@ -506,6 +506,7 @@ class TestBuildSubstitutionContext:
     @pytest.mark.asyncio
     async def test_includes_ai_parameters(self, tool, execution_context):
         """Test that AI parameters are included."""
+        tool.config.parameters = [{"name": "date"}, {"name": "time"}]
         ai_params = {"date": "2026-01-30", "time": "10:00"}
         
         result = await tool._build_substitution_context(ai_params, execution_context)
@@ -514,10 +515,11 @@ class TestBuildSubstitutionContext:
         assert result["time"] == "10:00"
     
     @pytest.mark.asyncio
-    async def test_ai_params_override_context(self, tool, execution_context):
-        """Test that AI parameters override context variables (except built-ins)."""
+    async def test_declared_custom_parameters_preserve_builtins(self, tool, execution_context):
+        """Declared new parameters coexist with protected built-in context."""
         # AI shouldn't override built-in context vars like caller_number
         ai_params = {"custom_var": "custom_value"}
+        tool.config.parameters = [{"name": "custom_var"}]
         
         result = await tool._build_substitution_context(ai_params, execution_context)
         

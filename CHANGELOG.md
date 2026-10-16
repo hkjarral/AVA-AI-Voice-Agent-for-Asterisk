@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Harden HTTP-tool templates across pre-call, in-call, and post-call execution:
+  resolve placeholders once, protect call/enrichment context from model argument
+  overrides, encode URL/header substitutions, and validate JSON bodies before
+  sending. Explicit plain-text and form bodies remain supported; see the
+  [template compatibility rules](docs/TOOL_CALLING_GUIDE.md#http-template-safety-and-compatibility).
+  Thanks to Kevin Rossen for the report and original single-pass renderer patch.
+
 ## [7.6.3] - 2026-10-11
 
 Release scope: #689, #690, #692, #679, #597, #694, #695, #696, #702, #706,
