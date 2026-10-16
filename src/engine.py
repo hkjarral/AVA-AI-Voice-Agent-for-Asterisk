@@ -21941,7 +21941,14 @@ class Engine:
             provider = getattr(self, "_call_providers", {}).get(call_id)
             release = getattr(provider, "release_terminal_output_protection", None)
             if callable(release):
-                release()
+                try:
+                    release()
+                except Exception:
+                    logger.warning(
+                        "Failed to release provider terminal output protection for transfer",
+                        call_id=call_id,
+                        exc_info=True,
+                    )
 
             local_handoff_played = await self._play_deferred_transfer_local_handoff(call_id, session)
             if not local_handoff_played:
@@ -21996,6 +22003,13 @@ class Engine:
                     status=result.get("status"),
                     message=result.get("message"),
                 )
+            if not isinstance(result, dict) or result.get("status") != "success":
+                # Do not replay a potentially side-effectful commit on the next
+                # provider completion, or leave hangup blocked indefinitely.
+                recovered = await self._recover_failed_deferred_transfer(
+                    call_id, action_id=action_id, commit_failed=True,
+                )
+                return recovered if recovered is not None else result
             return result
 
     async def _abort_deferred_transfer_after_drain_timeout(
@@ -22004,16 +22018,33 @@ class Engine:
         *,
         action_id: Any,
     ) -> Optional[Dict[str, Any]]:
-        """Cancel the exact pending transfer and return the caller to the AI."""
+        return await self._recover_failed_deferred_transfer(call_id, action_id=action_id)
+
+    async def _recover_failed_deferred_transfer(
+        self,
+        call_id: str,
+        *,
+        action_id: Any,
+        commit_failed: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Cancel the exact failed action and return the caller to the AI."""
+        error_code = "deferred_transfer_commit_failed" if commit_failed else "deferred_audio_drain_timeout"
+        message = (
+            "Deferred transfer cancelled because the transfer commit failed."
+            if commit_failed else
+            "Deferred transfer cancelled because caller-facing audio did not drain before the safety timeout."
+        )
         session = await self.session_store.get_by_call_id(call_id)
         action = getattr(session, "pending_deferred_transfer", None) if session else None
         if (
             not session
+            or getattr(session, "cleanup_in_progress", False)
+            or getattr(session, "cleanup_completed", False)
             or not isinstance(action, dict)
             or action.get("id") != action_id
         ):
             logger.info(
-                "Deferred transfer timeout ignored because pending action changed",
+                "Deferred transfer recovery skipped because call state changed",
                 call_id=call_id,
                 action_id=action_id,
                 latest_action_id=action.get("id") if isinstance(action, dict) else None,
@@ -22049,7 +22080,9 @@ class Engine:
         if clear_predial_current_action:
             session.current_action = None
 
-        await self._record_deferred_transfer_timeout_tool_result(session, action)
+        await self._record_deferred_transfer_timeout_tool_result(
+            session, action, error_code=error_code, message=message,
+        )
 
         # Clear the action before any network or playback awaits. A provider
         # OutputDone event emitted by the apology must not retry the transfer.
@@ -22070,7 +22103,7 @@ class Engine:
                 )
             except Exception:
                 logger.warning(
-                    "Failed to hang up deferred transfer predial leg after drain timeout",
+                    "Failed to hang up deferred transfer predial leg during failure recovery",
                     call_id=call_id,
                     action_id=action_id,
                     predial_channel_id=predial_channel_id,
@@ -22094,7 +22127,7 @@ class Engine:
                 )
             except Exception:
                 logger.debug(
-                    "Failed to stop predial MOH after deferred transfer timeout",
+                    "Failed to stop predial MOH during deferred transfer recovery",
                     call_id=call_id,
                     exc_info=True,
                 )
@@ -22108,7 +22141,7 @@ class Engine:
                 await provider.notify_barge_in(call_id, rollback_assistant=True)
         except Exception:
             logger.debug(
-                "Failed to cancel provider output after deferred transfer timeout",
+                "Failed to cancel provider output during deferred transfer recovery",
                 call_id=call_id,
                 exc_info=True,
             )
@@ -22117,10 +22150,13 @@ class Engine:
         transfer_cfg = tools_cfg.get("transfer", {}) if isinstance(tools_cfg, dict) else {}
         if not isinstance(transfer_cfg, dict):
             transfer_cfg = {}
-        apology = str(
-            transfer_cfg.get("deferred_audio_drain_timeout_message")
-            or "I'm sorry, I couldn't complete that transfer without interrupting you. How else can I help?"
-        ).strip()
+        apology = (
+            "I'm sorry, I couldn't complete that transfer. How else can I help?"
+            if commit_failed else str(
+                transfer_cfg.get("deferred_audio_drain_timeout_message")
+                or "I'm sorry, I couldn't complete that transfer without interrupting you. How else can I help?"
+            ).strip()
+        )
 
         stream_stopped = await self._stop_deferred_transfer_stream_before_recovery(
             call_id
@@ -22139,6 +22175,7 @@ class Engine:
                 action_id=action_id,
                 predial_channel_id=predial_channel_id,
                 apology=apology,
+                recovery_kind="deferred_transfer_commit_failed" if commit_failed else "deferred_transfer_timeout",
             )
             logger.warning(
                 "Deferred transfer recovery deferred until caller-facing output cleanup is confirmed",
@@ -22149,8 +22186,8 @@ class Engine:
             )
             return {
                 "status": "failed",
-                "message": "Deferred transfer cancelled because caller-facing audio did not drain before the safety timeout.",
-                "error_code": "deferred_audio_drain_timeout",
+                "message": message,
+                "error_code": error_code,
                 "transfer_cancelled": True,
                 "apology_spoken": False,
                 "recovery_pending": True,
@@ -22161,11 +22198,12 @@ class Engine:
             action_id=action_id,
             predial_channel_id=predial_channel_id,
             apology=apology,
+            recovery_kind="deferred_transfer_commit_failed" if commit_failed else "deferred_transfer_timeout",
         )
         return {
             "status": "failed",
-            "message": "Deferred transfer cancelled because caller-facing audio did not drain before the safety timeout.",
-            "error_code": "deferred_audio_drain_timeout",
+            "message": message,
+            "error_code": error_code,
             "transfer_cancelled": True,
             "apology_spoken": bool(apology_spoken),
         }
@@ -22174,12 +22212,15 @@ class Engine:
         self,
         session: CallSession,
         action: Dict[str, Any],
+        *,
+        error_code: str = "deferred_audio_drain_timeout",
+        message: str = "Deferred transfer cancelled because caller-facing audio did not drain before the safety timeout.",
     ) -> None:
         """Append the terminal cancellation to the originating tool history."""
         origin = action.get("_tool_history_origin")
         if not isinstance(origin, dict):
             logger.warning(
-                "Deferred transfer timeout has no originating tool history record",
+                "Deferred transfer cancellation has no originating tool history record",
                 call_id=session.call_id,
                 action_id=action.get("id"),
             )
@@ -22206,9 +22247,9 @@ class Engine:
             parameters=dict(origin.get("params") or {}),
             result={
                 "status": "cancelled",
-                "action": "deferred_transfer_timeout",
-                "message": "Deferred transfer cancelled because caller-facing audio did not drain before the safety timeout.",
-                "error_code": "deferred_audio_drain_timeout",
+                "action": "deferred_transfer_commit_failed" if error_code == "deferred_transfer_commit_failed" else "deferred_transfer_timeout",
+                "message": message,
+                "error_code": error_code,
                 "transfer_cancelled": True,
                 "target": action.get("target"),
             },
@@ -22262,6 +22303,7 @@ class Engine:
         action_id: Any,
         predial_channel_id: str,
         apology: str,
+        recovery_kind: str = "deferred_transfer_timeout",
     ) -> bool:
         """Restore caller input and speak after output cleanup is confirmed."""
         current = await self.session_store.get_by_call_id(call_id)
@@ -22308,10 +22350,11 @@ class Engine:
         apology_spoken = await self._speak_no_input_announcement(
             call_id,
             apology,
-            "deferred_transfer_timeout",
+            recovery_kind,
         )
         logger.warning(
-            "Deferred transfer cancelled after caller-facing audio drain timeout",
+            "Deferred transfer cancelled; caller recovery completed",
+            recovery_kind=recovery_kind,
             call_id=call_id,
             action_id=action_id,
             predial_channel_id=predial_channel_id or None,
@@ -22326,6 +22369,7 @@ class Engine:
         action_id: Any,
         predial_channel_id: str,
         apology: str,
+        recovery_kind: str = "deferred_transfer_timeout",
     ) -> None:
         """Retain recovery ownership until output is absent or the call ends."""
         tasks = getattr(self, "_deferred_transfer_recovery_tasks", None)
@@ -22361,6 +22405,7 @@ class Engine:
                             action_id=action_id,
                             predial_channel_id=predial_channel_id,
                             apology=apology,
+                            recovery_kind=recovery_kind,
                         )
                         return
                     logger.warning(

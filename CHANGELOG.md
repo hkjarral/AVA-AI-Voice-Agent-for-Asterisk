@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   markers at word boundaries, and suppress heuristic arming during deferred
   transfers. Give transfers priority over `HangupReady` and retire superseded
   hangup state so timeout recovery keeps the caller connected and later hangups
-  still work. Clarify the remaining heuristic false-positive risk in Admin UI
+  still work. Cancel failed transfer commits without replaying them on later
+  completion events, and tolerate provider reset-hook failures. Clarify the remaining heuristic false-positive risk in Admin UI
   help and the Google setup guide. Original fix contributed by
   [@theluckystrike](https://github.com/theluckystrike); reported by
   [@MVECoder](https://github.com/MVECoder).

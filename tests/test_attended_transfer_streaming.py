@@ -1259,6 +1259,7 @@ async def test_deferred_transfer_playback_cleanup_failure_suppresses_apology(mon
             "action_id": "action-playback-cleanup-failed",
             "predial_channel_id": "",
             "apology": "I'm sorry, I couldn't complete that transfer without interrupting you. How else can I help?",
+            "recovery_kind": "deferred_transfer_timeout",
         }
     ]
     updated = await engine.session_store.get_by_call_id(call_id)
@@ -1372,6 +1373,7 @@ async def test_deferred_transfer_recovery_owner_retries_until_cleanup_then_apolo
                 "action_id": "action-recovery-owner",
                 "predial_channel_id": "predial-recovery-owner",
                 "apology": "Please hold while I recover.",
+                "recovery_kind": "deferred_transfer_timeout",
             },
         ),
     ]

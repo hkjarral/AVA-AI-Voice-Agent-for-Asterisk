@@ -157,10 +157,8 @@ async def commit_pending_deferred_transfer(
             )
         return result
     except Exception as exc:
-        latest = await context.session_store.get_by_call_id(context.call_id)
-        if latest:
-            latest.pending_deferred_transfer = dict(action)
-            await context.session_store.upsert_call(latest)
+        # The action remains pending unless the tool deliberately cleared or
+        # replaced it. Never resurrect stale ownership after an awaited commit.
         logger.error(
             "Deferred transfer commit failed",
             call_id=context.call_id,

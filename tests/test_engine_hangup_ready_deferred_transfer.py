@@ -1,6 +1,6 @@
 """HangupReady must commit a pending deferred transfer before hanging up (#675)."""
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -191,26 +191,85 @@ async def test_transfer_release_cancels_provider_farewell_timer(provider_class, 
 
 
 @pytest.mark.asyncio
-async def test_failed_transfer_remains_retryable_without_old_hangup(monkeypatch):
+@pytest.mark.parametrize("failure", [RuntimeError("ARI unavailable"), {"status": "error"}, None])
+async def test_failed_transfer_recovers_without_replay_and_allows_later_hangup(monkeypatch, failure):
     from src.tools.telephony import deferred_transfer
     engine = _build_engine()
-    call_id = "call-transfer-retry"
+    call_id = "call-transfer-failure"
     session = await _armed_session(engine, call_id)
     session.cleanup_after_tts = True
+    session.pending_deferred_transfer["_tool_history_origin"] = {
+        "tool_call_id": "transfer-tool", "name": "blind_transfer", "params": {},
+    }
     await engine.session_store.upsert_call(session)
-    engine.ari_client.hangup_channel = AsyncMock()
+    engine.ari_client.hangup_channel = AsyncMock(return_value=True)
+    monkeypatch.setattr(engine, "_wait_for_call_audio_drain", AsyncMock(return_value=True))
     monkeypatch.setattr(engine, "_play_deferred_transfer_local_handoff", AsyncMock(return_value=False))
     monkeypatch.setattr(engine, "_wait_for_deferred_transfer_audio_drain", AsyncMock(return_value=True))
-    commit = AsyncMock(side_effect=[RuntimeError("ARI unavailable"), {"status": "success"}])
+    monkeypatch.setattr(engine.streaming_playback_manager, "stop_streaming_playback", AsyncMock(return_value=True))
+    speak = AsyncMock(return_value=True)
+    monkeypatch.setattr(engine, "_speak_no_input_announcement", speak)
+    commit = AsyncMock(side_effect=failure) if isinstance(failure, Exception) else AsyncMock(return_value=failure)
     monkeypatch.setattr(deferred_transfer, "commit_deferred_transfer_action", commit)
-    for attempt in range(2):
-        await engine.on_provider_event(_hangup_ready(call_id))
-        await asyncio.gather(*list(engine._call_bg_tasks.get(call_id, [])))
-        updated = await engine.session_store.get_by_call_id(call_id)
-        assert not updated.cleanup_after_tts
-        assert (updated.pending_deferred_transfer is not None) is (attempt == 0)
-    assert commit.await_count == 2
+    await engine.on_provider_event(_hangup_ready(call_id))
+    await asyncio.gather(*list(engine._call_bg_tasks.get(call_id, [])))
+    updated = await engine.session_store.get_by_call_id(call_id)
+    assert not updated.cleanup_after_tts
+    assert updated.pending_deferred_transfer is None
+    assert updated.audio_capture_enabled
+    assert updated.tool_calls[-1]["result"] == "cancelled"
+    speak.assert_awaited_once_with(
+        call_id, "I'm sorry, I couldn't complete that transfer. How else can I help?",
+        "deferred_transfer_commit_failed",
+    )
     engine.ari_client.hangup_channel.assert_not_awaited()
+    # Apology completion cannot retry the failed action, and a fresh farewell works.
+    await engine.on_provider_event({"type": "AgentAudioDone", "call_id": call_id, "streaming_done": True})
+    await engine.on_provider_event(_hangup_ready(call_id))
+    commit.assert_awaited_once()
+    engine.ari_client.hangup_channel.assert_awaited_once_with(session.caller_channel_id)
+
+
+@pytest.mark.asyncio
+async def test_provider_release_failure_does_not_abort_transfer(monkeypatch):
+    from src.tools.telephony import deferred_transfer
+    engine = _build_engine()
+    call_id = "call-release-error"
+    session = await _armed_session(engine, call_id)
+    provider = Mock()
+    provider.release_terminal_output_protection.side_effect = RuntimeError("reset failed")
+    engine._call_providers[call_id] = provider
+    monkeypatch.setattr(engine, "_play_deferred_transfer_local_handoff", AsyncMock(return_value=False))
+    monkeypatch.setattr(engine, "_wait_for_deferred_transfer_audio_drain", AsyncMock(return_value=True))
+    commit = AsyncMock(return_value={"status": "success"})
+    monkeypatch.setattr(deferred_transfer, "commit_deferred_transfer_action", commit)
+    assert await engine._commit_pending_deferred_transfer_for_call(call_id, session) == {"status": "success"}
+    commit.assert_awaited_once()
+    assert session.pending_deferred_transfer is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raises", [True, False])
+async def test_failed_commit_does_not_restore_or_cancel_replacement_action(monkeypatch, raises):
+    from src.tools.telephony import deferred_transfer
+    engine = _build_engine()
+    call_id = "call-replaced-action"
+    session = await _armed_session(engine, call_id)
+    replacement = _pending_action("replacement")
+    monkeypatch.setattr(engine, "_play_deferred_transfer_local_handoff", AsyncMock(return_value=False))
+    monkeypatch.setattr(engine, "_wait_for_deferred_transfer_audio_drain", AsyncMock(return_value=True))
+    speak = AsyncMock()
+    monkeypatch.setattr(engine, "_speak_no_input_announcement", speak)
+    async def replace_then_fail(*args):
+        session.pending_deferred_transfer = replacement
+        await engine.session_store.upsert_call(session)
+        if raises:
+            raise RuntimeError("old commit failed")
+        return {"status": "error"}
+    monkeypatch.setattr(deferred_transfer, "commit_deferred_transfer_action", replace_then_fail)
+    await engine._commit_pending_deferred_transfer_for_call(call_id, session)
+    assert session.pending_deferred_transfer == replacement
+    speak.assert_not_awaited()
 
 
 @pytest.mark.asyncio
