@@ -14,6 +14,9 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 
 from src.tools.http.path_utils import extract_path
+from src.tools.http.template import (
+    TemplateError, body_media_type, render_body, render_headers, render_template, render_url,
+)
 
 import aiohttp
 
@@ -180,11 +183,8 @@ class InCallHTTPTool(Tool):
             sub_context = await self._build_substitution_context(parameters, context)
             
             # Build request
-            url = self._substitute_variables(self.config.url, sub_context)
-            headers = {
-                k: self._substitute_variables(v, sub_context)
-                for k, v in self.config.headers.items()
-            }
+            url = render_url(self.config.url, sub_context)
+            headers = render_headers(self.config.headers, sub_context)
             query_params = {
                 k: self._substitute_variables(v, sub_context)
                 for k, v in self.config.query_params.items()
@@ -194,12 +194,12 @@ class InCallHTTPTool(Tool):
             json_body = None
             method = str(self.config.method or "GET").strip().upper()
             if method in BODY_CAPABLE_HTTP_METHODS and self.config.body_template:
-                body_str = self._substitute_variables(self.config.body_template, sub_context)
-                # Try to parse as JSON for proper Content-Type handling
-                try:
-                    json_body = json.loads(body_str)
-                except json.JSONDecodeError:
-                    body = body_str
+                if not any(key.lower() == "content-type" for key in headers):
+                    headers["Content-Type"] = "application/json"
+                body = render_body(self.config.body_template, sub_context, headers)
+                media_type = body_media_type(headers)
+                if media_type == "application/json" or media_type.endswith("+json"):
+                    json_body = json.loads(body)
 
             if debug_enabled(logger):
                 used_brace = extract_used_brace_vars(
@@ -443,7 +443,7 @@ class InCallHTTPTool(Tool):
         self,
         ai_params: Dict[str, Any],
         context: ToolExecutionContext
-    ) -> Dict[str, str]:
+    ) -> Dict[str, Any]:
         """
         Build combined substitution context from call context, pre-call results, and AI parameters.
         
@@ -470,6 +470,8 @@ class InCallHTTPTool(Tool):
         try:
             if context.session_store:
                 session = await context.session_store.get_by_call_id(context.call_id)
+                if session is None:
+                    raise TemplateError("HTTP tool call context is no longer available")
                 if session:
                     pre_call_results = getattr(session, 'pre_call_results', None) or {}
                     for key, value in pre_call_results.items():
@@ -489,19 +491,23 @@ class InCallHTTPTool(Tool):
                     for key, value in call_metadata.items():
                         if key not in built_in_keys:
                             sub[key] = str(value) if value is not None else ""
-        except Exception as e:
-            logger.warning(f"Failed to load call enrichment for in-call tool: {e}")
+        except Exception:
+            # Without the enrichment snapshot we cannot know which names are
+            # protected. Do not let model arguments fill in that missing state.
+            raise TemplateError("HTTP tool call enrichment is unavailable") from None
         
-        # Add AI-provided parameters (these override pre-call vars if same name)
+        # Existing context owns its keys, including empty enrichment values.
+        # Corrections use the separately authorized call-metadata tool.
+        declared = {p.get("name") for p in self.config.parameters if p.get("name")}
         for key, value in ai_params.items():
-            if value is not None:
-                sub[key] = str(value)
-            else:
-                sub[key] = ""
+            if key not in declared or key in sub:
+                logger.warning("Ignored undeclared or protected HTTP tool argument")
+                continue
+            sub[key] = value
         
         return sub
     
-    def _substitute_variables(self, template: str, context: Dict[str, str]) -> str:
+    def _substitute_variables(self, template: str, context: Dict[str, Any]) -> str:
         """
         Substitute variables in template string.
         
@@ -509,21 +515,7 @@ class InCallHTTPTool(Tool):
         - {variable} - Context or AI parameter
         - ${ENV_VAR} - Environment variable
         """
-        result = template
-        
-        # Context/parameter variables: {var_name}
-        for key, value in context.items():
-            result = result.replace(f"{{{key}}}", value)
-        
-        # Environment variables: ${VAR_NAME}
-        env_pattern = r'\$\{([A-Z_][A-Z0-9_]*)\}'
-        def env_replacer(match):
-            var_name = match.group(1)
-            return os.environ.get(var_name, "")
-        
-        result = re.sub(env_pattern, env_replacer, result)
-        
-        return result
+        return render_template(template, context)
     
     def _extract_output_variables(self, data: Any) -> Dict[str, Any]:
         """

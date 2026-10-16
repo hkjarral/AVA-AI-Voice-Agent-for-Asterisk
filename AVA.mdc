@@ -106,6 +106,11 @@ every service. Host `./data/` mounts at `/app/data/`; defaults include
   UI editing remains follow-up #703, and connection changes require an engine
   restart. The private pre/post test fixture was corrected and those unchanged
   handlers verified synthetically; live pre/post execution is not claimed.
+- **HTTP templates:** runtime pre/in/post-call requests use single-pass rendering,
+  context-specific encoding, and validated JSON. Model arguments cannot shadow
+  call/enrichment context, including empty fields. See the
+  [template compatibility rules](docs/TOOL_CALLING_GUIDE.md#http-template-safety-and-compatibility)
+  before adapting existing JSON, raw-text, or URL templates.
 - **Sensitive state:** preserve telephony ownership, consent/DNC, callbacks,
   dispositions, and transfer boundaries. Outbound `AAVA_CUSTOM_VARS_JSON` must be
   bounded and confirmed before AMD/provider startup; invalid authoritative state
