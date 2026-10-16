@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Farewell fallback and deferred transfer recovery** ([#675](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/675)):
+  evaluate Google farewell markers against the completed turn, match Google/Grok
+  markers at word boundaries, and suppress heuristic arming during deferred
+  transfers. Give transfers priority over `HangupReady` and retire superseded
+  hangup state so timeout recovery keeps the caller connected and later hangups
+  still work. Clarify the remaining heuristic false-positive risk in Admin UI
+  help and the Google setup guide. Original fix contributed by
+  [@theluckystrike](https://github.com/theluckystrike); reported by
+  [@MVECoder](https://github.com/MVECoder).
+
 ### Security
 
 - Harden HTTP-tool templates across pre-call, in-call, and post-call execution:

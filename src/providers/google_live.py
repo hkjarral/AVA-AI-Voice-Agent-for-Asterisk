@@ -54,7 +54,7 @@ from ..audio import (
     resolve_output_resampler_policy,
 )
 from ..config import GoogleProviderConfig
-from src.tools.telephony.hangup_policy import normalize_hangup_policy
+from src.tools.telephony.hangup_policy import normalize_hangup_policy, text_contains_marker_word
 from src.tools.adapters.sanitize import sanitize_tool_result_for_json_string
 
 # Tool calling support
@@ -503,7 +503,7 @@ class GoogleLiveProvider(AIProviderInterface):
             return None
         markers = (self._hangup_policy.get("markers") or {}).get("end_call", [])
         for m in markers:
-            if m in t:
+            if text_contains_marker_word(t, [m]):
                 return m
         return None
 
@@ -515,9 +515,30 @@ class GoogleLiveProvider(AIProviderInterface):
             return None
         markers = (self._hangup_policy.get("markers") or {}).get("assistant_farewell", [])
         for m in markers:
-            if m in t:
+            if text_contains_marker_word(t, [m]):
                 return m
         return None
+
+    def release_terminal_output_protection(self) -> None:
+        """Discard a hangup superseded by transfer, allowing later farewells."""
+        task = self._hangup_fallback_task
+        self._hangup_fallback_task = None
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+        self._hangup_after_response = False
+        self._hangup_fallback_armed = False
+        self._hangup_fallback_emitted = False
+        self._hangup_fallback_armed_at = None
+        self._hangup_fallback_audio_started = False
+        self._hangup_fallback_turn_complete_seen = False
+        self._hangup_fallback_wait_logged = False
+        self._hangup_ready_emitted = False
+        self._assistant_farewell_intent = None
+        self._user_end_intent = None
+        self._force_farewell_text = ""
+        self._force_farewell_sent = False
+        self._post_hangup_output_detected = False
+        self._terminal_audio_cutoff_after_tool = False
 
     def _should_wait_for_turn_complete_before_fallback(self, now: float, armed_at: float) -> bool:
         if self._hangup_fallback_turn_complete_seen:
@@ -1957,10 +1978,10 @@ class GoogleLiveProvider(AIProviderInterface):
         if self._hangup_fallback_armed:
             return
 
-        user_reason = self._detect_user_end_intent(user_text) or self._user_end_intent
+        user_reason = self._detect_user_end_intent(user_text)
         if not user_reason:
             return
-        assistant_reason = self._detect_assistant_farewell(assistant_text) or self._assistant_farewell_intent
+        assistant_reason = self._detect_assistant_farewell(assistant_text)
 
         # "No transcript" and explicit hangup intents are strong indicators that the call is ending,
         # even if output transcription is missing or the model doesn't include a canonical farewell.
@@ -1986,6 +2007,8 @@ class GoogleLiveProvider(AIProviderInterface):
         try:
             session = await session_store.get_by_call_id(self._call_id)
             if not session:
+                return
+            if isinstance(getattr(session, "pending_deferred_transfer", None), dict):
                 return
             if getattr(session, "cleanup_after_tts", False):
                 return

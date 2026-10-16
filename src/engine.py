@@ -15794,7 +15794,9 @@ class Engine:
             session = await self.session_store.get_by_call_id(call_id)
             if not session or bool(getattr(session, "cleanup_in_progress", False)):
                 return False
-            if self._session_was_transferred(session) or self._session_has_pending_attended_transfer(session):
+            if (self._session_was_transferred(session)
+                    or self._session_has_pending_attended_transfer(session)
+                    or isinstance(getattr(session, "pending_deferred_transfer", None), dict)):
                 logger.info("Terminal hangup skipped during transfer", call_id=call_id, reason=reason)
                 return False
 
@@ -15819,8 +15821,15 @@ class Engine:
                     reason=reason,
                 )
 
+            # A transfer may have taken ownership and recovered while this
+            # older hangup was draining. Its pending action can already be gone.
+            if call_id not in started:
+                return False
             session = await self.session_store.get_by_call_id(call_id)
             if not session or self._session_was_transferred(session):
+                return False
+            if isinstance(getattr(session, "pending_deferred_transfer", None), dict):
+                started.discard(call_id)
                 return False
             if drain_timeout_cap_sec is not None and (
                 bool(getattr(session, "cleanup_in_progress", False))
@@ -21919,6 +21928,20 @@ class Engine:
                 return None
             if commit_marker is not None:
                 commit_marker["action_id"] = action_id
+
+            # Transfer owns the call now. Retire both engine and provider hangup
+            # state before any handoff/recovery audio can complete. In particular,
+            # a drain-timeout apology must not inherit cleanup_after_tts.
+            session.cleanup_after_tts = False
+            getattr(self, "_terminal_hangup_started", set()).discard(call_id)
+            await self._save_session(session)
+            fallback = getattr(self, "_terminal_fallback_tasks", {}).pop(call_id, None)
+            if fallback and not fallback.done() and fallback is not asyncio.current_task():
+                fallback.cancel()
+            provider = getattr(self, "_call_providers", {}).get(call_id)
+            release = getattr(provider, "release_terminal_output_protection", None)
+            if callable(release):
+                release()
 
             local_handoff_played = await self._play_deferred_transfer_local_handoff(call_id, session)
             if not local_handoff_played:

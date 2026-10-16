@@ -392,6 +392,28 @@ The fallback watchdog protects against stuck calls:
 - `hangup_fallback_no_audio_timeout_sec`: fail-safe when no farewell audio arrives at all.
 - `hangup_fallback_turn_complete_timeout_sec`: grace window to wait for `turnComplete` before fallback.
 
+### Marker-based hangup heuristics
+
+`hangup_markers_enabled` defaults to `false` and should remain off in production;
+prefer the explicit `hangup_call` tool. When enabled, Google evaluates the completed
+turn's caller and assistant text, using whole-word/phrase boundaries. A greeting
+such as "thank you for calling" does not remain a farewell for later turns.
+Weak caller markers require an assistant farewell; configured explicit end-call
+markers can still end a call without one. Phrases such as "all set", "that's it",
+or "bye" are ambiguous even with word boundaries, so false positives remain possible.
+
+Google and Grok do not arm marker fallback while a deferred transfer is pending.
+A `HangupReady` event gives a pending transfer priority. Before committing, the
+engine clears superseded hangup timers/state so a transfer drain timeout can
+return the caller to the AI, play its apology, and accept a later legitimate
+hangup. Existing transfer failure/retry behavior remains in place. Grok also
+uses whole-word/phrase boundaries for its farewell fallback.
+
+Before enabling heuristics, validate a greeting followed by continued conversation,
+a genuine farewell, a successful transfer, and a transfer drain timeout followed
+by more conversation and a later hangup. Keep call IDs and the tested revision
+with the validation evidence.
+
 ## Features
 
 ### 1. Barge-In (Interruption)

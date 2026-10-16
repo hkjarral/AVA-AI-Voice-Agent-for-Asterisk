@@ -1268,7 +1268,9 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                             <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                                 <li>Recommended <strong>off</strong> for production — rely on the explicit <code>hangup_call</code> tool</li>
                                                 <li>Only enable while debugging cases where Gemini drops turnComplete after a farewell</li>
-                                                <li>Can produce false-positive hangups if the bot uses farewell wording mid-call</li>
+                                                <li>Phrases such as "all set", "that's it", or "bye" can still mean something other than ending a call</li>
+                                                <li>Uses the completed turn and whole-word markers; pending deferred transfers take priority</li>
+                                                <li>Can still produce false-positive hangups when the caller and bot use closing phrases mid-call</li>
                                             </ul>
                                         </>
                                     }

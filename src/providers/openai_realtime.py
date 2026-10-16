@@ -1552,6 +1552,14 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 self._current_response_id = None
         return response_id
     
+    def release_terminal_output_protection(self) -> None:
+        """Discard a superseded farewell without cancelling handoff audio."""
+        self._cancel_farewell_timeout()
+        self._farewell_response_id = None
+        self._farewell_waiting_for_audio_done = False
+        self._farewell_response_done = False
+        self._hangup_after_response = False
+
     def _cancel_farewell_timeout(self):
         """Cancel the farewell timeout if it's still running."""
         task = self._farewell_timeout_task

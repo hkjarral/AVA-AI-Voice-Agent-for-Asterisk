@@ -515,3 +515,24 @@ async def test_tool_adapter_disallowed_tool_suppresses_speech():
     result = await adapter.handle_tool_call_event(event, context)
     assert result["status"] == "error"
     assert result["ai_should_speak"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_text, pending, expected", [
+    ("byelaws", False, False),
+    ("goodbyes", False, False),
+    ("Bye!", False, True),
+    ("Bye!", True, False),
+])
+async def test_grok_farewell_boundaries_and_transfer_priority(provider, user_text, pending, expected):
+    from src.core.models import CallSession
+    from src.core.session_store import SessionStore
+    provider._session_store = SessionStore()
+    session = CallSession(call_id=provider._call_id, caller_channel_id="caller")
+    if pending:
+        session.pending_deferred_transfer = {"id": "transfer-1"}
+    await provider._session_store.upsert_call(session)
+    provider._last_final_user_text = user_text
+    await provider._track_conversation("assistant", "Goodbye!")
+    updated = await provider._session_store.get_by_call_id(provider._call_id)
+    assert updated.cleanup_after_tts is expected

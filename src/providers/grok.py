@@ -50,6 +50,7 @@ from ..config import GrokProviderConfig
 from src.tools.registry import tool_registry
 from src.tools.adapters.grok import GrokToolAdapter
 from src.tools.execution_history import record_in_call_tool_result
+from src.tools.telephony.hangup_policy import text_contains_marker_word
 
 logger = get_logger(__name__)
 
@@ -1400,6 +1401,15 @@ class GrokProvider(AIProviderInterface):
             call_id=self._call_id
         )
     
+    def release_terminal_output_protection(self) -> None:
+        """Discard a superseded farewell without ending the provider session."""
+        self._cancel_farewell_timeout()
+        self._farewell_response_id = None
+        self._farewell_waiting_for_audio_done = False
+        self._hangup_after_response = False
+        self._hangup_fallback_armed = False
+        self._last_final_user_text = ""
+
     def _cancel_farewell_timeout(self):
         """Cancel the farewell timeout if it's still running."""
         if self._farewell_timeout_task and not self._farewell_timeout_task.done():
@@ -2741,18 +2751,19 @@ class GrokProvider(AIProviderInterface):
                     role == "assistant"
                     and not self._hangup_after_response
                     and not self._hangup_fallback_armed
+                    and not isinstance(getattr(session, "pending_deferred_transfer", None), dict)
                 ):
                     assistant_lower = (text or "").lower()
                     user_lower = (self._last_final_user_text or "").lower()
-                    assistant_farewell = any(
-                        phrase in assistant_lower for phrase in (
+                    assistant_farewell = text_contains_marker_word(
+                        assistant_lower, (
                             "goodbye", "good bye", "have a great day", "have a good day",
                             "have a nice day", "take care", "talk to you later", "see you",
                             "the call will end", "i'll hang up", "ill hang up", "ending the call",
                         )
                     )
-                    user_farewell = any(
-                        phrase in user_lower for phrase in (
+                    user_farewell = text_contains_marker_word(
+                        user_lower, (
                             "goodbye", "good bye", "bye", "thank you. goodbye", "thanks goodbye",
                             "that's all", "thats all", "hang up", "end the call", "end call",
                             "no thank you", "no thanks",
