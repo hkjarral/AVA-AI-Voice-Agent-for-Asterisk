@@ -2,7 +2,55 @@
 
 This guide covers upgrading between releases of Asterisk AI Voice Agent.
 
-## Next release after v7.6.3
+## v7.6.3 to v7.6.4
+
+v7.6.4 contains HTTP-tool template hardening, farewell/transfer recovery fixes,
+and compatible Admin dependency updates. No database migration or change to
+saved Agents, providers, models, transports or Audio Profile defaults is required.
+
+Drain calls and preserve configuration, SQLite data, credentials, calendar OAuth
+caches and local Compose overlays using the
+[upgrade guide](INSTALLATION.md#upgrade-to-v764-existing-checkout). Rebuild/recreate
+`ai_engine` and `admin_ui` together, then hard-refresh the browser. Local AI code
+and its dependency profile are unchanged from v7.6.3; retain existing Local AI
+services and model volumes. Earlier upgrades must follow the intervening sections.
+
+### HTTP tool templates
+
+Before upgrading, review pre-call lookups, in-call HTTP tools and post-call
+webhooks against the [template compatibility rules](TOOL_CALLING_GUIDE.md#http-template-safety-and-compatibility):
+
+- Substitutions run once, only against the operator-authored template. Inserted
+  caller/model data and enrichment cannot introduce further placeholders.
+- Built-in call context and enrichment remain protected from model-argument
+  overrides, including when a protected field is empty. Use declared tool
+  parameters for independent model inputs rather than shadowing context names.
+- Absent Content-Type means JSON. Quote text placeholders inside JSON strings;
+  unquoted placeholders must resolve to one valid JSON value. Invalid JSON is
+  rejected before sending. Existing serialized transcript/summary placeholders
+  remain supported.
+- Raw text requires explicit `Content-Type: text/plain`. Form bodies retain
+  field encoding. XML, multipart and other unsupported body formats fail closed.
+- Keep the URL origin in operator configuration or an environment reference.
+  Per-call values supply encoded URL components, not a whole URL or multiple path
+  segments. Dot path segments are rejected. Do not pre-encode `query_params`.
+- The Admin HTTP **Test** preview uses a separate implementation. A successful
+  preview does not establish compatibility with the engine's runtime renderer.
+
+### Farewell and transfer recovery
+
+Google fallback uses the completed turn, while Google/Grok marker matching uses
+word/phrase boundaries. A pending deferred transfer takes priority over
+`HangupReady`; superseded hangup timers and provider farewell state are retired.
+Drain timeout recovery can play its apology and continue the conversation.
+Failed commits cancel their exact action without automatic replay; replacements
+survive older failures, and later independent hangups remain possible.
+
+Google marker heuristics remain off by default. Existing opt-in settings are
+preserved; ambiguous phrases such as "all set" can still cause false positives.
+See the [Google farewell guidance](Provider-Google-Setup.md#marker-based-hangup-heuristics).
+
+### Admin dependencies and custom telemetry
 
 The Admin backend updates FastAPI to 0.143.0 and Pydantic to 2.14.0; the
 supported container Python version remains 3.11. No database migration or
@@ -19,6 +67,20 @@ and pass `FASTAPI_OTEL_AUTO_CONFIGURE=true` to that container. The standard imag
 does not include this extra. Otherwise, keep configuring providers/exporters
 yourself. See the
 [upstream release notes](https://github.com/fastapi/fastapi/releases/tag/0.143.0).
+
+### Rollback
+
+Drain calls, restore v7.6.3 code/images and pre-upgrade configuration, and retain
+Agent databases, model volumes, credentials and OAuth caches. No database
+downgrade is required. Code rollback cannot undo remote HTTP effects, bookings
+or completed transfers; reconcile ambiguous outcomes before retrying.
+Rolling back also removes HTTP template hardening: restrict or disable affected
+HTTP tools until a fixed release is restored. Remove custom FastAPI telemetry
+changes only if the older image/configuration does not support them.
+
+The [v7.6.4 validation matrix](baselines/golden/v7.6.4-validation-matrix.md)
+records the included PR evidence and the remaining final-candidate acceptance
+and publication gates. Previous-release waivers are not new acceptance evidence.
 
 ## v7.6.2 to v7.6.3
 

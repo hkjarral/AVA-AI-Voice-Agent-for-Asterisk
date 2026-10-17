@@ -406,8 +406,10 @@ Google and Grok do not arm marker fallback while a deferred transfer is pending.
 A `HangupReady` event gives a pending transfer priority. Before committing, the
 engine clears superseded hangup timers/state so a transfer drain timeout can
 return the caller to the AI, play its apology, and accept a later legitimate
-hangup. Existing transfer failure/retry behavior remains in place. Grok also
-uses whole-word/phrase boundaries for its farewell fallback.
+hangup. Failed commits cancel their exact pending action and recover without
+automatic replay on later completion events; a replacement action survives an
+older action's failure. Grok also uses whole-word/phrase boundaries for its
+farewell fallback.
 
 Before enabling heuristics, validate a greeting followed by continued conversation,
 a genuine farewell, a successful transfer, and a transfer drain timeout followed

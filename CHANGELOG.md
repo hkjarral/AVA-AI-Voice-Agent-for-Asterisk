@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.6.4] - 2026-10-16
+
+Release scope: merged PRs [#739](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/739),
+[#735](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/735),
+and [#740](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/740),
+plus release documentation and contributor attribution. Open Dependabot and
+unrelated feature PRs remain excluded. No database migration or provider,
+transport, model, or saved Agent default changes.
+See [migration notes](docs/MIGRATION.md#v763-to-v764) and the
+[validation matrix](docs/baselines/golden/v7.6.4-validation-matrix.md).
+
+Contributors: [@theluckystrike](https://github.com/theluckystrike) (original
+farewell fix), Kevin Rossen (HTTP-template security report and original renderer
+patch, preserved as co-author), [@MVECoder](https://github.com/MVECoder)
+(farewell report and production investigation), and
+[@hkjarral](https://github.com/hkjarral) (implementation, review, validation and
+release maintenance). See [CONTRIBUTORS.md](CONTRIBUTORS.md).
+
 ### Changed
 
 - **Release dependency maintenance:** update Admin FastAPI to 0.143.0 and Pydantic to 2.14.0, frontend Vite/Prettier patches, and the workflow-helper setup-node action to v7. Retain the existing Node/ESLint toolchain and all held runtime/model/NumPy/Piper versions. Custom FastAPI automatic OpenTelemetry exporter setup now requires explicit opt-in; see the migration guide.

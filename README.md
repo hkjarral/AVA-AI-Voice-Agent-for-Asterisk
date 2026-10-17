@@ -6,7 +6,7 @@
   <img alt="AVA Core — AI Voice Agent for Asterisk" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-[![Version](https://img.shields.io/badge/version-7.6.3-blue.svg)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases)
+[![Version](https://img.shields.io/badge/version-7.6.4-blue.svg)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases)
 [![CI](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Discord](https://dcbadge.limes.pink/api/server/ysg8fphxUe?style=plastic)](https://discord.gg/ysg8fphxUe)
@@ -37,13 +37,13 @@ Asterisk 18+ / FreePBX system with ARI enabled. Cloud configurations start with
 transports require newer Asterisk versions or additional modules.
 
 **Already running AVA?** Follow the
-[v7.6.3 upgrade guide](docs/INSTALLATION.md#upgrade-to-v763-existing-checkout)
+[v7.6.4 upgrade guide](docs/INSTALLATION.md#upgrade-to-v764-existing-checkout)
 instead of cloning another installation.
 
 On the AVA host:
 
 ```bash
-git clone --branch v7.6.3 https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+git clone --branch v7.6.4 https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
 cd AVA-AI-Voice-Agent-for-Asterisk
 sudo ./preflight.sh --apply-fixes
 docker compose -p asterisk-ai-voice-agent up -d --build admin_ui
@@ -98,7 +98,7 @@ The guide also covers CLI/manual installation, permissions, and recovery;
 
 Model availability, tools, latency, and transport support vary by configuration.
 Use the [compatibility matrix](docs/Transport-Mode-Compatibility.md) and
-[release validation evidence](docs/baselines/golden/v7.6.3-validation-matrix.md)
+[release validation evidence](docs/baselines/golden/v7.6.4-validation-matrix.md)
 rather than assuming every provider/transport combination is qualified.
 
 AudioSocket and ExternalMedia RTP are configuration-dependent; Media WebSocket
@@ -153,17 +153,15 @@ The core services are `ai_engine` and `admin_ui`; `local_ai_server` and
 
 <a id="-whats-new"></a>
 
-### Latest release: v7.6.3
+### Latest release: v7.6.4
 
-- More reliable provider setup, optional startup recovery, and Google playback
-  and transfer fixes.
-- Authenticated Local AI checks, Whisper speech finalization, DTMF log privacy,
-  and YAML-configured Streamable HTTP MCP.
-- Admin security/dependency updates and clearer operator/contributor guidance.
+- Safer HTTP-tool templates with single-pass substitution and protected call data.
+- Farewell and transfer-recovery fixes that prevent stale hangups.
+- Compatible Admin dependency updates and refreshed upgrade guidance.
 
 See the [changelog](CHANGELOG.md) for detailed changes and contributor credit,
 [GitHub Releases](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases)
-for artifacts, and [migration notes](docs/MIGRATION.md#v762-to-v763) before upgrading.
+for artifacts, and [migration notes](docs/MIGRATION.md#v763-to-v764) before upgrading.
 Earlier release notes remain in the changelog and versioned repository history.
 
 <a id="-contributing"></a>
@@ -211,8 +209,10 @@ context. All contributions still require appropriate testing and review.
 </tr>
 <tr>
 <td align="center"><a href="https://github.com/pi0n00r"><img src="https://github.com/pi0n00r.png" width="60" alt="pi0n00r"><br><sub><b>pi0n00r</b></sub></a><br>Local AI, Whisper, DTMF Privacy, MCP</td>
-<td align="center"><a href="https://github.com/MVECoder"><img src="https://github.com/MVECoder.png" width="60" alt="MVECoder"><br><sub><b>MVECoder</b></sub></a><br>Startup Recovery Investigation</td>
+<td align="center"><a href="https://github.com/MVECoder"><img src="https://github.com/MVECoder.png" width="60" alt="MVECoder"><br><sub><b>MVECoder</b></sub></a><br>Startup Recovery, Farewell Investigation</td>
 <td align="center"><a href="https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/8df4e07319031a3bb12a886f4e0772f9504db5a1"><img src="https://img.shields.io/badge/contributor-NC-blue" alt="NC contributor badge"><br><sub><b>NC</b></sub></a><br>Authenticated Local AI Tests</td>
+<td align="center"><a href="https://github.com/theluckystrike"><img src="https://github.com/theluckystrike.png" width="60" alt="theluckystrike"><br><sub><b>Michael (theluckystrike)</b></sub></a><br>Farewell Hangup Fix</td>
+<td align="center"><a href="https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/d4de6ad0fd09d72ed8c0a27d76e4a67f3bdc32da"><img src="https://img.shields.io/badge/contributor-Kevin%20Rossen-blue" alt="Kevin Rossen contributor badge"><br><sub><b>Kevin Rossen</b></sub></a><br>HTTP Template Security</td>
 </tr>
 </table>
 
