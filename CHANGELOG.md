@@ -19,13 +19,15 @@ See [migration notes](docs/MIGRATION.md#v763-to-v764) and the
 [validation matrix](docs/baselines/golden/v7.6.4-validation-matrix.md).
 
 Contributors: [@theluckystrike](https://github.com/theluckystrike) (original
-farewell fix), Kevin Rossen (HTTP-template security report and original renderer
+farewell fix), [Kevin Rossen](https://github.com/kevinrossen) (HTTP-template security report and original renderer
 patch, preserved as co-author), [@MVECoder](https://github.com/MVECoder)
 (farewell report and production investigation), and
 [@hkjarral](https://github.com/hkjarral) (implementation, review, validation and
 release maintenance). See [CONTRIBUTORS.md](CONTRIBUTORS.md).
 
 ### Changed
+
+- **Contributor attribution:** link Kevin Rossen's verified GitHub profile and avatar; clarify Ivan Garcia's submitting-account provenance and NC's original environment-parser contribution without assigning unverified personal profiles.
 
 - **Release dependency maintenance:** update Admin FastAPI to 0.143.0 and Pydantic to 2.14.0, frontend Vite/Prettier patches, and the workflow-helper setup-node action to v7. Retain the existing Node/ESLint toolchain and all held runtime/model/NumPy/Piper versions. Custom FastAPI automatic OpenTelemetry exporter setup now requires explicit opt-in; see the migration guide.
 

@@ -210,9 +210,9 @@ context. All contributions still require appropriate testing and review.
 <tr>
 <td align="center"><a href="https://github.com/pi0n00r"><img src="https://github.com/pi0n00r.png" width="60" alt="pi0n00r"><br><sub><b>pi0n00r</b></sub></a><br>Local AI, Whisper, DTMF Privacy, MCP</td>
 <td align="center"><a href="https://github.com/MVECoder"><img src="https://github.com/MVECoder.png" width="60" alt="MVECoder"><br><sub><b>MVECoder</b></sub></a><br>Startup Recovery, Farewell Investigation</td>
-<td align="center"><a href="https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/8df4e07319031a3bb12a886f4e0772f9504db5a1"><img src="https://img.shields.io/badge/contributor-NC-blue" alt="NC contributor badge"><br><sub><b>NC</b></sub></a><br>Authenticated Local AI Tests</td>
+<td align="center"><a href="https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/06f039dcf293128fa55478cb4bbd584fadf8f131"><img src="https://img.shields.io/badge/contributor-NC-blue" alt="NC contributor badge"><br><sub><b>NC</b></sub></a><br>Local AI Environment Parser</td>
 <td align="center"><a href="https://github.com/theluckystrike"><img src="https://github.com/theluckystrike.png" width="60" alt="theluckystrike"><br><sub><b>Michael (theluckystrike)</b></sub></a><br>Farewell Hangup Fix</td>
-<td align="center"><a href="https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/d4de6ad0fd09d72ed8c0a27d76e4a67f3bdc32da"><img src="https://img.shields.io/badge/contributor-Kevin%20Rossen-blue" alt="Kevin Rossen contributor badge"><br><sub><b>Kevin Rossen</b></sub></a><br>HTTP Template Security</td>
+<td align="center"><a href="https://github.com/kevinrossen"><img src="https://github.com/kevinrossen.png" width="60" alt="kevinrossen"><br><sub><b>Kevin Rossen</b></sub></a><br>HTTP Template Security</td>
 </tr>
 </table>
 

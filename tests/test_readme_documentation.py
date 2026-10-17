@@ -54,3 +54,15 @@ def test_readme_install_tag_matches_release_metadata():
     assert f'version-{latest}-blue' in readme
     assert '## Quick Start' in readme
     assert readme.index('## Quick Start') < readme.index('## AVA Operator')
+
+
+def test_verified_profile_and_unmapped_author_credits():
+    readme = (ROOT / 'README.md').read_text()
+    credits = (ROOT / 'CONTRIBUTORS.md').read_text()
+    assert '<a href="https://github.com/kevinrossen"><img src="https://github.com/kevinrossen.png"' in readme
+    assert '**[Kevin Rossen (kevinrossen)](https://github.com/kevinrossen)**' in credits
+    for name in ('Ivan Garcia', 'NC'):
+        row = next(line for line in credits.splitlines() if f'**{name}**' in line)
+        assert 'own GitHub profile is not verified' in row
+    original_nc_commit = 'https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/06f039dcf293128fa55478cb4bbd584fadf8f131'
+    assert original_nc_commit in readme and original_nc_commit in credits
