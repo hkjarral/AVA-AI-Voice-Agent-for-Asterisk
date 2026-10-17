@@ -2,6 +2,21 @@
 
 This guide covers upgrading between releases of Asterisk AI Voice Agent.
 
+## Next release after v7.6.3
+
+The Admin backend updates FastAPI to 0.143.0 and Pydantic to 2.14.0; the
+supported container Python version remains 3.11. No database migration or
+provider, transport, model, or saved Agent default changes are introduced by
+these dependency updates. Rebuild the Admin image and hard-refresh its frontend
+after upgrading.
+
+FastAPI 0.143 makes automatic OpenTelemetry exporter configuration opt-in.
+The standard AVA deployment does not configure these exporters and requires no
+change. If a custom Admin deployment relies on FastAPI automatically consuming
+`OTEL_*` variables, explicitly pass `FASTAPI_OTEL_AUTO_CONFIGURE=true` to the
+Admin container, or keep configuring providers/exporters yourself. See the
+[upstream release notes](https://github.com/fastapi/fastapi/releases/tag/0.143.0).
+
 ## v7.6.2 to v7.6.3
 
 v7.6.3 is an in-place reliability, security, and operator-documentation release.
