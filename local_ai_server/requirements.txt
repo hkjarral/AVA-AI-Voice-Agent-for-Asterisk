@@ -1,10 +1,10 @@
 websockets==16.1.1
 vosk==0.3.45
-llama-cpp-python==0.3.34
+llama-cpp-python==0.3.36
 piper-tts==1.2.0
 numpy==1.26.4
-sherpa-onnx==1.13.4
-faster-whisper==1.0.3
+sherpa-onnx==1.13.8
+faster-whisper==1.2.1
 kokoro==0.9.4
 torch==2.5.1
 torchaudio==2.5.1
