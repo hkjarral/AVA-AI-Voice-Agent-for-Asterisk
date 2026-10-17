@@ -17,7 +17,7 @@ websockets==12.0
 aiohttp==3.14.5
 prometheus_client==0.26.0
 jinja2==3.1.6
-numpy>=1.24.0
+numpy>=2.5.4
 openpyxl==3.1.5
 # Google Calendar verify endpoint + Vertex AI verify endpoint use these to
 # (a) extract SA identity (client_email / client_id) from uploaded JSON
