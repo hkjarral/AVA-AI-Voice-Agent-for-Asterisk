@@ -13,8 +13,11 @@ after upgrading.
 FastAPI 0.143 makes automatic OpenTelemetry exporter configuration opt-in.
 The standard AVA deployment does not configure these exporters and requires no
 change. If a custom Admin deployment relies on FastAPI automatically consuming
-`OTEL_*` variables, explicitly pass `FASTAPI_OTEL_AUTO_CONFIGURE=true` to the
-Admin container, or keep configuring providers/exporters yourself. See the
+`OTEL_*` variables, install the matching `fastapi[opentelemetry]==0.143.0`
+extra (or equivalent SDK and OTLP exporter packages) in your custom Admin image,
+and pass `FASTAPI_OTEL_AUTO_CONFIGURE=true` to that container. The standard image
+does not include this extra. Otherwise, keep configuring providers/exporters
+yourself. See the
 [upstream release notes](https://github.com/fastapi/fastapi/releases/tag/0.143.0).
 
 ## v7.6.2 to v7.6.3
