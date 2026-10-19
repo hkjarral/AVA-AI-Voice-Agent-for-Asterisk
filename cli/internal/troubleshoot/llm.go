@@ -40,7 +40,7 @@ func NewLLMAnalyzer() (*LLMAnalyzer, error) {
 		model = "gpt-4o-mini" // Fast and cost-effective
 	case "anthropic":
 		apiKey = os.Getenv("ANTHROPIC_API_KEY")
-		model = "claude-3-haiku-20240307" // Fast and cost-effective
+		model = "claude-haiku-5-5" // Fast and cost-effective
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", provider)
 	}
@@ -334,9 +334,12 @@ func (llm *LLMAnalyzer) callOpenAI(prompt string) (string, error) {
 	return content, nil
 }
 
+// anthropicMessagesURL is a variable so tests can point it at a local server.
+var anthropicMessagesURL = "https://api.anthropic.com/v1/messages"
+
 // callAnthropic makes Anthropic API request
 func (llm *LLMAnalyzer) callAnthropic(prompt string) (string, error) {
-	url := "https://api.anthropic.com/v1/messages"
+	url := anthropicMessagesURL
 
 	requestBody := map[string]interface{}{
 		"model": llm.model,
@@ -347,6 +350,8 @@ func (llm *LLMAnalyzer) callAnthropic(prompt string) (string, error) {
 			},
 		},
 		"max_tokens": 800,
+		// Claude Haiku 5.5 thinks by default; keep the 800 tokens for the answer.
+		"thinking": map[string]string{"type": "disabled"},
 	}
 
 	jsonData, err := json.Marshal(requestBody)
@@ -389,12 +394,18 @@ func (llm *LLMAnalyzer) callAnthropic(prompt string) (string, error) {
 		return "", fmt.Errorf("no content in response")
 	}
 
-	text, ok := content[0].(map[string]interface{})["text"].(string)
-	if !ok {
-		return "", fmt.Errorf("invalid response format")
+	// Read blocks by type: a response can start with a thinking block.
+	for _, block := range content {
+		b, ok := block.(map[string]interface{})
+		if !ok || b["type"] != "text" {
+			continue
+		}
+		if text, ok := b["text"].(string); ok {
+			return text, nil
+		}
 	}
 
-	return text, nil
+	return "", fmt.Errorf("invalid response format")
 }
 
 // LLMDiagnosis holds LLM analysis results

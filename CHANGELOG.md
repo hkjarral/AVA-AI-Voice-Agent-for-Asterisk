@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   uncertain mutations blocked when reconciliation reads fail. Preserve structured
   calendar outcomes and silent metadata continuation in OpenAI responses.
 
+- **CLI troubleshoot with Anthropic:** `agent troubleshoot` LLM analysis used
+  `claude-3-haiku-20240307`, which Anthropic retired on 2026-04-20, so every
+  request failed. It now uses `claude-haiku-5-5` with thinking disabled and reads
+  the first text block of the response.
+
 - **Tools save/apply and navigation:** preserve drafts and calendar connection
   state while moving between editors; merge background calendar results into the
   latest draft, including Microsoft timezone/calendar fallback values edited
