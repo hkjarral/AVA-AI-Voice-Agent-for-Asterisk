@@ -19,7 +19,7 @@ import aiohttp
 from ..config import AppConfig, TelnyxLLMProviderConfig
 from ..logging_config import get_logger
 from ..tools.registry import tool_registry
-from .base import LLMComponent, LLMResponse
+from .base import LLMComponent, LLMResponse, parse_tool_call_arguments
 
 logger = get_logger(__name__)
 
@@ -455,7 +455,7 @@ class TelnyxLLMAdapter(LLMComponent):
                                 {
                                     "id": tc.get("id"),
                                     "name": name,
-                                    "parameters": json.loads(args),
+                                    "parameters": parse_tool_call_arguments(args),
                                     "type": tc.get("type", "function"),
                                 }
                             )

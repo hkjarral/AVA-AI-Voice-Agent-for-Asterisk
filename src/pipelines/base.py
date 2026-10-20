@@ -11,6 +11,7 @@ provider.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -33,6 +34,21 @@ STREAMING_STT_FORMAT_ALIASES: frozenset[str] = frozenset({
     "pcm16-16k",
     "linear16",
 })
+
+
+def parse_tool_call_arguments(arguments: Any) -> Dict[str, Any]:
+    """Decode a chat-completions tool call's ``arguments`` into a dict.
+
+    Parameterless calls often arrive with an empty string (or null) instead of
+    ``"{}"``, and some servers send an object instead of a JSON string. Both
+    mean "no parameters" / "these parameters", not a malformed call. Invalid
+    JSON still raises ``json.JSONDecodeError``.
+    """
+    if isinstance(arguments, dict):
+        return arguments
+    if arguments is None or (isinstance(arguments, str) and not arguments.strip()):
+        return {}
+    return json.loads(arguments)
 
 
 @dataclass

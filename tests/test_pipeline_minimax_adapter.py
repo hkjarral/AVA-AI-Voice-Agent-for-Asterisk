@@ -380,3 +380,45 @@ async def test_minimax_llm_metadata_contains_assistant_message():
     assert "assistant_message" in response.metadata
     assert response.metadata["assistant_message"]["content"] == original_content
     assert "usage" in response.metadata
+
+
+async def _minimax_tool_calls(arguments):
+    app_config = _build_app_config()
+    provider_config = MiniMaxLLMProviderConfig(**app_config.providers["minimax_llm"])
+    body = json.dumps({
+        "choices": [{
+            "message": {
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "hangup_call", "arguments": arguments},
+                }],
+            },
+        }],
+    }).encode("utf-8")
+    adapter = MiniMaxLLMAdapter(
+        "minimax_llm",
+        app_config,
+        provider_config,
+        {},
+        session_factory=lambda: _FakeSession(body),
+    )
+    await adapter.start()
+    response = await adapter.generate("call-1", "bye", {}, {})
+    return response.tool_calls
+
+
+@pytest.mark.asyncio
+async def test_minimax_llm_tool_call_with_empty_arguments_keeps_the_call():
+    """A parameterless call arrives with arguments "" and must not be dropped."""
+    tool_calls = await _minimax_tool_calls("")
+
+    assert [(tc["name"], tc["parameters"]) for tc in tool_calls] == [("hangup_call", {})]
+
+
+@pytest.mark.asyncio
+async def test_minimax_llm_tool_call_with_object_arguments_keeps_the_call():
+    tool_calls = await _minimax_tool_calls({"reason": "done"})
+
+    assert [(tc["name"], tc["parameters"]) for tc in tool_calls] == [("hangup_call", {"reason": "done"})]
