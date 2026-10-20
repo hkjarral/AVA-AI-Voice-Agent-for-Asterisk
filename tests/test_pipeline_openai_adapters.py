@@ -461,3 +461,22 @@ async def test_openai_llm_stream_rejoins_interleaved_calls_sharing_an_index(fina
         ("call_a", "transfer", {"target": "100"}),
         ("call_b", "check_extension_status", {"extension": "200"}),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interleave_other_call", [False, True])
+async def test_openai_llm_stream_remembers_an_index_first_seen_on_a_known_id(interleave_other_call):
+    """A late index must route anonymous fragments back to the original call."""
+    deltas = [[{"id": "call_a", "function": {"name": "transfer", "arguments": '{"target":'}}]]
+    if interleave_other_call:
+        deltas.append([{"index": 0, "id": "call_b", "function": {"name": "hangup_call", "arguments": '{}'}}])
+    deltas.extend([
+        [{"index": 0, "id": "call_a", "function": {"arguments": '"1'}}],
+        [{"index": 0, "function": {"arguments": '00"}'}}],
+    ])
+    calls = await _stream_tool_calls(deltas)
+
+    expected = [("call_a", "transfer", {"target": "100"})]
+    if interleave_other_call:
+        expected.append(("call_b", "hangup_call", {}))
+    assert [(c["id"], c["name"], c["parameters"]) for c in calls] == expected

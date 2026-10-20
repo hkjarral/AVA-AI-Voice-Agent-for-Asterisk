@@ -769,6 +769,8 @@ class OpenAILLMAdapter(LLMComponent):
                                 # numeric slots preserve the final response order.
                                 entry = _tool_call_accum.pop(idx)
                                 _tool_call_accum[idx] = entry
+                                if tc_delta.get("index") is not None:
+                                    entry["index"] = tc_delta["index"]
                                 if tc_delta.get("id"):
                                     entry["id"] = tc_delta["id"]
                                 func = tc_delta.get("function", {})

@@ -29,7 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call used to land in the same slot, so names were overwritten and arguments
   concatenated into invalid JSON that ran the tool with empty parameters.
   Repeated call ids also retain their slot when calls interleave at a shared
-  index; later anonymous fragments continue the most recently updated call.
+  index; later anonymous fragments continue the most recently updated call,
+  including when its index first appears after the initial delta.
 
 - **Teams rescheduling:** tolerate equivalent Graph HTML serialization after a
   conditional update and retain the observed body as the next baseline. Match
