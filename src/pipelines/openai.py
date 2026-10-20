@@ -86,6 +86,27 @@ def _make_ws_headers(options: Dict[str, Any]) -> Iterable[tuple[str, str]]:
     return headers
 
 
+def _tool_call_slot(accum: Dict[int, Dict[str, Any]], tc_delta: Dict[str, Any]) -> int:
+    """Pick the accumulator slot a streamed tool call delta belongs to.
+
+    OpenAI sends an ``index`` on every delta. OpenAI-compatible servers (Gemini,
+    Ollama and others) may omit it; without this, every call would share slot 0
+    and overwrite each other's name and concatenate their arguments. A delta with
+    an id continues the call with that id, one with neither id nor name continues
+    the last call, and anything else starts a new call.
+    """
+    if tc_delta.get("index") is not None:
+        return tc_delta["index"]
+    call_id = tc_delta.get("id")
+    if call_id:
+        for slot, entry in accum.items():
+            if entry["id"] == call_id:
+                return slot
+    elif not (tc_delta.get("function") or {}).get("name") and accum:
+        return max(accum)
+    return max(accum) + 1 if accum else 0
+
+
 def _make_http_headers(options: Dict[str, Any]) -> Dict[str, str]:
     headers = {
         "Authorization": f"Bearer {options['api_key']}",
@@ -725,7 +746,7 @@ class OpenAILLMAdapter(LLMComponent):
 
                             # Accumulate tool call deltas
                             for tc_delta in delta.get("tool_calls", []):
-                                idx = tc_delta.get("index", 0)
+                                idx = _tool_call_slot(_tool_call_accum, tc_delta)
                                 if idx not in _tool_call_accum:
                                     _tool_call_accum[idx] = {
                                         "id": tc_delta.get("id", ""),

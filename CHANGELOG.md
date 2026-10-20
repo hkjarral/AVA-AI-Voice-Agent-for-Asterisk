@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **OpenAI pipeline tool calls:** keep streamed tool calls apart when the
+  server omits the `index` field (Gemini, Ollama and other OpenAI-compatible
+  endpoints). Every call used to land in slot 0, so names were overwritten and
+  arguments concatenated into invalid JSON that ran the tool with empty
+  parameters.
+
 - **Teams rescheduling:** tolerate equivalent Graph HTML serialization after a
   conditional update and retain the observed body as the next baseline. Match
   HTML parser offsets using LF only so Unicode separators cannot retain stale
