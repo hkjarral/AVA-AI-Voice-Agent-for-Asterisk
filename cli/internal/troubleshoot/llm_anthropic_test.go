@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+// TestCallAnthropicUsesCurrentModelAndReadsTextBlock verifies the request settings
+// and extracts the diagnosis when a thinking block precedes the text response.
 func TestCallAnthropicUsesCurrentModelAndReadsTextBlock(t *testing.T) {
 	var body map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
