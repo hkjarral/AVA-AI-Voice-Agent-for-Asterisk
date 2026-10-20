@@ -92,28 +92,28 @@ def _tool_call_slot(accum: Dict[int, Dict[str, Any]], tc_delta: Dict[str, Any]) 
     OpenAI sends an ``index`` on every delta. OpenAI-compatible servers (Gemini,
     Ollama and others) may omit it or reuse one index for different calls; without
     this, every call would share a slot and overwrite each other's name and
-    concatenate their arguments. A delta that repeats an index with another id
-    starts a new call. A delta with
-    an id continues the call with that id, one with neither id nor name continues
-    the last call, and anything else starts a new call.
+    concatenate their arguments. A known id takes precedence over the index.
+    An unseen id at an occupied index starts a new call. Anonymous fragments
+    continue the most recently updated call for their index, or overall when
+    the index is missing. Slots retain their original response ordering.
     """
     call_id = tc_delta.get("id")
     index = tc_delta.get("index")
-    if index is not None:
-        same_index = [slot for slot, entry in accum.items() if entry["index"] == index]
-        if not same_index:
-            return index if index not in accum else max(accum) + 1
-        slot = max(same_index)
-        # Ollama sends distinct calls, each with its own id, all at index 0
-        if call_id and accum[slot]["id"] and accum[slot]["id"] != call_id:
-            return max(accum) + 1
-        return slot
     if call_id:
         for slot, entry in accum.items():
             if entry["id"] == call_id:
                 return slot
-    elif not (tc_delta.get("function") or {}).get("name") and accum:
-        return max(accum)
+    if index is not None:
+        same_index = [slot for slot, entry in accum.items() if entry["index"] == index]
+        if not same_index:
+            return index if index not in accum else max(accum) + 1
+        slot = same_index[-1]
+        # Ollama sends distinct calls, each with its own id, all at index 0
+        if call_id and accum[slot]["id"] and accum[slot]["id"] != call_id:
+            return max(accum) + 1
+        return slot
+    if not call_id and not (tc_delta.get("function") or {}).get("name") and accum:
+        return next(reversed(accum))
     return max(accum) + 1 if accum else 0
 
 
@@ -765,7 +765,10 @@ class OpenAILLMAdapter(LLMComponent):
                                         "type": tc_delta.get("type", "function"),
                                         "index": tc_delta.get("index"),
                                     }
-                                entry = _tool_call_accum[idx]
+                                # Insertion order tracks the last updated call;
+                                # numeric slots preserve the final response order.
+                                entry = _tool_call_accum.pop(idx)
+                                _tool_call_accum[idx] = entry
                                 if tc_delta.get("id"):
                                     entry["id"] = tc_delta["id"]
                                 func = tc_delta.get("function", {})

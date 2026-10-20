@@ -438,3 +438,26 @@ async def test_openai_llm_stream_continues_the_latest_call_that_shares_an_index(
         ("call_a", "hangup_call", {}),
         ("call_b", "transfer", {"to": "100"}),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("final_index", [0, None])
+@pytest.mark.parametrize("repeat_final_id", [False, True])
+async def test_openai_llm_stream_rejoins_interleaved_calls_sharing_an_index(final_index, repeat_final_id):
+    """Repeated IDs and anonymous fragments must continue the same call once."""
+    final_delta = {"function": {"arguments": '00"}'}}
+    if final_index is not None:
+        final_delta["index"] = final_index
+    if repeat_final_id:
+        final_delta["id"] = "call_a"
+    calls = await _stream_tool_calls([
+        [{"index": 0, "id": "call_a", "function": {"name": "transfer", "arguments": '{"target":'}}],
+        [{"index": 0, "id": "call_b", "function": {"name": "check_extension_status", "arguments": '{"extension":"200"}'}}],
+        [{"index": 0, "id": "call_a", "function": {"name": "transfer", "arguments": '"1'}}],
+        [final_delta],
+    ])
+
+    assert [(c["id"], c["name"], c["parameters"]) for c in calls] == [
+        ("call_a", "transfer", {"target": "100"}),
+        ("call_b", "check_extension_status", {"extension": "200"}),
+    ]
