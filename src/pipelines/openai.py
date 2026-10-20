@@ -90,14 +90,24 @@ def _tool_call_slot(accum: Dict[int, Dict[str, Any]], tc_delta: Dict[str, Any]) 
     """Pick the accumulator slot a streamed tool call delta belongs to.
 
     OpenAI sends an ``index`` on every delta. OpenAI-compatible servers (Gemini,
-    Ollama and others) may omit it; without this, every call would share slot 0
-    and overwrite each other's name and concatenate their arguments. A delta with
+    Ollama and others) may omit it or reuse one index for different calls; without
+    this, every call would share a slot and overwrite each other's name and
+    concatenate their arguments. A delta that repeats an index with another id
+    starts a new call. A delta with
     an id continues the call with that id, one with neither id nor name continues
     the last call, and anything else starts a new call.
     """
-    if tc_delta.get("index") is not None:
-        return tc_delta["index"]
     call_id = tc_delta.get("id")
+    index = tc_delta.get("index")
+    if index is not None:
+        same_index = [slot for slot, entry in accum.items() if entry["index"] == index]
+        if not same_index:
+            return index if index not in accum else max(accum) + 1
+        slot = max(same_index)
+        # Ollama sends distinct calls, each with its own id, all at index 0
+        if call_id and accum[slot]["id"] and accum[slot]["id"] != call_id:
+            return max(accum) + 1
+        return slot
     if call_id:
         for slot, entry in accum.items():
             if entry["id"] == call_id:
@@ -753,6 +763,7 @@ class OpenAILLMAdapter(LLMComponent):
                                         "name": "",
                                         "arguments": "",
                                         "type": tc_delta.get("type", "function"),
+                                        "index": tc_delta.get("index"),
                                     }
                                 entry = _tool_call_accum[idx]
                                 if tc_delta.get("id"):

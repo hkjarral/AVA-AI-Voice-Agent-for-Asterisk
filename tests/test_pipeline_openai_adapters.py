@@ -411,3 +411,30 @@ async def test_pipeline_orchestrator_registers_openai_adapters():
     assert isinstance(resolution.llm_adapter, OpenAILLMAdapter)
     assert isinstance(resolution.tts_adapter, OpenAITTSAdapter)
     assert resolution.tts_options["format"]["encoding"] == "mulaw"
+
+
+@pytest.mark.asyncio
+async def test_openai_llm_stream_keeps_distinct_ids_apart_when_they_share_index_zero():
+    calls = await _stream_tool_calls([
+        [{"index": 0, "id": "call_a", "type": "function", "function": {"name": "hangup_call", "arguments": "{\"reason\":\"done\"}"}}],
+        [{"index": 0, "id": "call_b", "type": "function", "function": {"name": "transfer", "arguments": "{\"to\":\"100\"}"}}],
+    ])
+
+    assert [(c["id"], c["name"], c["parameters"]) for c in calls] == [
+        ("call_a", "hangup_call", {"reason": "done"}),
+        ("call_b", "transfer", {"to": "100"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_openai_llm_stream_continues_the_latest_call_that_shares_an_index():
+    calls = await _stream_tool_calls([
+        [{"index": 0, "id": "call_a", "function": {"name": "hangup_call", "arguments": "{}"}}],
+        [{"index": 0, "id": "call_b", "function": {"name": "transfer", "arguments": "{\"to\":"}}],
+        [{"index": 0, "function": {"arguments": "\"100\"}"}}],
+    ])
+
+    assert [(c["id"], c["name"], c["parameters"]) for c in calls] == [
+        ("call_a", "hangup_call", {}),
+        ("call_b", "transfer", {"to": "100"}),
+    ]

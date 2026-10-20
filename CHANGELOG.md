@@ -25,9 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **OpenAI pipeline tool calls:** keep streamed tool calls apart when the
   server omits the `index` field (Gemini, Ollama and other OpenAI-compatible
-  endpoints). Every call used to land in slot 0, so names were overwritten and
-  arguments concatenated into invalid JSON that ran the tool with empty
-  parameters.
+  endpoints), or reuse one `index` for calls with different ids (Ollama). Every
+  call used to land in the same slot, so names were overwritten and arguments
+  concatenated into invalid JSON that ran the tool with empty parameters.
 
 - **Teams rescheduling:** tolerate equivalent Graph HTML serialization after a
   conditional update and retain the observed body as the next baseline. Match
