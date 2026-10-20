@@ -68,7 +68,7 @@ class _FakeSession:
         return _FakeResponse(self._body)
 
 
-@pytest.mark.parametrize("arguments", ["", None])
+@pytest.mark.parametrize("arguments", ["", None, "null", {}, "  "])
 async def test_telnyx_generate_treats_empty_tool_arguments_as_no_parameters(arguments):
     app_config = AppConfig(
         default_provider="local",

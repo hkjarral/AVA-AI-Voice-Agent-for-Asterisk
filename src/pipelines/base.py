@@ -42,13 +42,19 @@ def parse_tool_call_arguments(arguments: Any) -> Dict[str, Any]:
     Parameterless calls often arrive with an empty string (or null) instead of
     ``"{}"``, and some servers send an object instead of a JSON string. Both
     mean "no parameters" / "these parameters", not a malformed call. Invalid
-    JSON still raises ``json.JSONDecodeError``.
+    JSON still raises ``json.JSONDecodeError``; non-object JSON values other
+    than null raise ``TypeError`` so tool execution always receives a dict.
     """
     if isinstance(arguments, dict):
         return arguments
     if arguments is None or (isinstance(arguments, str) and not arguments.strip()):
         return {}
-    return json.loads(arguments)
+    decoded = json.loads(arguments)
+    if decoded is None:
+        return {}
+    if not isinstance(decoded, dict):
+        raise TypeError("Tool-call arguments must decode to a JSON object")
+    return decoded
 
 
 @dataclass

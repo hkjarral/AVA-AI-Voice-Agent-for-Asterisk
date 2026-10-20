@@ -389,21 +389,30 @@ class MiniMaxLLMAdapter(LLMComponent):
 
                 if tool_calls:
                     parsed_tool_calls = []
+                    normalized_tool_calls = []
                     for tc in tool_calls:
                         try:
                             func = tc.get("function", {})
                             name = func.get("name")
                             args = func.get("arguments", "{}")
+                            parameters = parse_tool_call_arguments(args)
+                            normalized_tool_calls.append({
+                                **tc,
+                                "function": {**func, "arguments": json.dumps(parameters)},
+                            })
                             parsed_tool_calls.append(
                                 {
                                     "id": tc.get("id"),
                                     "name": name,
-                                    "parameters": parse_tool_call_arguments(args),
+                                    "parameters": parameters,
                                     "type": tc.get("type", "function"),
                                 }
                             )
                         except Exception as exc:
                             logger.warning("Failed to parse tool call", call_id=call_id, error=str(exc))
+                    # Replay only accepted calls with the API's JSON-string
+                    # argument format, preserving original reasoning/content.
+                    metadata["assistant_message"]["tool_calls"] = normalized_tool_calls
                     logger.info(
                         "MiniMax chat completion received with tools",
                         call_id=call_id,

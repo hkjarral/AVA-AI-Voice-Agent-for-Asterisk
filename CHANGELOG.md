@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Telnyx and MiniMax tool calls:** keep a tool call whose `arguments` is an
   empty string, null or an object. A parameterless call such as `hangup_call`
   used to fail `json.loads("")` and be dropped with only a warning.
+  Normalize JSON null to no parameters, reject other non-object JSON values,
+  and retain MiniMax tool arguments as JSON strings for valid history replay
+  while preserving the original assistant reasoning and content.
 
 - **Teams rescheduling:** tolerate equivalent Graph HTML serialization after a
   conditional update and retain the observed body as the next baseline. Match
