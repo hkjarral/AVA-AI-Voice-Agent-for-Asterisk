@@ -770,6 +770,11 @@ Config notes:
 - `providers.google_live.ws_keepalive_enabled`: enable protocol-level WebSocket ping keepalive (pings only fire when the connection is idle).
 - `providers.google_live.ws_keepalive_interval_sec`: ping interval when keepalive is enabled.
 - `providers.google_live.ws_keepalive_idle_sec`: minimum idle time (no `realtimeInput`) before sending a ping.
+- `providers.google_live.session_resumption_enabled`: default `false`. Opt in to bounded connection recovery using Google's cached session checkpoints. Available on Developer API and Vertex AI; requires server-side session retention. See [long-call recovery](Provider-Google-Setup.md#long-calls-and-session-recovery).
+- `providers.google_live.context_window_compression_enabled`: default `false`. Independently enable Google's sliding-window compression to avoid the context-duration limit; older conversation turns may be discarded.
+- `providers.google_live.session_recovery_timeout_sec`: default `10`, greater than `0` and at most `30`. Budget for replacing the transport, including authentication, setup acknowledgment, retry backoff and buffered input delivery. Planned waiting for a checkpoint uses `goAway.timeLeft`; final cleanup/tool drain is separately bounded.
+- `providers.google_live.session_recovery_max_attempts`: default `2`, range `1–3`. Attempts within that total budget; initial-connection retries do not multiply this limit.
+- `providers.google_live.session_recovery_audio_buffer_ms`: default `1000`, range `0–2000`. Keep the most recent caller audio received during recovery; older buffered input is dropped. `0` disables buffering. Save provider changes and restart the AI Engine.
 
 ### Deepgram Voice Agent (monolithic agent)
 

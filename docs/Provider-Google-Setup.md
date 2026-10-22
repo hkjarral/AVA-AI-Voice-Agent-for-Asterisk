@@ -16,6 +16,76 @@ If you used the Admin UI Setup Wizard, you may not need to follow this guide end
 For how provider/Agent selection works (including `AI_AGENT` / `AI_PROVIDER`), see:
 - `Configuration-Reference.md` → "Call Selection & Precedence (Provider / Pipeline / Agent)"
 
+## Long calls and session recovery
+
+Google limits the lifetime of each Live WebSocket connection to approximately ten
+minutes, on both Developer API and Vertex AI. Moving to Vertex does not remove
+the need for connection turnover. Audio sessions also have a separate context
+limit, approximately fifteen minutes without compression.
+
+In **Providers → Google Live → API Mode → Long calls and connection recovery**:
+
+- Enable **Keep long calls connected** to request resumable session checkpoints
+  and replace the connection after `GoAway` or an eligible unexpected close.
+- Enable **Compress long conversation history** independently to let Google
+  discard older turns when approaching the context limit. Keep critical business
+  state in AVA's tools/records rather than relying on model recall.
+- Save, then restart the AI Engine. Both options default to **off**; existing
+  configurations remain opted out. Leave resumption off when zero server-side
+  data retention is required. Google caches conversation data for resumption.
+
+Equivalent per-provider YAML (including named `type: google_live` instances):
+
+```yaml
+session_resumption_enabled: true
+context_window_compression_enabled: true
+session_recovery_timeout_sec: 10
+session_recovery_max_attempts: 2
+session_recovery_audio_buffer_ms: 1000
+```
+
+Recovery preserves the setup configuration, greeting state, tool permissions,
+completed tool responses and deduplication state. It never starts a fresh
+conversation or falls back between Vertex and Developer API during resumption.
+Planned turnover waits for a resumable checkpoint and completed tools, bounded by
+`goAway.timeLeft`. An unexpected disconnect without a currently safe checkpoint
+(for example during generation or a tool call) follows terminal disconnect
+handling; retaining an older handle does not prove it is safe to replay.
+Non-resumable updates revoke the saved checkpoint. Recovery rechecks safety
+after notifying the engine and before sending resumed setup; invalidation follows
+terminal handling instead of resuming stale context or starting a fresh chat.
+Authentication, schema and quota failures are not blindly retried. Caller
+hangup, farewell and transfer ownership take precedence over recovery.
+An attended-transfer decision retains ownership through bridge completion or
+abort cleanup, including caller-facing prompts. Predial routing retains ownership
+from destination setup, before deferred-transfer state is recorded. Disconnect handling also waits
+for deferred routing to resolve within its bounded observation window; if the
+transfer fails and returns ownership to the AI, the dead provider follows terminal
+disconnect handling rather than leaving the call silent.
+
+A short audio gap is possible. Only new caller audio arriving during replacement
+is buffered, with a bounded most-recent window; previously sent audio and old
+model output are never replayed. Failed recovery uses the engine's existing
+audio-drain/fallback/termination handling. Unexpected clean closes on an active
+call now also report a disconnect instead of leaving the provider silently dead.
+
+INFO logs record `GoAway` time left, connection age and recovery outcomes without
+resumption handles. Call diagnostics retain the call-time recovery settings.
+Handles are memory-only and cleared on teardown; process restarts end calls and
+do not resume past sessions. Disable the two switches and restart to roll back.
+
+**Qualification before production:** on each intended API/model/transport, make a
+30-minute call and confirm multiple `Google Live session resumed` events, one
+greeting, conversation continuity, and clean teardown. Exercise interruption,
+tool use, and hangup/transfer during turnover with both long-response playback
+modes where applicable. Verify failed/rejected recovery produces one terminal
+disconnect and no duplicate tool writes. Synthetic tests do not establish live
+provider acceptance or an audio-gap guarantee.
+
+Research checked 2026-10-20: [Developer API session management](https://ai.google.dev/gemini-api/docs/live-api/session-management),
+[Live WebSocket schema](https://ai.google.dev/api/live), and
+[Vertex session management](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/start-manage-session).
+
 ## Quick Start
 
 ### 1. Enable Google Cloud APIs

@@ -41,6 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Google Live long calls (#756):** add opt-in session resumption and independent
+  context compression for Developer API and Vertex AI. Turn over connections on
+  `GoAway` at safe checkpoints with bounded recovery, preserve call/tool state,
+  and report unexpected clean closes instead of leaving dead air. Both options
+  remain disabled until explicitly enabled in provider settings. Retain transfer
+  ownership from predial setup through routing completion, prevent recovery-buffer
+  replay across turnovers, preserve legacy tool calls without server IDs, and
+  restore valid defaults when recovery inputs are cleared. Revalidate checkpoints
+  after recovery admission yields so revocation cannot resume stale context.
 - **Telnyx and MiniMax tool calls:** keep a tool call whose `arguments` is an
   empty string, null or an object. A parameterless call such as `hangup_call`
   used to fail `json.loads("")` and be dropped with only a warning.

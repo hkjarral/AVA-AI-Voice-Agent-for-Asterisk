@@ -19,6 +19,9 @@ def test_snapshot_captures_effective_provider_audio_and_runtime_without_secrets(
                 "connect_timeout_sec": 10,
                 "connect_max_retries": 0,
                 "connect_total_timeout_sec": None,
+                "session_resumption_enabled": True,
+                "session_recovery_timeout_sec": 8,
+                "session_resumption_handle": "private-handle-must-not-be-copied",
                 "input_encoding": "pcm16",
                 "input_sample_rate_hz": 16000,
                 "api_key": "must-not-be-copied",
@@ -82,6 +85,9 @@ def test_snapshot_captures_effective_provider_audio_and_runtime_without_secrets(
     assert snapshot["configured"]["provider"]["model"] == "gemini-live"
     assert snapshot["configured"]["provider"]["connect_timeout_sec"] == 10
     assert snapshot["configured"]["provider"]["connect_max_retries"] == 0
+    assert snapshot["configured"]["provider"]["session_resumption_enabled"] is True
+    assert snapshot["configured"]["provider"]["session_recovery_timeout_sec"] == 8
+    assert "private-handle" not in str(snapshot)
     assert snapshot["configured"]["vad"]["vad_mode"] == "provider"
     assert snapshot["runtime"]["streaming_bytes_sent"] == 2048
     rendered = repr(snapshot)

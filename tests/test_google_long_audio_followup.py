@@ -249,6 +249,7 @@ async def test_disconnect_waits_for_transfer_and_closes_only_on_failure(accepted
     worker = next(iter(e._call_bg_tasks[s.call_id]))
     s.current_action={'type':'attended_transfer','decision':'accepted' if accepted else 'declined'}
     if accepted:s.transfer_active=True
+    else:s.current_action=None  # Abort cleanup, after the decline prompt, releases ownership.
     await asyncio.wait_for(task,timeout=1)
     await asyncio.wait_for(worker,timeout=1)
     assert e._terminate_call_after_audio.await_count==int(not accepted)

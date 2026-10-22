@@ -604,6 +604,20 @@ class GoogleProviderConfig(CloudConnectionConfig):
     ws_keepalive_interval_sec: float = Field(default=15.0)
     ws_keepalive_idle_sec: float = Field(default=5.0)
 
+    # Opt in: resumption retains conversation state on Google's servers.
+    session_resumption_enabled: bool = Field(default=False)
+    context_window_compression_enabled: bool = Field(default=False)
+    session_recovery_timeout_sec: float = Field(default=10.0, gt=0, le=30, allow_inf_nan=False)
+    session_recovery_max_attempts: int = Field(default=2, ge=1, le=3)
+    session_recovery_audio_buffer_ms: int = Field(default=1000, ge=0, le=2000)
+
+    @field_validator("session_recovery_timeout_sec", "session_recovery_max_attempts", "session_recovery_audio_buffer_ms", mode="before")
+    @classmethod
+    def reject_boolean_recovery_limits(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("Google session recovery limits must be numbers, not booleans")
+        return value
+
     # Google Vertex AI Live API support (AAVA-191)
     # When use_vertex_ai=True, the provider connects to Vertex AI instead of the Developer API.
     # Vertex AI uses OAuth2/ADC (Application Default Credentials) instead of an API key.

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import copy
 import json
 import math
 import os
@@ -27,11 +28,12 @@ import time
 import struct
 import audioop
 import re
+import uuid
 from typing import AbstractSet, Any, Dict, Optional, List, Tuple
 from collections import deque
 
 import websockets
-from .connection_recovery import connect_with_recovery
+from .connection_recovery import connect_with_recovery, is_transient_connect_error
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
@@ -227,6 +229,25 @@ class GoogleLiveProvider(AIProviderInterface):
         self._tool_call_lock = asyncio.Lock()
         self._tool_teardown_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
+        self._recovery_task: Optional[asyncio.Task] = None
+        self._recovering = False
+        self._recovery_ready = asyncio.Event()
+        self._recovery_ready.set()
+        self._resume_handle: Optional[str] = None
+        # A revoked handle may still appear in a subsequent close reason.
+        # Keep it only for redaction, never as recovery input, until teardown.
+        self._redaction_resume_handle: Optional[str] = None
+        self._session_resumable = False
+        self._setup_snapshot: Optional[Dict[str, Any]] = None
+        self._recovery_audio = bytearray()
+        self._recovery_audio_dropped = 0
+        self._disconnect_emitted = False
+        self._connection_started_at: Optional[float] = None
+        self._go_away_deadline: Optional[float] = None
+        self._last_close_code: Optional[int] = None
+        self._last_close_reason = ""
+        self._recovery_guard = None
+        self._tool_response_cache: Dict[str, Dict[str, Any]] = {}
         self._gating_manager = gating_manager
 
         self._call_id: Optional[str] = None
@@ -834,6 +855,15 @@ class GoogleLiveProvider(AIProviderInterface):
             call_id: Unique identifier for the call
             context: Optional context including system prompt, tools, etc.
         """
+        self._resume_handle = None
+        self._redaction_resume_handle = None
+        self._session_resumable = False
+        self._setup_snapshot = None
+        self._recovery_audio.clear()
+        self._recovery_audio_dropped = 0
+        self._disconnect_emitted = False
+        self._go_away_deadline = None
+        self._tool_response_cache.clear()
         self._handoff_evidence.reset(call_id)
         self._call_id = call_id
         self._closing = False
@@ -873,12 +903,24 @@ class GoogleLiveProvider(AIProviderInterface):
                 call_id=call_id,
             )
 
+        try:
+            await self._connect_session(context)
+        except BaseException:
+            await self.stop_session()
+            raise
+
+    async def _connect_session(self, context: Optional[Dict[str, Any]] = None) -> None:
+        """Replace only the transport; call-owned state survives resumption."""
+        call_id = self._call_id
         connection_loop = asyncio.get_running_loop()
         connection_started = connection_loop.time()
-        connection_budget = self.config.connect_total_timeout_sec
+        connection_budget = (
+            self.config.session_recovery_timeout_sec if self._recovering
+            else self.config.connect_total_timeout_sec
+        )
 
         # Build WebSocket URL and headers — Vertex AI vs Developer API (AAVA-191)
-        use_vertex = getattr(self.config, 'use_vertex_ai', False)
+        use_vertex = self._vertex_active if self._recovering else self.config.use_vertex_ai
         ws_url: str
         ws_extra_headers: dict = {}
 
@@ -934,7 +976,7 @@ class GoogleLiveProvider(AIProviderInterface):
             except Exception as vertex_err:
                 # ADC failed — fall back to Developer API if an API key exists
                 _fallback_key = (getattr(self.config, 'api_key', None) or "").strip()
-                if _fallback_key:
+                if _fallback_key and not self._recovering:
                     logger.warning(
                         "Vertex AI ADC failed; falling back to Developer API (api_key)",
                         call_id=call_id,
@@ -998,10 +1040,14 @@ class GoogleLiveProvider(AIProviderInterface):
                     ping_interval=None,
                     ping_timeout=None,
                 ),
-                self.config, provider=self.provider_event_name(), call_id=call_id,
+                self.config.model_copy(update={"connect_max_retries": 0}) if self._recovering else self.config,
+                provider=self.provider_event_name(), call_id=call_id,
                 started_at=connection_started,
             )
 
+            self._connection_started_at = time.monotonic()
+            self._last_close_code = None
+            self._last_close_reason = ""
             _GOOGLE_LIVE_SESSIONS.inc()
             self._session_gauge_incremented = True
 
@@ -1025,6 +1071,8 @@ class GoogleLiveProvider(AIProviderInterface):
             # Wait for setup acknowledgment
             logger.debug("Waiting for Google Live setupComplete...", call_id=self._call_id)
             await asyncio.wait_for(self._setup_ack_event.wait(), timeout=5.0)
+            if not self._setup_complete or not self._ws_is_open():
+                raise ConnectionError("Google Live closed before setup acknowledgment")
             logger.info("Google Live setup complete (ACK received)", call_id=self._call_id)
 
             # Note: Greeting is sent by _handle_setup_complete() to avoid race condition
@@ -1044,10 +1092,8 @@ class GoogleLiveProvider(AIProviderInterface):
             logger.error(
                 "Failed to start Google Live session",
                 call_id=call_id,
-                error=str(e),
-                exc_info=True,
+                error_type=type(e).__name__,
             )
-            await self.stop_session()
             raise
 
     @staticmethod
@@ -1091,6 +1137,14 @@ class GoogleLiveProvider(AIProviderInterface):
 
     async def _send_setup(self, context: Optional[Dict[str, Any]]) -> None:
         """Send session setup message to Gemini Live API."""
+        if self._recovering:
+            if not self._setup_snapshot or not self._safe_checkpoint():
+                raise ValueError("Google Live resumption requires a safe checkpoint")
+            setup_msg = copy.deepcopy(self._setup_snapshot)
+            setup_msg["setup"]["sessionResumption"] = {"handle": self._resume_handle}
+            if not await self._send_message(setup_msg):
+                raise ConnectionError("Google Live resumed setup send failed")
+            return
         # Use instructions from config (like OpenAI Realtime pattern)
         system_prompt = self.config.instructions
         
@@ -1230,6 +1284,12 @@ class GoogleLiveProvider(AIProviderInterface):
             }
         }
 
+        if self.config.session_resumption_enabled:
+            setup_msg["setup"]["sessionResumption"] = {}
+        if self.config.context_window_compression_enabled:
+            setup_msg["setup"]["contextWindowCompression"] = {"slidingWindow": {}}
+        self._setup_snapshot = copy.deepcopy(setup_msg)
+
         # Debug: Log setup message structure
         logger.debug(
             "Sending Google Live setup message",
@@ -1275,13 +1335,19 @@ class GoogleLiveProvider(AIProviderInterface):
             return False
 
         async with self._send_lock:
+            websocket = self.websocket
+            if websocket is None:
+                return False
             try:
-                await self.websocket.send(json.dumps(message))
+                await websocket.send(json.dumps(message))
+                for response in (message.get("toolResponse") or {}).get("functionResponses", []):
+                    if response.get("id"):
+                        self._tool_response_cache[response["id"]] = copy.deepcopy(response)
                 self._ws_unavailable_logged = False
                 return True
             except Exception as e:
                 if isinstance(e, (ConnectionClosedError, ConnectionClosedOK)):
-                    close_reason = getattr(e, "reason", None)
+                    close_reason = self._redact_close_reason(getattr(e, "reason", None) or "")
                     close_code = getattr(e, "code", None)
                     if not self._ws_send_close_logged:
                         logger.warning(
@@ -1292,7 +1358,6 @@ class GoogleLiveProvider(AIProviderInterface):
                             last_outbound=summary,
                         )
                         self._ws_send_close_logged = True
-                    self._mark_ws_disconnected()
                     return False
                 logger.error(
                     "Failed to send message to Google Live",
@@ -1300,9 +1365,6 @@ class GoogleLiveProvider(AIProviderInterface):
                     error=str(e),
                     last_outbound=summary,
                 )
-                # Prevent log storms when the socket is already closed.
-                if not self._ws_is_open():
-                    self._mark_ws_disconnected()
                 return False
 
     def _build_tool_response_payload(self, tool_name: str, result: Any) -> Dict[str, Any]:
@@ -1430,7 +1492,9 @@ class GoogleLiveProvider(AIProviderInterface):
             sample_rate: Sample rate of input audio (default from config)
             encoding: Audio encoding (ulaw/linear16/pcm16)
         """
-        if not self.websocket or not self._setup_complete or self._closing:
+        if self._closing or self._closed:
+            return
+        if not self._recovering and (not self.websocket or not self._setup_complete):
             return
 
         try:
@@ -1454,6 +1518,15 @@ class GoogleLiveProvider(AIProviderInterface):
                 )
             else:
                 pcm16_provider = pcm16_src
+
+            if self._recovering:
+                limit = int(provider_rate * 2 * self.config.session_recovery_audio_buffer_ms / 1000)
+                self._recovery_audio.extend(pcm16_provider)
+                excess = max(0, len(self._recovery_audio) - limit)
+                if excess:
+                    del self._recovery_audio[:excess]
+                    self._recovery_audio_dropped += excess
+                return
 
             # GOLDEN BASELINE APPROACH: Buffer and send in 20ms chunks
             # This matches the validated implementation from Nov 14, 2025
@@ -1493,127 +1566,83 @@ class GoogleLiveProvider(AIProviderInterface):
             )
 
     async def _receive_loop(self) -> None:
-        """Continuously receive and process messages from Gemini Live API."""
-        if not self.websocket:
+        """Read one connection; its replacement is owned by the recovery task."""
+        websocket = self.websocket
+        if websocket is None:
             return
-
+        code, reason = None, ""
         try:
-            async for message in self.websocket:
+            async for message in websocket:
+                if websocket is not self.websocket or self._closing:
+                    break
                 try:
-                    data = json.loads(message)
-                    await self._handle_server_message(data)
-                except json.JSONDecodeError as e:
-                    logger.error(
-                        "Failed to decode Google Live message",
-                        call_id=self._call_id,
-                        error=str(e),
-                    )
-                except Exception as e:
-                    logger.error(
-                        "Error handling Google Live message",
-                        call_id=self._call_id,
-                        error=str(e),
-                        exc_info=True,
-                    )
-        except (ConnectionClosedError, ConnectionClosedOK) as e:
-            # Enhanced logging for WebSocket close
-            close_reason = e.reason if hasattr(e, 'reason') else "No reason provided"
-            close_code = e.code if hasattr(e, 'code') else None
-            if self.long_audio_playback_enabled and close_code != 1000:
-                self._long_audio_transport_failed = True
-            
-            # Decode close code meaning
-            close_code_meanings = {
-                1000: "Normal closure",
-                1001: "Going away",
-                1002: "Protocol error",
-                1003: "Unsupported data",
-                1006: "Abnormal closure (no close frame)",
-                1007: "Invalid frame payload data",
-                1008: "Policy violation (unsupported operation, auth, or feature gating)",
-                1009: "Message too big",
-                1010: "Mandatory extension missing",
-                1011: "Internal server error",
-            }
-            close_meaning = close_code_meanings.get(close_code, "Unknown")
-            
-            logger.warning(
-                "Google Live WebSocket closed",
-                call_id=self._call_id,
-                code=close_code,
-                meaning=close_meaning,
-                reason=close_reason,
-                outbound_tail=list(self._outbound_summaries),
-                ws_keepalive=self._ws_keepalive_telemetry(),
-            )
-            
-            # Specific guidance for common errors
-            if close_code == 1008:
-                hint = "Verify: 1) model supports Live (bidiGenerateContent) 2) API key + Live API access 3) request schema matches docs"
-                if isinstance(close_reason, str) and "not supported" in close_reason.lower():
-                    hint = "Model/endpoint feature gating: verify model supports bidiGenerateContent (Live) for your API version/region"
-                if isinstance(close_reason, str) and "not implemented" in close_reason.lower():
-                    hint = "Server rejected an unsupported operation; verify message schema + model supports the requested features"
-                logger.error(
-                    "Policy violation (1008)",
-                    call_id=self._call_id,
-                    hint=hint,
-                    outbound_tail=list(self._outbound_summaries),
-                    ws_keepalive=self._ws_keepalive_telemetry(),
-                )
-            # Persist any pending transcription buffers before we signal the engine to tear down.
-            try:
-                await self._flush_pending_transcriptions_on_disconnect(code=close_code, reason=close_reason)
-            except Exception:
-                logger.debug(
-                    "Failed flushing pending transcriptions on disconnect",
-                    call_id=self._call_id,
-                    exc_info=True,
-                )
-            self._mark_ws_disconnected()
-            try:
-                if self.long_audio_playback_enabled and close_code != 1000:
-                    # Seal the final partial response before notifying teardown.
-                    # This is generation completion only, never a tool boundary.
-                    await self._handle_audio_generation_complete()
-                    await self._emit_provider_disconnected(code=close_code, reason=close_reason)
-                    return
-                # If farewell audio is already buffered/playing (hangup_call was invoked),
-                # the WebSocket is no longer needed.  Let the engine's cleanup_after_tts
-                # flow finish playback and hang up gracefully.
-                if self._hangup_after_response:
-                    logger.info(
-                        "Google Live WebSocket closed during farewell — "
-                        "letting buffered farewell audio play out",
-                        call_id=self._call_id,
-                        code=close_code,
-                        reason=close_reason,
-                    )
-                    return  # Don't emit ProviderDisconnected
-
-                # Only treat abnormal closes as a "disconnect" signal for the engine.
-                # Normal closure (1000) can occur during expected teardown and should not
-                # force an immediate hangup (would cut off farewell audio / cleanup flows).
-                if close_code != 1000:
-                    await self._emit_provider_disconnected(code=close_code, reason=close_reason)
-            except Exception:
-                logger.debug(
-                    "Failed to emit ProviderDisconnected event",
-                    call_id=self._call_id,
-                    exc_info=True,
-                )
-        except Exception as e:
-            logger.error(
-                "Google Live receive loop error",
-                call_id=self._call_id,
-                error=str(e),
-                exc_info=True,
-            )
+                    await self._handle_server_message(json.loads(message))
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Invalid Google Live message", call_id=self._call_id)
+                except Exception:
+                    logger.error("Error handling Google Live message", call_id=self._call_id, exc_info=True)
+        except (ConnectionClosedError, ConnectionClosedOK) as exc:
+            code, reason = exc.code, exc.reason
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            code, reason = 1006, type(exc).__name__
         finally:
-            await self._drain_tool_calls(reason="websocket_closed")
+            if websocket is self.websocket and not self._closing and not self._closed:
+                code = code if code is not None else getattr(websocket, "close_code", None)
+                reason = self._redact_close_reason(reason or getattr(websocket, "close_reason", "") or "receive loop ended")
+                self._last_close_code, self._last_close_reason = code, reason
+                logger.warning(
+                    "Google Live WebSocket closed", call_id=self._call_id,
+                    code=code, reason=reason,
+                    connection_age_sec=round(time.monotonic() - (self._connection_started_at or time.monotonic()), 3),
+                )
+                self._mark_ws_disconnected()
+                # Wake an opening/recovery attempt immediately on setup rejection.
+                if self._setup_ack_event:
+                    self._setup_ack_event.set()
+                if not self._recovering:
+                    if not self._request_recovery(code=code, reason=reason):
+                        await self._finish_disconnect(code=code, reason=reason)
+
+    async def _finish_disconnect(self, *, code: Optional[int], reason: str) -> None:
+        """Only exhausted/unrecoverable connections reach engine teardown."""
+        if self._disconnect_emitted or self._closing or self._closed:
+            return
+        if self._hangup_ready_emitted or self._terminal_audio_cutoff_after_tool:
+            return
+        self._disconnect_emitted = True
+        await self._flush_pending_transcriptions_on_disconnect(code=code, reason=reason)
+        if self.long_audio_playback_enabled:
+            self._long_audio_transport_failed = True
+            await self._handle_audio_generation_complete()
+        elif self._hangup_after_response:
+            return  # Buffered farewell still belongs to the engine's drain.
+        await self._drain_tool_calls(reason="websocket_closed")
+        await self._emit_provider_disconnected(code=code, reason=reason)
+
+    def _redact_close_reason(self, reason: str) -> str:
+        for secret in (self._resume_handle, self._redaction_resume_handle, self.config.api_key):
+            if secret:
+                reason = reason.replace(secret, "<redacted>")
+        return reason
 
     async def _handle_server_message(self, data: Dict[str, Any]) -> None:
         """Handle incoming message from Gemini Live API."""
+        content = data.get("serverContent") or {}
+        if content.get("modelTurn") or content.get("outputTranscription"):
+            # An earlier checkpoint does not cover a newly generating turn.
+            # Wait for a subsequent positive server update before turnover.
+            self._session_resumable = False
+        update = data.get("sessionResumptionUpdate")
+        if isinstance(update, dict):
+            handle = update.get("newHandle")
+            self._session_resumable = update.get("resumable") is True and isinstance(handle, str) and bool(handle)
+            if self._session_resumable:
+                self._resume_handle = handle
+                self._redaction_resume_handle = handle
+            else:
+                self._resume_handle = None
         message_type = None
         
         # Determine message type
@@ -1644,8 +1673,22 @@ class GoogleLiveProvider(AIProviderInterface):
         elif message_type == "serverContent":
             await self._handle_server_content(data)
         elif message_type == "toolCall":
+            # Setup ACK and recovery admission must finish before a new socket
+            # may cause external effects (including legacy serial tool calls).
+            self._session_resumable = False
+            await self._recovery_ready.wait()
+            calls = []
+            for call in (data.get("toolCall") or {}).get("functionCalls", []):
+                cached = self._tool_response_cache.get(call.get("id"))
+                if cached is not None:
+                    await self._send_message({"toolResponse": {"functionResponses": [copy.deepcopy(cached)]}})
+                else:
+                    calls.append(call)
+            data = {"toolCall": {"functionCalls": calls}}
             if self._normalize_model_name(self.config.llm_model) == self.GEMINI_3_8_LIVE_MODEL:
                 self._schedule_3_8_tool_calls(data)
+            elif self.config.session_resumption_enabled:
+                await self._run_resumable_serial_tools(data)
             else:
                 await self._handle_tool_call(data)
         elif message_type == "toolCallCancellation":
@@ -1669,7 +1712,7 @@ class GoogleLiveProvider(AIProviderInterface):
         )
 
         # Play greeting if configured (skip on reconnect — caller already heard it)
-        if self.config.greeting and not self._greeting_completed:
+        if not self._recovering and self.config.greeting and not self._greeting_completed:
             self._greeting_completed = True
             await self._send_greeting()
 
@@ -2363,10 +2406,10 @@ class GoogleLiveProvider(AIProviderInterface):
             # Stop the watchdog from double-firing.
             self._hangup_fallback_emitted = True
 
-    async def _handle_tool_call(self, data: Dict[str, Any]) -> None:
-        """Handle toolCall message."""
+    async def _handle_tool_call(self, data: Dict[str, Any], *, _tracking_id: Optional[str] = None) -> None:
+        """Execute tool calls; an optional local tracking id never enters the wire payload."""
         owner_call_id = self._call_id
-        if self._closing or self._closed or self._long_audio_transport_failed or not owner_call_id:
+        if self._closing or self._closed or self._disconnect_emitted or self._long_audio_transport_failed or not owner_call_id:
             return
         tool_call = data.get("toolCall", {})
         func_name = None
@@ -2435,13 +2478,14 @@ class GoogleLiveProvider(AIProviderInterface):
                         "message": f"Tool '{func_name}' not allowed for this call",
                     }
                 else:
-                    if self._closing or self._closed or self._long_audio_transport_failed or self._call_id != owner_call_id:
+                    if self._closing or self._closed or self._disconnect_emitted or self._long_audio_transport_failed or self._call_id != owner_call_id:
                         return
                     # Protect only a tool that has entered actual execution.
                     # A task still checking allowlists is safe to cancel during
                     # teardown; it must not begin a transfer after shutdown.
-                    if call_id is not None:
-                        self._active_tool_call_ids.add(call_id)
+                    active_id = _tracking_id or call_id
+                    if active_id is not None:
+                        self._active_tool_call_ids.add(active_id)
                     result = await self._tool_adapter.execute_tool(
                         func_name,
                         func_args,
@@ -2462,7 +2506,7 @@ class GoogleLiveProvider(AIProviderInterface):
 
                 # An active call-state action may finish after WebSocket teardown.
                 # Keep its result in call history, but never reply into a stale session.
-                if self._closing or self._closed or self._long_audio_transport_failed or self._call_id != owner_call_id:
+                if self._closing or self._closed or self._disconnect_emitted or self._long_audio_transport_failed or self._call_id != owner_call_id:
                     return
 
                 # Check for hangup intent (like OpenAI Realtime pattern)
@@ -2713,6 +2757,39 @@ class GoogleLiveProvider(AIProviderInterface):
 
             task.add_done_callback(finish_tool)
 
+    async def _run_resumable_serial_tools(self, data: Dict[str, Any]) -> None:
+        """Keep legacy ordering, shielding entered writes from reader cancellation."""
+        for call in (data.get("toolCall") or {}).get("functionCalls", []):
+            tool_id = call.get("id")
+            if tool_id and tool_id in self._seen_tool_call_ids:
+                continue
+            tracking_kwargs = {}
+            if tool_id:
+                self._seen_tool_call_ids.add(tool_id)
+            else:
+                # Legacy Vertex calls may omit ids. Keep the wire payload and
+                # recorder id unchanged while protecting entered writes locally.
+                tool_id = f"anonymous-{uuid.uuid4().hex}"
+                tracking_kwargs["_tracking_id"] = tool_id
+            task = asyncio.create_task(self._handle_tool_call(
+                {"toolCall": {"functionCalls": [call]}}, **tracking_kwargs,
+            ))
+            self._tool_call_tasks[tool_id] = task
+            self._tool_call_names[tool_id] = call.get("name") or ""
+
+            def finish(done: asyncio.Task, key: str = tool_id) -> None:
+                if self._tool_call_tasks.get(key) is done:
+                    self._tool_call_tasks.pop(key, None)
+                    self._tool_call_names.pop(key, None)
+                    self._active_tool_call_ids.discard(key)
+                self._detached_tool_tasks.discard(done)
+                if not done.cancelled() and done.exception():
+                    logger.error("Google Live serial tool failed", call_id=self._call_id,
+                                 error_type=type(done.exception()).__name__)
+
+            task.add_done_callback(finish)
+            await asyncio.shield(task)
+
     def _schedule_forced_farewell_if_needed(self) -> None:
         if self._force_farewell_sent:
             return
@@ -2819,12 +2896,161 @@ class GoogleLiveProvider(AIProviderInterface):
                 exc_info=True
             )
 
-    async def _handle_go_away(self, data: Dict[str, Any]) -> None:
-        """Handle goAway message (server disconnect warning)."""
-        logger.warning(
-            "Google Live server sending goAway",
-            call_id=self._call_id,
+    def _safe_checkpoint(self) -> bool:
+        return bool(
+            self._session_resumable and self._resume_handle
+            and not any(not task.done() for task in self._tool_call_tasks.values())
         )
+
+    async def _recovery_allowed(self) -> bool:
+        if (not self._call_id or self._closing or self._closed or self._hangup_after_response
+                or self._hangup_ready_emitted or self._terminal_audio_cutoff_after_tool):
+            return False
+        if self._recovery_guard is not None:
+            return bool(await self._recovery_guard())
+        return True
+
+    def _retryable_close(self, code: Optional[int], reason: str) -> bool:
+        # 1008 is overloaded: only the explicit GoAway lifetime case is recoverable.
+        if code == 1008:
+            return "goaway" in reason.lower()
+        if code == 1011:
+            return not any(term in reason.lower() for term in ("quota", "exhaust", "permission", "credential", "unauthoriz"))
+        return code in {None, 1000, 1001, 1006, 1012, 1013}
+
+    def _request_recovery(self, *, code: Optional[int], reason: str, planned: bool = False) -> bool:
+        if self._recovery_task and not self._recovery_task.done():
+            return True
+        if (not self.config.session_resumption_enabled or not self._setup_snapshot
+                or self._closing or self._closed or self._hangup_after_response
+                or self._hangup_ready_emitted or self._terminal_audio_cutoff_after_tool):
+            return False
+        if not planned and (not self._safe_checkpoint() or not self._retryable_close(code, reason)):
+            return False
+        self._recovery_task = asyncio.create_task(
+            self._recover_session(planned=planned), name=f"google-live-recover-{self._call_id}",
+        )
+        return True
+
+    async def _discard_connection(self) -> None:
+        """Detach before awaiting: an old reader/send must never clear its replacement."""
+        websocket = self.websocket
+        self._mark_ws_disconnected()
+        current = asyncio.current_task()
+        tasks = [task for task in (self._receive_task, self._keepalive_task)
+                 if task and task is not current and not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if websocket is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(websocket.close(), timeout=1.0)
+
+    async def _resume_transport(self) -> None:
+        for attempt in range(1, self.config.session_recovery_max_attempts + 1):
+            if not await self._recovery_allowed() or not self._safe_checkpoint():
+                raise RuntimeError("Call no longer has a safe Google checkpoint")
+            try:
+                self._last_close_code, self._last_close_reason = None, ""
+                await self._connect_session()
+                if not await self._recovery_allowed():
+                    raise RuntimeError("Call ended during Google recovery")
+                return
+            except Exception as exc:
+                code, reason = self._last_close_code, self._last_close_reason
+                await self._discard_connection()
+                retry = self._retryable_close(code, reason) if code is not None else is_transient_connect_error(exc)
+                logger.warning("Google Live resumption attempt failed", call_id=self._call_id,
+                               attempt=attempt, error_type=type(exc).__name__, retrying=retry)
+                if not retry or attempt == self.config.session_recovery_max_attempts:
+                    raise
+                await asyncio.sleep(0.25 * attempt)
+
+    async def _recover_session(self, *, planned: bool) -> None:
+        started = time.monotonic()
+        recovered = False
+        notified = False
+        try:
+            if planned:
+                while not self._safe_checkpoint():
+                    if (not await self._recovery_allowed() or not self._ws_is_open()
+                            or time.monotonic() >= (self._go_away_deadline or started)):
+                        raise RuntimeError("No safe Google checkpoint before GoAway deadline")
+                    await asyncio.sleep(0.05)
+            if not await self._recovery_allowed() or not self._safe_checkpoint():
+                raise RuntimeError("Google recovery is no longer safe")
+            if not self._ws_is_open() and not self._retryable_close(self._last_close_code, self._last_close_reason):
+                raise RuntimeError("Google closed with a non-retryable error")
+            self._recovering = True
+            self._recovery_ready.clear()
+            async with asyncio.timeout(self.config.session_recovery_timeout_sec):
+                if self.on_event:
+                    notified = True
+                    await self.on_event({"type": "ProviderSessionRecovery", "call_id": self._call_id, "active": True})
+                # The old reader remains live during the engine notification.
+                # Generation, tool requests, or revocation can invalidate the
+                # checkpoint while that callback yields.
+                if not self._safe_checkpoint():
+                    raise RuntimeError("Google checkpoint invalidated during recovery admission")
+                await self._discard_connection()
+                # Partial pre-close input is not replayed into a checkpoint.
+                self._input_buffer.clear()
+                await self._resume_transport()
+                rate = self.config.provider_input_sample_rate_hz
+                chunk_size = int(rate * 2 * _COMMIT_INTERVAL_SEC)
+                while len(self._recovery_audio) >= chunk_size:
+                    chunk = bytes(self._recovery_audio[:chunk_size])
+                    del self._recovery_audio[:chunk_size]
+                    if not await self._send_message({"realtimeInput": {"audio": {
+                        "mimeType": f"audio/pcm;rate={rate}", "data": base64.b64encode(chunk).decode(),
+                    }}}):
+                        raise ConnectionError("Google Live recovery audio send failed")
+                self._input_buffer.extend(self._recovery_audio)
+                self._recovery_audio.clear()
+                if not self._ws_is_open():
+                    raise ConnectionError("Google Live closed during resumption")
+                recovered = True
+                logger.info("Google Live session resumed", call_id=self._call_id,
+                            elapsed_sec=round(time.monotonic() - started, 3),
+                            dropped_input_bytes=self._recovery_audio_dropped)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Google Live session recovery failed", call_id=self._call_id,
+                           error_type=type(exc).__name__, elapsed_sec=round(time.monotonic() - started, 3),
+                           checkpoint_available=bool(self._resume_handle), resumable=self._session_resumable,
+                           active_tools=sum(not task.done() for task in self._tool_call_tasks.values()))
+        finally:
+            self._go_away_deadline = None
+            recovered = recovered and self._ws_is_open() and not self._closing and not self._closed
+            if not recovered:
+                await self._discard_connection()
+            self._recovering = False
+            self._recovery_audio.clear()
+            if notified and self.on_event:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(self.on_event({
+                        "type": "ProviderSessionRecovery", "call_id": self._call_id, "active": False,
+                    }), timeout=1.0)
+            recovered = recovered and self._ws_is_open() and not self._closing and not self._closed
+            self._recovery_task = None
+            if not recovered:
+                await self._discard_connection()
+            self._recovery_ready.set()
+            if not recovered and not self._closing and not self._closed:
+                await self._finish_disconnect(code=self._last_close_code, reason="session_recovery_failed")
+
+    async def _handle_go_away(self, data: Dict[str, Any]) -> None:
+        """Schedule one turnover at a resumable boundary before Google's deadline."""
+        time_left = (data.get("goAway") or {}).get("timeLeft")
+        match = re.fullmatch(r"(\d+(?:\.\d+)?)s", str(time_left))
+        remaining = float(match.group(1)) if match else 0.0
+        deadline = time.monotonic() + max(0, remaining - 0.25)
+        self._go_away_deadline = min(self._go_away_deadline or deadline, deadline)
+        logger.warning("Google Live server sending goAway", call_id=self._call_id,
+                       time_left=time_left, connection_age_sec=round(time.monotonic() - (self._connection_started_at or time.monotonic()), 3))
+        self._request_recovery(code=None, reason="goAway", planned=True)
 
     async def _keepalive_loop(self) -> None:
         """Send periodic keepalive messages."""
@@ -2973,6 +3199,17 @@ class GoogleLiveProvider(AIProviderInterface):
                     logger.debug("Failed to emit AgentAudioDone during stop_session",
                                  call_id=self._call_id, exc_info=True)
 
+            # Recovery must stop before any call-owned resources are cleared.
+            recovery = self._recovery_task
+            if recovery and recovery is not asyncio.current_task() and not recovery.done():
+                recovery.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await recovery
+            self._resume_handle = None
+            self._setup_snapshot = None
+            self._session_resumable = False
+            self._recovery_audio.clear()
+            self._tool_response_cache.clear()
             # Cancel background tasks
             await self._drain_tool_calls(reason="stop_session")
             if self._receive_task and not self._receive_task.done():
@@ -3001,6 +3238,12 @@ class GoogleLiveProvider(AIProviderInterface):
             self._mark_ws_disconnected()
         finally:
             # Clear evidence after background callbacks have stopped.
+            self._resume_handle = None
+            self._redaction_resume_handle = None
+            self._setup_snapshot = None
+            self._tool_response_cache.clear()
+            self._session_resumable = False
+            self._recovery_audio.clear()
             self._handoff_evidence.reset(self._call_id)
             # Clear state
             self._call_id = None

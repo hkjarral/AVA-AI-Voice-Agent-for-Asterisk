@@ -1,4 +1,5 @@
 import ConnectionRecoveryFields from './ConnectionRecoveryFields';
+import GoogleSessionRecoveryFields from './GoogleSessionRecoveryFields';
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -346,6 +347,8 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             </div>
                         </div>
                     )}
+
+                    <GoogleSessionRecoveryFields config={config} onChange={handleChange} />
 
                     {/* Vertex AI project + location — shown when Vertex AI is ON */}
                     {config.use_vertex_ai && (
