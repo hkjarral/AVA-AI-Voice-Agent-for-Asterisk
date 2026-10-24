@@ -1,6 +1,6 @@
 # Core ARI and WebSocket dependencies
 ari==0.1.3
-websockets==16.1.1
+websockets==17.3
 aiohttp==3.14.4
 httpx==0.28.1  # Native Pushover sender; shared with Admin UI
 mcp==2.3.0  # Official Streamable HTTP client; Python 3.11-compatible
