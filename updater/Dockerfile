@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gosu \
     jq \
     passwd \
+    python3 \
     util-linux \
     tzdata \
     && install -m 0755 -d /etc/apt/keyrings \
@@ -46,6 +47,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /runner
+
+RUN python3 -c "import sqlite3; assert hasattr(sqlite3.Connection, 'backup')"
 
 COPY --from=agent-builder /out/agent /usr/local/bin/agent
 COPY updater/run.sh /usr/local/bin/aava-update-runner

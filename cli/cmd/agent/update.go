@@ -82,7 +82,7 @@ var updateCmd = &cobra.Command{
 
 This command:
   - Backs up operator config (.env, config/ai-agent.local.yaml, config/users.json, config/contexts/)
-  - Takes consistent SQLite snapshots of agents.db and call_history.db when present
+  - Takes SQLite snapshots and private integration-journal/credential backups when present
   - Also snapshots config/ai-agent.yaml for recovery/migration if it was edited locally
   - Safely fast-forwards to origin/main (no forced merges by default)
   - Preserves local tracked changes using git stash (optional)
@@ -1168,10 +1168,13 @@ func createUpdateBackups(ctx *updateContext) error {
 	}
 
 	backupDir := filepath.Join(ctx.repoRoot, ".agent", "update-backups", dirName)
-	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
 		return fmt.Errorf("failed to create backup directory: %w", err)
 	}
 	ctx.backupDir = backupDir
+	if err := os.Chmod(backupDir, 0o700); err != nil {
+		return fmt.Errorf("failed to secure backup directory: %w", err)
+	}
 
 	paths := []string{
 		".env",
@@ -1194,7 +1197,7 @@ func createUpdateBackups(ctx *updateContext) error {
 			return err
 		}
 	}
-	return nil
+	return backupIntegrationState(ctx.repoRoot, backupDir)
 }
 
 // backupSQLiteIfExists uses SQLite's online backup API inside ai_engine. A raw

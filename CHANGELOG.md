@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Preserve private integration credentials and a coherent Calendly journal snapshot before CLI/recovery updates; fail closed on unsafe or unreadable state. Never automatically restore booking state during application rollback. See [backup and recovery boundaries](docs/INTEGRATION_BACKUPS.md).
+
 ### Added
 - Refreshed Agents workspace with searchable cards/list views, configured-tool summaries,
   larger AVA avatars, male/female appearance presets and custom image uploads. A routed,
