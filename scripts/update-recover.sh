@@ -41,8 +41,8 @@ usage() {
 Usage:
   sudo bash scripts/update-recover.sh [options]
 
-Recommended for a stuck release upgrade:
-  AAVA_RECOVERY_REF=v7.6.4
+Recommended for a stuck release upgrade (only after v7.7.0 is published):
+  AAVA_RECOVERY_REF=v7.7.0
   AAVA_RECOVERY_STATUS=0
   AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
     curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" -o "${AAVA_RECOVERY_SCRIPT}" &&
@@ -50,6 +50,11 @@ Recommended for a stuck release upgrade:
   AAVA_RECOVERY_STATUS=$?
   rm -f "${AAVA_RECOVERY_SCRIPT:-}"
   ( exit "${AAVA_RECOVERY_STATUS}" )
+
+Before publication, use the latest published release guide for stable recovery.
+Authorized pre-release evaluation may set AAVA_RECOVERY_REF=main after the target
+backup prerequisite (#775) merges and main passes CI. This is development code;
+never silently substitute main for an unavailable release tag.
 
 Options:
   --repo PATH                  AAVA checkout path (default: current Git checkout, then /opt/Asterisk-AI-Voice-Agent)

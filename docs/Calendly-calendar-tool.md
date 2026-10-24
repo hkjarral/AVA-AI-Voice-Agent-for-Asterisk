@@ -1,5 +1,11 @@
 # Calendly appointment booking
 
+Release qualification and accepted limits are recorded in the
+[v7.7.0 validation matrix](baselines/golden/v7.7.0-validation-matrix.md).
+Before upgrades, preserve the journal and managed credentials using the
+[integration backup guide](INTEGRATION_BACKUPS.md); application rollback must not
+erase remote-submission replay barriers.
+
 Calendly v1 connects one operator-owned Calendly user to self-hosted AVA Core. Agents can offer times and book existing supported one-to-one appointments. Calendly owns calendar connections, appointment settings, invitations, and subsequent cancellation/rescheduling.
 
 ## Setup

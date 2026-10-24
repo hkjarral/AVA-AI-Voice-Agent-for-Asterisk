@@ -16,7 +16,7 @@ You do not need to understand the whole codebase or already know Git to get help
 Try: “Read AVA.mdc. I want to [understand / build / fix / investigate] ___. Help me
 through the relevant steps and explain unfamiliar terms.”
 
-> Reviewed for v7.6.4 preparation against `main` cutoff `ec48e661` on 2026-10-16.
+> Reviewed for v7.7.0 preparation against `main` cutoff `9b58ddbd` on 2026-10-24.
 > Check the actual checkout and deployed revision before relying on any behavior.
 
 ## Assistant: Establish Context First
@@ -72,6 +72,10 @@ every service. Host `./data/` mounts at `/app/data/`; defaults include
   `AI_AGENT` selects a slug; legacy `AI_CONTEXT` uses display-name-first lookup.
   Legacy YAML Contexts import atomically only into an empty store; there is no
   live YAML persona fallback. See [Agents](docs/AGENTS.md).
+- **Appearance:** Agent avatar presets/images live in nullable `agents.db` columns,
+  never select a voice, and are ignored by runtime routing. The recovery exporter
+  omits these columns but may re-emit legacy avatar keys retained in `extra_json`.
+  Back up SQLite, not just YAML; see [Agents rollout](docs/AGENTS_EXPERIENCE_ROLLOUT.md).
 - **Per-agent behavior:** `src/core/agent_store.py` resolves a `ContextConfig` from
   `src/core/transport_orchestrator.py`; thread new fields through storage, API/UI,
   validation, and the engine's `provider_context`. Per-call `AI_PROVIDER` and
@@ -125,10 +129,17 @@ every service. Host `./data/` mounts at `/app/data/`; defaults include
   bounded and confirmed before AMD/provider startup; invalid authoritative state
   fails closed. `call_metadata` is non-authoritative and cannot change routing,
   caller identity, consent, or dialer state.
+- **Calendly:** the native tool is explicitly assigned and disabled until setup.
+  One connected account and supported one-to-one appointments use a durable
+  `data/operator/calendly.db` submission journal. Uncertain writes never replay;
+  preserve journal/credentials during rollback. See [Calendly](docs/Calendly-calendar-tool.md)
+  and [integration backups](docs/INTEGRATION_BACKUPS.md). Native later-call booking
+  management and group/pooled appointments remain out of scope.
 - **External effects:** retries must not duplicate bookings, transfers, or other
   writes. Preserve OAuth identities/caches and captured resource scopes. Microsoft
   booking updates require owned current-call bookings and observed ETags; creation
-  does not prove invitation delivery. See the [calendar guide](docs/Microsoft-calendar-tool.md).
+  does not prove invitation delivery. Teams is opt-in and calendar-backed; join readiness, invitation delivery and
+  RSVP acceptance remain different observations. See the [calendar guide](docs/Microsoft-calendar-tool.md).
 - **Diagnostics:** preserve immutable call-time settings, bounded sources, and
   sanitized support exports. Never add credentials, caller identity, recordings,
   prompts, or private instructions to public support packages.

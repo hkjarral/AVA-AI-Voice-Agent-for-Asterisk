@@ -1,6 +1,6 @@
 # Tool Calling Guide
 
-**Version**: 7.6.4<br>
+**Version**: 7.7.0<br>
 **Status**: Provider-specific qualification (see setup guides)<br>
 **Last Updated**: October 2026
 
@@ -17,6 +17,8 @@ Complete guide to AI tool calling in Asterisk AI Voice Agent—enabling AI agent
 - [Calendar Booking Boundaries](#calendar-booking-boundaries)
 - [Pre-Call Tools (HTTP Lookups)](#pre-call-tools-http-lookups)
 - [Native Pushover Tools](#native-pushover-tools)
+- [Native Calendly Booking](#native-calendly-booking)
+- [In-call Generated Summaries](#in-call-generated-summaries)
 - [In-Call HTTP Tools](#in-call-http-tools)
 - [Post-Call Tools (Webhooks)](#post-call-tools-webhooks)
 - [Configuration](#configuration)
@@ -444,6 +446,23 @@ AI: I'd be happy to help. Let me transfer you to support.
 ```
 
 ---
+
+See also [Calendly](#native-calendly-booking) and [in-call summaries](#in-call-generated-summaries).
+
+## Native Calendly Booking
+
+`calendly_calendar` lists appointments, finds slots and books after canonical
+recap/fresh approval. Explicit Agent assignment and appointment scope are required.
+The durable journal blocks replay after uncertainty/restart. Native later-call
+management and group/pooled appointments are excluded. See [setup and recovery](Calendly-calendar-tool.md).
+
+## In-call Generated Summaries
+
+Configure an existing HTTP tool's LLM, timeout and failure policy, using protected
+summary placeholders. It snapshots available conversation history at invocation,
+without filtering recorded turns by transfer state; unobserved human conversation
+cannot be summarized. Invoke before transfer for a pre-transfer snapshot. No
+provider fallback or blind retry is introduced. See [summary contracts](In-Call-Summaries.md).
 
 ## Native Pushover Tools
 
@@ -1907,5 +1926,5 @@ Tools written once, work with any provider.
 ---
 
 **Last Updated**: October 2026<br>
-**Version**: 7.6.4<br>
+**Version**: 7.7.0<br>
 **Status**: Provider-specific qualification (see setup guides)

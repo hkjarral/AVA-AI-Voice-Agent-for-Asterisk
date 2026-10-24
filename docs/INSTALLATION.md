@@ -1,8 +1,14 @@
-# Asterisk AI Voice Agent - Installation and Upgrade Guide (v7.6)
+# Asterisk AI Voice Agent - Installation and Upgrade Guide (v7.7)
 
-This guide covers fresh installations and the supported upgrade path to v7.6.4.
+This guide covers fresh installations and the supported upgrade path to v7.7.0.
+Release-pinned commands require the v7.7.0 tag and artifacts to be published.
+Until then, stable operators should use the latest published release's guide.
+For an explicitly authorized pre-release upgrade, maintainers can substitute
+`--ref main` or `AAVA_RECOVERY_REF=main` only after #775 has merged and that exact
+main revision has passed the required checks. This is development code, not a
+published release; never silently fall back from a missing release tag.
 For release-specific behavior changes, also read the
-[v7.6.4 migration notes](MIGRATION.md#v763-to-v764). Operators upgrading from
+[v7.7.0 migration notes](MIGRATION.md#v764-to-v770). Operators upgrading from
 v7.3.x or earlier must also follow the [v7.4 Agent migration](MIGRATION.md#v73x-to-v740).
 
 ## Three Setup Paths
@@ -12,21 +18,32 @@ Choose the path that best fits your experience level:
 <a id="upgrade-to-v762-existing-checkout"></a>
 <a id="upgrade-to-v763-existing-checkout"></a>
 
-## Upgrade to v7.6.4 (Existing Checkout)
+<a id="upgrade-to-v764-existing-checkout"></a>
+
+## Upgrade to v7.7.0 (Existing Checkout)
 
 This section is for operators upgrading an existing repo checkout (not a fresh install).
 
-When upgrading from v7.6.3, rebuild/recreate the engine and Admin UI and hard-refresh
-the browser. Local AI code and dependencies are unchanged; preserve its existing
-service, CPU/GPU profile and model volumes. If upgrading from an earlier release,
-also follow each intervening migration section, including the v7.6.3 Local AI
-rebuild requirement. Review HTTP templates before updating: recursive expansion,
-whole-URL call substitutions and parameter shadowing are no longer supported.
-See the [v7.6.4 migration notes](MIGRATION.md#v763-to-v764) for template formats,
-farewell/transfer behavior, custom telemetry prerequisites and rollback.
+When upgrading from v7.6.4, rebuild/recreate the engine and Admin UI, then
+hard-refresh the browser. Local AI source/dependencies are unchanged; preserve its
+profile and models. Earlier installations must follow intervening migration notes.
+Read the [v7.7.0 migration notes](MIGRATION.md#v764-to-v770) before rollout.
+
+This release adds nullable Agent appearance columns and a Calendly integration
+journal. Back up the actual Agent/Call History paths, `data/operator/calendly.db`
+when present, all managed `secrets/`, configuration and local overlays. Use coherent
+SQLite snapshots, not live main-file copies. Follow [integration backup and
+rollback safety](INTEGRATION_BACKUPS.md) and [Agents appearance recovery](AGENTS_EXPERIENCE_ROLLOUT.md).
+Use the target release CLI/pinned recovery script to obtain the new integration
+snapshots; an older installed CLI does not acquire this behavior automatically.
+The backup-safety prerequisite is tracked by PR #775 and must merge before tagging.
+The updater now needs Python 3.7+ with SQLite backup support when integration state
+exists. New updater images include it; rebuild/replace an older updater image
+before using UI-driven integration backups, or use the documented host recovery
+path with compatible Python. A CLI self-update cannot add Python to an old image.
 
 > ### ⚠️ Upgrading from 6.x? v7.0.0 introduced breaking changes — read first
-> (v7.6 includes them; if you are already on 7.x this is an in-place upgrade.)
+> (v7.7 includes them; if you are already on 7.x this is an in-place upgrade.)
 > Before upgrading from 6.x, review the **Upgrade Notes** at the top of the
 > [v7.0.0 CHANGELOG entry](../CHANGELOG.md) and the
 > [Agents migration guide](OPERATOR_MIGRATION.md). In short:
@@ -49,13 +66,13 @@ Run these commands from your actual checkout path. Do not assume it is `/root/..
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 git status --short
-git diff --binary > ../aava-pre-v764-working-tree.patch
-git diff --binary --cached > ../aava-pre-v764-staged.patch
+git diff --binary > ../aava-pre-v770-working-tree.patch
+git diff --binary --cached > ../aava-pre-v770-staged.patch
 docker compose config --quiet
 if ! docker compose -p asterisk-ai-voice-agent ps --services --status running \
-  > ../aava-pre-v764-running-services.txt; then
+  > ../aava-pre-v770-running-services.txt; then
   docker compose -p asterisk-ai-voice-agent ps --services \
-    > ../aava-pre-v764-running-services.txt || exit 1
+    > ../aava-pre-v770-running-services.txt || exit 1
 fi
 ```
 
@@ -72,11 +89,13 @@ Review the [calendar upgrade boundaries](Microsoft-calendar-tool.md#upgrading-ex
 before enabling invitations or changing booking limits. Drain active calls,
 especially booking conversations, before updating.
 
-The v7.6 updater also creates a per-job backup under `.agent/update-backups/`.
-While `ai_engine` is running, it uses SQLite's online backup API for `agents.db`
-and `call_history.db`. If the engine is stopped or unavailable, it instead copies
-each database plus any WAL/SHM sidecars from the host, when there are no active
-engine writers. An independent off-host backup is still recommended.
+The updater creates per-job backups under `.agent/update-backups/`. New
+integration preservation passes create private `integration-state.*` snapshots
+without replacing earlier passes. Confirm host Python/SQLite compatibility and
+actual mount mappings first. Relocated stores need a verified manual backup.
+Do not assume a stopped engine means Admin UI or another writer is stopped:
+when a coherent online snapshot is unavailable, stop all writers before any
+manual file/sidecar copy. An independent off-host backup remains required.
 
 ### 1) Choose how to handle tracked source changes
 
@@ -85,19 +104,19 @@ The updater never silently decides what to do with edits to tracked project file
 | Choice | Use it when | Result |
 |---|---|---|
 | `retain` | You intentionally modified project source and want to reapply it | Changes are stashed and reapplied; a conflict stops safely and leaves the stash for recovery |
-| `overwrite` | The changes are accidental, generated, or already preserved elsewhere | Tracked source edits are discarded after the updater backup; operator configuration and databases are restored |
+| `overwrite` | The changes are accidental, generated, or already preserved elsewhere | Tracked source edits are discarded after the updater backup; operator configuration is recovered; live databases and booking barriers are retained |
 | `abort` | You want to inspect or commit changes first | No update is applied |
 
 Untracked files are not overwritten by default. Review `git status --short` before
 choosing. If in doubt, choose `abort` and preserve the changes outside the checkout.
 
-### 2) Update using the v7.6 updater
+### 2) Update using the v7.7 updater
 
 Preferred CLI path:
 
 ```bash
 git fetch origin --prune --tags
-agent update --ref v7.6.4 --include-ui --local-changes=retain
+agent update --ref v7.7.0 --include-ui --local-changes=retain
 ```
 
 Replace `retain` with your explicit `overwrite` or `abort` decision. In an interactive
@@ -128,7 +147,7 @@ Run the host recovery script from an SSH shell on the AAVA server. This path doe
 depend on the failing Admin UI planner container:
 
 ```bash
-AAVA_RECOVERY_REF=v7.6.4
+AAVA_RECOVERY_REF=v7.7.0
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -164,7 +183,7 @@ terminal:
 For non-interactive recovery, pass the decision explicitly:
 
 ```bash
-AAVA_RECOVERY_REF=v7.6.4
+AAVA_RECOVERY_REF=v7.7.0
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -179,7 +198,7 @@ Use `overwrite` only when the operator accepts that tracked local code changes w
 discarded:
 
 ```bash
-AAVA_RECOVERY_REF=v7.6.4
+AAVA_RECOVERY_REF=v7.7.0
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -266,21 +285,21 @@ git diff > ../aava-update-conflict.patch
 Resolve and commit the conflict if the changes are wanted. If you intentionally choose
 to abandon the interrupted merge, `git merge --abort` is the first recovery action.
 When Git says no merge is active but the index is still conflicted, preserve the patch
-and stash before using `git reset --merge HEAD`. Then rerun the v7.6 updater with an
+and stash before using `git reset --merge HEAD`. Then rerun the v7.7 updater with an
 explicit policy. Never use `git reset --hard` as generic upgrade advice.
 
 #### If Git updated but Docker deployment failed
 
 Do not treat a second update run as proof that the containers were updated. If the first
 job reached **Fast-forwarding code** and then failed during Docker Compose, the checkout may
-already be at v7.6.4 while the old containers are still running. Save the failed job log and
+already be at v7.7.0 while the old containers are still running. Save the failed job log and
 either use its **Rollback** action or, after fixing the reported Compose/build error, reconcile
 only the services that were running before the update:
 
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 docker compose config --quiet
-AAVA_RUNNING_SERVICES_FILE=../aava-pre-v764-running-services.txt
+AAVA_RUNNING_SERVICES_FILE=../aava-pre-v770-running-services.txt
 test -f "${AAVA_RUNNING_SERVICES_FILE}" || exit 1
 AAVA_RECOVERY_SERVICES=()
 for AAVA_SERVICE in ai_engine admin_ui local_ai_server; do
@@ -542,7 +561,7 @@ agent setup
 
 **Best for:** Headless servers, scripted deployments, CLI preference
 
-> Note: `agent quickstart` and `agent init` are still available for backward compatibility, but `agent setup` is the recommended CLI wizard for v6.5.4.
+> Note: `agent quickstart` and `agent init` are still available for backward compatibility, but `agent setup` is the recommended CLI wizard for v7.7.0.
 
 ---
 

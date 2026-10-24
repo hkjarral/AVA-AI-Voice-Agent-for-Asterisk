@@ -14,13 +14,18 @@ CI is the hard gate for code quality (unit tests + lint/compile checks). Real-ca
 
 ## Manual Golden Baselines (Must Pass Before Tagging)
 
-For v7.6.4, use the [current validation matrix](baselines/golden/v7.6.4-validation-matrix.md).
-The release-preparation PR may become merge-ready before tag acceptance.
-Reuse the revision-pinned HTTP-tool, farewell/transfer and Admin dependency
-evidence with its documented limits. Keep final-candidate runtime/upgrade
-acceptance, main/security checks, supported-7.5 security-backport disposition
-and explicit merge/tag authorization separate; prior-release waivers do not
-establish a v7.6.4 pass.
+For v7.7.0, use the [current validation matrix](baselines/golden/v7.7.0-validation-matrix.md).
+The maintainer explicitly approved reuse of the existing evidence and waived
+the CI Gate's exact-revision live-call evidence and additional deployment,
+live-call, runtime and upgrade testing for this release. This also waives the
+successful-call requirement below for v7.7.0.
+The rows remain reused evidence or waived/untested, not exact-candidate passes.
+Required CI, automated checks and security review are not waived. The backup
+safety PR must merge first; refresh and revalidate the release PR against that
+base before merging it. Both merges and the tag require separate approval.
+Keep the outstanding 7.5 security-backport disposition separate: mitigation
+guidance is published, but a backport is not claimed. The general manual gates
+below remain the default for releases without an explicit scoped waiver.
 
 Run at least one successful call for each baseline you intend to claim as supported.
 

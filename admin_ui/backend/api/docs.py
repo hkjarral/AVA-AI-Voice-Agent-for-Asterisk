@@ -21,6 +21,11 @@ DOC_CATEGORIES = {
             {"file": "Configuration-Reference.md", "title": "Configuration Reference", "description": "All YAML settings explained"},
             {"file": "TOOL_CALLING_GUIDE.md", "title": "Tool Calling Guide", "description": "AI-powered actions and integrations"},
             {"file": "Pushover.md", "title": "Pushover Tool", "description": "Named notifications, recipients/groups, summaries and testing"},
+            {"file": "Calendly-calendar-tool.md", "title": "Calendly Booking", "description": "One-to-one booking, confirmation and uncertain outcomes"},
+            {"file": "In-Call-Summaries.md", "title": "In-call Summaries", "description": "Generated summaries for supported tools"},
+            {"file": "AGENTS.md", "title": "Agents", "description": "Agent workspace, permissions and appearance"},
+            {"file": "ARI-Endpoint-Discovery.md", "title": "ARI Endpoint Discovery", "description": "Discover and review transfer destinations"},
+            {"file": "Microsoft-teams-verification.md", "title": "Microsoft Teams Verification", "description": "Opt-in setup and verification boundaries"},
             {"file": "TROUBLESHOOTING_GUIDE.md", "title": "Troubleshooting", "description": "Common issues and solutions"},
         ]
     },
@@ -45,6 +50,9 @@ DOC_CATEGORIES = {
             {"file": "HARDWARE_REQUIREMENTS.md", "title": "Hardware Requirements", "description": "CPU, RAM, and GPU specs"},
             {"file": "LOCAL_PROFILES.md", "title": "Local Profiles", "description": "Recommended local model configs"},
             {"file": "OUTBOUND_CALLING.md", "title": "Outbound Calling", "description": "Scheduled campaigns and voicemail"},
+            {"file": "MIGRATION.md", "title": "Migration Guide", "description": "Release upgrade and rollback boundaries"},
+            {"file": "INTEGRATION_BACKUPS.md", "title": "Integration Backups", "description": "Private credentials and SQLite journal recovery"},
+            {"file": "AGENTS_EXPERIENCE_ROLLOUT.md", "title": "Agents Experience Rollout", "description": "Workspace rollout, compatibility and rollback"},
         ]
     },
     "developer": {

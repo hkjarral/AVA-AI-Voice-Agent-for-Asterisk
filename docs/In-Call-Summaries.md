@@ -1,5 +1,11 @@
 # In-call HTTP summaries
 
+See the [v7.7.0 validation matrix](baselines/golden/v7.7.0-validation-matrix.md)
+for existing automated evidence and the explicit waiver of further live testing.
+A summary uses the conversation history available at invocation. It cannot
+describe unobserved human conversation, and it does not filter recorded turns
+by transfer state or provide an after-transfer hook.
+
 In Tools → In-call HTTP, enable **Generate AI Summary**, select a configured LLM,
 and set the summary prompt, maximum words and timeout. Only that provider receives
 the transcript. The prompt supports `{max_words}`. Saving these tools uses the
@@ -11,9 +17,10 @@ Add `"summary_status": "{summary_status}"` and optionally
 model arguments and enrichment cannot supply their values. Templates retain the
 existing single-pass escaping and JSON validation.
 
-The summary describes the AVA conversation so far, including the latest available
-transcription. It does not describe a human conversation after transfer. Invoke
-the tool **before** transferring; a prompt cannot guarantee an after-transfer hook.
+The snapshot includes the latest available transcription and any other recorded
+turns; transfer does not establish a transcript cutoff. Invoke the tool **before**
+transferring when a pre-transfer summary is needed. Do not assume that later
+invocation removes post-transfer turns, or that a prompt creates an after-transfer hook.
 Post-call timing and legacy post-call summary configurations are unchanged.
 
 Summary generation and HTTP delivery have separate configured budgets; their sum

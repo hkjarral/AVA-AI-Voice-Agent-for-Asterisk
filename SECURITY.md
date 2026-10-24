@@ -6,8 +6,9 @@
 
 | Version | Supported          | End of Support                      |
 | ------- | ------------------ | ----------------------------------- |
-| 7.6.x   | :white_check_mark: | Current                             |
-| 7.5.x   | :white_check_mark: | When the second following minor ships |
+| 7.7.x   | :white_check_mark: | Current after v7.7.0 publication     |
+| 7.6.x   | :white_check_mark: | When v7.8.0 ships                   |
+| 7.5.x   | :white_check_mark: | At v7.7.0 publication               |
 | 7.4.x   | :x:                | Ended 2026-09-13                    |
 | 7.3.x   | :x:                | Ended 2026-07-22                    |
 | 7.2.x   | :x:                | Ended 2026-07-16                    |
@@ -19,6 +20,13 @@
 **Recommendation**: Always upgrade to the latest release for the most recent security patches and features. Upgrade guides: [docs/MIGRATION.md](docs/MIGRATION.md) and [docs/OPERATOR_MIGRATION.md](docs/OPERATOR_MIGRATION.md).
 
 ---
+
+The 7.7.x row stages the approved support transition, not an already published
+release. The current supported trains are 7.6.x and 7.5.x. Until that tag is
+published, 7.6.x and 7.5.x remain supported. The 7.5.x HTTP-template fix is not
+claimed shipped: upgrade to a fixed 7.6.x/7.7.x release or disable affected HTTP
+lookup/webhook tools in all call phases pending a separately managed backport.
+Do not interpret the support transition as evidence that older deployments were patched.
 
 ## Reporting a Vulnerability
 

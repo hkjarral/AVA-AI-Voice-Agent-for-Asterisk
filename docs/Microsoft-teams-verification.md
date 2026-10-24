@@ -68,7 +68,13 @@ actual Linux runtime imports still require deployment-stage verification.
 - Pending/late Teams links without duplicate POSTs or invented readiness.
 - Existing booking limits, adapter continuation, transfer/hangup and metadata results.
 
-## Live acceptance still required
+## Live acceptance boundary
+
+For v7.7.0, the maintainer explicitly waived further deployment and live testing
+and accepted the above existing evidence with these limits. This does not turn
+mocked Graph tests into evidence of actual Teams provisioning, invitation delivery
+or a working join link. See the [release matrix](baselines/golden/v7.7.0-validation-matrix.md).
+The following remains the acceptance procedure for a future authorized rollout.
 
 Obtain the authorized recipient, meeting details and rollout window. Present the
 target-specific deployment manifest and rollback commands before changing the
@@ -77,8 +83,8 @@ server. Reconfirm idle PBX channels and AVA calls/sessions before any restart.
 Verify actual Teams provisioning and body-container preservation on the selected
 calendar, recipient delivery, a real Calendly conflict, same-call rescheduling,
 confirmed cancellation/replacement, cleanup, hangup and existing post-call
-integrations. Archive raw call evidence privately before analysis. Keep the PR
-draft until the required live evidence and final review gate are complete.
+integrations. Archive raw call evidence privately before analysis. Obtain explicit
+authorization before performing those remote writes or deployment changes.
 
 Limitations: call-local ownership is not durable; uncertain creation/provisioning
 without a trusted body baseline requires staff for subsequent changes. No

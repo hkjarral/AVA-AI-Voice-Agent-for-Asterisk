@@ -2,6 +2,21 @@
 
 Complete guide to diagnosing and fixing issues with Asterisk AI Voice Agent.
 
+## v7.7 integration and UI checks
+
+- Refresh after Admin image replacement; new Agent editor routes do not exist in old UI.
+- **Update tool** stages changes; **Save & Apply** publishes them. Partial-apply errors
+  are not full success. See [Admin UI](ADMIN_UI_GUIDE.md).
+- Calendly uncertainty requires [retained-request recovery](Calendly-calendar-tool.md#pending-submissions),
+  not another booking POST. History erasure does not cancel remote appointments.
+- [Pushover](Pushover.md) distinguishes generation and recipient delivery. API acceptance
+  is not phone acknowledgement; do not automatically retry an uncertain send.
+- [Summary failures](In-Call-Summaries.md) follow the configured continue/abort policy.
+- [Endpoint discovery](ARI-Endpoint-Discovery.md) is a temporary snapshot, not
+  proof of dialability or Agent authorization.
+- Protect [journal/credentials](INTEGRATION_BACKUPS.md) during recovery. An old
+  snapshot cannot establish that a remote write never occurred.
+
 ## Table of Contents
 
 - [Installation](#installation)

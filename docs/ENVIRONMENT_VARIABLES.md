@@ -27,6 +27,18 @@ Set these in `.env`:
 
 ## Common operator variables
 
+### Calendly and managed notification state
+
+- `CALENDLY_DB_PATH`: default `/app/data/operator/calendly.db`.
+- `CALENDLY_TOKEN_PATH`: default `/app/project/secrets/calendly-default-token.json`.
+
+Both Engine and Admin require matching mounts and compatible ownership. Changing
+paths requires coordinated recreation and preserved state; never start a fresh
+journal to bypass pending operations. Host backups support standard mappings and
+in-checkout overrides, not arbitrary external/Compose-only mounts. Follow
+[backup guidance](INTEGRATION_BACKUPS.md). Enter PATs/Pushover keys through
+authenticated editors; they use managed secret files, not new plaintext env keys.
+
 ### Asterisk ARI
 
 - `ASTERISK_HOST`: where `ai_engine` reaches ARI (IP/hostname).

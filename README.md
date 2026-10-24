@@ -6,7 +6,7 @@
   <img alt="AVA Core — AI Voice Agent for Asterisk" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-[![Version](https://img.shields.io/badge/version-7.6.4-blue.svg)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases)
+[![Version](https://img.shields.io/badge/version-7.7.0-blue.svg)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases)
 [![CI](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Discord](https://dcbadge.limes.pink/api/server/ysg8fphxUe?style=plastic)](https://discord.gg/ysg8fphxUe)
@@ -37,13 +37,19 @@ Asterisk 18+ / FreePBX system with ARI enabled. Cloud configurations start with
 transports require newer Asterisk versions or additional modules.
 
 **Already running AVA?** Follow the
-[v7.6.4 upgrade guide](docs/INSTALLATION.md#upgrade-to-v764-existing-checkout)
+[v7.7.0 upgrade guide](docs/INSTALLATION.md#upgrade-to-v770-existing-checkout)
 instead of cloning another installation.
 
 On the AVA host:
 
+Run the pinned commands below only after v7.7.0 appears in
+[GitHub Releases](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases).
+Before publication, use the latest published release for stable installations.
+For maintainer source evaluation only (unstable):
+`git clone --branch main https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git`.
+
 ```bash
-git clone --branch v7.6.4 https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+git clone --branch v7.7.0 https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
 cd AVA-AI-Voice-Agent-for-Asterisk
 sudo ./preflight.sh --apply-fixes
 docker compose -p asterisk-ai-voice-agent up -d --build admin_ui
@@ -81,8 +87,8 @@ The guide also covers CLI/manual installation, permissions, and recovery;
   History, filter/export records, and manage updates through the Admin UI.
 - **Telephony tools:** transfers, extension availability, voicemail, and hangup
   controls integrated with Asterisk.
-- **Business integrations:** Google/Microsoft calendars, email, HTTP tools, and
-  MCP tools with per-Agent access controls.
+- **Business integrations:** Google/Microsoft calendars, opt-in Teams meetings,
+  Calendly booking, Pushover, email, HTTP summaries, and MCP tools with per-Agent access controls.
 - **Cloud, hybrid, or local operation:** choose where audio and model inference
   run. Hybrid deployments still send the configured inputs to cloud services.
 - **Operational diagnostics:** CLI health checks, sanitized support packages,
@@ -98,7 +104,7 @@ The guide also covers CLI/manual installation, permissions, and recovery;
 
 Model availability, tools, latency, and transport support vary by configuration.
 Use the [compatibility matrix](docs/Transport-Mode-Compatibility.md) and
-[release validation evidence](docs/baselines/golden/v7.6.4-validation-matrix.md)
+[release validation evidence](docs/baselines/golden/v7.7.0-validation-matrix.md)
 rather than assuming every provider/transport combination is qualified.
 
 AudioSocket and ExternalMedia RTP are configuration-dependent; Media WebSocket
@@ -153,15 +159,15 @@ The core services are `ai_engine` and `admin_ui`; `local_ai_server` and
 
 <a id="-whats-new"></a>
 
-### Latest release: v7.6.4
+### Latest release: v7.7.0
 
-- Safer HTTP-tool templates with single-pass substitution and protected call data.
-- Farewell and transfer-recovery fixes that prevent stale hangups.
-- Compatible Admin dependency updates and refreshed upgrade guidance.
+- Native Calendly booking, opt-in Microsoft Teams meetings, and Pushover notifications.
+- A refreshed Agents workspace and focused Tools editors with safer saves.
+- Transfer/audio reliability, endpoint discovery, and updated recovery guidance.
 
 See the [changelog](CHANGELOG.md) for detailed changes and contributor credit,
 [GitHub Releases](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases)
-for artifacts, and [migration notes](docs/MIGRATION.md#v763-to-v764) before upgrading.
+for artifacts, and [migration notes](docs/MIGRATION.md#v764-to-v770) before upgrading.
 Earlier release notes remain in the changelog and versioned repository history.
 
 <a id="-contributing"></a>
@@ -206,6 +212,8 @@ context. All contributions still require appropriate testing and review.
 <td align="center"><a href="https://github.com/alceops"><img src="https://github.com/alceops.png" width="60" alt="alceops"><br><sub><b>Alce</b></sub></a><br>OpenAI Streaming Timeouts</td>
 <td align="center"><a href="https://github.com/Genmin"><img src="https://github.com/Genmin.png" width="60" alt="Genmin"><br><sub><b>Joey Roth</b></sub></a><br>OpenAI Tool-call Tests</td>
 <td align="center"><a href="https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/3053c616"><img src="https://img.shields.io/badge/contributor-Ivan%20Garcia-blue" alt="Ivan Garcia contributor badge"><br><sub><b>Ivan Garcia</b></sub></a><br>Azure STT/TTS, OpenAI GA Tools</td>
+<td align="center"><a href="https://github.com/pcbeingused333"><img src="https://github.com/pcbeingused333.png" width="60" alt="pcbeingused333"><br><sub><b>alexcastgonz</b></sub></a><br>Pipeline Tool Calls, CLI Troubleshooting</td>
+<td align="center"><a href="https://github.com/lucamancusodev"><img src="https://github.com/lucamancusodev.png" width="60" alt="lucamancusodev"><br><sub><b>lucamancusodev</b></sub></a><br>Transfer Reports, Notification Requirements</td>
 </tr>
 <tr>
 <td align="center"><a href="https://github.com/pi0n00r"><img src="https://github.com/pi0n00r.png" width="60" alt="pi0n00r"><br><sub><b>pi0n00r</b></sub></a><br>Local AI, Whisper, DTMF Privacy, MCP</td>

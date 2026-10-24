@@ -2,6 +2,71 @@
 
 This guide covers upgrading between releases of Asterisk AI Voice Agent.
 
+## v7.6.4 to v7.7.0
+
+v7.7.0 adds Calendly booking, named Pushover tools, in-call HTTP summaries,
+opt-in Teams meetings, refreshed Agents/Tools editors, endpoint discovery,
+greeting readiness, and transfer/pipeline fixes. This is additive functionality;
+existing provider, model, transport, Audio Profile and saved Agent defaults remain.
+
+### Upgrade and persistent state
+
+Drain calls and follow the [pinned upgrade path](INSTALLATION.md#upgrade-to-v770-existing-checkout).
+Rebuild/recreate `ai_engine` and `admin_ui`, then hard-refresh browsers.
+Local AI source/dependencies are unchanged from v7.6.4; preserve its profile/models.
+The standalone Admin backend now requires Python 3.11, matching the primary image.
+Admin WebSockets remains direct even with ambient proxies; Engine/Local AI
+WebSocket versions are not upgraded by that Admin-only dependency change.
+
+Unlike v7.6.4, this release has additive state:
+- Agent initialization adds nullable `avatar_preset` and `avatar_image` columns.
+  Appearance is SQLite data, not voice selection or runtime YAML.
+- Calendly adds `data/operator/calendly.db` and a protected token. Preserve
+  replay/duplicate barriers and pending Call History erasure work.
+- Named Pushover tools reference private immutable files under `secrets/`.
+
+Back up actual SQLite paths coherently, credentials, configuration and overlays.
+Use the target CLI/recovery script and [integration backup instructions](INTEGRATION_BACKUPS.md).
+PR #775 is the unmerged backup-safety prerequisite during preparation.
+Custom mounts and unsupported host SQLite require a verified manual snapshot.
+
+### Operator workflows and limits
+
+- [Agents](AGENTS_EXPERIENCE_ROLLOUT.md): cards/list and a routed editor preserve
+  unsaved edits; saves PATCH changed fields only. Existing browser tabs need refresh.
+- Tools: **Update tool** stages HTTP/native edits; **Save & Apply** saves/publishes
+  new-call generations. Active calls retain their captured settings.
+- [Calendly](Calendly-calendar-tool.md): explicitly assigned, disabled until setup,
+  one account and qualified one-to-one appointments. Slot selection, canonical recap
+  and fresh approval precede submission; uncertain writes never replay. Subsequent
+  cancellation/rescheduling remains in Calendly/staff.
+- [Pushover](Pushover.md): named phase tools, recipient rows, explicit tests,
+  one summary per invocation and per-recipient outcomes. API acceptance does not
+  establish phone display; overlapping groups can duplicate delivery.
+- [In-call summaries](In-Call-Summaries.md): selected LLM and AVA conversation so far.
+  Invoke before transfer when needed. No general post-human-transfer hook is added.
+- [Teams](Microsoft-calendar-tool.md): opt-in calendar-backed meetings preserve
+  ownership, ETags and generated meeting content. Join readiness, invitation delivery
+  and RSVP acceptance are separate observations.
+- [ARI discovery](ARI-Endpoint-Discovery.md): only reviewed candidates are staged;
+  no automatic PBX extension creation or Agent permission expansion.
+- Greeting readiness defaults disabled. Google's separate `playback_prefill_ms`
+  defaults zero and trades latency for buffering; neither repairs missing inbound media.
+
+### Rollback and acceptance
+
+Keep current databases, credentials and booking journal while reverting application
+images. Never remove avatar columns or automatically restore an older journal.
+Pause booking, remove unsupported tool/policy references before older code starts,
+and reconcile remote activity before any data restore. Old UI ignores appearance;
+return to `/agents` if a new editor deep link is unavailable.
+
+The maintainer accepted existing evidence and waived additional deployment,
+runtime/live-call and upgrade testing. Automated gates remain required. Teams and
+other unqualified lanes are not relabelled as passes; see the [v7.7.0 matrix](baselines/golden/v7.7.0-validation-matrix.md).
+The approved support transition retains 7.6.x/7.7.x; 7.5.x support ends only when
+v7.7.0 is published. Dated metadata stages the release, not publication.
+
 ## v7.6.3 to v7.6.4
 
 v7.6.4 contains HTTP-tool template hardening, farewell/transfer recovery fixes,

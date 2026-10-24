@@ -151,7 +151,7 @@ Apply an update:
 
 ```bash
 agent update
-agent update --ref v7.6.4
+agent update --ref v7.7.0   # Only after this tag/artifacts are published
 agent update --checkout --ref main
 agent update --rebuild auto
 agent update --rebuild none

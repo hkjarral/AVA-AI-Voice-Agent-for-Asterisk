@@ -1,8 +1,8 @@
 # HTTP Tools Setup Guide (Admin UI)
 
 **Version**: 1.1.0
-**Last Updated**: July 2026
-**Applies to**: v7.4+
+**Last Updated**: October 2026
+**Applies to**: v7.7.0
 
 ---
 
@@ -58,6 +58,13 @@ retain their immediate operations; they are not undone by returning to the list.
 ---
 
 ## Prerequisites
+
+Native integrations have separate guides: [Calendly](../docs/Calendly-calendar-tool.md),
+[Pushover](../docs/Pushover.md), [generated summaries](../docs/In-Call-Summaries.md)
+and [Microsoft Teams verification](../docs/Microsoft-teams-verification.md).
+Calendly submission uncertainty must not be retried blindly. Pushover API
+acceptance is not proof that a person read a notification. Agent assignment and
+phase permissions still apply; exposing a configured tool is not authorization.
 
 1. Admin UI running and accessible at `http://localhost:3003`
 2. API keys for your integration platform (GoHighLevel, n8n, Make)

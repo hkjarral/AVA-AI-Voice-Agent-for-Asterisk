@@ -4,6 +4,16 @@ This document explains every major option in `config/ai-agent.yaml`, the precede
 
 ## Local Override File (`ai-agent.local.yaml`)
 
+### v7.7 integration storage and tool references
+
+[Calendly](Calendly-calendar-tool.md) uses a protected token and durable journal,
+not a token in Agent prompts or YAML. Both services must share its configured
+`CALENDLY_DB_PATH` and `CALENDLY_TOKEN_PATH`; see [environment wiring](ENVIRONMENT_VARIABLES.md)
+and [backup limits](INTEGRATION_BACKUPS.md). Native [Pushover](Pushover.md) reuses
+phase assignments and managed credential references. [HTTP summaries](In-Call-Summaries.md)
+separate generation/delivery budgets. [ARI discovery](ARI-Endpoint-Discovery.md)
+stages existing transfer entries without a new routing source.
+
 Operator customizations are stored in `config/ai-agent.local.yaml` (git-ignored). At startup the engine deep-merges this file on top of the base `config/ai-agent.yaml`:
 
 - **Base file** (`config/ai-agent.yaml`) — shipped golden defaults, git-tracked. Updated by upstream releases.

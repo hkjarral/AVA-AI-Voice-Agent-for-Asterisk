@@ -8,11 +8,24 @@ globs: src/**/*.py, *.py, docker-compose.yml, Dockerfile, config/ai-agent.yaml
 
 ## System Overview
 
+### v7.7 state boundaries
+
+Agent appearance uses additive nullable SQLite columns and never selects a voice.
+Calendly's integration journal durably claims submissions before one remote POST;
+lost/ambiguous results require positive reconciliation or staff, never blind replay.
+Pushover is a named pre/in/post-call tool with bounded, per-recipient outcomes and
+best-effort call-local duplicate control; there is no durable notification outbox.
+In-call summaries snapshot recorded history at invocation without transfer-state
+filtering; they cannot infer unobserved human conversation. Preserve these
+differences in future adapters.
+See [Calendly](../Calendly-calendar-tool.md), [Pushover](../Pushover.md),
+[summaries](../In-Call-Summaries.md), and [backup boundaries](../INTEGRATION_BACKUPS.md).
+
 The Asterisk AI Voice Agent is a **production-ready, modular conversational AI system** that enables **real-time, two-way voice conversations** through Asterisk/FreePBX systems. It features a **modular pipeline architecture** that allows mixing and matching STT, LLM, and TTS providers, alongside support for **monolithic providers** like OpenAI Realtime, Deepgram, Google Live, and ElevenLabs.
 
 ### Key Architecture Components
 
-- **Dual Transport Support** – ExternalMedia RTP (UDP) and AudioSocket (TCP). The shipped `config/ai-agent.yaml` defaults to `audio_transport: audiosocket`; ExternalMedia is a validated option (especially for pipelines). AudioSocket is currently validated with `audiosocket.format: slin`.
+- **Audio transports** – AudioSocket (TCP) remains the default, alongside ExternalMedia RTP (UDP) and opt-in Asterisk Media WebSocket. Availability and release-specific qualification differ; use the [transport compatibility guide](../Transport-Mode-Compatibility.md) rather than inferring that all provider/transport combinations are validated.
 - **Local Override Config** – Operator customizations live in `config/ai-agent.local.yaml` (git-ignored), deep-merged on top of the base `config/ai-agent.yaml` at startup. All Admin UI and CLI writes target the local file, so upstream `git pull` never conflicts with operator settings.
 - **Adaptive Streaming** – Downstream audio with automatic jitter buffering and file playback fallback
 - **Modular Pipelines** – Independent STT, LLM, and TTS provider selection via YAML configuration

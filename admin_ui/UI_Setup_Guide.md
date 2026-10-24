@@ -1,7 +1,8 @@
 # Admin UI Setup Guide
 
-**Version**: 1.0.0 (Introduced in Release 4.4.1; applies to v4.6.0+)  
-**Release Date**: November 30, 2025  
+**Applies to**: v7.7.0 (Admin UI introduced in v4.4.1)
+
+**Last reviewed**: October 2026
 **Quick Start**: 5 minutes to get running
 
 ---
@@ -12,12 +13,24 @@ The Admin UI provides a modern web interface for managing your Asterisk AI Voice
 
 ### What You Get
 - 🧙 **Setup Wizard** - Quick first-time configuration
-- ⚙️ **Configuration Management** - Visual editors for providers, pipelines, contexts
+- ⚙️ **Configuration Management** - Visual editors for providers, pipelines and Agents
 - 📊 **System Dashboard** - Monitor CPU, memory, and container status
 - 🔍 **Live Logs** - Stream logs from ai_engine in real-time
 - 📝 **YAML Editor** - Direct config editing with syntax validation
 
 ---
+
+## Current Agents and Tools workspace
+
+Use **Agents** for the focused per-Agent editor, tools/access policy and optional
+appearance. Avatar choices never change the provider voice. Use
+**Tools** for the shared inventory and searchable dedicated editors; **Save &
+Apply** persists the page draft, while credential connection operations retain
+their immediate behavior. Tool hot reload affects new calls; process changes
+still need an explicit restart.
+See the [Admin UI guide](../docs/ADMIN_UI_GUIDE.md),
+[Tools guide](Tools_Setup_Guide.md), [Agents rollout](../docs/AGENTS_EXPERIENCE_ROLLOUT.md)
+and [upgrade instructions](../docs/INSTALLATION.md#upgrade-to-v770-existing-checkout).
 
 ## 🚀 Quick Start (Docker)
 

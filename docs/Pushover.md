@@ -1,5 +1,11 @@
 # Pushover tools
 
+See the [v7.7.0 validation matrix](baselines/golden/v7.7.0-validation-matrix.md)
+for release evidence and accepted limits, and the
+[backup guide](INTEGRATION_BACKUPS.md) for private credential preservation.
+API acceptance is not a delivery/read receipt; duplicate control is call-local
+best effort, not a durable notification outbox.
+
 Pushover is a native tool type in the existing **Tools → Pre-Call / In-Call /
 Post-Call** workflow. Create as many named tools as needed, each with its own
 recipient list, templates, summary settings and description. The Tool Type selector
@@ -63,6 +69,11 @@ description and template; in-call tools are not tied to transfers.
 - **Post-call:** selected tools run through AVA's existing post-call lifecycle.
   They can summarize the finalized AVA conversation and observed outcome. Existing
   post-call timing is unchanged; unobserved human conversations are unavailable.
+
+Summary snapshots include whatever conversation turns AVA recorded at invocation;
+there is no transfer-state filter or guaranteed cutoff. Invoke before transfer
+when a pre-transfer-only summary is needed. No later human conversation is inferred
+from a transfer outcome, and no general after-transfer hook is introduced.
 
 When migrating another connector, disable only its equivalent notification sends
 for the pilot agent and preserve its CRM/email functions to avoid duplicate sends.

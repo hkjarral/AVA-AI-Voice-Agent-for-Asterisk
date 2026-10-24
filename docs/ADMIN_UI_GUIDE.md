@@ -4,6 +4,19 @@ The Admin UI is a web-based interface for configuring, monitoring, and managing 
 
 ## Quick Start
 
+For v7.7.0, read [migration](MIGRATION.md#v764-to-v770),
+[Agents workspace](AGENTS_EXPERIENCE_ROLLOUT.md), and [integration backups](INTEGRATION_BACKUPS.md).
+Hard-refresh after rebuilding Admin UI. Agents now use searchable cards/list,
+a routed four-section editor and changed-field saves. Visual avatars do not
+change voice or routing; tool counts describe configuration, not health.
+
+Tools opens focused editors. **Update tool** stages HTTP/native edits; **Save & Apply**
+saves/publishes new-call settings. Follow the explicit setup, consent and recovery
+steps for [Calendly](Calendly-calendar-tool.md), [Pushover](Pushover.md),
+[summaries](In-Call-Summaries.md) and [Teams](Microsoft-calendar-tool.md).
+Preview/verification is not a booking/send; explicitly approved setup tests can
+create real external effects.
+
 ```bash
 # Start the Admin UI container
 docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui

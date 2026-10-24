@@ -17,6 +17,18 @@ Agents are managed in the Admin UI **Agents** tab and stored in `agents.db`. v7.
 
 ## Source of truth: agents.db
 
+### v7.7 workspace and integration access
+
+Searchable cards/list views lead to a routed General, Conversation, Tools and
+Advanced editor. Appearance presets/images never choose a voice. Nullable SQLite
+columns preserve images; YAML export is not an appearance backup. See [rollout](AGENTS_EXPERIENCE_ROLLOUT.md).
+
+Calendly requires explicit tool assignment before per-Agent appointment access
+(inherit, selected keys, or none). Empty/stale selections fail closed. Named
+Pushover tools use normal phase selectors/global opt-outs. Configure credentials
+in Tools; Agent policies narrow rather than expand authority.
+See [Calendly](Calendly-calendar-tool.md) and [Pushover](Pushover.md).
+
 | Path | Location |
 |------|----------|
 | Inside container | `/app/data/operator/agents.db` |
