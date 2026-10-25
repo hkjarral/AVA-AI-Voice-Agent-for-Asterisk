@@ -21,6 +21,24 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXTERNAL_ACTIVITY_MAX_ROWS = 5000
 
 
+def _calendly_erasure_tracking_required() -> bool:
+    """Return whether this installation has Calendly-owned private state.
+
+    A stock installation must not accumulate provider-specific cleanup work for
+    an integration it never configured. The journal is authoritative once it
+    exists; the credential file keeps the obligation visible while a configured
+    journal is temporarily unavailable.
+    """
+    journal = Path(os.getenv("CALENDLY_DB_PATH", "/app/data/operator/calendly.db"))
+    credential = Path(
+        os.getenv(
+            "CALENDLY_TOKEN_PATH",
+            "/app/project/secrets/calendly-default-token.json",
+        )
+    )
+    return journal.is_file() or credential.is_file()
+
+
 @dataclass
 class CallRecord:
     """Persisted call record for history and analytics."""
@@ -1030,7 +1048,8 @@ class CallHistoryStore:
                 try:
                     cursor = conn.cursor()
                     rows = cursor.execute("SELECT call_id FROM call_records WHERE id = ?", (record_id,)).fetchall()
-                    cursor.executemany("INSERT OR IGNORE INTO pending_calendly_purges(call_id) VALUES(?)", [(row[0],) for row in rows])
+                    if _calendly_erasure_tracking_required():
+                        cursor.executemany("INSERT OR IGNORE INTO pending_calendly_purges(call_id) VALUES(?)", [(row[0],) for row in rows])
                     cursor.execute("DELETE FROM call_records WHERE id = ?", (record_id,))
                     deleted = cursor.rowcount > 0
                     conn.commit()
@@ -1054,7 +1073,8 @@ class CallHistoryStore:
                 try:
                     cursor = conn.cursor()
                     rows = cursor.execute("SELECT call_id FROM call_records WHERE start_time < ?", (before_date.isoformat(),)).fetchall()
-                    cursor.executemany("INSERT OR IGNORE INTO pending_calendly_purges(call_id) VALUES(?)", [(row[0],) for row in rows])
+                    if _calendly_erasure_tracking_required():
+                        cursor.executemany("INSERT OR IGNORE INTO pending_calendly_purges(call_id) VALUES(?)", [(row[0],) for row in rows])
                     cursor.execute(
                         "DELETE FROM call_records WHERE start_time < ?",
                         (before_date.isoformat(),)

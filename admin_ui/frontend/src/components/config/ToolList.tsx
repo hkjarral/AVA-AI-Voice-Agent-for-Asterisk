@@ -5,7 +5,7 @@ export function ToolList({ config, query, onSelect }: { config: Record<string, {
     const items = toolSections.filter(tool => `${tool.title} ${tool.description} ${tool.key}`.toLowerCase().includes(query.trim().toLowerCase()));
     return (
         <div className="space-y-7">
-            {['Call handling', 'Business'].map(group => {
+            {['Call handling', 'Business', 'Optional providers'].map(group => {
                 const entries = items.filter(tool => tool.group === group);
                 if (!entries.length) return null;
                 return (

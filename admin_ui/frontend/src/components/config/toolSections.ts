@@ -8,7 +8,7 @@ export const toolSections = [
     { key: 'request_transcript', title: 'Transcript requests', description: 'Caller delivery and email confirmation', group: 'Business', icon: FileText },
     { key: 'google_calendar', title: 'Google Calendar', description: 'Calendars and availability', group: 'Business', icon: Calendar },
     { key: 'microsoft_calendar', title: 'Microsoft Calendar', description: 'Account, availability and booking rules', group: 'Business', icon: Calendar },
-    { key: 'calendly_calendar', title: 'Calendly', description: 'Connect, select appointments and verify voice booking', group: 'Business', icon: Calendar },
+    { key: 'calendly_calendar', title: 'Calendly adapter', description: 'Optional paid-provider adapter for existing Calendly users', group: 'Optional providers', icon: Calendar },
 ] as const;
 
 export type ToolSection = typeof toolSections[number]['key'] | 'defaults';

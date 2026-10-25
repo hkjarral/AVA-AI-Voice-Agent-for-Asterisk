@@ -18,6 +18,7 @@ async def test_history_deletion_retries_private_erasure_after_restart(tmp_path, 
     monkeypatch.setenv('CALENDLY_DB_PATH', str(tmp_path / 'calendly.db'))
     monkeypatch.setenv('CALENDLY_TOKEN_PATH', str(tmp_path / 'token.json'))
     journal = CalendlyStore()
+    (tmp_path / 'token.json').write_text('{"synthetic":"configured"}')
     with journal.db() as db:
         db.execute("INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
             'attempt', 'call:purged', 'conn', 'digest', 'duplicate', 'marker', 'confirmed',
@@ -73,6 +74,40 @@ async def test_disabled_history_retry_does_not_initialize_a_new_queue(tmp_path, 
     else:
         with sqlite3.connect(path) as db:
             assert db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall() == [('legacy',)]
+
+
+@pytest.mark.parametrize('mode', ['single', 'retention'])
+async def test_history_deletion_without_calendly_footprint_does_not_queue_provider_work(tmp_path, monkeypatch, mode):
+    monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
+    monkeypatch.setenv('CALL_HISTORY_RETENTION_DAYS', '')
+    monkeypatch.setenv('CALENDLY_DB_PATH', str(tmp_path / 'missing-calendly.db'))
+    monkeypatch.setenv('CALENDLY_TOKEN_PATH', str(tmp_path / 'missing-token.json'))
+    history = CallHistoryStore(str(tmp_path / 'history.db'))
+    now = datetime.now(timezone.utc)
+    await history.save(CallRecord(call_id='ordinary-call', start_time=now-timedelta(days=2), end_time=now))
+    if mode == 'single':
+        row = await history.get_by_call_id('ordinary-call')
+        assert await history.delete(row.id)
+    else:
+        assert await history.delete_before(now) == 1
+    with sqlite3.connect(history._db_path) as db:
+        assert db.execute('SELECT * FROM pending_calendly_purges').fetchall() == []
+
+
+async def test_saved_calendly_credential_keeps_erasure_queue_when_journal_is_temporarily_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
+    monkeypatch.setenv('CALL_HISTORY_RETENTION_DAYS', '')
+    monkeypatch.setenv('CALENDLY_DB_PATH', str(tmp_path / 'missing-calendly.db'))
+    token = tmp_path / 'calendly-token.json'
+    token.write_text('{"synthetic":"configured"}')
+    monkeypatch.setenv('CALENDLY_TOKEN_PATH', str(token))
+    history = CallHistoryStore(str(tmp_path / 'history.db'))
+    now = datetime.now(timezone.utc)
+    await history.save(CallRecord(call_id='configured-call', start_time=now, end_time=now))
+    row = await history.get_by_call_id('configured-call')
+    assert await history.delete(row.id)
+    with sqlite3.connect(history._db_path) as db:
+        assert db.execute('SELECT call_id FROM pending_calendly_purges').fetchall() == [('configured-call',)]
 
 
 async def test_erasure_retry_processes_bounded_batches_without_dropping_remaining_work(tmp_path, monkeypatch):

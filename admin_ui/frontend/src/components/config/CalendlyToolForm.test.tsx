@@ -30,6 +30,15 @@ function mock(connected = true) {
 afterEach(() => { cleanup(); vi.resetAllMocks(); sessionStorage.clear(); });
 
 describe('Calendly guided setup', () => {
+    it('presents Calendly as optional beside self-hosted MCP booking', async () => {
+        mock(false);
+        render(<CalendlyToolForm config={{}} onChange={vi.fn()} onSave={vi.fn()} />);
+        await screen.findByText('Not connected');
+        expect(screen.getByText(/optional adapter/i)).toBeInTheDocument();
+        expect(screen.getByText(/Streamable HTTP MCP support/i)).toBeInTheDocument();
+        expect(screen.getByText(/Pushover operator notifications remain independently configurable/i)).toBeInTheDocument();
+    });
+
     it('shows the request ID for matching pending calls to recovery', async () => {
         mock();
         const request = vi.mocked(axios.request).getMockImplementation()!;

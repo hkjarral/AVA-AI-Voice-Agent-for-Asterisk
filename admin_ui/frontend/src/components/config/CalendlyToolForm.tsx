@@ -85,7 +85,10 @@ export default function CalendlyToolForm({ config, onChange, onSave }: { config:
         setProposal(null); setApproved(false);
     };
     return <div className="max-w-3xl space-y-7">
-        <p className="text-sm text-muted-foreground">Connect one operator-owned Calendly account. Standard or higher is required for booking. Configure calendars, appointment types and notifications in Calendly; later changes use the Calendly confirmation or staff.</p>
+        <div className="space-y-2 text-sm text-muted-foreground">
+            <p>This is an optional adapter for operators who already use Calendly. Direct API booking requires Calendly Standard or higher; Calendly is not required for appointment booking.</p>
+            <p>For a self-hosted calendar, expose its availability and event tools through Ava&apos;s Streamable HTTP MCP support instead. Provider-specific booking and Pushover operator notifications remain independently configurable.</p>
+        </div>
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         {notice && <p role="status" className="text-sm">{notice}</p>}
         {verified && <p role="status" className="rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-700 dark:text-green-400">{verified}</p>}

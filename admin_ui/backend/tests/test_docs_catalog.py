@@ -7,7 +7,7 @@ from api import docs
 
 ROOT = Path(__file__).resolve().parents[3]
 RELEASE_GUIDES = {
-    "Calendly-calendar-tool.md", "In-Call-Summaries.md", "AGENTS.md",
+    "Appointment-booking-providers.md", "Calendly-calendar-tool.md", "In-Call-Summaries.md", "AGENTS.md",
     "ARI-Endpoint-Discovery.md", "Microsoft-teams-verification.md",
     "MIGRATION.md", "INTEGRATION_BACKUPS.md", "AGENTS_EXPERIENCE_ROLLOUT.md",
 }

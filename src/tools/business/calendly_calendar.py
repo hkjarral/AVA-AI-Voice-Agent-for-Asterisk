@@ -1,4 +1,4 @@
-"""Provider-neutral Calendly v1 native in-call tool."""
+"""Optional Calendly v1 native in-call adapter."""
 import asyncio
 import logging
 import copy
