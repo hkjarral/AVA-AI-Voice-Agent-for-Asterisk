@@ -25,9 +25,8 @@ def _calendly_erasure_tracking_required() -> bool:
     """Return whether this installation has Calendly-owned private state.
 
     A stock installation must not accumulate provider-specific cleanup work for
-    an integration it never configured. The journal is authoritative once it
-    exists; the credential file keeps the obligation visible while a configured
-    journal is temporarily unavailable.
+    an integration it never configured. The marker preserves a prior Calendly
+    footprint after disconnect and while the journal is temporarily unavailable.
     """
     journal = Path(os.getenv("CALENDLY_DB_PATH", "/app/data/operator/calendly.db"))
     credential = Path(
@@ -36,7 +35,8 @@ def _calendly_erasure_tracking_required() -> bool:
             "/app/project/secrets/calendly-default-token.json",
         )
     )
-    return journal.is_file() or credential.is_file()
+    footprint = journal.with_name(journal.name + ".configured")
+    return journal.is_file() or credential.is_file() or footprint.is_file()
 
 
 @dataclass

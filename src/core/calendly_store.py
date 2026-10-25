@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import stat
 import time
 import uuid
 from contextlib import contextmanager
@@ -25,6 +26,44 @@ def encoded(value) -> str:
 
 def digest(value) -> str:
     return hashlib.sha256(encoded(value).encode()).hexdigest()
+
+
+def calendly_footprint_path(db_path: str | Path | None = None) -> Path:
+    """Return the durable, non-secret marker for prior Calendly configuration."""
+    journal = Path(db_path or os.getenv("CALENDLY_DB_PATH", "/app/data/operator/calendly.db"))
+    return journal.with_name(journal.name + ".configured")
+
+
+def record_calendly_footprint(db_path: str | Path | None = None) -> None:
+    """Persist that Calendly was configured, independently of removable credentials."""
+    marker = calendly_footprint_path(db_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        info = marker.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(info.st_mode):
+            raise CalendlyError("footprint_state_invalid")
+        if info.st_mode & 0o077:
+            os.chmod(marker, 0o600)
+        return
+    temp = marker.with_name(marker.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(b"calendly-configured-v1\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, marker)
+        os.chmod(marker, 0o600)
+        directory = os.open(marker.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 class CalendlyStore:
@@ -116,6 +155,10 @@ class CalendlyStore:
             old = self.connection()
             if old["revision"] != expected:
                 raise CalendlyError("connection_changed")
+            # save_connection is reached only after Calendly verifies the supplied
+            # identity. Keep this privacy-erasure obligation after disconnect,
+            # credential removal, journal outages and process restarts.
+            record_calendly_footprint(self.path)
             same = old.get("user") == identity["uri"] and old.get("organization") == identity["current_organization"]
             new = {"id": old["id"] if same else uuid.uuid4().hex, "user": identity["uri"],
                    "organization": identity["current_organization"], "name": str(identity.get("name") or "")[:200],

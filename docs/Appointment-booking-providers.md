@@ -42,9 +42,17 @@ mcp:
             retry an unknown result; ask staff to verify the calendar first.
 ```
 
-Assign both exposed tools only to the intended Agent. Confirm the calendar name,
-timezone, organizer identity, attendee-delivery behavior and conflict handling
-with a disposable synthetic appointment before allowing real callers to book.
+These descriptions are guidance to the Agent, not enforcement. The reviewed MCP
+server must enforce confirmation, duplicate prevention and unknown-result safety
+when the workflow requires those guarantees. Preserve Ava's caller-confirmation
+and unknown-result instructions even when the server also enforces them.
+
+After adding or changing the MCP server, restart the AI Engine during a
+controlled window and verify the server is connected before assigning or testing
+its tools. Assign both exposed tools only to the intended Agent. Confirm the
+calendar name, timezone, organizer identity, attendee-delivery behavior and
+conflict handling with a disposable synthetic appointment before allowing real
+callers to book.
 The generic MCP client refuses redirects, does not expose configured headers and
 does not replay an unknown-result tool call.
 

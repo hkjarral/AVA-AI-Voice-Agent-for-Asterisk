@@ -151,6 +151,10 @@ def backup(root, destination):
                 target.unlink()
             raise
 
+    # This non-secret marker preserves the erasure obligation after disconnect
+    # and must travel with the journal during update recovery.
+    copy_secret(journal.with_name(journal.name + ".configured"))
+
 
 if __name__ == "__main__":
     try:

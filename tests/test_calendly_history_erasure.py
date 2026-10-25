@@ -110,6 +110,32 @@ async def test_saved_calendly_credential_keeps_erasure_queue_when_journal_is_tem
         assert db.execute('SELECT call_id FROM pending_calendly_purges').fetchall() == [('configured-call',)]
 
 
+async def test_disconnected_calendly_footprint_queues_erasure_during_journal_outage(tmp_path, monkeypatch):
+    monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
+    monkeypatch.setenv('CALL_HISTORY_RETENTION_DAYS', '')
+    journal_path = tmp_path / 'calendly.db'
+    token_path = tmp_path / 'token.json'
+    monkeypatch.setenv('CALENDLY_DB_PATH', str(journal_path))
+    monkeypatch.setenv('CALENDLY_TOKEN_PATH', str(token_path))
+    journal = CalendlyStore()
+    conn = journal.save_connection(
+        {'uri': 'https://api.calendly.com/users/test',
+         'current_organization': 'https://api.calendly.com/organizations/test'},
+        'synthetic-private-token', 0,
+    )
+    journal.disconnect(conn['revision'])
+    journal_path.rename(tmp_path / 'temporarily-unavailable.db')
+    assert not journal_path.exists() and not token_path.exists()
+
+    history = CallHistoryStore(str(tmp_path / 'history.db'))
+    now = datetime.now(timezone.utc)
+    await history.save(CallRecord(call_id='disconnected-call', start_time=now, end_time=now))
+    row = await history.get_by_call_id('disconnected-call')
+    assert await history.delete(row.id)
+    with sqlite3.connect(history._db_path) as db:
+        assert db.execute('SELECT call_id FROM pending_calendly_purges').fetchall() == [('disconnected-call',)]
+
+
 async def test_erasure_retry_processes_bounded_batches_without_dropping_remaining_work(tmp_path, monkeypatch):
     monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
     history = CallHistoryStore(str(tmp_path / 'history.db'))
