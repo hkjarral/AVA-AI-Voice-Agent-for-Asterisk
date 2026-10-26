@@ -22,11 +22,12 @@ DEFAULT_EXTERNAL_ACTIVITY_MAX_ROWS = 5000
 
 
 def _calendly_erasure_tracking_required() -> bool:
-    """Return whether this installation has Calendly-owned private state.
+    """Return whether adapter footprints require erasure for new history.
 
     A stock installation must not accumulate provider-specific cleanup work for
     an integration it never configured. The marker preserves a prior Calendly
     footprint after disconnect and while the journal is temporarily unavailable.
+    Pre-upgrade history also retains an independent per-record obligation.
     """
     journal = Path(os.getenv("CALENDLY_DB_PATH") or "/app/data/operator/calendly.db")
     credential = Path(
@@ -294,7 +295,8 @@ class CallHistoryStore:
         codec_alignment_ok INTEGER,
         barge_in_count INTEGER,
         diagnostics_snapshot TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        calendly_erasure_required INTEGER NOT NULL DEFAULT 1
     )
     """
     
@@ -342,9 +344,18 @@ class CallHistoryStore:
                 conn = self._get_connection()
                 try:
                     cursor = conn.cursor()
+                    cursor.execute("BEGIN IMMEDIATE")
                     cursor.execute(self._CREATE_TABLE_SQL)
                     cursor.execute("CREATE TABLE IF NOT EXISTS pending_calendly_purges (call_id TEXT PRIMARY KEY)")
                     self._ensure_schema_sync(conn)
+                    columns = {row[1] for row in cursor.execute("PRAGMA table_info(call_records)")}
+                    if "calendly_erasure_required" not in columns:
+                        # SQLite applies the default to existing rows without
+                        # copying history. Older writers also retain the prior
+                        # unconditional erasure contract if code is rolled back.
+                        # Unlike optional display migrations, failure must close
+                        # history writes/deletion rather than lose privacy work.
+                        cursor.execute("ALTER TABLE call_records ADD COLUMN calendly_erasure_required INTEGER NOT NULL DEFAULT 1")
                     for idx_sql in self._CREATE_INDEXES_SQL:
                         cursor.execute(idx_sql)
                     conn.commit()
@@ -438,6 +449,9 @@ class CallHistoryStore:
                         # Already saved, skip duplicate
                         return True
                     
+                    # Current writers explicitly opt into footprint-based
+                    # tracking (literal 0). Older INSERTs omit this column and
+                    # retain DEFAULT 1, including during an application rollback.
                     cursor.execute("""
                         INSERT OR REPLACE INTO call_records (
                             id, call_id, caller_number, caller_name, called_number,
@@ -451,8 +465,8 @@ class CallHistoryStore:
                             tool_calls, pre_call_tool_calls, post_call_tool_calls,
                             avg_turn_latency_ms, max_turn_latency_ms, total_turns,
                             caller_audio_format, codec_alignment_ok, barge_in_count,
-                            diagnostics_snapshot, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            diagnostics_snapshot, created_at, calendly_erasure_required
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
                     """, (
                         record.id,
                         record.call_id,
@@ -1044,9 +1058,11 @@ class CallHistoryStore:
                 conn = self._get_connection()
                 try:
                     cursor = conn.cursor()
-                    rows = cursor.execute("SELECT call_id FROM call_records WHERE id = ?", (record_id,)).fetchall()
-                    if _calendly_erasure_tracking_required():
-                        cursor.executemany("INSERT OR IGNORE INTO pending_calendly_purges(call_id) VALUES(?)", [(row[0],) for row in rows])
+                    cursor.execute("BEGIN IMMEDIATE")
+                    rows = cursor.execute("SELECT call_id, calendly_erasure_required FROM call_records WHERE id = ?", (record_id,)).fetchall()
+                    configured = _calendly_erasure_tracking_required()
+                    cursor.executemany("INSERT OR IGNORE INTO pending_calendly_purges(call_id) VALUES(?)",
+                                       [(row[0],) for row in rows if configured or row[1] != 0])
                     cursor.execute("DELETE FROM call_records WHERE id = ?", (record_id,))
                     deleted = cursor.rowcount > 0
                     conn.commit()
@@ -1069,9 +1085,11 @@ class CallHistoryStore:
                 conn = self._get_connection()
                 try:
                     cursor = conn.cursor()
-                    rows = cursor.execute("SELECT call_id FROM call_records WHERE start_time < ?", (before_date.isoformat(),)).fetchall()
-                    if _calendly_erasure_tracking_required():
-                        cursor.executemany("INSERT OR IGNORE INTO pending_calendly_purges(call_id) VALUES(?)", [(row[0],) for row in rows])
+                    cursor.execute("BEGIN IMMEDIATE")
+                    rows = cursor.execute("SELECT call_id, calendly_erasure_required FROM call_records WHERE start_time < ?", (before_date.isoformat(),)).fetchall()
+                    configured = _calendly_erasure_tracking_required()
+                    cursor.executemany("INSERT OR IGNORE INTO pending_calendly_purges(call_id) VALUES(?)",
+                                       [(row[0],) for row in rows if configured or row[1] != 0])
                     cursor.execute(
                         "DELETE FROM call_records WHERE start_time < ?",
                         (before_date.isoformat(),)

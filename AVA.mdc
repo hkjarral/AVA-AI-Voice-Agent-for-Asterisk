@@ -134,6 +134,8 @@ every service. Host `./data/` mounts at `/app/data/`; defaults include
   `data/operator/calendly.db` submission journal. Uncertain writes never replay;
   opening a pre-marker journal backfills its durable privacy marker. Preserve
   that marker, journal/credentials and queued Call History erasures during rollback.
+  Legacy History rows retain their prior erasure contract independently of missing
+  adapter files; new unused calls use footprint-based tracking.
   See [Calendly](docs/Calendly-calendar-tool.md)
   and [integration backups](docs/INTEGRATION_BACKUPS.md). Native later-call booking
   management and group/pooled appointments remain out of scope.

@@ -264,6 +264,120 @@ async def test_default_paths_allow_deletion_and_preserve_erasure_work(
         assert not journal_path.exists() and not token_path.exists()
 
 
+@pytest.mark.parametrize('mode', ['single', 'retention'])
+@pytest.mark.parametrize('history_enabled_after_restart', ['true', 'false'])
+async def test_legacy_history_keeps_erasure_when_journal_is_absent_before_first_upgrade(
+    tmp_path, monkeypatch, mode, history_enabled_after_restart,
+):
+    """Missing adapter files cannot revoke the old writer's erasure contract."""
+    monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
+    monkeypatch.setenv('CALL_HISTORY_RETENTION_DAYS', '')
+    monkeypatch.setenv('CALENDLY_DB_PATH', str(tmp_path / 'journal.db'))
+    monkeypatch.setenv('CALENDLY_TOKEN_PATH', str(tmp_path / 'token.json'))
+    journal = CalendlyStore()
+    connection = journal.save_connection(
+        {'uri': 'https://api.calendly.com/users/test',
+         'current_organization': 'https://api.calendly.com/organizations/test'},
+        'synthetic-private-token', 0,
+    )
+    now = datetime.now(timezone.utc)
+    with journal.db() as db:
+        for key in ['deleted', 'preserved']:
+            db.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', (
+                key, 'call:' + key, connection['id'], 'fingerprint', 'duplicate-' + key,
+                'tracking-marker', 'confirmed', '{"email":"synthetic@example.com"}',
+                '{}', now.timestamp(), 0, 0, 0, 0, 0,
+            ))
+    journal.disconnect(connection['revision'])
+    (tmp_path / 'journal.db.configured').unlink()
+    unavailable = tmp_path / 'unavailable.db'
+    journal.path.rename(unavailable)
+
+    path = str(tmp_path / 'history.db')
+    legacy_history = CallHistoryStore(path)
+    target = CallRecord(call_id='deleted', start_time=now-timedelta(days=2), end_time=now)
+    await legacy_history.save(target)
+    await legacy_history.save(CallRecord(call_id='preserved', start_time=now+timedelta(days=1), end_time=now+timedelta(days=1)))
+    with sqlite3.connect(path) as db:
+        columns = {r[1] for r in db.execute('PRAGMA table_info(call_records)')}
+        if 'calendly_erasure_required' in columns:
+            db.execute('ALTER TABLE call_records DROP COLUMN calendly_erasure_required')
+    # No credential, marker or journal is available when migration first runs.
+    history = CallHistoryStore(path)
+    assert await history.save(target)  # A duplicate save cannot clear old obligations.
+    ordinary = CallRecord(call_id='new-unused-call', start_time=now, end_time=now)
+    await history.save(ordinary)
+    assert await history.delete(ordinary.id)
+    with sqlite3.connect(path) as db:
+        assert db.execute('SELECT * FROM pending_calendly_purges').fetchall() == []
+    if mode == 'single':
+        assert await history.delete(target.id)
+    else:
+        assert await history.delete_before(now) == 1
+    with sqlite3.connect(path) as db:
+        assert db.execute('SELECT call_id FROM pending_calendly_purges').fetchall() == [('deleted',)]
+    assert not journal.path.exists()
+    unavailable.rename(journal.path)
+    monkeypatch.setenv('CALL_HISTORY_ENABLED', history_enabled_after_restart)
+    await CallHistoryStore(path).retry_pending_calendly_purges()
+    erased = journal.attempt('deleted')
+    assert erased['state'] == 'erased' and erased['private'] == erased['public'] == '{}'
+    assert erased['operation'] == 'call:deleted' and erased['duplicate_key'] == 'duplicate-deleted'
+    assert journal.attempt('preserved')['private'] != '{}'
+    with sqlite3.connect(path) as db:
+        assert db.execute('SELECT * FROM pending_calendly_purges').fetchall() == []
+
+
+async def test_older_history_writer_remains_conservative_after_code_rollback(tmp_path, monkeypatch):
+    monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
+    monkeypatch.setenv('CALENDLY_DB_PATH', str(tmp_path / 'missing-journal.db'))
+    monkeypatch.setenv('CALENDLY_TOKEN_PATH', str(tmp_path / 'missing-token.json'))
+    history = CallHistoryStore(str(tmp_path / 'history.db'))
+    now = datetime.now(timezone.utc)
+    fresh = CallRecord(call_id='new-writer', start_time=now, end_time=now)
+    assert await history.save(fresh)
+    with sqlite3.connect(history._db_path) as db:
+        # The previous INSERT column list omits the new compatibility field.
+        db.execute('INSERT INTO call_records(id,call_id,start_time,end_time) VALUES(?,?,?,?)',
+                   ('old-row', 'old-writer', now.isoformat(), now.isoformat()))
+        assert db.execute('SELECT call_id,calendly_erasure_required FROM call_records ORDER BY call_id').fetchall() == [('new-writer', 0), ('old-writer', 1)]
+    assert await history.delete(fresh.id)
+    with sqlite3.connect(history._db_path) as db:
+        assert db.execute('SELECT * FROM pending_calendly_purges').fetchall() == []
+    assert await history.delete('old-row')
+    with sqlite3.connect(history._db_path) as db:
+        assert db.execute('SELECT call_id FROM pending_calendly_purges').fetchall() == [('old-writer',)]
+
+
+async def test_required_erasure_migration_failure_does_not_allow_history_deletion(tmp_path, monkeypatch):
+    from src.core import call_history
+    monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
+    path = str(tmp_path / 'history.db')
+    history = CallHistoryStore(path)
+    now = datetime.now(timezone.utc)
+    target = CallRecord(call_id='old-call', start_time=now, end_time=now)
+    assert await history.save(target)
+    with sqlite3.connect(path) as db:
+        db.execute('ALTER TABLE call_records DROP COLUMN calendly_erasure_required')
+    connect = sqlite3.connect
+    def migration_denied(*args, **kwargs):
+        db = connect(*args, **kwargs)
+        db.set_authorizer(lambda action, *_: sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_ALTER_TABLE else sqlite3.SQLITE_OK)
+        return db
+    monkeypatch.setattr(call_history.sqlite3, 'connect', migration_denied)
+    unavailable = CallHistoryStore(path)
+    assert not unavailable._enabled and not unavailable._initialized
+    assert await unavailable.delete(target.id) is False
+    assert await unavailable.delete_before(now+timedelta(days=1)) == 0
+    with connect(path) as db:
+        assert db.execute('SELECT call_id FROM call_records').fetchall() == [('old-call',)]
+    monkeypatch.setattr(call_history.sqlite3, 'connect', connect)
+    restored = CallHistoryStore(path)
+    assert restored._enabled and restored._initialized
+    with connect(path) as db:
+        assert db.execute('SELECT calendly_erasure_required FROM call_records').fetchall() == [(1,)]
+
+
 async def test_erasure_retry_processes_bounded_batches_without_dropping_remaining_work(tmp_path, monkeypatch):
     monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
     history = CallHistoryStore(str(tmp_path / 'history.db'))

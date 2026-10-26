@@ -74,8 +74,11 @@ result and notification result as separate evidence.
 The built-in `calendly_calendar` adapter remains for existing Calendly users and
 is disabled by default. Calendly's direct booking API requires a paid plan. Its
 credential, journal, recovery and erasure state belong only to that adapter;
-installations using MCP booking do not need them. A stock installation that has
-never initialized Calendly does not create Calendly erasure-queue entries.
+installations using MCP booking do not need them. New history on a stock
+installation that has never initialized Calendly does not create Calendly
+erasure-queue entries. History written before this upgrade retains its prior
+conservative erasure guarantee, even if all adapter files are temporarily absent;
+see the [Calendly privacy guide](Calendly-calendar-tool.md#storage-privacy-and-recovery).
 
 Do not relabel an arbitrary MCP write tool as booking without checking its
 schema and failure semantics. A new provider should expose bounded availability,

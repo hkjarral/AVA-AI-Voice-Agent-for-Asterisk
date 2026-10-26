@@ -18,9 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Backfill Calendly's durable privacy marker when opening pre-marker journals and
   preserve it before disconnect removes credentials. Individual and retention
   deletion keep erasure retries across temporary journal absence and restart,
-  including previously disconnected installations; unused installations remain
-  free of Calendly cleanup work. Treat blank optional Calendly paths as defaults
-  throughout deletion and recovery so they cannot block history purges (#778).
+  including previously disconnected installations. Preserve the prior erasure
+  contract for legacy History rows when all adapter files are absent before first
+  startup; new history on unused installations remains queue-free. Treat blank
+  optional Calendly paths as defaults throughout deletion and recovery so they
+  cannot block history purges (#778).
 
 ## [7.7.0] - 2026-10-24
 

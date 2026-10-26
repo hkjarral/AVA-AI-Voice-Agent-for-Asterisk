@@ -40,6 +40,12 @@ snapshots, not one distributed transaction; do not rotate credentials or change
 connections during the maintenance window. Validate connection identity/revision
 after recovery; a mismatch must remain disabled until staff resolves it.
 
+Call History's queued erasures and internal legacy-erasure flag live in its own
+configured SQLite database. Preserve that database with a consistent WAL-aware
+snapshot as well; an adapter journal/credential snapshot alone is not the full
+privacy recovery set. The additive flag is ignored safely by older application
+code, whose inserts retain the conservative default until upgraded writers resume.
+
 ## Application rollback is not state rollback
 
 Keep the current persistent volumes, journal, operation barriers and credentials
