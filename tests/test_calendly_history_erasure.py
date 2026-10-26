@@ -94,6 +94,43 @@ async def test_history_deletion_without_calendly_footprint_does_not_queue_provid
         assert db.execute('SELECT * FROM pending_calendly_purges').fetchall() == []
 
 
+@pytest.mark.parametrize('mode', ['single', 'retention'])
+@pytest.mark.parametrize('unreadable', ['journal', 'credential', 'marker'])
+async def test_unreadable_calendly_footprint_queues_without_blocking_history_deletion(
+    tmp_path, monkeypatch, mode, unreadable,
+):
+    """Unknown footprint state preserves erasure work while history deletion succeeds."""
+    from src.core import call_history
+
+    monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
+    monkeypatch.setenv('CALL_HISTORY_RETENTION_DAYS', '')
+    journal = tmp_path / 'calendly.db'
+    credential = tmp_path / 'token.json'
+    marker = tmp_path / 'calendly.db.configured'
+    monkeypatch.setenv('CALENDLY_DB_PATH', str(journal))
+    monkeypatch.setenv('CALENDLY_TOKEN_PATH', str(credential))
+    target = {'journal': journal, 'credential': credential, 'marker': marker}[unreadable]
+    real_is_file = call_history.Path.is_file
+
+    def inaccessible(path):
+        if path == target:
+            raise PermissionError('synthetic inaccessible footprint')
+        return real_is_file(path)
+
+    monkeypatch.setattr(call_history.Path, 'is_file', inaccessible)
+    history = CallHistoryStore(str(tmp_path / 'history.db'))
+    now = datetime.now(timezone.utc)
+    record = CallRecord(call_id='unknown-footprint', start_time=now-timedelta(days=2), end_time=now)
+    await history.save(record)
+    if mode == 'single':
+        assert await history.delete(record.id)
+    else:
+        assert await history.delete_before(now) == 1
+    assert await history.get_by_call_id(record.call_id) is None
+    with sqlite3.connect(history._db_path) as db:
+        assert db.execute('SELECT call_id FROM pending_calendly_purges').fetchall() == [('unknown-footprint',)]
+
+
 async def test_saved_calendly_credential_keeps_erasure_queue_when_journal_is_temporarily_missing(tmp_path, monkeypatch):
     monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
     monkeypatch.setenv('CALL_HISTORY_RETENTION_DAYS', '')

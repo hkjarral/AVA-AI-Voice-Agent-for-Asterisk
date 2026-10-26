@@ -21,6 +21,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXTERNAL_ACTIVITY_MAX_ROWS = 5000
 
 
+def _calendly_path_present_or_unknown(path: Path) -> bool:
+    """Treat an unreadable footprint path as requiring conservative tracking."""
+    try:
+        return path.is_file()
+    except OSError:
+        return True
+
+
 def _calendly_erasure_tracking_required() -> bool:
     """Return whether adapter footprints require erasure for new history.
 
@@ -34,7 +42,10 @@ def _calendly_erasure_tracking_required() -> bool:
         os.getenv("CALENDLY_TOKEN_PATH") or "/app/project/secrets/calendly-default-token.json"
     )
     footprint = journal.with_name(journal.name + ".configured")
-    return journal.is_file() or credential.is_file() or footprint.is_file()
+    return any(
+        _calendly_path_present_or_unknown(path)
+        for path in (journal, credential, footprint)
+    )
 
 
 @dataclass
