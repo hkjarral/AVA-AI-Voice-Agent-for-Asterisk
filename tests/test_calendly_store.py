@@ -23,6 +23,24 @@ def test_verified_connection_records_private_footprint_that_survives_disconnect(
     assert marker.is_file() and not store.token_path.exists()
 
 
+@pytest.mark.parametrize('fail_marker', [False, True])
+def test_disconnect_preserves_legacy_erasure_obligation_before_removing_token(tmp_path, monkeypatch, fail_marker):
+    store = CalendlyStore(str(tmp_path / 'calendly.db'), str(tmp_path / 'token'))
+    conn = store.save_connection(IDENTITY, 'synthetic-private-token', 0)
+    marker = tmp_path / 'calendly.db.configured'
+    marker.unlink()  # Connected state from a release without the marker.
+    if fail_marker:
+        def fail(_):
+            raise OSError('synthetic marker write failure')
+        monkeypatch.setattr('src.core.calendly_store.record_calendly_footprint', fail)
+        with pytest.raises(OSError, match='synthetic marker write failure'):
+            store.disconnect(conn['revision'])
+        assert store.token_path.is_file() and not store.connection()['enabled']
+    else:
+        store.disconnect(conn['revision'])
+        assert marker.is_file() and not store.token_path.exists()
+
+
 def claim(paths):
     store = CalendlyStore(*paths)
     _, admitted = store.admit('call:concurrent', store.connection(), PAYLOAD, {})

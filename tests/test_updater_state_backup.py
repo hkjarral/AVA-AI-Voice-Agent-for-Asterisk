@@ -35,6 +35,18 @@ def test_absent_state_is_optional(tmp_path):
     assert list((tmp_path / "backup").iterdir()) == []
 
 
+def test_standalone_calendly_footprint_is_preserved_during_journal_outage(tmp_path):
+    marker = tmp_path / 'data/operator/calendly.db.configured'
+    marker.parent.mkdir(parents=True)
+    marker.write_text('calendly-configured-v1\n')
+    marker.chmod(0o600)
+    assert run_backup(tmp_path).returncode == 0
+    copied = tmp_path / 'backup' / marker.relative_to(tmp_path)
+    assert copied.read_bytes() == marker.read_bytes()
+    assert copied.stat().st_mode & 0o777 == 0o600
+    assert not (tmp_path / 'backup/data/operator/calendly.db').exists()
+
+
 def test_live_wal_snapshot_and_private_credentials(tmp_path):
     secrets = tmp_path / "secrets/providers/example"
     secrets.mkdir(parents=True)

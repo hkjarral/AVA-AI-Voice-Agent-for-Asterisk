@@ -44,7 +44,7 @@ func integrationStatePresent(root string) (bool, error) {
 			return true, nil
 		}
 	}
-	for _, rel := range []string{"secrets", "data/operator/calendly.db"} {
+	for _, rel := range []string{"secrets", "data/operator/calendly.db", "data/operator/calendly.db.configured"} {
 		path := filepath.Join(root, rel)
 		info, err := os.Lstat(path)
 		if os.IsNotExist(err) {

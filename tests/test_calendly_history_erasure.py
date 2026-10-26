@@ -136,6 +136,71 @@ async def test_disconnected_calendly_footprint_queues_erasure_during_journal_out
         assert db.execute('SELECT call_id FROM pending_calendly_purges').fetchall() == [('disconnected-call',)]
 
 
+@pytest.mark.parametrize('mode', ['single', 'retention'])
+@pytest.mark.parametrize('disconnected_before_upgrade', [False, True])
+@pytest.mark.parametrize('history_enabled_after_restart', ['true', 'false'])
+async def test_legacy_upgrade_preserves_erasure_after_disconnect_and_journal_outage(
+    tmp_path, monkeypatch, mode, disconnected_before_upgrade, history_enabled_after_restart,
+):
+    """Upgrade the pre-marker layout without resaving a credential or booking."""
+    monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
+    monkeypatch.setenv('CALL_HISTORY_RETENTION_DAYS', '')
+    monkeypatch.setenv('CALENDLY_DB_PATH', str(tmp_path / 'calendly.db'))
+    monkeypatch.setenv('CALENDLY_TOKEN_PATH', str(tmp_path / 'token.json'))
+    legacy = CalendlyStore()
+    conn = legacy.save_connection(
+        {'uri': 'https://api.calendly.com/users/test',
+         'current_organization': 'https://api.calendly.com/organizations/test'},
+        'synthetic-private-token', 0,
+    )
+    now = datetime.now(timezone.utc)
+    with legacy.db() as db:
+        for key in ['deleted', 'preserved']:
+            db.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', (
+                key, 'call:' + key, conn['id'], 'fingerprint', 'duplicate-' + key,
+                'tracking-marker', 'confirmed', '{"email":"synthetic@example.com"}',
+                '{"appointment_name":"Synthetic"}', now.timestamp(), 0, 0, 0, 0, 0,
+            ))
+    if disconnected_before_upgrade:
+        legacy.disconnect(conn['revision'])
+    marker = tmp_path / 'calendly.db.configured'
+    # The schema/version and saved state are unchanged from pre-marker releases.
+    # Remove only the new sidecar to reproduce their exact persistent layout.
+    marker.unlink()
+    upgraded = CalendlyStore()
+    assert marker.is_file() and marker.stat().st_mode & 0o777 == 0o600
+    if not disconnected_before_upgrade:
+        upgraded.disconnect(conn['revision'])
+    assert not upgraded.token_path.exists()
+
+    path = str(tmp_path / 'history.db')
+    history = CallHistoryStore(path)
+    await history.save(CallRecord(call_id='deleted', start_time=now-timedelta(days=2), end_time=now))
+    await history.save(CallRecord(call_id='preserved', start_time=now+timedelta(days=1), end_time=now+timedelta(days=1)))
+    row = await history.get_by_call_id('deleted')
+    unavailable = tmp_path / 'temporarily-unavailable.db'
+    upgraded.path.rename(unavailable)
+    if mode == 'single':
+        assert await history.delete(row.id)
+    else:
+        assert await history.delete_before(now) == 1
+    assert await history.get_by_call_id('deleted') is None
+    assert await history.get_by_call_id('preserved') is not None
+    assert not upgraded.path.exists()  # Deletion must not create an empty journal.
+    with sqlite3.connect(path) as db:
+        assert db.execute('SELECT call_id FROM pending_calendly_purges').fetchall() == [('deleted',)]
+
+    unavailable.rename(upgraded.path)
+    monkeypatch.setenv('CALL_HISTORY_ENABLED', history_enabled_after_restart)
+    await CallHistoryStore(path).retry_pending_calendly_purges()
+    erased = upgraded.attempt('deleted')
+    assert erased['state'] == 'erased' and erased['private'] == erased['public'] == '{}'
+    assert erased['operation'] == 'call:deleted' and erased['duplicate_key'] == 'duplicate-deleted'
+    assert upgraded.attempt('preserved')['private'] != '{}'
+    with sqlite3.connect(path) as db:
+        assert db.execute('SELECT * FROM pending_calendly_purges').fetchall() == []
+
+
 async def test_erasure_retry_processes_bounded_batches_without_dropping_remaining_work(tmp_path, monkeypatch):
     monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
     history = CallHistoryStore(str(tmp_path / 'history.db'))

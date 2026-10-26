@@ -132,7 +132,9 @@ every service. Host `./data/` mounts at `/app/data/`; defaults include
 - **Calendly:** the native tool is explicitly assigned and disabled until setup.
   One connected account and supported one-to-one appointments use a durable
   `data/operator/calendly.db` submission journal. Uncertain writes never replay;
-  preserve journal/credentials during rollback. See [Calendly](docs/Calendly-calendar-tool.md)
+  opening a pre-marker journal backfills its durable privacy marker. Preserve
+  that marker, journal/credentials and queued Call History erasures during rollback.
+  See [Calendly](docs/Calendly-calendar-tool.md)
   and [integration backups](docs/INTEGRATION_BACKUPS.md). Native later-call booking
   management and group/pooled appointments remain out of scope.
 - **External effects:** retries must not duplicate bookings, transfers, or other

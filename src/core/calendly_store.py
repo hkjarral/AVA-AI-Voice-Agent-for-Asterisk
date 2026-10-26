@@ -80,6 +80,9 @@ class CalendlyStore:
         with self.db() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version == 1:
+                # Pre-marker journals retain private data even after disconnect.
+                # Backfill on open, before recovery/setup can remove credentials.
+                record_calendly_footprint(self.path)
                 return
             if version != 0:
                 raise CalendlyError("journal_version_unsupported")
@@ -90,6 +93,7 @@ class CalendlyStore:
                 if version not in {0, 1}:
                     raise CalendlyError("journal_version_unsupported")
                 if version == 1:
+                    record_calendly_footprint(self.path)
                     return
                 db.executescript("""
                     CREATE TABLE IF NOT EXISTS connection(id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
@@ -202,6 +206,9 @@ class CalendlyStore:
         self.token_path.parent.mkdir(parents=True, exist_ok=True)
         with portalocker.Lock(str(self.token_path) + ".lock", timeout=2):
             conn = self.update_connection(expected, enabled=False, qualified=False, revision=expected + 1)
+            # Do not remove the credential until its independent erasure marker
+            # is durable, including for a legacy connection opened before upgrade.
+            record_calendly_footprint(self.path)
             self.token_path.unlink(missing_ok=True)
             return conn
 

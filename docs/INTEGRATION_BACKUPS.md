@@ -4,7 +4,9 @@ The updated CLI and pinned recovery script preserve `secrets/` (including immuta
 provider/Pushover credentials and the Calendly token) with owner-only files inside
 a private backup directory. They snapshot `data/operator/calendly.db` through
 SQLite's online backup API, including committed WAL data, and verify integrity.
-They do not copy a live journal's main file alone or restart either service.
+They also preserve the non-secret `calendly.db.configured` privacy marker, which
+must survive disconnect and temporary journal absence. They do not copy a live
+journal's main file alone or restart either service.
 Missing integrations are skipped; an unreadable/corrupt existing journal, unsafe
 symlink, or failed copy stops the update before checkout changes.
 
