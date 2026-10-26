@@ -1240,6 +1240,33 @@ providers:
 
 ### Local AI (Vosk + Phi-3 + Piper)
 
+#### First Local/Hybrid Turn Is Slow Despite Healthy Readiness
+
+A healthy `/ready` response does not mean that the next call's modular
+`local_stt` or `local_tts` WebSocket is already open. The
+[local pipeline adapter](../src/pipelines/local.py) creates a call-scoped
+session in `open_call`; starting the adapter alone does not open that session.
+Distinguish this setup delay from slow LLM generation before changing models
+or timeouts. See [the first-turn report](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/439).
+
+Use the call ID and time window to compare these stages in the existing engine
+and Local AI logs:
+
+| Stage | Evidence and relevant adapter option |
+| --- | --- |
+| Socket opening/authentication | `Opening local adapter session`; when authentication is configured, look for `Local adapter authenticated` or `Local adapter auth failed`; inspect the effective `ws_url` and `connect_timeout_sec` |
+| Mode negotiation | `Local adapter set_mode sent`, then `Local adapter handshake complete`; the acknowledgement wait uses `handshake_timeout_sec`, defaulting to at least five seconds |
+| STT audio/transcription | Confirm audio reaches the selected STT adapter and a transcription follows; an open connection alone does not prove transcription works |
+| TTS synthesis | Confirm the selected TTS adapter receives text and returns synthesized audio; an open connection alone does not prove synthesis works |
+
+`Local adapter handshake not confirmed; proceeding without mode_ready` means
+the mode acknowledgement was not confirmed; the current adapter logs the warning
+and continues. It is different from failing to open the socket. Preserve the
+surrounding evidence before restarting anything, and follow the
+[diagnostic workflow](contributing/debugging-guide.md) for a bounded support
+package. Do not assume increasing a timeout fixes a wrong URL, authentication
+failure, or an unavailable model.
+
 #### Common Issues
 
 **1. Models Not Loading**
