@@ -37,15 +37,20 @@ def _calendly_erasure_tracking_required() -> bool:
     footprint after disconnect and while the journal is temporarily unavailable.
     Pre-upgrade history also retains an independent per-record obligation.
     """
-    journal = Path(os.getenv("CALENDLY_DB_PATH") or "/app/data/operator/calendly.db")
-    credential = Path(
-        os.getenv("CALENDLY_TOKEN_PATH") or "/app/project/secrets/calendly-default-token.json"
-    )
-    footprint = journal.with_name(journal.name + ".configured")
-    return any(
-        _calendly_path_present_or_unknown(path)
-        for path in (journal, credential, footprint)
-    )
+    try:
+        journal = Path(os.getenv("CALENDLY_DB_PATH") or "/app/data/operator/calendly.db")
+        credential = Path(
+            os.getenv("CALENDLY_TOKEN_PATH") or "/app/project/secrets/calendly-default-token.json"
+        )
+        footprint = journal.with_name(journal.name + ".configured")
+        return any(
+            _calendly_path_present_or_unknown(path)
+            for path in (journal, credential, footprint)
+        )
+    except ValueError as exc:
+        # Invalid path state must not roll back a durable History deletion.
+        logger.warning("Calendly footprint unavailable (%s); erasure tracking retained", type(exc).__name__)
+        return True
 
 
 @dataclass

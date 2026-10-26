@@ -415,6 +415,58 @@ async def test_required_erasure_migration_failure_does_not_allow_history_deletio
         assert db.execute('SELECT calendly_erasure_required FROM call_records').fetchall() == [(1,)]
 
 
+@pytest.mark.parametrize('mode', ['single', 'retention'])
+@pytest.mark.parametrize('footprint', ['journal', 'credential', 'marker'])
+async def test_io_error_adapter_footprint_keeps_erasure_without_blocking_deletion(
+    tmp_path, monkeypatch, mode, footprint,
+):
+    from pathlib import Path
+    monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
+    monkeypatch.setenv('CALL_HISTORY_RETENTION_DAYS', '')
+    journal, credential = tmp_path / 'journal.db', tmp_path / 'token.json'
+    monkeypatch.setenv('CALENDLY_DB_PATH', str(journal))
+    monkeypatch.setenv('CALENDLY_TOKEN_PATH', str(credential))
+    history = CallHistoryStore(str(tmp_path / 'history.db'))
+    now = datetime.now(timezone.utc)
+    record = CallRecord(call_id='unknown-footprint', start_time=now-timedelta(days=2), end_time=now)
+    assert await history.save(record)
+    target = {'journal': journal, 'credential': credential,
+              'marker': tmp_path / 'journal.db.configured'}[footprint]
+    is_file = Path.is_file
+    def unavailable(path):
+        if path == target:
+            raise OSError('synthetic footprint stat failure')
+        return is_file(path)
+    monkeypatch.setattr(Path, 'is_file', unavailable)
+    if mode == 'single':
+        assert await history.delete(record.id)
+    else:
+        assert await history.delete_before(now) == 1
+    assert await history.get_by_call_id(record.call_id) is None
+    with sqlite3.connect(history._db_path) as db:
+        assert db.execute('SELECT call_id FROM pending_calendly_purges').fetchall() == [('unknown-footprint',)]
+    assert not journal.exists()  # No replacement journal can discharge the retry.
+
+
+@pytest.mark.parametrize('mode', ['single', 'retention'])
+async def test_invalid_footprint_path_keeps_erasure_without_blocking_deletion(tmp_path, monkeypatch, mode):
+    monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
+    monkeypatch.setenv('CALL_HISTORY_RETENTION_DAYS', '')
+    monkeypatch.setenv('CALENDLY_DB_PATH', '.')
+    monkeypatch.setenv('CALENDLY_TOKEN_PATH', str(tmp_path / 'missing-token.json'))
+    monkeypatch.setattr('src.core.calendly_store.scrub_deleted_calls', lambda _: False)
+    history = CallHistoryStore(str(tmp_path / 'history.db'))
+    now = datetime.now(timezone.utc)
+    record = CallRecord(call_id='invalid-footprint', start_time=now-timedelta(days=2), end_time=now)
+    assert await history.save(record)
+    if mode == 'single':
+        assert await history.delete(record.id)
+    else:
+        assert await history.delete_before(now) == 1
+    with sqlite3.connect(history._db_path) as db:
+        assert db.execute('SELECT call_id FROM pending_calendly_purges').fetchall() == [('invalid-footprint',)]
+
+
 async def test_erasure_retry_processes_bounded_batches_without_dropping_remaining_work(tmp_path, monkeypatch):
     monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
     history = CallHistoryStore(str(tmp_path / 'history.db'))

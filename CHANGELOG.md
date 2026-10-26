@@ -22,8 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contract for legacy History rows when all adapter files are absent before first
   startup; new history on unused installations remains queue-free. Treat blank
   optional Calendly paths as defaults throughout deletion and recovery so they
-  cannot block history purges. Treat unreadable footprint paths conservatively so
-  permission errors cannot discard or block history erasure work (#778).
+  cannot block history purges. Unreadable or invalid footprint paths retain
+  erasure work without blocking individual deletion or retention (#778).
 
 ## [7.7.0] - 2026-10-24
 
