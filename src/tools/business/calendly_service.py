@@ -441,7 +441,7 @@ async def recovery_loop():
     last_cleanup = None
     while True:
         try:
-            path = Path(os.getenv("CALENDLY_DB_PATH", "/app/data/operator/calendly.db"))
+            path = Path(os.getenv("CALENDLY_DB_PATH") or "/app/data/operator/calendly.db")
             if path.exists():
                 store = await asyncio.to_thread(CalendlyStore)
                 if last_cleanup is None or time.monotonic() - last_cleanup >= 60:

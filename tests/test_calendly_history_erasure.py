@@ -201,6 +201,69 @@ async def test_legacy_upgrade_preserves_erasure_after_disconnect_and_journal_out
         assert db.execute('SELECT * FROM pending_calendly_purges').fetchall() == []
 
 
+@pytest.mark.parametrize('mode', ['single', 'retention'])
+@pytest.mark.parametrize('override', ['unset', 'blank'])
+@pytest.mark.parametrize('footprint', ['none', 'journal', 'credential', 'marker'])
+async def test_default_paths_allow_deletion_and_preserve_erasure_work(
+    tmp_path, monkeypatch, mode, override, footprint,
+):
+    """Optional blank path overrides behave like omitted container settings."""
+    from pathlib import Path
+    from src.core import calendly_store, call_history
+
+    journal_path, token_path = tmp_path / 'journal.db', tmp_path / 'token.json'
+    now = datetime.now(timezone.utc)
+    if footprint != 'none':
+        store = CalendlyStore(str(journal_path), str(token_path))
+        connection = store.save_connection(
+            {'uri': 'https://api.calendly.com/users/test',
+             'current_organization': 'https://api.calendly.com/organizations/test'},
+            'synthetic-private-token', 0,
+        )
+        with store.db() as db:
+            db.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', (
+                'attempt', 'call:deleted', connection['id'], 'fingerprint', 'duplicate',
+                'tracking-marker', 'confirmed', '{"email":"synthetic@example.com"}',
+                '{}', now.timestamp(), 0, 0, 0, 0, 0,
+            ))
+        if footprint == 'marker':
+            store.disconnect(connection['revision'])
+        if footprint in {'credential', 'marker'}:
+            journal_path.rename(tmp_path / 'unavailable.db')
+        if footprint == 'credential':
+            (tmp_path / 'journal.db.configured').unlink()
+    for name in ['CALENDLY_DB_PATH', 'CALENDLY_TOKEN_PATH']:
+        if override == 'blank':
+            monkeypatch.setenv(name, '')
+        else:
+            monkeypatch.delenv(name, raising=False)
+    # Map the real default container paths to isolated fixture storage.
+    defaults = {'/app/data/operator/calendly.db': journal_path,
+                '/app/project/secrets/calendly-default-token.json': token_path}
+    def fixture_path(value):
+        return Path(defaults.get(str(value), value))
+    monkeypatch.setattr(calendly_store, 'Path', fixture_path)
+    monkeypatch.setattr(call_history, 'Path', fixture_path)
+    monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
+    monkeypatch.setenv('CALL_HISTORY_RETENTION_DAYS', '')
+    history = CallHistoryStore(str(tmp_path / 'history.db'))
+    await history.save(CallRecord(call_id='deleted', start_time=now-timedelta(days=2), end_time=now))
+    row = await history.get_by_call_id('deleted')
+    if mode == 'single':
+        assert await history.delete(row.id)
+    else:
+        assert await history.delete_before(now) == 1
+    assert await history.get_by_call_id('deleted') is None
+    with sqlite3.connect(history._db_path) as db:
+        queued = db.execute('SELECT call_id FROM pending_calendly_purges').fetchall()
+    assert queued == ([('deleted',)] if footprint in {'credential', 'marker'} else [])
+    if footprint == 'journal':
+        erased = store.attempt('attempt')
+        assert erased['state'] == 'erased' and erased['private'] == erased['public'] == '{}'
+    elif footprint == 'none':
+        assert not journal_path.exists() and not token_path.exists()
+
+
 async def test_erasure_retry_processes_bounded_batches_without_dropping_remaining_work(tmp_path, monkeypatch):
     monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
     history = CallHistoryStore(str(tmp_path / 'history.db'))

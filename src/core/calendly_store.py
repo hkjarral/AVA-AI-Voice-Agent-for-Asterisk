@@ -30,7 +30,7 @@ def digest(value) -> str:
 
 def calendly_footprint_path(db_path: str | Path | None = None) -> Path:
     """Return the durable, non-secret marker for prior Calendly configuration."""
-    journal = Path(db_path or os.getenv("CALENDLY_DB_PATH", "/app/data/operator/calendly.db"))
+    journal = Path(db_path or (os.getenv("CALENDLY_DB_PATH") or "/app/data/operator/calendly.db"))
     return journal.with_name(journal.name + ".configured")
 
 
@@ -68,8 +68,8 @@ def record_calendly_footprint(db_path: str | Path | None = None) -> None:
 
 class CalendlyStore:
     def __init__(self, db_path: str | None = None, token_path: str | None = None):
-        self.path = Path(db_path or os.getenv("CALENDLY_DB_PATH", "/app/data/operator/calendly.db"))
-        self.token_path = Path(token_path or os.getenv("CALENDLY_TOKEN_PATH", "/app/project/secrets/calendly-default-token.json"))
+        self.path = Path(db_path or (os.getenv("CALENDLY_DB_PATH") or "/app/data/operator/calendly.db"))
+        self.token_path = Path(token_path or (os.getenv("CALENDLY_TOKEN_PATH") or "/app/project/secrets/calendly-default-token.json"))
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # SQLite derives WAL/SHM permissions from its main file. Never use 0666.
         fd = os.open(self.path, os.O_CREAT | os.O_WRONLY, 0o600)
@@ -383,7 +383,7 @@ class CalendlyStore:
 
 def scrub_deleted_calls(call_ids: list[str]) -> bool:
     """Acknowledge erasure only after accessing the journal; keep replay barriers."""
-    path = Path(os.getenv("CALENDLY_DB_PATH", "/app/data/operator/calendly.db"))
+    path = Path(os.getenv("CALENDLY_DB_PATH") or "/app/data/operator/calendly.db")
     if path.exists():
         CalendlyStore().cleanup(call_ids)
         return True

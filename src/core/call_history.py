@@ -28,12 +28,9 @@ def _calendly_erasure_tracking_required() -> bool:
     an integration it never configured. The marker preserves a prior Calendly
     footprint after disconnect and while the journal is temporarily unavailable.
     """
-    journal = Path(os.getenv("CALENDLY_DB_PATH", "/app/data/operator/calendly.db"))
+    journal = Path(os.getenv("CALENDLY_DB_PATH") or "/app/data/operator/calendly.db")
     credential = Path(
-        os.getenv(
-            "CALENDLY_TOKEN_PATH",
-            "/app/project/secrets/calendly-default-token.json",
-        )
+        os.getenv("CALENDLY_TOKEN_PATH") or "/app/project/secrets/calendly-default-token.json"
     )
     footprint = journal.with_name(journal.name + ".configured")
     return journal.is_file() or credential.is_file() or footprint.is_file()
