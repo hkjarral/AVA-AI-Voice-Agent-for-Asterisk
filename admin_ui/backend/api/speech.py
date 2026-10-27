@@ -12,6 +12,7 @@ import subprocess
 from typing import Annotated, Any
 
 import websockets
+import imageio_ffmpeg
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicCredentials, HTTPBearer
@@ -83,7 +84,7 @@ async def _decode_to_pcm16(audio: bytes) -> bytes:
     def _run() -> subprocess.CompletedProcess[bytes]:
         return subprocess.run(
             [
-                "ffmpeg",
+                imageio_ffmpeg.get_ffmpeg_exe(),
                 "-hide_banner",
                 "-loglevel",
                 "error",
