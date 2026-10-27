@@ -1,9 +1,15 @@
 import base64
+import sys
+from pathlib import Path
 
 import pytest
 
-from local_ai_server.protocol_contract import validate_payload
-from local_ai_server.server import LocalAIServer
+
+LOCAL_AI_ROOT = Path(__file__).resolve().parents[1] / "local_ai_server"
+sys.path.insert(0, str(LOCAL_AI_ROOT))
+
+from protocol_contract import validate_payload  # noqa: E402
+from server import LocalAIServer  # noqa: E402
 
 
 class _FakeServer:
