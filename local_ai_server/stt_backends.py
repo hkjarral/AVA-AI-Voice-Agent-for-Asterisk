@@ -1135,7 +1135,7 @@ class FasterWhisperSTTBackend:
         self._audio_buffer = np.array([], dtype=np.float32)
         self._last_text = ""
 
-    def transcribe_pcm16(self, pcm16_audio: bytes) -> str:
+    def transcribe_pcm16(self, pcm16_audio: bytes, language: Optional[str] = None) -> str:
         """
         Transcribe a complete utterance (PCM16 16kHz mono) in one shot.
 
@@ -1151,11 +1151,13 @@ class FasterWhisperSTTBackend:
         try:
             samples = np.frombuffer(pcm16_audio, dtype=np.int16)
             float_samples = samples.astype(np.float32) / 32768.0
-            lang = (self.language or "").strip().lower()
-            language = None if not lang or lang == "auto" else self.language
+            requested_language = (language or "").strip().lower()
+            configured_language = (self.language or "").strip().lower()
+            effective_language = requested_language or configured_language
+            model_language = None if not effective_language or effective_language == "auto" else effective_language
             segments, _info = self.model.transcribe(
                 float_samples,
-                language=language,
+                language=model_language,
                 beam_size=1,
                 vad_filter=False,
             )

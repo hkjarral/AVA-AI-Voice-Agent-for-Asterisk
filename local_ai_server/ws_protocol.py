@@ -152,6 +152,10 @@ class WebSocketProtocol:
             await self._server._handle_audio_payload(websocket, session, data)
             return
 
+        if msg_type == "transcribe_request":
+            await self._server._handle_transcribe_request(websocket, data)
+            return
+
         if msg_type == "barge_in":
             call_id = data.get("call_id")
             if call_id:

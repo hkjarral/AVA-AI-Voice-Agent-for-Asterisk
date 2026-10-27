@@ -28,6 +28,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     python3-dev \
     tzdata \
     gosu \
+    ffmpeg \
     sox \
     libsox-fmt-all \
     && install -m 0755 -d /etc/apt/keyrings \

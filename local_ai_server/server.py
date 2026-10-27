@@ -2587,6 +2587,120 @@ class LocalAIServer:
             logging.error("Faster-Whisper STT processing failed: %s", exc, exc_info=True)
             return ""
 
+    async def transcribe_pcm16_once(
+        self,
+        pcm16_audio: bytes,
+        *,
+        language: Optional[str] = None,
+    ) -> str:
+        """Transcribe one complete 16 kHz mono PCM16 payload without shared buffering."""
+        if not pcm16_audio:
+            return ""
+        if self.stt_backend == "faster_whisper":
+            if not self.faster_whisper_backend:
+                raise RuntimeError("stt_unavailable")
+            async with self._faster_whisper_lock:
+                return await asyncio.to_thread(
+                    self.faster_whisper_backend.transcribe_pcm16,
+                    pcm16_audio,
+                    language,
+                )
+        if self.stt_backend == "whisper_cpp":
+            if not self.whisper_cpp_backend:
+                raise RuntimeError("stt_unavailable")
+            async with self._whisper_cpp_lock:
+                return await asyncio.to_thread(
+                    self.whisper_cpp_backend.transcribe_pcm16,
+                    pcm16_audio,
+                )
+        if self.stt_backend == "vosk":
+            return await self._process_stt_vosk(pcm16_audio, PCM16_TARGET_RATE)
+        raise RuntimeError("unsupported_stt_backend")
+
+    async def _handle_transcribe_request(
+        self,
+        websocket,
+        data: Dict[str, Any],
+    ) -> None:
+        """Handle one authenticated, bounded batch transcription request."""
+        request_id = data.get("request_id")
+        encoded = data.get("data")
+        if not isinstance(encoded, str) or not encoded:
+            await self._send_json(
+                websocket,
+                {
+                    "type": "transcribe_response",
+                    "status": "error",
+                    "error": "missing_audio_data",
+                    "request_id": request_id,
+                },
+            )
+            return
+        if data.get("encoding") != "pcm_s16le" or data.get("sample_rate_hz") != PCM16_TARGET_RATE:
+            await self._send_json(
+                websocket,
+                {
+                    "type": "transcribe_response",
+                    "status": "error",
+                    "error": "unsupported_audio_format",
+                    "request_id": request_id,
+                },
+            )
+            return
+        try:
+            pcm16 = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError):
+            pcm16 = b""
+        max_bytes = 128 * 1024 * 1024
+        if not pcm16 or len(pcm16) > max_bytes or len(pcm16) % 2:
+            await self._send_json(
+                websocket,
+                {
+                    "type": "transcribe_response",
+                    "status": "error",
+                    "error": "invalid_audio_data",
+                    "request_id": request_id,
+                },
+            )
+            return
+        language = data.get("language")
+        if language is not None and not isinstance(language, str):
+            language = None
+        try:
+            text = await self.transcribe_pcm16_once(pcm16, language=language)
+        except RuntimeError as exc:
+            await self._send_json(
+                websocket,
+                {
+                    "type": "transcribe_response",
+                    "status": "error",
+                    "error": str(exc),
+                    "request_id": request_id,
+                },
+            )
+            return
+        except Exception:
+            logging.error("Batch transcription failed", exc_info=True)
+            await self._send_json(
+                websocket,
+                {
+                    "type": "transcribe_response",
+                    "status": "error",
+                    "error": "transcription_failed",
+                    "request_id": request_id,
+                },
+            )
+            return
+        await self._send_json(
+            websocket,
+            {
+                "type": "transcribe_response",
+                "status": "ok",
+                "text": text,
+                "request_id": request_id,
+            },
+        )
+
     async def _process_stt_vosk(self, audio_data: bytes, input_rate: int = PCM16_TARGET_RATE) -> str:
         """Process STT with Vosk - optimized for telephony audio"""
         try:
