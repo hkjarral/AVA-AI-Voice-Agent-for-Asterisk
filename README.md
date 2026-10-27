@@ -74,6 +74,26 @@ Verify engine health and make a test call before routing callers to the agent.
 The guide also covers CLI/manual installation, permissions, and recovery;
 [local AI setup](docs/LOCAL_ONLY_SETUP.md) covers CPU/GPU configurations.
 
+### OpenAI-compatible transcription
+
+The Admin API can expose the configured local STT provider through:
+
+- `GET /v1/models`
+- `POST /v1/audio/transcriptions`
+
+Set `AAVA_SPEECH_API_KEY` for Bearer authentication, or set both
+`AAVA_SPEECH_API_USERNAME` and `AAVA_SPEECH_API_PASSWORD` for Basic
+authentication. The endpoints fail closed when neither credential is set.
+The transcription route accepts the standard multipart `file`, `model`,
+`language`, and `response_format` fields; use model `whisper-1`. Supported
+response formats are `json`, `text`, `verbose_json`, `srt`, and `vtt`.
+
+The facade decodes uploaded audio with a bundled FFmpeg runtime and sends 16 kHz
+mono PCM to AVA's existing local speech service. It does not introduce a second
+STT engine or cloud fallback. Keep the Admin API behind the same network
+controls used for the rest of the operator surface, and keep its speech
+credential distinct from browser login credentials.
+
 <a id="-features"></a>
 <a id="-why-asterisk-ai-voice-agent"></a>
 <a id="-ai-powered-actions"></a>
