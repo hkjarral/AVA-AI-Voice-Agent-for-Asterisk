@@ -60,9 +60,22 @@ Configure full-agent providers and modular STT/LLM/TTS components. Each provider
 card shows its current status.
 
 For Google Gemini modular LLM providers, Temperature is greyed out and disabled
-for Gemini 3.6 and newer. Persistent helper text explains that the model manages
+for Gemini 3.6 and newer, Gemini 3.5 Flash-Lite, and the Gemini 3.5 Flash alias
+(which routes to 3.6). Persistent helper text explains that the model manages
 temperature automatically. The saved value is retained and becomes editable again
-when you select an older model.
+when you select a model that supports it.
+
+Google modular LLM requests omit `candidate_count` for Gemini 3 and later;
+supported older models retain it. Isolated Gemini 3+ summaries reserve at least
+4096 output tokens for thinking and answer text, and use low thinking on known
+compatible text models (including the default Gemini 3.8 Flash). The requested
+word limit remains in the summary prompt. `MAX_TOKENS` responses fail explicitly
+instead of delivering incomplete summaries as successful results. Call-generation
+token limits and older-model summary settings are unchanged.
+
+Model contracts: [sampling](https://ai.google.dev/gemini-api/docs/generate-content/whats-new-gemini-3.6),
+[aliases](https://ai.google.dev/gemini-api/docs/deprecations), and
+[thinking/output limits](https://ai.google.dev/gemini-api/docs/generate-content/thinking).
 
 For a modular HTTP provider, edit its endpoint and credential source, then click
 **Test Connection** to test the current form before saving. Custom hosts, ports

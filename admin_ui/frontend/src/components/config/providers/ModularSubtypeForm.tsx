@@ -1,4 +1,5 @@
 import React from 'react';
+import { googleLLMManagesTemperature } from '../../../utils/googleLLMModels';
 import { FormInput, FormLabel, FormSelect } from '../../ui/FormComponents';
 import HelpTooltip from '../../ui/HelpTooltip';
 import ComboboxInput from '../../ui/ComboboxInput';
@@ -18,12 +19,7 @@ interface ModularSubtypeFormProps {
 const ModularSubtypeForm: React.FC<ModularSubtypeFormProps> = ({ subtype, config, onChange }) => {
   const temperatureHelpId = React.useId();
   const model = config.llm_model ?? subtype.fields.find(field => field.key === 'llm_model')?.default;
-  // Match the Google adapter's numeric version check, including models/ prefixes.
-  const geminiVersion = String(model ?? '').match(/gemini-(\d+)(?:\.(\d+))?/);
-  const automaticTemperature = subtype.id === 'google' && geminiVersion !== null && (
-    Number(geminiVersion[1]) > 3 ||
-    (Number(geminiVersion[1]) === 3 && Number(geminiVersion[2] ?? 0) >= 6)
-  );
+  const automaticTemperature = subtype.id === 'google' && googleLLMManagesTemperature(String(model ?? ''));
   const renderField = (field: SubtypeField) => {
     const currentValue = config[field.key] ?? field.default ?? '';
 

@@ -247,7 +247,7 @@ def _google_llm_payload(model: str, options: dict) -> dict:
     return adapter._build_payload("hello", {}, merged)["generationConfig"]
 
 
-@pytest.mark.parametrize("model", ["models/gemini-3.8-flash", "gemini-3.6-flash", "gemini-4-argon"])
+@pytest.mark.parametrize("model", ["models/gemini-3.8-flash", "gemini-3.6-flash", "gemini-4-argon", "gemini-3.5-flash", "models/gemini-3.5-flash-lite"])
 def test_google_llm_payload_omits_sampling_params_for_gemini_3_6_plus(model):
     config = _google_llm_payload(model, {})
 
@@ -256,9 +256,89 @@ def test_google_llm_payload_omits_sampling_params_for_gemini_3_6_plus(model):
     assert config["maxOutputTokens"] == 64
 
 
-@pytest.mark.parametrize("model", ["models/gemini-1.5-pro-latest", "gemini-2.5-flash", "gemini-3.5-flash"])
+@pytest.mark.parametrize("model", ["models/gemini-1.5-pro-latest", "gemini-2.5-flash", "gemini-3.1-flash-lite", "custom-gemini-3.8"])
 def test_google_llm_payload_keeps_sampling_params_for_older_models(model):
     config = _google_llm_payload(model, {})
 
     assert config["temperature"] == 0.2
     assert config["topP"] == 0.9
+
+
+@pytest.mark.parametrize("model", ["gemini-3-flash-preview", "models/gemini-3.8-flash", "gemini-4-argon"])
+def test_google_multiple_candidates_omitted_for_gemini_3_plus(model):
+    assert "candidateCount" not in _google_llm_payload(model, {"candidate_count": 2})
+
+
+def test_google_multiple_candidates_preserved_for_older_models():
+    assert _google_llm_payload("gemini-2.5-flash", {"candidate_count": 2})["candidateCount"] == 2
+
+
+@pytest.mark.asyncio
+async def test_google_unsupported_options_removed_after_request_overrides():
+    fake = _FakeSession(json.dumps({"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": "Done"}]}}]}))
+    adapter = GoogleLLMAdapter("google_llm", _build_app_config(), GoogleProviderConfig(api_key="test-key"), session_factory=lambda: fake)
+    try:
+        await adapter.generate("call", "hello", {}, {
+            "candidate_count": 2,
+            "request_overrides": {"generationConfig": {"candidateCount": 2, "temperature": 0.2, "topP": 0.9, "topK": 10, "maxOutputTokens": 128}},
+        })
+        assert fake.requests[0]["json"]["generationConfig"] == {"maxOutputTokens": 128}
+    finally:
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model,expected_config", [
+    ("models/gemini-3.8-flash", {"maxOutputTokens": 4096, "thinkingConfig": {"thinkingLevel": "low"}}),
+    ("gemini-3.5-flash", {"maxOutputTokens": 4096, "thinkingConfig": {"thinkingLevel": "low"}}),
+    ("gemini-3.5-flash-lite", {"maxOutputTokens": 4096, "thinkingConfig": {"thinkingLevel": "low"}}),
+    ("gemini-2.5-flash", {"temperature": 0.3, "maxOutputTokens": 256}),
+    ("custom-model", {"temperature": 0.3, "maxOutputTokens": 256}),
+])
+async def test_google_summary_uses_model_budget_and_closes_session(monkeypatch, model, expected_config):
+    from src.post_call_summary import PostCallSummaryService
+    fake = _FakeSession(json.dumps({"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": "The caller asked about office hours."}]}}]}))
+    monkeypatch.setattr("src.pipelines.google.aiohttp.ClientSession", lambda: fake)
+    app = _build_app_config()
+    app.providers["google"]["llm_model"] = model
+    service = PostCallSummaryService(PipelineOrchestrator(app))
+    result = await service.generate(provider="google_llm", call_id="budget", conversation_history=[{"role": "user", "content": "What are your hours?"}], system_prompt="Summarize in 50 words.", max_words=50, timeout_ms=1000)
+    assert result.status == "ok"
+    assert result.text == "The caller asked about office hours."
+    request = fake.requests[0]
+    assert request["json"]["generationConfig"] == expected_config
+    assert request["json"]["systemInstruction"] == {"parts": [{"text": "Summarize in 50 words."}]}
+    assert request["url"].endswith(model.removeprefix("models/") + ":generateContent")
+    assert len(fake.requests) == 1
+    assert fake.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial", ["", "The caller requested a"])
+async def test_google_truncated_summary_is_error_and_session_closes(monkeypatch, partial):
+    from src.post_call_summary import PostCallSummaryService
+    fake = _FakeSession(json.dumps({"candidates": [{"finishReason": "MAX_TOKENS", "content": {"parts": [{"text": partial}]}}]}))
+    monkeypatch.setattr("src.pipelines.google.aiohttp.ClientSession", lambda: fake)
+    app = _build_app_config()
+    app.providers["google"]["llm_model"] = "models/gemini-3.8-flash"
+    result = await PostCallSummaryService(PipelineOrchestrator(app)).generate(provider="google_llm", call_id="truncated", conversation_history=[{"role": "user", "content": "Office hours?"}], system_prompt="Summarize.", max_words=50, timeout_ms=1000)
+    assert result.status == "error"
+    assert result.error_code == "GoogleGenerationIncompleteError"
+    assert result.text == ""
+    assert len(fake.requests) == 1  # No unbounded retry or provider fallback.
+    assert fake.closed
+
+
+@pytest.mark.asyncio
+async def test_google_summary_cancellation_closes_session(monkeypatch):
+    from src.post_call_summary import PostCallSummaryService
+    fake = _FakeSession("{}")
+    async def delayed_text(self):
+        await asyncio.sleep(1)
+        return self._body
+    monkeypatch.setattr(_FakeResponse, "text", delayed_text)
+    monkeypatch.setattr("src.pipelines.google.aiohttp.ClientSession", lambda: fake)
+    result = await PostCallSummaryService(PipelineOrchestrator(_build_app_config())).generate(provider="google_llm", call_id="timeout", conversation_history=[{"role": "user", "content": "Office hours?"}], system_prompt="Summarize.", max_words=50, timeout_ms=10)
+    assert result.status == "timeout"
+    assert result.text == ""
+    assert fake.closed

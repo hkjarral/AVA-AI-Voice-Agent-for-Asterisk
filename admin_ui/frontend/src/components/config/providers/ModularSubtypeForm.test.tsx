@@ -59,6 +59,8 @@ const temperatureHelp = 'This model manages temperature automatically. Your save
 describe('Google temperature compatibility', () => {
     it.each([
         'gemini-3.6-flash',
+        'gemini-3.5-flash',
+        'models/gemini-3.5-flash-lite',
         'models/gemini-3.8-flash',
         'gemini-3.10-flash',
         'gemini-4',
@@ -75,7 +77,7 @@ describe('Google temperature compatibility', () => {
         expect(onChange).not.toHaveBeenCalled();
     });
 
-    it.each(['gemini-2.5-flash', 'gemini-3.5-flash', 'gemini-3-flash', 'custom-model', ''])('allows editing temperature for %s', model => {
+    it.each(['gemini-2.5-flash', 'gemini-3.1-flash-lite', 'gemini-3-flash', 'custom-model', ''])('allows editing temperature for %s', model => {
         const onChange = vi.fn();
         render(<ModularSubtypeForm subtype={google} config={{ llm_model: model, temperature: 0.4 }} onChange={onChange} />);
         const temperature = screen.getByRole('spinbutton', { name: 'Temperature' });
@@ -95,6 +97,9 @@ describe('Google temperature compatibility', () => {
         const temperature = screen.getByRole('spinbutton', { name: 'Temperature' });
         fireEvent.change(temperature, { target: { value: '0.25' } });
         fireEvent.change(model, { target: { value: 'gemini-3.8-flash' } });
+        expect(temperature).toBeDisabled();
+        expect(temperature).toHaveValue(0.25);
+        fireEvent.change(model, { target: { value: 'gemini-3.5-flash-lite' } });
         expect(temperature).toBeDisabled();
         expect(temperature).toHaveValue(0.25);
         fireEvent.change(model, { target: { value: 'gemini-2.5-flash' } });

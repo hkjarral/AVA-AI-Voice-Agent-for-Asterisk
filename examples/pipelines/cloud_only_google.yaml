@@ -20,9 +20,6 @@ pipelines:
       stt:
         enhanced: true
         interim_results: false
-      llm:
-        temperature: 0.5
-        top_p: 0.9
       tts:
         speaking_rate: 1.0
         pitch: 0.0

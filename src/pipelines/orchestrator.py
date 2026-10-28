@@ -507,6 +507,9 @@ class PipelineOrchestrator:
                 f"Summary provider '{component_key}' did not resolve to an LLM"
             )
 
+        if isinstance(component, GoogleLLMAdapter):
+            options.update(component.summary_options(max_tokens))
+
         try:
             await component.start()
             await component.open_call(call_id, options)
