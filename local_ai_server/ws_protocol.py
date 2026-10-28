@@ -104,6 +104,19 @@ class WebSocketProtocol:
             )
             return
 
+        # Full LocalProvider starts with call-scoped prompt/tool setup and a
+        # greeting, without set_mode or an auth call_id. Protect that work before
+        # the first caller audio frame; idle auth/status probes remain unmarked.
+        call_scoped_setup = msg_type in {
+            "tool_context", "tts_request", "llm_request", "llm_tool_request", "tool_result"
+        } or (
+            msg_type == "switch_model"
+            and str(data.get("scope") or "").strip().lower() == "session"
+        )
+        call_id = data.get("call_id")
+        if call_scoped_setup and isinstance(call_id, str) and call_id.strip():
+            self._server._mark_live_session(session)
+
         if msg_type == "set_mode":
             self._server._mark_live_session(session)
             requested = data.get("mode", DEFAULT_MODE)
@@ -166,9 +179,10 @@ class WebSocketProtocol:
 
         if msg_type == "barge_in":
             call_id = data.get("call_id")
-            if call_id:
-                session.call_id = call_id
+            previous_call_id = session.call_id
             stop_session = str(data.get("reason") or "").strip().lower() == "stop_session"
+            if call_id and (not stop_session or call_id == previous_call_id):
+                session.call_id = call_id
             cancel_reason = "stop_session" if stop_session else "barge_in"
             suppression_reason = "engine_stop_session" if stop_session else "engine_barge_in"
             self._server._cancel_session_response_tasks(session, reason=cancel_reason)
@@ -177,6 +191,8 @@ class WebSocketProtocol:
             self._server._clear_whisper_stt_suppression(
                 session, reason=suppression_reason
             )
+            if stop_session and (not call_id or call_id == previous_call_id):
+                self._server._release_live_session(session)
             await self._server._send_json(
                 websocket,
                 {

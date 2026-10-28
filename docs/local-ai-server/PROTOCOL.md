@@ -157,6 +157,13 @@ a new live-call session preempts a running batch worker. Disconnection also
 terminates that worker. Live-call STT continues to use its existing in-process
 model and session contract.
 
+Full LocalProvider call-scoped prompt/tool setup and greeting requests reserve
+live-call priority before caller audio arrives. Idle authentication/status probes
+do not reserve it. A matching `barge_in` with `reason: "stop_session"` releases
+the reservation for a reusable connection; connection teardown also releases it.
+The Admin bridge monitors HTTP disconnects after the upload is consumed, cancels
+decoding/transcription, and waits for cleanup before admitting another request.
+
 ---
 
 ## Audio Streaming (STT / FULL)

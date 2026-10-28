@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import io
 import json
@@ -8,9 +9,11 @@ import wave
 from pathlib import Path
 
 import pytest
+import websockets
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -283,3 +286,138 @@ def test_all_advertised_formats(monkeypatch, response_format):
     )
     assert response.status_code == 200
     assert "hello" in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["decode", "transcribe"])
+async def test_http_disconnect_cancels_work_before_releasing_admission(monkeypatch, stage):
+    started = asyncio.Event()
+    cleaning = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    disconnected = asyncio.Event()
+
+    async def parse(_request):
+        return b"audio", "whisper-1", None, "json"
+
+    async def block():
+        try:
+            started.set()
+            await asyncio.Future()
+        finally:
+            cleaning.set()
+            await release_cleanup.wait()
+
+    async def decode(_audio):
+        if stage == "decode":
+            await block()
+        return b"\0\0"
+
+    async def transcribe(_pcm16, _language):
+        await block()
+
+    async def receive():
+        await disconnected.wait()
+        return {"type": "http.disconnect"}
+
+    async def auth(_request):
+        pass
+
+    monkeypatch.setattr(speech, "require_speech_auth", auth)
+    monkeypatch.setattr(speech, "_parse_upload", parse)
+    monkeypatch.setattr(speech, "_decode_to_pcm16", decode)
+    monkeypatch.setattr(speech, "_transcribe_pcm16", transcribe)
+    request = Request({"type": "http"}, receive)
+    task = asyncio.create_task(speech.create_transcription(request))
+    await asyncio.wait_for(started.wait(), 2)
+    disconnected.set()
+    await asyncio.wait_for(cleaning.wait(), 2)
+    assert speech._transcription_busy
+    with pytest.raises(HTTPException) as busy:
+        await speech.create_transcription(request)
+    assert busy.value.status_code == 429
+    release_cleanup.set()
+    with pytest.raises(HTTPException) as closed:
+        await asyncio.wait_for(task, 2)
+    assert closed.value.status_code == 499
+    assert not speech._transcription_busy
+
+
+@pytest.mark.asyncio
+async def test_decoder_cancellation_during_spawn_reaps_child_and_removes_upload(monkeypatch):
+    spawning = asyncio.Event()
+    finish_spawn = asyncio.Event()
+    source_paths = []
+
+    class Process:
+        returncode = None
+        reaped = False
+
+        def kill(self):
+            self.returncode = -9
+
+        async def wait(self):
+            self.reaped = True
+
+    process = Process()
+
+    async def spawn(*args, **_kwargs):
+        source_paths.append(Path(args[args.index("-i") + 1]))
+        spawning.set()
+        await finish_spawn.wait()
+        return process
+
+    monkeypatch.setattr(speech.asyncio, "create_subprocess_exec", spawn)
+    task = asyncio.create_task(speech._decode_to_pcm16(b"audio"))
+    await asyncio.wait_for(spawning.wait(), 2)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    finish_spawn.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 2)
+    assert process.returncode == -9
+    assert process.reaped
+    assert not source_paths[0].exists()
+
+
+@pytest.mark.asyncio
+async def test_http_disconnect_closes_upstream_websocket(monkeypatch):
+    started = asyncio.Event()
+    upstream_closed = asyncio.Event()
+    disconnected = asyncio.Event()
+
+    async def backend(websocket):
+        request = json.loads(await websocket.recv())
+        assert request["type"] == "transcribe_request"
+        started.set()
+        await websocket.wait_closed()
+        upstream_closed.set()
+
+    async def parse(_request):
+        return b"audio", "whisper-1", None, "json"
+
+    async def decode(_audio):
+        return b"\0\0"
+
+    async def receive():
+        await disconnected.wait()
+        return {"type": "http.disconnect"}
+
+    async def auth(_request):
+        pass
+
+    monkeypatch.setattr(speech, "require_speech_auth", auth)
+    monkeypatch.setattr(speech, "_configured_secret", lambda _name: "")
+    monkeypatch.setattr(speech, "_parse_upload", parse)
+    monkeypatch.setattr(speech, "_decode_to_pcm16", decode)
+    async with websockets.serve(backend, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        monkeypatch.setattr(speech, "get_setting", lambda *_args: f"ws://127.0.0.1:{port}")
+        task = asyncio.create_task(speech.create_transcription(Request({"type": "http"}, receive)))
+        await asyncio.wait_for(started.wait(), 2)
+        disconnected.set()
+        with pytest.raises(HTTPException) as closed:
+            await asyncio.wait_for(task, 2)
+        assert closed.value.status_code == 499
+        await asyncio.wait_for(upstream_closed.wait(), 2)
+        assert not speech._transcription_busy

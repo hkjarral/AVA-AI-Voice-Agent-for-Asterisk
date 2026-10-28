@@ -159,8 +159,13 @@ async def _decode_to_pcm16(audio: bytes) -> bytes:
     # The private temporary directory and its contents are removed on every exit path.
     with tempfile.TemporaryDirectory(prefix="ava-stt-") as temp_dir:
         source = Path(temp_dir) / "audio"
-        await asyncio.to_thread(source.write_bytes, audio)
-        process = await asyncio.create_subprocess_exec(
+        write = asyncio.create_task(asyncio.to_thread(source.write_bytes, audio))
+        try:
+            await asyncio.shield(write)
+        except asyncio.CancelledError:
+            await write
+            raise
+        spawn = asyncio.create_task(asyncio.create_subprocess_exec(
             imageio_ffmpeg.get_ffmpeg_exe(),
             "-hide_banner",
             "-loglevel",
@@ -179,7 +184,18 @@ async def _decode_to_pcm16(audio: bytes) -> bytes:
             "pipe:1",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
-        )
+        ))
+        try:
+            process = await asyncio.shield(spawn)
+        except asyncio.CancelledError:
+            process = await spawn
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            await process.wait()
+            raise
         assert process.stdout is not None
         output = bytearray()
         try:
@@ -297,11 +313,43 @@ async def create_transcription(request: Request):
     if _transcription_busy:
         raise HTTPException(status_code=429, detail="batch_busy")
     _transcription_busy = True
+    operation = None
+    disconnected = None
     try:
         audio, _model, language, response_format = await _parse_upload(request)
-        pcm16 = await _decode_to_pcm16(audio)
-        result = await _transcribe_pcm16(pcm16, language)
-        duration = len(pcm16) / float(16000 * 2)
-        return _format_response(result["text"], duration, language, response_format)
+
+        async def transcribe():
+            pcm16 = await _decode_to_pcm16(audio)
+            result = await _transcribe_pcm16(pcm16, language)
+            duration = len(pcm16) / float(16000 * 2)
+            return _format_response(result["text"], duration, language, response_format)
+
+        async def wait_for_disconnect():
+            # The upload is fully consumed before this task becomes the sole
+            # reader. ASGI doesn't cancel a normal endpoint on HTTP disconnect.
+            while True:
+                if (await request.receive())["type"] == "http.disconnect":
+                    return
+                await asyncio.sleep(0.05)
+
+        operation = asyncio.create_task(transcribe())
+        disconnected = asyncio.create_task(wait_for_disconnect())
+        done, _ = await asyncio.wait(
+            {operation, disconnected}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if disconnected in done:
+            await disconnected
+            raise HTTPException(status_code=499, detail="client_disconnected")
+        return await operation
     finally:
-        _transcription_busy = False
+        try:
+            for task in (operation, disconnected):
+                if task and not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *(task for task in (operation, disconnected) if task),
+                return_exceptions=True,
+            )
+        finally:
+            # Keep admission reserved until decoder/WS cancellation has finished.
+            _transcription_busy = False
