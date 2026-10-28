@@ -244,7 +244,7 @@ async def test_old_local_audio_done_cannot_preempt_asterisk_farewell():
 
 
 @pytest.mark.asyncio
-async def test_overlapping_blocked_tool_call_cannot_release_first_farewell():
+async def test_overlapping_hangup_is_coalesced_into_first_farewell():
     engine = _build_engine()
     call_id = "call-overlapping-farewell"
     session = CallSession(call_id=call_id, caller_channel_id="caller")
@@ -254,14 +254,17 @@ async def test_overlapping_blocked_tool_call_cannot_release_first_farewell():
     engine._terminate_call_after_audio = AsyncMock(return_value=True)
     playback_started = asyncio.Event()
     playback_ids = []
+    executed = []
 
     async def execute_hangup(**kwargs):
+        executed.append(kwargs["function_call_id"])
         if kwargs["function_call_id"] == "first-hangup":
             session.cleanup_after_tts = True
             await engine.session_store.upsert_call(session)
             return {"status": "success", "will_hangup": True}
-        # A concurrent tool call is rejected while the first farewell plays.
-        return {"status": "blocked", "will_hangup": False}
+        # Without coalescing, this would start a second farewell and race the
+        # first terminal hangup.
+        return {"status": "success", "will_hangup": True}
 
     async def play_media(channel_id, media_uri, playback_id):
         assert (channel_id, media_uri) == ("caller", "sound:goodbye")
@@ -282,6 +285,8 @@ async def test_overlapping_blocked_tool_call_cannot_release_first_farewell():
     await engine.on_provider_event(tool_event("second-hangup"))
 
     assert engine._local_asterisk_farewell_pending[call_id] == 1
+    assert executed == ["first-hangup"]
+    assert len(playback_ids) == 1
     await engine.on_provider_event(
         {"type": "AgentAudioDone", "call_id": call_id, "streaming_done": True}
     )

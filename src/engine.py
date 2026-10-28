@@ -15492,6 +15492,13 @@ class Engine:
                         )
                     )
                     if asterisk_farewell:
+                        if self._local_asterisk_farewell_pending.get(call_id, 0):
+                            logger.info(
+                                "Ignoring duplicate Local Asterisk hangup while farewell is pending",
+                                call_id=call_id,
+                                function_call_id=function_call_id,
+                            )
+                            continue
                         self._local_asterisk_farewell_pending[call_id] = (
                             self._local_asterisk_farewell_pending.get(call_id, 0) + 1
                         )
