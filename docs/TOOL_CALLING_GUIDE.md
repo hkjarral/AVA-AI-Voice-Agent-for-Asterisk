@@ -1296,6 +1296,26 @@ extra pause. They are no longer editable in the Admin UI. For Local AI,
 `farewell_mode` and `farewell_timeout_sec` remain supported and have separate
 purposes.
 
+With Local AI `farewell_mode: asterisk`, the engine reserves the terminal
+farewell before executing `hangup_call`. An older response's `AgentAudioDone`
+cannot preempt it. The engine starts `sound:goodbye` with a unique ARI playback
+ID, bounds the start request to three seconds, and waits up to eight more
+seconds for that playback's terminal `PlaybackFinished` event. Asterisk
+reports normal completion, stopped playback, and canceled playback as `done`;
+the engine logs that the playback finished, without claiming uninterrupted or
+audible delivery. A failed start, `failed`/unknown state, or timeout is reported
+as unconfirmed. Terminal cleanup still proceeds so the caller is not left on
+dead air; engine-initiated termination is recorded as `agent_hangup` in lifecycle
+logs and post-call tools. Call History retains its existing normalized outcome
+classification (for example, `completed`). An audible farewell must be verified
+on the caller leg.
+
+The bounded farewell finalizer belongs to the call, so replacing a Local AI
+listener during reconnect does not cancel it or release the stale-audio guard
+early. Caller teardown still cancels the finalizer through normal call cleanup.
+
+Reference: [Asterisk 20.17 playback state mapping](https://github.com/asterisk/asterisk/blob/20.17.0/res/res_stasis_playback.c#L196-L215).
+
 The modular pipeline also handles a spoken farewell without a `hangup_call`
 tool invocation when both caller end-of-call intent and an assistant farewell
 are recognized. It plays the response, drains audio, and hangs up. This fallback

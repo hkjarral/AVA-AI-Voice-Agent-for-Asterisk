@@ -687,6 +687,11 @@ class Engine:
         # AgentAudioDone from an interrupted response cannot end the call
         # before the farewell audio has even arrived.
         self._local_tts_farewell_pending: Set[str] = set()
+        # Asterisk farewells have a different completion owner: their exact
+        # ARI PlaybackFinished event, not an older Local AgentAudioDone.
+        # Multiple provider callbacks can overlap for one call. Keep a count
+        # so a later blocked tool call cannot clear the first farewell's gate.
+        self._local_asterisk_farewell_pending: Dict[str, int] = {}
         
         self.vad_manager: Optional[EnhancedVADManager] = None
         self.webrtc_vad = None
@@ -8647,6 +8652,72 @@ class Engine:
         farewell_mode, _timeout = self._resolve_local_farewell_settings(local_config)
         return farewell_mode != "asterisk"
 
+    async def _play_local_asterisk_farewell(
+        self, call_id: str, channel_id: str, *, timeout_sec: float = 8.0,
+        start_timeout_sec: float = 3.0,
+    ) -> str:
+        """Wait for this call's selected ARI goodbye, never an older reply."""
+        playback_id = f"local-farewell-{uuid.uuid4().hex}"
+        waiter = asyncio.get_running_loop().create_future()
+        # Register before requesting playback: a short sound can finish before
+        # the ARI POST response reaches us.
+        self._ari_playback_waiters[playback_id] = waiter
+        try:
+            try:
+                started = await asyncio.wait_for(
+                    self.ari_client.play_media_on_channel_with_id(
+                        channel_id, "sound:goodbye", playback_id,
+                    ),
+                    timeout=start_timeout_sec,
+                )
+            except asyncio.TimeoutError:
+                return "start_timeout"
+            if not started:
+                return "start_failed"
+            try:
+                playback = await asyncio.wait_for(waiter, timeout=timeout_sec)
+            except asyncio.TimeoutError:
+                return "timeout"
+            # Asterisk maps complete, stopped and canceled playback to "done".
+            # This establishes the selected playback's terminal boundary, not
+            # uninterrupted playback or what the caller actually heard.
+            state = str(playback.get("state") or "").strip().lower()
+            return state or "unknown"
+        except Exception:
+            logger.warning("Goodbye playback request failed", call_id=call_id, exc_info=True)
+            return "start_failed"
+        finally:
+            self._ari_playback_waiters.pop(playback_id, None)
+
+    def _release_local_asterisk_farewell(self, call_id: str) -> None:
+        remaining = self._local_asterisk_farewell_pending.get(call_id, 0) - 1
+        if remaining > 0:
+            self._local_asterisk_farewell_pending[call_id] = remaining
+        else:
+            self._local_asterisk_farewell_pending.pop(call_id, None)
+
+    async def _finish_local_asterisk_farewell(self, call_id: str, channel_id: str) -> None:
+        """Own the selected farewell across provider-listener replacement.
+
+        The provider callback shields this call-owned task. Call cleanup still
+        cancels it through _call_bg_tasks when the caller has already left.
+        """
+        try:
+            playback_state = await self._play_local_asterisk_farewell(call_id, channel_id)
+            if playback_state == "done":
+                logger.info("Asterisk goodbye playback finished", call_id=call_id, state=playback_state)
+            else:
+                logger.warning("Goodbye playback not confirmed", call_id=call_id, state=playback_state)
+            logger.info("✅ Farewell wait complete", call_id=call_id)
+            await self._terminate_call_after_audio(
+                call_id,
+                reason="local_asterisk_farewell",
+                call_outcome="agent_hangup",
+                audio_already_drained=True,
+            )
+        finally:
+            self._release_local_asterisk_farewell(call_id)
+
     async def _put_pipeline_stream_chunk(
         self,
         call_id: str,
@@ -10489,6 +10560,7 @@ class Engine:
                 self._terminal_hangup_locks.pop(call_id, None)
                 self._terminal_hangup_started.discard(call_id)
                 self._local_tts_farewell_pending.discard(call_id)
+                self._local_asterisk_farewell_pending.pop(call_id, None)
             except Exception:
                 logger.debug("Terminal lifecycle cleanup failed", call_id=call_id, exc_info=True)
             bg_tasks = self._call_bg_tasks.pop(call_id, set())
@@ -15270,11 +15342,14 @@ class Engine:
                             return
                         if session and getattr(session, 'cleanup_after_tts', False):
                             pending = getattr(self, "_local_tts_farewell_pending", set())
-                            if call_id in pending:
+                            asterisk_pending = getattr(self, "_local_asterisk_farewell_pending", set())
+                            if call_id in pending or call_id in asterisk_pending:
                                 logger.info(
                                     "Ignoring pre-farewell AgentAudioDone",
                                     call_id=call_id,
-                                    reason="local_tts_farewell_pending",
+                                    reason=("local_asterisk_farewell_pending"
+                                            if call_id in asterisk_pending
+                                            else "local_tts_farewell_pending"),
                                 )
                             else:
                                 logger.info("🔚 Cleanup after TTS requested - draining terminal audio", call_id=call_id)
@@ -15443,7 +15518,30 @@ class Engine:
                     parameters = tool_call.get("parameters", {})
                     function_call_id = stable_tool_call_id(tool_call.get("id"))
                     tool_call["id"] = function_call_id
-                    
+                    # Reserve Asterisk's farewell before hangup_call publishes
+                    # cleanup_after_tts. A delayed completion from the previous
+                    # reply can otherwise claim terminal hangup during the tool.
+                    asterisk_farewell = (
+                        tool_name == "hangup_call"
+                        and not self._should_send_provider_tool_result(
+                            provider_name=(getattr(session, "provider_name", None)
+                                           or self.config.default_provider),
+                            function_name="hangup_call",
+                            result={"will_hangup": True},
+                        )
+                    )
+                    if asterisk_farewell:
+                        if self._local_asterisk_farewell_pending.get(call_id, 0):
+                            logger.info(
+                                "Ignoring duplicate Local Asterisk hangup while farewell is pending",
+                                call_id=call_id,
+                                function_call_id=function_call_id,
+                            )
+                            continue
+                        self._local_asterisk_farewell_pending[call_id] = (
+                            self._local_asterisk_farewell_pending.get(call_id, 0) + 1
+                        )
+                    asterisk_farewell_task = None
                     try:
                         result = await self._execute_provider_tool(
                             call_id=call_id,
@@ -15523,41 +15621,30 @@ class Engine:
                                 asyncio.create_task(_hangup_fallback())
                                 break
                             else:
-                                # Use Asterisk's built-in goodbye sound - reliable for slow hardware
-                                try:
-                                    playback = await self.ari_client.play_media(
-                                        session.caller_channel_id,
-                                        "sound:goodbye"
-                                    )
-                                    playback_id = playback.get("id") if isinstance(playback, dict) else None
-                                    if playback_id:
-                                        waiter = asyncio.get_running_loop().create_future()
-                                        self._ari_playback_waiters[playback_id] = waiter
-                                        try:
-                                            await asyncio.wait_for(waiter, timeout=8.0)
-                                        except asyncio.TimeoutError:
-                                            logger.warning("Goodbye playback completion timed out", call_id=call_id)
-                                        finally:
-                                            self._ari_playback_waiters.pop(playback_id, None)
-                                    logger.info("✅ Goodbye sound played", call_id=call_id)
-                                except Exception as sound_err:
-                                    logger.warning(
-                                        "⚠️ Failed to play goodbye sound",
-                                        call_id=call_id,
-                                        error=str(sound_err),
-                                    )
-                            
-                            logger.info("✅ Farewell wait complete", call_id=call_id)
-
-                            await self._terminate_call_after_audio(
-                                call_id,
-                                reason="local_asterisk_farewell",
-                                audio_already_drained=True,
-                            )
+                                asterisk_farewell_task = self._fire_and_forget_for_call(
+                                    call_id,
+                                    self._finish_local_asterisk_farewell(call_id, session.caller_channel_id),
+                                    name=f"local-asterisk-farewell-{call_id}",
+                                )
+                                await asyncio.shield(asterisk_farewell_task)
                             break
                         elif result.get("transferred"):
                             # Transfer already handled
                             break
+                    except asyncio.CancelledError:
+                        # A listener can also be replaced after the tool has
+                        # published terminal intent but before returning its
+                        # result. Preserve that accepted intent unless caller
+                        # teardown already owns cleanup.
+                        if (asterisk_farewell and asterisk_farewell_task is None
+                                and getattr(session, "cleanup_after_tts", False)
+                                and not getattr(session, "cleanup_in_progress", False)):
+                            asterisk_farewell_task = self._fire_and_forget_for_call(
+                                call_id,
+                                self._finish_local_asterisk_farewell(call_id, session.caller_channel_id),
+                                name=f"local-asterisk-farewell-{call_id}",
+                            )
+                        raise
                     except Exception as e:
                         logger.error(
                             "❌ Local tool execution failed",
@@ -15566,6 +15653,11 @@ class Engine:
                             error=str(e),
                             exc_info=True,
                         )
+                    finally:
+                        # Once created, the call-owned task releases its own
+                        # reservation, even if this provider listener is canceled.
+                        if asterisk_farewell and asterisk_farewell_task is None:
+                            self._release_local_asterisk_farewell(call_id)
             
             elif etype == "transcript":
                 # User speech transcript from provider (ElevenLabs, etc.)
@@ -21496,7 +21588,7 @@ class Engine:
             waiter = self._ari_playback_waiters.get(playback_id)
             if waiter and not waiter.done():
                 try:
-                    waiter.set_result(True)
+                    waiter.set_result(playback)
                 except Exception:
                     pass
 
