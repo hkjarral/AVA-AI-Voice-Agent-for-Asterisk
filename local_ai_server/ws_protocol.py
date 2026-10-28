@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import replace
@@ -16,9 +17,12 @@ class WebSocketProtocol:
 
     async def handle_json_message(self, websocket, session: SessionContext, message: str) -> None:
         try:
-            data = json.loads(message)
+            data = await asyncio.to_thread(json.loads, message) if len(message) > 64 * 1024 else json.loads(message)
         except json.JSONDecodeError:
             logging.warning("❓ Invalid JSON message received (length=%d)", len(message))
+            return
+        if not isinstance(data, dict):
+            logging.warning("❓ JSON message must be an object")
             return
 
         # Protocol-version handshake: messages that declare a protocol_version are
@@ -68,6 +72,8 @@ class WebSocketProtocol:
                 session.call_id = call_id
             if not self._server.ws_auth_token or token == self._server.ws_auth_token:
                 session.authenticated = True
+                if call_id:
+                    self._server._mark_live_session(session)
                 await self._server._send_json(websocket, {"type": "auth_response", "status": "ok"})
                 logging.info("🔐 WS AUTH - Authenticated session call_id=%s", session.call_id)
             else:
@@ -99,6 +105,7 @@ class WebSocketProtocol:
             return
 
         if msg_type == "set_mode":
+            self._server._mark_live_session(session)
             requested = data.get("mode", DEFAULT_MODE)
             if requested in SUPPORTED_MODES:
                 session.mode = requested
@@ -148,6 +155,7 @@ class WebSocketProtocol:
             return
 
         if msg_type == "audio":
+            self._server._mark_live_session(session)
             self._server._apply_tts_output_preferences(session, data)
             await self._server._handle_audio_payload(websocket, session, data)
             return
@@ -383,6 +391,7 @@ class WebSocketProtocol:
             )
             return
         logging.info("🎵 AUDIO INPUT - Received binary audio: %s bytes", len(message))
+        self._server._mark_live_session(session)
         await self._server._handle_audio_payload(
             websocket,
             session,
@@ -420,6 +429,7 @@ class WebSocketProtocol:
             logging.error("❌ WebSocket handler error: %s", exc, exc_info=True)
         finally:
             session.closed = True
+            self._server._release_live_session(session)
             self._server._cancel_session_response_tasks(session, reason="connection_closed")
             try:
                 await self._server._flush_sherpa_offline_trailing(websocket, session)

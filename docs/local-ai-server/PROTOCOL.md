@@ -134,6 +134,31 @@ Notes:
 
 ---
 
+## One-shot transcription (Admin bridge)
+
+After WebSocket authentication, `transcribe_request` accepts one base64-encoded,
+16 kHz mono PCM16 utterance, at most 120 seconds (3,840,000 decoded bytes).
+`request_id` is required and must be 1-64 ASCII letters, digits, underscores,
+or hyphens. The complete inbound WebSocket message is limited to 6 MiB; encoded
+audio is checked before base64 decoding. Optional `language` is a two-letter
+code or `auto` for Faster-Whisper only. Vosk and Whisper.cpp use their configured
+model language and reject per-request overrides.
+
+```json
+{"type":"transcribe_request","request_id":"job-1","encoding":"pcm_s16le","sample_rate_hz":16000,"data":"<base64 pcm16>"}
+```
+
+The reply is `{"type":"transcribe_response","request_id":"job-1","status":"ok","text":"..."}`
+or an `error` status with a bounded error code. An empty `text` with `ok`
+means the backend completed and heard no speech; a backend failure is not
+reported as silence. The server admits one isolated batch worker, no queue,
+with a 180-second deadline. Active live-call sessions reject batch admission;
+a new live-call session preempts a running batch worker. Disconnection also
+terminates that worker. Live-call STT continues to use its existing in-process
+model and session contract.
+
+---
+
 ## Audio Streaming (STT / FULL)
 
 You can stream audio via:

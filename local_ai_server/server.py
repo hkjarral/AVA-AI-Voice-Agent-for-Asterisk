@@ -771,6 +771,12 @@ class LocalAIServer:
         self._faster_whisper_lock = asyncio.Lock()
         # Lock to serialize Whisper.cpp inference (avoid concurrent model access).
         self._whisper_cpp_lock = asyncio.Lock()
+        # Batch STT uses a killable child process, never a live-call model lock.
+        # Admission is immediate: one active job, no waiting queue.
+        self._batch_reserved = False
+        self._batch_process: Optional[asyncio.subprocess.Process] = None
+        self._batch_preempted = False
+        self._live_session_ids: set[int] = set()
         # The active local TTS model is shared by every WebSocket session. Most
         # ML TTS libraries are blocking and not documented as thread-safe, so
         # execute them off the event loop while serializing model access.
@@ -2587,35 +2593,104 @@ class LocalAIServer:
             logging.error("Faster-Whisper STT processing failed: %s", exc, exc_info=True)
             return ""
 
-    async def transcribe_pcm16_once(
-        self,
-        pcm16_audio: bytes,
-        *,
-        language: Optional[str] = None,
-    ) -> str:
-        """Transcribe one complete 16 kHz mono PCM16 payload without shared buffering."""
-        if not pcm16_audio:
-            return ""
+    def _mark_live_session(self, session: SessionContext) -> None:
+        """Give a new live session priority over any in-flight batch worker."""
+        session_id = id(session)
+        if session_id in self._live_session_ids:
+            return
+        self._live_session_ids.add(session_id)
+        if self._batch_reserved:
+            self._batch_preempted = True
+            if self._batch_process and self._batch_process.returncode is None:
+                try:
+                    self._batch_process.kill()
+                except ProcessLookupError:
+                    pass
+
+    def _release_live_session(self, session: SessionContext) -> None:
+        self._live_session_ids.discard(id(session))
+
+    async def _run_batch_worker(self, pcm16: bytes, language: str | None) -> str:
+        """Run one isolated STT model, reaping it on preemption or cancellation."""
         if self.stt_backend == "faster_whisper":
             if not self.faster_whisper_backend:
                 raise RuntimeError("stt_unavailable")
-            async with self._faster_whisper_lock:
-                return await asyncio.to_thread(
-                    self.faster_whisper_backend.transcribe_pcm16,
-                    pcm16_audio,
-                    language,
-                )
-        if self.stt_backend == "whisper_cpp":
+            model = self.faster_whisper_model
+            configured_language = self.faster_whisper_language
+            device = self.faster_whisper_device
+            compute_type = self.faster_whisper_compute
+        elif self.stt_backend == "whisper_cpp":
             if not self.whisper_cpp_backend:
                 raise RuntimeError("stt_unavailable")
-            async with self._whisper_cpp_lock:
-                return await asyncio.to_thread(
-                    self.whisper_cpp_backend.transcribe_pcm16,
-                    pcm16_audio,
-                )
-        if self.stt_backend == "vosk":
-            return await self._process_stt_vosk(pcm16_audio, PCM16_TARGET_RATE)
-        raise RuntimeError("unsupported_stt_backend")
+            model = self.whisper_cpp_model_path
+            configured_language = self.whisper_cpp_language
+            device, compute_type = "cpu", "int8"
+        elif self.stt_backend == "vosk":
+            if not self.stt_model:
+                raise RuntimeError("stt_unavailable")
+            model = self.stt_model_path
+            configured_language = ""
+            device, compute_type = "cpu", "int8"
+        else:
+            raise RuntimeError("unsupported_stt_backend")
+
+        spawn = asyncio.create_task(
+            asyncio.create_subprocess_exec(
+                sys.executable,
+                os.path.join(os.path.dirname(__file__), "batch_stt_worker.py"),
+                "--backend", self.stt_backend,
+                "--model", model,
+                "--device", device,
+                "--compute-type", compute_type,
+                "--configured-language", configured_language,
+                "--language", language or "",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        )
+        try:
+            process = await asyncio.shield(spawn)
+        except asyncio.CancelledError:
+            # If the client closes during spawn, still collect and reap the child.
+            process = await spawn
+            if process.returncode is None:
+                process.kill()
+            await process.wait()
+            raise
+        self._batch_process = process
+        if self._batch_preempted or self._live_session_ids:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        try:
+            async with asyncio.timeout(180):
+                stdout, _ = await process.communicate(pcm16)
+        except TimeoutError as exc:
+            raise RuntimeError("transcription_timeout") from exc
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            reason = "preempted_by_live_call" if self._batch_preempted else "transcription_failed"
+            raise RuntimeError(reason) from exc
+        finally:
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                await process.wait()
+            self._batch_process = None
+        if self._batch_preempted:
+            raise RuntimeError("preempted_by_live_call")
+        if process.returncode != 0 or len(stdout) > 64 * 1024:
+            raise RuntimeError("transcription_failed")
+        try:
+            result = json.loads(stdout)
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError("invalid_worker_response") from exc
+        if not isinstance(result, dict) or result.get("status") != "ok" or not isinstance(result.get("text"), str):
+            raise RuntimeError("transcription_failed")
+        return result["text"]
 
     async def _handle_transcribe_request(
         self,
@@ -2624,6 +2699,12 @@ class LocalAIServer:
     ) -> None:
         """Handle one authenticated, bounded batch transcription request."""
         request_id = data.get("request_id")
+        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", request_id):
+            await self._send_json(
+                websocket,
+                {"type": "transcribe_response", "status": "error", "error": "invalid_request_id", "request_id": None},
+            )
+            return
         encoded = data.get("data")
         if not isinstance(encoded, str) or not encoded:
             await self._send_json(
@@ -2647,11 +2728,24 @@ class LocalAIServer:
                 },
             )
             return
+        max_bytes = 120 * PCM16_TARGET_RATE * 2
+        if len(encoded) > ((max_bytes + 2) // 3) * 4:
+            await self._send_json(
+                websocket,
+                {"type": "transcribe_response", "status": "error", "error": "invalid_audio_data", "request_id": request_id},
+            )
+            return
+        if self._live_session_ids or self._batch_reserved:
+            reason = "live_call_active" if self._live_session_ids else "batch_busy"
+            await self._send_json(
+                websocket,
+                {"type": "transcribe_response", "status": "error", "error": reason, "request_id": request_id},
+            )
+            return
         try:
-            pcm16 = base64.b64decode(encoded, validate=True)
+            pcm16 = await asyncio.to_thread(base64.b64decode, encoded, validate=True)
         except (ValueError, TypeError):
             pcm16 = b""
-        max_bytes = 128 * 1024 * 1024
         if not pcm16 or len(pcm16) > max_bytes or len(pcm16) % 2:
             await self._send_json(
                 websocket,
@@ -2664,10 +2758,48 @@ class LocalAIServer:
             )
             return
         language = data.get("language")
-        if language is not None and not isinstance(language, str):
-            language = None
+        if language is not None and (
+            not isinstance(language, str)
+            or not re.fullmatch(r"[a-z]{2}|auto", language)
+        ):
+            await self._send_json(
+                websocket,
+                {"type": "transcribe_response", "status": "error", "error": "invalid_language", "request_id": request_id},
+            )
+            return
+        if language is not None:
+            supported = self.stt_backend == "faster_whisper"
+            if supported and ".en" in self.faster_whisper_model and language not in {"en"}:
+                supported = False
+            if not supported:
+                await self._send_json(
+                    websocket,
+                    {"type": "transcribe_response", "status": "error", "error": "unsupported_language", "request_id": request_id},
+                )
+                return
+        if self._live_session_ids:
+            await self._send_json(
+                websocket,
+                {"type": "transcribe_response", "status": "error", "error": "live_call_active", "request_id": request_id},
+            )
+            return
+        if self._batch_reserved:
+            await self._send_json(
+                websocket,
+                {"type": "transcribe_response", "status": "error", "error": "batch_busy", "request_id": request_id},
+            )
+            return
+        self._batch_reserved = True
+        self._batch_preempted = False
+        worker: asyncio.Task[str] | None = None
+        closed: asyncio.Task[None] | None = None
         try:
-            text = await self.transcribe_pcm16_once(pcm16, language=language)
+            worker = asyncio.create_task(self._run_batch_worker(pcm16, language))
+            closed = asyncio.create_task(websocket.wait_closed())
+            done, _ = await asyncio.wait({worker, closed}, return_when=asyncio.FIRST_COMPLETED)
+            if closed in done:
+                return
+            text = await worker
         except RuntimeError as exc:
             await self._send_json(
                 websocket,
@@ -2691,6 +2823,16 @@ class LocalAIServer:
                 },
             )
             return
+        finally:
+            for task in (worker, closed):
+                if task and not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *(task for task in (worker, closed) if task),
+                return_exceptions=True,
+            )
+            self._batch_reserved = False
+            self._batch_preempted = False
         await self._send_json(
             websocket,
             {
@@ -6867,7 +7009,9 @@ async def main():
             port,
             ping_interval=60,
             ping_timeout=120,
-            max_size=None,
+            # 120 s PCM16 batch audio is 5.12 MiB after base64. Bound all
+            # inbound WS frames before JSON/base64 allocation.
+            max_size=6 * 1024 * 1024,
             origins=None,  # Allow connections from other containers/browsers
         ):
             logging.info("🚀 Enhanced Local AI Server started on ws://%s:%s", host, port)

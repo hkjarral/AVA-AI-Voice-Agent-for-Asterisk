@@ -1147,7 +1147,8 @@
         },
         "data": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 5120000
         },
         "encoding": {
           "const": "pcm_s16le"
@@ -1157,10 +1158,13 @@
         },
         "request_id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
         },
         "language": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^(?:[a-z]{2}|auto)$"
         }
       },
       "additionalProperties": true

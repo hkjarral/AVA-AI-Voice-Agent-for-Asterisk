@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add an authenticated, OpenAI-compatible local transcription API with
+  bounded multipart uploads, killable FFmpeg decoding, and a one-job isolated
+  STT worker. Live-call sessions take priority and preempt batch work; backend
+  failures remain errors rather than successful empty transcripts (#784).
+
 ### Changed
 
 - Present Calendly as an optional provider and document appointment booking through

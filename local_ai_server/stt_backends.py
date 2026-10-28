@@ -1135,7 +1135,9 @@ class FasterWhisperSTTBackend:
         self._audio_buffer = np.array([], dtype=np.float32)
         self._last_text = ""
 
-    def transcribe_pcm16(self, pcm16_audio: bytes, language: Optional[str] = None) -> str:
+    def transcribe_pcm16(
+        self, pcm16_audio: bytes, language: Optional[str] = None, *, raise_on_error: bool = False
+    ) -> str:
         """
         Transcribe a complete utterance (PCM16 16kHz mono) in one shot.
 
@@ -1144,6 +1146,8 @@ class FasterWhisperSTTBackend:
         mis-detect phone audio as silence.
         """
         if not self._initialized or self.model is None:
+            if raise_on_error:
+                raise RuntimeError("stt_unavailable")
             return ""
         if not pcm16_audio:
             return ""
@@ -1165,6 +1169,8 @@ class FasterWhisperSTTBackend:
             return (text or "").strip()
         except Exception:
             logging.error("❌ FASTER-WHISPER - transcribe_pcm16 failed", exc_info=True)
+            if raise_on_error:
+                raise
             return ""
     
     def shutdown(self) -> None:
@@ -1371,9 +1377,11 @@ class WhisperCppSTTBackend:
         self._audio_buffer = np.array([], dtype=np.float32)
         self._last_text = ""
 
-    def transcribe_pcm16(self, pcm16_audio: bytes) -> str:
+    def transcribe_pcm16(self, pcm16_audio: bytes, *, raise_on_error: bool = False) -> str:
         """Transcribe a complete utterance (PCM16 16kHz mono) in one shot."""
         if not self._initialized or self.model is None:
+            if raise_on_error:
+                raise RuntimeError("stt_unavailable")
             return ""
         if not pcm16_audio:
             return ""
@@ -1389,6 +1397,8 @@ class WhisperCppSTTBackend:
             return text
         except Exception:
             logging.error("❌ WHISPER.CPP - transcribe_pcm16 failed", exc_info=True)
+            if raise_on_error:
+                raise
             return ""
     
     def shutdown(self) -> None:

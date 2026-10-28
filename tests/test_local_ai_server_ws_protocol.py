@@ -49,6 +49,9 @@ class _FakeServer:
     def _rollback_interrupted_exchange(self, session):
         self.rollback_calls.append(session.call_id)
 
+    def _mark_live_session(self, _session):
+        pass
+
 
 @pytest.mark.asyncio
 async def test_set_mode_applies_scoped_whisper_segmenter_policy():

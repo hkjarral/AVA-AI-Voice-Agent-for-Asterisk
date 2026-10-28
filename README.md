@@ -83,16 +83,36 @@ The Admin API can expose the configured local STT provider through:
 
 Set `AAVA_SPEECH_API_KEY` for Bearer authentication, or set both
 `AAVA_SPEECH_API_USERNAME` and `AAVA_SPEECH_API_PASSWORD` for Basic
-authentication. The endpoints fail closed when neither credential is set.
+authentication in the Admin backend environment. The endpoints fail closed when
+neither credential is set. Recreate the Admin container after changing these
+environment variables; browser login credentials are unrelated. If the local
+AI WebSocket requires `LOCAL_WS_AUTH_TOKEN`, configure the same token for the
+Admin backend. The Admin UI itself has no transcription screen.
 The transcription route accepts the standard multipart `file`, `model`,
-`language`, and `response_format` fields; use model `whisper-1`. Supported
-response formats are `json`, `text`, `verbose_json`, `srt`, and `vtt`.
+`language`, and `response_format` fields; use model `whisper-1`. For example,
+`curl -u stt-client -F 'file=@sample.wav' -F 'model=whisper-1' https://YOUR-ADMIN-HOST/v1/audio/transcriptions`
+prompts for the Basic password without placing it on the command line.
+Supported response formats are `json`, `text`, `verbose_json`, `srt`, and
+`vtt`. The last three use one whole-file segment and synthetic 0-to-duration
+timing, not model-derived word or segment timestamps.
 
-The facade decodes uploaded audio with a bundled FFmpeg runtime and sends 16 kHz
-mono PCM to AVA's existing local speech service. It does not introduce a second
-STT engine or cloud fallback. Keep the Admin API behind the same network
-controls used for the rest of the operator surface, and keep its speech
-credential distinct from browser login credentials.
+The facade accepts FFmpeg-decodable audio such as WAV, MP3, M4A, OGG and WebM,
+with a 25 MiB file cap, 25 MiB + 64 KiB total multipart cap, and 120-second
+decoded-audio cap. Upload receipt times out after 30 seconds and decoding after
+90 seconds. The local AI service runs at most one batch job in a killable
+separate process, with no waiting queue and a 180-second worker deadline. A
+live-call session rejects new batch work and preempts a running batch.
+Disconnection or timeout cancels the worker; a lost HTTP response is not
+evidence of a transcript. The Admin wait defaults to 240 seconds
+(`AAVA_SPEECH_STT_TIMEOUT_SECONDS`, clamped to 200-600).
+
+Batch transcription uses the configured local Vosk, Faster-Whisper or
+Whisper.cpp backend; unsupported or unloaded backends fail explicitly, with no
+cloud fallback. Only Faster-Whisper honors a per-request two-letter language
+code or `auto` detection; English-only `.en` models accept `en` only. Omit
+`language` for Vosk and Whisper.cpp so their configured model language is used.
+Keep the Admin API behind the same network controls used for the rest of the
+operator surface and keep its speech credential distinct from browser login.
 
 <a id="-features"></a>
 <a id="-why-asterisk-ai-voice-agent"></a>
