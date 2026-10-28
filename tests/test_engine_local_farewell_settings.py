@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.engine import Engine
+from src.core.models import CallSession
+from tests.test_deferred_transfer_commit_audio_gate import _build_engine
 
 
 def _engine_with_local_farewell(mode: str) -> Engine:
@@ -146,3 +148,96 @@ async def test_local_farewell_fallback_clears_boundary_and_marks_agent_hangup():
         reason="local:farewell:fallback_timeout",
         call_outcome="agent_hangup",
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["done", "failed", "stopped"])
+async def test_asterisk_farewell_waits_for_its_exact_playback_state(state):
+    engine = Engine.__new__(Engine)
+    engine._ari_playback_waiters = {}
+    playback_ids = []
+
+    async def play_media(channel_id, media_uri, playback_id):
+        assert (channel_id, media_uri) == ("caller", "sound:goodbye")
+        # The waiter must exist before the ARI request, since short audio can
+        # complete before the request itself returns.
+        assert playback_id in engine._ari_playback_waiters
+        playback_ids.append(playback_id)
+        await engine._on_playback_finished(
+            {"playback": {"id": "older-playback", "state": "done"}}
+        )
+        assert not engine._ari_playback_waiters[playback_id].done()
+        await engine._on_playback_finished(
+            {"playback": {"id": playback_id, "state": state}}
+        )
+        return True
+
+    engine.ari_client = types.SimpleNamespace(
+        play_media_on_channel_with_id=play_media
+    )
+    engine.playback_manager = types.SimpleNamespace(
+        on_playback_finished=AsyncMock()
+    )
+
+    assert await engine._play_local_asterisk_farewell("call", "caller") == state
+    assert playback_ids[0].startswith("local-farewell-")
+    assert not engine._ari_playback_waiters
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("started,expected", [(False, "start_failed"), (True, "timeout")])
+async def test_asterisk_farewell_unconfirmed_playback_cleans_waiter(started, expected):
+    engine = Engine.__new__(Engine)
+    engine._ari_playback_waiters = {}
+    engine.ari_client = types.SimpleNamespace(
+        play_media_on_channel_with_id=AsyncMock(return_value=started)
+    )
+
+    assert await engine._play_local_asterisk_farewell(
+        "call", "caller", timeout_sec=0.01
+    ) == expected
+    assert not engine._ari_playback_waiters
+
+
+@pytest.mark.asyncio
+async def test_old_local_audio_done_cannot_preempt_asterisk_farewell():
+    engine = _build_engine()
+    call_id = "call-farewell-race"
+    session = CallSession(call_id=call_id, caller_channel_id="caller")
+    session.provider_name = "local"
+    session.last_transcript = "goodbye"
+    await engine.session_store.upsert_call(session)
+    engine._terminate_call_after_audio = AsyncMock(return_value=True)
+
+    async def stale_audio_done():
+        await engine.on_provider_event(
+            {"type": "AgentAudioDone", "call_id": call_id, "streaming_done": True}
+        )
+        engine._terminate_call_after_audio.assert_not_awaited()
+
+    async def execute_hangup(**kwargs):
+        assert call_id in engine._local_asterisk_farewell_pending
+        session.cleanup_after_tts = True
+        await engine.session_store.upsert_call(session)
+        await stale_audio_done()
+        return {"status": "success", "will_hangup": True}
+
+    async def play_media(channel_id, media_uri, playback_id):
+        assert (channel_id, media_uri) == ("caller", "sound:goodbye")
+        await stale_audio_done()
+        await engine._on_playback_finished(
+            {"playback": {"id": playback_id, "state": "done"}}
+        )
+        return True
+
+    engine._execute_provider_tool = execute_hangup
+    engine.ari_client.play_media_on_channel_with_id = play_media
+    await engine.on_provider_event(
+        {"type": "ToolCall", "call_id": call_id,
+         "tool_calls": [{"id": "hangup-1", "name": "hangup_call", "parameters": {}}]}
+    )
+
+    engine._terminate_call_after_audio.assert_awaited_once_with(
+        call_id, reason="local_asterisk_farewell", audio_already_drained=True
+    )
+    assert call_id not in engine._local_asterisk_farewell_pending

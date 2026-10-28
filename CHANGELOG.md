@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Prevent an older Local AI `AgentAudioDone` from hanging up an Asterisk-owned
+  farewell before `sound:goodbye` finishes. Reserve the farewell before tool
+  execution, match its exact ARI playback ID and terminal state, and report
+  missing or failed playback as unconfirmed rather than played (#786).
 - Backfill Calendly's durable privacy marker when opening pre-marker journals and
   preserve it before disconnect removes credentials. Individual and retention
   deletion keep erasure retries across temporary journal absence and restart,
