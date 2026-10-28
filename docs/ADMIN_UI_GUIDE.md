@@ -69,9 +69,13 @@ Google modular LLM requests omit `candidate_count` for Gemini 3 and later;
 supported older models retain it. Isolated Gemini 3+ summaries reserve at least
 4096 output tokens for thinking and answer text, and use low thinking on known
 compatible text models (including the default Gemini 3.8 Flash). The requested
-word limit remains in the summary prompt. `MAX_TOKENS` responses fail explicitly
-instead of delivering incomplete summaries as successful results. Call-generation
-token limits and older-model summary settings are unchanged.
+word limit remains in the summary prompt. The adapter selects a complete `STOP`
+candidate, excluding thought text, even when another candidate hits `MAX_TOKENS`.
+If no complete answer remains, summaries fail without partial text. Live calls
+instead speak "I'm sorry, I couldn't complete that response. Could you ask again?"
+through the normal TTS path, subject to call cleanup and transfer ownership gates.
+No automatic retry is added. Call-generation token limits and older-model summary
+settings are unchanged.
 
 Model contracts: [sampling](https://ai.google.dev/gemini-api/docs/generate-content/whats-new-gemini-3.6),
 [aliases](https://ai.google.dev/gemini-api/docs/deprecations), and

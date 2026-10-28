@@ -30,7 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   models that support it, including correct handling of Gemini 3.5 Flash and
   Flash-Lite. Omit unsupported candidate counts for Gemini 3+, remove ineffective
   example sampling settings, reserve thinking room for isolated summaries, and
-  reject token-truncated responses instead of reporting them as complete (#785).
+  reject token-truncated responses instead of reporting them as complete. Select a
+  complete candidate even when another is truncated, and send live-call truncation
+  through the normal guarded TTS path with an apology instead of silence; summaries
+  still fail without partial text (#785).
 
 - Prevent an older Local AI `AgentAudioDone` from hanging up an Asterisk-owned
   farewell before `sound:goodbye` finishes. Reserve the farewell before tool

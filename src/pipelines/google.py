@@ -80,12 +80,19 @@ def _extract_stt_transcript(payload: Dict[str, Any]) -> Optional[str]:
 def _extract_candidate_text(payload: Dict[str, Any]) -> str:
     candidates = payload.get("candidates") or []
     for candidate in candidates:
-        content = candidate.get("content") or {}
-        parts = content.get("parts") or []
-        for part in parts:
-            text = part.get("text")
-            if text:
-                return text
+        # Finish reasons belong to individual candidates. Never mix partial,
+        # blocked, or thought text into a different candidate's complete answer.
+        if candidate.get("finishReason") != "STOP":
+            continue
+        parts = (candidate.get("content") or {}).get("parts") or []
+        text = "".join(
+            part["text"] for part in parts
+            if isinstance(part.get("text"), str) and not part.get("thought")
+        ).strip()
+        if text:
+            return text
+    if any(candidate.get("finishReason") == "MAX_TOKENS" for candidate in candidates):
+        raise GoogleGenerationIncompleteError("Google generation stopped at MAX_TOKENS")
     return ""
 
 
@@ -395,10 +402,6 @@ class GoogleLLMAdapter(LLMComponent):
                 )
                 response.raise_for_status()
             data = json.loads(body)
-
-        # Never return a partial answer as a completed call response or summary.
-        if any(candidate.get("finishReason") == "MAX_TOKENS" for candidate in data.get("candidates", [])):
-            raise GoogleGenerationIncompleteError("Google generation stopped at MAX_TOKENS")
 
         # Log raw response for debugging empty responses
         text = _extract_candidate_text(data)

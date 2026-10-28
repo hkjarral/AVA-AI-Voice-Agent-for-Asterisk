@@ -125,7 +125,7 @@ async def test_google_llm_adapter_generate(monkeypatch):
     payload = json.dumps(
         {
             "candidates": [
-                {"content": {"parts": [{"text": "response from gemini"}]}}
+                {"finishReason": "STOP", "content": {"parts": [{"text": "response from gemini"}]}}
             ]
         }
     )
@@ -341,4 +341,48 @@ async def test_google_summary_cancellation_closes_session(monkeypatch):
     result = await PostCallSummaryService(PipelineOrchestrator(_build_app_config())).generate(provider="google_llm", call_id="timeout", conversation_history=[{"role": "user", "content": "Office hours?"}], system_prompt="Summarize.", max_words=50, timeout_ms=10)
     assert result.status == "timeout"
     assert result.text == ""
+    assert fake.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_google_complete_candidate_survives_truncated_alternative(reverse):
+    candidates = [
+        {"finishReason": "MAX_TOKENS", "content": {"parts": [{"text": "Partial secret"}]}},
+        {"finishReason": "STOP", "content": {"parts": [
+            {"text": "Internal reasoning", "thought": True},
+            {"text": "Complete "}, {"text": "answer."},
+        ]}},
+    ]
+    fake = _FakeSession(json.dumps({"candidates": candidates[::-1] if reverse else candidates}))
+    adapter = GoogleLLMAdapter("google_llm", _build_app_config(), GoogleProviderConfig(api_key="test-key"), session_factory=lambda: fake)
+    try:
+        result = await adapter.generate("mixed", "hello", {}, {"model": "gemini-2.5-flash", "candidate_count": 2})
+        assert result.text == "Complete answer."
+        assert len(fake.requests) == 1
+        assert fake.requests[0]["json"]["generationConfig"]["candidateCount"] == 2
+    finally:
+        await adapter.stop()
+    assert fake.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("other", [
+    {"finishReason": "STOP", "content": {"parts": [{"text": "  "}]}},
+    {"finishReason": "STOP", "content": {"parts": [{"text": "Thinking", "thought": True}]}},
+    {"finishReason": "SAFETY", "content": {"parts": [{"text": "Blocked"}]}},
+    {"content": {"parts": [{"text": "Unfinished"}]}},
+])
+async def test_google_no_usable_complete_candidate_still_fails_summary(monkeypatch, other):
+    from src.post_call_summary import PostCallSummaryService
+    fake = _FakeSession(json.dumps({"candidates": [other, {"finishReason": "MAX_TOKENS", "content": {"parts": [{"text": "Partial"}]}}]}))
+    monkeypatch.setattr("src.pipelines.google.aiohttp.ClientSession", lambda: fake)
+    result = await PostCallSummaryService(PipelineOrchestrator(_build_app_config())).generate(
+        provider="google_llm", call_id="mixed-summary", conversation_history=[{"role": "user", "content": "Hours?"}],
+        system_prompt="Summarize.", max_words=50, timeout_ms=1000,
+    )
+    assert result.status == "error"
+    assert result.error_code == "GoogleGenerationIncompleteError"
+    assert result.text == ""
+    assert len(fake.requests) == 1
     assert fake.closed
