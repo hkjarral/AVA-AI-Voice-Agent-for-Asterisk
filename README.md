@@ -96,8 +96,10 @@ Supported response formats are `json`, `text`, `verbose_json`, `srt`, and
 `vtt`. The last three use one whole-file segment and synthetic 0-to-duration
 timing, not model-derived word or segment timestamps.
 
-The facade accepts FFmpeg-decodable audio such as WAV, MP3, M4A, OGG and WebM,
-with a 25 MiB file cap, 25 MiB + 64 KiB total multipart cap, and 120-second
+The facade accepts WAV, MP3, M4A/MP4, OGG, WebM/Matroska, FLAC and AAC audio.
+Input demuxers are restricted to these formats; playlists and external input
+protocols are rejected. Uploads have a 25 MiB file cap,
+25 MiB + 64 KiB total multipart cap, and 120-second
 decoded-audio cap. Upload receipt times out after 30 seconds and decoding after
 90 seconds. The local AI service runs at most one batch job in a killable
 separate process, with no waiting queue and a 180-second worker deadline. A

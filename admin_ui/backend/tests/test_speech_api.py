@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 import websockets
+from httpx import ASGITransport, AsyncClient
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -209,6 +210,51 @@ async def test_m4a_with_index_at_end_is_seekable(tmp_path):
     assert encoded.index(b"mdat") < encoded.index(b"moov")
     pcm16 = await speech._decode_to_pcm16(encoded)
     assert len(pcm16) >= 30000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("extension", "codec"), [
+    ("mp3", "libmp3lame"), ("ogg", "libvorbis"), ("webm", "libopus"),
+    ("flac", "flac"), ("aac", "aac"),
+])
+async def test_approved_compressed_audio_formats_decode(extension, codec, tmp_path):
+    source = tmp_path / f"sample.{extension}"
+    await asyncio.to_thread(
+        subprocess.run,
+        [speech.imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error",
+         "-y", "-i", "pipe:0", "-c:a", codec, str(source)],
+        input=_wav_bytes(), capture_output=True, check=True,
+    )
+    assert len(await speech._decode_to_pcm16(source.read_bytes())) >= 30000
+
+
+@pytest.mark.asyncio
+async def test_recursive_playlist_is_rejected_before_opening_nested_inputs(monkeypatch):
+    _set_auth(monkeypatch)
+    app = FastAPI()
+    app.include_router(speech.router)
+    spawn = speech.asyncio.create_subprocess_exec
+    diagnostics = []
+
+    async def capture_stderr(*args, **kwargs):
+        kwargs["stderr"] = asyncio.subprocess.PIPE
+        process = await spawn(*args, **kwargs)
+        diagnostics.append(asyncio.create_task(process.stderr.read()))
+        return process
+
+    monkeypatch.setattr(speech.asyncio, "create_subprocess_exec", capture_stderr)
+    # The upload is named "audio" in its private directory. An unrestricted
+    # concat demuxer recursively opens this same file until descriptors run out.
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+        rejected = await client.post(
+            "/v1/audio/transcriptions", auth=("nextcloud", "test-password"),
+            files={"file": ("audio", b"ffconcat version 1.0\nfile 'audio'\n")},
+        )
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"] == "unsupported_or_invalid_audio"
+    errors = b"".join(await asyncio.gather(*diagnostics)).lower()
+    assert b"not on whitelist" in errors
+    assert b"too many open files" not in errors
 
 
 @pytest.mark.asyncio
