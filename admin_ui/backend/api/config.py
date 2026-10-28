@@ -2713,8 +2713,8 @@ async def get_provider_options(provider_type: str):
     ]
     
     GOOGLE_MODELS = [
-        {"id": "gemini-1.5-flash", "name": "Gemini 1.5 Flash (Fastest)"},
-        {"id": "gemini-1.5-pro", "name": "Gemini 1.5 Pro (Best Quality)"},
+        {"id": "gemini-3.8-flash", "name": "Gemini 3.8 Flash (Recommended)"},
+        {"id": "gemini-3.6-flash", "name": "Gemini 3.6 Flash (Previous generation)"},
     ]
 
     GOOGLE_VOICES = [

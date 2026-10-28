@@ -387,7 +387,7 @@ const ProvidersPage: React.FC = () => {
                 capabilities: ['llm'],
                 api_key_env: 'GOOGLE_API_KEY',
                 llm_base_url: 'https://generativelanguage.googleapis.com/v1',
-                llm_model: 'gemini-2.5-flash',
+                llm_model: 'gemini-3.8-flash',
             },
             telnyx_llm: {
                 enabled: false,
@@ -1766,7 +1766,7 @@ const ProvidersPage: React.FC = () => {
                                         <strong>Google Gemini LLM</strong> — modular LLM slot for post-call summaries and pipelines.
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                             <li>Native Google <code>generateContent</code> API</li>
-                                            <li>Default model: <code>gemini-2.5-flash</code></li>
+                                            <li>Default model: <code>gemini-3.8-flash</code></li>
                                             <li>Free-tier availability depends on Google account, region, and quota</li>
                                             <li>Requires <code>GOOGLE_API_KEY</code></li>
                                         </ul>
