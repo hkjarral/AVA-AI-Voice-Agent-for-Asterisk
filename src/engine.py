@@ -8654,6 +8654,7 @@ class Engine:
 
     async def _play_local_asterisk_farewell(
         self, call_id: str, channel_id: str, *, timeout_sec: float = 8.0,
+        start_timeout_sec: float = 3.0,
     ) -> str:
         """Wait for this call's selected ARI goodbye, never an older reply."""
         playback_id = f"local-farewell-{uuid.uuid4().hex}"
@@ -8662,9 +8663,15 @@ class Engine:
         # the ARI POST response reaches us.
         self._ari_playback_waiters[playback_id] = waiter
         try:
-            started = await self.ari_client.play_media_on_channel_with_id(
-                channel_id, "sound:goodbye", playback_id,
-            )
+            try:
+                started = await asyncio.wait_for(
+                    self.ari_client.play_media_on_channel_with_id(
+                        channel_id, "sound:goodbye", playback_id,
+                    ),
+                    timeout=start_timeout_sec,
+                )
+            except asyncio.TimeoutError:
+                return "start_timeout"
             if not started:
                 return "start_failed"
             try:
@@ -15606,6 +15613,7 @@ class Engine:
                             await self._terminate_call_after_audio(
                                 call_id,
                                 reason="local_asterisk_farewell",
+                                call_outcome="agent_hangup",
                                 audio_already_drained=True,
                             )
                             break

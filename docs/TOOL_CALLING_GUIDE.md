@@ -1299,12 +1299,14 @@ purposes.
 With Local AI `farewell_mode: asterisk`, the engine reserves the terminal
 farewell before executing `hangup_call`. An older response's `AgentAudioDone`
 cannot preempt it. The engine starts `sound:goodbye` with a unique ARI playback
-ID and waits for that playback's terminal `PlaybackFinished` event. Asterisk
+ID, bounds the start request to three seconds, and waits up to eight more
+seconds for that playback's terminal `PlaybackFinished` event. Asterisk
 reports normal completion, stopped playback, and canceled playback as `done`;
 the engine logs that the playback finished, without claiming uninterrupted or
 audible delivery. A failed start, `failed`/unknown state, or timeout is reported
 as unconfirmed. Terminal cleanup still proceeds so the caller is not left on
-dead air. An audible farewell must be verified on the caller leg.
+dead air; engine-initiated termination is recorded as `agent_hangup` in Call
+History. An audible farewell must be verified on the caller leg.
 
 Reference: [Asterisk 20.17 playback state mapping](https://github.com/asterisk/asterisk/blob/20.17.0/res/res_stasis_playback.c#L196-L215).
 

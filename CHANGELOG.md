@@ -27,7 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   execution, match its exact ARI playback ID and terminal state, and report
   missing or failed playback as unconfirmed. Treat ARI `done` as a terminal
   boundary, which also includes stopped/canceled playback, without claiming
-  uninterrupted or audible delivery (#786).
+  uninterrupted or audible delivery. Bound the ARI playback-start request so
+  a stalled request cannot hold the farewell gate for minutes. Preserve
+  `agent_hangup` in Call History when the Asterisk farewell initiates termination
+  (#786).
 - Cancel local transcription on HTTP disconnect and reap decoder/worker work
   before releasing batch admission. Give full LocalProvider setup and greetings
   live-call priority before the first incoming audio frame (#784).

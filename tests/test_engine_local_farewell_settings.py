@@ -244,7 +244,8 @@ async def test_old_local_audio_done_cannot_preempt_asterisk_farewell(monkeypatch
     )
 
     engine._terminate_call_after_audio.assert_awaited_once_with(
-        call_id, reason="local_asterisk_farewell", audio_already_drained=True
+        call_id, reason="local_asterisk_farewell", call_outcome="agent_hangup",
+        audio_already_drained=True,
     )
     assert call_id not in engine._local_asterisk_farewell_pending
     # The real ARI payload is also "done" for stopped/canceled playback.
@@ -268,6 +269,26 @@ async def test_cancelled_asterisk_farewell_wait_cleans_exact_id():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    assert not engine._ari_playback_waiters
+
+
+@pytest.mark.asyncio
+async def test_stalled_asterisk_farewell_start_is_cancelled_and_cleans_waiter():
+    engine = _build_engine()
+    cancelled = asyncio.Event()
+
+    async def stalled_start(*args):
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    engine.ari_client.play_media_on_channel_with_id = stalled_start
+    state = await asyncio.wait_for(engine._play_local_asterisk_farewell(
+        "call", "caller", start_timeout_sec=0.01,
+    ), timeout=1)
+    assert state == "start_timeout"
+    assert cancelled.is_set()
     assert not engine._ari_playback_waiters
 
 
@@ -379,6 +400,33 @@ async def test_overlapping_hangup_is_coalesced_into_first_farewell():
     )
     await asyncio.wait_for(first, timeout=1)
     engine._terminate_call_after_audio.assert_awaited_once_with(
-        call_id, reason="local_asterisk_farewell", audio_already_drained=True
+        call_id, reason="local_asterisk_farewell", call_outcome="agent_hangup",
+        audio_already_drained=True,
     )
     assert call_id not in engine._local_asterisk_farewell_pending
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("playback_state", ["done", "failed", "timeout", "start_timeout"])
+async def test_asterisk_farewell_records_agent_outcome_before_terminal_cleanup(playback_state):
+    engine = _build_engine()
+    session = CallSession(call_id="call-outcome", caller_channel_id="caller", provider_name="local")
+    session.last_transcript = "goodbye"
+    await engine.session_store.upsert_call(session)
+
+    async def hangup(**kwargs):
+        session.cleanup_after_tts = True
+        return {"status": "success", "will_hangup": True}
+
+    engine._execute_provider_tool = hangup
+    engine._play_local_asterisk_farewell = AsyncMock(return_value=playback_state)
+    engine.ari_client.hangup_channel = AsyncMock()
+    await engine.on_provider_event({
+        "type": "ToolCall", "call_id": session.call_id,
+        "tool_calls": [{"id": "hangup", "name": "hangup_call", "parameters": {}}],
+    })
+    engine.ari_client.hangup_channel.assert_awaited_once_with("caller")
+    current = await engine.session_store.get_by_call_id(session.call_id)
+    assert current.call_outcome == "agent_hangup"
+    assert not current.cleanup_after_tts
+    assert not engine._local_asterisk_farewell_pending
