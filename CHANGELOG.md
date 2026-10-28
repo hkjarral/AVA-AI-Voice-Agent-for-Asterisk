@@ -25,7 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update the Google modular LLM default and Admin UI suggestions to Gemini 3.8
   Flash, replacing retired Gemini 1.5 defaults. Omit unsupported temperature and
   top-p parameters for Gemini 3.6+ while preserving older-model behavior and
-  existing saved model selections; explain the temperature limitation in the UI (#785).
+  existing saved model selections. Grey out temperature for Gemini 3.6+ with
+  persistent helper text, preserve its saved value, and re-enable editing for
+  older models (#785).
 
 - Cancel local transcription on HTTP disconnect and reap decoder/worker work
   before releasing batch admission. Give full LocalProvider setup and greetings

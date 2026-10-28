@@ -16,6 +16,14 @@ interface ModularSubtypeFormProps {
  * matches what the AI engine expects.
  */
 const ModularSubtypeForm: React.FC<ModularSubtypeFormProps> = ({ subtype, config, onChange }) => {
+  const temperatureHelpId = React.useId();
+  const model = config.llm_model ?? subtype.fields.find(field => field.key === 'llm_model')?.default;
+  // Match the Google adapter's numeric version check, including models/ prefixes.
+  const geminiVersion = String(model ?? '').match(/gemini-(\d+)(?:\.(\d+))?/);
+  const automaticTemperature = subtype.id === 'google' && geminiVersion !== null && (
+    Number(geminiVersion[1]) > 3 ||
+    (Number(geminiVersion[1]) === 3 && Number(geminiVersion[2] ?? 0) >= 6)
+  );
   const renderField = (field: SubtypeField) => {
     const currentValue = config[field.key] ?? field.default ?? '';
 
@@ -62,16 +70,24 @@ const ModularSubtypeForm: React.FC<ModularSubtypeFormProps> = ({ subtype, config
     }
 
     if (field.type === 'number') {
+      const temperatureDisabled = field.key === 'temperature' && automaticTemperature;
       return (
         <div key={field.key}>
           <FormInput
             label={field.label}
             type="number"
+            disabled={temperatureDisabled}
+            aria-describedby={temperatureDisabled ? temperatureHelpId : undefined}
             value={currentValue}
             onChange={(e) => onChange(field.key, e.target.value === '' ? '' : Number(e.target.value))}
             placeholder={field.placeholder || String(field.default ?? '')}
             tooltip={field.tooltip}
           />
+          {temperatureDisabled && (
+            <p id={temperatureHelpId} className="-mt-2 text-xs text-muted-foreground">
+              This model manages temperature automatically. Your saved value is preserved for models that support it.
+            </p>
+          )}
         </div>
       );
     }

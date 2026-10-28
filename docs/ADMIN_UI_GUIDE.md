@@ -59,6 +59,11 @@ Create and edit operator-managed agents, select their provider or pipeline, conf
 Configure full-agent providers and modular STT/LLM/TTS components. Each provider
 card shows its current status.
 
+For Google Gemini modular LLM providers, Temperature is greyed out and disabled
+for Gemini 3.6 and newer. Persistent helper text explains that the model manages
+temperature automatically. The saved value is retained and becomes editable again
+when you select an older model.
+
 For a modular HTTP provider, edit its endpoint and credential source, then click
 **Test Connection** to test the current form before saving. Custom hosts, ports
 and API paths are preserved. Results show the tested destination origin and a
