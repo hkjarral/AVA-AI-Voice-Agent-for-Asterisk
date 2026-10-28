@@ -524,7 +524,7 @@ describe('ProvidersPage OpenAI Realtime save contract', () => {
             capabilities: ['llm'],
             api_key_env: 'GOOGLE_API_KEY',
             llm_base_url: 'https://generativelanguage.googleapis.com/v1',
-            llm_model: 'gemini-2.5-flash',
+            llm_model: 'gemini-3.8-flash',
         });
     });
 });

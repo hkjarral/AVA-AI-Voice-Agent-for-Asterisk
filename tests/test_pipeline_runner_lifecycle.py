@@ -1300,3 +1300,83 @@ async def test_pipeline_open_receives_calendar_policy_from_call_snapshot_without
         assert prompt.count("Microsoft Calendar booking rules:") == 1
     else:
         assert "Microsoft Calendar booking rules:" not in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("continuation,cleanup", [(False, False), (True, False), (False, True)])
+async def test_google_truncation_uses_guarded_call_tts(monkeypatch, continuation, cleanup):
+    from src.core.models import CallSession
+    from src.pipelines.google import GoogleGenerationIncompleteError
+
+    engine = Engine(AppConfig(
+        default_provider="local", providers={"local": {"enabled": True}},
+        asterisk={"host": "127.0.0.1", "username": "u", "password": "p"},
+        llm={"initial_greeting": "", "prompt": "Be helpful"},
+        pipelines={"truncation": {}}, active_pipeline="truncation",
+        audio_transport="audiosocket", downstream_mode="file",
+    ))
+    engine.pipeline_orchestrator._started = True
+    stt = _ResultStreamingStubSTT()
+    raised = asyncio.Event()
+    spoken = asyncio.Queue()
+    calls = []
+    call_id = f"truncated-call-{continuation}-{cleanup}"
+    session = CallSession(call_id=call_id, caller_channel_id=call_id)
+    session.pipeline_name = "truncation"
+    session.context_name = "tool-context"
+    registry = ToolRegistry.isolated()
+    registry.register_instance(_TranscriptTool())
+    session.tool_runtime_registry = registry
+    session.allowed_tools = ["transcript_tool"]
+
+    class TruncatingLLM(_ToolOnlyThenTextLLM):
+        async def generate(self, call_id, transcript, context, options):
+            calls.append(transcript)
+            if continuation and len(calls) == 1:
+                return await super().generate(call_id, transcript, context, options)
+            if cleanup:
+                session.cleanup_in_progress = True
+            raised.set()
+            raise GoogleGenerationIncompleteError("Google generation stopped at MAX_TOKENS")
+
+    class CaptureTTS(TTSComponent):
+        async def synthesize(self, call_id, text, options):
+            spoken.put_nowait(text)
+            yield b"ulaw-bytes"
+
+    resolution = _StubResolution(stt_adapter=stt, stt_options={"streaming": True}, llm_adapter=TruncatingLLM(), tts_adapter=CaptureTTS())
+    monkeypatch.setattr(engine.pipeline_orchestrator, "get_pipeline", lambda *a, **k: resolution)
+    monkeypatch.setattr(engine.transport_orchestrator, "get_context_config", lambda *a, **k: SimpleNamespace(
+        prompt=None, greeting=None, tools=["transcript_tool"], in_call_http_tools={}, disable_global_in_call_tools=[],
+    ))
+    engine.playback_manager.play_audio = AsyncMock(return_value=None)
+    engine.ari_client.set_channel_var = AsyncMock(return_value=True)
+    await engine.session_store.upsert_call(session)
+    try:
+        await engine._ensure_pipeline_runner(session, forced=True)
+        await asyncio.wait_for(stt.started.wait(), 2)
+        await stt.results.put("Tell me the office hours")
+        await asyncio.wait_for(raised.wait(), 2)
+        if cleanup:
+            # The response handler performs its ownership gate before yielding.
+            assert spoken.empty()
+            engine.playback_manager.play_audio.assert_not_awaited()
+        else:
+            text = await asyncio.wait_for(spoken.get(), 2)
+            assert text == "I'm sorry, I couldn't complete that response. Could you ask again?"
+            assert session.conversation_history[-1]["content"] == text
+            engine.playback_manager.play_audio.assert_awaited_once()
+        assert len(calls) == (2 if continuation else 1)
+    finally:
+        session.cleanup_in_progress = False
+        await engine._cleanup_call(session.call_id)
+    assert session.call_id not in engine._pipeline_tasks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [asyncio.CancelledError, asyncio.TimeoutError, RuntimeError])
+async def test_call_truncation_fallback_does_not_swallow_other_failures(error):
+    adapter = SimpleNamespace(generate=AsyncMock(side_effect=error()))
+    with pytest.raises(error):
+        await Engine._generate_pipeline_response(adapter, "call", "hello", {}, {})
+    adapter.generate.assert_awaited_once()

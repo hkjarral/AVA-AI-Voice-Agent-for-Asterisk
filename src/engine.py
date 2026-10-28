@@ -111,6 +111,7 @@ from .utils.audio_capture import AudioCaptureManager
 from .utils.diagnostic_paths import DEFAULT_DIAGNOSTIC_CAPTURE_DIR
 from .utils.voice_catalog import known_voice_map
 from src.pipelines.base import LLMResponse
+from .pipelines.google import GoogleGenerationIncompleteError
 from src.tools.telephony.hangup_policy import (
     DEFAULT_HANGUP_MARKERS,
     resolve_effective_hangup_policy,
@@ -16370,6 +16371,21 @@ class Engine:
             logger.debug("AudioSocket -> PCM16 16k conversion failed", exc_info=True)
             return audio_bytes
 
+    @staticmethod
+    async def _generate_pipeline_response(adapter, call_id, transcript, context, options):
+        """Keep truncation audible in calls; isolated summaries still fail closed.
+
+        Return through the normal history/TTS path so teardown and transfer gates
+        retain ownership. Do not retry a request or change the configured budget.
+        """
+        try:
+            return await adapter.generate(call_id, transcript, context, options)
+        except GoogleGenerationIncompleteError:
+            logger.warning("Google call response truncated; using spoken fallback", call_id=call_id)
+            return LLMResponse(
+                text="I'm sorry, I couldn't complete that response. Could you ask again?"
+            )
+
     async def _ensure_pipeline_runner(self, session: CallSession, *, forced: bool = False) -> None:
         """Create per-call queue and start pipeline runner if not already started."""
         call_id = session.call_id
@@ -17482,7 +17498,8 @@ class Engine:
                     # Skip if streaming path already set tool_calls
                     if not tool_calls:
                         try:
-                            llm_result = await pipeline.llm_adapter.generate(
+                            llm_result = await self._generate_pipeline_response(
+                                pipeline.llm_adapter,
                                 call_id,
                                 transcript_text,
                                 context_for_llm,  # Include conversation history
@@ -17610,7 +17627,8 @@ class Engine:
                                 llm_options_no_tools = dict(llm_options or {})
                                 llm_options_no_tools["tools"] = []
                                 llm_options_no_tools["tools_enabled"] = False
-                                llm_result_retry = await pipeline.llm_adapter.generate(
+                                llm_result_retry = await self._generate_pipeline_response(
+                                    pipeline.llm_adapter,
                                     call_id,
                                     transcript_text,
                                     context_for_llm,
@@ -18053,7 +18071,8 @@ class Engine:
                                                 "prior_messages": _sanitize_for_llm(llm_context_history),
                                                 **continuation_context,
                                             }
-                                            llm_response = await pipeline.llm_adapter.generate(
+                                            llm_response = await self._generate_pipeline_response(
+                                                pipeline.llm_adapter,
                                                 call_id,
                                                 "",  # Empty transcript - tool result already in context
                                                 context_for_llm,

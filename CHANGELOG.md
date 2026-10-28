@@ -22,6 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Update the Google modular LLM default and Admin UI suggestions to Gemini 3.8
+  Flash, replacing retired Gemini 1.5 defaults. Omit unsupported temperature and
+  top-p parameters for Gemini 3.6+ while preserving older-model behavior and
+  existing saved model selections. Grey out temperature for Gemini 3.6+ with
+  persistent helper text, preserve its saved value, and re-enable editing for
+  models that support it, including correct handling of Gemini 3.5 Flash and
+  Flash-Lite. Omit unsupported candidate counts for Gemini 3+, remove ineffective
+  example sampling settings, reserve thinking room for isolated summaries, and
+  reject token-truncated responses instead of reporting them as complete. Select a
+  complete candidate even when another is truncated, and send live-call truncation
+  through the normal guarded TTS path with an apology instead of silence; summaries
+  still fail without partial text (#785).
+
 - Prevent an older Local AI `AgentAudioDone` from hanging up an Asterisk-owned
   farewell before `sound:goodbye` finishes. Reserve the farewell before tool
   execution, match its exact ARI playback ID and terminal state, and report
