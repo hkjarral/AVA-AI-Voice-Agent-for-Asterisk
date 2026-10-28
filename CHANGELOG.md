@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add an authenticated, OpenAI-compatible local transcription API with
+  bounded multipart uploads, killable FFmpeg decoding, and a one-job isolated
+  STT worker. Live-call sessions take priority and preempt batch work; backend
+  failures remain errors rather than successful empty transcripts (#784).
+
 ### Changed
 
 - Present Calendly as an optional provider and document appointment booking through
@@ -14,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MCP server's responsibility (#778).
 
 ### Fixed
+
+- Update the Google modular LLM default and Admin UI suggestions to Gemini 3.8
+  Flash, replacing retired Gemini 1.5 defaults. Omit unsupported temperature and
+  top-p parameters for Gemini 3.6+ while preserving older-model behavior and
+  existing saved model selections; explain the temperature limitation in the UI (#785).
+
+- Cancel local transcription on HTTP disconnect and reap decoder/worker work
+  before releasing batch admission. Give full LocalProvider setup and greetings
+  live-call priority before the first incoming audio frame (#784).
+- Restrict transcription uploads to approved audio demuxers and local file input
+  so crafted playlists cannot recursively reopen the uploaded file (#784).
 
 - Backfill Calendly's durable privacy marker when opening pre-marker journals and
   preserve it before disconnect removes credentials. Individual and retention

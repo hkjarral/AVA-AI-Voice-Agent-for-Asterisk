@@ -114,7 +114,7 @@ if _is_remote_bind and _raw_jwt_secret in _placeholder_secrets:
         _uvicorn_host,
     )
 
-from api import config, system, live_status, wizard, logs, local_ai, ollama, mcp, calls, outbound, vicidial, tools, docs, custom_models, agents, support, pushover  # noqa: E402
+from api import config, system, live_status, wizard, logs, local_ai, ollama, mcp, calls, outbound, vicidial, tools, docs, custom_models, agents, support, pushover, speech  # noqa: E402
 import auth  # noqa: E402
 from agents_store import AgentsStore  # noqa: E402
 
@@ -248,6 +248,7 @@ app.add_middleware(
 # Include routers
 # Public routes
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(speech.router)
 
 # Protected routes
 app.include_router(config.router, prefix="/api/config", tags=["config"], dependencies=[Depends(auth.get_current_user)])

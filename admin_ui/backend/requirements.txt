@@ -38,3 +38,6 @@ portalocker>=2.8.0
 
 # Decode and normalize operator-uploaded Agent avatars.
 Pillow==13.0.0
+# Self-contained decoder for OpenAI-compatible speech uploads. This avoids a
+# host package-manager dependency and supports WAV, MP3, M4A, OGG, and WebM.
+imageio-ffmpeg==0.6.0
