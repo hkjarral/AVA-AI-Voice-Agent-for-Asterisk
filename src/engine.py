@@ -689,7 +689,9 @@ class Engine:
         self._local_tts_farewell_pending: Set[str] = set()
         # Asterisk farewells have a different completion owner: their exact
         # ARI PlaybackFinished event, not an older Local AgentAudioDone.
-        self._local_asterisk_farewell_pending: Set[str] = set()
+        # Multiple provider callbacks can overlap for one call. Keep a count
+        # so a later blocked tool call cannot clear the first farewell's gate.
+        self._local_asterisk_farewell_pending: Dict[str, int] = {}
         
         self.vad_manager: Optional[EnhancedVADManager] = None
         self.webrtc_vad = None
@@ -10519,7 +10521,7 @@ class Engine:
                 self._terminal_hangup_locks.pop(call_id, None)
                 self._terminal_hangup_started.discard(call_id)
                 self._local_tts_farewell_pending.discard(call_id)
-                self._local_asterisk_farewell_pending.discard(call_id)
+                self._local_asterisk_farewell_pending.pop(call_id, None)
             except Exception:
                 logger.debug("Terminal lifecycle cleanup failed", call_id=call_id, exc_info=True)
             bg_tasks = self._call_bg_tasks.pop(call_id, set())
@@ -15490,7 +15492,9 @@ class Engine:
                         )
                     )
                     if asterisk_farewell:
-                        self._local_asterisk_farewell_pending.add(call_id)
+                        self._local_asterisk_farewell_pending[call_id] = (
+                            self._local_asterisk_farewell_pending.get(call_id, 0) + 1
+                        )
                     
                     try:
                         result = await self._execute_provider_tool(
@@ -15604,7 +15608,11 @@ class Engine:
                         )
                     finally:
                         if asterisk_farewell:
-                            self._local_asterisk_farewell_pending.discard(call_id)
+                            remaining = self._local_asterisk_farewell_pending.get(call_id, 0) - 1
+                            if remaining > 0:
+                                self._local_asterisk_farewell_pending[call_id] = remaining
+                            else:
+                                self._local_asterisk_farewell_pending.pop(call_id, None)
             
             elif etype == "transcript":
                 # User speech transcript from provider (ElevenLabs, etc.)

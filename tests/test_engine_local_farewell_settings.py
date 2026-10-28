@@ -241,3 +241,57 @@ async def test_old_local_audio_done_cannot_preempt_asterisk_farewell():
         call_id, reason="local_asterisk_farewell", audio_already_drained=True
     )
     assert call_id not in engine._local_asterisk_farewell_pending
+
+
+@pytest.mark.asyncio
+async def test_overlapping_blocked_tool_call_cannot_release_first_farewell():
+    engine = _build_engine()
+    call_id = "call-overlapping-farewell"
+    session = CallSession(call_id=call_id, caller_channel_id="caller")
+    session.provider_name = "local"
+    session.last_transcript = "goodbye"
+    await engine.session_store.upsert_call(session)
+    engine._terminate_call_after_audio = AsyncMock(return_value=True)
+    playback_started = asyncio.Event()
+    playback_ids = []
+
+    async def execute_hangup(**kwargs):
+        if kwargs["function_call_id"] == "first-hangup":
+            session.cleanup_after_tts = True
+            await engine.session_store.upsert_call(session)
+            return {"status": "success", "will_hangup": True}
+        # A concurrent tool call is rejected while the first farewell plays.
+        return {"status": "blocked", "will_hangup": False}
+
+    async def play_media(channel_id, media_uri, playback_id):
+        assert (channel_id, media_uri) == ("caller", "sound:goodbye")
+        playback_ids.append(playback_id)
+        playback_started.set()
+        return True
+
+    def tool_event(tool_id):
+        return {
+            "type": "ToolCall", "call_id": call_id,
+            "tool_calls": [{"id": tool_id, "name": "hangup_call", "parameters": {}}],
+        }
+
+    engine._execute_provider_tool = execute_hangup
+    engine.ari_client.play_media_on_channel_with_id = play_media
+    first = asyncio.create_task(engine.on_provider_event(tool_event("first-hangup")))
+    await asyncio.wait_for(playback_started.wait(), timeout=1)
+    await engine.on_provider_event(tool_event("second-hangup"))
+
+    assert engine._local_asterisk_farewell_pending[call_id] == 1
+    await engine.on_provider_event(
+        {"type": "AgentAudioDone", "call_id": call_id, "streaming_done": True}
+    )
+    engine._terminate_call_after_audio.assert_not_awaited()
+
+    await engine._on_playback_finished(
+        {"playback": {"id": playback_ids[0], "state": "done"}}
+    )
+    await asyncio.wait_for(first, timeout=1)
+    engine._terminate_call_after_audio.assert_awaited_once_with(
+        call_id, reason="local_asterisk_farewell", audio_already_drained=True
+    )
+    assert call_id not in engine._local_asterisk_farewell_pending
