@@ -1132,6 +1132,75 @@
       },
       "additionalProperties": true
     },
+    "TranscribeRequest": {
+      "type": "object",
+      "required": [
+        "type",
+        "data",
+        "encoding",
+        "sample_rate_hz",
+        "request_id"
+      ],
+      "properties": {
+        "type": {
+          "const": "transcribe_request"
+        },
+        "data": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 5120000
+        },
+        "encoding": {
+          "const": "pcm_s16le"
+        },
+        "sample_rate_hz": {
+          "const": 16000
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "language": {
+          "type": "string",
+          "pattern": "^(?:[a-z]{2}|auto)$"
+        }
+      },
+      "additionalProperties": true
+    },
+    "TranscribeResponse": {
+      "type": "object",
+      "required": [
+        "type",
+        "status",
+        "request_id"
+      ],
+      "properties": {
+        "type": {
+          "const": "transcribe_response"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "error"
+          ]
+        },
+        "request_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
     "STTResult": {
       "type": "object",
       "required": [
@@ -1275,6 +1344,12 @@
     },
     {
       "$ref": "#/$defs/AudioFrameRequest"
+    },
+    {
+      "$ref": "#/$defs/TranscribeRequest"
+    },
+    {
+      "$ref": "#/$defs/TranscribeResponse"
     },
     {
       "$ref": "#/$defs/STTResult"

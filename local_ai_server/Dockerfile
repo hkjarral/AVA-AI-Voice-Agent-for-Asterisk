@@ -64,8 +64,10 @@ RUN if [ "$INCLUDE_SHERPA" = "true" ]; then \
 RUN if [ "$INCLUDE_FASTER_WHISPER" = "true" ]; then \
         echo "📦 Installing Faster-Whisper STT..." && \
         FASTER_WHISPER_REQUIREMENT="$(grep -m 1 '^faster-whisper==' requirements.txt || true)"; \
-        if [ -z "$FASTER_WHISPER_REQUIREMENT" ]; then echo "❌ Missing faster-whisper pin" >&2; exit 1; fi; \
-        pip install --no-cache-dir "$FASTER_WHISPER_REQUIREMENT"; \
+        HF_HUB_REQUIREMENT="$(grep -m 1 '^huggingface-hub==' requirements.txt || true)"; \
+        if [ -z "$FASTER_WHISPER_REQUIREMENT" ] || [ -z "$HF_HUB_REQUIREMENT" ]; then echo "❌ Missing faster-whisper/huggingface-hub pin" >&2; exit 1; fi; \
+        pip install --no-cache-dir "$FASTER_WHISPER_REQUIREMENT" "$HF_HUB_REQUIREMENT" && \
+        python -c 'from faster_whisper import WhisperModel'; \
     fi
 
 RUN if [ "$INCLUDE_WHISPER_CPP" = "true" ]; then \
