@@ -237,3 +237,28 @@ async def test_pipeline_orchestrator_registers_google_adapters():
     assert isinstance(resolution.llm_adapter, GoogleLLMAdapter)
     assert isinstance(resolution.tts_adapter, GoogleTTSAdapter)
     assert resolution.stt_options["language_code"] == "en-US"
+
+
+def _google_llm_payload(model: str, options: dict) -> dict:
+    app_config = _build_app_config()
+    provider_config = GoogleProviderConfig(**app_config.providers["google"])
+    adapter = GoogleLLMAdapter("google_llm", app_config, provider_config, {})
+    merged = {"model": model, "temperature": 0.2, "top_p": 0.9, "max_output_tokens": 64, **options}
+    return adapter._build_payload("hello", {}, merged)["generationConfig"]
+
+
+@pytest.mark.parametrize("model", ["models/gemini-3.8-flash", "gemini-3.6-flash", "gemini-4-argon"])
+def test_google_llm_payload_omits_sampling_params_for_gemini_3_6_plus(model):
+    config = _google_llm_payload(model, {})
+
+    assert "temperature" not in config
+    assert "topP" not in config
+    assert config["maxOutputTokens"] == 64
+
+
+@pytest.mark.parametrize("model", ["models/gemini-1.5-pro-latest", "gemini-2.5-flash", "gemini-3.5-flash"])
+def test_google_llm_payload_keeps_sampling_params_for_older_models(model):
+    config = _google_llm_payload(model, {})
+
+    assert config["temperature"] == 0.2
+    assert config["topP"] == 0.9

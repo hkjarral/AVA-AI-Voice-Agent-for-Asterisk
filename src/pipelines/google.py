@@ -7,6 +7,7 @@ import base64
 import struct
 import json
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -440,6 +441,14 @@ class GoogleLLMAdapter(LLMComponent):
         }
         return options
 
+    @staticmethod
+    def _ignores_sampling_params(model: Optional[str]) -> bool:
+        """Return True for Gemini 3.6+ models, which ignore temperature and topP."""
+        match = re.search(r"gemini-(\d+)(?:\.(\d+))?", str(model or ""))
+        if not match:
+            return False
+        return (int(match.group(1)), int(match.group(2) or 0)) >= (3, 6)
+
     def _build_payload(self, transcript: str, context: Dict[str, Any], merged: Dict[str, Any]) -> Dict[str, Any]:
         contents = context.get("google_contents")
         if not contents:
@@ -447,11 +456,12 @@ class GoogleLLMAdapter(LLMComponent):
 
         system_instruction = merged.get("system_instruction") or context.get("system_prompt")
 
-        generation_config = {
-            "temperature": merged["temperature"],
-        }
-        if merged.get("top_p") is not None:
-            generation_config["topP"] = merged["top_p"]
+        generation_config: Dict[str, Any] = {}
+        # Gemini 3.6+ ignores temperature/topP (Google plans to reject them), so only older models get them.
+        if not self._ignores_sampling_params(merged.get("model")):
+            generation_config["temperature"] = merged["temperature"]
+            if merged.get("top_p") is not None:
+                generation_config["topP"] = merged["top_p"]
         if merged.get("max_output_tokens") is not None:
             generation_config["maxOutputTokens"] = merged["max_output_tokens"]
         if merged.get("candidate_count") not in (None, 1):
