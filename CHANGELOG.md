@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Prevent an older Local AI `AgentAudioDone` from hanging up an Asterisk-owned
+  farewell before `sound:goodbye` finishes. Reserve the farewell before tool
+  execution, match its exact ARI playback ID and terminal state, and report
+  missing or failed playback as unconfirmed. Treat ARI `done` as a terminal
+  boundary, which also includes stopped/canceled playback, without claiming
+  uninterrupted or audible delivery. Bound the ARI playback-start request so
+  a stalled request cannot hold the farewell gate for minutes. Preserve
+  `agent_hangup` in lifecycle logs and post-call tools when the Asterisk farewell
+  initiates termination. Keep farewell ownership across Local listener replacement
+  while allowing caller teardown to cancel its finalizer (#786).
 - Cancel local transcription on HTTP disconnect and reap decoder/worker work
   before releasing batch admission. Give full LocalProvider setup and greetings
   live-call priority before the first incoming audio frame (#784).
