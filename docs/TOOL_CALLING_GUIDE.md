@@ -1305,8 +1305,14 @@ reports normal completion, stopped playback, and canceled playback as `done`;
 the engine logs that the playback finished, without claiming uninterrupted or
 audible delivery. A failed start, `failed`/unknown state, or timeout is reported
 as unconfirmed. Terminal cleanup still proceeds so the caller is not left on
-dead air; engine-initiated termination is recorded as `agent_hangup` in Call
-History. An audible farewell must be verified on the caller leg.
+dead air; engine-initiated termination is recorded as `agent_hangup` in lifecycle
+logs and post-call tools. Call History retains its existing normalized outcome
+classification (for example, `completed`). An audible farewell must be verified
+on the caller leg.
+
+The bounded farewell finalizer belongs to the call, so replacing a Local AI
+listener during reconnect does not cancel it or release the stale-audio guard
+early. Caller teardown still cancels the finalizer through normal call cleanup.
 
 Reference: [Asterisk 20.17 playback state mapping](https://github.com/asterisk/asterisk/blob/20.17.0/res/res_stasis_playback.c#L196-L215).
 

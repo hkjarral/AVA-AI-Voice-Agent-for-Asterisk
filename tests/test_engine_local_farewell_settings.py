@@ -189,6 +189,47 @@ async def test_asterisk_farewell_waits_for_its_exact_playback_state(state):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("caller_cleanup", [False, True])
+async def test_listener_cancel_after_hangup_intent_preserves_only_live_call(caller_cleanup):
+    engine = _build_engine()
+    call_id = "call-tool-cancel"
+    session = CallSession(call_id=call_id, caller_channel_id="caller", provider_name="local")
+    session.last_transcript = "goodbye"
+    await engine.session_store.upsert_call(session)
+    intent = asyncio.Event()
+    engine._play_local_asterisk_farewell = AsyncMock(return_value="done")
+    engine._terminate_call_after_audio = AsyncMock(return_value=True)
+
+    async def hangup(**kwargs):
+        session.cleanup_after_tts = True
+        intent.set()
+        await asyncio.Future()
+
+    engine._execute_provider_tool = hangup
+    listener = asyncio.create_task(engine.on_provider_event({
+        "type": "ToolCall", "call_id": call_id,
+        "tool_calls": [{"id": "hangup", "name": "hangup_call", "parameters": {}}],
+    }))
+    await asyncio.wait_for(intent.wait(), timeout=1)
+    session.cleanup_in_progress = caller_cleanup
+    listener.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await listener
+    tasks = list(engine._call_bg_tasks.get(call_id, set()))
+    if tasks:
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)
+    if caller_cleanup:
+        engine._play_local_asterisk_farewell.assert_not_awaited()
+        engine._terminate_call_after_audio.assert_not_awaited()
+    else:
+        engine._terminate_call_after_audio.assert_awaited_once_with(
+            call_id, reason="local_asterisk_farewell", call_outcome="agent_hangup",
+            audio_already_drained=True,
+        )
+    assert not engine._local_asterisk_farewell_pending
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("started,expected", [(False, "start_failed"), (True, "timeout")])
 async def test_asterisk_farewell_unconfirmed_playback_cleans_waiter(started, expected):
     engine = Engine.__new__(Engine)
@@ -430,3 +471,72 @@ async def test_asterisk_farewell_records_agent_outcome_before_terminal_cleanup(p
     assert current.call_outcome == "agent_hangup"
     assert not current.cleanup_after_tts
     assert not engine._local_asterisk_farewell_pending
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["finished", "timeout", "start_timeout", "call_cleanup"])
+async def test_listener_cancellation_preserves_call_owned_asterisk_farewell(boundary):
+    engine = _build_engine()
+    call_id = "call-listener-replaced"
+    session = CallSession(call_id=call_id, caller_channel_id="caller", provider_name="local")
+    session.last_transcript = "goodbye"
+    await engine.session_store.upsert_call(session)
+    engine._terminate_call_after_audio = AsyncMock(return_value=True)
+    started = asyncio.Event()
+    playback_ids = []
+
+    async def execute(**kwargs):
+        session.cleanup_after_tts = True
+        return {"status": "success", "will_hangup": True}
+
+    async def start(channel_id, media_uri, playback_id):
+        playback_ids.append(playback_id)
+        started.set()
+        if boundary == "start_timeout":
+            await asyncio.Future()
+        return True
+
+    original_play = engine._play_local_asterisk_farewell
+
+    async def bounded_play(target_call_id, channel_id):
+        return await original_play(target_call_id, channel_id,
+            timeout_sec=0.2, start_timeout_sec=0.2)
+
+    engine._execute_provider_tool = execute
+    engine.ari_client.play_media_on_channel_with_id = start
+    engine._play_local_asterisk_farewell = bounded_play
+    listener = asyncio.create_task(engine.on_provider_event({
+        "type": "ToolCall", "call_id": call_id,
+        "tool_calls": [{"id": "hangup", "name": "hangup_call", "parameters": {}}],
+    }))
+    await asyncio.wait_for(started.wait(), timeout=1)
+    listener.cancel()  # Local reconnect cancels the old receive-loop callback.
+    with pytest.raises(asyncio.CancelledError):
+        await listener
+    finalizer = next(task for task in engine._call_bg_tasks[call_id]
+                     if task.get_name().startswith("local-asterisk-farewell-"))
+    assert not finalizer.done()
+    assert engine._local_asterisk_farewell_pending[call_id] == 1
+    assert playback_ids[0] in engine._ari_playback_waiters
+    await engine.on_provider_event({
+        "type": "AgentAudioDone", "call_id": call_id, "streaming_done": True,
+    })
+    engine._terminate_call_after_audio.assert_not_awaited()
+    if boundary == "call_cleanup":
+        # Normal caller teardown cancels tasks registered in _call_bg_tasks.
+        finalizer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await finalizer
+        engine._terminate_call_after_audio.assert_not_awaited()
+    else:
+        if boundary == "finished":
+            await engine._on_playback_finished({
+                "playback": {"id": playback_ids[0], "state": "done"},
+            })
+        await asyncio.wait_for(asyncio.shield(finalizer), timeout=1)
+        engine._terminate_call_after_audio.assert_awaited_once_with(
+            call_id, reason="local_asterisk_farewell", call_outcome="agent_hangup",
+            audio_already_drained=True,
+        )
+    assert not engine._local_asterisk_farewell_pending
+    assert not engine._ari_playback_waiters

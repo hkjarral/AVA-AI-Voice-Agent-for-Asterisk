@@ -29,8 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   boundary, which also includes stopped/canceled playback, without claiming
   uninterrupted or audible delivery. Bound the ARI playback-start request so
   a stalled request cannot hold the farewell gate for minutes. Preserve
-  `agent_hangup` in Call History when the Asterisk farewell initiates termination
-  (#786).
+  `agent_hangup` in lifecycle logs and post-call tools when the Asterisk farewell
+  initiates termination. Keep farewell ownership across Local listener replacement
+  while allowing caller teardown to cancel its finalizer (#786).
 - Cancel local transcription on HTTP disconnect and reap decoder/worker work
   before releasing batch admission. Give full LocalProvider setup and greetings
   live-call priority before the first incoming audio frame (#784).

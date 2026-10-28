@@ -8689,6 +8689,35 @@ class Engine:
         finally:
             self._ari_playback_waiters.pop(playback_id, None)
 
+    def _release_local_asterisk_farewell(self, call_id: str) -> None:
+        remaining = self._local_asterisk_farewell_pending.get(call_id, 0) - 1
+        if remaining > 0:
+            self._local_asterisk_farewell_pending[call_id] = remaining
+        else:
+            self._local_asterisk_farewell_pending.pop(call_id, None)
+
+    async def _finish_local_asterisk_farewell(self, call_id: str, channel_id: str) -> None:
+        """Own the selected farewell across provider-listener replacement.
+
+        The provider callback shields this call-owned task. Call cleanup still
+        cancels it through _call_bg_tasks when the caller has already left.
+        """
+        try:
+            playback_state = await self._play_local_asterisk_farewell(call_id, channel_id)
+            if playback_state == "done":
+                logger.info("Asterisk goodbye playback finished", call_id=call_id, state=playback_state)
+            else:
+                logger.warning("Goodbye playback not confirmed", call_id=call_id, state=playback_state)
+            logger.info("✅ Farewell wait complete", call_id=call_id)
+            await self._terminate_call_after_audio(
+                call_id,
+                reason="local_asterisk_farewell",
+                call_outcome="agent_hangup",
+                audio_already_drained=True,
+            )
+        finally:
+            self._release_local_asterisk_farewell(call_id)
+
     async def _put_pipeline_stream_chunk(
         self,
         call_id: str,
@@ -15512,7 +15541,7 @@ class Engine:
                         self._local_asterisk_farewell_pending[call_id] = (
                             self._local_asterisk_farewell_pending.get(call_id, 0) + 1
                         )
-                    
+                    asterisk_farewell_task = None
                     try:
                         result = await self._execute_provider_tool(
                             call_id=call_id,
@@ -15592,34 +15621,30 @@ class Engine:
                                 asyncio.create_task(_hangup_fallback())
                                 break
                             else:
-                                playback_state = await self._play_local_asterisk_farewell(
-                                    call_id, session.caller_channel_id,
+                                asterisk_farewell_task = self._fire_and_forget_for_call(
+                                    call_id,
+                                    self._finish_local_asterisk_farewell(call_id, session.caller_channel_id),
+                                    name=f"local-asterisk-farewell-{call_id}",
                                 )
-                                if playback_state == "done":
-                                    logger.info(
-                                        "Asterisk goodbye playback finished",
-                                        call_id=call_id,
-                                        state=playback_state,
-                                    )
-                                else:
-                                    logger.warning(
-                                        "Goodbye playback not confirmed",
-                                        call_id=call_id,
-                                        state=playback_state,
-                                    )
-                            
-                            logger.info("✅ Farewell wait complete", call_id=call_id)
-
-                            await self._terminate_call_after_audio(
-                                call_id,
-                                reason="local_asterisk_farewell",
-                                call_outcome="agent_hangup",
-                                audio_already_drained=True,
-                            )
+                                await asyncio.shield(asterisk_farewell_task)
                             break
                         elif result.get("transferred"):
                             # Transfer already handled
                             break
+                    except asyncio.CancelledError:
+                        # A listener can also be replaced after the tool has
+                        # published terminal intent but before returning its
+                        # result. Preserve that accepted intent unless caller
+                        # teardown already owns cleanup.
+                        if (asterisk_farewell and asterisk_farewell_task is None
+                                and getattr(session, "cleanup_after_tts", False)
+                                and not getattr(session, "cleanup_in_progress", False)):
+                            asterisk_farewell_task = self._fire_and_forget_for_call(
+                                call_id,
+                                self._finish_local_asterisk_farewell(call_id, session.caller_channel_id),
+                                name=f"local-asterisk-farewell-{call_id}",
+                            )
+                        raise
                     except Exception as e:
                         logger.error(
                             "❌ Local tool execution failed",
@@ -15629,12 +15654,10 @@ class Engine:
                             exc_info=True,
                         )
                     finally:
-                        if asterisk_farewell:
-                            remaining = self._local_asterisk_farewell_pending.get(call_id, 0) - 1
-                            if remaining > 0:
-                                self._local_asterisk_farewell_pending[call_id] = remaining
-                            else:
-                                self._local_asterisk_farewell_pending.pop(call_id, None)
+                        # Once created, the call-owned task releases its own
+                        # reservation, even if this provider listener is canceled.
+                        if asterisk_farewell and asterisk_farewell_task is None:
+                            self._release_local_asterisk_farewell(call_id)
             
             elif etype == "transcript":
                 # User speech transcript from provider (ElevenLabs, etc.)
