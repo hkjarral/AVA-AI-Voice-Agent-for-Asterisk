@@ -9,6 +9,8 @@ import json
 import os
 import re
 import secrets
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import websockets
@@ -153,63 +155,52 @@ async def _read_bounded(file: UploadFile) -> bytes:
 
 async def _decode_to_pcm16(audio: bytes) -> bytes:
     """Decode with an output ceiling enforced while FFmpeg is still running."""
-    process = await asyncio.create_subprocess_exec(
-        imageio_ffmpeg.get_ffmpeg_exe(),
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-nostdin",
-        "-i",
-        "pipe:0",
-        "-f",
-        "s16le",
-        "-acodec",
-        "pcm_s16le",
-        "-ac",
-        "1",
-        "-ar",
-        "16000",
-        "pipe:1",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    assert process.stdin is not None and process.stdout is not None
-
-    async def write_audio() -> None:
+    # Some M4A/MP4 files keep their index at the end and cannot be read from a pipe.
+    # The private temporary directory and its contents are removed on every exit path.
+    with tempfile.TemporaryDirectory(prefix="ava-stt-") as temp_dir:
+        source = Path(temp_dir) / "audio"
+        await asyncio.to_thread(source.write_bytes, audio)
+        process = await asyncio.create_subprocess_exec(
+            imageio_ffmpeg.get_ffmpeg_exe(),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-i",
+            str(source),
+            "-f",
+            "s16le",
+            "-acodec",
+            "pcm_s16le",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "pipe:1",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        assert process.stdout is not None
+        output = bytearray()
         try:
-            process.stdin.write(audio)
-            await process.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+            async with asyncio.timeout(_DECODE_TIMEOUT_SECONDS):
+                while chunk := await process.stdout.read(64 * 1024):
+                    if len(output) + len(chunk) > _MAX_PCM_BYTES:
+                        raise HTTPException(status_code=413, detail="decoded_audio_too_large")
+                    output.extend(chunk)
+                await process.wait()
+        except TimeoutError as exc:
+            raise HTTPException(status_code=422, detail="audio_decode_timeout") from exc
         finally:
-            process.stdin.close()
-
-    writer = asyncio.create_task(write_audio())
-    output = bytearray()
-    try:
-        async with asyncio.timeout(_DECODE_TIMEOUT_SECONDS):
-            while chunk := await process.stdout.read(64 * 1024):
-                if len(output) + len(chunk) > _MAX_PCM_BYTES:
-                    raise HTTPException(status_code=413, detail="decoded_audio_too_large")
-                output.extend(chunk)
-            await writer
-            await process.wait()
-    except TimeoutError as exc:
-        raise HTTPException(status_code=422, detail="audio_decode_timeout") from exc
-    finally:
-        if process.returncode is None:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-            await process.wait()
-        if not writer.done():
-            writer.cancel()
-        await asyncio.gather(writer, return_exceptions=True)
-    if process.returncode != 0 or not output:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="unsupported_or_invalid_audio")
-    return bytes(output)
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                await process.wait()
+        if process.returncode != 0 or not output:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="unsupported_or_invalid_audio")
+        return bytes(output)
 
 
 async def _transcribe_pcm16(pcm16: bytes, language: str | None) -> dict[str, Any]:

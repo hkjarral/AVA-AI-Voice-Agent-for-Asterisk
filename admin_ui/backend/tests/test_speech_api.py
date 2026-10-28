@@ -2,6 +2,7 @@ import base64
 import io
 import json
 import os
+import subprocess
 import sys
 import wave
 from pathlib import Path
@@ -186,6 +187,25 @@ async def test_real_decoder_and_expansion_ceiling(monkeypatch):
     with pytest.raises(HTTPException) as oversized:
         await speech._decode_to_pcm16(_wav_bytes())
     assert oversized.value.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_m4a_with_index_at_end_is_seekable(tmp_path):
+    source = tmp_path / "source.m4a"
+    subprocess.run(
+        [
+            speech.imageio_ffmpeg.get_ffmpeg_exe(),
+            "-hide_banner", "-loglevel", "error", "-y",
+            "-i", "pipe:0", "-c:a", "aac", str(source),
+        ],
+        input=_wav_bytes(),
+        capture_output=True,
+        check=True,
+    )
+    encoded = source.read_bytes()
+    assert encoded.index(b"mdat") < encoded.index(b"moov")
+    pcm16 = await speech._decode_to_pcm16(encoded)
+    assert len(pcm16) >= 30000
 
 
 @pytest.mark.asyncio
