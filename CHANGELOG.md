@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add an authenticated, OpenAI-compatible local transcription API with
+  bounded multipart uploads, killable FFmpeg decoding, and a one-job isolated
+  STT worker. Live-call sessions take priority and preempt batch work; backend
+  failures remain errors rather than successful empty transcripts (#784).
+
 ### Changed
 
 - Present Calendly as an optional provider and document appointment booking through
@@ -18,7 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Prevent an older Local AI `AgentAudioDone` from hanging up an Asterisk-owned
   farewell before `sound:goodbye` finishes. Reserve the farewell before tool
   execution, match its exact ARI playback ID and terminal state, and report
-  missing or failed playback as unconfirmed rather than played (#786).
+  missing or failed playback as unconfirmed. Treat ARI `done` as a terminal
+  boundary, which also includes stopped/canceled playback, without claiming
+  uninterrupted or audible delivery (#786).
+- Cancel local transcription on HTTP disconnect and reap decoder/worker work
+  before releasing batch admission. Give full LocalProvider setup and greetings
+  live-call priority before the first incoming audio frame (#784).
+- Restrict transcription uploads to approved audio demuxers and local file input
+  so crafted playlists cannot recursively reopen the uploaded file (#784).
+
 - Backfill Calendly's durable privacy marker when opening pre-marker journals and
   preserve it before disconnect removes credentials. Individual and retention
   deletion keep erasure retries across temporary journal absence and restart,

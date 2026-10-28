@@ -1,6 +1,6 @@
 import asyncio
 import types
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -151,7 +151,11 @@ async def test_local_farewell_fallback_clears_boundary_and_marks_agent_hangup():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("state", ["done", "failed", "stopped"])
+@pytest.mark.parametrize("state", [
+    pytest.param("done", id="completed-stopped-or-canceled"),
+    "failed",
+    pytest.param("", id="missing-state"),
+])
 async def test_asterisk_farewell_waits_for_its_exact_playback_state(state):
     engine = Engine.__new__(Engine)
     engine._ari_playback_waiters = {}
@@ -179,7 +183,7 @@ async def test_asterisk_farewell_waits_for_its_exact_playback_state(state):
         on_playback_finished=AsyncMock()
     )
 
-    assert await engine._play_local_asterisk_farewell("call", "caller") == state
+    assert await engine._play_local_asterisk_farewell("call", "caller") == (state or "unknown")
     assert playback_ids[0].startswith("local-farewell-")
     assert not engine._ari_playback_waiters
 
@@ -200,7 +204,7 @@ async def test_asterisk_farewell_unconfirmed_playback_cleans_waiter(started, exp
 
 
 @pytest.mark.asyncio
-async def test_old_local_audio_done_cannot_preempt_asterisk_farewell():
+async def test_old_local_audio_done_cannot_preempt_asterisk_farewell(monkeypatch):
     engine = _build_engine()
     call_id = "call-farewell-race"
     session = CallSession(call_id=call_id, caller_channel_id="caller")
@@ -208,6 +212,8 @@ async def test_old_local_audio_done_cannot_preempt_asterisk_farewell():
     session.last_transcript = "goodbye"
     await engine.session_store.upsert_call(session)
     engine._terminate_call_after_audio = AsyncMock(return_value=True)
+    log = Mock()
+    monkeypatch.setattr("src.engine.logger", log)
 
     async def stale_audio_done():
         await engine.on_provider_event(
@@ -241,6 +247,82 @@ async def test_old_local_audio_done_cannot_preempt_asterisk_farewell():
         call_id, reason="local_asterisk_farewell", audio_already_drained=True
     )
     assert call_id not in engine._local_asterisk_farewell_pending
+    # The real ARI payload is also "done" for stopped/canceled playback.
+    # A terminal event must never be promoted to proof of audible delivery.
+    assert any(args.args[0] == "Asterisk goodbye playback finished" for args in log.info.call_args_list)
+    assert not any("Goodbye sound played" in str(args) for args in log.info.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_asterisk_farewell_wait_cleans_exact_id():
+    engine = _build_engine()
+    called = asyncio.Event()
+
+    async def start(*args):
+        called.set()
+        return True
+
+    engine.ari_client.play_media_on_channel_with_id = start
+    task = asyncio.create_task(engine._play_local_asterisk_farewell("call", "caller"))
+    await asyncio.wait_for(called.wait(), 1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not engine._ari_playback_waiters
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raises", [False, True])
+async def test_rejected_or_failed_local_hangup_releases_reservation(raises):
+    engine = _build_engine()
+    session = CallSession(call_id="call", caller_channel_id="caller", provider_name="local")
+    session.last_transcript = "goodbye"
+    await engine.session_store.upsert_call(session)
+
+    async def reject(**kwargs):
+        assert engine._local_asterisk_farewell_pending["call"] == 1
+        if raises:
+            raise RuntimeError("tool failed")
+        return {"status": "error", "message": "blocked"}
+
+    engine._execute_provider_tool = reject
+    engine._play_local_asterisk_farewell = AsyncMock()
+    engine._terminate_call_after_audio = AsyncMock()
+    await engine.on_provider_event({
+        "type": "ToolCall", "call_id": "call",
+        "tool_calls": [{"id": "one", "name": "hangup_call", "parameters": {}}],
+    })
+    assert not engine._local_asterisk_farewell_pending
+    engine._play_local_asterisk_farewell.assert_not_awaited()
+    engine._terminate_call_after_audio.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_transfer_claim_during_asterisk_farewell_prevents_terminal_hangup():
+    engine = _build_engine()
+    session = CallSession(call_id="call", caller_channel_id="caller", provider_name="local")
+    session.last_transcript = "goodbye"
+    await engine.session_store.upsert_call(session)
+
+    async def hangup(**kwargs):
+        session.cleanup_after_tts = True
+        return {"status": "success", "will_hangup": True}
+
+    async def play(channel_id, media_uri, playback_id):
+        session.pending_deferred_transfer = {"id": "pending", "kind": "transfer"}
+        await engine._on_playback_finished({"playback": {"id": playback_id, "state": "done"}})
+        return True
+
+    engine._execute_provider_tool = hangup
+    engine.ari_client.play_media_on_channel_with_id = play
+    engine.ari_client.hangup_channel = AsyncMock()
+    await engine.on_provider_event({
+        "type": "ToolCall", "call_id": "call",
+        "tool_calls": [{"id": "one", "name": "hangup_call", "parameters": {}}],
+    })
+    engine.ari_client.hangup_channel.assert_not_awaited()
+    assert not engine._local_asterisk_farewell_pending
+    assert not engine._ari_playback_waiters
 
 
 @pytest.mark.asyncio

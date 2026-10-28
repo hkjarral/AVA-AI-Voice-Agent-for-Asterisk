@@ -8671,6 +8671,9 @@ class Engine:
                 playback = await asyncio.wait_for(waiter, timeout=timeout_sec)
             except asyncio.TimeoutError:
                 return "timeout"
+            # Asterisk maps complete, stopped and canceled playback to "done".
+            # This establishes the selected playback's terminal boundary, not
+            # uninterrupted playback or what the caller actually heard.
             state = str(playback.get("state") or "").strip().lower()
             return state or "unknown"
         except Exception:
@@ -15586,7 +15589,11 @@ class Engine:
                                     call_id, session.caller_channel_id,
                                 )
                                 if playback_state == "done":
-                                    logger.info("✅ Goodbye sound played", call_id=call_id)
+                                    logger.info(
+                                        "Asterisk goodbye playback finished",
+                                        call_id=call_id,
+                                        state=playback_state,
+                                    )
                                 else:
                                     logger.warning(
                                         "Goodbye playback not confirmed",
