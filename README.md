@@ -104,7 +104,8 @@ separate process, with no waiting queue and a 180-second worker deadline. A
 live-call session rejects new batch work and preempts a running batch.
 Disconnection or timeout cancels the worker; a lost HTTP response is not
 evidence of a transcript. The Admin wait defaults to 240 seconds
-(`AAVA_SPEECH_STT_TIMEOUT_SECONDS`, clamped to 200-600).
+(`AAVA_SPEECH_STT_TIMEOUT_SECONDS`, clamped to 10-600). A shorter API timeout
+cancels its WebSocket request and reaps the isolated batch worker.
 
 Batch transcription uses the configured local Vosk, Faster-Whisper or
 Whisper.cpp backend; unsupported or unloaded backends fail explicitly, with no

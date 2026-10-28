@@ -217,7 +217,7 @@ async def _transcribe_pcm16(pcm16: bytes, language: str | None) -> dict[str, Any
     ws_url = get_setting("HEALTH_CHECK_LOCAL_AI_URL", "ws://127.0.0.1:8765")
     token = _configured_secret("LOCAL_WS_AUTH_TOKEN")
     try:
-        timeout = min(max(float(_configured_secret("AAVA_SPEECH_STT_TIMEOUT_SECONDS") or "240"), 200.0), 600.0)
+        timeout = min(max(float(_configured_secret("AAVA_SPEECH_STT_TIMEOUT_SECONDS") or "240"), 10.0), 600.0)
     except ValueError as exc:
         raise HTTPException(status_code=503, detail="invalid_transcription_timeout_config") from exc
     request_id = secrets.token_hex(16)
