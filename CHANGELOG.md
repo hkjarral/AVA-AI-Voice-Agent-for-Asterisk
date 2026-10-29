@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   honor `--rebuild=all` at the same commit, and recover Compose/Bake host-network
   entitlement failures with an explicit, scoped Bake build. Keep active-call
   checks and stopped Local AI behavior during recovery (#790).
+- Audit upgrade/rollback recovery: build images before recreation, fail closed
+  on unknown active-call state, recheck calls after long builds, preserve
+  interrupted branch checkouts, and archive pending actions after rollback.
+  Use coherent host SQLite snapshots instead of copying live WAL sidecars;
+  reject unmapped database overrides and reused backup IDs. Add a packaged/manual
+  Compose build helper,
+  explicit Buildx dependency, and complete manual/release recovery guidance (#790).
 
 - Update the Google modular LLM default and Admin UI suggestions to Gemini 3.8
   Flash, replacing retired Gemini 1.5 defaults. Omit unsupported temperature and

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -63,7 +64,7 @@ func TestUpdateRetriesFailedDockerActionsAtSameCommit(t *testing.T) {
 	normalRun := runDockerCommandForUpdate
 	runDockerCommandForUpdate = func(name string, args ...string) (string, error) {
 		out, err := normalRun(name, args...)
-		if strings.Join(args, " ") == "compose up -d --build ai_engine" {
+		if strings.Join(args, " ") == "compose build ai_engine" {
 			// A fresh recovery record must already exist when Docker starts.
 			pending, readErr := readPendingDockerActions(root)
 			if readErr != nil || pending == nil || pending.TargetSHA != target {
@@ -122,7 +123,7 @@ func TestUpdateRetriesFailedDockerActionsAtSameCommit(t *testing.T) {
 	if err := runUpdate(); err != nil {
 		t.Fatal(err)
 	}
-	if !commandSeen(*commands, "docker compose up -d --build ai_engine") {
+	if !commandSeen(*commands, "docker compose up -d --no-build --pull never ai_engine") {
 		t.Fatalf("retry skipped rebuild: %v", *commands)
 	}
 	if _, err := os.Stat(pendingDockerPath(root)); !os.IsNotExist(err) {
@@ -146,7 +147,7 @@ func TestUpdateRebuildAllAtSameCommit(t *testing.T) {
 	if err := runUpdate(); err != nil {
 		t.Fatal(err)
 	}
-	if !commandSeen(*commands, "docker compose up -d --build ai_engine") {
+	if !commandSeen(*commands, "docker compose up -d --no-build --pull never ai_engine") {
 		t.Fatalf("explicit rebuild-all ignored: %v", *commands)
 	}
 }
@@ -155,6 +156,7 @@ func TestPendingSameCommitStillGuardsActiveCalls(t *testing.T) {
 	root, _, target := initRecoveryUpdateRepo(t)
 	runLocalGit(t, "reset", "--hard", target)
 	commands := withDockerActionState(t, "ai_engine\n", map[string]bool{})
+	queryActiveCallsForUpdate = queryActiveCalls
 	if err := os.MkdirAll(filepath.Dir(pendingDockerPath(root)), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +231,7 @@ func TestRecoveryRestoresPreviouslyRunningDeletedLocalAI(t *testing.T) {
 	if err := applyDockerActions(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !commandSeen(*commands, "docker compose up -d --build local_ai_server") {
+	if !commandSeen(*commands, "docker compose up -d --no-build --pull never local_ai_server") {
 		t.Fatalf("recovery dropped previously running Local AI: %v", *commands)
 	}
 }
@@ -338,7 +340,7 @@ func TestHostNetworkBuildFallback(t *testing.T) {
 			runDockerCommandForUpdate = func(name string, args ...string) (string, error) {
 				out, err := originalRun(name, args...)
 				command := strings.Join(args, " ")
-				if command == "compose up -d --build ai_engine" || command == "compose build local_ai_server" {
+				if command == "compose build ai_engine" || command == "compose build local_ai_server" {
 					return buildOutput, buildErr
 				}
 				if scenario == "recreate-failure" && command == "compose up -d --no-build --pull never ai_engine" {
@@ -387,6 +389,178 @@ func TestHostNetworkBuildFallback(t *testing.T) {
 			}
 			if scenario == "stopped-local" && commandContainingSeen(*commands, "compose up", service) {
 				t.Fatalf("fallback started stopped Local AI: %v", *commands)
+			}
+		})
+	}
+}
+
+func TestComposeReconciliationWaitsForEveryImage(t *testing.T) {
+	commands := withDockerActionState(t, "ai_engine\n", map[string]bool{})
+	ctx := recoveryContext(t.TempDir(), "", "")
+	ctx.composeChanged = true
+	ctx.servicesToRebuild["ai_engine"] = true
+	originalRun := runDockerCommandForUpdate
+	runDockerCommandForUpdate = func(name string, args ...string) (string, error) {
+		out, err := originalRun(name, args...)
+		if strings.Join(args, " ") == "compose build ai_engine" {
+			return "", errors.New("new dependency failed")
+		}
+		return out, err
+	}
+	if err := applyDockerActions(ctx); err == nil {
+		t.Fatal("build failure must fail the update")
+	}
+	if commandContainingSeen(*commands, "compose up") || commandContainingSeen(*commands, "compose restart") {
+		t.Fatalf("failed build changed existing containers: %v", *commands)
+	}
+}
+
+func TestUpdateRefusesUnknownHealthBeforeCheckout(t *testing.T) {
+	_, base, _ := initRecoveryUpdateRepo(t)
+	commands := withDockerActionState(t, "ai_engine\n", map[string]bool{})
+	t.Setenv("AAVA_UPDATE_FORCE_ACTIVE_CALLS", "false")
+	queryActiveCallsForUpdate = func() (int, bool, error) { return 0, false, errors.New("health timeout") }
+	updateBackupID = "unreachable-health"
+	if err := runUpdate(); err == nil || !strings.Contains(err.Error(), "cannot confirm active-call state") {
+		t.Fatalf("unknown health allowed checkout: %v", err)
+	}
+	if head, _ := gitRevParse("HEAD"); head != base {
+		t.Fatal("checkout advanced with unknown active-call state")
+	}
+	if commandContainingSeen(*commands, "compose build") || commandContainingSeen(*commands, "compose up") {
+		t.Fatalf("unknown health allowed Docker changes: %v", *commands)
+	}
+}
+
+func TestCallsStartingDuringBuildDeferRecreationUntilRetry(t *testing.T) {
+	root, _, target := initRecoveryUpdateRepo(t)
+	commands := withDockerActionState(t, "ai_engine\n", map[string]bool{})
+	t.Setenv("AAVA_UPDATE_FORCE_ACTIVE_CALLS", "false")
+	probes := 0
+	queryActiveCallsForUpdate = func() (int, bool, error) {
+		probes++
+		if probes > 1 {
+			return 2, true, nil
+		}
+		return 0, true, nil
+	}
+	updateBackupID = "calls-during-build"
+	if err := runUpdate(); err == nil || !strings.Contains(err.Error(), "2 active call(s)") {
+		t.Fatalf("late active calls did not defer recreation: %v", err)
+	}
+	if head, _ := gitRevParse("HEAD"); head != target {
+		t.Fatal("fixture did not reach the post-checkout stage")
+	}
+	if commandContainingSeen(*commands, "compose up") || commandContainingSeen(*commands, "compose restart") {
+		t.Fatalf("late active calls were interrupted: %v", *commands)
+	}
+	if pending, err := readPendingDockerActions(root); err != nil || pending == nil {
+		t.Fatal("deferred recreation must retain pending work")
+	}
+	queryActiveCallsForUpdate = func() (int, bool, error) { return 0, true, nil }
+	updateBackupID = "calls-drained"
+	if err := runUpdate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPendingRecoveryAcceptsInterruptedBranchCheckout(t *testing.T) {
+	root := t.TempDir()
+	base, intermediate, target := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
+	if err := os.MkdirAll(filepath.Dir(pendingDockerPath(root)), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx := recoveryContext(root, base, target)
+	ctx.checkoutSHA = intermediate
+	ctx.servicesToRebuild["ai_engine"] = true
+	if err := savePendingDockerActions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	withDockerActionState(t, "ai_engine\n", map[string]bool{})
+	withUpdateRebuildMode(t, rebuildAuto)
+	ctx = recoveryContext(root, intermediate, target)
+	if err := planDockerActions(ctx); err != nil {
+		t.Fatalf("interruption between branch checkout and fast-forward must be recoverable: %v", err)
+	}
+	if !ctx.servicesToRebuild["ai_engine"] {
+		t.Fatal("intermediate checkout recovery lost pending rebuilds")
+	}
+}
+
+func TestComposeOnlyBuildChangesRebuildEligibleServices(t *testing.T) {
+	withUpdateRebuildMode(t, rebuildAuto)
+	withDockerActionState(t, "ai_engine\n", map[string]bool{})
+	withLocalAIUpdateState(t, localAIUpdateState{selectionKnown: true, existingKnown: true})
+	ctx := recoveryContext(t.TempDir(), "", "")
+	ctx.changedFiles = []string{"docker-compose.yml"}
+	if err := planDockerActions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !ctx.servicesToRebuild["ai_engine"] || ctx.servicesToRebuild["admin_ui"] || ctx.servicesToRebuild["local_ai_server"] {
+		t.Fatalf("Compose build changes must honor UI/optional-service filters: %#v", ctx.servicesToRebuild)
+	}
+}
+
+func TestHealthProbeRejectsMissingOrInvalidCounts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a POSIX Docker CLI shim")
+	}
+	chdirTemp(t)
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte("#!/bin/sh\nprintf '%s' \"$AAVA_TEST_HEALTH_JSON\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, payload := range []string{`{}`, `{"active_calls":null}`, `{"active_calls":-1}`, `{"active_calls":1.5}`, `{"active_calls":true}`} {
+		t.Setenv("AAVA_TEST_HEALTH_JSON", payload)
+		if _, _, err := queryActiveCalls(); err == nil {
+			t.Fatalf("health payload must fail closed: %s", payload)
+		}
+	}
+}
+
+func TestEngineStartingDuringBuildIsRecheckedBeforeRecovery(t *testing.T) {
+	commands := withDockerActionState(t, "", map[string]bool{})
+	ctx := recoveryContext(t.TempDir(), "", "")
+	ctx.servicesToRebuild["ai_engine"] = true
+	ctx.runningBeforeUpdate = map[string]bool{"ai_engine": true}
+	originalRun := runDockerCommandForUpdate
+	statusReads := 0
+	runDockerCommandForUpdate = func(name string, args ...string) (string, error) {
+		out, err := originalRun(name, args...)
+		if strings.Join(args, " ") == "compose ps --services --status running" {
+			statusReads++
+			if statusReads > 1 {
+				return "ai_engine\n", nil
+			}
+		}
+		return out, err
+	}
+	t.Setenv("AAVA_UPDATE_FORCE_ACTIVE_CALLS", "false")
+	queryActiveCallsForUpdate = func() (int, bool, error) { return 1, true, nil }
+	if err := applyDockerActions(ctx); err == nil || !strings.Contains(err.Error(), "1 active call(s)") {
+		t.Fatalf("engine starting during build bypassed the guard: %v", err)
+	}
+	if commandContainingSeen(*commands, "compose up") {
+		t.Fatal("recovery interrupted a call accepted by the newly started engine")
+	}
+}
+
+func TestActiveCallsGuardRunningLocalAIButAllowBuildOnlyRecovery(t *testing.T) {
+	for _, running := range []bool{true, false} {
+		t.Run(fmt.Sprintf("local-running-%t", running), func(t *testing.T) {
+			initRecoveryUpdateRepo(t)
+			withDockerActionState(t, "ai_engine\n", map[string]bool{"local_ai_server": true})
+			t.Setenv("AAVA_UPDATE_FORCE_ACTIVE_CALLS", "false")
+			probed := false
+			queryActiveCallsForUpdate = func() (int, bool, error) { probed = true; return 1, true, nil }
+			ctx := recoveryContext(t.TempDir(), "", "")
+			ctx.servicesToRebuild["local_ai_server"] = true
+			ctx.localAIExisting = true
+			ctx.currentlyRunning = map[string]bool{"ai_engine": true, "local_ai_server": running}
+			err := preflightDockerChangeGuard(ctx)
+			if (err != nil) != running || probed != running {
+				t.Fatalf("unexpected Local AI guard outcome: running=%t probed=%t err=%v", running, probed, err)
 			}
 		})
 	}

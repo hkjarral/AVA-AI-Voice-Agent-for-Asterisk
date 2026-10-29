@@ -42,7 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && chmod a+r /etc/apt/keyrings/docker.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo \"$VERSION_CODENAME\") stable" > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
+    && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin docker-buildx-plugin \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -52,6 +52,7 @@ RUN python3 -c "import sqlite3; assert hasattr(sqlite3.Connection, 'backup')"
 
 COPY --from=agent-builder /out/agent /usr/local/bin/agent
 COPY updater/run.sh /usr/local/bin/aava-update-runner
-RUN chmod +x /usr/local/bin/aava-update-runner
+COPY scripts/compose-build.sh /usr/local/bin/aava-compose-build
+RUN chmod +x /usr/local/bin/aava-update-runner /usr/local/bin/aava-compose-build
 
 ENTRYPOINT ["/usr/local/bin/aava-update-runner"]

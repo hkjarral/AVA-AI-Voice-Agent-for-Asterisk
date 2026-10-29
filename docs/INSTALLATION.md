@@ -421,13 +421,21 @@ If preflight reports warnings or failures, resolve them first, then re-run prefl
 The updater normally performs this step. If you are recovering manually:
 
 ```bash
-docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui ai_engine
+./scripts/compose-build.sh admin_ui ai_engine &&
+  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui ai_engine
 ```
+
+Builds finish before recreation. If the selected release predates this helper,
+use the [explicit Bake recovery procedure](CLI_TOOLS_GUIDE.md#manual-builds-on-affected-composebuildx-versions).
+Use the same Compose files/project for both steps, preserve coherent SQLite and
+managed-secret backups, and wait for active calls to end. A successful `git pull`
+or a changed Git version does not prove that containers were rebuilt.
 
 If your configuration requires local inference:
 
 ```bash
-docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate local_ai_server
+./scripts/compose-build.sh local_ai_server &&
+  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate local_ai_server
 ```
 
 ### 5) Verify the upgrade

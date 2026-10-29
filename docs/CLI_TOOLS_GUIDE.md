@@ -178,6 +178,9 @@ shows pending actions even when Git is already up to date. Retry the same ref wi
 still apply. A service stopped by a failed recreation can be restarted, while an
 installed-but-stopped Local AI service remains build-only. The record is removed
 after Docker actions succeed, before post-update diagnostics.
+Backups are created in fresh directories and never overwritten by a retry. If
+you supplied `--backup-id`, choose a new ID for another attempt and retain the
+original pre-upgrade backup. GUI jobs already use distinct job identifiers.
 
 An incompatible rebuild/UI exclusion, malformed record, or unrelated manual
 branch change stops recovery with guidance. Do not delete the record merely to
@@ -195,6 +198,99 @@ services using `--no-build --pull never`. Unrelated build failures do not activa
 this fallback, and no additional entitlement is granted. Export/Bake failures
 retain the pending actions and report which stage failed. Host networking for
 builds is separate from runtime telephony networking.
+
+Every replacement image is built before Compose reconciliation or recreation.
+Compose file changes can change build inputs, so automatic mode also rebuilds
+eligible services for those changes. A running engine's active-call state must be
+known before checkout and again after building, before runtime changes. A failed
+probe or calls arriving during the build defer the update; pending actions allow
+a retry once health is restored or calls end. A stopped engine remains recoverable.
+`AAVA_UPDATE_FORCE_ACTIVE_CALLS=true` is an explicit operator override, not a
+recommended routine upgrade setting.
+Use the PBX's existing maintenance/routing controls to prevent new calls and
+drain existing calls during rollout. Health probes observe call state; they do
+not lock call admission. Resume normal routing after readiness and a test call.
+
+The host SQLite fallback uses Python 3.7+ and SQLite's online backup API, even if
+the engine is stopped: Admin UI may still be writing. Missing Python, invalid
+databases, or failed snapshots stop the update before checkout. Automatic backups
+currently cover the default Agent/History paths. An `AGENTS_DB_PATH` or
+`CALL_HISTORY_DB_PATH` relocation stops automatic updates rather than silently
+backing up the wrong file. Use the manual upgrade path with coherent snapshots of
+the actual configured files and bind mounts; never temporarily unset an override
+to bypass this check.
+
+For GUI rollback, choose the original job whose pre-update revision is the desired
+baseline, not a later retry already at the newer commit. The updater image embeds
+the compatible build helper so rollback to older source still works. Successful
+rollback archives pending forward actions under `.agent/updates/rolled-back/`;
+failed rollback keeps them for another rollback attempt. For a manual rollback,
+retain the journal until the restored revision's builds/recreations and health
+checks succeed, then move it aside as recovery evidence. Operator databases and
+managed credentials are not automatically rewound; follow the
+[integration rollback boundaries](INTEGRATION_BACKUPS.md).
+
+### Manual builds on affected Compose/Buildx versions
+
+After recording local changes, taking coherent private backups, and fetching or
+fast-forwarding to the intended release, use explicit services. With Docker access
+in your shell, from the checkout root:
+
+```bash
+./scripts/compose-build.sh ai_engine admin_ui &&
+  docker compose -p asterisk-ai-voice-agent up -d \
+    --no-build --pull never --force-recreate ai_engine admin_ui &&
+  agent check
+```
+
+The helper honors `COMPOSE_FILE` and `COMPOSE_PROJECT_NAME`; use the same settings
+for the build and recreation. Build Local AI only when it is installed/selected,
+and leave a stopped Local AI service stopped. Recreate during a window with no
+active calls; direct Docker commands do not enforce the CLI's call guard.
+
+For older checkouts without the helper, build with the explicit Bake grant:
+
+```bash
+( set -o pipefail
+  docker compose -p asterisk-ai-voice-agent build --print ai_engine admin_ui |
+    docker buildx bake --file - --allow=network.host --load
+) && docker compose -p asterisk-ai-voice-agent up -d \
+  --no-build --pull never --force-recreate ai_engine admin_ui
+```
+
+`--allow` belongs to `docker buildx bake`, not `docker compose up`. Verify the Git
+revision, `agent version`, and Docker plugin versions separately. This recovery
+fix is newer than v7.7.0: installing v7.7.0 again does not install it. A fixed host
+CLI or a rebuilt/replaced updater image containing the fix is required for
+automatic recovery; pulling source does not replace those binaries. Until a
+release containing the fix is installed, use the manual procedure above. After
+recreation, run `agent check`, hard-refresh Admin UI, verify the running services,
+and make a test call before considering the upgrade complete.
+
+For relocated databases, map each configured container path to its real host file
+and make a coherent snapshot before the manual upgrade. Replace both paths below,
+use a new private destination, and repeat for every configured Agent/History/
+integration database; retain managed secrets and configuration separately:
+
+```bash
+( umask 077
+  python3 - /actual/host/path/agents.db /private/backup/agents.db <<'PY'
+import pathlib, sqlite3, sys
+source, destination = map(pathlib.Path, sys.argv[1:])
+if destination.exists():
+    raise RuntimeError("Choose a new backup destination")
+destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+src = sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+dst = sqlite3.connect(str(destination))
+try:
+    src.backup(dst)
+    assert dst.execute("PRAGMA quick_check").fetchone() == ("ok",)
+finally:
+    dst.close()
+    src.close()
+PY
+)
+```
 
 When reporting a failure, include `docker compose version`, `docker buildx version`,
 the selected ref, and sanitized update output. Versions must come from the

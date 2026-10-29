@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -122,10 +124,8 @@ func TestConfiguredHealthPortDefault(t *testing.T) {
 	}
 }
 
-// TestBackupSQLiteHostCopy proves the stopped-engine fallback copies the DB and
-// any present -wal/-shm sidecars while skipping absent sidecars. This is the path
-// taken when ai_engine is not running, so a stopped/unhealthy container no longer
-// aborts the update (Finding 1 / Codex P2 + CodeRabbit).
+// A stopped engine does not imply a quiescent database: keep another writer's
+// WAL open and prove that the host backup includes its committed data coherently.
 func TestBackupSQLiteHostCopy(t *testing.T) {
 	chdirTemp(t)
 	backupRoot := t.TempDir()
@@ -134,35 +134,104 @@ func TestBackupSQLiteHostCopy(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	dbContent := []byte("SQLite format 3\x00")
-	walContent := []byte("wal-bytes")
-	if err := os.WriteFile(rel, dbContent, 0o644); err != nil {
-		t.Fatalf("write db: %v", err)
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("Python with SQLite is required")
 	}
-	// Present WAL sidecar should be copied; SHM is absent and must be skipped.
-	if err := os.WriteFile(rel+"-wal", walContent, 0o644); err != nil {
-		t.Fatalf("write wal: %v", err)
+	writer := exec.Command(python, "-c", `
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.execute("PRAGMA journal_mode=WAL")
+db.execute("CREATE TABLE state(value TEXT)")
+db.execute("INSERT INTO state VALUES ('committed in live WAL')")
+db.commit()
+print("ready", flush=True)
+sys.stdin.readline()
+db.close()
+`, rel)
+	input, _ := writer.StdinPipe()
+	output, _ := writer.StdoutPipe()
+	if err := writer.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { input.Close(); _ = writer.Wait() })
+	if ready, err := bufio.NewReader(output).ReadString('\n'); err != nil || ready != "ready\n" {
+		t.Fatalf("writer did not open WAL: %q %v", ready, err)
 	}
 
 	if err := backupSQLiteHostCopy(rel, backupRoot); err != nil {
-		t.Fatalf("host copy should succeed, got: %v", err)
+		t.Fatalf("host snapshot should succeed, got: %v", err)
 	}
+	verify := exec.Command(python, "-c", `import sqlite3, sys; db=sqlite3.connect(sys.argv[1]); assert db.execute("PRAGMA quick_check").fetchone() == ("ok",); assert db.execute("SELECT value FROM state").fetchone() == ("committed in live WAL",)`, filepath.Join(backupRoot, rel))
+	if out, err := verify.CombinedOutput(); err != nil {
+		t.Fatalf("snapshot lost committed WAL data: %v %s", err, out)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(filepath.Join(backupRoot, rel+suffix)); !os.IsNotExist(err) {
+			t.Fatalf("snapshot must be standalone, found copied %s", suffix)
+		}
+	}
+}
 
-	gotDB, err := os.ReadFile(filepath.Join(backupRoot, rel))
-	if err != nil {
-		t.Fatalf("db backup missing: %v", err)
+func TestHostSQLiteSnapshotRejectsCorruptDatabase(t *testing.T) {
+	chdirTemp(t)
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("Python with SQLite is required")
 	}
-	if string(gotDB) != string(dbContent) {
-		t.Fatalf("db content mismatch: got %q want %q", gotDB, dbContent)
+	if err := os.WriteFile("broken.db", []byte("not SQLite"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	gotWAL, err := os.ReadFile(filepath.Join(backupRoot, rel+"-wal"))
-	if err != nil {
-		t.Fatalf("wal sidecar should be copied: %v", err)
+	root := t.TempDir()
+	if err := backupSQLiteHostCopy("broken.db", root); err == nil {
+		t.Fatal("corrupt database must stop the update, not produce a successful backup")
 	}
-	if string(gotWAL) != string(walContent) {
-		t.Fatalf("wal content mismatch: got %q want %q", gotWAL, walContent)
+	if _, err := os.Stat(filepath.Join(root, "broken.db")); !os.IsNotExist(err) {
+		t.Fatal("failed snapshot must not publish a partial backup")
 	}
-	if _, err := os.Stat(filepath.Join(backupRoot, rel+"-shm")); !os.IsNotExist(err) {
-		t.Fatalf("absent shm sidecar should not produce a backup artifact")
+}
+
+func TestRelocatedSQLitePathsRequireExplicitBackup(t *testing.T) {
+	chdirTemp(t)
+	t.Setenv("AGENTS_DB_PATH", "/app/data/operator/agents.db")
+	t.Setenv("CALL_HISTORY_DB_PATH", "data/call_history.db")
+	if err := validateSQLiteBackupPaths(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTS_DB_PATH", "/external/operator.db")
+	if err := validateSQLiteBackupPaths(); err == nil {
+		t.Fatal("default-path backups must not silently omit an external database")
+	}
+	t.Setenv("AGENTS_DB_PATH", "")
+	if err := os.WriteFile(".env", []byte("AGENTS_DB_PATH=data/custom-agents.db\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSQLiteBackupPaths(); err == nil {
+		t.Fatal("dotenv overrides must also require explicit backup mapping")
+	}
+}
+
+func TestRetryCannotOverwriteOriginalBackupID(t *testing.T) {
+	root := chdirTemp(t)
+	t.Setenv("AGENTS_DB_PATH", "")
+	t.Setenv("CALL_HISTORY_DB_PATH", "")
+	originalID := updateBackupID
+	t.Cleanup(func() { updateBackupID = originalID })
+	updateBackupID = "original-upgrade"
+	if err := os.WriteFile(".env", []byte("SYNTHETIC=before\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := recoveryContext(root, "", "")
+	if err := createUpdateBackups(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(".env", []byte("SYNTHETIC=after\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := createUpdateBackups(recoveryContext(root, "", "")); err == nil {
+		t.Fatal("a retry must not overwrite the original backup identifier")
+	}
+	saved, err := os.ReadFile(filepath.Join(ctx.backupDir, ".env"))
+	if err != nil || string(saved) != "SYNTHETIC=before\n" {
+		t.Fatalf("original backup changed: %s %v", saved, err)
 	}
 }

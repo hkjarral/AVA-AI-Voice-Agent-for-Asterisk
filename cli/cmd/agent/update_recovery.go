@@ -17,6 +17,7 @@ type pendingDockerActions struct {
 	Version        int      `json:"version"`
 	BaseSHA        string   `json:"base_sha"`
 	TargetSHA      string   `json:"target_sha"`
+	CheckoutSHA    string   `json:"checkout_sha,omitempty"`
 	Rebuild        []string `json:"rebuild"`
 	Restart        []string `json:"restart"`
 	ComposeChanged bool     `json:"compose_changed"`
@@ -50,6 +51,9 @@ func readPendingDockerActions(repoRoot string) (*pendingDockerActions, error) {
 	if pending.Version != 1 || !validUpdateSHA(pending.BaseSHA) || !validUpdateSHA(pending.TargetSHA) {
 		return nil, fmt.Errorf("invalid pending Docker state at %s; inspect host CLI recovery state", path)
 	}
+	if pending.CheckoutSHA != "" && !validUpdateSHA(pending.CheckoutSHA) {
+		return nil, fmt.Errorf("invalid checkout revision in pending Docker state at %s", path)
+	}
 	services := append(append(append([]string{}, pending.Rebuild...), pending.Restart...), pending.Running...)
 	for _, service := range services {
 		if service != "ai_engine" && service != "admin_ui" && service != "local_ai_server" {
@@ -82,7 +86,7 @@ func planDockerActions(ctx *updateContext) error {
 		ctx.pendingDocker = true
 		// A manual branch switch/reset can make the saved actions unrelated to
 		// this checkout. Never silently consume that recovery record.
-		if ctx.oldSHA != pending.BaseSHA && ctx.oldSHA != pending.TargetSHA {
+		if ctx.oldSHA != pending.BaseSHA && ctx.oldSHA != pending.TargetSHA && ctx.oldSHA != pending.CheckoutSHA {
 			return fmt.Errorf("pending Docker actions belong to another checkout revision; inspect %s and complete host CLI recovery before updating", pendingDockerPath(ctx.repoRoot))
 		}
 		if rebuildMode(strings.ToLower(strings.TrimSpace(updateRebuild))) == rebuildNone && len(pending.Rebuild) > 0 {
@@ -117,7 +121,8 @@ func savePendingDockerActions(ctx *updateContext) error {
 	}
 	pending := pendingDockerActions{
 		Version: 1, BaseSHA: ctx.oldSHA, TargetSHA: ctx.newSHA,
-		Rebuild: sortedKeys(ctx.servicesToRebuild), Restart: sortedKeys(ctx.servicesToRestart),
+		CheckoutSHA: ctx.checkoutSHA,
+		Rebuild:     sortedKeys(ctx.servicesToRebuild), Restart: sortedKeys(ctx.servicesToRestart),
 		ComposeChanged: ctx.composeChanged,
 		Running:        sortedKeys(ctx.runningBeforeUpdate),
 	}
@@ -152,16 +157,18 @@ func captureRunningDockerServices(ctx *updateContext) error {
 	if ctx.runningBeforeUpdate == nil {
 		ctx.runningBeforeUpdate = map[string]bool{}
 	}
+	ctx.currentlyRunning = map[string]bool{}
 	out, err := runDockerCommandForUpdate("docker", "compose", "ps", "--services", "--status", "running")
 	if err != nil {
 		out, err = runDockerCommandForUpdate("docker", "compose", "ps", "--services")
 	}
 	if err != nil {
-		return fmt.Errorf("cannot snapshot running services before checkout; Docker actions were not applied: %w", err)
+		return fmt.Errorf("cannot snapshot running services; Docker actions were not applied: %w", err)
 	}
 	for _, service := range strings.Fields(out) {
 		if service == "ai_engine" || service == "admin_ui" || service == "local_ai_server" {
 			ctx.runningBeforeUpdate[service] = true
+			ctx.currentlyRunning[service] = true
 		}
 	}
 	return nil
@@ -170,7 +177,7 @@ func captureRunningDockerServices(ctx *updateContext) error {
 func clearPendingDockerActions(repoRoot string) error {
 	err := os.Remove(pendingDockerPath(repoRoot))
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("Docker actions completed but pending state could not be removed: %w", err)
+		return fmt.Errorf("docker actions completed but pending state could not be removed: %w", err)
 	}
 	return nil
 }
@@ -212,10 +219,26 @@ func buildWithHostNetworkGrant(services []string) error {
 	}
 	// --print must produce a Bake document, not a warning or partial output.
 	if !json.Valid([]byte(definition)) {
-		return errors.New("Compose build --print did not produce valid JSON; check docker compose/buildx versions")
+		return errors.New("compose build --print did not produce valid JSON; check docker compose/buildx versions")
 	}
 	if _, err := runDockerBakeForUpdate(definition); err != nil {
-		return fmt.Errorf("Bake host-network build failed; pending Docker actions are retained for retry (check docker compose/buildx versions): %w", err)
+		return fmt.Errorf("bake host-network build failed; pending Docker actions are retained for retry (check docker compose/buildx versions): %w", err)
+	}
+	return nil
+}
+
+// buildDockerServices prepares scoped replacement images without changing any
+// container's running state, including when Compose needs the Bake workaround.
+func buildDockerServices(services []string) error {
+	if len(services) == 0 {
+		return nil
+	}
+	args := append([]string{"compose", "build"}, services...)
+	if output, err := runDockerCommandForUpdate("docker", args...); err != nil {
+		if !hostNetworkEntitlementError(output, err) {
+			return fmt.Errorf("docker compose build failed: %w", err)
+		}
+		return buildWithHostNetworkGrant(services)
 	}
 	return nil
 }

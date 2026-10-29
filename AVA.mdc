@@ -66,6 +66,11 @@ advancing Git, retries them at the same commit, and retains original running-sta
 intent. The update lock and active-call guard still apply. Specific Compose/Bake
 host-network entitlement failures use a scoped explicit Bake grant; see
 [CLI recovery](docs/CLI_TOOLS_GUIDE.md#interrupted-docker-builds-and-same-version-recovery).
+Build replacements before recreation and recheck active calls after long builds;
+unknown health on a running engine blocks runtime changes. GUI rollback uses a
+packaged compatible build helper and archives superseded forward actions. Host
+SQLite fallbacks use online snapshots; relocated databases require explicit manual
+backup mapping rather than silently backing up defaults.
 
 The core services are `ai_engine` and `admin_ui`; `local_ai_server` and `updater`
 are optional. Inspect the deployment's Compose configuration instead of starting
