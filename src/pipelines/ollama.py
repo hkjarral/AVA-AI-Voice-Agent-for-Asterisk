@@ -229,6 +229,15 @@ class OllamaLLMAdapter(LLMComponent):
                 })
         return tools
 
+    @staticmethod
+    def _recent_messages(messages: List[Dict[str, Any]], limit: int = 10) -> List[Dict[str, Any]]:
+        """Last ``limit`` messages for context, always keeping a leading system prompt."""
+        if len(messages) <= limit:
+            return messages
+        if messages and messages[0].get("role") == "system":
+            return [messages[0], *messages[-(limit - 1):]]
+        return messages[-limit:]
+
     async def generate(
         self,
         call_id: str,
@@ -304,7 +313,7 @@ class OllamaLLMAdapter(LLMComponent):
         url = f"{merged['base_url'].rstrip('/')}/api/chat"
         payload = {
             "model": model,
-            "messages": messages[-10:],  # Keep last 10 messages for context
+            "messages": self._recent_messages(messages),
             "stream": False,
             "options": {},
         }
