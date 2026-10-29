@@ -236,6 +236,45 @@ async def test_openai_llm_uses_captured_registry_for_tool_schemas(monkeypatch):
     live_registry.get.assert_not_called()
 
 
+def _tool_with_phase(name, phase):
+    definition = MagicMock()
+    definition.phase = phase
+    definition.to_openai_schema.return_value = {
+        "type": "function",
+        "function": {"name": name, "description": name, "parameters": {"type": "object", "properties": {}}},
+    }
+    return MagicMock(definition=definition)
+
+
+@pytest.mark.asyncio
+async def test_openai_llm_stream_leaves_non_in_call_tools_out_of_the_request():
+    app_config = _build_app_config()
+    provider_config = OpenAIProviderConfig(**app_config.providers["openai"])
+    fake_session = _FakeStreamingSession(_SSEStream([{"choices": [{"delta": {"content": "ok"}}]}]))
+    adapter = OpenAILLMAdapter(
+        "openai_llm",
+        app_config,
+        provider_config,
+        {"use_realtime": False},
+        session_factory=lambda: fake_session,
+    )
+    in_call = _tool_with_phase("in_call_tool", ToolPhase.IN_CALL)
+    post_call = _tool_with_phase("post_call_tool", ToolPhase.POST_CALL)
+    registry = MagicMock()
+    registry.get.side_effect = {"in_call_tool": in_call, "post_call_tool": post_call}.get
+    adapter.bind_tool_registry(registry)
+
+    await adapter.start()
+    _ = [
+        chunk
+        async for chunk in adapter.generate_stream(
+            "call-1", "hello", {"system_prompt": "You are helpful."}, {"tools": ["in_call_tool", "post_call_tool"]}
+        )
+    ]
+
+    assert fake_session.requests[0]["json"]["tools"] == [in_call.definition.to_openai_schema.return_value]
+
+
 @pytest.mark.asyncio
 async def test_openai_llm_stream_timeout_returns_empty_for_serial_fallback():
     app_config = _build_app_config()
