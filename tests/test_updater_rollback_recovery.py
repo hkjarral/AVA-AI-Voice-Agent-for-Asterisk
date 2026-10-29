@@ -16,7 +16,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize("failure", ["none", "build", "late-call", "remote-local"])
+@pytest.mark.parametrize("failure", ["none", "build", "late-call", "remote-local", "remote-compose"])
 def test_rollback_recovery_preserves_runtime_and_pending_state(tmp_path, failure):
     image = os.getenv("AAVA_UPDATER_TEST_IMAGE")
     bash = shutil.which("bash")
@@ -46,11 +46,15 @@ def test_rollback_recovery_preserves_runtime_and_pending_state(tmp_path, failure
     backup = tmp_path / ".agent/update-backups/failed"
     backup.mkdir(parents=True)
     (backup / ".env").write_text("SYNTHETIC=baseline\n")
+    remote = failure.startswith("remote-")
     (jobs / "failed.json").write_text(json.dumps({
         "pre_update_branch": "baseline", "pre_update_sha": before,
         "backup_dir_rel": ".agent/update-backups/failed", "include_ui": False,
-        "pre_update_running_services": ["local_ai_server"] if failure == "remote-local" else ["ai_engine"],
-        "plan": {"services_rebuild": ["local_ai_server"] if failure == "remote-local" else ["ai_engine", "local_ai_server"], "services_restart": [], "compose_changed": failure != "remote-local"},
+        "pre_update_running_services": ["local_ai_server"] if remote else ["ai_engine"],
+        # Legacy plans may omit Local AI despite reconciling its running container.
+        "plan": {"services_rebuild": (["ai_engine"] if failure == "remote-compose" else
+                                       ["local_ai_server"] if remote else ["ai_engine", "local_ai_server"]),
+                 "services_restart": [], "compose_changed": failure != "remote-local"},
     }))
     pending = state / "pending-docker.json"
     pending.write_text(json.dumps({"version": 1, "base_sha": before, "target_sha": after,
@@ -107,11 +111,11 @@ exit 0
     if failure != "none":
         assert not changes, "failed build/late active calls must not change containers"
         assert pending.exists(), "failed rollback must preserve pending actions"
-        if failure == "remote-local":
+        if remote:
             assert "remote active calls" in result.stdout + result.stderr
             assert git("rev-parse", "HEAD") == after, "unverified remote drain must block before checkout"
         (tmp_path / "probes").unlink(missing_ok=True)
-        result = invoke("retry", "remote-drained" if failure == "remote-local" else "none")
+        result = invoke("retry", "remote-drained" if remote else "none")
         assert result.returncode == 0, result.stdout + result.stderr
         archive = state / "rolled-back/retry.pending-docker.json"
     else:
@@ -122,8 +126,12 @@ exit 0
     commands = (tmp_path / "commands.log").read_text().splitlines()
     changes = [command for command in commands if command.startswith("compose up") or command.startswith("compose restart")]
     assert changes
-    if failure != "remote-local":
+    if not remote:
         assert all("local_ai_server" not in command for command in changes), "stopped Local AI must stay stopped"
-    target = "local_ai_server" if failure == "remote-local" else "ai_engine"
-    assert commands.index(f"compose build {target}") < next(i for i, command in enumerate(commands) if command.startswith("compose up"))
-    assert "buildx bake --file - --allow=network.host --load" in commands
+    if failure == "remote-compose":
+        assert any("local_ai_server" in command for command in changes)
+        assert not any(command.startswith("compose build") for command in commands), "legacy plan has no installed rebuild target"
+    else:
+        target = "local_ai_server" if remote else "ai_engine"
+        assert commands.index(f"compose build {target}") < next(i for i, command in enumerate(commands) if command.startswith("compose up"))
+        assert "buildx bake --file - --allow=network.host --load" in commands

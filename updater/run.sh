@@ -835,6 +835,14 @@ run_rollback() {
     rollback_changes_local_ai=false
     if [ "${compose_changed}" = "true" ]; then
       rollback_touches_calls=true
+      # Older job plans may omit Local AI even though Compose reconciliation
+      # recreates every previously running service. Guard the actual targets.
+      for running in "${recovery_running_svcs[@]}"; do
+        if [ "${running}" = "local_ai_server" ]; then
+          rollback_changes_local_ai=true
+          break
+        fi
+      done
     fi
     for svc in "${rebuild_services[@]}" "${restart_services[@]}"; do
       if [ "${svc}" = "ai_engine" ]; then

@@ -37,7 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Compose build helper,
   explicit Buildx dependency, and complete manual/release recovery guidance (#790).
 - Preserve configured Compose project names in manual recovery commands; require
-  verified remote drain for inference-only host runtime changes. Harden journal
+  verified remote drain for inference-only host runtime changes, including
+  Compose rollback reconciliation from older job plans. Harden journal
   reads and Unix directory persistence, and check container snapshot integrity
   before using it for recovery (#790).
 
