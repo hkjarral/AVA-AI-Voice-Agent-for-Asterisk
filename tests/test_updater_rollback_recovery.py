@@ -16,7 +16,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize("failure", ["none", "build", "late-call"])
+@pytest.mark.parametrize("failure", ["none", "build", "late-call", "remote-local"])
 def test_rollback_recovery_preserves_runtime_and_pending_state(tmp_path, failure):
     image = os.getenv("AAVA_UPDATER_TEST_IMAGE")
     bash = shutil.which("bash")
@@ -49,8 +49,8 @@ def test_rollback_recovery_preserves_runtime_and_pending_state(tmp_path, failure
     (jobs / "failed.json").write_text(json.dumps({
         "pre_update_branch": "baseline", "pre_update_sha": before,
         "backup_dir_rel": ".agent/update-backups/failed", "include_ui": False,
-        "pre_update_running_services": ["ai_engine"],
-        "plan": {"services_rebuild": ["ai_engine", "local_ai_server"], "services_restart": [], "compose_changed": True},
+        "pre_update_running_services": ["local_ai_server"] if failure == "remote-local" else ["ai_engine"],
+        "plan": {"services_rebuild": ["local_ai_server"] if failure == "remote-local" else ["ai_engine", "local_ai_server"], "services_restart": [], "compose_changed": failure != "remote-local"},
     }))
     pending = state / "pending-docker.json"
     pending.write_text(json.dumps({"version": 1, "base_sha": before, "target_sha": after,
@@ -61,7 +61,8 @@ def test_rollback_recovery_preserves_runtime_and_pending_state(tmp_path, failure
     docker.write_text("""#!/bin/sh
 printf '%s\\n' "$*" >> "$TEST_COMMANDS"
 if [ "$1 $2" = 'compose ps' ]; then
-  case "$*" in *--all*) printf 'ai_engine\\nlocal_ai_server\\n';; *) echo ai_engine;; esac
+  case "$TEST_FAILURE" in remote-*) echo local_ai_server;; *)
+    case "$*" in *--all*) printf 'ai_engine\\nlocal_ai_server\\n';; *) echo ai_engine;; esac;; esac
 elif [ "$1" = exec ]; then
   n=0; [ -f "$TEST_PROBES" ] && n=$(cat "$TEST_PROBES")
   n=$((n + 1)); echo "$n" > "$TEST_PROBES"
@@ -85,7 +86,7 @@ exit 0
         location = "/fixture" if image else str(tmp_path)
         values = {"PROJECT_ROOT": location, "AAVA_UPDATE_MODE": "rollback", "AAVA_UPDATE_JOB_ID": job,
                   "AAVA_UPDATE_ROLLBACK_FROM_JOB": "failed", "AAVA_UPDATE_UPDATE_CLI_HOST": "false",
-                  "AAVA_UPDATE_INCLUDE_UI": "false", "AAVA_UPDATE_FORCE_ACTIVE_CALLS": "false",
+                  "AAVA_UPDATE_INCLUDE_UI": "false", "AAVA_UPDATE_FORCE_ACTIVE_CALLS": "true" if scenario == "remote-drained" else "false",
                   "TEST_COMMANDS": f"{location}/commands.log", "TEST_PROBES": f"{location}/probes",
                   "TEST_FAILURE": scenario,
                   "PATH": f"{location}/bin:" + ("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" if image else os.environ["PATH"])}
@@ -106,8 +107,11 @@ exit 0
     if failure != "none":
         assert not changes, "failed build/late active calls must not change containers"
         assert pending.exists(), "failed rollback must preserve pending actions"
+        if failure == "remote-local":
+            assert "remote active calls" in result.stdout + result.stderr
+            assert git("rev-parse", "HEAD") == after, "unverified remote drain must block before checkout"
         (tmp_path / "probes").unlink(missing_ok=True)
-        result = invoke("retry", "none")
+        result = invoke("retry", "remote-drained" if failure == "remote-local" else "none")
         assert result.returncode == 0, result.stdout + result.stderr
         archive = state / "rolled-back/retry.pending-docker.json"
     else:
@@ -117,6 +121,9 @@ exit 0
     assert archive.exists() and not pending.exists()
     commands = (tmp_path / "commands.log").read_text().splitlines()
     changes = [command for command in commands if command.startswith("compose up") or command.startswith("compose restart")]
-    assert changes and all("local_ai_server" not in command for command in changes), "stopped Local AI must stay stopped"
-    assert commands.index("compose build ai_engine") < next(i for i, command in enumerate(commands) if command.startswith("compose up"))
+    assert changes
+    if failure != "remote-local":
+        assert all("local_ai_server" not in command for command in changes), "stopped Local AI must stay stopped"
+    target = "local_ai_server" if failure == "remote-local" else "ai_engine"
+    assert commands.index(f"compose build {target}") < next(i for i, command in enumerate(commands) if command.startswith("compose up"))
     assert "buildx bake --file - --allow=network.host --load" in commands

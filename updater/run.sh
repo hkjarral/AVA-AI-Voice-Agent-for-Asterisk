@@ -306,6 +306,7 @@ PY
 }
 
 guard_rollback_active_calls() {
+  local local_ai_changes="${1:-false}"
   if is_truthy "${FORCE_ACTIVE_CALLS}"; then
     echo "==> Active-call guard bypassed by override" >&2
     return 0
@@ -317,6 +318,13 @@ guard_rollback_active_calls() {
     return 1
   fi
   if ! grep -Fxq ai_engine <<<"${running}"; then
+    if [ "${local_ai_changes}" = "true" ]; then
+      local existing
+      if ! existing="$(compose_existing_services)" || ! grep -Fxq ai_engine <<<"${existing}"; then
+        echo "ERR: cannot verify remote active calls on an inference-only host; drain every remote engine, then explicitly set AAVA_UPDATE_FORCE_ACTIVE_CALLS=true" >&2
+        return 1
+      fi
+    fi
     return 0
   fi
 
@@ -824,24 +832,25 @@ run_rollback() {
     fi
 
     rollback_touches_calls=false
+    rollback_changes_local_ai=false
     if [ "${compose_changed}" = "true" ]; then
       rollback_touches_calls=true
     fi
     for svc in "${rebuild_services[@]}" "${restart_services[@]}"; do
       if [ "${svc}" = "ai_engine" ]; then
         rollback_touches_calls=true
-        break
       fi
       if [ "${svc}" = "local_ai_server" ]; then
         for running in "${recovery_running_svcs[@]}"; do
           if [ "${running}" = "local_ai_server" ]; then
             rollback_touches_calls=true
+            rollback_changes_local_ai=true
           fi
         done
       fi
     done
     if [ "${rollback_touches_calls}" = "true" ]; then
-      guard_rollback_active_calls
+      guard_rollback_active_calls "${rollback_changes_local_ai}"
     fi
 
     # Best-effort: preserve any current local changes before switching branches.
@@ -969,7 +978,7 @@ run_rollback() {
     # A long build can outlast the initial active-call check. Check again
     # immediately before any runtime reconciliation or recreation.
     if [ "${rollback_touches_calls}" = "true" ]; then
-      guard_rollback_active_calls
+      guard_rollback_active_calls "${rollback_changes_local_ai}"
     fi
     if [ "${compose_changed}" = "true" ] && [ "${#targets[@]}" -gt 0 ]; then
       docker compose up -d --remove-orphans --no-build --pull never "${targets[@]}"

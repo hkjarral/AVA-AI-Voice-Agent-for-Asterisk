@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reject unmapped database overrides and reused backup IDs. Add a packaged/manual
   Compose build helper,
   explicit Buildx dependency, and complete manual/release recovery guidance (#790).
+- Preserve configured Compose project names in manual recovery commands; require
+  verified remote drain for inference-only host runtime changes. Harden journal
+  reads and Unix directory persistence, and check container snapshot integrity
+  before using it for recovery (#790).
 
 - Update the Google modular LLM default and Admin UI suggestions to Gemini 3.8
   Flash, replacing retired Gemini 1.5 defaults. Omit unsupported temperature and

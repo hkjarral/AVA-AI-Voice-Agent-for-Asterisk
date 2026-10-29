@@ -57,3 +57,22 @@ fi
 def test_compose_build_requires_explicit_service_names(tmp_path):
     result = subprocess.run(["bash", str(ROOT / "scripts/compose-build.sh"), "--push"], capture_output=True)
     assert result.returncode == 2
+
+
+def test_documented_build_and_recreation_honor_the_same_project(tmp_path):
+    guide = (ROOT / "docs/CLI_TOOLS_GUIDE.md").read_text()
+    section = guide.split("### Manual builds on affected Compose/Buildx versions", 1)[1]
+    commands = section.split("```bash\n", 1)[1].split("```", 1)[0]
+    log = tmp_path / "commands"
+    for name in ("docker", "agent"):
+        executable = tmp_path / name
+        executable.write_text('#!/bin/sh\nprintf "%s|%s\\n" "$COMPOSE_PROJECT_NAME" "$*" >> "$TEST_COMMANDS"\n')
+        executable.chmod(0o700)
+    env = dict(os.environ, PATH=f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+               TEST_COMMANDS=str(log), COMPOSE_PROJECT_NAME="custom-project")
+    result = subprocess.run(["bash", "-c", commands], cwd=ROOT, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    recorded = log.read_text().splitlines()
+    assert all(line.startswith("custom-project|") for line in recorded)
+    assert "custom-project|compose build ai_engine admin_ui" in recorded
+    assert "custom-project|compose up -d --no-build --pull never --force-recreate ai_engine admin_ui" in recorded

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,19 +31,27 @@ func pendingDockerPath(repoRoot string) string {
 
 func readPendingDockerActions(repoRoot string) (*pendingDockerActions, error) {
 	path := pendingDockerPath(repoRoot)
-	info, err := os.Lstat(path)
+	file, err := openPendingDockerJournal(path)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
 	if !info.Mode().IsRegular() || info.Size() > 16384 {
 		return nil, fmt.Errorf("invalid pending Docker state at %s; inspect host CLI recovery state", path)
 	}
-	data, err := os.ReadFile(path)
+	data, err := io.ReadAll(io.LimitReader(file, 16385))
 	if err != nil {
 		return nil, err
+	}
+	if len(data) > 16384 {
+		return nil, fmt.Errorf("pending Docker state exceeds size limit at %s", path)
 	}
 	var pending pendingDockerActions
 	if err := json.Unmarshal(data, &pending); err != nil {
@@ -115,6 +124,8 @@ func planDockerActions(ctx *updateContext) error {
 	return nil
 }
 
+// runUpdate holds the update lock, whose acquisition creates .agent/updates
+// before this private helper is called. Plan-only requests never write a journal.
 func savePendingDockerActions(ctx *updateContext) error {
 	if !updateHasDockerChanges(ctx) {
 		return nil
@@ -150,6 +161,9 @@ func savePendingDockerActions(ctx *updateContext) error {
 	if err := os.Rename(file.Name(), path); err != nil {
 		return fmt.Errorf("cannot journal Docker actions before checkout: %w", err)
 	}
+	if err := syncUpdateDirectory(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("cannot persist Docker journal directory before checkout: %w", err)
+	}
 	return nil
 }
 
@@ -160,6 +174,8 @@ func captureRunningDockerServices(ctx *updateContext) error {
 	ctx.currentlyRunning = map[string]bool{}
 	out, err := runDockerCommandForUpdate("docker", "compose", "ps", "--services", "--status", "running")
 	if err != nil {
+		// Without --all, this fallback also excludes stopped containers; it is
+		// not the defined-service inventory returned by `compose config --services`.
 		out, err = runDockerCommandForUpdate("docker", "compose", "ps", "--services")
 	}
 	if err != nil {

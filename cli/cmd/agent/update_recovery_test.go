@@ -221,7 +221,7 @@ func TestRecoveryRestoresPreviouslyRunningDeletedLocalAI(t *testing.T) {
 	if err := savePendingDockerActions(ctx); err != nil {
 		t.Fatal(err)
 	}
-	commands := withDockerActionState(t, "", map[string]bool{})
+	commands := withDockerActionState(t, "", map[string]bool{"ai_engine": true})
 	withLocalAIUpdateState(t, localAIUpdateState{existingKnown: true, selectionKnown: true})
 	withUpdateRebuildMode(t, rebuildAuto)
 	ctx = recoveryContext(root, target, target)
@@ -274,7 +274,7 @@ fi
 
 func TestPendingDockerStateRejectsUnsafeRecovery(t *testing.T) {
 	base, target := strings.Repeat("a", 40), strings.Repeat("b", 40)
-	for _, scenario := range []string{"different-head", "excluded-ui", "rebuild-none", "invalid-json", "symlink"} {
+	for _, scenario := range []string{"different-head", "excluded-ui", "rebuild-none", "invalid-json", "symlink", "oversized"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			if err := os.MkdirAll(filepath.Dir(pendingDockerPath(root)), 0700); err != nil {
@@ -298,6 +298,8 @@ func TestPendingDockerStateRejectsUnsafeRecovery(t *testing.T) {
 				updateRebuild = "none"
 			case "invalid-json":
 				os.WriteFile(pendingDockerPath(root), []byte("{"), 0600)
+			case "oversized":
+				os.WriteFile(pendingDockerPath(root), []byte(strings.Repeat(" ", 16385)), 0600)
 			case "symlink":
 				os.Remove(pendingDockerPath(root))
 				if err := os.Symlink(filepath.Join(root, "outside"), pendingDockerPath(root)); err != nil {
@@ -563,5 +565,20 @@ func TestActiveCallsGuardRunningLocalAIButAllowBuildOnlyRecovery(t *testing.T) {
 				t.Fatalf("unexpected Local AI guard outcome: running=%t probed=%t err=%v", running, probed, err)
 			}
 		})
+	}
+}
+
+func TestInferenceOnlyHostRequiresRemoteDrainForRuntimeChanges(t *testing.T) {
+	withDockerActionState(t, "local_ai_server\n", map[string]bool{"local_ai_server": true})
+	t.Setenv("AAVA_UPDATE_FORCE_ACTIVE_CALLS", "false")
+	if err := guardUpdateActiveCalls("recreate Local AI", false, true); err == nil || !strings.Contains(err.Error(), "remote active calls") {
+		t.Fatalf("missing local engine must not imply remote calls are drained: %v", err)
+	}
+	if err := guardUpdateActiveCalls("build stopped image", false, false); err != nil {
+		t.Fatalf("build-only recovery should remain available: %v", err)
+	}
+	t.Setenv("AAVA_UPDATE_FORCE_ACTIVE_CALLS", "true")
+	if err := guardUpdateActiveCalls("recreate after verified drain", false, true); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -1273,6 +1273,8 @@ def progress(*_):
         raise TimeoutError("SQLite snapshot exceeded 30 seconds")
 try:
     src.backup(dst, pages=128, progress=progress, sleep=0.01)
+    if dst.execute("PRAGMA quick_check").fetchone() != ("ok",):
+        raise RuntimeError("SQLite snapshot integrity check failed")
 finally:
     dst.close(); src.close()
 `
@@ -2033,10 +2035,13 @@ func decideDockerActions(ctx *updateContext) {
 }
 
 func updateMayAffectCalls(ctx *updateContext) bool {
+	return ctx.composeChanged || ctx.servicesToRebuild["ai_engine"] || ctx.servicesToRestart["ai_engine"] || updateChangesLocalAIRuntime(ctx)
+}
+
+func updateChangesLocalAIRuntime(ctx *updateContext) bool {
 	localAIWillRun := ctx.currentlyRunning["local_ai_server"] || ctx.runningBeforeUpdate["local_ai_server"] ||
 		(ctx.localAISelected && !ctx.localAIExisting)
-	return ctx.composeChanged || ctx.servicesToRebuild["ai_engine"] || ctx.servicesToRestart["ai_engine"] ||
-		(localAIWillRun && (ctx.servicesToRebuild["local_ai_server"] || ctx.servicesToRestart["local_ai_server"]))
+	return localAIWillRun && (ctx.servicesToRebuild["local_ai_server"] || ctx.servicesToRestart["local_ai_server"])
 }
 
 func updateHasDockerChanges(ctx *updateContext) bool {
@@ -2053,13 +2058,22 @@ func preflightDockerChangeGuard(ctx *updateContext) error {
 	if !updateMayAffectCalls(ctx) || envBool("AAVA_UPDATE_FORCE_ACTIVE_CALLS") {
 		return nil
 	}
-	return guardUpdateActiveCalls("update checkout", ctx.currentlyRunning["ai_engine"])
+	return guardUpdateActiveCalls("update checkout", ctx.currentlyRunning["ai_engine"], updateChangesLocalAIRuntime(ctx))
 }
 
 // guardUpdateActiveCalls fails closed for a running engine, while allowing
 // recovery of a stopped engine. The override remains an explicit operator choice.
-func guardUpdateActiveCalls(stage string, engineRunning bool) error {
-	if !engineRunning || envBool("AAVA_UPDATE_FORCE_ACTIVE_CALLS") {
+func guardUpdateActiveCalls(stage string, engineRunning, localAIChanges bool) error {
+	if envBool("AAVA_UPDATE_FORCE_ACTIVE_CALLS") {
+		return nil
+	}
+	if !engineRunning {
+		if localAIChanges {
+			existing, known := existingComposeServicesForUpdate()
+			if !known || !existing["ai_engine"] {
+				return fmt.Errorf("cannot verify remote active calls before %s on an inference-only host; drain every remote engine, then explicitly set AAVA_UPDATE_FORCE_ACTIVE_CALLS=true", stage)
+			}
+		}
 		return nil
 	}
 	activeCalls, reachable, err := queryActiveCallsForUpdate()
@@ -2181,7 +2195,8 @@ func applyDockerActions(ctx *updateContext) error {
 		if err := captureRunningDockerServices(ctx); err != nil {
 			return err
 		}
-		if err := guardUpdateActiveCalls("restart services after checkout (pending Docker actions retained)", ctx.currentlyRunning["ai_engine"]); err != nil {
+		localAIChanges := containsString(rebuildServices, "local_ai_server") || containsString(restartServices, "local_ai_server")
+		if err := guardUpdateActiveCalls("restart services after checkout (pending Docker actions retained)", ctx.currentlyRunning["ai_engine"], localAIChanges); err != nil {
 			return err
 		}
 	}

@@ -210,6 +210,12 @@ recommended routine upgrade setting.
 Use the PBX's existing maintenance/routing controls to prevent new calls and
 drain existing calls during rollout. Health probes observe call state; they do
 not lock call admission. Resume normal routing after readiness and a test call.
+On an inference-only GPU host with no installed local engine, the updater cannot
+prove remote engines are idle. Runtime changes to running Local AI fail closed.
+Drain every consuming remote engine first, then use the explicit
+`AAVA_UPDATE_FORCE_ACTIVE_CALLS=true` override for the controlled update/rollback.
+A co-located but stopped engine remains recoverable, and image-only builds do
+not require a remote-drain override.
 
 The host SQLite fallback uses Python 3.7+ and SQLite's online backup API, even if
 the engine is stopped: Admin UI may still be writing. Missing Python, invalid
@@ -238,7 +244,7 @@ in your shell, from the checkout root:
 
 ```bash
 ./scripts/compose-build.sh ai_engine admin_ui &&
-  docker compose -p asterisk-ai-voice-agent up -d \
+  docker compose up -d \
     --no-build --pull never --force-recreate ai_engine admin_ui &&
   agent check
 ```
@@ -252,9 +258,9 @@ For older checkouts without the helper, build with the explicit Bake grant:
 
 ```bash
 ( set -o pipefail
-  docker compose -p asterisk-ai-voice-agent build --print ai_engine admin_ui |
+  docker compose build --print ai_engine admin_ui |
     docker buildx bake --file - --allow=network.host --load
-) && docker compose -p asterisk-ai-voice-agent up -d \
+) && docker compose up -d \
   --no-build --pull never --force-recreate ai_engine admin_ui
 ```
 

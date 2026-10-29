@@ -232,6 +232,13 @@ func TestDockerActionsRebuildRunningLocalAIWithComposeUp(t *testing.T) {
 	commands := withDockerActionState(t, "local_ai_server\n", map[string]bool{"local_ai_server": true})
 	ctx := updateTestContext()
 
+	if err := applyDockerActions(ctx); err == nil || !strings.Contains(err.Error(), "remote active calls") {
+		t.Fatalf("an inference-only host must require a verified remote drain: %v", err)
+	}
+	if commandContainingSeen(*commands, "compose up") {
+		t.Fatal("unverified remote call state must not authorize Local AI recreation")
+	}
+	t.Setenv("AAVA_UPDATE_FORCE_ACTIVE_CALLS", "true")
 	if err := applyDockerActions(ctx); err != nil {
 		t.Fatalf("applyDockerActions: %v", err)
 	}

@@ -422,7 +422,7 @@ The updater normally performs this step. If you are recovering manually:
 
 ```bash
 ./scripts/compose-build.sh admin_ui ai_engine &&
-  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui ai_engine
+  docker compose up -d --no-build --pull never --force-recreate admin_ui ai_engine
 ```
 
 Builds finish before recreation. If the selected release predates this helper,
@@ -435,7 +435,7 @@ If your configuration requires local inference:
 
 ```bash
 ./scripts/compose-build.sh local_ai_server &&
-  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate local_ai_server
+  docker compose up -d --no-build --pull never --force-recreate local_ai_server
 ```
 
 ### 5) Verify the upgrade
