@@ -17,7 +17,7 @@ import uuid
 import wave
 from io import BytesIO
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable, Dict, Iterable, Optional
+from typing import Any, AsyncIterator, Callable, Dict, Iterable, List, Optional
 from urllib.parse import urlparse
 
 import aiohttp
@@ -492,24 +492,7 @@ class OpenAILLMAdapter(LLMComponent):
         
         # Tool support: tool allowlists are resolved per-context by the engine and passed in via `merged["tools"]`.
         # Do not gate tools by provider-level flags; contexts are the source of truth for tool availability.
-        tools_list = merged.get("tools")
-        tool_schemas = []
-        call_tool_registry = self.tool_registry_or(tool_registry)
-        if tools_list and isinstance(tools_list, list):
-            for tool_name in tools_list:
-                tool = call_tool_registry.get(tool_name)
-                if tool:
-                    try:
-                        from src.tools.base import ToolPhase
-                        if getattr(tool.definition, "phase", ToolPhase.IN_CALL) != ToolPhase.IN_CALL:
-                            logger.warning("Skipping non-in-call tool in pipeline schema", tool=tool_name)
-                            continue
-                    except Exception:
-                        pass
-                    tool_schemas.append(tool.definition.to_openai_schema())
-                else:
-                    logger.warning("Tool not found in registry", tool=tool_name)
-            
+        tool_schemas = self._in_call_tool_schemas(merged, tool_registry)
         if tool_schemas:
             payload["tools"] = tool_schemas
             payload["tool_choice"] = "auto"
@@ -713,14 +696,7 @@ class OpenAILLMAdapter(LLMComponent):
         payload["stream"] = True
 
         # Include tools in streaming request so the LLM can return tool calls
-        tools_list = merged.get("tools")
-        tool_schemas = []
-        call_tool_registry = self.tool_registry_or(tool_registry)
-        if tools_list and isinstance(tools_list, list):
-            for tool_name in tools_list:
-                tool = call_tool_registry.get(tool_name)
-                if tool:
-                    tool_schemas.append(tool.definition.to_openai_schema())
+        tool_schemas = self._in_call_tool_schemas(merged, tool_registry)
         if tool_schemas:
             payload["tools"] = tool_schemas
             payload["tool_choice"] = "auto"
@@ -903,6 +879,27 @@ class OpenAILLMAdapter(LLMComponent):
             except Exception:
                 merged["instructions"] = None
         return merged
+
+    def _in_call_tool_schemas(self, merged: Dict[str, Any], tool_registry: Any = None) -> List[Dict[str, Any]]:
+        """OpenAI schemas for the configured tools, leaving out tools that are not in-call."""
+        tools_list = merged.get("tools")
+        tool_schemas: List[Dict[str, Any]] = []
+        call_tool_registry = self.tool_registry_or(tool_registry)
+        if tools_list and isinstance(tools_list, list):
+            for tool_name in tools_list:
+                tool = call_tool_registry.get(tool_name)
+                if tool:
+                    try:
+                        from src.tools.base import ToolPhase
+                        if getattr(tool.definition, "phase", ToolPhase.IN_CALL) != ToolPhase.IN_CALL:
+                            logger.warning("Skipping non-in-call tool in pipeline schema", tool=tool_name)
+                            continue
+                    except Exception:
+                        pass
+                    tool_schemas.append(tool.definition.to_openai_schema())
+                else:
+                    logger.warning("Tool not found in registry", tool=tool_name)
+        return tool_schemas
 
     def _build_chat_payload(self, transcript: str, context: Dict[str, Any], merged: Dict[str, Any]) -> Dict[str, Any]:
         messages = self._coalesce_messages(transcript, context, merged)
