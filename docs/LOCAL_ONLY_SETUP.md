@@ -197,6 +197,13 @@ This is common for production: a small VPS runs Asterisk/ai_engine, and a beefy 
 
 ### Machine B (GPU Server) — local_ai_server only
 
+Before updating or rolling back this host, pause new calls and drain active calls
+on every engine that uses it. No local `ai_engine` exists to verify remote call
+state, so the updater refuses Local AI runtime changes unless the operator has
+verified that drain and explicitly sets `AAVA_UPDATE_FORCE_ACTIVE_CALLS=true`.
+An image-only build does not recreate the service. See the
+[upgrade recovery procedure](CLI_TOOLS_GUIDE.md#interrupted-docker-builds-and-same-version-recovery).
+
 ```bash
 git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
 cd AVA-AI-Voice-Agent-for-Asterisk

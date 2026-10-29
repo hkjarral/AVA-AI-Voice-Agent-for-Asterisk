@@ -335,8 +335,8 @@ def test_rollback_never_reconciles_a_fully_stopped_stack_with_compose_up() -> No
 
     assert "Reconciling stopped services with built images" not in rollback
     assert 'docker compose up -d --remove-orphans --no-build "${safe_targets[@]}"' not in rollback
-    assert 'if [ "${#targets[@]}" -gt 0 ]; then' in rollback
-    assert 'docker compose up -d --remove-orphans --no-build "${targets[@]}"' in rollback
+    assert '[ "${#targets[@]}" -gt 0 ]; then' in rollback
+    assert 'docker compose up -d --remove-orphans --no-build --pull never "${targets[@]}"' in rollback
 
 
 def test_rollback_builds_every_existing_stopped_target_without_starting_it() -> None:
@@ -344,13 +344,27 @@ def test_rollback_builds_every_existing_stopped_target_without_starting_it() -> 
     rollback = _run_rollback_body(runner)
 
     assert 'build_only_services+=("${svc}")' in rollback
-    assert 'docker compose build "${build_only_services[@]}"' in rollback
+    assert '"${COMPOSE_BUILD_HELPER}" "${build_only_services[@]}"' in rollback
     assert 'filtered_rebuild_services+=("${svc}")' in rollback
     assert 'rebuild_services=("${filtered_rebuild_services[@]}")' in rollback
-    assert 'if [ "${svc}" = "local_ai_server" ]; then' not in rollback
-    assert rollback.index('docker compose build "${build_only_services[@]}"') < rollback.index(
-        'docker compose up -d --build "${rebuild_services[@]}"'
+    filters = rollback[rollback.index("filtered_rebuild_services=()") : rollback.index('rebuild_services=("${filtered_rebuild_services[@]}")')]
+    assert 'if [ "${svc}" = "local_ai_server" ]; then' not in filters
+    assert rollback.index('"${COMPOSE_BUILD_HELPER}" "${build_only_services[@]}"') < rollback.index(
+        'docker compose up -d --no-build --pull never "${rebuild_services[@]}"'
     )
+
+
+def test_rollback_builds_before_reconcile_and_archives_pending_only_on_success() -> None:
+    runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
+    rollback = _run_rollback_body(runner)
+    build = '"${COMPOSE_BUILD_HELPER}" "${rebuild_services[@]}"'
+    reconcile = 'docker compose up -d --remove-orphans --no-build --pull never "${targets[@]}"'
+    archive = 'mv -- "${UPDATES_DIR}/pending-docker.json"'
+    assert rollback.index(build) < rollback.index(reconcile) < rollback.index(archive)
+    assert rollback.count("guard_rollback_active_calls") == 2
+    dockerfile = (ROOT / "updater" / "Dockerfile").read_text(encoding="utf-8")
+    assert "docker-buildx-plugin" in dockerfile
+    assert "COPY scripts/compose-build.sh /usr/local/bin/aava-compose-build" in dockerfile
 
 
 def test_source_built_cli_is_written_as_the_project_owner() -> None:

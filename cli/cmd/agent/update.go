@@ -127,9 +127,13 @@ type updateContext struct {
 
 	changedFiles []string
 
-	servicesToRebuild map[string]bool
-	servicesToRestart map[string]bool
-	composeChanged    bool
+	servicesToRebuild   map[string]bool
+	servicesToRestart   map[string]bool
+	composeChanged      bool
+	pendingDocker       bool
+	runningBeforeUpdate map[string]bool
+	currentlyRunning    map[string]bool
+	checkoutSHA         string
 
 	// Local AI is optional. Keep the active-route selection signal separate
 	// from container existence so Docker actions can distinguish a selected,
@@ -202,13 +206,12 @@ func runUpdate() (retErr error) {
 		}
 	}()
 
-	ctx.oldSHA, err = gitRevParse("HEAD")
-	if err != nil {
-		return err
-	}
-
 	// Plan-only: show what would happen without changing the repo or containers.
 	if updatePlan {
+		ctx.oldSHA, err = gitRevParse("HEAD")
+		if err != nil {
+			return err
+		}
 		return runUpdatePlan(ctx)
 	}
 
@@ -217,6 +220,11 @@ func runUpdate() (retErr error) {
 		return err
 	}
 	defer releaseLock()
+	// Read the baseline under the same lock as the pending action journal.
+	ctx.oldSHA, err = gitRevParse("HEAD")
+	if err != nil {
+		return err
+	}
 
 	printUpdateStep("Creating backups")
 	if err := createUpdateBackups(ctx); err != nil {
@@ -301,18 +309,26 @@ func runUpdate() (retErr error) {
 		return fmt.Errorf("cannot fast-forward: local branch has diverged from %s (resolve manually and re-run)", targetLabel)
 	}
 	ctx.newSHA = finalSHA
+	if branchMismatch {
+		ctx.checkoutSHA = branchHead
+	}
 
 	if strings.TrimSpace(ctx.oldSHA) != strings.TrimSpace(ctx.newSHA) {
 		ctx.changedFiles, err = gitDiffNames(ctx.oldSHA, ctx.newSHA)
 		if err != nil {
 			return err
 		}
-		decideDockerActions(ctx)
-		applyServiceFilters(ctx)
-		applyOptionalServiceFilters(ctx)
-		if err := preflightDockerChangeGuard(ctx); err != nil {
+	}
+	if err := planDockerActions(ctx); err != nil {
+		return err
+	}
+	if updateHasDockerChanges(ctx) {
+		if err := captureRunningDockerServices(ctx); err != nil {
 			return err
 		}
+	}
+	if err := preflightDockerChangeGuard(ctx); err != nil {
+		return err
 	}
 
 	printUpdateStep("Checking working tree")
@@ -345,6 +361,12 @@ func runUpdate() (retErr error) {
 	}
 
 	restoreOperatorConfigAfterMerge := dirty && localPolicy == localChangesOverwrite
+
+	// Journal before checkout: a failed build or interrupted process must not
+	// turn the next same-commit update into a successful no-op.
+	if err := savePendingDockerActions(ctx); err != nil {
+		return err
+	}
 
 	if branchMismatch {
 		printUpdateStep(fmt.Sprintf("Checking out %s", updateRef))
@@ -396,6 +418,9 @@ func runUpdate() (retErr error) {
 	printUpdateStep("Applying Docker changes")
 	printDockerActionsPlanned(ctx)
 	if err := applyDockerActions(ctx); err != nil {
+		return err
+	}
+	if err := clearPendingDockerActions(ctx.repoRoot); err != nil {
 		return err
 	}
 
@@ -496,11 +521,11 @@ func runUpdatePlan(ctx *updateContext) error {
 		if err != nil {
 			return err
 		}
-		decideDockerActions(ctx)
-		applyServiceFilters(ctx)
-		applyOptionalServiceFilters(ctx)
 	} else {
 		ctx.changedFiles = nil
+	}
+	if err := planDockerActions(ctx); err != nil {
+		return err
 	}
 
 	wouldStash := dirty && localPolicy == localChangesRetain
@@ -568,6 +593,9 @@ func runUpdatePlan(ctx *updateContext) error {
 	if len(ctx.skippedServices) > 0 {
 		rep.SkippedServices = ctx.skippedServices
 	}
+	if ctx.pendingDocker {
+		rep.Warnings = append(rep.Warnings, "An interrupted update has pending Docker actions; these will be retried even if Git is already up to date.")
+	}
 	if wouldCheckout && strings.TrimSpace(currentBranch) != "" && strings.TrimSpace(currentBranch) != "HEAD" && strings.TrimSpace(currentBranch) != strings.TrimSpace(updateRef) {
 		rep.Warnings = append(rep.Warnings, fmt.Sprintf("Selected ref %q differs from current branch %q; update will checkout/switch branches (use --checkout=false to disallow).", updateRef, currentBranch))
 	}
@@ -631,6 +659,7 @@ var existingComposeServicesForUpdate = existingComposeServices
 var configuredActiveRouteUsesLocalAIForUpdate = configuredActiveRouteUsesLocalAI
 var detectLocalAIUpdateStateForUpdate = detectLocalAIUpdateState
 var runDockerCommandForUpdate = runCmd
+var queryActiveCallsForUpdate = queryActiveCalls
 
 const activeAgentRouteReadTimeout = 15 * time.Second
 
@@ -647,6 +676,11 @@ type activeAgentRoute struct {
 }
 
 func applyOptionalServiceFilters(ctx *updateContext) {
+	// A failed recreation may have removed the previously running container.
+	// Its saved running-state intent still authorizes restoring that service.
+	if ctx.runningBeforeUpdate["local_ai_server"] {
+		return
+	}
 	if !ctx.servicesToRebuild["local_ai_server"] && !ctx.servicesToRestart["local_ai_server"] {
 		return
 	}
@@ -1154,6 +1188,9 @@ func parseSemver(v string) (major int, minor int, patch int, ok bool) {
 }
 
 func createUpdateBackups(ctx *updateContext) error {
+	if err := validateSQLiteBackupPaths(); err != nil {
+		return err
+	}
 	id := strings.TrimSpace(updateBackupID)
 	if id != "" {
 		id = sanitizeBackupID(id)
@@ -1162,14 +1199,17 @@ func createUpdateBackups(ctx *updateContext) error {
 		}
 	}
 
-	dirName := time.Now().UTC().Format("20060102_150405")
+	dirName := time.Now().UTC().Format("20060102_150405.000000000")
 	if id != "" {
 		dirName = id
 	}
 
 	backupDir := filepath.Join(ctx.repoRoot, ".agent", "update-backups", dirName)
-	if err := os.MkdirAll(backupDir, 0o700); err != nil {
-		return fmt.Errorf("failed to create backup directory: %w", err)
+	if err := os.MkdirAll(filepath.Dir(backupDir), 0o700); err != nil {
+		return fmt.Errorf("failed to create backup parent directory: %w", err)
+	}
+	if err := os.Mkdir(backupDir, 0o700); err != nil {
+		return fmt.Errorf("failed to create a new backup directory (choose a fresh --backup-id; existing backups are never overwritten): %w", err)
 	}
 	ctx.backupDir = backupDir
 	if err := os.Chmod(backupDir, 0o700); err != nil {
@@ -1204,12 +1244,8 @@ func createUpdateBackups(ctx *updateContext) error {
 // file copy can miss committed pages that are still in the WAL and is not a
 // safe pre-migration backup while calls are active.
 //
-// When the ai_engine container is not running (a common recovery context for
-// running an update), the online-backup path is unavailable. In that case we
-// fall back to a host-side file copy of the .db plus its -wal/-shm sidecars,
-// which is safe precisely because a stopped engine means there are no concurrent
-// writers. Aborting the whole update just because the engine is down would defeat
-// the purpose, so we never fail here on a stopped container.
+// A stopped engine does not prove all writers stopped: Admin UI can still write
+// agents.db. If the container probe is unavailable, use the host SQLite backup API.
 func backupSQLiteIfExists(relPath, backupRoot string) error {
 	if _, err := os.Stat(relPath); err != nil {
 		if os.IsNotExist(err) {
@@ -1219,7 +1255,7 @@ func backupSQLiteIfExists(relPath, backupRoot string) error {
 	}
 
 	if !aiEngineRunning() {
-		printUpdateInfo("ai_engine not running; copying %s (and WAL/SHM) from host", relPath)
+		printUpdateInfo("ai_engine not running; taking an online host snapshot of %s", relPath)
 		return backupSQLiteHostCopy(relPath, backupRoot)
 	}
 
@@ -1228,21 +1264,29 @@ func backupSQLiteIfExists(relPath, backupRoot string) error {
 	containerSrc := "/app/" + filepath.ToSlash(relPath)
 	containerTmp := "/app/data/" + tmpName
 	const script = `
-import sqlite3, sys
+import sqlite3, sys, time
 src = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True, timeout=30)
 dst = sqlite3.connect(sys.argv[2])
-with dst:
-    src.backup(dst)
-dst.close(); src.close()
+deadline = time.monotonic() + 30
+def progress(*_):
+    if time.monotonic() > deadline:
+        raise TimeoutError("SQLite snapshot exceeded 30 seconds")
+try:
+    src.backup(dst, pages=128, progress=progress, sleep=0.01)
+    if dst.execute("PRAGMA quick_check").fetchone() != ("ok",):
+        raise RuntimeError("SQLite snapshot integrity check failed")
+finally:
+    dst.close(); src.close()
 `
-	cmd := exec.Command("docker", "exec", "ai_engine", "python3", "-c", script, containerSrc, containerTmp)
+	defer os.Remove(hostTmp)
+	backupCtx, cancelBackup := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancelBackup()
+	cmd := exec.CommandContext(backupCtx, "docker", "exec", "ai_engine", "python3", "-c", script, containerSrc, containerTmp)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		// The container looked up as running but the exec failed (e.g. it became
-		// unhealthy mid-update). Fall back to a host copy rather than aborting.
-		printUpdateInfo("online SQLite backup failed for %s (%s); falling back to host copy", relPath, strings.TrimSpace(string(out)))
+		// A failed exec does not prove writers stopped. Never copy live sidecars.
+		printUpdateInfo("container SQLite backup failed for %s (%s); trying host SQLite snapshot", relPath, strings.TrimSpace(string(out)))
 		return backupSQLiteHostCopy(relPath, backupRoot)
 	}
-	defer os.Remove(hostTmp)
 	dst := filepath.Join(backupRoot, relPath)
 	if err := copyFile(hostTmp, dst); err != nil {
 		return err
@@ -1253,7 +1297,7 @@ dst.close(); src.close()
 
 // aiEngineRunning reports whether the ai_engine container is currently running.
 // A non-running or unreachable container (docker absent, daemon down) returns
-// false so callers fall back to a host-side copy.
+// false so callers fall back to a coherent host-side SQLite snapshot.
 func aiEngineRunning() bool {
 	out, err := runCmd("docker", "ps", "--filter", "name=^ai_engine$", "--filter", "status=running", "--format", "{{.Names}}")
 	if err != nil {
@@ -1267,27 +1311,62 @@ func aiEngineRunning() bool {
 	return false
 }
 
-// backupSQLiteHostCopy copies a SQLite DB and any -wal/-shm sidecars directly
-// from the host filesystem. Only valid when no process is writing the DB (i.e.
-// the engine is stopped); missing sidecars are skipped.
+// backupSQLiteHostCopy retains the legacy helper name but takes a coherent
+// snapshot with SQLite, including committed WAL data from other live writers.
 func backupSQLiteHostCopy(relPath, backupRoot string) error {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		return fmt.Errorf("python3 with SQLite is required for a coherent host backup of %s; install it before retrying: %w", relPath, err)
+	}
 	dst := filepath.Join(backupRoot, relPath)
-	if err := copyFile(relPath, dst); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
-	for _, suffix := range []string{"-wal", "-shm"} {
-		sidecar := relPath + suffix
-		if _, err := os.Stat(sidecar); err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return fmt.Errorf("failed to stat %s: %w", sidecar, err)
+	file, err := os.CreateTemp(filepath.Dir(dst), ".sqlite-snapshot-*")
+	if err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(file.Name())
+		return err
+	}
+	defer os.Remove(file.Name())
+	const script = `
+import pathlib, sqlite3, sys
+src = sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True, timeout=10)
+dst = sqlite3.connect(sys.argv[2], timeout=10)
+try:
+    src.backup(dst, pages=128, sleep=0.01)
+    if dst.execute("PRAGMA quick_check").fetchone() != ("ok",):
+        raise RuntimeError("SQLite snapshot integrity check failed")
+finally:
+    dst.close()
+    src.close()
+`
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, python, "-c", script, relPath, file.Name()).CombinedOutput(); err != nil {
+		return fmt.Errorf("coherent SQLite host snapshot failed for %s; update stopped before checkout: %w (%s)", relPath, err, strings.TrimSpace(string(out)))
+	}
+	if err := os.Rename(file.Name(), dst); err != nil {
+		return err
+	}
+	printUpdateInfo("SQLite host snapshot: %s", relPath)
+	return nil
+}
+
+// validateSQLiteBackupPaths prevents default-path backups from silently omitting
+// relocated databases. External layouts need explicitly mapped manual snapshots.
+func validateSQLiteBackupPaths() error {
+	for key, expected := range map[string]string{"AGENTS_DB_PATH": "data/operator/agents.db", "CALL_HISTORY_DB_PATH": "data/call_history.db"} {
+		value := strings.TrimSpace(os.Getenv(key))
+		if value == "" {
+			value, _ = dotenvValue(".env", key)
 		}
-		if err := copyFile(sidecar, filepath.Join(backupRoot, sidecar)); err != nil {
-			return err
+		if value != "" && filepath.ToSlash(filepath.Clean(strings.TrimPrefix(value, "/app/"))) != expected {
+			return fmt.Errorf("%s relocates an operator database; automatic default-path backups are insufficient: use the documented manual upgrade with a coherent snapshot of the configured database", key)
 		}
 	}
-	printUpdateInfo("SQLite host copy: %s", relPath)
 	return nil
 }
 
@@ -1929,6 +2008,13 @@ func decideDockerActions(ctx *updateContext) {
 	}
 
 	// auto
+	if ctx.composeChanged {
+		// Compose can change build args, contexts or image tags without touching
+		// a Dockerfile. Existing/selected-service filters still limit this plan.
+		ctx.servicesToRebuild["ai_engine"] = true
+		ctx.servicesToRebuild["admin_ui"] = true
+		ctx.servicesToRebuild["local_ai_server"] = true
+	}
 	for _, f := range ctx.changedFiles {
 		switch {
 		case strings.HasPrefix(f, "admin_ui/"):
@@ -1948,8 +2034,14 @@ func decideDockerActions(ctx *updateContext) {
 	}
 }
 
-func updateMayTouchAIEngine(ctx *updateContext) bool {
-	return ctx.composeChanged || ctx.servicesToRebuild["ai_engine"] || ctx.servicesToRestart["ai_engine"]
+func updateMayAffectCalls(ctx *updateContext) bool {
+	return ctx.composeChanged || ctx.servicesToRebuild["ai_engine"] || ctx.servicesToRestart["ai_engine"] || updateChangesLocalAIRuntime(ctx)
+}
+
+func updateChangesLocalAIRuntime(ctx *updateContext) bool {
+	localAIWillRun := ctx.currentlyRunning["local_ai_server"] || ctx.runningBeforeUpdate["local_ai_server"] ||
+		(ctx.localAISelected && !ctx.localAIExisting)
+	return localAIWillRun && (ctx.servicesToRebuild["local_ai_server"] || ctx.servicesToRestart["local_ai_server"])
 }
 
 func updateHasDockerChanges(ctx *updateContext) bool {
@@ -1963,16 +2055,33 @@ func preflightDockerChangeGuard(ctx *updateContext) error {
 	if _, err := runCmd("docker", "compose", "version"); err != nil {
 		return fmt.Errorf("docker compose is required before updating checkout because Docker changes are planned: %w", err)
 	}
-	if !updateMayTouchAIEngine(ctx) || envBool("AAVA_UPDATE_FORCE_ACTIVE_CALLS") {
+	if !updateMayAffectCalls(ctx) || envBool("AAVA_UPDATE_FORCE_ACTIVE_CALLS") {
 		return nil
 	}
+	return guardUpdateActiveCalls("update checkout", ctx.currentlyRunning["ai_engine"], updateChangesLocalAIRuntime(ctx))
+}
 
-	activeCalls, reachable, err := queryActiveCalls()
-	if err == nil && reachable && activeCalls > 0 {
-		return fmt.Errorf("refusing to update checkout while %d active call(s) are in progress; retry after calls complete or set AAVA_UPDATE_FORCE_ACTIVE_CALLS=true", activeCalls)
+// guardUpdateActiveCalls fails closed for a running engine, while allowing
+// recovery of a stopped engine. The override remains an explicit operator choice.
+func guardUpdateActiveCalls(stage string, engineRunning, localAIChanges bool) error {
+	if envBool("AAVA_UPDATE_FORCE_ACTIVE_CALLS") {
+		return nil
 	}
-	if err != nil {
-		printUpdateInfo("WARN: unable to check active calls before updating checkout: %v", err)
+	if !engineRunning {
+		if localAIChanges {
+			existing, known := existingComposeServicesForUpdate()
+			if !known || !existing["ai_engine"] {
+				return fmt.Errorf("cannot verify remote active calls before %s on an inference-only host; drain every remote engine, then explicitly set AAVA_UPDATE_FORCE_ACTIVE_CALLS=true", stage)
+			}
+		}
+		return nil
+	}
+	activeCalls, reachable, err := queryActiveCallsForUpdate()
+	if err != nil || !reachable {
+		return fmt.Errorf("cannot confirm active-call state before %s; retry when the engine health probe works or explicitly set AAVA_UPDATE_FORCE_ACTIVE_CALLS=true (probe: %v)", stage, err)
+	}
+	if activeCalls > 0 {
+		return fmt.Errorf("refusing to %s while %d active call(s) are in progress; retry after calls complete or set AAVA_UPDATE_FORCE_ACTIVE_CALLS=true", stage, activeCalls)
 	}
 	return nil
 }
@@ -2006,7 +2115,14 @@ func applyDockerActions(ctx *updateContext) error {
 			}
 		}
 	}
-
+	if err != nil {
+		return fmt.Errorf("cannot inspect running services before Docker actions: %w", err)
+	}
+	// A failed recreate may have stopped a service. Resume the original running
+	// state instead of filtering that service out as intentionally stopped.
+	for service := range ctx.runningBeforeUpdate {
+		runningServices[service] = true
+	}
 	rebuildServices := sortedKeys(ctx.servicesToRebuild)
 	restartServices := sortedKeys(ctx.servicesToRestart)
 	buildOnlyServices := []string{}
@@ -2066,20 +2182,29 @@ func applyDockerActions(ctx *updateContext) error {
 		})
 	}
 
-	if runningServices["ai_engine"] && (ctx.composeChanged || containsString(rebuildServices, "ai_engine") || containsString(restartServices, "ai_engine")) && !envBool("AAVA_UPDATE_FORCE_ACTIVE_CALLS") {
-		activeCalls, reachable, err := queryActiveCalls()
-		if err == nil && reachable && activeCalls > 0 {
-			printUpdateInfo("WARN: %d active call(s) started after update checkout; continuing to keep code and containers aligned", activeCalls)
+	// Build every replacement before any reconciliation/recreation. A build
+	// failure must leave the existing containers running with their prior config.
+	buildTargets := append(append([]string{}, buildOnlyServices...), rebuildServices...)
+	if err := buildDockerServices(buildTargets); err != nil {
+		return err
+	}
+	if ctx.composeChanged || containsString(rebuildServices, "ai_engine") || containsString(restartServices, "ai_engine") ||
+		containsString(rebuildServices, "local_ai_server") || containsString(restartServices, "local_ai_server") {
+		// Restart policies or an operator can start the engine during a long
+		// build. Re-read actual runtime state instead of trusting the old snapshot.
+		if err := captureRunningDockerServices(ctx); err != nil {
+			return err
 		}
-		if err != nil {
-			printUpdateInfo("WARN: unable to check active calls before ai_engine restart: %v", err)
+		localAIChanges := containsString(rebuildServices, "local_ai_server") || containsString(restartServices, "local_ai_server")
+		if err := guardUpdateActiveCalls("restart services after checkout (pending Docker actions retained)", ctx.currentlyRunning["ai_engine"], localAIChanges); err != nil {
+			return err
 		}
 	}
 
 	if ctx.composeChanged {
 		// Avoid implicit builds when Compose files change (some deployments use pull_policy: build).
 		// The rebuild/restart logic below will handle builds explicitly when needed.
-		args := []string{"compose", "up", "-d", "--remove-orphans", "--no-build"}
+		args := []string{"compose", "up", "-d", "--remove-orphans", "--no-build", "--pull", "never"}
 		if updateForceRecreate {
 			args = append(args, "--force-recreate")
 		}
@@ -2118,28 +2243,21 @@ func applyDockerActions(ctx *updateContext) error {
 		}
 	}
 
-	if len(buildOnlyServices) > 0 {
-		args := append([]string{"compose", "build"}, buildOnlyServices...)
-		if _, err := runDockerCommandForUpdate("docker", args...); err != nil {
-			return fmt.Errorf("docker compose build failed: %w", err)
-		}
-	}
-
 	if len(rebuildServices) > 0 {
-		args := []string{"compose", "up", "-d", "--build"}
+		args := []string{"compose", "up", "-d", "--no-build", "--pull", "never"}
 		if updateForceRecreate {
 			args = append(args, "--force-recreate")
 		}
 		args = append(args, rebuildServices...)
 		if _, err := runDockerCommandForUpdate("docker", args...); err != nil {
-			return fmt.Errorf("docker compose up --build failed: %w", err)
+			return fmt.Errorf("docker compose up after build failed: %w", err)
 		}
 	}
 
 	for _, svc := range restartServices {
 		if _, err := runDockerCommandForUpdate("docker", "compose", "restart", svc); err != nil {
 			// Fallback: start/recreate service if restart fails.
-			if _, err2 := runDockerCommandForUpdate("docker", "compose", "up", "-d", "--no-build", svc); err2 != nil {
+			if _, err2 := runDockerCommandForUpdate("docker", "compose", "up", "-d", "--no-build", "--pull", "never", svc); err2 != nil {
 				return fmt.Errorf("failed to restart %s (restart error: %v; up error: %w)", svc, err, err2)
 			}
 		}
@@ -2269,13 +2387,16 @@ except Exception as e:
 		if raw, ok := payload[key]; ok {
 			switch v := raw.(type) {
 			case float64:
+				if v < 0 || v != float64(int(v)) {
+					return 0, true, errors.New("engine health probe returned an invalid active-call count")
+				}
 				return int(v), true, nil
 			case int:
 				return v, true, nil
 			}
 		}
 	}
-	return 0, true, nil
+	return 0, true, errors.New("engine health probe did not return a valid active-call count")
 }
 
 func filterSlice(in []string, keep func(string) bool) []string {
@@ -2359,6 +2480,9 @@ func printUpdateFailureRecovery(ctx *updateContext, err error) {
 
 	if ctx == nil {
 		return
+	}
+	if pending, readErr := readPendingDockerActions(ctx.repoRoot); readErr == nil && pending != nil {
+		printUpdateInfo("Pending Docker actions retained at %s; after resolving the error, retry the same ref with --rebuild=auto --include-ui=true", pendingDockerPath(ctx.repoRoot))
 	}
 
 	if ctx.backupDir != "" {
@@ -2477,8 +2601,12 @@ func shortSHA(sha string) string {
 }
 
 func runCmd(name string, args ...string) (string, error) {
+	return runCmdWithInput(os.Stdin, name, args...)
+}
+
+func runCmdWithInput(input io.Reader, name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
-	cmd.Stdin = os.Stdin
+	cmd.Stdin = input
 	if verbose {
 		fmt.Printf(" → %s %s\n", name, strings.Join(args, " "))
 		var buf bytes.Buffer

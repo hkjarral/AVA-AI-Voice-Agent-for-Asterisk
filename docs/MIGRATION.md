@@ -1040,10 +1040,11 @@ curl http://localhost:15000/health
 
 For any version upgrade:
 
-1. **Backup** your `.env`, `config/ai-agent.yaml`, and `config/ai-agent.local.yaml`
-2. **Pull** the latest code: `git pull` (or use `agent update` which handles backup/restore automatically)
-3. **Run preflight**: `sudo ./preflight.sh --apply-fixes`
-4. **Rebuild**: `docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate`
-5. **Verify**: `agent check` and make a test call
+1. **Prepare** a maintenance window: pause/reroute new PBX calls and drain existing calls. Record the current Git/CLI versions, local changes, Compose files/project, running services, and the release you intend to install. Read that release's migration/rollback boundaries.
+2. **Back up** configuration, users, overlays, managed secrets and coherent SQLite snapshots of the actual Agent/History/integration paths, including any environment overrides. Live DB/WAL file copies are not coherent backups. Prefer a release CLI/updater containing the required backup fixes; see [installation backup prerequisites](INSTALLATION.md#upgrade-to-v770-existing-checkout).
+3. **Update** using `agent update --plan --ref <release>` followed by `agent update --ref <release>`, or fetch and fast-forward to the chosen release after preserving local edits. Do not use destructive reset/clean commands as a routine upgrade step.
+4. **Run preflight**: `sudo ./preflight.sh --apply-fixes` and resolve failures.
+5. **Build, then recreate** only the affected services. Use the [manual Compose/Bake procedure](CLI_TOOLS_GUIDE.md#manual-builds-on-affected-composebuildx-versions) when not using the updater; keep stopped optional services stopped and use the same Compose files/project for both steps.
+6. **Verify**: `agent check`, service readiness, a hard-refresh of Admin UI, and a test call. Keep the original backups until validation is complete. A retry at the same Git commit may still require unfinished Docker actions.
 
 For detailed release notes, see [CHANGELOG.md](../CHANGELOG.md).
