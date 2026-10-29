@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep tools that are not in-call out of the OpenAI streaming LLM request, as the
   non-streaming path already does, so a streaming turn cannot be offered pre-call or
   post-call tools.
+- Resume interrupted updater Docker actions after Git has already advanced,
+  honor `--rebuild=all` at the same commit, and recover Compose/Bake host-network
+  entitlement failures with an explicit, scoped Bake build. Keep active-call
+  checks and stopped Local AI behavior during recovery (#790).
+
 - Update the Google modular LLM default and Admin UI suggestions to Gemini 3.8
   Flash, replacing retired Gemini 1.5 defaults. Omit unsupported temperature and
   top-p parameters for Gemini 3.6+ while preserving older-model behavior and

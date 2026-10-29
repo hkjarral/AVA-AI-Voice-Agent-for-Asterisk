@@ -168,6 +168,40 @@ Before changing Git state, the updater backs up operator configuration and uses 
 
 With `--plan --plan-json`, progress is written to stderr and stdout contains valid JSON for automation.
 
+### Interrupted Docker builds and same-version recovery
+
+Before advancing Git, the updater atomically saves planned Docker actions and the
+original running services in `.agent/updates/pending-docker.json`. A failed build,
+recreation, or interrupted process leaves this record for the next update. Preview
+shows pending actions even when Git is already up to date. Retry the same ref with
+`--rebuild=auto --include-ui=true`; the normal update lock and active-call guard
+still apply. A service stopped by a failed recreation can be restarted, while an
+installed-but-stopped Local AI service remains build-only. The record is removed
+after Docker actions succeed, before post-update diagnostics.
+
+An incompatible rebuild/UI exclusion, malformed record, or unrelated manual
+branch change stops recovery with guidance. Do not delete the record merely to
+make an update pass: inspect the intended revision and finish the Docker actions
+first. Older CLI versions do not consume this record. For a build failure that
+predates this journal, the updated CLI also honors `--rebuild=all` when the target
+commit is already checked out; optional-service and UI filters still apply.
+
+Some Compose/Buildx combinations reject our `build.network: host` configuration
+with `additional privileges requested: pass "--allow=network.host"`. The updater
+recognizes this specific error, exports the selected services with
+`docker compose build --print`, and feeds that JSON to
+`docker buildx bake --file - --allow=network.host --load`. It then recreates those
+services using `--no-build --pull never`. Unrelated build failures do not activate
+this fallback, and no additional entitlement is granted. Export/Bake failures
+retain the pending actions and report which stage failed. Host networking for
+builds is separate from runtime telephony networking.
+
+When reporting a failure, include `docker compose version`, `docker buildx version`,
+the selected ref, and sanitized update output. Versions must come from the
+environment running the update: a GUI updater container can use different Docker
+plugins from the host. See [issue #790](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/790)
+and [Docker's entitlement-forwarding fix](https://github.com/docker/compose/pull/14325).
+
 ## Compatibility aliases
 
 These commands remain hidden for existing scripts:

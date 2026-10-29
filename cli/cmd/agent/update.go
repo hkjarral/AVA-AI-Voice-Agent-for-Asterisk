@@ -127,9 +127,11 @@ type updateContext struct {
 
 	changedFiles []string
 
-	servicesToRebuild map[string]bool
-	servicesToRestart map[string]bool
-	composeChanged    bool
+	servicesToRebuild   map[string]bool
+	servicesToRestart   map[string]bool
+	composeChanged      bool
+	pendingDocker       bool
+	runningBeforeUpdate map[string]bool
 
 	// Local AI is optional. Keep the active-route selection signal separate
 	// from container existence so Docker actions can distinguish a selected,
@@ -307,10 +309,15 @@ func runUpdate() (retErr error) {
 		if err != nil {
 			return err
 		}
-		decideDockerActions(ctx)
-		applyServiceFilters(ctx)
-		applyOptionalServiceFilters(ctx)
-		if err := preflightDockerChangeGuard(ctx); err != nil {
+	}
+	if err := planDockerActions(ctx); err != nil {
+		return err
+	}
+	if err := preflightDockerChangeGuard(ctx); err != nil {
+		return err
+	}
+	if updateHasDockerChanges(ctx) {
+		if err := captureRunningDockerServices(ctx); err != nil {
 			return err
 		}
 	}
@@ -345,6 +352,12 @@ func runUpdate() (retErr error) {
 	}
 
 	restoreOperatorConfigAfterMerge := dirty && localPolicy == localChangesOverwrite
+
+	// Journal before checkout: a failed build or interrupted process must not
+	// turn the next same-commit update into a successful no-op.
+	if err := savePendingDockerActions(ctx); err != nil {
+		return err
+	}
 
 	if branchMismatch {
 		printUpdateStep(fmt.Sprintf("Checking out %s", updateRef))
@@ -396,6 +409,9 @@ func runUpdate() (retErr error) {
 	printUpdateStep("Applying Docker changes")
 	printDockerActionsPlanned(ctx)
 	if err := applyDockerActions(ctx); err != nil {
+		return err
+	}
+	if err := clearPendingDockerActions(ctx.repoRoot); err != nil {
 		return err
 	}
 
@@ -496,11 +512,11 @@ func runUpdatePlan(ctx *updateContext) error {
 		if err != nil {
 			return err
 		}
-		decideDockerActions(ctx)
-		applyServiceFilters(ctx)
-		applyOptionalServiceFilters(ctx)
 	} else {
 		ctx.changedFiles = nil
+	}
+	if err := planDockerActions(ctx); err != nil {
+		return err
 	}
 
 	wouldStash := dirty && localPolicy == localChangesRetain
@@ -567,6 +583,9 @@ func runUpdatePlan(ctx *updateContext) error {
 	}
 	if len(ctx.skippedServices) > 0 {
 		rep.SkippedServices = ctx.skippedServices
+	}
+	if ctx.pendingDocker {
+		rep.Warnings = append(rep.Warnings, "An interrupted update has pending Docker actions; these will be retried even if Git is already up to date.")
 	}
 	if wouldCheckout && strings.TrimSpace(currentBranch) != "" && strings.TrimSpace(currentBranch) != "HEAD" && strings.TrimSpace(currentBranch) != strings.TrimSpace(updateRef) {
 		rep.Warnings = append(rep.Warnings, fmt.Sprintf("Selected ref %q differs from current branch %q; update will checkout/switch branches (use --checkout=false to disallow).", updateRef, currentBranch))
@@ -647,6 +666,11 @@ type activeAgentRoute struct {
 }
 
 func applyOptionalServiceFilters(ctx *updateContext) {
+	// A failed recreation may have removed the previously running container.
+	// Its saved running-state intent still authorizes restoring that service.
+	if ctx.runningBeforeUpdate["local_ai_server"] {
+		return
+	}
 	if !ctx.servicesToRebuild["local_ai_server"] && !ctx.servicesToRestart["local_ai_server"] {
 		return
 	}
@@ -2007,6 +2031,11 @@ func applyDockerActions(ctx *updateContext) error {
 		}
 	}
 
+	// A failed recreate may have stopped a service. Resume the original running
+	// state instead of filtering that service out as intentionally stopped.
+	for service := range ctx.runningBeforeUpdate {
+		runningServices[service] = true
+	}
 	rebuildServices := sortedKeys(ctx.servicesToRebuild)
 	restartServices := sortedKeys(ctx.servicesToRestart)
 	buildOnlyServices := []string{}
@@ -2120,8 +2149,13 @@ func applyDockerActions(ctx *updateContext) error {
 
 	if len(buildOnlyServices) > 0 {
 		args := append([]string{"compose", "build"}, buildOnlyServices...)
-		if _, err := runDockerCommandForUpdate("docker", args...); err != nil {
-			return fmt.Errorf("docker compose build failed: %w", err)
+		if output, err := runDockerCommandForUpdate("docker", args...); err != nil {
+			if !hostNetworkEntitlementError(output, err) {
+				return fmt.Errorf("docker compose build failed: %w", err)
+			}
+			if err := buildWithHostNetworkGrant(buildOnlyServices); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -2131,8 +2165,23 @@ func applyDockerActions(ctx *updateContext) error {
 			args = append(args, "--force-recreate")
 		}
 		args = append(args, rebuildServices...)
-		if _, err := runDockerCommandForUpdate("docker", args...); err != nil {
-			return fmt.Errorf("docker compose up --build failed: %w", err)
+		if output, err := runDockerCommandForUpdate("docker", args...); err != nil {
+			if !hostNetworkEntitlementError(output, err) {
+				return fmt.Errorf("docker compose up --build failed: %w", err)
+			}
+			if err := buildWithHostNetworkGrant(rebuildServices); err != nil {
+				return err
+			}
+			// Bake has loaded the exact Compose image tags. Prevent Compose's
+			// pull_policy: build from invoking the incompatible build path again.
+			args = []string{"compose", "up", "-d", "--no-build", "--pull", "never"}
+			if updateForceRecreate {
+				args = append(args, "--force-recreate")
+			}
+			args = append(args, rebuildServices...)
+			if _, err := runDockerCommandForUpdate("docker", args...); err != nil {
+				return fmt.Errorf("docker compose up after Bake build failed: %w", err)
+			}
 		}
 	}
 
@@ -2360,6 +2409,9 @@ func printUpdateFailureRecovery(ctx *updateContext, err error) {
 	if ctx == nil {
 		return
 	}
+	if pending, readErr := readPendingDockerActions(ctx.repoRoot); readErr == nil && pending != nil {
+		printUpdateInfo("Pending Docker actions retained at %s; after resolving the error, retry the same ref with --rebuild=auto --include-ui=true", pendingDockerPath(ctx.repoRoot))
+	}
 
 	if ctx.backupDir != "" {
 		printUpdateInfo("Backups: %s", ctx.backupDir)
@@ -2477,8 +2529,12 @@ func shortSHA(sha string) string {
 }
 
 func runCmd(name string, args ...string) (string, error) {
+	return runCmdWithInput(os.Stdin, name, args...)
+}
+
+func runCmdWithInput(input io.Reader, name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
-	cmd.Stdin = os.Stdin
+	cmd.Stdin = input
 	if verbose {
 		fmt.Printf(" → %s %s\n", name, strings.Join(args, " "))
 		var buf bytes.Buffer
