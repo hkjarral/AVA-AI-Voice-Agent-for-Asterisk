@@ -12,7 +12,7 @@ const review: TemplateReview = {
     references: [{ field: 'body_template', name: 'transcript_json', start: 0, end: 17, status: 'available', message: 'Available' }],
     variables: [{ name: 'transcript_json', type: 'array', source: 'call', description: 'Conversation so far', example: '[]' }],
     example_body: '{"transcript":{transcript_json}}',
-    preview: { url: 'https://example.invalid', headers: {}, query_params: {}, body: '{"transcript":[]}' },
+    preview: { url: 'https://example.com', headers: {}, query_params: {}, body: '{"transcript":[]}' },
 };
 
 describe('HTTP template configuration guidance', () => {
@@ -24,7 +24,7 @@ describe('HTTP template configuration guidance', () => {
         expect(screen.getByText(/Runtime enrichment required/)).toHaveClass('text-amber-700');
         fireEvent.click(screen.getByRole('button', { name: 'Validate & Preview' }));
         expect(refresh).toHaveBeenCalledOnce();
-        expect(screen.getByLabelText('Synthetic request preview')).toHaveTextContent('https://example.invalid');
+        expect(screen.getByLabelText('Synthetic request preview')).toHaveTextContent('https://example.com');
         expect(axios.post).not.toHaveBeenCalled();
         fireEvent.click(screen.getByRole('button', { name: 'Use example' }));
         expect(useExample).toHaveBeenCalledWith(review.example_body);
@@ -44,7 +44,7 @@ describe('HTTP template configuration guidance', () => {
     it('uses the backend validator rather than the live HTTP test endpoint', async () => {
         vi.mocked(axios.post).mockResolvedValue({ data: review });
         function Harness() {
-            const state = useHTTPTemplateReview({ url: 'https://example.invalid', body_template: review.example_body }, 'in_call', 'example-token');
+            const state = useHTTPTemplateReview({ url: 'https://example.com', body_template: review.example_body }, 'in_call', 'example-token');
             return <span>{state.review?.valid ? 'validated' : 'waiting'}</span>;
         }
         render(<Harness />);

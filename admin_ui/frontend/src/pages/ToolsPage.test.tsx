@@ -66,6 +66,12 @@ async function open(name: string) {
     await screen.findByRole('heading', { name: 'Tools' });
     fireEvent.click(screen.getByRole('button', { name: `Configure ${name}` }));
 }
+
+// HTTP draft validation is read-only; editing/cancelling must still never save
+// configuration, apply a generation, or dispatch an actual HTTP test request.
+function expectNoConfigurationWrites() {
+    expect(vi.mocked(axios.post).mock.calls.filter(([url]) => url !== '/api/tools/http-templates/validate')).toEqual([]);
+}
 async function editFarewell() {
     await open('Hangup');
     fireEvent.change(screen.getByLabelText('Default Farewell Message'), { target: { value: 'See you soon.' } });
@@ -222,7 +228,7 @@ describe('Tools list and dedicated editors', () => {
         fireEvent.change(screen.getByLabelText('URL'), { target: { value: 'https://example.com/new-lookup' } });
         fireEvent.click(screen.getByRole('button', { name: 'Update tool' }));
         expect(screen.getByRole('button', { name: query ? 'Add Tool' : 'Configure lookup' })).toHaveFocus();
-        expect(axios.post).not.toHaveBeenCalled();
+        expectNoConfigurationWrites();
         fireEvent.click(await screen.findByRole('button', { name: 'Save & Apply' }));
         await screen.findByText(/Applied as tool generation 9/);
         const saved = postedConfig();
@@ -236,12 +242,13 @@ describe('Tools list and dedicated editors', () => {
         const user = userEvent.setup();
         render(<ToolsPage />);
         await user.click(await screen.findByRole('button', { name: 'Configure lookup' }));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/tools/http-templates/validate', expect.objectContaining({ phase: 'in_call' }), expect.anything()));
         fireEvent.change(screen.getByLabelText('URL'), { target: { value: 'https://example.com/discard' } });
         await user.click(screen.getByRole('button', { name: cancelLabel }));
         expect(screen.getByRole('button', { name: 'Configure lookup' })).toHaveFocus();
         fireEvent.click(screen.getByRole('button', { name: 'Configure lookup' }));
         expect(screen.getByLabelText('URL')).toHaveValue('https://example.com/lookup');
-        expect(axios.post).not.toHaveBeenCalled();
+        expectNoConfigurationWrites();
     });
 
     it('restores focus to Add Tool when a new HTTP draft is cancelled', async () => {
@@ -251,7 +258,7 @@ describe('Tools list and dedicated editors', () => {
         expect(screen.getByRole('heading', { name: 'Add In-Call HTTP Tool' })).toHaveFocus();
         await user.click(screen.getByRole('button', { name: 'Cancel' }));
         expect(screen.getByRole('button', { name: 'Add Tool' })).toHaveFocus();
-        expect(axios.post).not.toHaveBeenCalled();
+        expectNoConfigurationWrites();
     });
 
     it('commits a blur-based transfer value before saving with the mouse', async () => {
