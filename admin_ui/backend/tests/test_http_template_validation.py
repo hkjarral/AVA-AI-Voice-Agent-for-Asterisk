@@ -1,3 +1,5 @@
+import json
+from urllib.parse import quote, quote_plus
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -84,6 +86,50 @@ async def test_live_test_uses_runtime_escaping_and_masks_expanded_credentials(mo
     assert sent["json"]["credential"] == "private-credential"
     assert isinstance(sent["json"]["transcript"], list)
     assert "private-credential" not in result.model_dump_json()
+    assert json.loads(result.resolved_body)["caller"] == sent["json"]["caller"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["pre_call", "in_call", "post_call"])
+async def test_live_test_displays_sent_values_with_json_field_and_environment_masks(monkeypatch, phase):
+    secrets = {"BASE_URL": "https://receiver.example.com", "SECRET": 'private"\\é\n value'}
+    secret = secrets["SECRET"]
+    variants = {secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=False)[1:-1],
+                quote(secret, safe=""), quote_plus(secret)}
+    response = httpx.Response(200, json={"echo": secret, "encoded": quote(secret, safe="")},
+                              headers={"X-Echo": quote_plus(secret)})
+    http = MagicMock(request=AsyncMock(return_value=response))
+    manager = MagicMock(__aenter__=AsyncMock(return_value=http), __aexit__=AsyncMock(return_value=None))
+    monkeypatch.setattr(tools.httpx, "AsyncClient", MagicMock(return_value=manager))
+    monkeypatch.setattr(tools, "_validate_http_tool_test_target", lambda value: None)
+    monkeypatch.setattr(tools, "get_setting", lambda name, default="": secrets[name])
+    result = await tools.test_http_tool(tools.TestHTTPRequest(
+        phase=phase, url="${BASE_URL}/hook/{call_id}", method="POST",
+        body_template='{"caller":"{caller_name}","credential":"${SECRET}","nested":{"password":"literal-password"}}',
+        test_values={"caller_name": "Actual test caller", "call_id": "actual-test-id"},
+    ))
+    assert result.success
+    assert result.resolved_url == "***/hook/actual-test-id"
+    body = json.loads(result.resolved_body)
+    assert body["caller"] == "Actual test caller"
+    assert body["credential"] == "<redacted>" and body["nested"]["password"] == "<redacted>"
+    assert http.request.await_args.kwargs["json"]["nested"]["password"] == "literal-password"
+    for value in (result.body_raw, *result.headers.values(), *result.body.values()):
+        assert all(variant not in value for variant in variants)
+    assert "receiver.example.com" not in result.model_dump_json()
+
+
+def test_save_and_explicit_test_never_expose_exception_arguments(monkeypatch):
+    def fail(*args, **kwargs):
+        raise tools.TemplateError("synthetic-private-value", code="invalid_json_template")
+    monkeypatch.setattr(tools, "assert_valid_template", fail)
+    with pytest.raises(tools.HTTPException) as error:
+        tools._validate_http_tool_template({}, "in_call")
+    assert "synthetic-private-value" not in str(error.value.detail)
+    monkeypatch.setattr(tools, "render_request", fail)
+    result = client().post("/api/tools/test-http", json={"url": "https://example.invalid"})
+    assert "synthetic-private-value" not in result.text
+    assert result.json()["error_code"] == "invalid_json_template"
 
 
 def test_support_export_keeps_the_call_correlated_template_error():

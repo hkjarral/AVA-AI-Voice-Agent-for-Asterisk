@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -501,6 +502,7 @@ class ToolRuntimeGeneration:
         generation_id: int,
         config: Mapping[str, Any],
         preserved_tools: Optional[Iterable[Any]] = None,
+        skip_invalid_http_templates: bool = False,
     ) -> "ToolRuntimeGeneration":
         from src.tools.registry import ToolRegistry
 
@@ -510,6 +512,30 @@ class ToolRuntimeGeneration:
         from src.integrations.pushover import PushoverToolConfig
         registry = ToolRegistry.isolated()
         registry.initialize_default_tools()
+        skipped_http_names: set[str] = set()
+        if skip_invalid_http_templates:
+            # Startup can omit a broken HTTP integration without disabling the
+            # engine. Reloads remain strict so publication stays atomic.
+            from src.tools.http.template import TemplateError
+            from src.tools.http.template_contract import assert_valid_template
+            for block in ("tools", "in_call_tools"):
+                for name, doc in list((snapshot.get(block) or {}).items()):
+                    if not isinstance(doc, dict):
+                        continue
+                    kind = doc.get("kind") or ("in_call_http_lookup" if block == "in_call_tools" else "")
+                    phase = {"generic_http_lookup": "pre_call", "generic_webhook": "post_call",
+                             "in_call_http_lookup": "in_call"}.get(kind)
+                    if phase is None:
+                        continue
+                    try:
+                        assert_valid_template(doc, phase)
+                    except TemplateError as exc:
+                        skipped_http_names.add(name)
+                        del snapshot[block][name]
+                        logging.getLogger(__name__).warning(
+                            "Skipping invalid HTTP tool at startup: tool=%s phase=%s error_code=%s",
+                            name, phase, exc.code,
+                        )
         for block in ("tools", "in_call_tools"):
             for name, doc in (snapshot.get(block) or {}).items():
                 if isinstance(doc, dict) and doc.get("kind") == "pushover":
@@ -527,7 +553,7 @@ class ToolRuntimeGeneration:
         )
         for tool in preserved_tools or ():
             name = getattr(getattr(tool, "definition", None), "name", None)
-            if name and not registry.has(name):
+            if name and name not in skipped_http_names and not registry.has(name):
                 registry.register_instance(tool)
 
         payload = json.dumps(snapshot, sort_keys=True, default=str, separators=(",", ":"))

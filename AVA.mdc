@@ -139,6 +139,9 @@ every service. Host `./data/` mounts at `/app/data/`; defaults include
   phase-aware validation, synthetic previews, examples, and actionable preparation
   diagnostics. In-call `{transcript_json}` is an invocation-local transcript-so-far
   snapshot, independent of summary enablement; summaries use that same snapshot.
+  Initial startup omits malformed HTTP templates with safe diagnostics; reload
+  validation stays atomic and retains the current generation on failure. Pre-call
+  JSON templates cannot use custom enrichment variables that the runtime never supplies.
   Pushover shares these editor controls for its plain-text title/message contract,
   with a fixed variable catalog, synthetic no-send preview, and field-specific
   validation. Conditional notification values remain warnings for compatibility.

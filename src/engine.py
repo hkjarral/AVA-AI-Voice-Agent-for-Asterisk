@@ -999,6 +999,7 @@ class Engine:
                 generation_id=self._next_tool_generation_id,
                 config=config_dict,
                 preserved_tools=tool_registry.get_all(),
+                skip_invalid_http_templates=True,
             )
             self._tool_generation = generation
             self._next_tool_generation_id += 1

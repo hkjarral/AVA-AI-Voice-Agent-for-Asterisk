@@ -25,6 +25,18 @@ class TemplateError(ValueError):
     def diagnostics(self) -> dict[str, Any]:
         return {"error_code": self.code, **({"template_variable": self.variable} if self.variable else {})}
 
+    def public_message(self) -> str:
+        """Use fixed API messages; exception arguments must never reach clients."""
+        return {
+            "missing_template_variable": "Supply the missing JSON template variable.",
+            "invalid_template_value": "An unquoted template variable must contain one JSON value.",
+            "invalid_json_template": "Correct the JSON template syntax or substituted value type.",
+            "summary_unavailable": "AI summaries are unavailable before the conversation starts.",
+            "summary_provider_required": "Select an explicit provider for the in-call summary.",
+            "reserved_template_variable": "AVA-supplied variables cannot be model parameters.",
+            "unavailable_template_variable": "This variable is unavailable for the selected phase/settings.",
+        }.get(self.code, "Invalid HTTP template. Check the configured URL, Content-Type and body.")
+
 
 def _text(value: Any) -> str:
     return "" if value is None else str(value)

@@ -33,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep HTTP template previews accurate for repeated environment references and
+  explicit test values; reject unsupported pre-call JSON variables. Mask escaped
+  credential echoes and use fixed API error messages. On initial startup, omit
+  malformed HTTP tools while keeping valid tools available; preserve atomic
+  rejection of invalid reloads and strict routing/Pushover policies (#766).
+
 - Keep tools that are not in-call out of the OpenAI streaming LLM request, as the
   non-streaming path already does, so a streaming turn cannot be offered pre-call or
   post-call tools.

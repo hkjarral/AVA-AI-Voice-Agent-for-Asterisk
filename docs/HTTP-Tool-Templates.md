@@ -26,16 +26,22 @@ use neutral synthetic data and remain warnings until supplied by the call.
 
 **Send test request** is a separate, explicitly triggered network operation. It
 uses the same JSON escaping and URL/body rendering as the runtime, with test
-values and configured environment references. It preserves the existing HTTP-test
-destination restrictions and redirect checks. Invalid JSON is rejected before
+values and configured environment references. Its displayed URL/body reflect those
+test values, with environment values and sensitive JSON fields masked. It preserves
+the existing HTTP-test destination restrictions and redirect checks. Invalid JSON is rejected before
 dispatch; it is never sent as an unvalidated raw body. A test does not generate
 an AI summary and cannot prove the receiver's application-side result. Expanded
-environment values are removed from returned diagnostics, including receiver echoes.
+environment values are removed from returned diagnostics, including JSON-escaped
+and URL/form-encoded receiver echoes.
 
 Validation also runs when enabled tools are saved through the managed API or
 loaded into an engine tool generation. A failed reload retains the previous
-generation, and active calls retain their captured settings. Python changes still
-require an engine restart.
+generation, and active calls retain their captured settings. On initial startup,
+an invalid HTTP template is logged with its tool, phase and safe error code and
+that tool is omitted from the running generation; valid tools still start. The
+saved configuration is unchanged. Correct the template and apply it to enable the
+omitted tool. Routing/handoff and Pushover configuration policies remain strict.
+Python changes still require an engine restart.
 
 ## Variables and phases
 
@@ -49,7 +55,7 @@ require an engine restart.
 | `{call_duration}`, `{call_outcome}`, `{call_start_time}`, `{call_end_time}` | Unavailable | Unavailable | Final recorded values |
 | `{provider}`, `{call_direction}`, `{schema_version}`, `{tool_calls_json}`, `{pre_call_results_json}`, `{call_metadata_json}` | Unavailable | Not built-in | Available |
 | Custom model parameters | Unavailable | Declared parameters only | Unavailable |
-| Custom enrichment/metadata | Only where injected by the execution context | Completed pre-call enrichment and effective call metadata | Final available enrichment and metadata |
+| Custom enrichment/metadata | Unavailable in JSON bodies; text/form retains literal unknown placeholders | Completed pre-call enrichment and effective call metadata | Final available enrichment and metadata |
 
 `{transcript_json}` is a serialized JSON array. Insert it **outside quotes**.
 `{summary_json}` is a JSON-encoded string, also inserted outside quotes; alternatively

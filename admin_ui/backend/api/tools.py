@@ -17,11 +17,11 @@ import ipaddress
 import socket
 import yaml
 from string import Formatter
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, quote, quote_plus
 from settings import get_setting
 from . import config as config_api
 from src.tools.http.template import TemplateError, _PLACEHOLDER, body_media_type, render_template
-from src.tools.http.template_contract import assert_valid_template, render_request, validate_template, variable_catalog
+from src.tools.http.template_contract import assert_valid_template, render_request, request_preview, validate_template, variable_catalog
 from services.ari_endpoint_discovery import DestinationReview, validate_additions
 
 router = APIRouter()
@@ -96,7 +96,7 @@ def _validate_http_tool_template(doc: Dict[str, Any], phase: str) -> None:
     try:
         assert_valid_template(doc, phase)
     except TemplateError as exc:
-        raise HTTPException(status_code=422, detail={"message": str(exc), **exc.diagnostics()}) from None
+        raise HTTPException(status_code=422, detail={"message": exc.public_message(), **exc.diagnostics()}) from None
 
 
 def _substitute_variables(template: str, values: Dict[str, str]) -> str:
@@ -795,7 +795,7 @@ async def test_http_tool(request: TestHTTPRequest):
     try:
         prepared = render_request(doc, test_values, request.phase, environ=environments)
     except TemplateError as exc:
-        return TestHTTPResponse(success=False, response_time_ms=0, resolved_url="", error=str(exc), **exc.diagnostics())
+        return TestHTTPResponse(success=False, response_time_ms=0, resolved_url="", error=exc.public_message(), **exc.diagnostics())
     
     # Resolve URL with variable substitution
     resolved_url = prepared["url"]
@@ -814,7 +814,7 @@ async def test_http_tool(request: TestHTTPRequest):
     # Never display or send a stale hidden body for bodyless methods.
     resolved_body = prepared["body"]
     # Never return expanded server credentials in the test response.
-    safe_preview = validate_template(doc, request.phase).get("preview") or {}
+    safe_preview = request_preview(prepared)
     
     # Prepare the response
     response_data = TestHTTPResponse(
@@ -883,7 +883,7 @@ async def test_http_tool(request: TestHTTPRequest):
             response_data.response_time_ms = (time.time() - start_time) * 1000
             response_data.status_code = resp.status_code
             response_data.headers = dict(resp.headers)
-            response_data.body_raw = resp.text[:10000]  # Limit response size
+            response_data.body_raw = resp.text  # Redact before applying the display limit.
             
             # Try to parse as JSON
             try:
@@ -892,7 +892,7 @@ async def test_http_tool(request: TestHTTPRequest):
                 response_data.suggested_mappings = _extract_json_paths(json_body)
             except (ValueError, httpx.DecodingError):
                 # Not JSON, just use raw text
-                response_data.body = resp.text[:10000]
+                response_data.body = resp.text
             
             response_data.success = 200 <= resp.status_code < 300
             
@@ -915,7 +915,14 @@ async def test_http_tool(request: TestHTTPRequest):
         logger.warning("HTTP tool test failed")
 
     # A test receiver may echo credentials in its body or response headers.
-    secret_values = sorted({str(value) for value in environments.values() if value}, key=len, reverse=True)
+    secret_values = set()
+    for value in environments.values():
+        if value:
+            # Receivers can echo a JSON string or an encoded URL/form value.
+            secret_values.update((value, json.dumps(value, ensure_ascii=True)[1:-1],
+                                  json.dumps(value, ensure_ascii=False)[1:-1],
+                                  quote(value, safe=""), quote_plus(value)))
+    secret_values = sorted(secret_values, key=len, reverse=True)
     def redact(value):
         if isinstance(value, dict):
             return {redact(key): redact(item) for key, item in value.items()}
@@ -925,7 +932,12 @@ async def test_http_tool(request: TestHTTPRequest):
             for secret in secret_values:
                 value = value.replace(secret, "***")
         return value
-    return TestHTTPResponse.model_validate(redact(response_data.model_dump()))
+    safe_response = redact(response_data.model_dump())
+    if safe_response["body_raw"] is not None:
+        safe_response["body_raw"] = safe_response["body_raw"][:10000]
+    if isinstance(safe_response["body"], str):
+        safe_response["body"] = safe_response["body"][:10000]
+    return TestHTTPResponse.model_validate(safe_response)
 
 
 # ============================================================================

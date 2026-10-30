@@ -197,9 +197,49 @@ def test_registry_activation_rejects_bad_templates_without_removing_an_existing_
     with pytest.raises(TemplateError):
         candidate.initialize_http_tools_from_config({"broken": {"kind": "generic_webhook", "url": "https://example.invalid", "payload_template": '{"oops":'}})
     assert existing.get("working") is not None
+    assert candidate.get("broken") is None
 
 
 def test_http_highlight_offsets_match_utf16_editor_after_emoji():
     review = validate_template({"url": "https://example.invalid", "method": "POST", "body_template": '{"text":"😀 {caller_name}"}'}, "in_call")
     reference = next(item for item in review['references'] if item['name'] == 'caller_name')
     assert reference['start'] == 12
+
+
+def test_repeated_environment_reference_preserves_synthetic_origin():
+    review = validate_template({
+        "url": "${API_BASE}/hook?origin=${API_BASE}", "method": "POST",
+        "headers": {"X-Origin": "${API_BASE}"}, "query_params": {"origin": "${API_BASE}"},
+        "body_template": '{"origin":"${API_BASE}"}',
+    }, "in_call")
+    assert review["valid"], review["issues"]
+    assert review["preview"]["url"].startswith("https://example.invalid/hook")
+
+
+@pytest.mark.parametrize("headers,content_type,valid", [
+    ({}, None, False),
+    ({"Content-Type": "application/json"}, None, False),
+    ({"content-type": "application/problem+json; charset=utf-8"}, None, False),
+    ({"Content-Type": "${BODY_TYPE}"}, None, False),
+    ({"Authorization": "Bearer ${SECRET}"}, "text/plain", True),
+    ({"Content-Type": "text/plain"}, None, True),
+    ({"Content-Type": "application/x-www-form-urlencoded"}, None, True),
+])
+def test_pre_call_custom_json_variables_are_unavailable(headers, content_type, valid):
+    review = validate_template({"url": "https://example.invalid", "method": "POST", "headers": headers,
+                                "content_type": content_type, "body_template": '{"custom":"{crm_company}"}'}, "pre_call")
+    assert review["valid"] is valid
+    issue = next(item for item in review["issues"] if item.get("variable") == "crm_company")
+    assert issue["severity"] == ("warning" if valid else "error")
+
+
+def test_preview_does_not_serialize_template_exception_arguments(monkeypatch):
+    from src.tools.http import template_contract
+    def fail(*args, **kwargs):
+        raise TemplateError("synthetic-private-value", code="invalid_template_value", variable="example")
+    monkeypatch.setattr(template_contract, "render_request", fail)
+    review = validate_template({"url": "https://example.invalid"}, "pre_call")
+    assert not review["valid"]
+    assert "synthetic-private-value" not in json.dumps(review)
+    assert review["issues"][-1]["error_code"] == "invalid_template_value"
+    assert review["issues"][-1]["template_variable"] == "example"

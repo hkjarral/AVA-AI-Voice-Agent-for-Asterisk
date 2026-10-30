@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
-from .template import TemplateError, _PLACEHOLDER, render_body, render_headers, render_template, render_url
+from .template import TemplateError, _PLACEHOLDER, body_media_type, render_body, render_headers, render_template, render_url
 from .debug_trace import redact_headers
 
 BODY_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
@@ -148,8 +148,8 @@ def validate_template(config: Mapping[str, Any], phase: str) -> dict[str, Any]:
             severity, message, code = "available", "Available in this phase.", ""
             if env:
                 name = env
-                environments[env] = ("https://example.invalid" if field == "url" and match.start() == 0 else
-                                     "application/json" if field.lower() == "headers.content-type" else "null")
+                environments.setdefault(env, "https://example.invalid" if field == "url" and match.start() == 0 else
+                                        "application/json" if field.lower() == "headers.content-type" else "null")
                 severity, message = "warning", "Environment-backed value; preview uses a synthetic replacement."
             elif name not in reserved and name not in model_names:
                 if name in ALL_BUILTINS:
@@ -158,6 +158,12 @@ def validate_template(config: Mapping[str, Any], phase: str) -> dict[str, Any]:
                 else:
                     severity = "warning"
                     message = "Custom enrichment/metadata variable; availability and type must be supplied at runtime."
+                    content_type = next((value for key, value in (config.get("headers") or {}).items() if key.lower() == "content-type"),
+                                        config.get("content_type") or "application/json")
+                    media_type = body_media_type({"Content-Type": render_template(content_type, {}, environ=environments)})
+                    if phase == "pre_call" and field == "body_template" and (media_type == "application/json" or media_type.endswith("+json")):
+                        severity, code = "error", "unavailable_template_variable"
+                        message = "Pre-call JSON bodies can only use AVA-supplied variables and environment references."
                 # A neutral JSON value keeps unknown dynamic slots testable,
                 # without claiming they will exist when the call executes.
                 if name not in values and name not in ALL_BUILTINS:
@@ -183,24 +189,31 @@ def validate_template(config: Mapping[str, Any], phase: str) -> dict[str, Any]:
                 issues.append(dict(severity=severity, error_code=code or "runtime_value_required", field=field, variable=name, message=message))
     try:
         rendered = render_request(config, values, phase, environ=environments)
-        rendered["headers"] = redact_headers(rendered["headers"])
-        if rendered["body"]:
-            def mask(value):
-                if isinstance(value, dict):
-                    return {key: mask(item) for key, item in redact_headers(value).items()}
-                if isinstance(value, list):
-                    return [mask(item) for item in value]
-                return value
-            try:
-                rendered["body"] = json.dumps(mask(json.loads(rendered["body"])), ensure_ascii=False)
-            except ValueError:
-                pass  # Explicit text/form templates retain their serializer.
+        rendered = request_preview(rendered)
     except TemplateError as exc:
         rendered = None
-        issues.append(dict(severity="error", field="request", message=str(exc), **exc.diagnostics()))
+        issues.append(dict(severity="error", field="request", message=exc.public_message(), **exc.diagnostics()))
     return dict(valid=not any(item["severity"] == "error" for item in issues), issues=issues,
                 references=references, variables=catalog, example_body=example_body(phase, bool(config.get("generate_summary"))),
                 preview=rendered)
+
+
+def request_preview(prepared: Mapping[str, Any]) -> dict[str, Any]:
+    """Mask sensitive JSON fields in a display copy of an already valid request."""
+    result = dict(prepared)
+    result["headers"] = redact_headers(result["headers"])
+    def mask(value):
+        if isinstance(value, dict):
+            return {key: mask(item) for key, item in redact_headers(value).items()}
+        if isinstance(value, list):
+            return [mask(item) for item in value]
+        return value
+    if result["body"]:
+        try:
+            result["body"] = json.dumps(mask(json.loads(result["body"])), ensure_ascii=False)
+        except ValueError:
+            pass  # Explicit text/form templates retain their serializer.
+    return result
 
 
 def assert_valid_template(config: Mapping[str, Any], phase: str) -> None:
