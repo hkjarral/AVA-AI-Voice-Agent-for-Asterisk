@@ -23,7 +23,9 @@ beforeEach(() => {
     });
     vi.mocked(axios.post).mockImplementation(async (url, body) => ({
         data:
-            url === '/api/pushover/credentials'
+            url === '/api/pushover/templates/validate'
+                ? { valid: !(body as {config?: {body?: string}})?.config?.body?.includes('{bad}'), issues: (body as {config?: {body?: string}})?.config?.body?.includes('{bad}') ? [{field:'body', severity:'error', error_code:'unsupported_template_variable', message:'Unsupported notification variable.'}] : [], references: [], variables: [], example_title: '{agent}: example', example_body: 'Caller: {caller_number}', preview: {title:'Synthetic preview', message:'Synthetic message'} }
+                : url === '/api/pushover/credentials'
                 ? {
                       token_file: '/managed/application',
                       recipients: Object.fromEntries(
@@ -73,7 +75,8 @@ describe('Pushover in the existing tool editor', () => {
                 fireEvent.change(screen.getByLabelText('Tool description / when to use'), {
                     target: { value: 'Use before a Sales handoff' },
                 });
-            expect(axios.post).not.toHaveBeenCalled();
+            expect(vi.mocked(axios.post).mock.calls.filter(([url]) => !String(url).includes('templates/validate'))).toHaveLength(0);
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Update tool' })).toBeEnabled());
             fireEvent.click(screen.getByRole('button', { name: 'Update tool' }));
             await waitFor(() => expect(changed).toHaveBeenCalledOnce());
             const doc = changed.mock.calls[0][0].notify_sales;
@@ -95,7 +98,7 @@ describe('Pushover in the existing tool editor', () => {
             expect(doc).not.toHaveProperty('title');
             expect(JSON.stringify(doc)).not.toContain('a'.repeat(30));
             expect(JSON.stringify(doc)).not.toContain('b'.repeat(30));
-            expect(vi.mocked(axios.post).mock.calls.map(([url]) => url)).toEqual([
+            expect(vi.mocked(axios.post).mock.calls.filter(([url]) => !String(url).includes('templates/validate')).map(([url]) => url)).toEqual([
                 '/api/pushover/credentials',
             ]);
             // The staged document can be saved/applied by the parent and reopened normally.
@@ -125,12 +128,13 @@ describe('Pushover in the existing tool editor', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Configure notify_sales' }));
         expect(screen.getByLabelText('Application token')).toHaveValue('');
         expect(screen.getByLabelText('User/group key (legacy)')).toHaveValue('');
-        fireEvent.click(screen.getByRole('button', { name: 'Preview message' }));
-        await screen.findByText('Synthetic preview');
-        expect(vi.mocked(axios.post).mock.calls.map(([url]) => url)).toEqual([
-            '/api/pushover/preview',
+        fireEvent.click(screen.getByRole('button', { name: 'Validate & Preview' }));
+        await screen.findByLabelText('Synthetic notification preview');
+        await waitFor(() => expect(screen.getByLabelText('Synthetic notification preview')).toHaveTextContent('Synthetic message'));
+        expect(vi.mocked(axios.post).mock.calls.filter(([url]) => !String(url).includes('templates/validate')).map(([url]) => url)).toEqual([
         ]);
-        fireEvent.click(screen.getByRole('button', { name: 'Update tool' }));
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Update tool' })).toBeEnabled());
+            fireEvent.click(screen.getByRole('button', { name: 'Update tool' }));
         await waitFor(() => expect(changed).toHaveBeenCalledOnce());
         expect(changed.mock.calls[0][0].notify_sales.token_file).toBe('/managed/application');
         expect(changed.mock.calls[0][0].notify_sales.recipients.legacy.key_file).toBe(
@@ -160,13 +164,14 @@ it('adds, disables and removes recipient/group rows without sending', async () =
     });
     fireEvent.click(screen.getByRole('button', { name: 'Remove recipient_3' }));
     expect(screen.queryByLabelText('User/group key (recipient_3)')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Update tool' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Update tool' })).toBeEnabled());
+            fireEvent.click(screen.getByRole('button', { name: 'Update tool' }));
     await waitFor(() => expect(changed).toHaveBeenCalledOnce());
     expect(changed.mock.calls[0][0].send_recap.recipients).toEqual({
         recipient_1: { label: 'Alice', enabled: true, key_file: '' },
         recipient_2: { label: 'Sales group', enabled: false, key_file: '' },
     });
-    expect(axios.post).not.toHaveBeenCalled();
+    expect(vi.mocked(axios.post).mock.calls.filter(([url]) => !String(url).includes('templates/validate'))).toHaveLength(0);
 });
 
 it('updates generic summary hints without replacing a saved custom CRM template', async () => {
@@ -200,7 +205,30 @@ it('updates generic summary hints without replacing a saved custom CRM template'
         'Caller: {caller_number}\nCall: {call_id}\nSummary: {summary}'
     );
     fireEvent.click(screen.getByLabelText('Generate AI Summary'));
-    fireEvent.click(screen.getByRole('button', { name: 'Update tool' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Update tool' })).toBeEnabled());
+            fireEvent.click(screen.getByRole('button', { name: 'Update tool' }));
     await waitFor(() => expect(changed).toHaveBeenCalledOnce());
     expect(changed.mock.calls[0][0].custom_notice).toMatchObject({ body, title: 'Custom {agent}' });
+});
+
+it.each(['pre_call', 'in_call', 'post_call'] as const)('reviews %s templates, blocks invalid saves, and preserves saved values on cancel', async phase => {
+    const changed = vi.fn();
+    render(<HTTPToolForm phase={phase} config={{notify_example:{kind:'pushover', phase, body:'Saved message', title:'Saved title', enabled:true}}} onChange={changed} presentation="page" />);
+    fireEvent.click(screen.getByRole('button', {name:'Configure notify_example'}));
+    await waitFor(() => expect(screen.getByText('No definite template errors detected.')).toBeInTheDocument());
+    expect(screen.getByLabelText('Pushover template guidance')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Application token'), {target:{value:'a'.repeat(30)}});
+    fireEvent.change(screen.getByLabelText('Message template'), {target:{value:'{bad}'}});
+    await waitFor(() => expect(screen.getByRole('button', {name:'Update tool'})).toBeDisabled());
+    expect(await screen.findByText(/Unsupported notification variable/)).toBeInTheDocument();
+    const validationCalls = vi.mocked(axios.post).mock.calls.filter(([url]) => url === '/api/pushover/templates/validate');
+    expect(validationCalls.length).toBeGreaterThan(0);
+    expect(JSON.stringify(validationCalls)).not.toContain('a'.repeat(30));
+    fireEvent.click(screen.getByRole('button', {name:'Use example'}));
+    expect(screen.getByLabelText('Notification title')).toHaveValue('{agent}: example');
+    expect(screen.getByLabelText('Message template')).toHaveValue('Caller: {caller_number}');
+    await waitFor(() => expect(screen.getByRole('button', {name:'Update tool'})).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', {name:'Cancel'}));
+    expect(changed).not.toHaveBeenCalled();
+    expect(vi.mocked(axios.post).mock.calls.filter(([url]) => !String(url).includes('templates/validate'))).toHaveLength(0);
 });

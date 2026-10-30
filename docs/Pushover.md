@@ -58,6 +58,35 @@ execution after a transfer. Invoke the notification before transfer when needed.
 A booking update or general callback notification can use a different named tool,
 description and template; in-call tools are not tied to transfers.
 
+## Template guidance and validation
+
+All three tool phases share the HTTP editor's guidance panel, inline variable
+highlighting, **Validate & Preview**, and **Use example / Copy example** controls.
+For Pushover, examples update both the title and message only after an explicit
+click. Existing saved templates and blank-template defaults are preserved.
+
+Review uses synthetic call values and the runtime plain-text renderer. It never
+reads application/recipient secrets, stages credentials, sends a notification, or
+calls a summary model. **Validate recipient** and **Send test** remain separate
+explicit network actions. Editing a template clears its old review; saving waits
+for a valid review of the current draft. The backend also rejects invalid templates
+with the affected title/body field and a safe error code.
+
+Use plain `{caller_number}`, `{call_id}` and `{summary}` placeholders. Escape
+literal braces as `{{` and `}}`. Unsupported variables, unmatched braces and format
+operations are errors. HTTP JSON fields such as `{transcript_json}` and
+`{summary_json}` are not notification variables. The catalog describes optional
+trusted enrichment (which can render as `unknown`), disabled summaries (which
+render as `unavailable`), and early-phase outcomes/duration (`pending` / `0`). These
+conditional values are warnings, preserving existing template behavior. Pre-call
+summary generation remains invalid.
+
+Pushover limits rendered titles to 250 and messages to 1024 characters. Preview
+uses the existing runtime truncation and summary-space handling; actual values
+can have different lengths. Source-template limits remain 2000/8000 characters.
+The external contract was rechecked against the [official API](https://pushover.net/api)
+on 2026-10-30; this extension adds no vendor endpoints or delivery behavior.
+
 ## Phase behavior
 
 - **Pre-call:** selected notifications run after selected enrichment finishes,

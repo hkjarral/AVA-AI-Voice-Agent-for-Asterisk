@@ -52,3 +52,14 @@ describe('HTTP template configuration guidance', () => {
         expect(axios.post).toHaveBeenCalledWith('/api/tools/http-templates/validate', expect.objectContaining({ phase: 'in_call' }), expect.anything());
     });
 });
+
+it('uses plain-text title/message examples and guidance for Pushover', () => {
+    const useExample=vi.fn();
+    render(<HTTPTemplateGuidance kind="pushover" phase="post_call" review={{...review, example_title:'{agent}: call complete', example_body:'Caller: {caller_number}', preview:{title:'Example Agent',message:'Synthetic message'}}} error="" refresh={vi.fn()} onUseExample={useExample} />);
+    expect(screen.getByLabelText('Pushover template guidance')).toHaveTextContent('Pushover titles and messages are plain text');
+    expect(screen.queryByText(/JSON-encoded placeholders such as/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button',{name:'Validate & Preview'}));
+    expect(screen.getByLabelText('Synthetic notification preview')).toHaveTextContent('Synthetic message');
+    fireEvent.click(screen.getByRole('button',{name:'Use example'}));
+    expect(useExample).toHaveBeenCalledWith('Caller: {caller_number}', '{agent}: call complete');
+});

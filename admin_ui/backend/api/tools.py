@@ -1414,6 +1414,11 @@ def _build_tool_doc(data: Dict[str, Any], phase: str) -> Dict[str, Any]:
     """Build the stored tool config dict from validated input (None values dropped)."""
     if data.get("kind") == "pushover":
         from src.integrations.pushover import PushoverToolConfig
+        from src.integrations.pushover_templates import review_templates
+        review = review_templates(data, phase)
+        error = next((issue for issue in review["issues"] if issue["severity"] == "error"), None)
+        if error:
+            raise HTTPException(status_code=422, detail=error)
         allowed = set(PushoverToolConfig.model_fields)
         try:
             http_only = (

@@ -16,7 +16,7 @@ vi.mock('../../hooks/useConfirmDialog', () => ({
 vi.mock('axios', () => ({
     default: {
         get: vi.fn().mockResolvedValue({ data: { providers: [] } }),
-        post: vi.fn(),
+        post: vi.fn().mockResolvedValue({ data: {valid:true,issues:[],references:[],variables:[],example_body:'{}',preview:{}} }),
     },
 }));
 
@@ -31,7 +31,7 @@ const expectThemeAwareControl = (control: HTMLElement) => {
 };
 
 describe('HTTPToolForm editor colors', () => {
-    it('keeps persistence opt-in and saves the per-output correction policy', () => {
+    it('keeps persistence opt-in and saves the per-output correction policy', async () => {
         const onChange = vi.fn();
         render(
             <HTTPToolForm
@@ -61,6 +61,7 @@ describe('HTTPToolForm editor colors', () => {
         fireEvent.click(persist);
         expect(correct).toBeEnabled();
         fireEvent.click(correct);
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
         fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
         expect(onChange).toHaveBeenCalledOnce();
@@ -73,7 +74,7 @@ describe('HTTPToolForm editor colors', () => {
         });
     });
 
-    it('styles pre-call header, query, output, and body controls for dark mode', () => {
+    it('styles pre-call header, query, output, and body controls for dark mode', async () => {
         renderForm('pre_call');
         fireEvent.click(screen.getByRole('button', { name: 'Add Tool' }));
 
@@ -90,7 +91,7 @@ describe('HTTPToolForm editor colors', () => {
         );
     });
 
-    it('starts GET lookups without a JSON header and clears a hidden body on method change', () => {
+    it('starts GET lookups without a JSON header and clears a hidden body on method change', async () => {
         renderForm('pre_call');
         fireEvent.click(screen.getByRole('button', { name: 'Add Tool' }));
 
@@ -109,7 +110,7 @@ describe('HTTPToolForm editor colors', () => {
         ).toHaveValue('');
     });
 
-    it('preserves a configured body when switching from POST to DELETE', () => {
+    it('preserves a configured body when switching from POST to DELETE', async () => {
         renderForm('pre_call');
         fireEvent.click(screen.getByRole('button', { name: 'Add Tool' }));
         fireEvent.change(screen.getByLabelText('Method'), { target: { value: 'POST' } });
@@ -122,7 +123,7 @@ describe('HTTPToolForm editor colors', () => {
         expect(screen.getByDisplayValue('{"delete":true}')).toBeInTheDocument();
     });
 
-    it('styles in-call parameter, query, output, body, and description controls', () => {
+    it('styles in-call parameter, query, output, body, and description controls', async () => {
         renderForm('in_call');
         fireEvent.click(screen.getByRole('button', { name: 'Add Tool' }));
 
@@ -148,7 +149,7 @@ describe('HTTPToolForm editor colors', () => {
         expectThemeAwareControl(screen.getByDisplayValue('string'));
     });
 
-    it('styles shared headers and the post-call payload control', () => {
+    it('styles shared headers and the post-call payload control', async () => {
         renderForm('post_call');
         fireEvent.click(screen.getByRole('button', { name: 'Add Tool' }));
 
@@ -247,6 +248,7 @@ describe('HTTPToolForm editor colors', () => {
         fireEvent.change(screen.getByLabelText('Summary Prompt'), {
             target: { value: 'Create a {max_words}-word CRM summary.' },
         });
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
         fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
         expect(onChange).toHaveBeenCalledOnce();
@@ -299,12 +301,13 @@ describe('HTTPToolForm editor colors', () => {
         expect(screen.getByLabelText('Summary Provider')).toHaveTextContent(
             'DeepSeek — deepseek-v4-flash — API key missing'
         );
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
         fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
         expect(onChange).not.toHaveBeenCalled();
     });
 
-    it('allows unrelated saves for an unchanged legacy summary configuration', () => {
+    it('allows unrelated saves for an unchanged legacy summary configuration', async () => {
         const onChange = vi.fn();
         const legacyConfig = {
             legacy_hook: {
@@ -326,6 +329,7 @@ describe('HTTPToolForm editor colors', () => {
         fireEvent.change(screen.getByLabelText('URL'), {
             target: { value: 'https://hooks.example.com/updated' },
         });
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
         fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
         expect(onChange).toHaveBeenCalledOnce();
@@ -333,7 +337,7 @@ describe('HTTPToolForm editor colors', () => {
         expect(onChange.mock.calls[0][0].legacy_hook.summary_provider).toBeUndefined();
     });
 
-    it('requires a provider when legacy summary settings are changed', () => {
+    it('requires a provider when legacy summary settings are changed', async () => {
         const onChange = vi.fn();
         const legacyConfig = {
             legacy_hook: {
@@ -353,6 +357,7 @@ describe('HTTPToolForm editor colors', () => {
 
         fireEvent.click(screen.getByRole('button', { name: 'Edit legacy_hook' }));
         fireEvent.change(screen.getByLabelText('Max Summary Words'), { target: { value: '120' } });
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
         fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
         expect(onChange).not.toHaveBeenCalled();

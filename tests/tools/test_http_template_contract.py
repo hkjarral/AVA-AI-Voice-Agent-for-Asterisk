@@ -191,9 +191,15 @@ async def test_transcripts_are_isolated_per_call_and_cleanup_blocks_delivery_wit
 
 def test_registry_activation_rejects_bad_templates_without_removing_an_existing_generation():
     from src.tools.registry import ToolRegistry
-    existing = ToolRegistry()
+    existing = ToolRegistry.isolated()
     existing.initialize_in_call_http_tools_from_config({"working": {"url": "https://example.invalid", "kind": "in_call_http_lookup"}})
-    candidate = ToolRegistry()
+    candidate = ToolRegistry.isolated()
     with pytest.raises(TemplateError):
         candidate.initialize_http_tools_from_config({"broken": {"kind": "generic_webhook", "url": "https://example.invalid", "payload_template": '{"oops":'}})
     assert existing.get("working") is not None
+
+
+def test_http_highlight_offsets_match_utf16_editor_after_emoji():
+    review = validate_template({"url": "https://example.invalid", "method": "POST", "body_template": '{"text":"😀 {caller_name}"}'}, "in_call")
+    reference = next(item for item in review['references'] if item['name'] == 'caller_name')
+    assert reference['start'] == 12

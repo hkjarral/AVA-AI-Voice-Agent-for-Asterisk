@@ -59,7 +59,7 @@ beforeEach(() => {
     mocks.refetch.mockResolvedValue(undefined);
     mocks.confirm.mockResolvedValue(false);
     vi.mocked(axios.get).mockResolvedValue({ data: { tools: [], providers: [] } });
-    vi.mocked(axios.post).mockImplementation(async url => ({ data: url === '/api/config/yaml' ? { recommended_apply_method: 'hot_reload' } : { tool_generation: 9 } }));
+    vi.mocked(axios.post).mockImplementation(async url => ({ data: String(url).includes('templates/validate') ? {valid:true,issues:[],references:[],variables:[],example_body:'{}',preview:{}} : url === '/api/config/yaml' ? { recommended_apply_method: 'hot_reload' } : { tool_generation: 9 } }));
 });
 
 async function open(name: string) {
@@ -226,6 +226,7 @@ describe('Tools list and dedicated editors', () => {
         expect(screen.getByRole('heading', { name: 'Edit lookup' })).toHaveFocus();
         expect(screen.queryByRole('button', { name: 'Save & Apply' })).not.toBeInTheDocument();
         fireEvent.change(screen.getByLabelText('URL'), { target: { value: 'https://example.com/new-lookup' } });
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Update tool' })).toBeEnabled());
         fireEvent.click(screen.getByRole('button', { name: 'Update tool' }));
         expect(screen.getByRole('button', { name: query ? 'Add Tool' : 'Configure lookup' })).toHaveFocus();
         expectNoConfigurationWrites();
@@ -316,7 +317,7 @@ describe('Tools list and dedicated editors', () => {
         let finish!: (value: unknown) => void;
         const pending = new Promise(resolve => { finish = resolve; });
         vi.mocked(axios.post).mockImplementation(async url => url.toString().endsWith('/office/verify') ? pending
-            : { data: url === '/api/config/yaml' ? { recommended_apply_method: 'hot_reload' } : { tool_generation: 9 } });
+            : { data: String(url).includes('templates/validate') ? {valid:true,issues:[],references:[],variables:[],example_body:'{}',preview:{}} : url === '/api/config/yaml' ? { recommended_apply_method: 'hot_reload' } : { tool_generation: 9 } });
         render(<ToolsPage />);
         await open('Google Calendar');
         fireEvent.click(screen.getByRole('button', { name: /Verify access/ }));
@@ -356,6 +357,7 @@ describe('Tools persistence and apply outcomes', () => {
         const key = phase === 'Pre-Call' ? 'before' : 'after';
         fireEvent.click(screen.getByRole('button', { name: `Configure ${key}` }));
         fireEvent.change(screen.getByLabelText('URL'), { target: { value: `https://example.com/new-${key}` } });
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Update tool' })).toBeEnabled());
         fireEvent.click(screen.getByRole('button', { name: 'Update tool' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Save & Apply' }));
         await screen.findByText(/Applied as tool generation 9/);
@@ -389,7 +391,7 @@ describe('Tools persistence and apply outcomes', () => {
     });
 
     it('does not report full success after a partial hot reload', async () => {
-        vi.mocked(axios.post).mockImplementation(async url => ({ data: url === '/api/config/yaml' ? { recommended_apply_method: 'hot_reload' } : { restart_required: true } }));
+        vi.mocked(axios.post).mockImplementation(async url => ({ data: String(url).includes('templates/validate') ? {valid:true,issues:[],references:[],variables:[],example_body:'{}',preview:{}} : url === '/api/config/yaml' ? { recommended_apply_method: 'hot_reload' } : { restart_required: true } }));
         render(<ToolsPage />);
         await editFarewell();
         fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));

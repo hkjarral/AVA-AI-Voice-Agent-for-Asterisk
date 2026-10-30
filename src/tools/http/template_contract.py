@@ -177,7 +177,7 @@ def validate_template(config: Mapping[str, Any], phase: str) -> dict[str, Any]:
                         quoted = not quoted
                 if quoted and severity != "error":
                     severity, message = "warning", "JSON-encoded values inside quotes become strings; insert outside quotes to preserve their JSON type."
-            reference = dict(field=field, name=name, start=match.start(), end=match.end(), status=severity, message=message)
+            reference = dict(field=field, name=name, start=len(template[:match.start()].encode("utf-16-le")) // 2, end=len(template[:match.end()].encode("utf-16-le")) // 2, status=severity, message=message)
             references.append(reference)
             if severity in {"warning", "error"}:
                 issues.append(dict(severity=severity, error_code=code or "runtime_value_required", field=field, variable=name, message=message))

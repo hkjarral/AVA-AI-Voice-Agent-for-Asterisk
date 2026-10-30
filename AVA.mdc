@@ -139,6 +139,10 @@ every service. Host `./data/` mounts at `/app/data/`; defaults include
   phase-aware validation, synthetic previews, examples, and actionable preparation
   diagnostics. In-call `{transcript_json}` is an invocation-local transcript-so-far
   snapshot, independent of summary enablement; summaries use that same snapshot.
+  Pushover shares these editor controls for its plain-text title/message contract,
+  with a fixed variable catalog, synthetic no-send preview, and field-specific
+  validation. Conditional notification values remain warnings for compatibility.
+  See [Pushover template guidance](docs/Pushover.md#template-guidance-and-validation).
 - **Sensitive state:** preserve telephony ownership, consent/DNC, callbacks,
   dispositions, and transfer boundaries. Outbound `AAVA_CUSTOM_VARS_JSON` must be
   bounded and confirmed before AMD/provider startup; invalid authoritative state

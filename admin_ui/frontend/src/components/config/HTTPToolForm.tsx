@@ -233,10 +233,11 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
     };
 
     const { review: templateReview, error: templateReviewError, refresh: refreshTemplateReview } = useHTTPTemplateReview(
-        editingTool && toolForm.kind !== 'pushover' ? withDraftRowsCommitted(toolForm) : null, phase, token
+        editingTool ? toolForm.kind === 'pushover' ? Object.fromEntries(['kind', 'title', 'body', 'generate_summary', 'summary_provider', 'summary_prompt', 'summary_max_words', 'priority', 'sound'].map(key => [key, toolForm[key]])) : withDraftRowsCommitted(toolForm) : null, phase, token
     );
 
-    const useTemplateExample = (body: string) => {
+    const useTemplateExample = (body: string, title?: string) => {
+        if (toolForm.kind === 'pushover') { setToolForm({ ...toolForm, body, title }); return; }
         const headers = Object.fromEntries(Object.entries(toolForm.headers || {}).filter(([key]) => key.toLowerCase() !== 'content-type'));
         setToolForm({ ...toolForm, method: isBodyCapableHTTPMethod(toolForm.method) ? toolForm.method : 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
@@ -327,8 +328,8 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
 
     const handleSaveTool = async () => {
         let committedToolForm = withDraftRowsCommitted(toolForm);
-        if (committedToolForm.kind !== 'pushover' && committedToolForm.enabled !== false && templateReview?.valid === false) {
-            toast.error('Fix HTTP template errors before enabling this tool.');
+        if ((committedToolForm.kind === 'pushover' || committedToolForm.enabled !== false) && templateReview?.valid !== true) {
+            toast.error('Wait for a valid template review before saving this tool.');
             return;
         }
         if (!isBodyCapableHTTPMethod(committedToolForm.method)) {
@@ -808,7 +809,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                             {testing ? 'Testing...' : 'Send test request'}
                         </button>}
                         <button
-                            disabled={savingPushover || (toolForm.kind !== 'pushover' && toolForm.enabled !== false && templateReview?.valid === false)}
+                            disabled={savingPushover || ((toolForm.kind === 'pushover' || toolForm.enabled !== false) && templateReview?.valid !== true)}
                             onClick={() => void handleSaveTool()}
                             className="px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90"
                         >
@@ -818,8 +819,8 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                 }
             >
                 <div className="space-y-4">
-                    {toolForm.kind !== 'pushover' && <HTTPTemplateGuidance phase={phase} review={templateReview}
-                        error={templateReviewError} refresh={refreshTemplateReview} onUseExample={useTemplateExample} />}
+                    <HTTPTemplateGuidance phase={phase} kind={toolForm.kind === 'pushover' ? 'pushover' : 'http'} review={templateReview}
+                        error={templateReviewError} refresh={refreshTemplateReview} onUseExample={useTemplateExample} />
                     <FormSelect label="Tool type" value={toolForm.kind === 'pushover' ? 'pushover' : 'http'} disabled={editingTool !== 'new_tool'} options={[{value: 'http', label: 'HTTP'}, {value: 'pushover', label: 'Pushover'}]} onChange={e => {
                         const kind = e.target.value === 'pushover' ? 'pushover' : ({pre_call: 'generic_http_lookup', in_call: 'in_call_http_lookup', post_call: 'generic_webhook'}[phase]);
                         setToolForm({...toolForm, kind, priority: 0, summary_prompt: recommendedSummaryPrompt, summary_failure_policy: 'continue'});
@@ -854,7 +855,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                         />
                     </div>
 
-                    {toolForm.kind === 'pushover' ? <PushoverToolFields value={toolForm} onChange={setToolForm} credentials={pushoverCredentials} onCredentialsChange={setPushoverCredentials} /> : <>
+                    {toolForm.kind === 'pushover' ? <PushoverToolFields value={toolForm} onChange={setToolForm} credentials={pushoverCredentials} onCredentialsChange={setPushoverCredentials} templateReview={templateReview} /> : <>
                     <FormInput
                         label="URL"
                         value={toolForm.url || ''}

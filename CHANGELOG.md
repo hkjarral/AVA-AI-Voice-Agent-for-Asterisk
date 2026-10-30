@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Extend shared template guidance, highlighting, examples and synthetic previews
+  to Pushover title/message fields in all three phases. Report safe field-specific
+  errors and wait for a current valid review before staging enabled HTTP or
+  Pushover tools, preserving separate recipient/test actions and saved templates.
+
 - Add transcript-so-far payloads to in-call HTTP tools, with phase-specific
   examples, variable guidance, template validation and synthetic previews across
   pre-, in-, and post-call HTTP tools. Preserve actionable preparation errors in

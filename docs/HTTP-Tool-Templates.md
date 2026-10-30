@@ -105,3 +105,7 @@ external action succeeded. See [in-call summaries](In-Call-Summaries.md) and the
 Implementation references: [Python 3.11 JSON serialization](https://docs.python.org/3.11/library/json.html)
 and [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259). This feature adds no vendor API,
 account requirement, or database migration.
+
+Native Pushover uses the same guidance controls for its plain-text title/message,
+with its own supported-variable catalog and rendering contract. See
+[Pushover template guidance](Pushover.md#template-guidance-and-validation).
