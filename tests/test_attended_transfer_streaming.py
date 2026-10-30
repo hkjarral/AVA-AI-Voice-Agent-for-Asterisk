@@ -2157,3 +2157,67 @@ async def test_recovery_does_not_notify_if_history_wait_replaces_attempt(monkeyp
     notify.assert_not_awaited()
     assert session.current_action is newer
     assert not session.audio_capture_enabled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['screening-failed', 'originate-failed', 'new-attempt', 'hangup', 'replace-during-originate', 'hangup-during-originate'])
+async def test_background_screening_failures_use_owned_recovery(monkeypatch, failure):
+    from unittest.mock import AsyncMock
+    from src.tools.context import ToolExecutionContext
+    from src.tools.telephony.attended_transfer import AttendedTransferTool
+    engine = _build_engine({'enabled': True})
+    session = CallSession(call_id='screening-recovery', caller_channel_id='caller')
+    attempt = {'id': 'attempt', 'type': 'attended_transfer', 'screening_mode': 'caller_recording',
+               '_tool_history_origin': {'tool_call_id': 'original'}}
+    session.current_action = attempt
+    await engine.session_store.upsert_call(session)
+    await record_in_call_tool_result(session_store=engine.session_store, call_id=session.call_id,
+        tool_call_id='original', tool_name='attended_transfer', parameters={},
+        result={'status': 'success', 'type': 'attended_transfer'})
+    notify = AsyncMock(return_value=True)
+    engine._call_providers[session.call_id] = types.SimpleNamespace(notify_transfer_failed=notify)
+    monkeypatch.setattr(engine.ari_client, 'hangup_channel', AsyncMock())
+    async def send_command(**kwargs):
+        if kwargs['method'] == 'POST' and kwargs['resource'] == 'channels':
+            if failure == 'replace-during-originate':
+                session.current_action = {'type': 'attended_transfer', 'id': 'new'}
+            elif failure == 'hangup-during-originate':
+                await engine.session_store.remove_call(session.call_id)
+            else:
+                return None
+            return {'id': 'orphan-agent'}
+        return {}
+    monkeypatch.setattr(engine.ari_client, 'send_command', AsyncMock(side_effect=send_command))
+    async def collect(**_kwargs):
+        if failure == 'screening-failed':
+            raise RuntimeError('screening unavailable')
+        if failure == 'new-attempt':
+            session.current_action = {'type': 'attended_transfer', 'id': 'new'}
+        elif failure == 'hangup':
+            await engine.session_store.remove_call(session.call_id)
+        return None
+    monkeypatch.setattr(engine, 'collect_attended_transfer_screening', collect)
+    context = ToolExecutionContext(call_id=session.call_id, caller_channel_id='caller',
+        session_store=engine.session_store, ari_client=types.SimpleNamespace(
+            engine=engine, send_command=engine.ari_client.send_command), config={})
+    tool = AttendedTransferTool()
+    await tool._complete_caller_recording_transfer(context=context, attempt=attempt,
+        destination='support', extension='6000', description='Support', dial_endpoint='SIP/6000',
+        dial_timeout_sec=30, moh_class='default', screening_max_seconds=6, screening_silence_ms=1200)
+    if failure in ('screening-failed', 'originate-failed'):
+        notify.assert_awaited_once_with(call_id=session.call_id, attempt=attempt, caller_prompt='')
+        assert session.current_action is None and session.audio_capture_enabled
+        assert [e['action'] for e in session.tool_calls] == ['attended_transfer_initiated', 'attended_transfer_failed']
+        assert {e['tool_call_id'] for e in session.tool_calls} == {'original'}
+        assert failure in session.tool_calls[-1]['message']
+        engine.ari_client.hangup_channel.assert_not_awaited()
+    else:
+        notify.assert_not_awaited()
+        assert len(session.tool_calls) == 1
+        if failure in ('new-attempt', 'replace-during-originate'):
+            assert session.current_action['id'] == 'new'
+        else:
+            assert await engine.session_store.get_by_call_id(session.call_id) is None
+
+    if failure.endswith('during-originate'):
+        engine.ari_client.send_command.assert_any_await(method='DELETE', resource='channels/orphan-agent')

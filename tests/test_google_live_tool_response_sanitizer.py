@@ -181,3 +181,81 @@ async def test_transfer_failure_rechecks_ownership_after_waiting_for_send_lock(t
     provider._send_lock.release()
     assert await pending is False
     provider.websocket.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('transition', ['sent', 'send-failed', 'new-attempt', 'hangup'])
+async def test_transfer_failure_waits_until_originating_tool_response_is_sent(transition):
+    import asyncio
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    provider, session, attempt = await _active_transfer_provider()
+    attempt['_tool_history_origin'] = {'tool_call_id': 'origin'}
+    session.current_action = None
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    response_entered = asyncio.Event()
+    response_release = asyncio.Event()
+    notify_tasks = []
+    sent = []
+
+    async def execute(*_args):
+        session.current_action = attempt
+        notify_tasks.append(asyncio.create_task(provider.notify_transfer_failed(call_id='active', attempt=attempt)))
+        entered.set()
+        await release.wait()
+        return {'status': 'success', 'type': 'attended_transfer'}
+
+    async def send(payload):
+        message = json.loads(payload)
+        if 'toolResponse' in message:
+            response_entered.set()
+            await response_release.wait()
+            if transition == 'send-failed':
+                raise RuntimeError('send failed')
+        sent.append(message)
+
+    provider.websocket.send = send
+    provider._allowed_tools = ['attended_transfer']
+    provider._tool_adapter = SimpleNamespace(
+        registry=SimpleNamespace(is_tool_allowed=lambda *_: True), execute_tool=execute)
+    provider.prepare_handoff_result = AsyncMock()
+    provider.handoff_result_sent = AsyncMock()
+    tool = asyncio.create_task(provider._handle_tool_call({'toolCall': {'functionCalls': [
+        {'id': 'origin', 'name': 'attended_transfer', 'args': {}}]}}))
+    await asyncio.wait_for(entered.wait(), 1)
+    await asyncio.sleep(0)
+    assert sent == []
+    release.set()
+    await asyncio.wait_for(response_entered.wait(), 1)
+    assert not notify_tasks[0].done()
+    assert sent == []
+    if transition == 'new-attempt':
+        session.current_action = {'type': 'attended_transfer', 'id': 'new'}
+    elif transition == 'hangup':
+        await provider._session_store.remove_call('active')
+    response_release.set()
+    await asyncio.wait_for(tool, 1)
+    delivered = await asyncio.wait_for(notify_tasks[0], 1)
+    assert delivered is (transition == 'sent')
+    assert ['toolResponse' if 'toolResponse' in m else 'clientContent' for m in sent] == (
+        ['toolResponse', 'clientContent'] if transition == 'sent' else
+        [] if transition == 'send-failed' else ['toolResponse'])
+
+
+@pytest.mark.asyncio
+async def test_transfer_response_waiter_is_released_on_session_reset_and_survives_recovery_timeout():
+    import asyncio
+    provider, session, attempt = await _active_transfer_provider()
+    attempt['_tool_history_origin'] = {'tool_call_id': 'origin'}
+    response = asyncio.get_running_loop().create_future()
+    provider._transfer_tool_responses[('active', 'origin')] = response
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(provider.notify_transfer_failed(call_id='active', attempt=attempt), .01)
+    assert not response.cancelled()
+    pending = asyncio.create_task(provider.notify_transfer_failed(call_id='active', attempt=attempt))
+    await asyncio.sleep(0)
+    provider._release_transfer_tool_responses()
+    assert not await pending
+    provider.websocket.send.assert_not_awaited()

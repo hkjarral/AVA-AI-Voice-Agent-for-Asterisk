@@ -236,6 +236,7 @@ class AttendedTransferTool(Tool):
             engine = getattr(context.ari_client, "engine", None)
             workflow = self._complete_caller_recording_transfer(
                 context=context,
+                attempt=session.current_action,
                 destination=destination,
                 extension=extension,
                 description=description,
@@ -415,6 +416,7 @@ class AttendedTransferTool(Tool):
         clear_current_action: bool,
         restore_audio_capture: bool,
         reason: str,
+        expected_action: Optional[Dict[str, Any]] = None,
     ) -> None:
         try:
             session = await context.get_session()
@@ -423,6 +425,8 @@ class AttendedTransferTool(Tool):
             return
 
         action = session.current_action or {}
+        if expected_action is not None and action is not expected_action:
+            return
         if not isinstance(action, dict) or action.get("type") != "attended_transfer":
             return
 
@@ -456,8 +460,13 @@ class AttendedTransferTool(Tool):
         dial_endpoint: str,
         dial_timeout_sec: int,
         moh_class: str,
+        attempt: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         call_id = context.call_id
+        if attempt is not None:
+            session = await context.get_session()
+            if session.cleanup_in_progress or session.current_action is not attempt:
+                return None
         try:
             await self._start_moh(context, moh_class)
         except Exception:
@@ -465,6 +474,8 @@ class AttendedTransferTool(Tool):
 
         try:
             session = await context.get_session()
+            if attempt is not None and (session.cleanup_in_progress or session.current_action is not attempt):
+                return None
             if session.current_action and session.current_action.get("type") == "attended_transfer":
                 session.current_action["pre_transfer_audio_capture_enabled"] = bool(
                     getattr(session, "audio_capture_enabled", True)
@@ -473,6 +484,8 @@ class AttendedTransferTool(Tool):
             session.audio_capture_enabled = False
             await context.session_store.upsert_call(session)
         except Exception:
+            if attempt is not None:
+                return None
             logger.debug("Failed to update session before attended transfer originate", call_id=call_id, exc_info=True)
 
         caller_id = self._build_ai_caller_id(context)
@@ -500,10 +513,22 @@ class AttendedTransferTool(Tool):
             logger.error("Failed to originate attended transfer agent leg", call_id=call_id, exc_info=True)
 
         if not result or not isinstance(result, dict) or not result.get("id"):
-            await self._cleanup_failed_originate(context, call_id)
+            if attempt is not None:
+                await self._recover_background_failure(context, attempt, reason="originate-failed")
+            else:
+                await self._cleanup_failed_originate(context, call_id)
             return None
 
         agent_channel_id = result["id"]
+        if attempt is not None:
+            try:
+                session = await context.get_session()
+            except RuntimeError:
+                session = None
+            if not session or session.cleanup_in_progress or session.current_action is not attempt:
+                # Only the leg originated by this now-stale workflow is ours.
+                await context.ari_client.send_command(method="DELETE", resource=f"channels/{agent_channel_id}")
+                return None
         try:
             session = await context.get_session()
             if session.current_action and session.current_action.get("type") == "attended_transfer":
@@ -534,6 +559,7 @@ class AttendedTransferTool(Tool):
         self,
         *,
         context: ToolExecutionContext,
+        attempt: Dict[str, Any],
         destination: str,
         extension: str,
         description: str,
@@ -547,6 +573,9 @@ class AttendedTransferTool(Tool):
         engine = getattr(context.ari_client, "engine", None)
         screening_result = None
         try:
+            session = await context.get_session()
+            if session.cleanup_in_progress or session.current_action is not attempt:
+                return
             if engine and hasattr(engine, "collect_attended_transfer_screening"):
                 screening_result = await engine.collect_attended_transfer_screening(
                     call_id=call_id,
@@ -556,7 +585,7 @@ class AttendedTransferTool(Tool):
 
             session = await context.get_session()
             action = session.current_action or {}
-            if action.get("type") != "attended_transfer":
+            if session.cleanup_in_progress or action is not attempt or action.get("type") != "attended_transfer":
                 return
 
             if screening_result and screening_result.get("audio_ulaw"):
@@ -573,12 +602,7 @@ class AttendedTransferTool(Tool):
             await context.session_store.upsert_call(session)
         except Exception:
             logger.error("Caller-recording attended transfer screening failed", call_id=call_id, exc_info=True)
-            await self._clear_pending_attended_transfer_state(
-                context,
-                clear_current_action=True,
-                restore_audio_capture=True,
-                reason="screening-failed",
-            )
+            await self._recover_background_failure(context, attempt, reason="screening-failed")
             return
 
         result = await self._originate_attended_transfer_leg(
@@ -588,13 +612,28 @@ class AttendedTransferTool(Tool):
             dial_endpoint=dial_endpoint,
             dial_timeout_sec=dial_timeout_sec,
             moh_class=moh_class,
+            attempt=attempt,
         )
         if result:
             return
 
         logger.warning("Caller-recording attended transfer fell back before origination", call_id=call_id, destination=description)
 
-    async def _cleanup_failed_originate(self, context: ToolExecutionContext, call_id: str) -> None:
+    async def _recover_background_failure(
+        self, context: ToolExecutionContext, attempt: Dict[str, Any], *, reason: str
+    ) -> None:
+        engine = getattr(context.ari_client, "engine", None)
+        if engine and hasattr(engine, "recover_attended_transfer_failure"):
+            await engine.recover_attended_transfer_failure(context.call_id, attempt, reason=reason)
+            return
+        # Standalone/custom tool hosts retain best-effort cleanup.
+        session = await context.get_session()
+        if session.current_action is attempt and not session.cleanup_in_progress:
+            await self._cleanup_failed_originate(context, context.call_id, attempt=attempt)
+
+    async def _cleanup_failed_originate(
+        self, context: ToolExecutionContext, call_id: str, *, attempt: Optional[Dict[str, Any]] = None
+    ) -> None:
         try:
             await context.ari_client.send_command(
                 method="DELETE",
@@ -608,4 +647,5 @@ class AttendedTransferTool(Tool):
             clear_current_action=True,
             restore_audio_capture=True,
             reason="originate-failed",
+            expected_action=attempt,
         )

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Order Google Live transfer-failure recovery after the originating tool response, and recover background caller-recording failures with correlated history and caller cleanup.
+
 - Preserve immediate attended-transfer invocation IDs before dialing, and safely render unknown legacy transfer actions in Call History.
 
 - Notify Google Live when an attended transfer fails after initiation, so it

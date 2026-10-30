@@ -9431,6 +9431,17 @@ class Engine:
             template_vars=template_vars,
         )
 
+    async def recover_attended_transfer_failure(
+        self, call_id: str, attempt: Dict[str, Any], *, reason: str
+    ) -> None:
+        """Recover a background screening/origination failure while it still owns the call."""
+        session = await self.session_store.get_by_call_id(call_id)
+        if not session or session.current_action is not attempt or session.cleanup_in_progress:
+            return
+        await self._attended_transfer_abort_and_resume(
+            session, str(attempt.get("agent_channel_id") or ""), reason=reason
+        )
+
     async def _attended_transfer_abort_and_resume(self, session: "CallSession", agent_channel_id: str, *, reason: str) -> None:
         """Retire the matching attended attempt and restore the surviving caller.
 
@@ -9464,14 +9475,16 @@ class Engine:
         notify = getattr(provider, "notify_transfer_failed", None)
         provider_recovery = callable(notify)
         try:
-            await self._cleanup_attended_transfer_helper_media(agent_channel_id)
+            if agent_channel_id:
+                await self._cleanup_attended_transfer_helper_media(agent_channel_id)
         except Exception:
             logger.debug("Failed to clean up attended transfer helper media on abort", call_id=call_id, agent_channel_id=agent_channel_id, exc_info=True)
         # IMPORTANT: unregister mapping before hanging up the agent leg so that the resulting
         # ChannelDestroyed/StasisEnd does not get resolved back to the caller session and tear down the call.
         self._unregister_attended_transfer_agent_channel(agent_channel_id)
         try:
-            await self.ari_client.hangup_channel(agent_channel_id)
+            if agent_channel_id:
+                await self.ari_client.hangup_channel(agent_channel_id)
         except Exception:
             pass
         try:

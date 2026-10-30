@@ -223,6 +223,7 @@ class GoogleLiveProvider(AIProviderInterface):
         self._seen_tool_call_ids: set[str] = set()
         self._detached_tool_tasks: set[asyncio.Task] = set()
         self._active_tool_call_ids: set[str] = set()
+        self._transfer_tool_responses: Dict[tuple[str, str], asyncio.Future] = {}
         self._tool_call_names: Dict[str, str] = {}
         self._tool_call_lock = asyncio.Lock()
         self._tool_teardown_lock = asyncio.Lock()
@@ -840,6 +841,7 @@ class GoogleLiveProvider(AIProviderInterface):
             call_id: Unique identifier for the call
             context: Optional context including system prompt, tools, etc.
         """
+        self._release_transfer_tool_responses()
         self._handoff_evidence.reset(call_id)
         self._call_id = call_id
         self._closing = False
@@ -1378,6 +1380,12 @@ class GoogleLiveProvider(AIProviderInterface):
         # the speech text extracted via speech_field/speech_template.
         return payload
 
+    def _release_transfer_tool_responses(self) -> None:
+        for response in self._transfer_tool_responses.values():
+            if not response.done():
+                response.set_result(False)
+        self._transfer_tool_responses.clear()
+
     async def notify_transfer_failed(
         self, *, call_id: str, attempt: Dict[str, Any], caller_prompt: str = ""
     ) -> bool:
@@ -1387,6 +1395,13 @@ class GoogleLiveProvider(AIProviderInterface):
         turnComplete requests the caller-facing recovery response immediately.
         """
         if self._call_id != call_id or self._closing or self._closed or not self._ws_is_open():
+            return False
+
+        origin = attempt.get("_tool_history_origin") or {}
+        response = self._transfer_tool_responses.get((call_id, str(origin.get("tool_call_id") or "")))
+        # The engine bounds this wait. Shield the shared future from cancellation
+        # so a timed-out recovery cannot cancel the originating tool response.
+        if response is not None and not await asyncio.shield(response):
             return False
 
         async def still_owns_attempt() -> bool:
@@ -2494,6 +2509,8 @@ class GoogleLiveProvider(AIProviderInterface):
         call_id = None
         tool_started_at = time.time()
         tool_result_recorded = False
+        transfer_responses = []
+        response_sent = None
         
         if not self._tool_adapter:
             logger.warning(
@@ -2510,6 +2527,11 @@ class GoogleLiveProvider(AIProviderInterface):
                 func_name = func_call.get("name")
                 func_args = func_call.get("args", {})
                 call_id = func_call.get("id")
+                response_sent = None
+                if func_name == "attended_transfer":
+                    response_sent = asyncio.get_running_loop().create_future()
+                    self._transfer_tool_responses[(owner_call_id, str(call_id or ""))] = response_sent
+                    transfer_responses.append(response_sent)
                 handoff_origin = self._handoff_evidence.turn(owner_call_id, self._audio_response_id if self.long_audio_playback_enabled and self._in_audio_burst else None)["id"]
                 tool_started_at = time.time()
                 tool_result_recorded = False
@@ -2653,6 +2675,8 @@ class GoogleLiveProvider(AIProviderInterface):
                 }
                 await self.prepare_handoff_result(result, owner_call_id, handoff_origin)
                 handoff_send_ok = await self._send_message(tool_response)
+                if response_sent is not None and not response_sent.done():
+                    response_sent.set_result(bool(handoff_send_ok))
                 await self.handoff_result_sent(result, owner_call_id, success=bool(handoff_send_ok))
                 if not handoff_send_ok and not terminal_after_spoken_farewell:
                     logger.warning(
@@ -2764,6 +2788,11 @@ class GoogleLiveProvider(AIProviderInterface):
                     result={"status": "error", "message": str(e)},
                     duration_ms=(time.time() - tool_started_at) * 1000,
                 )
+
+        finally:
+            for response in transfer_responses:
+                if not response.done():
+                    response.set_result(False)
 
     async def _handle_tool_call_cancellation(self, data: Dict[str, Any]) -> None:
         """Handle toolCallCancellation message (server canceled one or more pending tool calls)."""
@@ -3078,6 +3107,7 @@ class GoogleLiveProvider(AIProviderInterface):
             return
 
         self._closing = True
+        self._release_transfer_tool_responses()
         try:
             logger.info(
                 "Stopping Google Live session",

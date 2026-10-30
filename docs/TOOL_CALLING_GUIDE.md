@@ -1977,10 +1977,14 @@ The provider event uses Google's documented history-bearing `clientContent`
 message with `turnComplete: true`, after the original tool response has been
 acknowledged: https://ai.google.dev/api/live#bidigeneratecontentclientcontent .
 This requests an immediate recovery response; it is not a second function result.
+Failure events wait for the originating Google tool response to finish sending
+within the existing recovery deadline. Failed/aborted sends suppress the event.
 Queued failure events recheck the exact active attempt after acquiring the
 provider send lock. Superseded attempts cannot interrupt a newer transfer.
 Configured failure prompts resolve the attended caller/screening/destination
-variables in both provider and local playback paths.
+variables in both provider and local playback paths. Background caller-recording
+screening/origination failures use the same owned recovery and terminal history
+path, even when no destination channel was created.
 If the provider has disconnected or event delivery fails, recovery logs the
 failure and still restores caller capture and clears the ended action. It does
 not retry notification or dialing automatically. Real-call validation must cover
