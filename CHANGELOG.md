@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add transcript-so-far payloads to in-call HTTP tools, with phase-specific
+  examples, variable guidance, template validation and synthetic previews across
+  pre-, in-, and post-call HTTP tools. Preserve actionable preparation errors in
+  Call History and support exports, and align explicit HTTP tests with runtime
+  rendering instead of sending malformed JSON as raw content (#766).
+
 - Add an authenticated, OpenAI-compatible local transcription API with
   bounded multipart uploads, killable FFmpeg decoding, and a one-job isolated
   STT worker. Live-call sessions take priority and preempt batch work; backend

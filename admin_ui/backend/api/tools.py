@@ -20,6 +20,8 @@ from string import Formatter
 from urllib.parse import urlparse, urljoin
 from settings import get_setting
 from . import config as config_api
+from src.tools.http.template import TemplateError, _PLACEHOLDER, body_media_type, render_template
+from src.tools.http.template_contract import assert_valid_template, render_request, validate_template, variable_catalog
 from services.ari_endpoint_discovery import DestinationReview, validate_additions
 
 router = APIRouter()
@@ -54,6 +56,8 @@ class TestHTTPRequest(BaseModel):
     body_template: Optional[str] = None
     timeout_ms: int = 5000
     test_values: Dict[str, str] = {}
+    phase: Literal["pre_call", "in_call", "post_call"] = "pre_call"
+    generate_summary: bool = False
 
 
 class TestHTTPResponse(BaseModel):
@@ -68,27 +72,40 @@ class TestHTTPResponse(BaseModel):
     resolved_url: str
     resolved_body: Optional[str] = None
     suggested_mappings: List[Dict[str, str]] = []
+    error_code: Optional[str] = None
+    template_variable: Optional[str] = None
+
+
+class HTTPTemplateReview(BaseModel):
+    phase: Literal["pre_call", "in_call", "post_call"]
+    config: Dict[str, Any]
+
+
+@router.post("/http-templates/validate")
+async def review_http_template(request: HTTPTemplateReview):
+    """Synthetic validation/preview only: no credential lookup, LLM, or HTTP."""
+    try:
+        return validate_template(request.config, request.phase)
+    except (TypeError, ValueError, AttributeError):
+        raise HTTPException(status_code=422, detail="Invalid HTTP template configuration shape") from None
+
+
+def _validate_http_tool_template(doc: Dict[str, Any], phase: str) -> None:
+    if doc.get("kind") == "pushover":
+        return
+    try:
+        assert_valid_template(doc, phase)
+    except TemplateError as exc:
+        raise HTTPException(status_code=422, detail={"message": str(exc), **exc.diagnostics()}) from None
 
 
 def _substitute_variables(template: str, values: Dict[str, str]) -> str:
     """
     Substitute template variables like {caller_number} and ${ENV_VAR}.
     """
-    result = template
-    
-    # First, substitute {variable} style placeholders
-    for key, value in values.items():
-        result = result.replace(f"{{{key}}}", str(value))
-    
-    # Then substitute ${ENV_VAR} style environment variables
-    env_pattern = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}')
-    def env_replacer(match):
-        env_name = match.group(1)
-        resolved = get_setting(env_name, default=f"${{{env_name}}}")
-        return resolved
-    
-    result = env_pattern.sub(env_replacer, result)
-    return result
+    environments = {match.group(1): get_setting(match.group(1), default="")
+                    for match in _PLACEHOLDER.finditer(template) if match.group(1)}
+    return render_template(template, values, environ=environments)
 
 
 def _normalize_template(raw: Any) -> Optional[str]:
@@ -766,37 +783,45 @@ async def test_http_tool(request: TestHTTPRequest):
     3. Returns the response with suggested variable mappings
     """
     # Merge default test values with provided ones
-    test_values = {**DEFAULT_TEST_VALUES, **request.test_values}
+    test_values = {**DEFAULT_TEST_VALUES,
+                   **{item["name"]: item["example"] for item in variable_catalog(request.phase, request.generate_summary)},
+                   **request.test_values}
+    doc = request.model_dump()
+    if request.phase == "post_call":
+        doc["payload_template"] = request.body_template
+    environments = {match.group(1): get_setting(match.group(1), default="")
+                    for template in [request.url, *request.headers.values(), *request.query_params.values(), request.body_template or ""]
+                    for match in _PLACEHOLDER.finditer(template) if match.group(1)}
+    try:
+        prepared = render_request(doc, test_values, request.phase, environ=environments)
+    except TemplateError as exc:
+        return TestHTTPResponse(success=False, response_time_ms=0, resolved_url="", error=str(exc), **exc.diagnostics())
     
     # Resolve URL with variable substitution
-    resolved_url = _substitute_variables(request.url, test_values)
+    resolved_url = prepared["url"]
     _validate_http_tool_test_target(resolved_url)
     
     # Build query parameters
-    resolved_params = {}
-    for key, value in request.query_params.items():
-        resolved_params[key] = _substitute_variables(value, test_values)
+    resolved_params = prepared["query_params"]
     
     # Resolve headers
-    resolved_headers = {}
-    for key, value in request.headers.items():
-        resolved_headers[key] = _substitute_variables(value, test_values)
+    resolved_headers = prepared["headers"]
     
     method = (request.method or "GET").strip().upper()
     if method not in _SUPPORTED_HTTP_METHODS:
         raise HTTPException(status_code=400, detail=f"Unsupported HTTP method: {method}")
 
     # Never display or send a stale hidden body for bodyless methods.
-    resolved_body = None
-    if method in _BODY_CAPABLE_HTTP_METHODS and request.body_template:
-        resolved_body = _substitute_variables(request.body_template, test_values)
+    resolved_body = prepared["body"]
+    # Never return expanded server credentials in the test response.
+    safe_preview = validate_template(doc, request.phase).get("preview") or {}
     
     # Prepare the response
     response_data = TestHTTPResponse(
         success=False,
         response_time_ms=0,
-        resolved_url=resolved_url,
-        resolved_body=resolved_body
+        resolved_url=safe_preview.get("url", ""),
+        resolved_body=safe_preview.get("body")
     )
     
     # Make the HTTP request
@@ -818,15 +843,10 @@ async def test_http_tool(request: TestHTTPRequest):
             # body-bearing DELETE/OPTIONS integrations as well as write methods.
             if method in _BODY_CAPABLE_HTTP_METHODS and resolved_body:
                 # Check if Content-Type is JSON
-                content_type = resolved_headers.get("Content-Type", resolved_headers.get("content-type", ""))
-                if "application/json" in content_type.lower():
+                content_type = body_media_type(resolved_headers)
+                if content_type == "application/json" or content_type.endswith("+json"):
                     # Parse and send as JSON to ensure proper encoding
-                    try:
-                        json_data = json.loads(resolved_body)
-                        kwargs["json"] = json_data
-                    except json.JSONDecodeError:
-                        # If it's not valid JSON, send as content
-                        kwargs["content"] = resolved_body
+                    kwargs["json"] = json.loads(resolved_body)
                 else:
                     kwargs["content"] = resolved_body
             
@@ -858,7 +878,7 @@ async def test_http_tool(request: TestHTTPRequest):
 
             if resp is None:
                 raise HTTPException(status_code=400, detail="Request failed: no response received")
-            response_data.resolved_url = str(resp.url)
+            response_data.resolved_url = safe_preview.get("url", "")
             
             response_data.response_time_ms = (time.time() - start_time) * 1000
             response_data.status_code = resp.status_code
@@ -882,15 +902,30 @@ async def test_http_tool(request: TestHTTPRequest):
     except httpx.TimeoutException:
         response_data.response_time_ms = (time.time() - start_time) * 1000
         response_data.error = f"Request timed out after {request.timeout_ms}ms"
-    except httpx.ConnectError as e:
+    except httpx.ConnectError:
         response_data.response_time_ms = (time.time() - start_time) * 1000
-        response_data.error = f"Connection failed: {e!s}"
-    except Exception as e:
+        response_data.error = "HTTP connection failed"
+        response_data.error_code = "http_connection_failed"
+    except HTTPException:
+        raise
+    except Exception:
         response_data.response_time_ms = (time.time() - start_time) * 1000
-        response_data.error = f"Request failed: {e!s}"
-        logger.exception("HTTP tool test failed")
+        response_data.error = "HTTP test request failed"
+        response_data.error_code = "http_request_failed"
+        logger.warning("HTTP tool test failed")
 
-    return response_data
+    # A test receiver may echo credentials in its body or response headers.
+    secret_values = sorted({str(value) for value in environments.values() if value}, key=len, reverse=True)
+    def redact(value):
+        if isinstance(value, dict):
+            return {redact(key): redact(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        if isinstance(value, str):
+            for secret in secret_values:
+                value = value.replace(secret, "***")
+        return value
+    return TestHTTPResponse.model_validate(redact(response_data.model_dump()))
 
 
 # ============================================================================
@@ -1432,6 +1467,7 @@ def _build_tool_doc(data: Dict[str, Any], phase: str) -> Dict[str, Any]:
             )
         except CallMetadataValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _validate_http_tool_template(doc, phase)
     return doc
 
 
@@ -1663,6 +1699,7 @@ async def patch_managed_tool(name: str, body: ManagedToolPatch):
         if "recipients" in patch and patch["recipients"] is None:
             merged["recipients"] = {}
         merged = _build_tool_doc(merged, new_phase)
+    _validate_http_tool_template(merged, new_phase)
     await _validate_summary_provider_selection(merged)
 
     target_block = _block_for_phase(new_phase)

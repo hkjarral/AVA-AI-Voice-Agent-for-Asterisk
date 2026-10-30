@@ -20,6 +20,7 @@ import { useAuth } from '../../auth/AuthContext';
 import { FormInput, FormSwitch, FormSelect, FormLabel } from '../ui/FormComponents';
 import { ToolEditorSurface } from './ToolEditorSurface';
 import { PushoverToolFields } from './PushoverToolFields';
+import { HTTPTemplateEditor, HTTPTemplateGuidance, useHTTPTemplateReview } from './HTTPTemplateGuidance';
 import { pushoverDocument, credentialPayload, applyPushoverRefs, type PushoverCredentials } from './pushoverToolConfig';
 
 const BODY_CAPABLE_HTTP_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
@@ -231,6 +232,17 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
         return committed;
     };
 
+    const { review: templateReview, error: templateReviewError, refresh: refreshTemplateReview } = useHTTPTemplateReview(
+        editingTool && toolForm.kind !== 'pushover' ? withDraftRowsCommitted(toolForm) : null, phase, token
+    );
+
+    const useTemplateExample = (body: string) => {
+        const headers = Object.fromEntries(Object.entries(toolForm.headers || {}).filter(([key]) => key.toLowerCase() !== 'content-type'));
+        setToolForm({ ...toolForm, method: isBodyCapableHTTPMethod(toolForm.method) ? toolForm.method : 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            [phase === 'post_call' ? 'payload_template' : 'body_template']: body });
+    };
+
     const closeEditor = () => {
         setPushoverCredentials({token: "", recipients: {}});
         setEditingTool(null);
@@ -315,6 +327,10 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
 
     const handleSaveTool = async () => {
         let committedToolForm = withDraftRowsCommitted(toolForm);
+        if (committedToolForm.kind !== 'pushover' && committedToolForm.enabled !== false && templateReview?.valid === false) {
+            toast.error('Fix HTTP template errors before enabling this tool.');
+            return;
+        }
         if (!isBodyCapableHTTPMethod(committedToolForm.method)) {
             committedToolForm = {
                 ...committedToolForm,
@@ -608,7 +624,9 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                     method: committedToolForm.method || 'GET',
                     headers: committedToolForm.headers || {},
                     query_params: committedToolForm.query_params || {},
-                    body_template: committedToolForm.body_template || null,
+                    body_template: (phase === 'post_call' ? committedToolForm.payload_template : committedToolForm.body_template) || null,
+                    phase,
+                    generate_summary: committedToolForm.generate_summary || false,
                     timeout_ms: committedToolForm.timeout_ms || 5000,
                     test_values: testValues,
                 },
@@ -787,10 +805,10 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                             ) : (
                                 <Play className="w-4 h-4" />
                             )}
-                            {testing ? 'Testing...' : 'Test'}
+                            {testing ? 'Testing...' : 'Send test request'}
                         </button>}
                         <button
-                            disabled={savingPushover}
+                            disabled={savingPushover || (toolForm.kind !== 'pushover' && toolForm.enabled !== false && templateReview?.valid === false)}
                             onClick={() => void handleSaveTool()}
                             className="px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90"
                         >
@@ -800,6 +818,8 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                 }
             >
                 <div className="space-y-4">
+                    {toolForm.kind !== 'pushover' && <HTTPTemplateGuidance phase={phase} review={templateReview}
+                        error={templateReviewError} refresh={refreshTemplateReview} onUseExample={useTemplateExample} />}
                     <FormSelect label="Tool type" value={toolForm.kind === 'pushover' ? 'pushover' : 'http'} disabled={editingTool !== 'new_tool'} options={[{value: 'http', label: 'HTTP'}, {value: 'pushover', label: 'Pushover'}]} onChange={e => {
                         const kind = e.target.value === 'pushover' ? 'pushover' : ({pre_call: 'generic_http_lookup', in_call: 'in_call_http_lookup', post_call: 'generic_webhook'}[phase]);
                         setToolForm({...toolForm, kind, priority: 0, summary_prompt: recommendedSummaryPrompt, summary_failure_policy: 'continue'});
@@ -966,7 +986,8 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                                     <FormLabel tooltip="JSON body template for body-bearing requests. Use {caller_number}, {call_id}, etc. for variable substitution.">
                                         Body Template
                                     </FormLabel>
-                                    <textarea
+                                    <HTTPTemplateEditor
+                                        references={templateReview?.references.filter(reference => reference.field === 'body_template')}
                                         className={`${editorTextareaClass} min-h-[120px] font-mono`}
                                         value={toolForm.body_template || ''}
                                         onChange={e =>
@@ -1470,7 +1491,8 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                                     <FormLabel tooltip="JSON body template. Use {param_name} for AI params, {caller_number}, {call_id}, etc. for context vars.">
                                         Body Template
                                     </FormLabel>
-                                    <textarea
+                                    <HTTPTemplateEditor
+                                        references={templateReview?.references.filter(reference => reference.field === 'body_template')}
                                         className={`${editorTextareaClass} min-h-[120px] font-mono`}
                                         value={toolForm.body_template || ''}
                                         onChange={e =>
@@ -1980,7 +2002,8 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                                     <FormLabel tooltip="JSON payload with variable substitution. Available: {call_id}, {caller_number}, {call_duration}, {transcript_json}, {summary}, etc.">
                                         Payload Template
                                     </FormLabel>
-                                    <textarea
+                                    <HTTPTemplateEditor
+                                        references={templateReview?.references.filter(reference => reference.field === 'payload_template')}
                                         className={`${editorTextareaClass} min-h-[200px] font-mono`}
                                         value={toolForm.payload_template || ''}
                                         onChange={e =>

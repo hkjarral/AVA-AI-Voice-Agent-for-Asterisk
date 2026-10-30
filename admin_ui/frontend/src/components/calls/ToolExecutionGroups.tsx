@@ -5,6 +5,8 @@ export type ToolPhase = 'pre_call' | 'in_call' | 'post_call';
 export type ToolExecutionStatus = 'pending' | 'ok' | 'error' | 'timeout' | 'skipped';
 
 interface ToolDiagnostics {
+    error_code?: string | null;
+    template_variable?: string | null;
     summary_provider?: string | null;
     summary_model?: string | null;
     summary_status?: string | null;
@@ -16,6 +18,9 @@ interface ToolDiagnostics {
 }
 
 const ToolDiagnosticsView = ({entry}: {entry: ToolDiagnostics}) => <>
+    {entry.error_code && <div className="mt-2 rounded bg-destructive/10 p-2 text-xs" role="status">
+        Request error: {entry.error_code}{entry.template_variable && <> — variable: <code>{entry.template_variable}</code></>}
+    </div>}
     {entry.summary_status && <div className="mt-2 rounded bg-background/50 p-2 text-xs">
         <span className="font-medium">AI summary</span>
         <div className="mt-1 flex flex-wrap gap-x-3 text-muted-foreground">

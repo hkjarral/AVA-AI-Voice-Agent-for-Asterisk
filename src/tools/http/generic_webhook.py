@@ -45,7 +45,7 @@ def _now_iso() -> str:
 
 from src.tools.base import PostCallTool, ToolDefinition, ToolCategory, ToolPhase
 from src.tools.context import PostCallContext
-from src.tools.http.template import render_body, render_headers, render_template, render_url
+from src.tools.http.template import TemplateError, render_body, render_headers, render_template, render_url
 from src.tools.http.debug_trace import (
     BODY_CAPABLE_HTTP_METHODS,
     build_var_snapshot,
@@ -191,6 +191,7 @@ class GenericWebhookTool(PostCallTool):
         body_text: str = "",
         error_message: Optional[str] = None,
         summary_diagnostics: Optional[Dict[str, Any]] = None,
+        request_diagnostics: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Store execution diagnostics for ``call_id`` in ``self._last_results``."""
         max_chars = _resolve_body_max_chars(self.config.response_body_max_chars)
@@ -209,6 +210,11 @@ class GenericWebhookTool(PostCallTool):
             )
             return
         self._last_results[call_id] = {
+            "phase": "post_call",
+            "delivery_status": ("accepted" if http_status is not None and 200 <= http_status < 300 else
+                                "rejected" if http_status is not None and 400 <= http_status < 500 and http_status != 408 else
+                                "skipped" if status == "skipped" else "uncertain"),
+            **(request_diagnostics or {}),
             "status": status,
             "http_status": http_status,
             "response_summary": response_summary,
@@ -255,6 +261,15 @@ class GenericWebhookTool(PostCallTool):
             return
 
         try:
+            # Fail local preparation before invoking a potentially expensive LLM.
+            values = context.to_payload_dict()
+            values.update(schema_version="1", summary_json=json.dumps(context.summary or ""))
+            render_url(self.config.url, values)
+            initial_headers = render_headers(self.config.headers, values)
+            if self.config.method.upper() in BODY_CAPABLE_HTTP_METHODS and self.config.payload_template:
+                if not any(key.lower() == "content-type" for key in initial_headers):
+                    initial_headers["Content-Type"] = self.config.content_type
+                render_body(self.config.payload_template, values, initial_headers)
             # Each webhook gets its own context copy. Post-call tools execute
             # concurrently, so mutating the shared context would let one
             # webhook's provider/prompt leak into a sibling webhook payload.
@@ -426,6 +441,14 @@ class GenericWebhookTool(PostCallTool):
                             summary_diagnostics=summary_diagnostics,
                         )
 
+        except TemplateError as exc:
+            logger.warning("HTTP tool template rejected call_id=%s tool=%s phase=post_call error_code=%s template_variable=%s",
+                           call_id, self.config.name, exc.code, exc.variable,
+                           extra={"call_id": call_id, "tool": self.config.name,
+                           "phase": "post_call", **exc.diagnostics()})
+            self._record_result(call_id=call_id, status="error", started_iso=started_iso,
+                                started_monotonic=started, error_message=str(exc), summary_diagnostics=summary_diagnostics,
+                                request_diagnostics={"delivery_status": "skipped", **exc.diagnostics()})
         except (asyncio.TimeoutError, aiohttp.ServerTimeoutError) as e:
             # Explicit timeout exception types — covers asyncio.TimeoutError
             # raised by aiohttp.ClientTimeout and SocketTimeoutError aliases.
@@ -492,6 +515,8 @@ class GenericWebhookTool(PostCallTool):
     @staticmethod
     def _template_values(context: PostCallContext) -> Dict[str, str]:
         return {
+            **context.to_payload_dict(),
+            "schema_version": "1", "summary_json": json.dumps(context.summary or ""),
             "call_id": context.call_id or "",
             "caller_number": context.caller_number or "",
             "called_number": context.called_number or "",

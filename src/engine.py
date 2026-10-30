@@ -23303,7 +23303,7 @@ class Engine:
                             last = None
                         last = pre_call_ctx.execution_results.get(tool_name, last)
                         if isinstance(last, dict):
-                            metadata.update({key: last[key] for key in ("delivery_status", "notification_deliveries", "notification_service") if key in last})
+                            metadata.update({key: last[key] for key in ("delivery_status", "notification_deliveries", "notification_service", "error_code", "template_variable") if key in last})
                             diagnostic_status = last.get("status")
                             if diagnostic_status in {"ok", "error", "timeout", "skipped"}:
                                 metadata["status"] = diagnostic_status
@@ -23534,7 +23534,7 @@ class Engine:
                         last = None
                     last = post_call_ctx.execution_results.get(tool_name, last)
                     if isinstance(last, dict):
-                        tool_extra.update({key: last[key] for key in ("delivery_status", "notification_deliveries", "notification_service") if key in last})
+                        tool_extra.update({key: last[key] for key in ("delivery_status", "notification_deliveries", "notification_service", "error_code", "template_variable") if key in last})
                         # Tool's recorded status wins for skipped/error/timeout — the tool
                         # knows about non-2xx HTTP responses that didn't raise an exception
                         # (GenericWebhookTool catches them internally). Without this, a 502
@@ -23589,6 +23589,8 @@ class Engine:
                                 "summary_duration_ms": tool_extra.get("summary_duration_ms"),
                                 "summary_error_code": tool_extra.get("summary_error_code"),
                                 "error_message": error_message,
+                                "error_code": tool_extra.get("error_code"),
+                                "template_variable": tool_extra.get("template_variable"),
                                 "attempt": 1,
                             },
                         )

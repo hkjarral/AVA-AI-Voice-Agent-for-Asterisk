@@ -427,6 +427,8 @@ def build_in_call_tool_record(
            if name == "calendly_calendar" else {}),
         **{key: result_dict[key] for key in ("summary_provider", "summary_model", "summary_status",
             "summary_duration_ms", "summary_error_code") if key in result_dict},
+        **({key: result_dict[key] for key in ("phase", "http_status", "delivery_status", "error_code", "template_variable") if key in result_dict}
+           if result_dict.get("http_tool") else {}),
         **({key: result_dict[key] for key in ("delivery_status", "notification_deliveries", "notification_service") if key in result_dict} if result_dict.get("internal_notification") else {}),
         "type": "tool_result",
         "call_id": str(call_id or ""),
