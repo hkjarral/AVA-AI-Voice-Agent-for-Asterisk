@@ -38,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   credential echoes and use fixed API error messages. On initial startup, omit
   malformed HTTP tools while keeping valid tools available; preserve atomic
   rejection of invalid reloads and strict routing/Pushover policies (#766).
+- Handle invalid Agent-inline HTTP templates through the existing fail-closed
+  policy path. Normalize webhook methods before summary/preparation, clear
+  conflicting pending Content-Type rows when applying JSON examples, and mask
+  percent-encoded credential echoes with either hexadecimal letter case (#766).
 
 - Keep tools that are not in-call out of the OpenAI streaming LLM request, as the
   non-streaming path already does, so a streaming turn cannot be offered pre-call or

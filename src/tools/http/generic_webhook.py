@@ -266,7 +266,7 @@ class GenericWebhookTool(PostCallTool):
             values.update(schema_version="1", summary_json=json.dumps(context.summary or ""))
             render_url(self.config.url, values)
             initial_headers = render_headers(self.config.headers, values)
-            if self.config.method.upper() in BODY_CAPABLE_HTTP_METHODS and self.config.payload_template:
+            if str(self.config.method or "POST").strip().upper() in BODY_CAPABLE_HTTP_METHODS and self.config.payload_template:
                 if not any(key.lower() == "content-type" for key in initial_headers):
                     initial_headers["Content-Type"] = self.config.content_type
                 render_body(self.config.payload_template, values, initial_headers)

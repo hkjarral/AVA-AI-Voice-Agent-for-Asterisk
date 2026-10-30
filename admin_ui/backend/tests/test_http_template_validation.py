@@ -119,6 +119,20 @@ async def test_live_test_displays_sent_values_with_json_field_and_environment_ma
     assert "receiver.example.com" not in result.model_dump_json()
 
 
+@pytest.mark.asyncio
+async def test_percent_encoded_echo_redaction_ignores_only_hex_case(monkeypatch):
+    response = httpx.Response(200, json={"echo": "Ab%2fCd", "different": "ab%2fCd"}, headers={"X-Echo": "Ab%2fCd"})
+    http = MagicMock(request=AsyncMock(return_value=response))
+    manager = MagicMock(__aenter__=AsyncMock(return_value=http), __aexit__=AsyncMock(return_value=None))
+    monkeypatch.setattr(tools.httpx, "AsyncClient", MagicMock(return_value=manager))
+    monkeypatch.setattr(tools, "_validate_http_tool_test_target", lambda value: None)
+    monkeypatch.setattr(tools, "get_setting", lambda name, default="": "Ab/Cd")
+    result = await tools.test_http_tool(tools.TestHTTPRequest(url="https://example.com", headers={"Authorization": "${SECRET}"}))
+    assert result.body["echo"] == "***" and result.headers["x-echo"] == "***"
+    assert "Ab%2fCd" not in result.body_raw
+    assert result.body["different"] == "ab%2fCd"
+
+
 def test_save_and_explicit_test_never_expose_exception_arguments(monkeypatch):
     def fail(*args, **kwargs):
         raise tools.TemplateError("synthetic-private-value", code="invalid_json_template")

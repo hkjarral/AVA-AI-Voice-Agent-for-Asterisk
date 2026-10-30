@@ -16,6 +16,9 @@ explicitly replaces the body and selects JSON Content-Type; **Copy example** cop
 the selected phase's example. Event names in examples are illustrative payload
 values, not an AVA event-subscription contract.
 
+Applying an example also clears a pending Content-Type header row so it cannot
+override JSON when the tool is reviewed or saved.
+
 ## Validate without sending
 
 **Validate & Preview** renders synthetic values with the runtime serializer. It
@@ -41,6 +44,9 @@ an invalid HTTP template is logged with its tool, phase and safe error code and
 that tool is omitted from the running generation; valid tools still start. The
 saved configuration is unchanged. Correct the template and apply it to enable the
 omitted tool. Routing/handoff and Pushover configuration policies remain strict.
+An invalid Agent-inline HTTP template follows the existing invalid Agent policy
+path: record a configuration failure before provider startup, without publishing
+partial tools or falling back to another Agent.
 Python changes still require an engine restart.
 
 ## Variables and phases

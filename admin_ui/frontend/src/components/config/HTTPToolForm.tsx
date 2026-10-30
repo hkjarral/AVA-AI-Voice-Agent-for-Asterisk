@@ -239,6 +239,10 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
     const useTemplateExample = (body: string, title?: string) => {
         if (toolForm.kind === 'pushover') { setToolForm({ ...toolForm, body, title }); return; }
         const headers = Object.fromEntries(Object.entries(toolForm.headers || {}).filter(([key]) => key.toLowerCase() !== 'content-type'));
+        if (headerKey.trim().toLowerCase() === 'content-type') {
+            setHeaderKey('');
+            setHeaderValue('');
+        }
         setToolForm({ ...toolForm, method: isBodyCapableHTTPMethod(toolForm.method) ? toolForm.method : 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
             [phase === 'post_call' ? 'payload_template' : 'body_template']: body });

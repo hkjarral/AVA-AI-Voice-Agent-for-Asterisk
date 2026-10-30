@@ -19631,10 +19631,16 @@ class Engine:
         inline_http = getattr(context_config, "in_call_http_tools", None) if context_config else None
         if isinstance(inline_http, dict) and inline_http:
             registry = generation.registry.clone()
-            registry.initialize_in_call_http_tools_from_config(
-                inline_http,
-                cache_key=f"agent:{session.context_name or session.call_id}",
-            )
+            from src.tools.http.template import TemplateError
+            try:
+                registry.initialize_in_call_http_tools_from_config(
+                    inline_http,
+                    cache_key=f"agent:{session.context_name or session.call_id}",
+                )
+            except TemplateError as exc:
+                # Use the existing fail-closed Agent policy path, never a
+                # partially constructed registry or a fallback Agent.
+                raise ToolConfigPolicyError("Invalid Agent HTTP template: " + exc.code) from None
         from src.tools.pushover import NotificationState
         if getattr(session, "notification_state", None) is None:
             session.notification_state = NotificationState()

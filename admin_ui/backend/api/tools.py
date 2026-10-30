@@ -923,14 +923,22 @@ async def test_http_tool(request: TestHTTPRequest):
                                   json.dumps(value, ensure_ascii=False)[1:-1],
                                   quote(value, safe=""), quote_plus(value)))
     secret_values = sorted(secret_values, key=len, reverse=True)
+    secret_patterns = []
+    for secret in secret_values:
+        parts, cursor = [], 0
+        for match in re.finditer(r"%[0-9a-fA-F]{2}", secret):
+            parts.extend((re.escape(secret[cursor:match.start()]), "(?i:" + match.group(0) + ")"))
+            cursor = match.end()
+        parts.append(re.escape(secret[cursor:]))
+        secret_patterns.append("".join(parts))
+    secret_pattern = re.compile("|".join(secret_patterns)) if secret_patterns else None
     def redact(value):
         if isinstance(value, dict):
             return {redact(key): redact(item) for key, item in value.items()}
         if isinstance(value, list):
             return [redact(item) for item in value]
-        if isinstance(value, str):
-            for secret in secret_values:
-                value = value.replace(secret, "***")
+        if isinstance(value, str) and secret_pattern is not None:
+            value = secret_pattern.sub("***", value)
         return value
     safe_response = redact(response_data.model_dump())
     if safe_response["body_raw"] is not None:

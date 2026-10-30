@@ -26,8 +26,8 @@ This guide is also available in AVA's Documentation menu as **Pushover Tool**.
    explicit clear controls remove references. Keys never appear in model parameters.
    A Pushover group key addresses its active group members. Group membership is
    managed in Pushover; individual users and groups can coexist in the same tool.
-4. Set the notification title and plain-text message template. **Preview message**
-   uses synthetic data and makes no network/model request. **Validate …**
+4. Set the notification title and plain-text message template. **Validate & Preview**
+   in the shared guidance panel uses synthetic data and makes no network/model request. **Validate …**
    checks that row's credentials without sending a message. **Send test to …**
    sends a fixed synthetic message to that enabled row only when explicitly
    clicked. Disabled rows cannot send tests. Each result is shown separately.

@@ -31,6 +31,26 @@ const expectThemeAwareControl = (control: HTMLElement) => {
 };
 
 describe('HTTPToolForm editor colors', () => {
+    it.each(['Content-Type', ' content-type '])('Use example replaces a pending %s row before review and save', async (headerName) => {
+        const onChange = vi.fn();
+        render(<HTTPToolForm phase="pre_call" onChange={onChange} config={{lookup: {
+            kind: 'generic_http_lookup', phase: 'pre_call', enabled: true,
+            url: 'https://example.com', method: 'POST', headers: {},
+        }}} />);
+        fireEvent.click(screen.getByRole('button', {name: 'Edit lookup'}));
+        fireEvent.change(screen.getByPlaceholderText('Header name'), {target: {value: headerName}});
+        fireEvent.change(screen.getByPlaceholderText('Value (use ${VAR} for secrets)'), {target: {value: 'text/plain'}});
+        const useExample = screen.getByRole('button', {name: 'Use example'});
+        await waitFor(() => expect(useExample).toBeEnabled());
+        fireEvent.click(useExample);
+        expect(screen.getByPlaceholderText('Header name')).toHaveValue('');
+        expect(screen.getByPlaceholderText('Value (use ${VAR} for secrets)')).toHaveValue('');
+        await waitFor(() => expect(screen.getByRole('button', {name: 'Save'})).toBeEnabled());
+        fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+        expect(onChange.mock.calls[0][0].lookup.headers).toEqual({'Content-Type': 'application/json'});
+        expect(onChange.mock.calls[0][0].lookup.body_template).toBe('{}');
+    });
+
     it('keeps persistence opt-in and saves the per-output correction policy', async () => {
         const onChange = vi.fn();
         render(
