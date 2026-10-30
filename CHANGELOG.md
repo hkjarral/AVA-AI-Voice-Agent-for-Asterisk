@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Notify Google Live when an attended transfer fails after initiation, so it
+  stops claiming the connection is still in progress. Deduplicate recovery,
+  preserve caller/new-attempt ownership, and show initiation and terminal
+  outcomes separately in Call History (#793).
+
 ### Added
 
 - Extend shared template guidance, highlighting, examples and synthetic previews

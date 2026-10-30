@@ -490,6 +490,8 @@ async def record_in_call_tool_result(
             and deferred_action.get("kind") == "transfer"
             else ""
         )
+        if isinstance(deferred_action, dict) and deferred_action.get("transfer_type") == "attended_transfer":
+            record["action"] = "attended_transfer_initiated"
         deferred_origin = {
             "tool_call_id": record["tool_call_id"],
             "name": record["name"],

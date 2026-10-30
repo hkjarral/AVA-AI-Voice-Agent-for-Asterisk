@@ -123,3 +123,25 @@ def test_google_notification_response_excludes_diagnostics_and_continues_silentl
     assert "remaining tools" in payload["instruction"] and "Do not read acknowledgements" in payload["instruction"]
     assert "private" not in str(payload) and "notification_deliveries" not in payload
     assert result["notification_deliveries"]["private-recipient"]["delivery_status"] == "uncertain"
+
+@pytest.mark.asyncio
+async def test_google_transfer_failure_is_a_single_history_event():
+    from unittest.mock import AsyncMock
+    from src.providers.google_live import GoogleLiveProvider
+    from src.config import GoogleProviderConfig
+    provider = GoogleLiveProvider(config=GoogleProviderConfig(), on_event=lambda e: None)
+    provider._call_id = 'active'
+    provider._ws_is_open = lambda: True
+    provider._send_message = AsyncMock(return_value=True)
+    assert not await provider.notify_transfer_failed(call_id='stale')
+    provider._send_message.assert_not_awaited()
+    assert await provider.notify_transfer_failed(call_id='active')
+    msg = provider._send_message.call_args.args[0]
+    assert msg['clientContent']['turnComplete'] is True
+    assert 'toolResponse' not in msg
+    text = msg['clientContent']['turns'][0]['parts'][0]['text']
+    assert 'No transfer is in progress' in text
+    assert 'Do not retry' in text
+    provider._closed = True
+    assert not await provider.notify_transfer_failed(call_id='active')
+    assert provider._send_message.await_count == 1

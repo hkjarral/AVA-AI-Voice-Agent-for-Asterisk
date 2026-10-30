@@ -197,6 +197,8 @@ class AttendedTransferTool(Tool):
         )
 
         session.current_action = {
+            "id": action.get("id"),
+            "_tool_history_origin": action.get("_tool_history_origin"),
             "type": "attended_transfer",
             "destination_key": destination,
             "target": extension,

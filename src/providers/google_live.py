@@ -1372,6 +1372,28 @@ class GoogleLiveProvider(AIProviderInterface):
         # the speech text extracted via speech_field/speech_template.
         return payload
 
+    async def notify_transfer_failed(self, *, call_id: str, caller_prompt: str = "") -> bool:
+        """Deliver an engine outcome after the original tool was acknowledged.
+
+        clientContent is a history-bearing event, not a second toolResponse.
+        turnComplete requests the caller-facing recovery response immediately.
+        """
+        if self._call_id != call_id or self._closing or self._closed or not self._ws_is_open():
+            return False
+        return await self._send_message({
+            "clientContent": {
+                "turns": [{"role": "user", "parts": [{"text": (
+                    "System event: the attended transfer attempt failed and has ended. "
+                    "No transfer is in progress. Tell the caller briefly in their language "
+                    "that the connection could not be completed, then follow the configured "
+                    "fallback instructions. Do not claim you are still connecting them or "
+                    "that all operators are busy. Do not retry a transfer automatically."
+                    + (f" Use this configured failure response: {caller_prompt}" if caller_prompt else "")
+                )}]}],
+                "turnComplete": True,
+            }
+        })
+
     async def _send_greeting(self) -> None:
         """Send greeting by asking Gemini to speak it (validated pattern from Golden Baseline)."""
         greeting = (self.config.greeting or "").strip()

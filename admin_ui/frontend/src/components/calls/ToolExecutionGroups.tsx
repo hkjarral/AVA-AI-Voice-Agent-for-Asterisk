@@ -155,6 +155,12 @@ export const PhaseToolGroup = ({ phase, entries }: { phase: Exclude<ToolPhase, '
     </div>
 );
 
+const transferActionLabels: Record<string, string> = {
+    attended_transfer_initiated: 'Transfer initiated',
+    attended_transfer_failed: 'Transfer failed',
+    attended_transfer_completed: 'Transfer completed',
+};
+
 export const InCallToolGroup = ({ entries }: { entries: InCallToolCall[] }) => {
     const recordedModes = Array.from(new Set(entries.map(entry => entry.redaction_mode ?? 'legacy')));
     const recordedMode = recordedModes.length === 1 ? recordedModes[0] : recordedModes.length > 1 ? 'mixed' : 'legacy';
@@ -189,7 +195,7 @@ export const InCallToolGroup = ({ entries }: { entries: InCallToolCall[] }) => {
                                 <Wrench className="w-4 h-4 shrink-0" />
                                 <span className="font-medium truncate">{tool.name}</span>
                                 {tool.action && tool.action !== tool.name && (
-                                    <span className="text-xs text-muted-foreground truncate">{tool.action}</span>
+                                    <span className="text-xs text-muted-foreground truncate">{transferActionLabels[tool.action] || tool.action}</span>
                                 )}
                             </div>
                             <div className="flex items-center gap-2 text-muted-foreground text-xs">

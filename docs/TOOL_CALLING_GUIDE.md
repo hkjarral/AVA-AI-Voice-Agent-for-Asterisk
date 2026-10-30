@@ -1952,3 +1952,33 @@ Tools written once, work with any provider.
 **Last Updated**: October 2026<br>
 **Version**: 7.7.0<br>
 **Status**: Provider-specific qualification (see setup guides)
+
+
+### Attended-transfer failure recovery
+
+For Google Live, an attended transfer that ends without connecting sends an
+explicit engine event to the active provider. The agent explains the failed
+connection in the caller's language and follows its configured fallback behavior;
+it is instructed not to redial automatically. This recovery response does not
+require Local AI Server TTS. A configured `caller_declined_prompt` is supplied to
+Google Live as the preferred failure response. Other providers retain their
+existing local failure-prompt path.
+
+Call History records **Transfer initiated** separately from **Transfer failed** or
+**Transfer completed**, retaining the original tool invocation ID. Initiation
+success means the request was prepared, not that the destination answered. Older
+records without these stages retain their original display. Failure reasons such
+as `no-answer` describe the recovery path; they do not establish SIP cause or prove
+that all operators are busy. This change adds no strict transfer-attempt budget;
+a prompt instruction alone is not an enforced runtime limit.
+
+The provider event uses Google's documented history-bearing `clientContent`
+message with `turnComplete: true`, after the original tool response has been
+acknowledged: https://ai.google.dev/api/live#bidigeneratecontentclientcontent .
+This requests an immediate recovery response; it is not a second function result.
+If the provider has disconnected or event delivery fails, recovery logs the
+failure and still restores caller capture and clears the ended action. It does
+not retry notification or dialing automatically. Real-call validation must cover
+failure announcement playback and a subsequent caller turn as well as successful
+handoff. Bridge failures after provider/media teardown still require the existing
+provider/media recovery mechanisms; this patch does not restart a stopped provider.

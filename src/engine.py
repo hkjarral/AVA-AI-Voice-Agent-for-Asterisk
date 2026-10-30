@@ -8090,24 +8090,9 @@ class Engine:
 
             logger.info("Attended transfer timed out before answer; resuming caller", call_id=call_id, agent_channel_id=agent_channel_id)
 
-            # IMPORTANT: unregister mapping before hanging up the agent leg so that the resulting
-            # ChannelDestroyed/StasisEnd does not get resolved back to the caller session and tear down the call.
-            self._unregister_attended_transfer_agent_channel(agent_channel_id)
-
-            try:
-                await self.ari_client.hangup_channel(agent_channel_id)
-            except Exception:
-                pass
-            try:
-                await self.ari_client.send_command(method="DELETE", resource=f"channels/{session.caller_channel_id}/moh")
-            except Exception:
-                pass
-            try:
-                session.current_action = None
-                session.audio_capture_enabled = True
-            except Exception:
-                pass
-            await self._save_session(session)
+            await self._attended_transfer_abort_and_resume(
+                session, agent_channel_id, reason="dial-timeout"
+            )
         except Exception:
             logger.debug("Attended transfer timeout guard failed", call_id=call_id, exc_info=True)
 
@@ -9443,6 +9428,29 @@ class Engine:
 
     async def _attended_transfer_abort_and_resume(self, session: "CallSession", agent_channel_id: str, *, reason: str) -> None:
         call_id = session.call_id
+        action = session.current_action
+        if (
+            not isinstance(action, dict)
+            or action.get("type") != "attended_transfer"
+            or str(action.get("agent_channel_id") or "") not in ("", agent_channel_id)
+            or action.get("recovery_started")
+            or getattr(session, "cleanup_in_progress", False)
+        ):
+            return
+        # Confirm ownership, then claim before cleanup yields to paired events.
+        current_session = await self.session_store.get_by_call_id(call_id)
+        if (
+            not current_session
+            or current_session.cleanup_in_progress
+            or current_session.current_action is not action
+            or action.get("recovery_started")
+        ):
+            return
+        action["recovery_started"] = True
+        self._unregister_attended_transfer_agent_channel(agent_channel_id)
+        provider = getattr(self, "_call_providers", {}).get(call_id)
+        notify = getattr(provider, "notify_transfer_failed", None)
+        provider_recovery = callable(notify)
         try:
             await self._cleanup_attended_transfer_helper_media(agent_channel_id)
         except Exception:
@@ -9463,7 +9471,7 @@ class Engine:
         try:
             tools_cfg = getattr(self.config, "tools", {}) or {}
             attended_cfg = tools_cfg.get("attended_transfer") if isinstance(tools_cfg, dict) else None
-            if isinstance(attended_cfg, dict) and reason in {"declined", "timeout", "no-answer", "dial-timeout"}:
+            if not provider_recovery and isinstance(attended_cfg, dict) and reason in {"declined", "timeout", "no-answer", "dial-timeout"}:
                 caller_prompt = str(
                     attended_cfg.get(
                         "caller_declined_prompt",
@@ -9501,8 +9509,29 @@ class Engine:
             if not current_session or bool(getattr(current_session, "cleanup_in_progress", False)):
                 return
             session = current_session
-            if session.current_action and session.current_action.get("type") == "attended_transfer":
-                session.current_action = None
+            if session.current_action is not action:
+                return  # A newer transfer owns the caller now.
+            await self._record_attended_transfer_outcome(session, action, reason=reason)
+            # Keep ownership while delivering the bounded provider event. A duplicate
+            # end event cannot notify twice or race a timeout into the same recovery.
+            if provider_recovery:
+                try:
+                    configured = (self._tool_config_for_session(session).get("tools") or {}).get("attended_transfer") or {}
+                    caller_prompt = str(configured.get("caller_declined_prompt") or "")
+                    if caller_prompt:
+                        caller_prompt = self._apply_prompt_template_substitution(caller_prompt, session)
+                    delivered = await asyncio.wait_for(
+                        notify(call_id=call_id, caller_prompt=caller_prompt), timeout=5.0
+                    )
+                    if not delivered:
+                        logger.warning("Attended transfer failure notification not delivered", call_id=call_id)
+                except Exception:
+                    logger.warning("Attended transfer failure notification failed", call_id=call_id, exc_info=True)
+            current_session = await self.session_store.get_by_call_id(call_id)
+            if not current_session or current_session.cleanup_in_progress or current_session.current_action is not action:
+                return
+            session = current_session
+            session.current_action = None
             # Re-enable capture so the AI can resume.
             try:
                 session.audio_capture_enabled = True
@@ -9514,6 +9543,24 @@ class Engine:
         finally:
             # Idempotent safety: ensure mapping is removed even if we returned early.
             self._unregister_attended_transfer_agent_channel(agent_channel_id)
+
+    async def _record_attended_transfer_outcome(
+        self, session: CallSession, action: Dict[str, Any], *, reason: Optional[str] = None
+    ) -> None:
+        """Append terminal evidence without rewriting the initiating tool result."""
+        origin = action.get("_tool_history_origin") or {}
+        await record_in_call_tool_result(
+            session_store=self.session_store,
+            call_id=session.call_id,
+            tool_call_id=origin.get("tool_call_id") or action.get("id") or action.get("agent_channel_id"),
+            tool_name="attended_transfer",
+            parameters={},
+            result={
+                "status": "failed" if reason else "success",
+                "action": "attended_transfer_failed" if reason else "attended_transfer_completed",
+                "message": f"Transfer failed ({reason})." if reason else "Transfer completed.",
+            },
+        )
 
     async def _attended_transfer_finalize_bridge(
         self,
@@ -9596,6 +9643,7 @@ class Engine:
         try:
             session = await self.session_store.get_by_call_id(call_id) or session
             session.transfer_destination = destination_description
+            await self._record_attended_transfer_outcome(session, session.current_action or {})
             if session.current_action and session.current_action.get("type") == "attended_transfer":
                 session.current_action["answered"] = True
                 session.current_action["agent_channel_id"] = agent_channel_id
