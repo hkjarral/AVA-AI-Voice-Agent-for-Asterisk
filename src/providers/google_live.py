@@ -2544,6 +2544,7 @@ class GoogleLiveProvider(AIProviderInterface):
                     config=getattr(self, '_full_config', None),
                     tool_registry=self._tool_adapter.registry,
                     provider_name=self.provider_event_name(),
+                    tool_call_id=call_id,
                     user_input=self._input_transcription_buffer,
                 )
 

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve immediate attended-transfer invocation IDs before dialing, and safely render unknown legacy transfer actions in Call History.
+
 - Notify Google Live when an attended transfer fails after initiation, so it
   stops claiming the connection is still in progress. Deduplicate recovery,
   preserve caller/new-attempt ownership, and show initiation and terminal

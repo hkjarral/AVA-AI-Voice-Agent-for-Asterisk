@@ -17989,6 +17989,7 @@ class Engine:
                             args = tool_call.get("parameters") or {}
                             function_call_id = stable_tool_call_id(tool_call.get("id"))
                             tool_call["id"] = function_call_id
+                            tool_ctx.tool_call_id = function_call_id
                             _tool_start = time.time()
                             tool_result_recorded = False
                             tool_task = None
@@ -18219,6 +18220,7 @@ class Engine:
                                                         next_args = next_tc.get("parameters") or {}
                                                         next_function_call_id = stable_tool_call_id(next_tc.get("id"))
                                                         next_tc["id"] = next_function_call_id
+                                                        tool_ctx.tool_call_id = next_function_call_id
                                                         try:
                                                             next_canonical_name = tool_registry.canonicalize_tool_name(next_name)
                                                         except Exception:
@@ -21976,6 +21978,7 @@ class Engine:
                     config=self._tool_config_for_session(session),
                     tool_registry=tool_registry,
                     provider_name=provider_name,
+                    tool_call_id=function_call_id,
                 )
 
                 # Execute through the registry captured by this call's generation.

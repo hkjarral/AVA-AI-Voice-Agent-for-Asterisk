@@ -1965,8 +1965,8 @@ Google Live as the preferred failure response. Other providers retain their
 existing local failure-prompt path.
 
 Call History records **Transfer initiated** separately from **Transfer failed** or
-**Transfer completed**. Deferred initiation and terminal outcomes retain the
-original tool invocation ID. Non-deferred initiation is also labeled explicitly. Initiation
+**Transfer completed**. Initiation and terminal outcomes retain the
+provider tool invocation ID for both deferred and immediate transfers. Initiation
 success means the request was prepared, not that the destination answered. Older
 records without these stages retain their original display. Failure reasons such
 as `no-answer` describe the recovery path; they do not establish SIP cause or prove

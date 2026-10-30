@@ -195,7 +195,7 @@ export const InCallToolGroup = ({ entries }: { entries: InCallToolCall[] }) => {
                                 <Wrench className="w-4 h-4 shrink-0" />
                                 <span className="font-medium truncate">{tool.name}</span>
                                 {tool.action && tool.action !== tool.name && (
-                                    <span className="text-xs text-muted-foreground truncate">{transferActionLabels[tool.action] || tool.action}</span>
+                                    <span className="text-xs text-muted-foreground truncate">{Object.prototype.hasOwnProperty.call(transferActionLabels, tool.action) ? transferActionLabels[tool.action] : tool.action}</span>
                                 )}
                             </div>
                             <div className="flex items-center gap-2 text-muted-foreground text-xs">

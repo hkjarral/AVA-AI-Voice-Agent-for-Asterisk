@@ -165,6 +165,11 @@ class AttendedTransferTool(Tool):
                 },
             )
 
+        # Bind before origination: a fast failure may precede the tool result.
+        invocation_id = getattr(context, "tool_call_id", None)
+        if invocation_id:
+            action["_tool_history_origin"] = {"tool_call_id": invocation_id}
+
         return await self.commit_deferred_action(action, context)
 
     async def commit_deferred_action(

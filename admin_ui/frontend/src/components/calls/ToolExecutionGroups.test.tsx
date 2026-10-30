@@ -214,3 +214,9 @@ it('distinguishes transfer initiation from its terminal failure', () => {
     expect(screen.getByText('Transfer initiated')).toBeInTheDocument();
     expect(screen.getByText('Transfer failed')).toBeInTheDocument();
 });
+
+
+it.each(['__proto__', 'constructor', 'toString'])('renders the literal legacy action %s safely', (action) => {
+    render(<InCallToolGroup entries={[{name:'attended_transfer',action,params:{},result:'success',timestamp:'2026-10-30T12:00:00Z',duration_ms:2}]} />);
+    expect(screen.getByText(action)).toBeInTheDocument();
+});
