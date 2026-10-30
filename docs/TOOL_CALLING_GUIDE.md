@@ -1965,7 +1965,8 @@ Google Live as the preferred failure response. Other providers retain their
 existing local failure-prompt path.
 
 Call History records **Transfer initiated** separately from **Transfer failed** or
-**Transfer completed**, retaining the original tool invocation ID. Initiation
+**Transfer completed**. Deferred initiation and terminal outcomes retain the
+original tool invocation ID. Non-deferred initiation is also labeled explicitly. Initiation
 success means the request was prepared, not that the destination answered. Older
 records without these stages retain their original display. Failure reasons such
 as `no-answer` describe the recovery path; they do not establish SIP cause or prove
@@ -1976,6 +1977,10 @@ The provider event uses Google's documented history-bearing `clientContent`
 message with `turnComplete: true`, after the original tool response has been
 acknowledged: https://ai.google.dev/api/live#bidigeneratecontentclientcontent .
 This requests an immediate recovery response; it is not a second function result.
+Queued failure events recheck the exact active attempt after acquiring the
+provider send lock. Superseded attempts cannot interrupt a newer transfer.
+Configured failure prompts resolve the attended caller/screening/destination
+variables in both provider and local playback paths.
 If the provider has disconnected or event delivery fails, recovery logs the
 failure and still restores caller capture and clears the ended action. It does
 not retry notification or dialing automatically. Real-call validation must cover

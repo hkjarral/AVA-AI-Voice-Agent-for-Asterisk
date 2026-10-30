@@ -2033,7 +2033,7 @@ async def test_transfer_failure_notifies_provider_once_without_local_tts(monkeyp
     tts = AsyncMock(side_effect=AssertionError('provider owns the failure announcement'))
     monkeypatch.setattr(engine, '_local_ai_server_tts', tts)
     await asyncio.gather(*[engine._attended_transfer_abort_and_resume(session, 'agent', reason=reason) for _ in range(2)])
-    notify.assert_awaited_once_with(call_id=session.call_id, caller_prompt="")
+    notify.assert_awaited_once_with(call_id=session.call_id, attempt=action, caller_prompt="")
     assert session.current_action is None
     assert session.audio_capture_enabled
     assert len(session.tool_calls) == 1
@@ -2101,6 +2101,59 @@ async def test_attended_timeout_uses_same_failure_recovery(monkeypatch):
     monkeypatch.setattr(engine.ari_client, 'send_command', AsyncMock())
     await engine._attended_transfer_timeout_guard(session.call_id, 'agent', timeout_sec=0)
     await engine._attended_transfer_timeout_guard(session.call_id, 'agent', timeout_sec=0)
-    notify.assert_awaited_once_with(call_id=session.call_id, caller_prompt='')
+    assert notify.await_count == 1
+    assert notify.call_args.kwargs['attempt']['agent_channel_id'] == 'agent'
+    assert notify.call_args.kwargs['caller_prompt'] == ''
     assert session.current_action is None
     assert session.tool_calls[0]['message'] == 'Transfer failed (dial-timeout).'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_recovery", [True, False])
+async def test_google_recovery_renders_attended_template_fields(monkeypatch, provider_recovery):
+    """Provider recovery resolves the same transfer-specific fields as local TTS."""
+    from unittest.mock import AsyncMock
+    engine = _build_engine({"enabled": True, "caller_declined_prompt":
+        "{caller_display}: cannot connect {screened_caller_name} to {destination_description}."})
+    session = CallSession(call_id="templates", caller_channel_id="caller", caller_name="Fixture Caller")
+    session.current_action = {"type": "attended_transfer", "agent_channel_id": "agent",
+        "target_name": "Support", "briefing": {"screened_caller_name": "Taylor Test"}}
+    await engine.session_store.upsert_call(session)
+    notify = AsyncMock(return_value=True)
+    if provider_recovery:
+        engine._call_providers[session.call_id] = types.SimpleNamespace(notify_transfer_failed=notify)
+    tts = AsyncMock(return_value=None)
+    monkeypatch.setattr(engine, "_local_ai_server_tts", tts)
+    monkeypatch.setattr(engine.ari_client, "hangup_channel", AsyncMock())
+    monkeypatch.setattr(engine.ari_client, "send_command", AsyncMock())
+    await engine._attended_transfer_abort_and_resume(session, "agent", reason="declined")
+    expected = "Fixture Caller: cannot connect Taylor Test to Support."
+    if provider_recovery:
+        assert notify.call_args.kwargs["caller_prompt"] == expected
+        tts.assert_not_awaited()
+    else:
+        assert tts.call_args.kwargs["text"] == expected
+        notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recovery_does_not_notify_if_history_wait_replaces_attempt(monkeypatch):
+    """History awaits may yield to a new transfer without authorizing stale speech."""
+    from unittest.mock import AsyncMock
+    engine = _build_engine({"enabled": True})
+    session = CallSession(call_id="history-race", caller_channel_id="caller")
+    session.current_action = {"type": "attended_transfer", "agent_channel_id": "old"}
+    session.audio_capture_enabled = False
+    await engine.session_store.upsert_call(session)
+    newer = {"type": "attended_transfer", "agent_channel_id": "new"}
+    async def record(*args, **kwargs):
+        session.current_action = newer
+    notify = AsyncMock()
+    engine._call_providers[session.call_id] = types.SimpleNamespace(notify_transfer_failed=notify)
+    monkeypatch.setattr(engine, "_record_attended_transfer_outcome", record)
+    monkeypatch.setattr(engine.ari_client, "hangup_channel", AsyncMock())
+    monkeypatch.setattr(engine.ari_client, "send_command", AsyncMock())
+    await engine._attended_transfer_abort_and_resume(session, "old", reason="declined")
+    notify.assert_not_awaited()
+    assert session.current_action is newer
+    assert not session.audio_capture_enabled

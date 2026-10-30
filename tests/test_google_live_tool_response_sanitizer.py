@@ -124,24 +124,60 @@ def test_google_notification_response_excludes_diagnostics_and_continues_silentl
     assert "private" not in str(payload) and "notification_deliveries" not in payload
     assert result["notification_deliveries"]["private-recipient"]["delivery_status"] == "uncertain"
 
-@pytest.mark.asyncio
-async def test_google_transfer_failure_is_a_single_history_event():
+async def _active_transfer_provider():
+    """Build a real provider send path with an in-memory call and mocked socket."""
+    from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from src.providers.google_live import GoogleLiveProvider
     from src.config import GoogleProviderConfig
+    from src.core.models import CallSession
+    from src.core.session_store import SessionStore
     provider = GoogleLiveProvider(config=GoogleProviderConfig(), on_event=lambda e: None)
-    provider._call_id = 'active'
+    provider._call_id = "active"
     provider._ws_is_open = lambda: True
-    provider._send_message = AsyncMock(return_value=True)
-    assert not await provider.notify_transfer_failed(call_id='stale')
-    provider._send_message.assert_not_awaited()
-    assert await provider.notify_transfer_failed(call_id='active')
-    msg = provider._send_message.call_args.args[0]
-    assert msg['clientContent']['turnComplete'] is True
-    assert 'toolResponse' not in msg
-    text = msg['clientContent']['turns'][0]['parts'][0]['text']
-    assert 'No transfer is in progress' in text
-    assert 'Do not retry' in text
+    provider.websocket = SimpleNamespace(send=AsyncMock())
+    provider._session_store = SessionStore()
+    session = CallSession(call_id="active", caller_channel_id="caller")
+    attempt = {"type": "attended_transfer", "id": "old", "recovery_started": True}
+    session.current_action = attempt
+    await provider._session_store.upsert_call(session)
+    return provider, session, attempt
+
+
+@pytest.mark.asyncio
+async def test_google_transfer_failure_is_a_single_history_event():
+    import json
+    provider, session, attempt = await _active_transfer_provider()
+    assert not await provider.notify_transfer_failed(call_id="stale", attempt=attempt)
+    provider.websocket.send.assert_not_awaited()
+    assert await provider.notify_transfer_failed(call_id="active", attempt=attempt)
+    msg = json.loads(provider.websocket.send.call_args.args[0])
+    assert msg["clientContent"]["turnComplete"] is True
+    assert "toolResponse" not in msg
+    text = msg["clientContent"]["turns"][0]["parts"][0]["text"]
+    assert "No transfer is in progress" in text
+    assert "Do not retry" in text
     provider._closed = True
-    assert not await provider.notify_transfer_failed(call_id='active')
-    assert provider._send_message.await_count == 1
+    assert not await provider.notify_transfer_failed(call_id="active", attempt=attempt)
+    assert provider.websocket.send.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transition", ["new-attempt", "hangup", "closing"])
+async def test_transfer_failure_rechecks_ownership_after_waiting_for_send_lock(transition):
+    """An obsolete failure turn must never interrupt a newer call-state owner."""
+    import asyncio
+    provider, session, attempt = await _active_transfer_provider()
+    await provider._send_lock.acquire()
+    pending = asyncio.create_task(provider.notify_transfer_failed(call_id="active", attempt=attempt))
+    await asyncio.sleep(0)
+    assert not pending.done()
+    if transition == "new-attempt":
+        session.current_action = {"type": "attended_transfer", "id": "new"}
+    elif transition == "hangup":
+        await provider._session_store.remove_call("active")
+    else:
+        provider._closing = True
+    provider._send_lock.release()
+    assert await pending is False
+    provider.websocket.send.assert_not_awaited()

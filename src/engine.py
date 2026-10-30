@@ -9493,7 +9493,9 @@ class Engine:
                 )
                 tts_timeout = float(attended_cfg.get("tts_timeout_seconds", 8) or 8)
                 if caller_prompt.strip():
-                    template_vars = self._build_attended_transfer_template_vars(session)
+                    template_vars = self._build_attended_transfer_template_vars(
+                        session, destination_description=action.get("target_name") or action.get("target")
+                    )
                     # Keep capture disabled while we play this prompt so we don't feed it back into STT.
                     try:
                         session.audio_capture_enabled = False
@@ -9524,6 +9526,9 @@ class Engine:
             if session.current_action is not action:
                 return  # A newer transfer owns the caller now.
             await self._record_attended_transfer_outcome(session, action, reason=reason)
+            current_session = await self.session_store.get_by_call_id(call_id)
+            if not current_session or current_session.cleanup_in_progress or current_session.current_action is not action:
+                return
             # Keep ownership while delivering the bounded provider event. A duplicate
             # end event cannot notify twice or race a timeout into the same recovery.
             if provider_recovery:
@@ -9531,9 +9536,15 @@ class Engine:
                     configured = (self._tool_config_for_session(session).get("tools") or {}).get("attended_transfer") or {}
                     caller_prompt = str(configured.get("caller_declined_prompt") or "")
                     if caller_prompt:
-                        caller_prompt = self._apply_prompt_template_substitution(caller_prompt, session)
+                        caller_prompt = self._apply_prompt_template_substitution(
+                            caller_prompt,
+                            session,
+                            extra_substitutions=self._build_attended_transfer_template_vars(
+                                session, destination_description=action.get("target_name") or action.get("target")
+                            ),
+                        )
                     delivered = await asyncio.wait_for(
-                        notify(call_id=call_id, caller_prompt=caller_prompt), timeout=5.0
+                        notify(call_id=call_id, attempt=action, caller_prompt=caller_prompt), timeout=5.0
                     )
                     if not delivered:
                         logger.warning("Attended transfer failure notification not delivered", call_id=call_id)

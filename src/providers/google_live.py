@@ -27,7 +27,7 @@ import time
 import struct
 import audioop
 import re
-from typing import AbstractSet, Any, Dict, Optional, List, Tuple
+from typing import AbstractSet, Any, Awaitable, Callable, Dict, Optional, List, Tuple
 from collections import deque
 
 import websockets
@@ -1257,7 +1257,9 @@ class GoogleLiveProvider(AIProviderInterface):
             tools_count=len(tools),
         )
 
-    async def _send_message(self, message: Dict[str, Any]) -> bool:
+    async def _send_message(
+        self, message: Dict[str, Any], *, send_guard: Optional[Callable[[], Awaitable[bool]]] = None
+    ) -> bool:
         """Send a message to Google Live API and report confirmed websocket acceptance."""
         summary = self._summarize_outbound(message)
         try:
@@ -1282,6 +1284,10 @@ class GoogleLiveProvider(AIProviderInterface):
             return False
 
         async with self._send_lock:
+            # Recovery ownership can change while another message holds this
+            # lock. Revalidate at the actual send boundary, not before waiting.
+            if send_guard is not None and not await send_guard():
+                return False
             try:
                 await self.websocket.send(json.dumps(message))
                 self._ws_unavailable_logged = False
@@ -1372,7 +1378,9 @@ class GoogleLiveProvider(AIProviderInterface):
         # the speech text extracted via speech_field/speech_template.
         return payload
 
-    async def notify_transfer_failed(self, *, call_id: str, caller_prompt: str = "") -> bool:
+    async def notify_transfer_failed(
+        self, *, call_id: str, attempt: Dict[str, Any], caller_prompt: str = ""
+    ) -> bool:
         """Deliver an engine outcome after the original tool was acknowledged.
 
         clientContent is a history-bearing event, not a second toolResponse.
@@ -1380,6 +1388,22 @@ class GoogleLiveProvider(AIProviderInterface):
         """
         if self._call_id != call_id or self._closing or self._closed or not self._ws_is_open():
             return False
+
+        async def still_owns_attempt() -> bool:
+            """Validate the same live attempt after acquiring the send lock."""
+            store = getattr(self, "_session_store", None)
+            if not store:
+                return False
+            session = await store.get_by_call_id(call_id)
+            return bool(
+                self._call_id == call_id
+                and not self._closing and not self._closed and self._ws_is_open()
+                and session and not session.cleanup_in_progress
+                and session.current_action is attempt
+                and attempt.get("type") == "attended_transfer"
+                and attempt.get("recovery_started")
+            )
+
         return await self._send_message({
             "clientContent": {
                 "turns": [{"role": "user", "parts": [{"text": (
@@ -1392,7 +1416,7 @@ class GoogleLiveProvider(AIProviderInterface):
                 )}]}],
                 "turnComplete": True,
             }
-        })
+        }, send_guard=still_owns_attempt)
 
     async def _send_greeting(self) -> None:
         """Send greeting by asking Gemini to speak it (validated pattern from Golden Baseline)."""
