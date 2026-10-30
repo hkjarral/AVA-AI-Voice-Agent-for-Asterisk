@@ -73,3 +73,45 @@ async def test_generate_preserves_system_prompt_in_long_history_payload():
         assert result.text == "Latest answer"
     finally:
         await adapter.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "options,context,expected_prompt",
+    [
+        ({"system_prompt": "Call instructions"}, {}, "Call instructions"),
+        ({}, {"system_prompt": "Legacy instructions"}, "Legacy instructions"),
+        (
+            {"system_prompt": "Call instructions"},
+            {"system_prompt": "Legacy instructions"},
+            "Call instructions",
+        ),
+    ],
+)
+async def test_generate_initializes_and_retains_resolved_prompt(options, context, expected_prompt):
+    """An empty live-call session must receive its prompt before history is trimmed."""
+    adapter = OllamaLLMAdapter(SimpleNamespace())
+    captured = []
+    response = SimpleNamespace(
+        status=200,
+        json=AsyncMock(return_value={"message": {"content": "Answer"}}),
+    )
+
+    def post(url, **kwargs):
+        captured.append(copy.deepcopy(kwargs["json"]["messages"]))
+        return MagicMock(
+            __aenter__=AsyncMock(return_value=response),
+            __aexit__=AsyncMock(return_value=None),
+        )
+
+    adapter._session = SimpleNamespace(closed=False, post=post, close=AsyncMock())
+    try:
+        for turn in range(8):
+            result = await adapter.generate("new-call", f"Question {turn}", context, options)
+            assert result.text == "Answer"
+            assert captured[-1][0] == {"role": "system", "content": expected_prompt}
+            assert captured[-1][-1] == {"role": "user", "content": f"Question {turn}"}
+            assert len(captured[-1]) <= 10
+        assert len(captured[-1]) == 10
+    finally:
+        await adapter.stop()

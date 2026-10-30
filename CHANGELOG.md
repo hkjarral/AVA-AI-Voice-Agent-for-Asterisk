@@ -42,7 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads and Unix directory persistence, and check container snapshot integrity
   before using it for recovery (#790).
 
-- Keep the system prompt when the Ollama pipeline trims the conversation sent to `/api/chat`: after the fifth turn only the last 10 messages were sent, which dropped the system prompt, so the model lost its instructions mid-call.
+- Initialize Ollama's system prompt from the resolved call options, with a context
+  fallback, and retain it when trimming `/api/chat` history to ten messages so
+  configured instructions remain present throughout longer calls (#792).
 - Update the Google modular LLM default and Admin UI suggestions to Gemini 3.8
   Flash, replacing retired Gemini 1.5 defaults. Omit unsupported temperature and
   top-p parameters for Gemini 3.6+ while preserving older-model behavior and

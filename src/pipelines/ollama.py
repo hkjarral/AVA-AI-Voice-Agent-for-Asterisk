@@ -139,7 +139,7 @@ class OllamaLLMAdapter(LLMComponent):
     _KNOWN_KEYS = frozenset({
         # consumed by the adapter
         "base_url", "model", "temperature", "timeout_sec", "stream",
-        "max_tokens", "tools_enabled", "tools",
+        "max_tokens", "tools_enabled", "tools", "system_prompt",
         "num_ctx", "context_window", "context_length",
         # provider-level meta keys from providers.ollama_llm
         "enabled", "type", "display_name", "customer", "capabilities",
@@ -259,7 +259,7 @@ class OllamaLLMAdapter(LLMComponent):
         # Build messages array
         # Add system message if not already present
         if not messages or messages[0].get("role") != "system":
-            system_prompt = context.get("system_prompt", "")
+            system_prompt = merged.get("system_prompt") or context.get("system_prompt", "")
             if system_prompt:
                 messages.insert(0, {"role": "system", "content": system_prompt})
         
