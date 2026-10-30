@@ -172,6 +172,12 @@ class AttendedTransferTool(Tool):
         action: Dict[str, Any],
         context: ToolExecutionContext,
     ) -> Dict[str, Any]:
+        """Start screening or dial the destination after the caller's handoff audio.
+
+        Carry the deferred attempt ID and originating tool history into the
+        active action so later completion/failure can be correlated. A success
+        return acknowledges initiation, not an answered or accepted handoff.
+        """
         payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
         destination = str(action.get("destination_key") or "").strip()
         extension = str(action.get("target") or "").strip()

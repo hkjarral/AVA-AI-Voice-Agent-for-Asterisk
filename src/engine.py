@@ -8066,6 +8066,11 @@ class Engine:
             logger.debug("Failed to schedule attended transfer timeout guard", call_id=call_id, exc_info=True)
 
     async def _attended_transfer_timeout_guard(self, call_id: str, agent_channel_id: str, *, timeout_sec: float) -> None:
+        """Recover an owned unanswered leg after its dial deadline plus event grace.
+
+        Answered, superseded, or already-retired legs are left to their current
+        owner. The shared abort path records and notifies failure once.
+        """
         try:
             await asyncio.sleep(max(0.0, float(timeout_sec)) + 2.0)
             # Asterisk normally destroys an unanswered leg at dial_timeout.
@@ -9427,6 +9432,13 @@ class Engine:
         )
 
     async def _attended_transfer_abort_and_resume(self, session: "CallSession", agent_channel_id: str, *, reason: str) -> None:
+        """Retire the matching attended attempt and restore the surviving caller.
+
+        Claim the action before cleanup so paired channel-end/timeout events
+        cannot announce twice. Google Live owns its recovery response; other
+        providers retain local failure playback. Recheck session/action ownership
+        after waits so hangup or a newer transfer cannot be overwritten.
+        """
         call_id = session.call_id
         action = session.current_action
         if (
@@ -9572,6 +9584,12 @@ class Engine:
         tts_timeout: float,
         template_vars: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Finish an accepted transfer and append the successful handoff outcome.
+
+        Stop caller hold audio and AI media/provider work before bridging the
+        accepted agent. Delegate bridge errors to the existing abort path;
+        recording completion does not restart a provider already stopped here.
+        """
         call_id = session.call_id
 
         # Stop MOH and optionally play "connecting you now" prompt to caller.
