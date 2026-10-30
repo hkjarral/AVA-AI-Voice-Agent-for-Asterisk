@@ -7,7 +7,7 @@ import pytest
 
 from src.core.models import CallSession
 from src.engine import Engine
-from src.tools.runtime_config import ToolConfigPolicyError
+from src.tools.runtime_config import ToolConfigPolicyError, ToolRuntimeGeneration
 
 
 @pytest.mark.asyncio
@@ -83,7 +83,8 @@ async def test_unknown_ai_agent_records_failure_before_default_provider_resoluti
 
 
 @pytest.mark.asyncio
-async def test_invalid_agent_tool_policy_records_failure_before_provider_resolution():
+@pytest.mark.parametrize("failure", ["policy", "http_template"])
+async def test_invalid_agent_tool_policy_records_failure_before_provider_resolution(failure):
     engine = Engine.__new__(Engine)
     engine.config = SimpleNamespace(default_provider="local")
     engine.providers = {"local": object()}
@@ -99,6 +100,13 @@ async def test_invalid_agent_tool_policy_records_failure_before_provider_resolut
             )
         )
     )
+    if failure == "http_template":
+        context_config.tool_configs = None
+        context_config.in_call_http_tools = {
+            "working_inline": {"url": "https://example.com"},
+            "broken_inline": {"url": "https://example.com", "method": "POST", "body_template": '{"broken":'},
+        }
+        engine._tool_generation = ToolRuntimeGeneration.build(generation_id=1, config={})
     engine._save_session = AsyncMock()
     engine._configure_no_input_watchdog = AsyncMock()
     engine.ari_client = MagicMock()
@@ -120,7 +128,11 @@ async def test_invalid_agent_tool_policy_records_failure_before_provider_resolut
     await Engine._resolve_audio_profile(engine, session, "chan-bad-policy")
 
     assert "invalid Agent tool policy" in session.context_resolution_error
-    assert "unsupported_scope" in session.context_resolution_error
+    assert ("unsupported_scope" if failure == "policy" else "invalid_json_template") in session.context_resolution_error
     assert session.error_message == session.context_resolution_error
     engine.transport_orchestrator.resolve_transport.assert_not_called()
     engine._configure_no_input_watchdog.assert_not_awaited()
+    if failure == "http_template":
+        assert not engine._tool_generation.registry.has("working_inline")
+        assert not engine._tool_generation.registry.has("broken_inline")
+        assert session.tool_runtime_registry is None

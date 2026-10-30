@@ -207,3 +207,44 @@ def test_generation_builds_an_isolated_registry():
     assert first.registry is not second.registry
     assert first.registry.get("blind_transfer") is not None
     assert first.config_hash == second.config_hash
+
+
+def test_startup_skips_only_bad_http_templates_and_never_restores_preserved_copies(caplog):
+    from src.tools.http.template import TemplateError
+    from src.tools.registry import ToolRegistry
+    config = {
+        "tools": {
+            "valid_pre": {"kind": "generic_http_lookup", "url": "https://example.invalid"},
+            "bad_pre": {"kind": "generic_http_lookup", "url": "https://example.invalid", "method": "POST", "body_template": '{"custom":"{crm}"}'},
+            "valid_post": {"kind": "generic_webhook", "url": "https://example.invalid"},
+            "bad_post": {"kind": "generic_webhook", "url": "https://example.invalid", "payload_template": '{"bad":'},
+        },
+        "in_call_tools": {
+            "valid_in": {"kind": "in_call_http_lookup", "url": "https://example.invalid"},
+            "bad_in": {"url": "https://example.invalid", "body_template": '{"bad":', "method": "POST"},
+        },
+    }
+    preserved = ToolRegistry.isolated()
+    preserved.initialize_http_tools_from_config({"bad_post": {"kind": "generic_webhook", "url": "https://example.invalid"}})
+    generation = ToolRuntimeGeneration.build(generation_id=1, config=config, preserved_tools=preserved.get_all(),
+                                              skip_invalid_http_templates=True)
+    assert generation.registry.has("valid_pre") and generation.registry.has("valid_in")
+    assert generation.registry.has("valid_post") and not generation.registry.has("bad_pre")
+    assert generation.registry.has("blind_transfer")
+    assert not generation.registry.has("bad_post") and not generation.registry.has("bad_in")
+    assert "bad_post" not in generation.config["tools"]
+    assert "bad_in" not in generation.for_agent(None).config["in_call_tools"]
+    assert "bad_post" in config["tools"]  # Operator config is never rewritten.
+    assert "error_code=invalid_json_template" in caplog.text
+    with pytest.raises(TemplateError):
+        ToolRuntimeGeneration.build(generation_id=2, config=config)
+    assert generation.registry.has("valid_pre") and not generation.registry.has("bad_post")
+
+
+def test_startup_http_policy_does_not_relax_handoff_or_pushover_validation():
+    with pytest.raises(ValueError, match="message is required"):
+        ToolRuntimeGeneration.build(generation_id=1, skip_invalid_http_templates=True,
+                                    config={"tools": {"transfer": {"handoff": {"enabled": True}}}})
+    with pytest.raises(ToolConfigPolicyError):
+        ToolRuntimeGeneration.build(generation_id=1, skip_invalid_http_templates=True,
+                                    config={"tools": {"notify": {"kind": "pushover", "phase": "invalid"}}})

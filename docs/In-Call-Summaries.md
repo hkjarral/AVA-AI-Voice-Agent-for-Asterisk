@@ -1,5 +1,8 @@
 # In-call HTTP summaries
 
+For phase-specific examples, configuration validation, synthetic previews, and
+transcript-so-far support, see [HTTP tool templates](HTTP-Tool-Templates.md).
+
 See the [v7.7.0 validation matrix](baselines/golden/v7.7.0-validation-matrix.md)
 for existing automated evidence and the explicit waiver of further live testing.
 A summary uses the conversation history available at invocation. It cannot

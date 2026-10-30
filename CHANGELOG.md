@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Extend shared template guidance, highlighting, examples and synthetic previews
+  to Pushover title/message fields in all three phases. Report safe field-specific
+  errors and wait for a current valid review before staging enabled HTTP or
+  Pushover tools, preserving separate recipient/test actions and saved templates.
+
+- Add transcript-so-far payloads to in-call HTTP tools, with phase-specific
+  examples, variable guidance, template validation and synthetic previews across
+  pre-, in-, and post-call HTTP tools. Preserve actionable preparation errors in
+  Call History and support exports, and align explicit HTTP tests with runtime
+  rendering instead of sending malformed JSON as raw content (#766).
+
 - Add an authenticated, OpenAI-compatible local transcription API with
   bounded multipart uploads, killable FFmpeg decoding, and a one-job isolated
   STT worker. Live-call sessions take priority and preempt batch work; backend
@@ -21,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MCP server's responsibility (#778).
 
 ### Fixed
+
+- Keep HTTP template previews accurate for repeated environment references and
+  explicit test values; reject unsupported pre-call JSON variables. Mask escaped
+  credential echoes and use fixed API error messages. On initial startup, omit
+  malformed HTTP tools while keeping valid tools available; preserve atomic
+  rejection of invalid reloads and strict routing/Pushover policies (#766).
+- Handle invalid Agent-inline HTTP templates through the existing fail-closed
+  policy path. Normalize webhook methods before summary/preparation, clear
+  conflicting pending Content-Type rows when applying JSON examples, and mask
+  percent-encoded credential echoes with either hexadecimal letter case (#766).
 
 - Keep tools that are not in-call out of the OpenAI streaming LLM request, as the
   non-streaming path already does, so a streaming turn cannot be offered pre-call or

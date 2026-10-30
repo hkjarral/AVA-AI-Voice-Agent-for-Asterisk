@@ -17,8 +17,9 @@ from contextvars import ContextVar
 
 from src.tools.summary import SUMMARY_FIELDS, generate_summary, snapshot_history
 from src.tools.http.path_utils import extract_path
+from src.tools.http.template_contract import IN_CALL_RESERVED, render_request, template_fields
 from src.tools.http.template import (
-    TemplateError, body_media_type, render_body, render_headers, render_template, render_url,
+    TemplateError, body_media_type, render_template,
 )
 
 import aiohttp
@@ -26,7 +27,6 @@ import aiohttp
 from src.tools.base import Tool, ToolDefinition, ToolCategory, ToolPhase, ToolParameter
 from src.tools.context import ToolExecutionContext
 from src.tools.http.debug_trace import (
-    BODY_CAPABLE_HTTP_METHODS,
     build_var_snapshot,
     debug_enabled,
     extract_used_brace_vars,
@@ -133,7 +133,7 @@ class InCallHTTPTool(Tool):
         # Convert config parameters to ToolParameter objects
         tool_params = []
         for p in config.parameters:
-            if config.generate_summary and p.get("name") in SUMMARY_FIELDS:
+            if p.get("name") in IN_CALL_RESERVED or (config.generate_summary and p.get("name") in SUMMARY_FIELDS):
                 continue
             tool_params.append(ToolParameter(
                 name=p.get('name', ''),
@@ -162,27 +162,39 @@ class InCallHTTPTool(Tool):
     
     async def execute(self, parameters, context):
         if not self.config.enabled or not self.config.url:
-            return {"status": "failed" if not self.config.enabled else "error", "message": self.config.error_message, "delivery_status": "skipped"}
-        diagnostics = {"internal_notification": True} if self.config.generate_summary else {}
+            return {"status": "failed" if not self.config.enabled else "error", "message": self.config.error_message,
+                    "http_tool": True, "phase": "in_call", "delivery_status": "skipped"}
+        diagnostics = {"http_tool": True, "phase": "in_call"}
+        if self.config.generate_summary:
+            diagnostics["internal_notification"] = True
+            diagnostics.update(summary_status="skipped", summary_provider=self.config.summary_provider)
         delivery_started = False
         delivery = {}
         delivery_token = _http_delivery_state.set(delivery)
         async def run():
             nonlocal delivery_started
             values = await self._build_substitution_context(parameters, context)
+            needs_history = self.config.generate_summary or any(
+                "{transcript_json}" in template
+                for template in template_fields(vars(self.config), "in_call").values()
+            )
+            history = await snapshot_history(context) if needs_history else []
+            values["transcript_json"] = json.dumps(history)
+            # Validate actual runtime inputs before paying for summary generation.
+            render_request(vars(self.config), values, "in_call")
             if self.config.generate_summary:
-                history = await snapshot_history(context)
                 generator = getattr(context.tool_registry, "summary_generator", None)
                 summary_values, summary_diagnostics = await generate_summary(
                     self.config, generator, call_id=context.call_id,
-                    history=history, values=values,
+                    history=history, values={key: value for key, value in values.items() if key != "transcript_json"},
                 )
                 values.update(summary_values)
                 diagnostics.update(summary_diagnostics)
                 if summary_values["summary_status"] != "ok" and self.config.summary_failure_policy == "abort":
                     return {"status": "error", "message": "Summary unavailable; request was not sent.",
                             "delivery_status": "skipped"}
-                # A completed summary must not start delivery after hangup/cleanup.
+            # Preparation must not start delivery after hangup/cleanup.
+            if context.session_store:
                 live = await context.get_session()
                 if getattr(live, "cleanup_in_progress", False) or getattr(live, "cleanup_completed", False):
                     return {"status": "cancelled", "delivery_status": "skipped"}
@@ -192,8 +204,17 @@ class InCallHTTPTool(Tool):
             result = await asyncio.wait_for(run(), timeout=self.definition.timeout_ms / 1000)
         except asyncio.TimeoutError:
             result = {"status": "timeout", "message": self.config.error_message, "delivery_status": "uncertain" if delivery_started else "skipped", **delivery}
+        except TemplateError as exc:
+            logger.warning("HTTP tool template rejected call_id=%s tool=%s phase=in_call error_code=%s template_variable=%s",
+                           context.call_id, self.config.name, exc.code, exc.variable,
+                           extra={"call_id": context.call_id, "tool": self.config.name,
+                           "phase": "in_call", **exc.diagnostics()})
+            result = {"status": "error", "message": self.config.error_message, "delivery_status": "skipped", **exc.diagnostics()}
         except Exception:
-            result = {"status": "error", "message": self.config.error_message, "delivery_status": "uncertain" if delivery_started else "skipped", **delivery}
+            logger.warning("HTTP tool preparation failed call_id=%s tool=%s phase=in_call error_code=preparation_failed",
+                           context.call_id, self.config.name,
+                           extra={"call_id": context.call_id, "tool": self.config.name, "phase": "in_call", "error_code": "preparation_failed"})
+            result = {"status": "error", "message": self.config.error_message, "error_code": "preparation_failed", "delivery_status": "uncertain" if delivery_started else "skipped", **delivery}
         finally:
             _http_delivery_state.reset(delivery_token)
         return {**result, **diagnostics}
@@ -244,20 +265,12 @@ class InCallHTTPTool(Tool):
             # Build substitution context (context vars + pre-call results + AI params)
             
             # Build request
-            url = render_url(self.config.url, sub_context)
-            headers = render_headers(self.config.headers, sub_context)
-            query_params = {
-                k: self._substitute_variables(v, sub_context)
-                for k, v in self.config.query_params.items()
-            }
-            
-            body = None
+            prepared = render_request(vars(self.config), sub_context, "in_call")
+            url, headers, query_params = prepared["url"], prepared["headers"], prepared["query_params"]
+            body = prepared["body"]
             json_body = None
             method = str(self.config.method or "GET").strip().upper()
-            if method in BODY_CAPABLE_HTTP_METHODS and self.config.body_template:
-                if not any(key.lower() == "content-type" for key in headers):
-                    headers["Content-Type"] = "application/json"
-                body = render_body(self.config.body_template, sub_context, headers)
+            if body is not None:
                 media_type = body_media_type(headers)
                 if media_type == "application/json" or media_type.endswith("+json"):
                     json_body = json.loads(body)
@@ -503,6 +516,8 @@ class InCallHTTPTool(Tool):
                     
                     return result
         
+        except TemplateError:
+            raise
         except asyncio.TimeoutError:
             return {**delivery, "status": "timeout", "message": self.config.error_message}
         except aiohttp.ClientError as e:
@@ -544,6 +559,7 @@ class InCallHTTPTool(Tool):
             "caller_name": context.caller_name or "",
             "context_name": context.context_name or "",
             "call_id": context.call_id or "",
+            "transcript_json": "[]",
             **({**{key: "" for key in SUMMARY_FIELDS}, "summary_json": json.dumps(""),
                 "summary_status": "pending"} if self.config.generate_summary else {}),
         }
@@ -569,7 +585,7 @@ class InCallHTTPTool(Tool):
                     call_metadata = getattr(session, 'call_metadata', None) or {}
                     built_in_keys = {
                         "caller_number", "called_number", "caller_name",
-                        "context_name", "call_id", *(SUMMARY_FIELDS if self.config.generate_summary else ()),
+                        "context_name", "call_id", "transcript_json", *(SUMMARY_FIELDS if self.config.generate_summary else ()),
                     }
                     for key, value in call_metadata.items():
                         if key not in built_in_keys:

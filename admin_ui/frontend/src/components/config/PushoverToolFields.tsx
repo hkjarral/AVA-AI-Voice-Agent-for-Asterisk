@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import axios from 'axios';
+import { HTTPTemplateEditor, type TemplateReview } from './HTTPTemplateGuidance';
 import { FormInput, FormSelect, FormLabel, FormSwitch } from '../ui/FormComponents';
 
 import {
@@ -18,18 +19,18 @@ export function PushoverToolFields({
     onChange,
     credentials,
     onCredentialsChange,
+    templateReview,
 }: {
+    templateReview?: TemplateReview | null;
     value: PushoverDraft;
     onChange: (value: PushoverDraft) => void;
     credentials: PushoverCredentials;
     onCredentialsChange: (value: PushoverCredentials) => void;
 }) {
     const [status, setStatus] = useState('');
-    const [preview, setPreview] = useState<{ title: string; message: string } | null>(null);
     const [busy, setBusy] = useState(false);
     const change = (key: string, next: unknown) => {
         onChange({ ...value, [key]: next });
-        setPreview(null);
     };
     const recipients = pushoverRecipients(value);
     const defaults = pushoverDefaults(value.phase, Boolean(value.generate_summary));
@@ -57,42 +58,35 @@ export function PushoverToolFields({
             ),
         });
     };
-    const action = async (kind: 'preview' | 'validate' | 'test', id?: string) => {
+    const action = async (kind: 'validate' | 'test', id?: string) => {
         setBusy(true);
         setStatus('');
         try {
             const response = await axios.post(`/api/pushover/${kind}`, {
                 config: pushoverDocument(value),
-                ...(kind === 'preview'
-                    ? {}
-                    : {
-                          credentials: credentialPayload(credentials, id ? [id] : undefined),
-                          recipient_id: id,
-                      }),
+                credentials: credentialPayload(credentials, id ? [id] : undefined),
+                recipient_id: id,
             });
-            if (kind === 'preview') setPreview(response.data);
-            else {
-                onChange(applyPushoverRefs(value, response.data.credential_refs || {}));
-                onCredentialsChange({
-                    token: '',
-                    recipients: Object.fromEntries(
-                        Object.entries(credentials.recipients).filter(([key]) => id && key !== id)
-                    ),
-                });
-                const details = Object.entries(response.data.notification_deliveries || {})
-                    .map(([key, result]) => {
-                        const row = result as {
-                            label?: string;
-                            delivery_status: string;
-                            error_code?: string;
-                        };
-                        return `${row.label || key}: ${row.delivery_status}${row.error_code ? ` (${row.error_code})` : ''}`;
-                    })
-                    .join('; ');
-                setStatus(
-                    `${kind === 'test' ? 'Test' : 'Validation'}: ${details || response.data.delivery_status}. Acceptance does not prove display or acknowledgement.`
-                );
-            }
+            onChange(applyPushoverRefs(value, response.data.credential_refs || {}));
+            onCredentialsChange({
+                token: '',
+                recipients: Object.fromEntries(
+                    Object.entries(credentials.recipients).filter(([key]) => id && key !== id)
+                ),
+            });
+            const details = Object.entries(response.data.notification_deliveries || {})
+                .map(([key, result]) => {
+                    const row = result as {
+                        label?: string;
+                        delivery_status: string;
+                        error_code?: string;
+                    };
+                    return `${row.label || key}: ${row.delivery_status}${row.error_code ? ` (${row.error_code})` : ''}`;
+                })
+                .join('; ');
+            setStatus(
+                `${kind === 'test' ? 'Test' : 'Validation'}: ${details || response.data.delivery_status}. Acceptance does not prove display or acknowledgement.`
+            );
         } catch {
             setStatus(
                 'Unable to complete this action. Check credential format and configuration. No automatic retry will be made.'
@@ -223,12 +217,12 @@ export function PushoverToolFields({
                     </p>
                 )}
             </div>
-            <FormInput
-                label="Notification title"
-                value={value.title || ''}
-                onChange={e => change('title', e.target.value)}
-                placeholder={defaults.title}
-            />
+            <div>
+                <FormLabel htmlFor="pushover-title">Notification title</FormLabel>
+                <HTTPTemplateEditor id="pushover-title" rows={1} value={value.title || ''}
+                    onChange={e => change('title', e.target.value)} placeholder={defaults.title}
+                    references={templateReview?.references.filter(reference => reference.field === 'title')} />
+            </div>
             <div>
                 <FormLabel
                     htmlFor="pushover-body"
@@ -236,7 +230,8 @@ export function PushoverToolFields({
                 >
                     Message template
                 </FormLabel>
-                <textarea
+                <HTTPTemplateEditor
+                    references={templateReview?.references.filter(reference => reference.field === 'body')}
                     id="pushover-body"
                     className="w-full min-h-32 rounded border border-input bg-background p-3 font-mono text-sm"
                     value={value.body || ''}
@@ -305,24 +300,6 @@ export function PushoverToolFields({
                     />
                 )}
             </details>
-            <div className="flex flex-wrap gap-3">
-                <button
-                    type="button"
-                    className="rounded border px-3 py-2 text-sm"
-                    onClick={() => void action('preview')}
-                >
-                    Preview message
-                </button>
-            </div>
-            {preview && (
-                <div className="rounded border p-3">
-                    <p>{preview.title}</p>
-                    <pre className="whitespace-pre-wrap text-sm">{preview.message}</pre>
-                    <p className="text-xs">
-                        Synthetic preview only. No notification or model request was sent.
-                    </p>
-                </div>
-            )}
             {status && (
                 <p role="status" className="text-sm">
                     {status}

@@ -127,7 +127,7 @@ async def test_summary_disabled_preserves_legacy_summary_parameter():
     tool=InCallHTTPTool(InCallHTTPConfig(name='legacy',url='https://example.com',parameters=[{'name':'summary','type':'string','required':True}]))
     tool._execute_request=AsyncMock(return_value={'status':'success'})
     result=await tool.execute({'summary':'Legacy model-provided note'},context)
-    assert result=={'status':'success'}
+    assert result=={'status':'success', 'http_tool': True, 'phase': 'in_call'}
     assert tool._execute_request.await_args.args[2]['summary']=='Legacy model-provided note'
     assert [p.name for p in tool.definition.parameters]==['summary']
     enabled=make_tool(parameters=[{'name':'summary','type':'string','required':True}])
@@ -216,7 +216,8 @@ async def test_http_network_failure_is_uncertain_but_invalid_template_is_skipped
     config = {} if network else {"headers": {"Content-Type": "application/json"}, "body_template": '{"broken":'}
     result = await make_tool(**config).execute({}, context)
     assert result["delivery_status"] == ("uncertain" if network else "skipped")
-    assert result["summary_status"] == "ok" and client.called == network
+    assert result["summary_status"] == ("ok" if network else "skipped") and client.called == network
+    assert generator.called == network
 
 
 @pytest.mark.asyncio

@@ -704,6 +704,10 @@ Tool Definitions:
                 continue
             
             kind = tool_config.get('kind', '')
+
+            if kind in {"generic_http_lookup", "generic_webhook"}:
+                from src.tools.http.template_contract import assert_valid_template
+                assert_valid_template(tool_config, "pre_call" if kind == "generic_http_lookup" else "post_call")
             
             if kind == 'pushover':
                 self._register_pushover_tool_from_config(tool_name, tool_config, in_call=False)
@@ -775,6 +779,8 @@ Tool Definitions:
                 continue
 
             if kind == 'in_call_http_lookup':
+                from src.tools.http.template_contract import assert_valid_template
+                assert_valid_template(tool_config, "in_call")
                 try:
                     from src.tools.http.in_call_lookup import create_in_call_http_tool
                     tool = create_in_call_http_tool(tool_name, tool_config)

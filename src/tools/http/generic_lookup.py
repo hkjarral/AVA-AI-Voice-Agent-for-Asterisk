@@ -16,7 +16,7 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 
 from src.tools.http.path_utils import extract_path
-from src.tools.http.template import render_body, render_headers, render_template, render_url
+from src.tools.http.template import TemplateError, render_body, render_headers, render_template, render_url
 
 import aiohttp
 
@@ -242,6 +242,7 @@ class GenericHTTPLookupTool(PreCallTool):
         body_text: str = "",
         error_message: Optional[str] = None,
         output_variables: Optional[Dict[str, str]] = None,
+        request_diagnostics: Optional[Dict[str, Any]] = None,
     ) -> None:
         if not call_id:
             return
@@ -251,6 +252,11 @@ class GenericHTTPLookupTool(PreCallTool):
             safe_body = self._sanitize_response_text(body_text)
             summary = safe_body if len(safe_body) <= max_chars else safe_body[:max_chars] + "…"
         self._last_results[call_id] = {
+            "phase": "pre_call",
+            "delivery_status": ("accepted" if http_status is not None and 200 <= http_status < 300 else
+                                "rejected" if http_status is not None and 400 <= http_status < 500 and http_status != 408 else
+                                "skipped" if status == "skipped" else "uncertain"),
+            **(request_diagnostics or {}),
             "status": status,
             "http_status": http_status,
             "response_summary": summary,
@@ -524,6 +530,14 @@ class GenericHTTPLookupTool(PreCallTool):
                     
                     logger.info(f"HTTP lookup completed: {self.config.name} status={response.status} keys={list(results.keys())}")
         
+        except TemplateError as exc:
+            logger.warning("HTTP tool template rejected call_id=%s tool=%s phase=pre_call error_code=%s template_variable=%s",
+                           call_id, self.config.name, exc.code, exc.variable,
+                           extra={"call_id": call_id, "tool": self.config.name,
+                           "phase": "pre_call", **exc.diagnostics()})
+            self._record_result(call_id=call_id, status="error", started_at=started_at,
+                                started_monotonic=started, error_message=str(exc), output_variables=results,
+                                request_diagnostics={"delivery_status": "skipped", **exc.diagnostics()})
         except (asyncio.TimeoutError, aiohttp.ServerTimeoutError) as e:
             safe_error = self._sanitize_plain_text(f"{e.__class__.__name__}: {e}")
             logger.warning(f"HTTP lookup timed out: {self.config.name} error={safe_error}")

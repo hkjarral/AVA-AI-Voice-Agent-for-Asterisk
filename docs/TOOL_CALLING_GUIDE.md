@@ -484,6 +484,10 @@ credentials, limits and testing.
 
 ## HTTP Template Safety and Compatibility
 
+See [HTTP tool templates](HTTP-Tool-Templates.md) for phase-specific examples,
+inline variable guidance, configuration validation, synthetic previews, and
+in-call transcript-so-far payloads.
+
 The engine's pre-call lookups, in-call HTTP tools, and post-call webhooks resolve
 `${ENV_VAR}` and `{variable}` only in the original operator-authored template.
 Inserted caller data, model arguments, enrichment, transcripts, summaries, and

@@ -18,6 +18,33 @@ from src.tools.base import ToolPhase, ToolCategory
 from src.post_call_summary import SummaryGenerationResult
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", [None, " post "])
+@pytest.mark.parametrize("valid", [False, True])
+async def test_method_normalization_applies_before_body_validation_and_summary(method, valid):
+    generator = AsyncMock()
+    context = PostCallContext(call_id="synthetic-method", caller_number="synthetic", summary_generator=generator)
+    tool = GenericWebhookTool(WebhookConfig(
+        name="method_normalization", url="https://example.com", method=method,
+        generate_summary=not valid, summary_provider="example",
+        payload_template='{"call":"{call_id}"}' if valid else '{"missing":{absent}}',
+    ))
+    response = AsyncMock(status=204)
+    response.text = AsyncMock(return_value="")
+    request_cm = MagicMock(__aenter__=AsyncMock(return_value=response), __aexit__=AsyncMock(return_value=None))
+    session = MagicMock(request=MagicMock(return_value=request_cm))
+    manager = MagicMock(__aenter__=AsyncMock(return_value=session), __aexit__=AsyncMock(return_value=None))
+    with patch("aiohttp.ClientSession", return_value=manager):
+        await tool.execute(context)
+    assert not generator.called
+    if valid:
+        assert session.request.call_args.kwargs["method"] == "POST"
+        assert json.loads(session.request.call_args.kwargs["data"])["call"] == context.call_id
+    else:
+        assert not session.request.called
+        assert tool.get_last_result(context.call_id)["error_code"] == "missing_template_variable"
+
+
 # --- WebhookConfig Tests ---
 
 class TestWebhookConfig:

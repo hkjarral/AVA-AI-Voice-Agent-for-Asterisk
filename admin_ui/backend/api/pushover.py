@@ -18,6 +18,8 @@ from src.integrations.pushover import (
     read_key,
 )
 
+from src.integrations.pushover_templates import preview_values
+
 router = APIRouter()
 
 
@@ -87,34 +89,17 @@ def _config(raw):
         raise HTTPException(422, "Invalid Pushover tool configuration") from None
 
 
-def preview_values(phase):
-    return {
-        "agent": "Example Agent",
-        "context_name": "Example Agent",
-        "caller_name": "Example Caller",
-        "called_number": "+18005550100",
-        "call_outcome": "caller_hangup" if phase == "post_call" else "pending",
-        "call_duration": "120" if phase == "post_call" else "0",
-        "stage": {
-            "pre_call": "arrival",
-            "in_call": "in-call update",
-            "post_call": "completion",
-        }[phase],
-        "name": "Example Caller",
-        "company": "Example Company",
-        "caller_number": "+15550102030",
-        "callback_number": "unknown",
-        "call_id": "synthetic-preview",
-        "crm_status": "unknown",
-        "identity_source": "caller-confirmed",
-        "destination": "support",
-        "outcome": "caller_hangup" if phase == "post_call" else "pending",
-        "language": "unknown",
-        "meeting": "unknown",
-        "summary": "Caller requested a consultation. Next step: staff follow-up.",
-        "summary_status": "preview",
-        "update_key": "",
-    }
+@router.post("/templates/validate")
+async def review_notification_templates(request: Request):
+    from src.integrations.pushover_templates import review_templates
+    raw = await _body(request)
+    config = raw.get("config")
+    if not isinstance(config, dict):
+        raise HTTPException(422, "Expected notification template settings")
+    try:
+        return review_templates(config, raw.get("phase"))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(422, "Invalid notification template settings") from None
 
 
 @router.post("/preview")
@@ -122,7 +107,7 @@ async def preview(request: Request):
     raw = await _body(request)
     cfg = _config(raw.get("config") or {})
     return {
-        **render_message(cfg, cfg.phase, preview_values(cfg.phase)),
+        **render_message(cfg, cfg.phase, preview_values(cfg.phase, cfg.generate_summary)),
         "preview_only": True,
     }
 
