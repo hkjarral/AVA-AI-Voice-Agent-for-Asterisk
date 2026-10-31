@@ -8,7 +8,7 @@ pydantic==2.14.1
 httpx==0.28.1
 urllib3<2
 requests==2.34.2
-psutil==5.9.8
+psutil==7.2.2
 passlib[bcrypt]==1.7.4
 python-jose[cryptography]==3.5.0
 python-multipart==0.0.32
