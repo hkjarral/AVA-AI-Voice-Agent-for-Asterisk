@@ -8066,6 +8066,11 @@ class Engine:
             logger.debug("Failed to schedule attended transfer timeout guard", call_id=call_id, exc_info=True)
 
     async def _attended_transfer_timeout_guard(self, call_id: str, agent_channel_id: str, *, timeout_sec: float) -> None:
+        """Recover an owned unanswered leg after its dial deadline plus event grace.
+
+        Answered, superseded, or already-retired legs are left to their current
+        owner. The shared abort path records and notifies failure once.
+        """
         try:
             await asyncio.sleep(max(0.0, float(timeout_sec)) + 2.0)
             # Asterisk normally destroys an unanswered leg at dial_timeout.
@@ -8090,24 +8095,9 @@ class Engine:
 
             logger.info("Attended transfer timed out before answer; resuming caller", call_id=call_id, agent_channel_id=agent_channel_id)
 
-            # IMPORTANT: unregister mapping before hanging up the agent leg so that the resulting
-            # ChannelDestroyed/StasisEnd does not get resolved back to the caller session and tear down the call.
-            self._unregister_attended_transfer_agent_channel(agent_channel_id)
-
-            try:
-                await self.ari_client.hangup_channel(agent_channel_id)
-            except Exception:
-                pass
-            try:
-                await self.ari_client.send_command(method="DELETE", resource=f"channels/{session.caller_channel_id}/moh")
-            except Exception:
-                pass
-            try:
-                session.current_action = None
-                session.audio_capture_enabled = True
-            except Exception:
-                pass
-            await self._save_session(session)
+            await self._attended_transfer_abort_and_resume(
+                session, agent_channel_id, reason="dial-timeout"
+            )
         except Exception:
             logger.debug("Attended transfer timeout guard failed", call_id=call_id, exc_info=True)
 
@@ -9441,17 +9431,60 @@ class Engine:
             template_vars=template_vars,
         )
 
+    async def recover_attended_transfer_failure(
+        self, call_id: str, attempt: Dict[str, Any], *, reason: str
+    ) -> None:
+        """Recover a background screening/origination failure while it still owns the call."""
+        session = await self.session_store.get_by_call_id(call_id)
+        if not session or session.current_action is not attempt or session.cleanup_in_progress:
+            return
+        await self._attended_transfer_abort_and_resume(
+            session, str(attempt.get("agent_channel_id") or ""), reason=reason
+        )
+
     async def _attended_transfer_abort_and_resume(self, session: "CallSession", agent_channel_id: str, *, reason: str) -> None:
+        """Retire the matching attended attempt and restore the surviving caller.
+
+        Claim the action before cleanup so paired channel-end/timeout events
+        cannot announce twice. Google Live owns its recovery response; other
+        providers retain local failure playback. Recheck session/action ownership
+        after waits so hangup or a newer transfer cannot be overwritten.
+        """
         call_id = session.call_id
+        action = session.current_action
+        if (
+            not isinstance(action, dict)
+            or action.get("type") != "attended_transfer"
+            or str(action.get("agent_channel_id") or "") not in ("", agent_channel_id)
+            or action.get("recovery_started")
+            or getattr(session, "cleanup_in_progress", False)
+        ):
+            return
+        # Confirm ownership, then claim before cleanup yields to paired events.
+        current_session = await self.session_store.get_by_call_id(call_id)
+        if (
+            not current_session
+            or current_session.cleanup_in_progress
+            or current_session.current_action is not action
+            or action.get("recovery_started")
+        ):
+            return
+        action["recovery_started"] = True
+        self._unregister_attended_transfer_agent_channel(agent_channel_id)
+        provider = getattr(self, "_call_providers", {}).get(call_id)
+        notify = getattr(provider, "notify_transfer_failed", None)
+        provider_recovery = callable(notify)
         try:
-            await self._cleanup_attended_transfer_helper_media(agent_channel_id)
+            if agent_channel_id:
+                await self._cleanup_attended_transfer_helper_media(agent_channel_id)
         except Exception:
             logger.debug("Failed to clean up attended transfer helper media on abort", call_id=call_id, agent_channel_id=agent_channel_id, exc_info=True)
         # IMPORTANT: unregister mapping before hanging up the agent leg so that the resulting
         # ChannelDestroyed/StasisEnd does not get resolved back to the caller session and tear down the call.
         self._unregister_attended_transfer_agent_channel(agent_channel_id)
         try:
-            await self.ari_client.hangup_channel(agent_channel_id)
+            if agent_channel_id:
+                await self.ari_client.hangup_channel(agent_channel_id)
         except Exception:
             pass
         try:
@@ -9463,7 +9496,7 @@ class Engine:
         try:
             tools_cfg = getattr(self.config, "tools", {}) or {}
             attended_cfg = tools_cfg.get("attended_transfer") if isinstance(tools_cfg, dict) else None
-            if isinstance(attended_cfg, dict) and reason in {"declined", "timeout", "no-answer", "dial-timeout"}:
+            if not provider_recovery and isinstance(attended_cfg, dict) and reason in {"declined", "timeout", "no-answer", "dial-timeout"}:
                 caller_prompt = str(
                     attended_cfg.get(
                         "caller_declined_prompt",
@@ -9473,7 +9506,9 @@ class Engine:
                 )
                 tts_timeout = float(attended_cfg.get("tts_timeout_seconds", 8) or 8)
                 if caller_prompt.strip():
-                    template_vars = self._build_attended_transfer_template_vars(session)
+                    template_vars = self._build_attended_transfer_template_vars(
+                        session, destination_description=action.get("target_name") or action.get("target")
+                    )
                     # Keep capture disabled while we play this prompt so we don't feed it back into STT.
                     try:
                         session.audio_capture_enabled = False
@@ -9501,8 +9536,38 @@ class Engine:
             if not current_session or bool(getattr(current_session, "cleanup_in_progress", False)):
                 return
             session = current_session
-            if session.current_action and session.current_action.get("type") == "attended_transfer":
-                session.current_action = None
+            if session.current_action is not action:
+                return  # A newer transfer owns the caller now.
+            await self._record_attended_transfer_outcome(session, action, reason=reason)
+            current_session = await self.session_store.get_by_call_id(call_id)
+            if not current_session or current_session.cleanup_in_progress or current_session.current_action is not action:
+                return
+            # Keep ownership while delivering the bounded provider event. A duplicate
+            # end event cannot notify twice or race a timeout into the same recovery.
+            if provider_recovery:
+                try:
+                    configured = (self._tool_config_for_session(session).get("tools") or {}).get("attended_transfer") or {}
+                    caller_prompt = str(configured.get("caller_declined_prompt") or "")
+                    if caller_prompt:
+                        caller_prompt = self._apply_prompt_template_substitution(
+                            caller_prompt,
+                            session,
+                            extra_substitutions=self._build_attended_transfer_template_vars(
+                                session, destination_description=action.get("target_name") or action.get("target")
+                            ),
+                        )
+                    delivered = await asyncio.wait_for(
+                        notify(call_id=call_id, attempt=action, caller_prompt=caller_prompt), timeout=5.0
+                    )
+                    if not delivered:
+                        logger.warning("Attended transfer failure notification not delivered", call_id=call_id)
+                except Exception:
+                    logger.warning("Attended transfer failure notification failed", call_id=call_id, exc_info=True)
+            current_session = await self.session_store.get_by_call_id(call_id)
+            if not current_session or current_session.cleanup_in_progress or current_session.current_action is not action:
+                return
+            session = current_session
+            session.current_action = None
             # Re-enable capture so the AI can resume.
             try:
                 session.audio_capture_enabled = True
@@ -9515,6 +9580,24 @@ class Engine:
             # Idempotent safety: ensure mapping is removed even if we returned early.
             self._unregister_attended_transfer_agent_channel(agent_channel_id)
 
+    async def _record_attended_transfer_outcome(
+        self, session: CallSession, action: Dict[str, Any], *, reason: Optional[str] = None
+    ) -> None:
+        """Append terminal evidence without rewriting the initiating tool result."""
+        origin = action.get("_tool_history_origin") or {}
+        await record_in_call_tool_result(
+            session_store=self.session_store,
+            call_id=session.call_id,
+            tool_call_id=origin.get("tool_call_id") or action.get("id") or action.get("agent_channel_id"),
+            tool_name="attended_transfer",
+            parameters={},
+            result={
+                "status": "failed" if reason else "success",
+                "action": "attended_transfer_failed" if reason else "attended_transfer_completed",
+                "message": f"Transfer failed ({reason})." if reason else "Transfer completed.",
+            },
+        )
+
     async def _attended_transfer_finalize_bridge(
         self,
         session: "CallSession",
@@ -9525,6 +9608,12 @@ class Engine:
         tts_timeout: float,
         template_vars: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Finish an accepted transfer and append the successful handoff outcome.
+
+        Stop caller hold audio and AI media/provider work before bridging the
+        accepted agent. Delegate bridge errors to the existing abort path;
+        recording completion does not restart a provider already stopped here.
+        """
         call_id = session.call_id
 
         # Stop MOH and optionally play "connecting you now" prompt to caller.
@@ -9596,6 +9685,7 @@ class Engine:
         try:
             session = await self.session_store.get_by_call_id(call_id) or session
             session.transfer_destination = destination_description
+            await self._record_attended_transfer_outcome(session, session.current_action or {})
             if session.current_action and session.current_action.get("type") == "attended_transfer":
                 session.current_action["answered"] = True
                 session.current_action["agent_channel_id"] = agent_channel_id
@@ -17912,6 +18002,7 @@ class Engine:
                             args = tool_call.get("parameters") or {}
                             function_call_id = stable_tool_call_id(tool_call.get("id"))
                             tool_call["id"] = function_call_id
+                            tool_ctx.tool_call_id = function_call_id
                             _tool_start = time.time()
                             tool_result_recorded = False
                             tool_task = None
@@ -18142,6 +18233,7 @@ class Engine:
                                                         next_args = next_tc.get("parameters") or {}
                                                         next_function_call_id = stable_tool_call_id(next_tc.get("id"))
                                                         next_tc["id"] = next_function_call_id
+                                                        tool_ctx.tool_call_id = next_function_call_id
                                                         try:
                                                             next_canonical_name = tool_registry.canonicalize_tool_name(next_name)
                                                         except Exception:
@@ -21899,6 +21991,7 @@ class Engine:
                     config=self._tool_config_for_session(session),
                     tool_registry=tool_registry,
                     provider_name=provider_name,
+                    tool_call_id=function_call_id,
                 )
 
                 # Execute through the registry captured by this call's generation.

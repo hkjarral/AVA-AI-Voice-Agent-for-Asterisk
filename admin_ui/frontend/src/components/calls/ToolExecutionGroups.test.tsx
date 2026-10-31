@@ -205,3 +205,18 @@ it('does not attach Pushover acknowledgement semantics to calendar delivery', ()
     render(<InCallToolGroup entries={[{name:'microsoft_calendar',params:{},result:'success',timestamp:'2026-10-23T12:00:00Z',duration_ms:5,delivery_status:'unknown'}]} />);
     expect(screen.queryByText(/queued by Pushover/)).not.toBeInTheDocument();
 });
+
+it('distinguishes transfer initiation from its terminal failure', () => {
+    render(<InCallToolGroup entries={[
+        {name:'attended_transfer',action:'attended_transfer_initiated',params:{},result:'success',timestamp:'2026-10-30T12:00:00Z',duration_ms:2},
+        {name:'attended_transfer',action:'attended_transfer_failed',params:{},result:'failed',timestamp:'2026-10-30T12:00:01Z',duration_ms:0},
+    ]} />);
+    expect(screen.getByText('Transfer initiated')).toBeInTheDocument();
+    expect(screen.getByText('Transfer failed')).toBeInTheDocument();
+});
+
+
+it.each(['__proto__', 'constructor', 'toString'])('renders the literal legacy action %s safely', (action) => {
+    render(<InCallToolGroup entries={[{name:'attended_transfer',action,params:{},result:'success',timestamp:'2026-10-30T12:00:00Z',duration_ms:2}]} />);
+    expect(screen.getByText(action)).toBeInTheDocument();
+});

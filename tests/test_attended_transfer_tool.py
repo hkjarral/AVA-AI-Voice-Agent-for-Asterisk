@@ -32,6 +32,9 @@ class _FakeSessionStore:
     async def upsert_call(self, session: CallSession) -> None:
         self.sessions[session.call_id] = session
 
+    async def get_by_call_id(self, call_id):
+        return self.sessions.get(call_id)
+
 
 class _FakeContext:
     def __init__(self, *, config: dict, caller_channel_id: str, ari_client: _FakeAriClient, session: CallSession):
@@ -166,7 +169,8 @@ async def test_execute_deferred_attended_transfer_arms_pending_action_without_or
 
 
 @pytest.mark.asyncio
-async def test_execute_success_sets_action_and_originates_agent_leg():
+@pytest.mark.parametrize("invocation_id", [None, "provider-immediate-invocation"])
+async def test_execute_success_sets_action_and_originates_agent_leg(invocation_id):
     tool = AttendedTransferTool()
     call_id = "1760000000.0000"
     session = CallSession(call_id=call_id, caller_channel_id=call_id)
@@ -196,9 +200,20 @@ async def test_execute_success_sets_action_and_originates_agent_leg():
         session=session,
     )
 
+    context.tool_call_id = invocation_id
+    original_send = ari.send_command
+
+    async def assert_origin_before_originate(**kwargs):
+        if kwargs["method"] == "POST" and kwargs["resource"] == "channels":
+            origin = session.current_action.get("_tool_history_origin")
+            assert origin == ({"tool_call_id": invocation_id} if invocation_id else None)
+        return await original_send(**kwargs)
+
+    ari.send_command = assert_origin_before_originate
     result = await tool.execute({"destination": "support_agent"}, context)
     assert result["status"] == "success"
     assert result["type"] == "attended_transfer"
+    assert "_tool_history_origin" not in result
 
     # MOH start + originate were requested.
     assert any(c["method"] == "POST" and c["resource"].endswith(f"channels/{call_id}/moh") for c in ari.calls)
@@ -207,6 +222,21 @@ async def test_execute_success_sets_action_and_originates_agent_leg():
     # Session action and capture gating are set.
     assert session.current_action and session.current_action.get("type") == "attended_transfer"
     assert session.audio_capture_enabled is False
+
+    if invocation_id:
+        from types import SimpleNamespace
+        from src.engine import Engine
+        from src.tools.execution_history import record_in_call_tool_result
+        await record_in_call_tool_result(
+            session_store=context.session_store, call_id=call_id,
+            tool_call_id=invocation_id, tool_name="attended_transfer",
+            parameters={}, result=result)
+        await Engine._record_attended_transfer_outcome(
+            SimpleNamespace(session_store=context.session_store), session,
+            session.current_action, reason="no-answer")
+        assert [entry["tool_call_id"] for entry in session.tool_calls] == [invocation_id, invocation_id]
+        assert [entry["action"] for entry in session.tool_calls] == [
+            "attended_transfer_initiated", "attended_transfer_failed"]
 
 
 @pytest.mark.asyncio

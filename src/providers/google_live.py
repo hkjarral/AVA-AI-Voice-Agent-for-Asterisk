@@ -27,7 +27,7 @@ import time
 import struct
 import audioop
 import re
-from typing import AbstractSet, Any, Dict, Optional, List, Tuple
+from typing import AbstractSet, Any, Awaitable, Callable, Dict, Optional, List, Tuple
 from collections import deque
 
 import websockets
@@ -223,6 +223,7 @@ class GoogleLiveProvider(AIProviderInterface):
         self._seen_tool_call_ids: set[str] = set()
         self._detached_tool_tasks: set[asyncio.Task] = set()
         self._active_tool_call_ids: set[str] = set()
+        self._transfer_tool_responses: Dict[tuple[str, str], asyncio.Future] = {}
         self._tool_call_names: Dict[str, str] = {}
         self._tool_call_lock = asyncio.Lock()
         self._tool_teardown_lock = asyncio.Lock()
@@ -840,6 +841,7 @@ class GoogleLiveProvider(AIProviderInterface):
             call_id: Unique identifier for the call
             context: Optional context including system prompt, tools, etc.
         """
+        self._release_transfer_tool_responses()
         self._handoff_evidence.reset(call_id)
         self._call_id = call_id
         self._closing = False
@@ -1257,7 +1259,9 @@ class GoogleLiveProvider(AIProviderInterface):
             tools_count=len(tools),
         )
 
-    async def _send_message(self, message: Dict[str, Any]) -> bool:
+    async def _send_message(
+        self, message: Dict[str, Any], *, send_guard: Optional[Callable[[], Awaitable[bool]]] = None
+    ) -> bool:
         """Send a message to Google Live API and report confirmed websocket acceptance."""
         summary = self._summarize_outbound(message)
         try:
@@ -1282,6 +1286,10 @@ class GoogleLiveProvider(AIProviderInterface):
             return False
 
         async with self._send_lock:
+            # Recovery ownership can change while another message holds this
+            # lock. Revalidate at the actual send boundary, not before waiting.
+            if send_guard is not None and not await send_guard():
+                return False
             try:
                 await self.websocket.send(json.dumps(message))
                 self._ws_unavailable_logged = False
@@ -1371,6 +1379,59 @@ class GoogleLiveProvider(AIProviderInterface):
         # Google Live to stutter when generating audio. The `message` field already contains
         # the speech text extracted via speech_field/speech_template.
         return payload
+
+    def _release_transfer_tool_responses(self) -> None:
+        for response in self._transfer_tool_responses.values():
+            if not response.done():
+                response.set_result(False)
+        self._transfer_tool_responses.clear()
+
+    async def notify_transfer_failed(
+        self, *, call_id: str, attempt: Dict[str, Any], caller_prompt: str = ""
+    ) -> bool:
+        """Deliver an engine outcome after the original tool was acknowledged.
+
+        clientContent is a history-bearing event, not a second toolResponse.
+        turnComplete requests the caller-facing recovery response immediately.
+        """
+        if self._call_id != call_id or self._closing or self._closed or not self._ws_is_open():
+            return False
+
+        origin = attempt.get("_tool_history_origin") or {}
+        response = self._transfer_tool_responses.get((call_id, str(origin.get("tool_call_id") or "")))
+        # The engine bounds this wait. Shield the shared future from cancellation
+        # so a timed-out recovery cannot cancel the originating tool response.
+        if response is not None and not await asyncio.shield(response):
+            return False
+
+        async def still_owns_attempt() -> bool:
+            """Validate the same live attempt after acquiring the send lock."""
+            store = getattr(self, "_session_store", None)
+            if not store:
+                return False
+            session = await store.get_by_call_id(call_id)
+            return bool(
+                self._call_id == call_id
+                and not self._closing and not self._closed and self._ws_is_open()
+                and session and not session.cleanup_in_progress
+                and session.current_action is attempt
+                and attempt.get("type") == "attended_transfer"
+                and attempt.get("recovery_started")
+            )
+
+        return await self._send_message({
+            "clientContent": {
+                "turns": [{"role": "user", "parts": [{"text": (
+                    "System event: the attended transfer attempt failed and has ended. "
+                    "No transfer is in progress. Tell the caller briefly in their language "
+                    "that the connection could not be completed, then follow the configured "
+                    "fallback instructions. Do not claim you are still connecting them or "
+                    "that all operators are busy. Do not retry a transfer automatically."
+                    + (f" Use this configured failure response: {caller_prompt}" if caller_prompt else "")
+                )}]}],
+                "turnComplete": True,
+            }
+        }, send_guard=still_owns_attempt)
 
     async def _send_greeting(self) -> None:
         """Send greeting by asking Gemini to speak it (validated pattern from Golden Baseline)."""
@@ -2448,6 +2509,8 @@ class GoogleLiveProvider(AIProviderInterface):
         call_id = None
         tool_started_at = time.time()
         tool_result_recorded = False
+        transfer_responses = []
+        response_sent = None
         
         if not self._tool_adapter:
             logger.warning(
@@ -2464,6 +2527,11 @@ class GoogleLiveProvider(AIProviderInterface):
                 func_name = func_call.get("name")
                 func_args = func_call.get("args", {})
                 call_id = func_call.get("id")
+                response_sent = None
+                if func_name == "attended_transfer":
+                    response_sent = asyncio.get_running_loop().create_future()
+                    self._transfer_tool_responses[(owner_call_id, str(call_id or ""))] = response_sent
+                    transfer_responses.append(response_sent)
                 handoff_origin = self._handoff_evidence.turn(owner_call_id, self._audio_response_id if self.long_audio_playback_enabled and self._in_audio_burst else None)["id"]
                 tool_started_at = time.time()
                 tool_result_recorded = False
@@ -2498,6 +2566,7 @@ class GoogleLiveProvider(AIProviderInterface):
                     config=getattr(self, '_full_config', None),
                     tool_registry=self._tool_adapter.registry,
                     provider_name=self.provider_event_name(),
+                    tool_call_id=call_id,
                     user_input=self._input_transcription_buffer,
                 )
 
@@ -2606,6 +2675,8 @@ class GoogleLiveProvider(AIProviderInterface):
                 }
                 await self.prepare_handoff_result(result, owner_call_id, handoff_origin)
                 handoff_send_ok = await self._send_message(tool_response)
+                if response_sent is not None and not response_sent.done():
+                    response_sent.set_result(bool(handoff_send_ok))
                 await self.handoff_result_sent(result, owner_call_id, success=bool(handoff_send_ok))
                 if not handoff_send_ok and not terminal_after_spoken_farewell:
                     logger.warning(
@@ -2717,6 +2788,11 @@ class GoogleLiveProvider(AIProviderInterface):
                     result={"status": "error", "message": str(e)},
                     duration_ms=(time.time() - tool_started_at) * 1000,
                 )
+
+        finally:
+            for response in transfer_responses:
+                if not response.done():
+                    response.set_result(False)
 
     async def _handle_tool_call_cancellation(self, data: Dict[str, Any]) -> None:
         """Handle toolCallCancellation message (server canceled one or more pending tool calls)."""
@@ -3031,6 +3107,7 @@ class GoogleLiveProvider(AIProviderInterface):
             return
 
         self._closing = True
+        self._release_transfer_tool_responses()
         try:
             logger.info(
                 "Stopping Google Live session",

@@ -81,6 +81,7 @@ class ToolExecutionContext:
     user_input_recorded: bool = False  # Trusted caller path already persisted this turn
     detected_intent: Optional[str] = None
     confidence: Optional[float] = None
+    tool_call_id: Optional[str] = None  # Upstream invocation ID; private runtime metadata
 
     @staticmethod
     def is_pending_attended_transfer(session: Any) -> bool:

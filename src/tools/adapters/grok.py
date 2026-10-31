@@ -143,6 +143,7 @@ class GrokToolAdapter:
             ari_client=context['ari_client'],
             config=context.get('config'),
             tool_registry=self.registry,
+            tool_call_id=function_call_id,
             provider_name="grok",
             user_input=context.get('user_input'),
         )

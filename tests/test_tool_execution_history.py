@@ -474,3 +474,31 @@ def test_microsoft_attendee_list_and_booking_notes_are_redacted():
     assert record["params"]["meeting_purpose"] == "***REDACTED***"
     assert record["params"]["confirmed_notes"] == "***REDACTED***"
     assert parameters["attendee_emails"] == ["caller@example.com"]
+
+@pytest.mark.asyncio
+async def test_attended_initiation_is_distinct_from_handoff_success():
+    store = SessionStore()
+    session = CallSession(call_id='attended', caller_channel_id='caller')
+    session.pending_deferred_transfer = {'id': 'attempt', 'kind': 'transfer', 'transfer_type': 'attended_transfer'}
+    await store.upsert_call(session)
+    await record_in_call_tool_result(session_store=store, call_id=session.call_id,
+        tool_call_id='invocation', tool_name='attended_transfer', parameters={},
+        result={'status': 'success', 'deferred_transfer': dict(session.pending_deferred_transfer)})
+    assert session.tool_calls[0]['action'] == 'attended_transfer_initiated'
+    assert session.pending_deferred_transfer['_tool_history_origin']['tool_call_id'] == 'invocation'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result,expected", [
+    ({"status": "success", "type": "attended_transfer"}, "attended_transfer_initiated"),
+    ({"status": "failed", "type": "attended_transfer"}, "attended_transfer"),
+    ({"status": "success", "action": "attended_transfer_completed"}, "attended_transfer_completed"),
+])
+async def test_non_deferred_attended_initiation_preserves_terminal_semantics(result, expected):
+    """Immediate initiation is labeled without relabeling failures or completion."""
+    store = SessionStore()
+    session = CallSession(call_id="immediate", caller_channel_id="caller")
+    await store.upsert_call(session)
+    await record_in_call_tool_result(session_store=store, call_id=session.call_id,
+        tool_call_id="invocation", tool_name="attended_transfer", parameters={}, result=result)
+    assert session.tool_calls[0]["action"] == expected
