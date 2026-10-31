@@ -6,8 +6,8 @@ required for booking. Direct API booking requires a paid Calendly plan. For a
 self-hosted calendar exposed through Streamable HTTP MCP, start with
 [Appointment booking providers](Appointment-booking-providers.md).
 
-Release qualification and accepted limits are recorded in the
-[v7.7.0 validation matrix](baselines/golden/v7.7.0-validation-matrix.md).
+Reused release qualification, the fresh scoped waiver and accepted limits are recorded in the
+[v7.7.1 validation matrix](baselines/golden/v7.7.1-validation-matrix.md).
 Before upgrades, preserve the journal and managed credentials using the
 [integration backup guide](INTEGRATION_BACKUPS.md); application rollback must not
 erase remote-submission replay barriers.

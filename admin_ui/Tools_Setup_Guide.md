@@ -2,7 +2,7 @@
 
 **Version**: 1.1.0
 **Last Updated**: October 2026
-**Applies to**: v7.7.0
+**Applies to**: v7.7.1 (release preparation; tag pending approval)
 
 ---
 

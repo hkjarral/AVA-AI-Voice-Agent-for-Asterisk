@@ -299,9 +299,22 @@ explicit policy. Never use `git reset --hard` as generic upgrade advice.
 
 Do not treat a second update run as proof that the containers were updated. If the first
 job reached **Fast-forwarding code** and then failed during Docker Compose, the checkout may
-already be at v7.7.1 while the old containers are still running. Save the failed job log and
-either use its **Rollback** action or, after fixing the reported Compose/build error, reconcile
-only the services that were running before the update:
+already be at v7.7.1 while the old containers are still running. Save the failed
+job log and original pre-update backup. After fixing the reported Compose/build
+error, retry the same ref with the target CLI or fixed updater first:
+
+```bash
+agent update --ref v7.7.1 --rebuild=auto --include-ui=true --local-changes=retain
+```
+
+The updater replays saved actions from `.agent/updates/pending-docker.json`, even
+when Git is already at the target revision. Preview shows those pending actions;
+normal locking and call-safety checks still apply. An installed-but-stopped Local
+AI service remains build-only. See [interrupted updates](CLI_TOOLS_GUIDE.md#interrupted-docker-builds-and-same-version-recovery).
+The failed job's **Rollback** action is a separate decision, not proof of recovery.
+
+Use the manual fallback below only when no usable journal exists or journal replay
+cannot safely proceed. Reconcile only the services that were running before the update:
 
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
@@ -327,10 +340,10 @@ agent check
 This uses the service list captured before the update, so a service stopped or
 removed by the failed operation is still recovered. It recreates
 `local_ai_server` only when it was previously running, preserving an absent or
-intentionally stopped optional Local AI service.
-
-This manual recovery is required because a retry at the target Git commit may have no
-remaining source diff from which to reconstruct the failed Docker action plan.
+intentionally stopped optional Local AI service. Unlike journal replay, this
+fallback does not rebuild an installed-but-stopped Local AI image. Manual Docker
+commands do not clear the pending-action journal; preserve it and reconcile any
+remaining actions before a later update rather than deleting it to hide unfinished work.
 
 #### If the update fails with “No such image: ...local-ai-server:latest”
 

@@ -3,8 +3,8 @@
 For phase-specific examples, configuration validation, synthetic previews, and
 transcript-so-far support, see [HTTP tool templates](HTTP-Tool-Templates.md).
 
-See the [v7.7.0 validation matrix](baselines/golden/v7.7.0-validation-matrix.md)
-for existing automated evidence and the explicit waiver of further live testing.
+See the [v7.7.1 validation matrix](baselines/golden/v7.7.1-validation-matrix.md)
+for existing automated evidence and the fresh scoped waiver of further live testing.
 A summary uses the conversation history available at invocation. It cannot
 describe unobserved human conversation, and it does not filter recorded turns
 by transfer state or provide an after-transfer hook.

@@ -1,6 +1,6 @@
 # Admin UI Setup Guide
 
-**Applies to**: v7.7.0 (Admin UI introduced in v4.4.1)
+**Applies to**: v7.7.1 release preparation (Admin UI introduced in v4.4.1)
 
 **Last reviewed**: October 2026
 **Quick Start**: 5 minutes to get running
@@ -380,7 +380,7 @@ If you've been using `install.sh` and the Agent CLI, the Admin UI works alongsid
 
 1. **Follow the supported upgrade and backup procedure**:
 
-   Read the [Installation and Upgrade Guide](../docs/INSTALLATION.md#upgrade-to-v740-existing-checkout),
+   Read the [Installation and Upgrade Guide](../docs/INSTALLATION.md#upgrade-to-v771-existing-checkout),
    especially when upgrading from v7.3.0–v7.3.3 or when the updater reports
    `Failed to compute update plan`. At minimum, preserve:
 

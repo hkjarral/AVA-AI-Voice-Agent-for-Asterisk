@@ -8,8 +8,13 @@ There is no cloud fallback and no transcription screen in the Admin UI.
 ## Setup and credentials
 
 1. Configure and load a supported Local AI STT backend: Vosk, Faster-Whisper or
-   Whisper.cpp. Preserve its installed build profile and model volumes; an API
-   request does not install a backend or download a model. See [local setup](LOCAL_ONLY_SETUP.md).
+   Whisper.cpp. Preserve its installed build profile and model volumes. Requests
+   do not install a backend, but each Faster-Whisper worker initializes its model
+   and may download missing weights, including the default `base` model, into
+   `/app/models/stt/faster_whisper_cache` (the mounted `models/stt/faster_whisper_cache`).
+   Pre-warm the configured model cache before accepting requests. For offline
+   operation, provision the cache and enforce outbound network controls; the API
+   is not an egress control. See [local setup](LOCAL_ONLY_SETUP.md#supported-stt-models).
 2. Set either `AAVA_SPEECH_API_KEY` for Bearer authentication or both
    `AAVA_SPEECH_API_USERNAME` and `AAVA_SPEECH_API_PASSWORD` for Basic authentication
    in the Admin backend environment. Both schemes can be configured. Keep these

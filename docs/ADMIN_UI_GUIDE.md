@@ -4,7 +4,7 @@ The Admin UI is a web-based interface for configuring, monitoring, and managing 
 
 ## Quick Start
 
-For v7.7.0, read [migration](MIGRATION.md#v764-to-v770),
+For v7.7.1, read [migration](MIGRATION.md#v770-to-v771),
 [Agents workspace](AGENTS_EXPERIENCE_ROLLOUT.md), and [integration backups](INTEGRATION_BACKUPS.md).
 Hard-refresh after rebuilding Admin UI. Agents now use searchable cards/list,
 a routed four-section editor and changed-field saves. Visual avatars do not
