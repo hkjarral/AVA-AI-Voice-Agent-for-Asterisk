@@ -2,6 +2,25 @@
 
 Complete guide to diagnosing and fixing issues with Asterisk AI Voice Agent.
 
+## v7.7.1 recovery checks
+
+- For a failed build after Git advanced, inspect [same-version update recovery](CLI_TOOLS_GUIDE.md#interrupted-docker-builds-and-same-version-recovery).
+  Replacing source does not replace an old CLI/updater image. Do not delete pending
+  actions or bypass unknown-call-state and backup failures to make an upgrade pass.
+- [Transcription errors](OpenAI-Compatible-Transcription.md#errors-and-troubleshooting)
+  use separate speech credentials. A model list or healthy service is not an
+  inference test; live calls can reject/preempt batch work.
+- [HTTP/Pushover previews](HTTP-Tool-Templates.md) are synthetic, not delivery tests.
+  Inspect safe preparation codes when a tool is skipped or omitted at startup.
+  Invalid reloads retain the last running generation; fix the saved template and apply.
+- Google modular model/sampling behavior differs from native Google Live. See
+  [provider controls](ADMIN_UI_GUIDE.md#providers). Ollama now retains the resolved
+  system prompt in long histories; that fix is not a qualification of every model.
+- Local Asterisk farewell handling waits for the matching playback's terminal
+  state; an ARI `done` event alone is not proof of audible/uninterrupted delivery.
+  Google Live transfer recovery distinguishes initiation from terminal outcomes;
+  #793's two-attempt policy and original PBX cause remain follow-up, not automatic retries.
+
 ## v7.7 integration and UI checks
 
 - Refresh after Admin image replacement; new Agent editor routes do not exist in old UI.

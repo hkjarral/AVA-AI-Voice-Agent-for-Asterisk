@@ -1,6 +1,6 @@
 # Agent CLI Tools Guide
 
-Operator reference for the `agent` command shipped with Asterisk AI Voice Agent v7.2.0.
+Operator reference for the `agent` command prepared for Asterisk AI Voice Agent v7.7.1.
 
 Run commands from the repository root on the Docker Compose host. Global flags are `--verbose` and `--no-color`.
 
@@ -151,7 +151,7 @@ Apply an update:
 
 ```bash
 agent update
-agent update --ref v7.7.0   # Only after this tag/artifacts are published
+agent update --ref v7.7.1   # Only after this tag/artifacts are published
 agent update --checkout --ref main
 agent update --rebuild auto
 agent update --rebuild none
@@ -266,7 +266,7 @@ For older checkouts without the helper, build with the explicit Bake grant:
 
 `--allow` belongs to `docker buildx bake`, not `docker compose up`. Verify the Git
 revision, `agent version`, and Docker plugin versions separately. This recovery
-fix is newer than v7.7.0: installing v7.7.0 again does not install it. A fixed host
+fix ships in v7.7.1: installing v7.7.0 again does not install it. A fixed host
 CLI or a rebuilt/replaced updater image containing the fix is required for
 automatic recovery; pulling source does not replace those binaries. Until a
 release containing the fix is installed, use the manual procedure above. After

@@ -6,7 +6,7 @@
   <img alt="AVA Core — AI Voice Agent for Asterisk" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-[![Version](https://img.shields.io/badge/version-7.7.0-blue.svg)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases)
+[![Version](https://img.shields.io/badge/version-7.7.1-blue.svg)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases)
 [![CI](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Discord](https://dcbadge.limes.pink/api/server/ysg8fphxUe?style=plastic)](https://discord.gg/ysg8fphxUe)
@@ -37,19 +37,19 @@ Asterisk 18+ / FreePBX system with ARI enabled. Cloud configurations start with
 transports require newer Asterisk versions or additional modules.
 
 **Already running AVA?** Follow the
-[v7.7.0 upgrade guide](docs/INSTALLATION.md#upgrade-to-v770-existing-checkout)
+[v7.7.1 upgrade guide](docs/INSTALLATION.md#upgrade-to-v771-existing-checkout)
 instead of cloning another installation.
 
 On the AVA host:
 
-Run the pinned commands below only after v7.7.0 appears in
+Run the pinned commands below only after v7.7.1 appears in
 [GitHub Releases](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases).
 Before publication, use the latest published release for stable installations.
 For maintainer source evaluation only (unstable):
 `git clone --branch main https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git`.
 
 ```bash
-git clone --branch v7.7.0 https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+git clone --branch v7.7.1 https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
 cd AVA-AI-Voice-Agent-for-Asterisk
 sudo ./preflight.sh --apply-fixes
 docker compose -p asterisk-ai-voice-agent up -d --build admin_ui
@@ -76,46 +76,10 @@ The guide also covers CLI/manual installation, permissions, and recovery;
 
 ### OpenAI-compatible transcription
 
-The Admin API can expose the configured local STT provider through:
-
-- `GET /v1/models`
-- `POST /v1/audio/transcriptions`
-
-Set `AAVA_SPEECH_API_KEY` for Bearer authentication, or set both
-`AAVA_SPEECH_API_USERNAME` and `AAVA_SPEECH_API_PASSWORD` for Basic
-authentication in the Admin backend environment. The endpoints fail closed when
-neither credential is set. Recreate the Admin container after changing these
-environment variables; browser login credentials are unrelated. If the local
-AI WebSocket requires `LOCAL_WS_AUTH_TOKEN`, configure the same token for the
-Admin backend. The Admin UI itself has no transcription screen.
-The transcription route accepts the standard multipart `file`, `model`,
-`language`, and `response_format` fields; use model `whisper-1`. For example,
-`curl -u stt-client -F 'file=@sample.wav' -F 'model=whisper-1' https://YOUR-ADMIN-HOST/v1/audio/transcriptions`
-prompts for the Basic password without placing it on the command line.
-Supported response formats are `json`, `text`, `verbose_json`, `srt`, and
-`vtt`. The last three use one whole-file segment and synthetic 0-to-duration
-timing, not model-derived word or segment timestamps.
-
-The facade accepts WAV, MP3, M4A/MP4, OGG, WebM/Matroska, FLAC and AAC audio.
-Input demuxers are restricted to these formats; playlists and external input
-protocols are rejected. Uploads have a 25 MiB file cap,
-25 MiB + 64 KiB total multipart cap, and 120-second
-decoded-audio cap. Upload receipt times out after 30 seconds and decoding after
-90 seconds. The local AI service runs at most one batch job in a killable
-separate process, with no waiting queue and a 180-second worker deadline. A
-live-call session rejects new batch work and preempts a running batch.
-Disconnection or timeout cancels the worker; a lost HTTP response is not
-evidence of a transcript. The Admin wait defaults to 240 seconds
-(`AAVA_SPEECH_STT_TIMEOUT_SECONDS`, clamped to 10-600). A shorter API timeout
-cancels its WebSocket request and reaps the isolated batch worker.
-
-Batch transcription uses the configured local Vosk, Faster-Whisper or
-Whisper.cpp backend; unsupported or unloaded backends fail explicitly, with no
-cloud fallback. Only Faster-Whisper honors a per-request two-letter language
-code or `auto` detection; English-only `.en` models accept `en` only. Omit
-`language` for Vosk and Whisper.cpp so their configured model language is used.
-Keep the Admin API behind the same network controls used for the rest of the
-operator surface and keep its speech credential distinct from browser login.
+The Admin API can expose local STT through authenticated OpenAI-compatible
+endpoints, without cloud fallback or a transcription UI. See the
+[transcription guide](docs/OpenAI-Compatible-Transcription.md) for setup,
+supported backends, limits and live-call priority.
 
 <a id="-features"></a>
 <a id="-why-asterisk-ai-voice-agent"></a>
@@ -147,7 +111,7 @@ operator surface and keep its speech credential distinct from browser login.
 
 Model availability, tools, latency, and transport support vary by configuration.
 Use the [compatibility matrix](docs/Transport-Mode-Compatibility.md) and
-[release validation evidence](docs/baselines/golden/v7.7.0-validation-matrix.md)
+[release validation evidence](docs/baselines/golden/v7.7.1-validation-matrix.md)
 rather than assuming every provider/transport combination is qualified.
 
 AudioSocket and ExternalMedia RTP are configuration-dependent; Media WebSocket
@@ -202,15 +166,17 @@ The core services are `ai_engine` and `admin_ui`; `local_ai_server` and
 
 <a id="-whats-new"></a>
 
-### Latest release: v7.7.0
+### Latest release: v7.7.1
 
-- Native Calendly booking, opt-in Microsoft Teams meetings, and Pushover notifications.
-- A refreshed Agents workspace and focused Tools editors with safer saves.
-- Transfer/audio reliability, endpoint discovery, and updated recovery guidance.
+- Authenticated local transcription and clearer HTTP/Pushover template editing.
+- Farewell/transfer recovery and Google, OpenAI-compatible and Ollama pipeline fixes.
+- Interrupted-upgrade recovery, safer rollback and provider-neutral booking guidance.
+
+Release preparation: the tag and artifacts remain pending maintainer approval.
 
 See the [changelog](CHANGELOG.md) for detailed changes and contributor credit,
 [GitHub Releases](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases)
-for artifacts, and [migration notes](docs/MIGRATION.md#v764-to-v770) before upgrading.
+for artifacts, and [migration notes](docs/MIGRATION.md#v770-to-v771) before upgrading.
 Earlier release notes remain in the changelog and versioned repository history.
 
 <a id="-contributing"></a>
@@ -255,21 +221,29 @@ context. All contributions still require appropriate testing and review.
 <td align="center"><a href="https://github.com/alceops"><img src="https://github.com/alceops.png" width="60" alt="alceops"><br><sub><b>Alce</b></sub></a><br>OpenAI Streaming Timeouts</td>
 <td align="center"><a href="https://github.com/Genmin"><img src="https://github.com/Genmin.png" width="60" alt="Genmin"><br><sub><b>Joey Roth</b></sub></a><br>OpenAI Tool-call Tests</td>
 <td align="center"><a href="https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/3053c616"><img src="https://img.shields.io/badge/contributor-Ivan%20Garcia-blue" alt="Ivan Garcia contributor badge"><br><sub><b>Ivan Garcia</b></sub></a><br>Azure STT/TTS, OpenAI GA Tools</td>
-<td align="center"><a href="https://github.com/pcbeingused333"><img src="https://github.com/pcbeingused333.png" width="60" alt="pcbeingused333"><br><sub><b>alexcastgonz</b></sub></a><br>Pipeline Tool Calls, CLI Troubleshooting</td>
+<td align="center"><a href="https://github.com/pcbeingused333"><img src="https://github.com/pcbeingused333.png" width="60" alt="pcbeingused333"><br><sub><b>alexcastgonz</b></sub></a><br>Pipeline Tool Calls, Google/Ollama, CLI</td>
 <td align="center"><a href="https://github.com/lucamancusodev"><img src="https://github.com/lucamancusodev.png" width="60" alt="lucamancusodev"><br><sub><b>lucamancusodev</b></sub></a><br>Transfer Reports, Notification Requirements</td>
 </tr>
 <tr>
-<td align="center"><a href="https://github.com/pi0n00r"><img src="https://github.com/pi0n00r.png" width="60" alt="pi0n00r"><br><sub><b>pi0n00r</b></sub></a><br>Local AI, Whisper, DTMF Privacy, MCP</td>
+<td align="center"><a href="https://github.com/pi0n00r"><img src="https://github.com/pi0n00r.png" width="60" alt="pi0n00r"><br><sub><b>pi0n00r</b></sub></a><br>Local AI, Transcription, MCP, Privacy</td>
 <td align="center"><a href="https://github.com/MVECoder"><img src="https://github.com/MVECoder.png" width="60" alt="MVECoder"><br><sub><b>MVECoder</b></sub></a><br>Startup Recovery, Farewell Investigation</td>
 <td align="center"><a href="https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/06f039dcf293128fa55478cb4bbd584fadf8f131"><img src="https://img.shields.io/badge/contributor-NC-blue" alt="NC contributor badge"><br><sub><b>NC</b></sub></a><br>Local AI Environment Parser</td>
 <td align="center"><a href="https://github.com/theluckystrike"><img src="https://github.com/theluckystrike.png" width="60" alt="theluckystrike"><br><sub><b>Michael (theluckystrike)</b></sub></a><br>Farewell Hangup Fix</td>
 <td align="center"><a href="https://github.com/kevinrossen"><img src="https://github.com/kevinrossen.png" width="60" alt="kevinrossen"><br><sub><b>Kevin Rossen</b></sub></a><br>HTTP Template Security</td>
+</tr>
+<tr>
+<td align="center"><a href="https://github.com/abaichuan1017"><img src="https://github.com/abaichuan1017.png" width="60" alt="abaichuan1017"><br><sub><b>Kai (abaichuan1017)</b></sub></a><br>Local Pipeline Diagnostics Docs</td>
+<td align="center"><a href="https://github.com/Andrew-Engelbrecht"><img src="https://github.com/Andrew-Engelbrecht.png" width="60" alt="Andrew-Engelbrecht"><br><sub><b>Andrew-Engelbrecht</b></sub></a><br>Upgrade Failure Report</td>
 </tr>
 </table>
 
 See [CONTRIBUTORS.md](CONTRIBUTORS.md) for contribution details and historical
 credit. Commit-linked badges preserve attribution when no GitHub profile is
 linked; they do not imply a verified account identity.
+
+Additional commit-author credit:
+[![Debian contributor badge](https://img.shields.io/badge/contributor-Debian-blue)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/8af035c7dedb1698bac0062833b913d068032985).
+This preserves an unmapped Git author label, not a verified additional person.
 
 ## AVA Operator
 

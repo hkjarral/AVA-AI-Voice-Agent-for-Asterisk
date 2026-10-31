@@ -722,7 +722,7 @@ def test_main_app_openapi_version_and_tag(monkeypatch):
     # Schema inspection must not create/rotate credentials in a developer checkout.
     monkeypatch.setattr("auth.ensure_default_user", lambda: None)
     main = _load_backend_main()
-    assert main.app.version == "7.7.0"
+    assert main.app.version == "7.7.1"
     spec = main.app.openapi()
     tags = {t["name"]: t.get("description", "") for t in spec.get("tags", [])}
     assert tags.get("agents")  # present with a non-empty description

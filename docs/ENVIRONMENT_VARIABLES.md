@@ -27,6 +27,19 @@ Set these in `.env`:
 
 ## Common operator variables
 
+### Local transcription API
+
+Admin's optional `/v1/models` and `/v1/audio/transcriptions` facade uses separate
+speech credentials, not browser login. Configure either `AAVA_SPEECH_API_KEY`
+(Bearer), or both `AAVA_SPEECH_API_USERNAME` and `AAVA_SPEECH_API_PASSWORD`
+(Basic); it fails closed when neither scheme is set. Keep credentials private.
+`AAVA_SPEECH_STT_TIMEOUT_SECONDS` defaults to 240 and is clamped to 10–600; it
+bounds the STT response wait, not the whole upload/decode operation.
+
+For split servers, configure Admin's `HEALTH_CHECK_LOCAL_AI_URL` with the actual
+inference WebSocket and supply its matching `LOCAL_WS_AUTH_TOKEN` when required.
+Recreate Admin after environment changes. See [transcription setup and limits](OpenAI-Compatible-Transcription.md).
+
 ### Calendly and managed notification state
 
 - `CALENDLY_DB_PATH`: default `/app/data/operator/calendly.db`.

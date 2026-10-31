@@ -52,6 +52,14 @@ Starting in v4.0, the project added a **modular pipeline architecture** alongsid
 - **Best for**: Simplicity, fastest response times
 
 ### Pipeline Configurations
+
+In v7.7.1, an omitted Google modular `llm_model` defaults to
+`models/gemini-3.8-flash`. Existing explicit model selections remain. Native
+Google Live's default and Audio Profiles are unchanged. See the
+[Admin model capability notes](ADMIN_UI_GUIDE.md#providers) for sampling controls
+and complete-answer/summary behavior. The optional
+[transcription API](OpenAI-Compatible-Transcription.md) uses environment wiring,
+not an extra YAML pipeline or Agent persona.
 - **Separate providers** for STT, LLM, and TTS
 - Examples: Local Hybrid (Vosk STT + OpenAI LLM + Piper TTS)
 - Configuration: Define under `pipelines:` block and set `active_pipeline: "pipeline_name"`

@@ -8,17 +8,17 @@ Asterisk AI Voice Agent (AAVA) aims to be the definitive open-source AI voice ag
 
 ## What's Next
 
-### v7.7.0 — Integration and operator workflow release
+### v7.7.1 — Recovery, transcription and tool reliability
 
-Prepared from main through #772; publication is pending maintainer approval.
-This release adds native Calendly booking, named Pushover notifications,
-in-call summaries, opt-in Microsoft Teams verification, refreshed Agents/Tools
-workspaces and ARI endpoint discovery. Transfer announcements, onward-transfer
-handling, greeting readiness and provider tool arguments are hardened.
-See the [migration guide](MIGRATION.md#v764-to-v770) and
-[validation matrix](baselines/golden/v7.7.0-validation-matrix.md) for supported
-boundaries, evidence and explicit testing waivers. General post-human-transfer
-hooks (#766) and Dependabot follow-ups are not bundled into this release prep.
+Prepared from main through #795 (`a6cfc5f8`); merge and tag remain held for
+maintainer approval. The chosen patch release includes local transcription,
+HTTP/Pushover template guidance and transcript payloads, provider-neutral booking,
+Google/Ollama/OpenAI pipeline fixes, farewell/transfer recovery and safer updates.
+See the [migration guide](MIGRATION.md#v770-to-v771) and
+[validation matrix](baselines/golden/v7.7.1-validation-matrix.md) for reused evidence,
+remaining qualification gaps and the fresh scoped testing waiver. v7.7.0 is
+already published. General post-human-transfer hooks (#766), unresolved #793
+policy/PBX questions and Dependabot follow-ups are not claimed solved here.
 
 Active and upcoming work. Pick something up and [get involved](#how-to-contribute-to-the-roadmap)!
 
@@ -244,4 +244,4 @@ Longer-term goals that will shape the project's direction:
 
 ---
 
-**Last Updated**: October 2026 | **Latest Stable**: v7.7.0 (staged; tag pending) | **Next**: Unreleased
+**Last Updated**: October 2026 | **Latest Stable**: v7.7.1 (staged; tag pending) | **Next**: Unreleased

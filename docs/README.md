@@ -2,7 +2,10 @@
 
 ## User Documentation
 
-- **[v7.7.0 Migration](MIGRATION.md#v764-to-v770)** - Integrations, additive state and compatibility
+- **[v7.7.1 Migration](MIGRATION.md#v770-to-v771)** - Recovery, transcription, privacy state and compatibility
+- **[Local Transcription API](OpenAI-Compatible-Transcription.md)** - Authentication, local backends, bounds and live-call priority
+- **[HTTP Tool Templates](HTTP-Tool-Templates.md)** - Phase-aware validation and no-send previews
+- **[Appointment Booking Providers](Appointment-booking-providers.md)** - Reviewed MCP booking and optional native adapters
 - **[Integration Backups](INTEGRATION_BACKUPS.md)** - Private journal/credential snapshots and recovery limits
 - **[Agents Workspace](AGENTS_EXPERIENCE_ROLLOUT.md)** - Appearance, settings and rollback
 - **[Pushover](Pushover.md)** - Named notifications, multiple recipients and delivery limits
@@ -11,7 +14,7 @@
 - **[ARI Discovery](ARI-Endpoint-Discovery.md)** - Review/stage transfer destinations without changing calls
 
 - **[Quick Start Guide](../README.md#quick-start)** - Prerequisites and the primary setup path
-- **[Installation and Upgrade Guide](INSTALLATION.md)** - Fresh setup, v7.7.0 upgrade steps, and older-installation updater recovery
+- **[Installation and Upgrade Guide](INSTALLATION.md)** - Fresh setup, v7.7.1 upgrade steps, and older-installation updater recovery
 - **[Admin UI Guide](ADMIN_UI_GUIDE.md)** - Web interface for configuration and monitoring
 - **[FreePBX Integration Guide](FreePBX-Integration-Guide.md)** - Dialplan and queue configuration
 - **[Outbound Calling (Alpha)](OUTBOUND_CALLING.md)** - Scheduled outbound campaigns, voicemail drop, consent gate
@@ -20,7 +23,8 @@
 - **[WebSocket Transport](WebSocket-Transport.md)** - Opt-in Asterisk Media WebSocket setup, authenticated loopback/WSS topology, qualification, and rollback
 - **[Caller Inactivity Watchdog](Configuration-Reference.md#caller-inactivity-no_input)** - 30-second inbound silence protection, per-agent overrides, and safe terminal playback (v7.3.1+)
 - **[Agents](AGENTS.md)** - v7.4 Agent routing, dialplan selection, and per-Agent tool access
-- **[v7.7.0 Validation Matrix](baselines/golden/v7.7.0-validation-matrix.md)** - Integrations, Agents/Tools workflows, backup safety and bounded reuse of validation evidence
+- **[v7.7.1 Validation Matrix](baselines/golden/v7.7.1-validation-matrix.md)** - Recovery, transcription, template/pipeline fixes and fresh scoped waiver
+- **[v7.7.0 Validation Matrix](baselines/golden/v7.7.0-validation-matrix.md)** - Historical integration and operator-workflow evidence
 - **[v7.6.4 Validation Matrix](baselines/golden/v7.6.4-validation-matrix.md)** - HTTP-template safety, farewell/transfer recovery and compatible Admin updates
 - **[v7.6.3 Validation Matrix](baselines/golden/v7.6.3-validation-matrix.md)** - Provider recovery, Local AI/MCP, security, documentation and release qualification
 - **[v7.6.2 Validation Matrix](baselines/golden/v7.6.2-validation-matrix.md)** - Gemini 3.8 Live, Microsoft booking acceptance, Call History filter parity, and Admin UI evidence

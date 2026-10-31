@@ -2,6 +2,88 @@
 
 This guide covers upgrading between releases of Asterisk AI Voice Agent.
 
+## v7.7.0 to v7.7.1
+
+The maintainer selected a patch tag for the merged recovery and reliability work,
+including new local transcription and template-editor capabilities. The tag and
+artifacts are not published by this preparation PR. Use the latest published
+guide for stable installations until v7.7.1 is published; do not silently fall
+back to main when a release ref is missing.
+
+### Upgrade, images and persistent state
+
+Drain calls and prevent new PBX admissions before the
+[pinned upgrade](INSTALLATION.md#upgrade-to-v771-existing-checkout). Update Engine
+and Admin UI together, replace the host CLI/updater image, and update Local AI
+when installed/selected. Its batch worker, protocol and optional Faster-Whisper
+image packaging changed; retain build flags, model volumes and intentionally
+stopped optional services. Hard-refresh browser assets after Admin replacement.
+
+The new CLI/updater journals unfinished Docker work, retries at the same Git
+revision, builds before recreation, and scopes the Compose/Bake host-network
+entitlement fallback. Source revision, installed CLI, updater image and Docker
+plugin versions are distinct. An old binary/image does not gain the fix from
+new source alone. Use the target release CLI/pinned recovery script or the
+[manual helper/Bake procedure](CLI_TOOLS_GUIDE.md#manual-builds-on-affected-composebuildx-versions).
+Failed or unknown health on a running engine and unmapped database overrides
+intentionally block automatic changes. Inference-only hosts require verified
+remote drain before any explicit runtime override. Preserve the original
+pre-advance update job/backup; a later retry can already point at the new source.
+
+Call History adds the internal `calendly_erasure_required` column with a
+conservative default for old rows/writers. Current writers use adapter footprints
+for new rows, so unused installations do not accumulate new Calendly cleanup.
+Required privacy migration fails closed. Opening older Calendly journals
+backfills `calendly.db.configured`, retained through disconnect/journal absence.
+Back up the actual History database, erasure queue, adapter journal/marker,
+managed secrets and configuration coherently. An adapter snapshot alone is not
+the complete recovery set. Never delete the marker, drop the flag or restore an
+older booking journal merely to roll back application code. See
+[integration backups](INTEGRATION_BACKUPS.md) and [booking providers](Appointment-booking-providers.md).
+
+### Configuration and operator-visible changes
+
+- [Local transcription](OpenAI-Compatible-Transcription.md) is optional and
+  fails closed without separate speech credentials. Recreate Admin after setting
+  them and match Local AI WebSocket authentication. No transcription UI or cloud
+  fallback is added; subtitles use synthetic whole-file timing.
+- [HTTP template validation](HTTP-Tool-Templates.md) checks enabled tools before
+  staging/saving. Initial startup omits definitely invalid HTTP tools with safe
+  diagnostics; valid tools still start. Invalid reloads retain the prior generation,
+  and invalid Agent-inline templates retain fail-closed Agent policy. Review and
+  fix templates rather than assuming old malformed JSON will still dispatch.
+- HTTP `{transcript_json}` is an invocation-local snapshot independent of summary
+  enablement. Pushover text has a different variable catalog; HTTP JSON placeholders
+  are not supported there. Synthetic previews do not resolve secrets, generate
+  summaries, send tests or establish receiver-side success.
+- The modular Google LLM default becomes `models/gemini-3.8-flash` when omitted.
+  Explicit saved selections remain; native Google Live defaults and Audio Profiles
+  are unchanged. Sampling/candidate normalization and complete-answer selection
+  are model-specific; see [provider controls](ADMIN_UI_GUIDE.md#providers).
+- OpenAI-compatible streaming excludes pre/post-call tools. Ollama retains the
+  resolved system prompt in bounded long-history requests. Neither is a new
+  provider/transport qualification.
+- Local Full waits for the exact Asterisk farewell playback's terminal state;
+  `done` can include stopped/canceled playback and is not proof of audibility.
+  Google Live can recover a pre-connection attended-transfer failure after the
+  original tool response. Initiation is not completion. Strict two-attempt
+  policy, physical-extension acceptance and the original #793 PBX cause remain
+  follow-up; no automatic retry or general after-human-transfer hook is added.
+
+### Acceptance and rollback limits
+
+The maintainer explicitly approved a fresh v7.7.1 waiver of additional deployment,
+runtime, live-call and upgrade testing, including exact-candidate call acceptance
+and the successful-call baseline requirement. Existing evidence and unverified
+cases remain labelled as such in the [validation matrix](baselines/golden/v7.7.1-validation-matrix.md).
+Required CI, automated checks, reviews and security assessment are not waived.
+This is not an inherited v7.7.0 waiver. Merge and tag remain separately held.
+
+Keep current state/models/credentials when reverting code or images. Reconcile
+uncertain external writes with staff before any data recovery; restoring local
+state cannot prove that a remote booking or notification never happened. Supported
+release trains remain 7.7.x and 7.6.x; this patch does not end 7.6.x support.
+
 ## v7.6.4 to v7.7.0
 
 v7.7.0 adds Calendly booking, named Pushover tools, in-call HTTP summaries,

@@ -6,9 +6,9 @@
 
 | Version | Supported          | End of Support                      |
 | ------- | ------------------ | ----------------------------------- |
-| 7.7.x   | :white_check_mark: | Current after v7.7.0 publication     |
+| 7.7.x   | :white_check_mark: | Current minor release train         |
 | 7.6.x   | :white_check_mark: | When v7.8.0 ships                   |
-| 7.5.x   | :white_check_mark: before v7.7.0; :x: thereafter | At v7.7.0 publication |
+| 7.5.x   | :x:                | Ended at v7.7.0 publication         |
 | 7.4.x   | :x:                | Ended 2026-09-13                    |
 | 7.3.x   | :x:                | Ended 2026-07-22                    |
 | 7.2.x   | :x:                | Ended 2026-07-16                    |
@@ -21,9 +21,9 @@
 
 ---
 
-Before v7.7.0 publication, the supported trains are 7.6.x and 7.5.x. From
-v7.7.0 publication, the supported trains are 7.7.x and 7.6.x, and 7.5.x is
-unsupported. This version-based transition does not itself publish a tag.
+The supported trains are 7.7.x and 7.6.x. Preparing v7.7.1 does not change this
+two-minor policy or end 7.6.x support, and does not itself publish a tag. 7.5.x is
+unsupported.
 The 7.5.x HTTP-template fix is not claimed shipped: upgrade to a fixed 7.6.x/7.7.x
 release or disable affected HTTP
 lookup/webhook tools in all call phases pending a separately managed backport.

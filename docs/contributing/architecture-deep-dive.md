@@ -8,6 +8,18 @@ globs: src/**/*.py, *.py, docker-compose.yml, Dockerfile, config/ai-agent.yaml
 
 ## System Overview
 
+### v7.7.1 recovery and transcription boundaries
+
+The [Admin transcription facade](../OpenAI-Compatible-Transcription.md) bridges
+authenticated bounded uploads to Local AI's single isolated batch worker. Live
+call setup preempts it; it is not a replacement for in-process live-call STT.
+The updater's [pending-action journal](../CLI_TOOLS_GUIDE.md#interrupted-docker-builds-and-same-version-recovery)
+tracks unfinished Docker actions separately from the Git revision. Preserve
+original running-state intent, private backups and booking replay barriers;
+application rollback does not rewind integration state. Call History's additive
+legacy erasure flag and Calendly privacy marker retain cleanup obligations even
+when adapter files are temporarily absent.
+
 ### v7.7 state boundaries
 
 Agent appearance uses additive nullable SQLite columns and never selects a voice.
