@@ -313,8 +313,15 @@ normal locking and call-safety checks still apply. An installed-but-stopped Loca
 AI service remains build-only. See [interrupted updates](CLI_TOOLS_GUIDE.md#interrupted-docker-builds-and-same-version-recovery).
 The failed job's **Rollback** action is a separate decision, not proof of recovery.
 
-Use the manual fallback below only when no usable journal exists or journal replay
-cannot safely proceed. Reconcile only the services that were running before the update:
+Use the manual fallback below when no usable journal exists or the target recovery
+tooling is unavailable, after correcting the underlying failure. Do not use it to
+bypass a call-safety, revision or database-mapping refusal.
+
+Before manual recreation, stop new PBX admissions using maintenance/routing
+controls, drain active calls, and verify that no calls remain on every affected
+host. If call state cannot be verified, restore that visibility before proceeding.
+Direct Docker commands do not enforce the updater's call-safety guard. Reconcile
+only the services that were running before the update:
 
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
@@ -328,7 +335,8 @@ for AAVA_SERVICE in ai_engine admin_ui local_ai_server; do
   fi
 done
 if [ "${#AAVA_RECOVERY_SERVICES[@]}" -gt 0 ]; then
-  docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate "${AAVA_RECOVERY_SERVICES[@]}"
+  COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh "${AAVA_RECOVERY_SERVICES[@]}" || exit 1
+  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate "${AAVA_RECOVERY_SERVICES[@]}"
 else
   echo "No pre-update AAVA application services were running; leaving them stopped."
 fi
@@ -344,31 +352,22 @@ intentionally stopped optional Local AI service. Unlike journal replay, this
 fallback does not rebuild an installed-but-stopped Local AI image. Manual Docker
 commands do not clear the pending-action journal; preserve it and reconcile any
 remaining actions before a later update rather than deleting it to hide unfinished work.
+The build helper applies the documented entitlement fallback only to the selected
+services and stops recovery on failure. Keep the same Compose files, profiles and
+project for build and recreation; see [manual build recovery](CLI_TOOLS_GUIDE.md#manual-builds-on-affected-composebuildx-versions)
+if the helper is absent from an older checkout.
 
 #### If the update fails with “No such image: ...local-ai-server:latest”
 
 Some installations never started or built the optional `local_ai_server` container (for example, if you only use remote providers).
 Older `agent update` versions could still try to recreate `local_ai_server` when Compose files change.
 
-To recover without enabling `local_ai_server`, bring up only the services you actually run:
-
-```bash
-cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
-
-# If the update planned to rebuild admin_ui, recreate it (safe even if not needed):
-docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
-
-docker compose -p asterisk-ai-voice-agent up -d --remove-orphans --no-build ai_engine admin_ui
-agent check
-```
-
-If you *do* want `local_ai_server`, build it and then re-run compose:
-
-```bash
-cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
-docker compose -p asterisk-ai-voice-agent build local_ai_server
-docker compose -p asterisk-ai-voice-agent up -d --remove-orphans --no-build
-```
+Use the [journal-first recovery procedure above](#if-git-updated-but-docker-deployment-failed)
+with the target CLI/updater. If manual recovery is required, use its call-drain
+steps, original running-service list and entitlement-aware build helper. Do not
+start Local AI merely to satisfy a missing optional image, or run an unscoped
+Compose recreation that starts intentionally stopped services. For an intentional
+new Local AI installation, follow [Local AI setup](LOCAL_ONLY_SETUP.md) separately.
 
 ### 3) Re-run preflight
 

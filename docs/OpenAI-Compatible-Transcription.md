@@ -24,6 +24,9 @@ There is no cloud fallback and no transcription screen in the Admin UI.
    endpoint for split-server deployments. The transcription bridge defaults to
    `ws://127.0.0.1:8765`. If Local AI requires `LOCAL_WS_AUTH_TOKEN`, supply the
    matching token to Admin. Do not expose the inference WebSocket publicly.
+   `ws://` does not encrypt the token or uploaded audio. For split hosts, use a
+   trusted private network or an encrypted VPN/SSH tunnel; use encryption whenever
+   the network path is not fully trusted. A token authenticates access, not the link.
 4. Rebuild/recreate affected Admin and Local AI services when upgrading their
    code, and recreate Admin after changing its environment. A browser refresh or
    plain restart does not reload Compose environment values. Keep Admin behind

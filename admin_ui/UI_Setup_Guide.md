@@ -382,14 +382,14 @@ If you've been using `install.sh` and the Agent CLI, the Admin UI works alongsid
 
    Read the [Installation and Upgrade Guide](../docs/INSTALLATION.md#upgrade-to-v771-existing-checkout),
    especially when upgrading from v7.3.0–v7.3.3 or when the updater reports
-   `Failed to compute update plan`. At minimum, preserve:
-
-   ```bash
-   cp config/ai-agent.yaml ../ai-agent.yaml.backup
-   cp .env ../aava.env.backup
-   cp data/operator/agents.db ../agents.db.backup 2>/dev/null || true
-   cp data/call_history.db ../call_history.db.backup 2>/dev/null || true
-   ```
+   `Failed to compute update plan`. Preserve configuration and local overlays,
+   `.env`, managed secrets and the actual configured Agent/Call History databases
+   in a private backup directory. Use the
+   [verified SQLite snapshot procedure](../docs/CLI_TOOLS_GUIDE.md#manual-builds-on-affected-composebuildx-versions)
+   for each configured database path; copying a live `.db` file can omit committed
+   WAL data. Stop if a required backup or integrity check fails. Also preserve any
+   integration journal/privacy marker and pending erasure state according to the
+   [integration backup guide](../docs/INTEGRATION_BACKUPS.md).
 
 2. **Start the Admin UI**:
    ```bash
