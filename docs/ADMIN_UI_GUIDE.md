@@ -4,7 +4,7 @@ The Admin UI is a web-based interface for configuring, monitoring, and managing 
 
 ## Quick Start
 
-For v7.7.0, read [migration](MIGRATION.md#v764-to-v770),
+For v7.7.1, read [migration](MIGRATION.md#v770-to-v771),
 [Agents workspace](AGENTS_EXPERIENCE_ROLLOUT.md), and [integration backups](INTEGRATION_BACKUPS.md).
 Hard-refresh after rebuilding Admin UI. Agents now use searchable cards/list,
 a routed four-section editor and changed-field saves. Visual avatars do not
@@ -56,10 +56,16 @@ The wizard writes to `config/ai-agent.local.yaml` (operator overrides), so upstr
 Create and edit operator-managed agents, select their provider or pipeline, configure prompts/tools/voice, and copy a ready-to-use dialplan snippet. Resource access for transfers, Google Calendar, Microsoft Calendar, and voicemail can inherit the global inventory, allow selected resource keys, or deny that family. Under **Caller Inactivity Overrides**, an agent can partially override the global watchdog timing/messages. Inbound agents inherit the global policy; outbound agents must explicitly enable it here.
 
 #### Providers
+
+The optional [local transcription API](OpenAI-Compatible-Transcription.md) is
+configured through Admin's environment, not a new browser screen. It uses
+separate Basic/Bearer speech credentials and the selected Local AI STT backend.
 Configure full-agent providers and modular STT/LLM/TTS components. Each provider
 card shows its current status.
 
-For Google Gemini modular LLM providers, Temperature is greyed out and disabled
+For Google Gemini modular LLM providers, the new default is
+`models/gemini-3.8-flash`; existing saved selections are preserved. This does not
+change native Google Live's model default. Temperature is greyed out and disabled
 for Gemini 3.6 and newer, Gemini 3.5 Flash-Lite, and the Gemini 3.5 Flash alias
 (which routes to 3.6). Persistent helper text explains that the model manages
 temperature automatically. The saved value is retained and becomes editable again

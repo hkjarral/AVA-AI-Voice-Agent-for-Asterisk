@@ -33,10 +33,36 @@ Thanks to all the people who have contributed to the Asterisk AI Voice Agent!
 | <img src="https://github.com/kevinrossen.png" width="50" alt="kevinrossen"> | **[Kevin Rossen (kevinrossen)](https://github.com/kevinrossen)** | Security Report, Original Renderer Patch, Co-author — HTTP Template Safety ([#739](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/739), [commit](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/d4de6ad0fd09d72ed8c0a27d76e4a67f3bdc32da)) |
 | <img src="https://github.com/pcbeingused333.png" width="50" alt="pcbeingused333"> | **[alexcastgonz (pcbeingused333)](https://github.com/pcbeingused333)** | Code, Tests — CLI Anthropic troubleshooting ([#755](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/755)), OpenAI-compatible streaming tool calls ([#760](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/760)), Telnyx/MiniMax argument handling ([#761](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/761)) |
 | <img src="https://github.com/lucamancusodev.png" width="50" alt="lucamancusodev"> | **[lucamancusodev](https://github.com/lucamancusodev)** | Reports and Requirements — onward transfers ([#699](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/699)) and notification timing ([#766](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/766)); broader post-transfer requirements remain follow-up |
+| <img src="https://github.com/abaichuan1017.png" width="50" alt="abaichuan1017"> | **[Kai (abaichuan1017)](https://github.com/abaichuan1017)** | Docs — Local/Hybrid First-turn Diagnostics ([#777](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/777)); diagnosis guidance, not a claim to fix #439 |
+| <img src="https://github.com/Andrew-Engelbrecht.png" width="50" alt="Andrew-Engelbrecht"> | **[Andrew-Engelbrecht](https://github.com/Andrew-Engelbrecht)** | Report — Compose/Bake Upgrade Failure ([#790](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/790)); implementation and recovery audit in #791 by the maintainer |
 
 <!-- markdownlint-restore -->
 <!-- prettier-ignore-end -->
 <!-- ALL-CONTRIBUTORS-LIST:END -->
+
+### v7.7.1 contribution updates
+
+- **pi0n00r:** provider-neutral booking/privacy migration
+  ([#778](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/778)),
+  authenticated transcription ([#784](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/784))
+  and Local/Asterisk farewell ownership ([#787](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/787));
+  contributor code and maintainer lifecycle fixes are preserved.
+- **pcbeingused333 / alexcastgonz:** modular Google model/capability fixes
+  ([#785](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/785)),
+  streaming tool-phase filtering ([#789](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/789))
+  and Ollama prompt retention ([#792](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/792)).
+- **lucamancusodev:** notification/transcript requirements
+  ([#766](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/766))
+  and attended-transfer failure report ([#793](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/793)).
+  Broader post-transfer automation and strict attempt policy remain follow-up.
+- **hkjarral:** implementation, lifecycle/security/recovery review, tests and
+  maintenance, including #791, #794 and #795.
+
+NC's existing commit-linked badge remains. Original #778/#784 commits and their
+squash commits also preserve the NC/Debian author labels. Additional commit credit:
+[![Debian contributor badge](https://img.shields.io/badge/contributor-Debian-blue)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/8af035c7dedb1698bac0062833b913d068032985).
+No GitHub profile or distinct-person identity is inferred for these unmapped
+labels, and they are not counted as additional verified people.
 
 Automated contributions by [Dependabot](https://github.com/apps/dependabot) and
 [AVA's AI assistant](https://github.com/ava-ai-assistant), and AI-tool co-author

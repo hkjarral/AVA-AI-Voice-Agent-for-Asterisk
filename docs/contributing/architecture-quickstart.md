@@ -13,6 +13,13 @@ and the [architecture deep dive](architecture-deep-dive.md).
 
 ## Services and ownership
 
+Admin's optional [transcription facade](../OpenAI-Compatible-Transcription.md)
+authenticates uploads before parsing, bounds FFmpeg decoding, and bridges to one
+killable Local AI batch worker. Live-call setup preempts batch work. This is not
+a replacement for the engine's live STT stream or a new transcription UI.
+Updater pending-action journals preserve same-version recovery; see
+[upgrade recovery](../CLI_TOOLS_GUIDE.md#interrupted-docker-builds-and-same-version-recovery).
+
 ### v7.7 integration state
 
 Calendly's dedicated journal owns durable booking admission/reconciliation;

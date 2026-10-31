@@ -1,14 +1,14 @@
 # Asterisk AI Voice Agent - Installation and Upgrade Guide (v7.7)
 
-This guide covers fresh installations and the supported upgrade path to v7.7.0.
-Release-pinned commands require the v7.7.0 tag and artifacts to be published.
+This guide covers fresh installations and the supported upgrade path to v7.7.1.
+Release-pinned commands require the v7.7.1 tag and artifacts to be published.
 Until then, stable operators should use the latest published release's guide.
 For an explicitly authorized pre-release upgrade, maintainers can substitute
-`--ref main` or `AAVA_RECOVERY_REF=main` only after #775 has merged and that exact
+`--ref main` or `AAVA_RECOVERY_REF=main` only after that exact
 main revision has passed the required checks. This is development code, not a
 published release; never silently fall back from a missing release tag.
 For release-specific behavior changes, also read the
-[v7.7.0 migration notes](MIGRATION.md#v764-to-v770). Operators upgrading from
+[v7.7.1 migration notes](MIGRATION.md#v770-to-v771). Operators upgrading from
 v7.3.x or earlier must also follow the [v7.4 Agent migration](MIGRATION.md#v73x-to-v740).
 
 ## Three Setup Paths
@@ -20,23 +20,30 @@ Choose the path that best fits your experience level:
 
 <a id="upgrade-to-v764-existing-checkout"></a>
 
-## Upgrade to v7.7.0 (Existing Checkout)
+<a id="upgrade-to-v770-existing-checkout"></a>
+
+## Upgrade to v7.7.1 (Existing Checkout)
 
 This section is for operators upgrading an existing repo checkout (not a fresh install).
 
-When upgrading from v7.6.4, rebuild/recreate the engine and Admin UI, then
-hard-refresh the browser. Local AI source/dependencies are unchanged; preserve its
-profile and models. Earlier installations must follow intervening migration notes.
-Read the [v7.7.0 migration notes](MIGRATION.md#v764-to-v770) before rollout.
+When upgrading from v7.7.0, rebuild/recreate the engine and Admin UI, update the
+host CLI and updater image, and update Local AI when installed/selected. Local AI
+code and STT image packaging changed; preserve its build profile and model volumes
+and keep intentionally stopped optional services stopped. Hard-refresh the browser.
+Earlier installations must follow intervening migration notes. Read the
+[v7.7.1 migration notes](MIGRATION.md#v770-to-v771) before rollout.
 
-This release adds nullable Agent appearance columns and a Calendly integration
-journal. Back up the actual Agent/Call History paths, `data/operator/calendly.db`
-when present, all managed `secrets/`, configuration and local overlays. Use coherent
-SQLite snapshots, not live main-file copies. Follow [integration backup and
+This release adds an internal Call History erasure flag and preserves Calendly's
+`calendly.db.configured` privacy marker. Back up the actual Agent/Call History
+paths, journal/marker when present, all managed `secrets/`, configuration and local
+overlays. Use coherent SQLite snapshots, not live main-file copies. Follow [integration backup and
 rollback safety](INTEGRATION_BACKUPS.md) and [Agents appearance recovery](AGENTS_EXPERIENCE_ROLLOUT.md).
 Use the target release CLI/pinned recovery script to obtain the new integration
 snapshots; an older installed CLI does not acquire this behavior automatically.
-The backup-safety prerequisite merged in PR #775 (`8c336951`) and is included in v7.7.0.
+The v7.7.1 CLI/updater also supplies interrupted-action recovery and stronger
+Agent/History snapshots from #791. An old CLI or updater image does not gain these
+fixes by checking out new source. Use the target release CLI/pinned recovery path;
+if the old updater cannot build, use the [manual build helper/Bake recovery](CLI_TOOLS_GUIDE.md#manual-builds-on-affected-composebuildx-versions).
 The updater now needs Python 3.7+ with SQLite backup support when integration state
 exists. New updater images include it; rebuild/replace an older updater image
 before using UI-driven integration backups, or use the documented host recovery
@@ -66,13 +73,13 @@ Run these commands from your actual checkout path. Do not assume it is `/root/..
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 git status --short
-git diff --binary > ../aava-pre-v770-working-tree.patch
-git diff --binary --cached > ../aava-pre-v770-staged.patch
+git diff --binary > ../aava-pre-v771-working-tree.patch
+git diff --binary --cached > ../aava-pre-v771-staged.patch
 docker compose config --quiet
 if ! docker compose -p asterisk-ai-voice-agent ps --services --status running \
-  > ../aava-pre-v770-running-services.txt; then
+  > ../aava-pre-v771-running-services.txt; then
   docker compose -p asterisk-ai-voice-agent ps --services \
-    > ../aava-pre-v770-running-services.txt || exit 1
+    > ../aava-pre-v771-running-services.txt || exit 1
 fi
 ```
 
@@ -116,7 +123,7 @@ Preferred CLI path:
 
 ```bash
 git fetch origin --prune --tags
-agent update --ref v7.7.0 --include-ui --local-changes=retain
+agent update --ref v7.7.1 --include-ui --local-changes=retain
 ```
 
 Replace `retain` with your explicit `overwrite` or `abort` decision. In an interactive
@@ -147,7 +154,7 @@ Run the host recovery script from an SSH shell on the AAVA server. This path doe
 depend on the failing Admin UI planner container:
 
 ```bash
-AAVA_RECOVERY_REF=v7.7.0
+AAVA_RECOVERY_REF=v7.7.1
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -183,7 +190,7 @@ terminal:
 For non-interactive recovery, pass the decision explicitly:
 
 ```bash
-AAVA_RECOVERY_REF=v7.7.0
+AAVA_RECOVERY_REF=v7.7.1
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -198,7 +205,7 @@ Use `overwrite` only when the operator accepts that tracked local code changes w
 discarded:
 
 ```bash
-AAVA_RECOVERY_REF=v7.7.0
+AAVA_RECOVERY_REF=v7.7.1
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -292,14 +299,34 @@ explicit policy. Never use `git reset --hard` as generic upgrade advice.
 
 Do not treat a second update run as proof that the containers were updated. If the first
 job reached **Fast-forwarding code** and then failed during Docker Compose, the checkout may
-already be at v7.7.0 while the old containers are still running. Save the failed job log and
-either use its **Rollback** action or, after fixing the reported Compose/build error, reconcile
+already be at v7.7.1 while the old containers are still running. Save the failed
+job log and original pre-update backup. After fixing the reported Compose/build
+error, retry the same ref with the target CLI or fixed updater first:
+
+```bash
+agent update --ref v7.7.1 --rebuild=auto --include-ui=true --local-changes=retain
+```
+
+The updater replays saved actions from `.agent/updates/pending-docker.json`, even
+when Git is already at the target revision. Preview shows those pending actions;
+normal locking and call-safety checks still apply. An installed-but-stopped Local
+AI service remains build-only. See [interrupted updates](CLI_TOOLS_GUIDE.md#interrupted-docker-builds-and-same-version-recovery).
+The failed job's **Rollback** action is a separate decision, not proof of recovery.
+
+Use the manual fallback below when no usable journal exists or the target recovery
+tooling is unavailable, after correcting the underlying failure. Do not use it to
+bypass a call-safety, revision or database-mapping refusal.
+
+Before manual recreation, stop new PBX admissions using maintenance/routing
+controls, drain active calls, and verify that no calls remain on every affected
+host. If call state cannot be verified, restore that visibility before proceeding.
+Direct Docker commands do not enforce the updater's call-safety guard. Reconcile
 only the services that were running before the update:
 
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 docker compose config --quiet
-AAVA_RUNNING_SERVICES_FILE=../aava-pre-v770-running-services.txt
+AAVA_RUNNING_SERVICES_FILE=../aava-pre-v771-running-services.txt
 test -f "${AAVA_RUNNING_SERVICES_FILE}" || exit 1
 AAVA_RECOVERY_SERVICES=()
 for AAVA_SERVICE in ai_engine admin_ui local_ai_server; do
@@ -308,7 +335,8 @@ for AAVA_SERVICE in ai_engine admin_ui local_ai_server; do
   fi
 done
 if [ "${#AAVA_RECOVERY_SERVICES[@]}" -gt 0 ]; then
-  docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate "${AAVA_RECOVERY_SERVICES[@]}"
+  COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh "${AAVA_RECOVERY_SERVICES[@]}" || exit 1
+  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate "${AAVA_RECOVERY_SERVICES[@]}"
 else
   echo "No pre-update AAVA application services were running; leaving them stopped."
 fi
@@ -320,35 +348,26 @@ agent check
 This uses the service list captured before the update, so a service stopped or
 removed by the failed operation is still recovered. It recreates
 `local_ai_server` only when it was previously running, preserving an absent or
-intentionally stopped optional Local AI service.
-
-This manual recovery is required because a retry at the target Git commit may have no
-remaining source diff from which to reconstruct the failed Docker action plan.
+intentionally stopped optional Local AI service. Unlike journal replay, this
+fallback does not rebuild an installed-but-stopped Local AI image. Manual Docker
+commands do not clear the pending-action journal; preserve it and reconcile any
+remaining actions before a later update rather than deleting it to hide unfinished work.
+The build helper applies the documented entitlement fallback only to the selected
+services and stops recovery on failure. Keep the same Compose files, profiles and
+project for build and recreation; see [manual build recovery](CLI_TOOLS_GUIDE.md#manual-builds-on-affected-composebuildx-versions)
+if the helper is absent from an older checkout.
 
 #### If the update fails with “No such image: ...local-ai-server:latest”
 
 Some installations never started or built the optional `local_ai_server` container (for example, if you only use remote providers).
 Older `agent update` versions could still try to recreate `local_ai_server` when Compose files change.
 
-To recover without enabling `local_ai_server`, bring up only the services you actually run:
-
-```bash
-cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
-
-# If the update planned to rebuild admin_ui, recreate it (safe even if not needed):
-docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
-
-docker compose -p asterisk-ai-voice-agent up -d --remove-orphans --no-build ai_engine admin_ui
-agent check
-```
-
-If you *do* want `local_ai_server`, build it and then re-run compose:
-
-```bash
-cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
-docker compose -p asterisk-ai-voice-agent build local_ai_server
-docker compose -p asterisk-ai-voice-agent up -d --remove-orphans --no-build
-```
+Use the [journal-first recovery procedure above](#if-git-updated-but-docker-deployment-failed)
+with the target CLI/updater. If manual recovery is required, use its call-drain
+steps, original running-service list and entitlement-aware build helper. Do not
+start Local AI merely to satisfy a missing optional image, or run an unscoped
+Compose recreation that starts intentionally stopped services. For an intentional
+new Local AI installation, follow [Local AI setup](LOCAL_ONLY_SETUP.md) separately.
 
 ### 3) Re-run preflight
 
@@ -569,7 +588,7 @@ agent setup
 
 **Best for:** Headless servers, scripted deployments, CLI preference
 
-> Note: `agent quickstart` and `agent init` are still available for backward compatibility, but `agent setup` is the recommended CLI wizard for v7.7.0.
+> Note: `agent quickstart` and `agent init` are still available for backward compatibility, but `agent setup` is the recommended CLI wizard for v7.7.1.
 
 ---
 

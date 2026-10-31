@@ -7,18 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+## [7.7.1] - 2026-10-30
 
-- Order Google Live transfer-failure recovery after the originating tool response, and recover background caller-recording failures with correlated history and caller cleanup.
+Release preparation from main `a6cfc5f8`, after v7.7.0. Included PRs:
+#777, #778, #784, #785, #787, #789, #791, #792, #794 and #795.
+The maintainer chose the patch tag while retaining the merged transcription and
+template capabilities. See [migration](docs/MIGRATION.md#v770-to-v771) and the
+[validation matrix](docs/baselines/golden/v7.7.1-validation-matrix.md) for additive
+state, changed modular Google defaults, reused evidence and the fresh scoped
+testing waiver. Merge and tag publication remain held for approval; the date is
+staged metadata, not proof of publication. Supported trains remain 7.7.x/7.6.x.
 
-- Preserve immediate attended-transfer invocation IDs before dialing, and safely render unknown legacy transfer actions in Call History.
-
-- Notify Google Live when an attended transfer fails after initiation, so it
-  stops claiming the connection is still in progress. Deduplicate recovery,
-  preserve caller/new-attempt ownership, and show initiation and terminal
-  outcomes separately in Call History (#793). Guard queued recovery speech against
-  superseded attempts, resolve attended-transfer prompt variables consistently,
-  and label initiation when playback deferral is disabled.
+Thanks to @pi0n00r and @pcbeingused333 for code/tests, @abaichuan1017 (Kai) for
+Local pipeline diagnostics documentation, @Andrew-Engelbrecht for upgrade report
+#790, @lucamancusodev for transfer/notification reports, and @hkjarral for
+implementation/maintenance. Preserve NC/Debian commit co-authorship without
+inventing account identities; see [CONTRIBUTORS.md](CONTRIBUTORS.md).
 
 ### Added
 
@@ -45,6 +49,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MCP server's responsibility (#778).
 
 ### Fixed
+
+- Order Google Live transfer-failure recovery after the originating tool response,
+  and recover background caller-recording failures with correlated history and
+  caller cleanup. Preserve immediate invocation IDs before dialing and safely
+  render unknown legacy transfer actions in Call History (#795).
+- Notify Google Live when an attended transfer fails after initiation, so it
+  stops claiming the connection is still in progress. Deduplicate recovery,
+  preserve caller/new-attempt ownership, render transfer prompt variables, and
+  show initiation and terminal outcomes separately. This does not enforce a
+  two-attempt limit or resolve every PBX failure in #793.
 
 - Keep HTTP template previews accurate for repeated environment references and
   explicit test values; reject unsupported pre-call JSON variables. Mask escaped

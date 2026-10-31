@@ -9,6 +9,12 @@ Google AI integration provides two modes for the Asterisk AI Voice Agent:
 
 This guide covers setup for both modes.
 
+For v7.7.1, the modular Google LLM default is `models/gemini-3.8-flash` when
+no model is selected; explicit saved selections remain unchanged. Native Google
+Live's default is not changed by this modular update. See the
+[Admin capability notes](ADMIN_UI_GUIDE.md#providers) for model-specific sampling
+controls, complete-candidate selection and summary truncation handling.
+
 If you used the Admin UI Setup Wizard, you may not need to follow this guide end-to-end. For first-call onboarding and transport selection, see:
 - `INSTALLATION.md`
 - `Transport-Mode-Compatibility.md`

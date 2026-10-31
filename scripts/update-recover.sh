@@ -41,8 +41,8 @@ usage() {
 Usage:
   sudo bash scripts/update-recover.sh [options]
 
-Recommended for a stuck release upgrade (only after v7.7.0 is published):
-  AAVA_RECOVERY_REF=v7.7.0
+Recommended for a stuck release upgrade (only after v7.7.1 is published):
+  AAVA_RECOVERY_REF=v7.7.1
   AAVA_RECOVERY_STATUS=0
   AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
     curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" -o "${AAVA_RECOVERY_SCRIPT}" &&

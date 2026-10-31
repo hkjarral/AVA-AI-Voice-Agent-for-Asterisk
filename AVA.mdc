@@ -16,7 +16,7 @@ You do not need to understand the whole codebase or already know Git to get help
 Try: “Read AVA.mdc. I want to [understand / build / fix / investigate] ___. Help me
 through the relevant steps and explain unfamiliar terms.”
 
-> Reviewed for v7.7.0 preparation against `main` cutoff `9b58ddbd` on 2026-10-24.
+> Reviewed for v7.7.1 preparation against `main` cutoff `a6cfc5f8` on 2026-10-30.
 > Check the actual checkout and deployed revision before relying on any behavior.
 
 ## Assistant: Establish Context First
@@ -78,6 +78,12 @@ every service. Host `./data/` mounts at `/app/data/`; defaults include
 `call_history.db` and `operator/agents.db`. Honor configured path overrides.
 
 ### Architecture Contracts
+
+- **Batch transcription:** Admin's optional [speech facade](docs/OpenAI-Compatible-Transcription.md)
+  uses independent Basic/Bearer credentials and bounded private FFmpeg decoding.
+  It bridges to one killable Local AI worker, with live-call setup priority and
+  disconnect/timeout cleanup. This is not a new live STT transport or a browser
+  transcription screen; CPU Faster-Whisper evidence does not qualify every backend.
 
 - **Routing/personas:** Agents in `agents.db` are the runtime source of truth.
   `AI_AGENT` selects a slug; legacy `AI_CONTEXT` uses display-name-first lookup.

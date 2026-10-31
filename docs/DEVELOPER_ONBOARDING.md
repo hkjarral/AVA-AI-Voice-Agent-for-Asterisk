@@ -35,6 +35,13 @@ Asterisk-AI-Voice-Agent/
 
 ## Recommended Dev Flow
 
+The [local transcription API](OpenAI-Compatible-Transcription.md) bridges Admin
+`api/speech.py` to Local AI's isolated batch worker; authentication, bounded
+uploads and cleanup are separate from live-call streaming. The
+[HTTP template guide](HTTP-Tool-Templates.md) describes no-send synthetic review
+versus explicitly sending a test. Do not use real audio, bookings or recipients
+in automated fixtures.
+
 1. Read the architecture overview: [Architecture Quickstart](contributing/architecture-quickstart.md) (10-minute read)
 2. Set up a dev environment: [Contributing Quickstart](contributing/quickstart.md)
 3. Pick a golden baseline to test against:

@@ -1,7 +1,7 @@
 # Pushover tools
 
-See the [v7.7.0 validation matrix](baselines/golden/v7.7.0-validation-matrix.md)
-for release evidence and accepted limits, and the
+See the [v7.7.1 validation matrix](baselines/golden/v7.7.1-validation-matrix.md)
+for reused release evidence, the fresh scoped waiver and accepted limits, and the
 [backup guide](INTEGRATION_BACKUPS.md) for private credential preservation.
 API acceptance is not a delivery/read receipt; duplicate control is call-local
 best effort, not a durable notification outbox.

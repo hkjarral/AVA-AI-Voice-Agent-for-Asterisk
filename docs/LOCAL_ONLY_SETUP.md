@@ -10,6 +10,11 @@ This is the **canonical guide** for all local deployment topologies:
 
 ## Overview
 
+For authenticated batch uploads using your installed local STT backend, see the
+[OpenAI-compatible transcription API](OpenAI-Compatible-Transcription.md).
+It has no cloud fallback or transcription UI; live calls take priority over its
+single isolated batch worker. Preserve backend profiles/models during upgrades.
+
 A fully local deployment uses:
 - **STT**: Faster Whisper (recommended with GPU), Vosk, or Sherpa-ONNX
 - **LLM**: Phi-3 Mini or other GGUF models via llama.cpp
@@ -298,7 +303,7 @@ python3 scripts/check_local_server.py --local
 python3 scripts/check_local_server.py --remote <gpu-ip>
 ```
 
-See [CLI Tools Guide](CLI_TOOLS_GUIDE.md#agent-check---local--agent-check---remote) for full flag reference.
+See [CLI Tools Guide](CLI_TOOLS_GUIDE.md#local-ai-server-round-trip) for full flag reference.
 
 The Admin UI connects directly to the configured Local AI WebSocket URL, including
 remote URLs. It ignores environment and system proxy settings for these connections,

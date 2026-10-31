@@ -14,7 +14,18 @@ CI is the hard gate for code quality (unit tests + lint/compile checks). Real-ca
 
 ## Manual Golden Baselines (Must Pass Before Tagging)
 
-For v7.7.0, use the [current validation matrix](baselines/golden/v7.7.0-validation-matrix.md).
+For v7.7.1, use the [current validation matrix](baselines/golden/v7.7.1-validation-matrix.md).
+The maintainer explicitly approved a fresh scoped waiver of additional deployment,
+runtime, live-call and upgrade testing, including the CI Gate's exact-revision
+live-call evidence and the successful-call requirement below. Reused evidence,
+skipped cases and unverified lanes remain labelled, not new exact-candidate passes.
+Required CI, automated/image checks, security assessment and review are not waived.
+Merge and tag publication remain separately held for approval. Supported release
+trains remain 7.7.x/7.6.x. Do not infer a new waiver for another release.
+
+### Historical v7.7.0 waiver
+
+For v7.7.0, use its [historical validation matrix](baselines/golden/v7.7.0-validation-matrix.md).
 The maintainer explicitly approved reuse of the existing evidence and waived
 the CI Gate's exact-revision live-call evidence and additional deployment,
 live-call, runtime and upgrade testing for this release. This also waives the
