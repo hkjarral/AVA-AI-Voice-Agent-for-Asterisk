@@ -5,7 +5,7 @@ aiohttp==3.14.4
 httpx==0.28.1  # Native Pushover sender; shared with Admin UI
 mcp==2.3.0  # Official Streamable HTTP client; Python 3.11-compatible
 # MessagePack: Fish Audio realtime (websocket) transport only
-msgpack==1.2.1
+msgpack==1.2.3
 
 # Configuration and logging
 pydantic>=2.13.4
