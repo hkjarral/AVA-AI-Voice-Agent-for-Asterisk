@@ -1,4 +1,4 @@
-fastapi==0.143.3
+fastapi==0.162.0
 uvicorn==0.54.0
 python-dotenv==1.2.4
 pyyaml==6.0.3
