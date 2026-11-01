@@ -320,6 +320,23 @@ If found, it reports reconciliation without another POST. This works after a
 process restart when the original call ID and arguments remain available.
 Later calls have different call IDs and do not gain mutation authority.
 
+If the transaction is not found, a creation this process still holds as
+unresolved is resent on the same `transactionId` with the body it first sent,
+attendees in their original order. Graph documents `transactionId` as a way to
+avoid redundant POSTs on client retries. In testing, an identical repeat
+returned the existing event rather than a duplicate, so a creation that landed
+but is not yet visible in calendarView should come back as that event. The
+resent event is read back by ID and reported only if it is still at the
+requested time: a moved event is `booking_changed`, and a missing or cancelled
+one stays `mutation_uncertain`. A resend cannot tell a new event from a repeat,
+so a Teams booking created this way has no trusted meeting-body baseline and
+changes to it require staff. The read-back and the Teams rule apply only
+in-process. After a restart the record is gone, so identical arguments are sent
+as an ordinary creation on the same `transactionId`, without a read-back. If
+that body differs from the first request only in attendee order or letter case,
+which keep the same `transactionId`, Graph has been observed to answer 400
+`ErrorDuplicateTransactionId`, and the outcome stays uncertain.
+
 Within a process, mutation workers share a lock through read/check/write/state
 tracking, including when an already-dispatched write's awaiting coroutine is
 cancelled. Lock acquisition waits at most ten seconds; a contended attempt
@@ -334,7 +351,10 @@ engine or external resource arbitration if exclusive booking is required.
 
 A transport timeout, 5xx response or malformed success result after a write is
 `mutation_uncertain`, with reservation/invitation/delivery state unknown. Retry
-identical arguments to reconcile. If creation is still not visible, ask staff;
+identical arguments to reconcile; a creation that is still not visible is
+resent as above. Any Graph error on that resend, a slot that now looks busy, and a
+Graph 400 `ErrorDuplicateTransactionId` on any create keep the outcome
+uncertain, because an earlier attempt may have landed. If uncertainty remains, ask staff;
 do not change arguments and create another reservation. PATCH retries inspect
 the current start/end to reconcile an applied update; an unobserved pending
 update requires staff rather than blindly sending another notification. Pending changes block a
