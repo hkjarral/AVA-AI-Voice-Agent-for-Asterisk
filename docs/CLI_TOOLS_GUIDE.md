@@ -339,6 +339,25 @@ After setup, select `ai_engine` in both commands instead of `admin_ui`. Include
 startup. These commands grant only `network.host` for the selected build; they do
 not change Docker's global configuration.
 
+For cache-sensitive recovery, including the NumPy compatibility fix, older helpers
+also reject `--no-cache`. Use the Compose mode selected in the installation guide
+and pass the flag directly to Compose before exporting to Bake:
+
+```bash
+if docker compose version >/dev/null 2>&1; then
+  AAVA_COMPOSE=(docker compose)
+else
+  AAVA_COMPOSE=(docker-compose)
+fi
+( set -o pipefail
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent build --no-cache --print ai_engine admin_ui |
+    docker buildx bake --file - --allow=network.host --load
+) && "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate ai_engine admin_ui
+```
+
+Keep any selected Compose file flags identical for build and startup. This path
+works with either the plugin or standalone executable and does not require newer
+helper options.
 
 ## Compatibility aliases
 
