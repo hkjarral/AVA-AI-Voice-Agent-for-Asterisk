@@ -1158,13 +1158,13 @@ class VADConfig(BaseModel):
     fallback_buffer_size: int = 128000
 
     # Provider-agnostic upstream squelch (helps server-side VAD providers terminate turns in noisy environments).
-    # Applies only to providers that require continuous audio.
+    # AudioSocket only; requires continuous audio and native VAD. RTP/WebSocket bypass this squelch.
     upstream_squelch_enabled: bool = True
     # Base RMS threshold in PCM16 space. Lower values are more permissive (less likely to clip quiet speakers).
     upstream_squelch_base_rms: int = 200
     # Dynamic threshold multiplier: threshold = max(base_rms, noise_floor_rms * noise_factor)
     upstream_squelch_noise_factor: float = 2.5
-    # Exponential moving average factor for noise floor updates (0..1). Higher adapts faster.
+    # EMA factor for non-speech noise updates (0..1); independent speech evidence protects the floor.
     upstream_squelch_noise_ema_alpha: float = 0.06
     # Hysteresis: require N speech frames to enter speaking state, and M silence frames to exit.
     upstream_squelch_min_speech_frames: int = 2

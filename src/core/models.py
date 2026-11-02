@@ -12,6 +12,7 @@ from datetime import datetime
 
 if TYPE_CHECKING:
     from .transport_orchestrator import TransportProfile as OrchestratorTransportProfile
+    from .upstream_speech_evidence import UpstreamSpeechEvidence
 
 
 @dataclass
@@ -157,6 +158,8 @@ class CallSession:
     
     # VAD and audio processing state
     vad_state: Dict[str, Any] = field(default_factory=dict)
+    # Runtime-only detector owned by this session; removed with the call. Never persisted.
+    upstream_speech_evidence: Optional["UpstreamSpeechEvidence"] = field(default=None, repr=False, compare=False)
     fallback_state: Dict[str, Any] = field(default_factory=dict)
     enhanced_vad_enabled: Optional[bool] = None
     enhanced_vad_frames: int = 0

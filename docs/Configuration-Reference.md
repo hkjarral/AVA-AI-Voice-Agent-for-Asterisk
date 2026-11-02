@@ -546,12 +546,18 @@ Defines how inbound speech is segmented into utterances for STT.
 - vad.fallback_enabled: When true, sends audio at a fixed interval if VAD fails to detect speech.
 - vad.fallback_interval_ms: Interval between fallback sends.
 - vad.fallback_buffer_size: Bytes to accumulate at fallback thresholds.
-- vad.upstream_squelch_enabled: When true, replaces low-energy/noise frames with silence for continuous-audio providers that have native VAD (improves end-of-turn detection in noisy environments; may suppress quiet callers if too aggressive).
+- vad.upstream_squelch_enabled: On AudioSocket only, replaces low-energy frames with silence for continuous-audio providers that have native VAD. RTP and Media WebSocket bypass this squelch. Call-local WebRTC speech evidence protects detected speech from noise-floor learning and allows recovery from sustained non-speech noise. Aggressive thresholds can suppress quiet callers.
 - vad.upstream_squelch_base_rms: Minimum RMS threshold (PCM16 space) before audio is treated as “speech”.
 - vad.upstream_squelch_noise_factor: Dynamic threshold multiplier relative to estimated noise floor.
-- vad.upstream_squelch_noise_ema_alpha: EMA smoothing factor (0–1) for noise floor estimation.
+- vad.upstream_squelch_noise_ema_alpha: EMA smoothing factor (0–1). Independently detected non-speech updates the floor even when squelch is open; detected speech does not train it. Zero disables noise-floor adaptation.
 - vad.upstream_squelch_min_speech_frames: Hysteresis: speech frames required to enter “speaking”.
 - vad.upstream_squelch_end_silence_frames: Hysteresis: silence frames required to exit “speaking”.
+
+The initial adaptive threshold is bounded by the base RMS threshold, even when
+the first received frame already contains speech. Existing learned floors remain
+call-scoped across greeting/output gating. VAD changes require saving and an
+AI Engine restart. See [upstream squelch behavior and validation](Upstream-Squelch.md)
+for provider/transport scope, diagnostics and the startup-noise tradeoff.
 
 Common pitfalls:
 

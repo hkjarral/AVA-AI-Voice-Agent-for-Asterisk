@@ -102,6 +102,10 @@ every service. Host `./data/` mounts at `/app/data/`; defaults include
   and YAML profiles. Preserve provider wire contracts and read the
   [transport matrix](docs/Transport-Mode-Compatibility.md) and
   [WebSocket guide](docs/WebSocket-Transport.md) before claiming support.
+  [Upstream energy squelch](docs/Upstream-Squelch.md) is AudioSocket-only for
+  continuous native-VAD providers; startup favors caller admission. Call-local
+  speech evidence protects detected speech while allowing non-speech noise-floor
+  recovery. RTP/WebSocket and the no-input detector are separate.
 - **State:** `SessionStore` owns shared call state. Playback managers emit audio;
   `ConversationCoordinator` and `AudioGatingManager` coordinate capture and barge-in.
   Extend the appropriate existing owner; do not add parallel call-state dictionaries.
