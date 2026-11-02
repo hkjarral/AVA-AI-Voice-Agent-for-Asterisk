@@ -249,6 +249,18 @@ in your shell, from the checkout root:
   agent check
 ```
 
+For a fresh install, select only `admin_ui`, complete the Setup Wizard, then
+select `ai_engine`; include `local_ai_server` only when configured. The same
+helper is used by the installer and Admin UI build/start paths.
+
+The helper accepts repeated `-f FILE`, `-p PROJECT`, `--no-cache`, and repeated
+`--build-arg KEY=VALUE` options. These are retained when exporting the equivalent
+Bake definition; unknown options are rejected. The default command is Docker's
+Compose plugin (`docker compose`); preflight
+and the installer retain standalone Compose selection through
+`AAVA_COMPOSE_BIN=docker-compose`. See Docker's [build options](https://docs.docker.com/reference/cli/docker/compose/build/)
+and [Bake host-network grant](https://docs.docker.com/build/bake/reference/#targetnetwork).
+
 The helper honors `COMPOSE_FILE` and `COMPOSE_PROJECT_NAME`; use the same settings
 for the build and recreation. Build Local AI only when it is installed/selected,
 and leave a stopped Local AI service stopped. Recreate during a window with no

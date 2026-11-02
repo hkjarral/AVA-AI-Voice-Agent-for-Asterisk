@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Fresh-install Docker builds (#802):** route Quick Start, preflight, installer,
+  and Admin UI setup/rebuild paths through the entitlement-aware Compose build
+  helper. Preserve project/Compose overlays, no-cache rebuilds and backend build
+  arguments through the scoped `network.host` fallback. Start only after a
+  successful build with `--no-build --pull never`, so Compose cannot repeat the
+  rejected build during startup. No global Docker entitlement override is needed.
+
 - **AudioSocket caller squelch (#799):** prevent a first speech frame from
   poisoning the noise floor and muting the whole utterance when quiet onset
   frames are absent. Classify before updating the noise estimate and exclude

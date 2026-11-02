@@ -15,6 +15,17 @@ print_info() {
     echo -e "${COLOR_BLUE}INFO: $1${COLOR_RESET}"
 }
 
+# Build first so Compose startup cannot bypass the entitlement-aware helper.
+build_and_start_service() (
+    local service="$1"
+    local install_root
+    install_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    cd "$install_root" || exit 1
+    AAVA_COMPOSE_BIN="${COMPOSE_BIN:-}" COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent \
+        bash ./scripts/compose-build.sh "$service" || exit 1
+    $COMPOSE up -d --no-build --pull never "$service"
+)
+
 # Determine sudo usable globally
 if [ "$(id -u)" -ne 0 ]; then SUDO="sudo"; else SUDO=""; fi
 
@@ -389,10 +400,12 @@ check_docker() {
 }
 
 choose_compose_cmd() {
-    if command -v docker-compose >/dev/null 2>&1; then
-        COMPOSE="docker-compose -p asterisk-ai-voice-agent"
-    elif docker compose version >/dev/null 2>&1; then
+    if docker compose version >/dev/null 2>&1; then
         COMPOSE="docker compose -p asterisk-ai-voice-agent"
+        COMPOSE_BIN=""
+    elif command -v docker-compose >/dev/null 2>&1; then
+        COMPOSE="docker-compose -p asterisk-ai-voice-agent"
+        COMPOSE_BIN="docker-compose"
     else
         print_error "Neither 'docker-compose' nor 'docker compose' is available. Please install Docker Compose."
         exit 1
@@ -506,7 +519,7 @@ ensure_docker_sock_env() {
         print_info "Detected rootless container runtime; set DOCKER_SOCK in .env for Admin UI container control"
         print_info "  DOCKER_SOCK=$desired_sock"
         print_info "  If admin_ui is already running, recreate it to apply the mount:"
-        print_info "  docker compose -p asterisk-ai-voice-agent up -d --force-recreate admin_ui"
+        print_info "  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui"
     fi
 }
 
@@ -764,7 +777,7 @@ wait_for_local_ai_health() {
     
     # Ensure service started (build if needed)
     print_info "Starting local_ai_server container..."
-    $COMPOSE up -d --build local_ai_server
+    build_and_start_service local_ai_server || return 1
     echo ""
     
     # Wait up to 10 minutes (60 iterations * 10s)
@@ -1008,7 +1021,7 @@ configure_env() {
     [ -f .env.bak ] && rm -f .env.bak || true
 
     print_success ".env updated."
-    print_info "If you don't have API keys now, you can add them later to .env and then recreate containers: 'docker compose -p asterisk-ai-voice-agent up -d' (use '--build' if images changed). Note: simple 'restart' will not pick up new .env values."
+    print_info "If you don't have API keys now, you can add them later to .env and recreate selected containers with '--no-build --pull never --force-recreate'. If images changed, build those services first with './scripts/compose-build.sh'. Simple 'restart' will not pick up new .env values."
 }
 
 select_config_template() {
@@ -1444,13 +1457,13 @@ start_services() {
             print_info "Note: First startup may take 5-10 minutes to load models"
             print_info "Monitor progress: $COMPOSE logs -f local_ai_server"
             echo ""
-            wait_for_local_ai_health
+            wait_for_local_ai_health || return 1
         fi
         
         # Always start ai_engine
         print_info "Starting ai_engine (orchestrator)..."
         echo ""
-        $COMPOSE up -d --build ai_engine
+        build_and_start_service ai_engine || return 1
         
         # Post-start validation
         validate_services
@@ -1502,10 +1515,11 @@ start_services() {
 
         if [[ "$start_admin_ui" =~ ^[Yy]$|^$ ]]; then
             print_info "Starting Admin UI..."
-            $COMPOSE up -d --build admin_ui
+            build_and_start_service admin_ui || return 1
         else
             print_info "Skipped starting Admin UI. You can start it later with:"
-            print_info "  $COMPOSE up -d admin_ui"
+            print_info "  AAVA_COMPOSE_BIN=${COMPOSE_BIN:-} COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&"
+            print_info "    $COMPOSE up -d --no-build --pull never admin_ui"
         fi
 
         echo ""
@@ -1539,7 +1553,8 @@ start_services() {
     else
         echo ""
         print_info "Setup complete. Start services later with:"
-        print_info "  $COMPOSE up --build -d"
+        print_info "  AAVA_COMPOSE_BIN=${COMPOSE_BIN:-} COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh ai_engine admin_ui &&"
+        print_info "    $COMPOSE up -d --no-build --pull never ai_engine admin_ui"
     fi
 
     # Always print recommended Asterisk dialplan snippet
