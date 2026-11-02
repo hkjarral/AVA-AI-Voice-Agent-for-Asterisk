@@ -86,7 +86,7 @@ also available. No new per-frame log events or audio capture are enabled.
 Automated tests exercise the real ingress handlers with synthetic PCM and real
 provider capability declarations. They cover missing quiet onset, speech near
 the base threshold, configured smoothing/hysteresis, all AudioSocket signed-linear
-rates and legacy μ-law decoding, noise and isolated spikes, subsequent turns,
+rates, noise and isolated spikes, subsequent turns,
 greeting release, capability/disabled/pipeline bypasses, and unchanged RTP/WebSocket
 continuous-input behavior. Real WebRTC checks add sustained deterministic noise,
 tone and white-noise recovery, speech after noise, and a licensed public speech

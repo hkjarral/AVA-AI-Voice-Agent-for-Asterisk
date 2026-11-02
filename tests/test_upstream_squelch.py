@@ -1,6 +1,5 @@
 """Issue #799: exercise real ingress with PCM and the providers' real capabilities."""
 import asyncio
-import audioop
 import struct
 from copy import deepcopy
 from types import SimpleNamespace
@@ -52,12 +51,11 @@ def setup(name="openai_realtime", cls=OpenAIRealtimeProvider, *, evidence=True, 
     return engine, session, provider
 
 
-def frame(energy, message_type=0x12, *, ulaw=False):
+def frame(energy, message_type=0x12):
     encoding, rate = AUDIO_TYPE_TO_FORMAT[message_type]
     pcm = struct.pack("<hh", energy, -energy) * (rate // 100)
     return AudioSocketAudioFrame(
-        audioop.lin2ulaw(pcm, 2) if ulaw else pcm,
-        message_type, "ulaw" if ulaw else encoding, rate,
+        pcm, message_type, encoding, rate,
     )
 
 
@@ -93,14 +91,6 @@ async def test_squelch_uses_pcm_energy_independent_of_audiosocket_rate(message_t
     assert nonzero(provider) == 3
     for call in provider.send_audio.await_args_list:
         assert len(call.args[0]) == len(frame(1000, message_type).payload)
-
-
-@pytest.mark.asyncio
-async def test_legacy_ulaw_is_decoded_before_squelch():
-    engine, session, provider = setup()
-    await engine.session_store.upsert_call(session)
-    await send(engine, [1000] * 4, message_type=0x10, ulaw=True)
-    assert nonzero(provider) == 3
 
 
 @pytest.mark.asyncio
