@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   arguments through the scoped `network.host` fallback. Start only after a
   successful build with `--no-build --pull never`, so Compose cannot repeat the
   rejected build during startup. No global Docker entitlement override is needed.
+  Recovery hints also build a missing Admin UI image and retain standalone Compose
+  selection even before the full Compose check has run. Clarify CPU/GPU layer settings.
 
 - **AudioSocket caller squelch (#799):** prevent a first speech frame from
   poisoning the noise floor and muting the whole utterance when quiet onset

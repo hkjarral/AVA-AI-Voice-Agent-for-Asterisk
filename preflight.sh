@@ -26,6 +26,25 @@ log_warn() { echo -e "${YELLOW}⚠${NC} $1"; WARNINGS+=("$1"); }
 log_fail() { echo -e "${RED}✗${NC} $1"; FAILURES+=("$1"); }
 log_info() { echo -e "${BLUE}ℹ${NC} $1"; }
 
+admin_ui_recreate_command() {
+    # Some Docker/rootless hints are printed before check_compose selects a mode.
+    local compose_cmd="${COMPOSE_CMD:-}"
+    if [ -z "$compose_cmd" ]; then
+        if docker compose version >/dev/null 2>&1; then
+            compose_cmd="docker compose"
+        elif command -v docker-compose >/dev/null 2>&1; then
+            compose_cmd="docker-compose"
+        else
+            compose_cmd="docker compose"
+        fi
+    fi
+    local build_env=""
+    if [ "$compose_cmd" = docker-compose ]; then
+        build_env="AAVA_COMPOSE_BIN=docker-compose "
+    fi
+    printf '%s\n' "${build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui && ${compose_cmd} -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui"
+}
+
 # State
 WARNINGS=()
 FAILURES=()
@@ -842,7 +861,7 @@ check_docker() {
         ROOTLESS_DOCS="$(github_docs_url "$(platform_yaml_get docker.rootless_docs || echo "docs/CROSS_PLATFORM_PLAN.md")" 2>/dev/null || true)"
         log_info "  Admin UI (rootless) tip:"
         log_info "    export DOCKER_SOCK=$ROOTLESS_SOCKET"
-        log_info "    ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui"
+        log_info "    $(admin_ui_recreate_command)"
         [ -n "$ROOTLESS_DOCS" ] && log_info "    Docs: $ROOTLESS_DOCS"
     fi
 }
@@ -907,11 +926,11 @@ check_docker_gid() {
                 fi
                 rm -f "$SCRIPT_DIR/.env.bak" 2>/dev/null || true
                 log_ok "Updated .env with DOCKER_GID=$actual_gid"
-                log_info "  Recreate admin_ui: ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui"
+                log_info "  Recreate admin_ui: $(admin_ui_recreate_command)"
             else
                 FIX_CMDS+=("# Update .env with: DOCKER_GID=$actual_gid  (docker socket: $sock)")
                 FIX_CMDS+=("# Then recreate admin_ui:")
-                FIX_CMDS+=("${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui")
+                FIX_CMDS+=("$(admin_ui_recreate_command)")
             fi
         fi
     else
@@ -1617,7 +1636,7 @@ check_env() {
                 rm -f "$SCRIPT_DIR/.env.bak" 2>/dev/null || true
                 log_ok "Set DOCKER_SOCK in .env for Admin UI container control"
                 log_info "  DOCKER_SOCK=${desired_sock}"
-                log_info "  Recreate admin_ui to apply: ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui"
+                log_info "  Recreate admin_ui to apply: $(admin_ui_recreate_command)"
             fi
         fi
     fi

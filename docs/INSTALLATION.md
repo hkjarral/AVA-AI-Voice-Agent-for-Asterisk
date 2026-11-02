@@ -820,8 +820,9 @@ Use the same GPU overlay for both steps when GPU acceleration is configured:
   docker compose -p asterisk-ai-voice-agent -f docker-compose.yml -f docker-compose.gpu.yml up -d --no-build --pull never local_ai_server
 ```
 
-For CPU-only Local AI, omit both `-f` flags from both commands. Set
-`LOCAL_LLM_GPU_LAYERS=-1` in `.env` for CUDA-accelerated LLM inference. See
+For CPU-only Local AI, omit both `-f` flags from both commands and leave
+`LOCAL_LLM_GPU_LAYERS` unset or set it to `0`. For CUDA acceleration, use the GPU
+overlay above and set `LOCAL_LLM_GPU_LAYERS=-1` in `.env`. See
 [Local AI setup](LOCAL_ONLY_SETUP.md) for backend selection and model requirements.
 
 > **Runtime mode:** `local_ai_server` auto-selects runtime based on GPU availability:
