@@ -407,7 +407,7 @@ detect_os() {
                         sed -i 's/numpy>=1.24.0/numpy>=1.24.0,<2.0/g' "$SCRIPT_DIR/admin_ui/backend/requirements.txt" 2>/dev/null || true
                     fi
                     log_ok "NumPy pinned to <2.0 for CPU compatibility"
-                    log_info "  Rebuild containers: docker compose build --no-cache ai_engine admin_ui"
+                    log_info "  Rebuild containers: COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh --no-cache ai_engine admin_ui"
                 else
                     log_info "  Fix: Run with --apply-fixes to auto-pin numpy<2.0"
                     log_info "  Or manually edit requirements.txt: numpy>=1.24.0,<2.0"
@@ -842,7 +842,7 @@ check_docker() {
         ROOTLESS_DOCS="$(github_docs_url "$(platform_yaml_get docker.rootless_docs || echo "docs/CROSS_PLATFORM_PLAN.md")" 2>/dev/null || true)"
         log_info "  Admin UI (rootless) tip:"
         log_info "    export DOCKER_SOCK=$ROOTLESS_SOCKET"
-        log_info "    ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --force-recreate admin_ui"
+        log_info "    ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui"
         [ -n "$ROOTLESS_DOCS" ] && log_info "    Docs: $ROOTLESS_DOCS"
     fi
 }
@@ -907,11 +907,11 @@ check_docker_gid() {
                 fi
                 rm -f "$SCRIPT_DIR/.env.bak" 2>/dev/null || true
                 log_ok "Updated .env with DOCKER_GID=$actual_gid"
-                log_info "  Recreate admin_ui: ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --force-recreate admin_ui"
+                log_info "  Recreate admin_ui: ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui"
             else
                 FIX_CMDS+=("# Update .env with: DOCKER_GID=$actual_gid  (docker socket: $sock)")
                 FIX_CMDS+=("# Then recreate admin_ui:")
-                FIX_CMDS+=("${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --force-recreate admin_ui")
+                FIX_CMDS+=("${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui")
             fi
         fi
     else
@@ -1617,7 +1617,7 @@ check_env() {
                 rm -f "$SCRIPT_DIR/.env.bak" 2>/dev/null || true
                 log_ok "Set DOCKER_SOCK in .env for Admin UI container control"
                 log_info "  DOCKER_SOCK=${desired_sock}"
-                log_info "  Recreate admin_ui to apply: ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --force-recreate admin_ui"
+                log_info "  Recreate admin_ui to apply: ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui"
             fi
         fi
     fi
@@ -2435,7 +2435,12 @@ check_gpu() {
             log_info "  To use GPU for LLM inference (optional, faster responses):"
             log_info "    1. Set LOCAL_LLM_GPU_LAYERS=-1 in .env"
             log_info "    2. Start local_ai_server with GPU override:"
-            log_info "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent -f docker-compose.yml -f docker-compose.gpu.yml up -d --build local_ai_server"
+            local compose_build_env=""
+            if [ "${COMPOSE_CMD:-docker compose}" = docker-compose ]; then
+                compose_build_env="AAVA_COMPOSE_BIN=docker-compose "
+            fi
+            log_info "       ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh -f docker-compose.yml -f docker-compose.gpu.yml local_ai_server &&"
+            log_info "         ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent -f docker-compose.yml -f docker-compose.gpu.yml up -d --no-build --pull never local_ai_server"
         else
             log_warn "Docker GPU passthrough test failed"
             log_info "  GPU detected and toolkit installed, but Docker cannot access GPU"
@@ -2695,6 +2700,10 @@ apply_fixes() {
 # Summary
 # ============================================================================
 print_summary() {
+    local compose_build_env=""
+    if [ "${COMPOSE_CMD:-docker compose}" = docker-compose ]; then
+        compose_build_env="AAVA_COMPOSE_BIN=docker-compose "
+    fi
     echo ""
     echo "========================================"
     echo "Pre-flight Summary"
@@ -2733,7 +2742,8 @@ print_summary() {
             echo "Next steps (Local AI Server only):"
             echo ""
             echo "  1. Start Local AI Server:"
-            echo "     ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --build local_ai_server"
+            echo "     ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh local_ai_server &&"
+            echo "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never local_ai_server"
             echo ""
             echo "  2. Verify WS health:"
             echo "     cd local_ai_server && python3 smoke_test_ws.py --url ws://127.0.0.1:${LOCAL_WS_PORT:-8765} --auth-token \"\\$LOCAL_WS_AUTH_TOKEN\" --verbose"
@@ -2767,10 +2777,12 @@ print_summary() {
         echo "     Or enable the full build (more models / larger image):"
         echo "       sudo ./preflight.sh --apply-fixes --local-ai-full"
         echo "     After changing LOCAL_AI_MODE, rebuild/recreate local_ai_server:"
-        echo "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --build --force-recreate local_ai_server"
+        echo "       ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh local_ai_server &&"
+        echo "         ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate local_ai_server"
         echo ""
         echo "  1. Start the Admin UI:"
-        echo "     ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d admin_ui"
+        echo "     ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&"
+        echo "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui"
         echo ""
         if [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]; then
             echo "  2. Access the Admin UI:"
@@ -2780,10 +2792,12 @@ print_summary() {
         fi
         echo ""
         echo "  3. Complete the Setup Wizard, then start ai_engine:"
-        echo "     ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d ai_engine"
+        echo "     ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh ai_engine &&"
+        echo "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never ai_engine"
         echo ""
         echo "  4. For local_hybrid or local_only pipeline, also start:"
-        echo "     ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d local_ai_server"
+        echo "     ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh local_ai_server &&"
+        echo "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never local_ai_server"
         echo ""
     elif [ ${#FAILURES[@]} -eq 0 ]; then
         touch "$SCRIPT_DIR/.preflight-ok"
@@ -2800,7 +2814,8 @@ print_summary() {
         echo "  Or enable the full build (more models / larger image):"
         echo "    sudo ./preflight.sh --apply-fixes --local-ai-full"
         echo "  After changing LOCAL_AI_MODE, rebuild/recreate local_ai_server:"
-        echo "    ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --build --force-recreate local_ai_server"
+        echo "    ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh local_ai_server &&"
+        echo "      ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate local_ai_server"
         echo ""
         echo "╔═══════════════════════════════════════════════════════════════════════════╗"
         echo "║  ⚠️  SECURITY NOTICE                                                       ║"
@@ -2820,7 +2835,8 @@ print_summary() {
         echo "     (For troubleshooting, add: --persist-media-mount)"
         echo ""
         echo "  1. Start the Admin UI:"
-        echo "     ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d admin_ui"
+        echo "     ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&"
+        echo "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui"
         echo ""
         if [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]; then
             echo "  2. Access the Admin UI:"
@@ -2830,10 +2846,12 @@ print_summary() {
         fi
         echo ""
         echo "  3. Complete the Setup Wizard, then start ai_engine:"
-        echo "     ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d ai_engine"
+        echo "     ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh ai_engine &&"
+        echo "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never ai_engine"
         echo ""
         echo "  4. For local_hybrid or local_only pipeline, also start:"
-        echo "     ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d local_ai_server"
+        echo "     ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh local_ai_server &&"
+        echo "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never local_ai_server"
         echo ""
     else
         echo -e "${RED}Cannot proceed - fix failures above first.${NC}"

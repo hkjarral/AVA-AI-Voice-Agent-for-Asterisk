@@ -40,7 +40,8 @@ and [upgrade instructions](../docs/INSTALLATION.md#upgrade-to-v770-existing-chec
 
 ```bash
 # From your project root (runs in background)
-docker compose up -d --build admin_ui
+COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
+  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
 
 # View logs if needed
 docker compose logs -f admin_ui
@@ -54,6 +55,9 @@ That's it! The container will:
 
 > **Note**: Run `./preflight.sh --apply-fixes` first (recommended) to create `.env` and generate a secure `JWT_SECRET`.
 > The Admin UI reads/writes `config/ai-agent.yaml` and `.env`.
+> The build helper handles the specific Compose/Buildx `--allow=network.host`
+> failure; do not add this flag to `compose up`. See
+> [build recovery](../docs/CLI_TOOLS_GUIDE.md#manual-builds-on-affected-composebuildx-versions).
 
 For first-call onboarding (dialplan + transport selection + verification), see:
 - [Installation Guide](../docs/INSTALLATION.md)
@@ -541,7 +545,8 @@ docker logs admin_ui
 
 **Rebuild if needed**:
 ```bash
-docker compose up -d --build admin_ui
+COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
+  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
 ```
 
 ### Login Not Working
@@ -605,8 +610,8 @@ docker compose logs admin_ui
 
 **Force rebuild**:
 ```bash
-docker compose down
-docker compose up -d --build admin_ui
+COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh --no-cache admin_ui &&
+  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui
 ```
 
 ### Page Not Loading
@@ -821,7 +826,8 @@ docker logs admin_ui -f
 docker compose restart admin_ui
 
 # Rebuild from scratch
-docker compose up -d --build admin_ui
+COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh --no-cache admin_ui &&
+  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
 
 # Access UI
 # Browse to: http://localhost:3003

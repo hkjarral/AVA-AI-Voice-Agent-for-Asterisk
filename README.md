@@ -52,11 +52,15 @@ For maintainer source evaluation only (unstable):
 git clone --branch v7.7.1 https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
 cd AVA-AI-Voice-Agent-for-Asterisk
 sudo ./preflight.sh --apply-fixes
-docker compose -p asterisk-ai-voice-agent up -d --build admin_ui
+COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
+  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
 ```
 
 Preflight prepares `.env`, generates the JWT secret, and checks PBX/media
-permissions. Review its findings before continuing.
+permissions. Review its findings before continuing. The build helper retries the
+specific Compose/Buildx host-network entitlement error with an explicit
+`network.host` grant; startup then uses the built image. See
+[build troubleshooting](docs/CLI_TOOLS_GUIDE.md#manual-builds-on-affected-composebuildx-versions).
 
 Open `http://<server-ip>:3003`. Retrieve the one-time admin password:
 

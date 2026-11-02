@@ -119,6 +119,30 @@ def _compose_files_flags_for_service(service_name: str) -> str:
     return "-f docker-compose.yml -f docker-compose.gpu.yml"
 
 
+def _compose_service_command(
+    service: str, *, build: bool, build_only: bool = False,
+    no_cache: bool = False, build_args: Optional[List[str]] = None,
+    recreate: bool = False,
+) -> str:
+    """Build selected images before starting them, retaining the same topology."""
+    if service not in {"ai_engine", "admin_ui", "local_ai_server"}:
+        raise ValueError("Unsupported Compose service")
+    compose_options = shlex.split(_compose_files_flags_for_service(service))
+    compose_options += ["-p", "asterisk-ai-voice-agent"]
+    commands = ["set -euo pipefail", 'cd "$PROJECT_ROOT"']
+    if build:
+        options = (["--no-cache"] if no_cache else []) + list(build_args or [])
+        commands.append(shlex.join([
+            "bash", "./scripts/compose-build.sh", *compose_options, *options, service,
+        ]))
+    if not build_only:
+        commands.append(shlex.join([
+            "docker", "compose", *compose_options, "up", "-d", "--no-build", "--pull", "never",
+            *(["--force-recreate"] if recreate else []), service,
+        ]))
+    return "; ".join(commands)
+
+
 def _compose_files_flags_for_recovery(
     service_name: str,
     previous_environment: List[str],
@@ -393,23 +417,13 @@ async def start_container(container_id: str):
     host_root = _project_host_root_from_admin_ui_container()
     logger.info("Starting %s via updater-runner (host_root=%s)", _sanitize_for_log(service_name), _sanitize_for_log(host_root))
 
-    def _compose_up_cmd(svc: str, *, build: bool) -> str:
-        flag = "--build" if build else "--no-build"
-        compose_files = _compose_files_flags_for_service(svc)
-        compose_prefix = f"{compose_files} " if compose_files else ""
-        return (
-            "set -euo pipefail; "
-            "cd \"$PROJECT_ROOT\"; "
-            f"docker compose {compose_prefix}-p asterisk-ai-voice-agent up -d {flag} {svc}"
-        )
-
     try:
         if service_name == "local_ai_server":
             # Fast path: start without build if the image already exists.
             code, out = _run_updater_ephemeral(
                 host_root,
                 env={"PROJECT_ROOT": host_root},
-                command=_compose_up_cmd(service_name, build=False),
+                command=_compose_service_command(service_name, build=False),
                 timeout_sec=120,
             )
             if code == 0:
@@ -427,7 +441,7 @@ async def start_container(container_id: str):
                 code2, out2 = _run_updater_ephemeral(
                     host_root,
                     env={"PROJECT_ROOT": host_root},
-                    command=_compose_up_cmd(service_name, build=True),
+                    command=_compose_service_command(service_name, build=True),
                     timeout_sec=1800,
                 )
                 if code2 == 0:
@@ -439,7 +453,7 @@ async def start_container(container_id: str):
         code, out = _run_updater_ephemeral(
             host_root,
             env={"PROJECT_ROOT": host_root},
-            command=_compose_up_cmd(service_name, build=True),
+            command=_compose_service_command(service_name, build=True),
             timeout_sec=600,
         )
         if code == 0:
@@ -862,14 +876,9 @@ async def _start_via_compose(container_id: str, service_map: dict):
     
     try:
         host_root = _project_host_root_from_admin_ui_container()
-        build_flag = "--build" if service_name == "local_ai_server" else "--no-build"
         timeout_sec = 1800 if service_name == "local_ai_server" else 300
-        compose_files = _compose_files_flags_for_service(service_name)
-        compose_prefix = f"{compose_files} " if compose_files else ""
-        cmd = (
-            "set -euo pipefail; "
-            "cd \"$PROJECT_ROOT\"; "
-            f"docker compose {compose_prefix}-p asterisk-ai-voice-agent up -d {build_flag} {service_name}"
+        cmd = _compose_service_command(
+            service_name, build=service_name == "local_ai_server",
         )
 
         code, out = _run_updater_ephemeral(
@@ -3115,7 +3124,11 @@ def _build_checks(os_info, docker_info, compose_info, selinux_info, dir_info, as
             "action": {
                 "type": "command",
                 "label": "Rebuild Admin UI",
-                "value": "docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui",
+                "value": (
+                    "./scripts/compose-build.sh -p asterisk-ai-voice-agent admin_ui && "
+                    "docker compose -p asterisk-ai-voice-agent up -d "
+                    "--no-build --pull never --force-recreate admin_ui"
+                ),
                 "docs_url": _github_docs_url("docs/INSTALLATION.md"),
                 "docs_label": "AAVA installation docs",
             },

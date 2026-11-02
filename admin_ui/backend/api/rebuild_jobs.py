@@ -8,7 +8,6 @@ Similar pattern to download jobs in wizard.py.
 import copy
 import logging
 import os
-import shlex
 import shutil
 import subprocess
 import threading
@@ -317,27 +316,20 @@ def _run_docker_build(job_id: str, service: str = "local_ai_server") -> bool:
     """
     try:
         from api.system import (
-            _compose_files_flags_for_service,
+            _compose_service_command,
             _project_host_root_from_admin_ui_container,
             _run_updater_ephemeral,
         )
 
         host_root = _project_host_root_from_admin_ui_container()
-        compose_files = _compose_files_flags_for_service(service)
-        compose_prefix = f"{compose_files} " if compose_files else ""
 
         job = get_rebuild_job(job_id)
         backend = (job.backend if job else "").strip().lower()
         env_path = os.path.join(PROJECT_ROOT, ".env")
         env = _read_env_file(env_path)
         build_args = _build_args_for_backend(backend, env)
-        build_args_str = " ".join(shlex.quote(arg) for arg in build_args)
-        service_arg = shlex.quote(service)
-
-        cmd = (
-            "set -euo pipefail; "
-            "cd \"$PROJECT_ROOT\"; "
-            f"docker compose {compose_prefix}-p asterisk-ai-voice-agent build --no-cache {build_args_str} {service_arg}"
+        cmd = _compose_service_command(
+            service, build=True, build_only=True, no_cache=True, build_args=build_args,
         )
         _job_output(job_id, f"$ {cmd}")
 

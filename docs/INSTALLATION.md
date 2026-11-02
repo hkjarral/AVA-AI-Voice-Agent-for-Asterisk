@@ -506,11 +506,18 @@ cd AVA-AI-Voice-Agent-for-Asterisk
 sudo ./preflight.sh --apply-fixes
 
 # Start Admin UI first
-docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
+COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
+  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui
 
 # Complete the Setup Wizard in Admin UI, then start ai_engine
-docker compose -p asterisk-ai-voice-agent up -d --build ai_engine
+COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh ai_engine &&
+  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never ai_engine
 ```
+
+The helper handles the specific `--allow=network.host` Compose/Buildx failure
+before any container is started. A failed build stops the sequence. See
+[manual build recovery](CLI_TOOLS_GUIDE.md#manual-builds-on-affected-composebuildx-versions)
+for the entitlement explanation and older checkouts.
 
 If you hit permission/container/health issues during setup, start with:
 - `agent check`
@@ -715,7 +722,8 @@ If your host uses **rootless Docker**, the Admin UI needs the rootless socket mo
 
 ```bash
 export DOCKER_SOCK=/run/user/$(id -u)/docker.sock
-docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
+COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
+  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui
 ```
 
 `./preflight.sh` prints the exact command for your system when it detects rootless Docker.
@@ -790,7 +798,8 @@ After you complete the wizard, the script will create a `.env` file in the proje
 Once the configuration is complete, the script will prompt you to build and start the Docker container. You can also do this manually.
 
 ```bash
-docker compose -p asterisk-ai-voice-agent up --build -d
+COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh ai_engine admin_ui &&
+  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never ai_engine admin_ui
 ```
 
 > IMPORTANT: First startup time (local models)
@@ -803,8 +812,18 @@ docker compose -p asterisk-ai-voice-agent up --build -d
 >
 > Subsequent restarts are typically much faster due to OS page cache. If startup is too slow for your hardware, consider using MEDIUM or LIGHT tier models and update the `.env` model paths accordingly.
 >
-> **GPU acceleration:** Use `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build local_ai_server` for CUDA-accelerated LLM inference. Set `LOCAL_LLM_GPU_LAYERS=-1` in `.env`. See [LOCAL_ONLY_SETUP.md](LOCAL_ONLY_SETUP.md) for the full guide.
->
+For selected Local/Hybrid installations, build and start Local AI separately.
+Use the same GPU overlay for both steps when GPU acceleration is configured:
+
+```bash
+./scripts/compose-build.sh -p asterisk-ai-voice-agent -f docker-compose.yml -f docker-compose.gpu.yml local_ai_server &&
+  docker compose -p asterisk-ai-voice-agent -f docker-compose.yml -f docker-compose.gpu.yml up -d --no-build --pull never local_ai_server
+```
+
+For CPU-only Local AI, omit both `-f` flags from both commands. Set
+`LOCAL_LLM_GPU_LAYERS=-1` in `.env` for CUDA-accelerated LLM inference. See
+[Local AI setup](LOCAL_ONLY_SETUP.md) for backend selection and model requirements.
+
 > **Runtime mode:** `local_ai_server` auto-selects runtime based on GPU availability:
 > - `GPU_AVAILABLE=true` → `full` mode (STT + LLM + TTS preloaded)
 > - `GPU_AVAILABLE=false` → `minimal` mode (STT + TTS only; LLM loaded on demand)
@@ -992,10 +1011,8 @@ asterisk -rx "dialplan reload"
   sed -i 's/numpy>=1.24.0/numpy>=1.24.0,<2.0/g' admin_ui/backend/requirements.txt
 
   # Rebuild containers with --no-cache to force fresh install
-  docker compose -p asterisk-ai-voice-agent build --no-cache ai_engine admin_ui
-
-  # Recreate containers
-  docker compose -p asterisk-ai-voice-agent up -d --force-recreate ai_engine admin_ui
+  ./scripts/compose-build.sh -p asterisk-ai-voice-agent --no-cache ai_engine admin_ui &&
+    docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate ai_engine admin_ui
   ```
 
   **Verify your CPU supports X86_V2** (optional diagnostic):
