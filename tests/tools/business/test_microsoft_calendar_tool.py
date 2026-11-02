@@ -3,7 +3,7 @@
 import asyncio
 import copy
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from unittest.mock import Mock, patch
 
@@ -1151,19 +1151,266 @@ async def test_identical_retry_and_restart_reconcile_without_second_post(phoenix
     assert len(fake.created) == 1
 
 
+def lost_response():
+    return MicrosoftGraphApiError("lost response", error_code="graph_unavailable")
+
+
+class GraphTransactionClient(FakeMicrosoftClient):
+    """Graph's transactionId handling on POST: an identical body returns the
+    existing event as it is now, a different body is a 400. A lost request
+    never reaches the store. A hidden event exists but calendarView omits it;
+    hide_once omits it from the next calendarView read only."""
+
+    def __init__(self):
+        super().__init__()
+        self.lose_requests = 0
+        self.refusal = None
+        self.hidden = set()
+        self.hide_once = set()
+        self.by_transaction = {}
+
+    def list_calendar_view(self, start, end):
+        omitted, self.hide_once = self.hidden | self.hide_once, set()
+        return [
+            e for e in super().list_calendar_view(start, end) if e["id"] not in omitted
+        ]
+
+    def create_event(self, summary, description, start_utc, end_utc, **kwargs):
+        if self.lose_requests:
+            self.lose_requests -= 1
+            raise MicrosoftGraphApiError("timeout", error_code="graph_unavailable")
+        if self.refusal:
+            raise self.refusal
+        sent = (summary, description, start_utc, end_utc, kwargs)
+        transaction = kwargs.get("transaction_id")
+        if transaction in self.by_transaction:
+            first_sent, event_id = self.by_transaction[transaction]
+            self.created.append(sent)
+            if sent != first_sent:
+                raise MicrosoftGraphApiError(
+                    "The TransactionId specified in the request has already been used to create a different event.",
+                    status=400,
+                    payload={"error": {"code": "ErrorDuplicateTransactionId"}},
+                )
+            # Graph's answer for a deleted event is unknown; return its id,
+            # which is the hardest case for the tool.
+            event = next(
+                (e for e in self.events if e["id"] == event_id), {"id": event_id}
+            )
+        else:
+            lost, self.creation_error = self.creation_error, None
+            event = super().create_event(
+                summary, description, start_utc, end_utc, **kwargs
+            )
+            self.creation_error = lost
+            self.by_transaction[transaction] = (sent, event["id"])
+        if self.creation_error:
+            raise self.creation_error
+        return copy.deepcopy(event)
+
+
 @pytest.mark.asyncio
 async def test_unresolved_creation_blocks_changed_retry(phoenix):
-    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
     fake.creation_error = MicrosoftGraphApiError(
         "timeout", error_code="graph_unavailable"
     )
     with patch.object(tool, "_client_for_config", return_value=fake):
         await tool.execute(booking(), phoenix)
-        fake.events.clear()  # no visible reconciliation evidence yet
+        fake.hidden.add(fake.events[0]["id"])  # no visible reconciliation evidence yet
         unresolved = await tool.execute(booking(), phoenix)
         changed = await tool.execute(booking(summary="Different booking"), phoenix)
     assert unresolved["error_code"] == "mutation_uncertain"
-    assert changed["error_code"] == "existing_booking" and len(fake.created) == 1
+    assert changed["error_code"] == "existing_booking" and len(fake.events) == 1
+    first, resent = (call[4]["transaction_id"] for call in fake.created)
+    assert first == resent
+
+
+@pytest.mark.asyncio
+async def test_unlanded_creation_is_resent_and_books(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.lose_requests = 1
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        uncertain = await tool.execute(booking(), phoenix)
+        retry = await tool.execute(booking(), phoenix)
+    assert uncertain["error_code"] == "mutation_uncertain"
+    assert retry["reservation_status"] == "created"
+    assert len(fake.created) == 1 and len(fake.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_resend_of_landed_but_unlisted_creation_returns_same_event(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.creation_error = lost_response()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        uncertain = await tool.execute(booking(), phoenix)
+        fake.hidden.add(fake.events[0]["id"])
+        fake.creation_error = None
+        retry = await tool.execute(booking(), phoenix)
+    assert uncertain["error_code"] == "mutation_uncertain"
+    assert retry["reservation_status"] == "created"
+    assert retry["event_id"] == fake.events[0]["id"]
+    assert len(fake.created) == 2 and len(fake.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_resend_keeps_first_attendee_order(phoenix, ms_config):
+    ms_config["invitations_enabled"] = True
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    args = booking(booking_confirmed=True, invitation_confirmed=True)
+    fake.creation_error = lost_response()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(
+            {**args, "attendee_emails": ["b@example.com", "A@example.com"]}, phoenix
+        )
+        fake.hidden.add(fake.events[0]["id"])
+        fake.creation_error = None
+        retry = await tool.execute(
+            {**args, "attendee_emails": ["a@example.com", "B@example.com"]}, phoenix
+        )
+    assert retry["reservation_status"] == "created", retry
+    assert fake.created[1][4]["attendee_emails"] == ["b@example.com", "A@example.com"]
+    assert len(fake.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_resend_of_moved_event_reports_booking_changed(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.creation_error = lost_response()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(booking(), phoenix)
+        fake.creation_error = None
+        event = fake.events[0]
+        for edge in ("start", "end"):
+            moved = datetime.fromisoformat(event[edge]["dateTime"]) + timedelta(hours=2)
+            event[edge]["dateTime"] = moved.isoformat()
+        retry = await tool.execute(booking(), phoenix)
+    assert retry["error_code"] == "booking_changed"
+    assert len(fake.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_resend_of_deleted_event_stays_uncertain(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.creation_error = lost_response()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(booking(), phoenix)
+        fake.creation_error = None
+        fake.events.clear()
+        retry = await tool.execute(booking(), phoenix)
+    assert retry["error_code"] == "mutation_uncertain" and not fake.events
+
+
+@pytest.mark.asyncio
+async def test_resend_of_cancelled_event_stays_uncertain(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.creation_error = lost_response()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(booking(), phoenix)
+        fake.creation_error = None
+        fake.hidden.add(fake.events[0]["id"])
+        fake.events[0]["isCancelled"] = True
+        retry = await tool.execute(booking(), phoenix)
+    assert retry["error_code"] == "mutation_uncertain"
+    assert len(fake.created) == 2
+
+
+@pytest.mark.asyncio
+async def test_resend_read_back_failure_stays_uncertain(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.creation_error = lost_response()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(booking(), phoenix)
+        fake.creation_error = None
+        fake.hidden.add(fake.events[0]["id"])
+        with patch.object(fake, "get_event", side_effect=lost_response()):
+            retry = await tool.execute(booking(), phoenix)
+    assert retry["error_code"] == "mutation_uncertain"
+    assert len(fake.created) == 2
+
+
+@pytest.mark.asyncio
+async def test_creation_seen_only_by_slot_check_is_uncertain_not_busy(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.creation_error = lost_response()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(booking(), phoenix)
+        fake.creation_error = None
+        fake.hide_once.add(fake.events[0]["id"])
+        retry = await tool.execute(booking(), phoenix)
+        again = await tool.execute(booking(), phoenix)
+    assert retry["error_code"] == "mutation_uncertain"
+    assert again["reconciled"] and len(fake.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_teams_resend_gives_no_meeting_baseline(phoenix, teams_booking):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.creation_error = lost_response()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(teams_booking, phoenix)
+        fake.hidden.add(fake.events[0]["id"])
+        fake.creation_error = None
+        retry = await tool.execute(teams_booking, phoenix)
+    assert retry["changes_require_staff"] is True
+    assert len(fake.created) == 2 and len(fake.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_resolving_a_lost_creation_frees_earlier_booking(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    later = booking(
+        start_datetime="2026-04-29T14:00:00-07:00",
+        end_datetime="2026-04-29T14:30:00-07:00",
+    )
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        first = await tool.execute(booking(), phoenix)
+        cancel = {
+            "action": "delete_event",
+            "cancellation_confirmed": True,
+            "event_id": first["event_id"],
+        }
+        fake.lose_requests = 1
+        await tool.execute(later, phoenix)
+        blocked = await tool.execute(cancel, phoenix)
+        await tool.execute(later, phoenix)
+        cancelled = await tool.execute(cancel, phoenix)
+    assert blocked["error_code"] == "mutation_uncertain"
+    assert cancelled["reservation_status"] == "cancelled"
+    assert len(fake.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_transaction_400_is_uncertain_not_failed(phoenix):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    fake.creation_error = MicrosoftGraphApiError(
+        "The TransactionId specified in the request has already been used to create a different event.",
+        status=400,
+        payload={"error": {"code": "ErrorDuplicateTransactionId"}},
+    )
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        result = await tool.execute(booking(), phoenix)
+        fake.events.clear()
+        fake.creation_error = None
+        other = await tool.execute(booking(summary="Different booking"), phoenix)
+    assert result["error_code"] == "mutation_uncertain"
+    assert other["error_code"] == "existing_booking" and len(fake.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_refused_resend_stays_uncertain(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.lose_requests = 1
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(booking(), phoenix)
+        fake.refusal = MicrosoftGraphApiError(
+            "Forbidden", error_code="forbidden_calendar", status=403
+        )
+        refused = await tool.execute(booking(), phoenix)
+        fake.refusal = None
+        other = await tool.execute(booking(summary="Different booking"), phoenix)
+    assert refused["error_code"] == "mutation_uncertain"
+    assert other["error_code"] == "existing_booking"
 
 
 @pytest.mark.asyncio

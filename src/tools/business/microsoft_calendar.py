@@ -161,6 +161,18 @@ _MICROSOFT_CALENDAR_INPUT_SCHEMA = {
 }
 
 
+def _transaction_already_used(exc: MicrosoftGraphApiError) -> bool:
+    """Graph's 400 for a transactionId that already created an event.
+
+    Graph returns it when a repeated POST carries the same transactionId with a
+    different body, so it shows that an earlier attempt landed.
+    """
+    if exc.status != 400 or not isinstance(exc.payload, dict):
+        return False
+    error = exc.payload.get("error")
+    return isinstance(error, dict) and error.get("code") == "ErrorDuplicateTransactionId"
+
+
 class MicrosoftCalendarTool(Tool):
     _LAST_EVENT_CACHE_CAP = 1024
     # Held inside the worker through read/check/write/cache, even if its awaiting
@@ -1323,8 +1335,16 @@ class MicrosoftCalendarTool(Tool):
                         attendees,
                         reconciled=True,
                     )
-                if tracked.get("state") in {"active", "uncertain"}:
+                if tracked.get("state") == "active":
                     return self._uncertain("creation")
+                # An unresolved create is resent with the same transactionId and
+                # the attendee order it was first sent with, so the body is
+                # identical. Graph answers a repeated identical POST with the
+                # event it already made, which covers a create that landed but
+                # is not yet visible in calendarView.
+                resend = tracked.get("state") == "uncertain"
+                if resend:
+                    attendees = tracked.get("attendees") or attendees
                 booking_interval(parameters, config, account.timezone)
                 if teams:
                     require_teams_calendar(client.get_calendar())
@@ -1337,6 +1357,10 @@ class MicrosoftCalendarTool(Tool):
                     client, start, end, account.timezone, config, for_booking=True
                 )
                 if not any(a <= start and end <= b for a, b in intervals):
+                    if resend:
+                        # The earlier POST may have become visible since the
+                        # lookup above and be what makes the slot busy.
+                        return self._uncertain("creation")
                     raise BookingValidationError(
                         "slot_busy",
                         "The chosen interval is now busy. Check alternatives and obtain caller agreement again.",
@@ -1381,6 +1405,10 @@ class MicrosoftCalendarTool(Tool):
             except MicrosoftGraphApiError as exc:
                 if exc.error_code == "graph_unavailable" or exc.status is None:
                     return self._uncertain("creation")
+                if resend or _transaction_already_used(exc):
+                    # The earlier POST may have landed, so a refusal now does
+                    # not free the slot or allow a different booking.
+                    return self._uncertain("creation")
                 record["state"] = "failed"
                 self._track(call_id, record)
                 result = self._map_api_error(
@@ -1394,8 +1422,30 @@ class MicrosoftCalendarTool(Tool):
                 return result
             if not isinstance(event, dict) or not event.get("id"):
                 return self._uncertain("creation")
+            if resend:
+                # A repeat may return an event that staff have since moved or
+                # deleted (Graph does not document this case), so read it back
+                # and check it as reconciliation does.
+                try:
+                    event = client.get_event(event["id"], html_body=teams)
+                except MicrosoftGraphApiError:
+                    return self._uncertain("creation")
+                if not event or not event.get("id") or event.get("isCancelled"):
+                    return self._uncertain("creation")
+                if (
+                    self._parse_event_dt(event.get("start") or {}, account.timezone)
+                    != start
+                    or self._parse_event_dt(event.get("end") or {}, account.timezone)
+                    != end
+                ):
+                    raise BookingValidationError(
+                        "booking_changed",
+                        "The booking changed in Outlook; ask staff to verify it.",
+                    )
             record.update(event_id=event["id"], state="active")
-            if teams:
+            if teams and not resend:
+                # A resend cannot tell a new event from a repeat, so its body is
+                # not a trusted baseline and changes require staff.
                 record["teams_snapshot"] = self._capture_teams_snapshot(event)
             self._track(call_id, record)
             return self._teams_result(
