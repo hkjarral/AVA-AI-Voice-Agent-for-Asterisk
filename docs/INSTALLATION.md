@@ -75,7 +75,7 @@ path with compatible Python. A CLI self-update cannot add Python to an old image
 > [Agents migration guide](OPERATOR_MIGRATION.md). In short:
 > - **Default `admin`/`admin` login is removed.** If your install was **still using `admin`/`admin`**,
 >   it is automatically rotated on first start to a one-time random password printed to the `admin_ui`
->   logs (`"${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent logs admin_ui | grep -i password`), which you must
+>   logs (`docker logs admin_ui | grep -i password`), which you must
 >   change at first login. **If you already changed the admin password, nothing changes — your existing
 >   login keeps working** and no new password is printed.
 > - **`/api/config/export` no longer bundles `.env`** by default (pass `include_secrets=true`).
@@ -612,7 +612,7 @@ The Setup Wizard will:
 5. ✅ Start containers automatically
 
 **First login:** retrieve the one-time password from
-`"${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent logs admin_ui | grep -i password`, then change it.
+`docker logs admin_ui | grep -i password`, then change it.
 
 **Best for:** First-time users, production deployments, visual configuration
 
@@ -1039,7 +1039,12 @@ asterisk -rx "dialplan reload"
   - Pre-2013 physical CPUs
   - Some cloud VPS instances with legacy CPU emulation
 
-  **Fix**: Pin NumPy to version 1.x (compatible with older CPUs):
+  **Fix**: Pin NumPy to version 1.x (compatible with older CPUs).
+  The example below assumes the engine is intended to run and recreates it.
+  First stop new call admissions using your PBX's existing routing controls and
+  wait for active calls to end. If the engine is intentionally stopped, leave it
+  out of the startup command; use the Admin UI-only recovery recipe instead.
+
 
   ```bash
   cd /path/to/AVA-AI-Voice-Agent-for-Asterisk

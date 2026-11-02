@@ -20,7 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   selection for build/start snippets, including older standalone-helper recovery,
   and clarify CPU/GPU layer settings. Separate wizard completion from engine
   startup, retain no-cache in legacy recovery, and use the selected Compose mode
-  for first-login instructions.
+  for first-login instructions. Keep Admin UI recovery scoped to that service,
+  require call drain before engine recreation, and make password lookup independent
+  of prior shell state or Docker when running the backend directly.
 
 - **AudioSocket caller squelch (#799):** prevent a first speech frame from
   poisoning the noise floor and muting the whole utterance when quiet onset
