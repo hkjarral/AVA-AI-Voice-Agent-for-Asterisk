@@ -334,14 +334,16 @@ explicit Bake grant instead, from the project root in Bash:
 ) && docker-compose -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
 ```
 
-After setup, select `ai_engine` in both commands instead of `admin_ui`. Include
-`local_ai_server` only when configured, with the same Compose files for build and
-startup. These commands grant only `network.host` for the selected build; they do
-not change Docker's global configuration.
+After setup, select `ai_engine` in both commands only when you intend to start
+it. Before recreating a running engine, stop new admissions using the PBX's
+existing routing controls and wait for active calls to end. Leave an intentionally
+stopped engine stopped. Include `local_ai_server` only when configured, with the
+same Compose files for build and startup. These commands grant only
+`network.host` for the selected build; they do not change Docker's global configuration.
 
-For cache-sensitive recovery, including the NumPy compatibility fix, older helpers
-also reject `--no-cache`. Use the Compose mode selected in the installation guide
-and pass the flag directly to Compose before exporting to Bake:
+For an Admin UI-only no-cache rebuild, older helpers also reject `--no-cache`.
+The recipe below rebuilds and recreates only `admin_ui`; it does not start or
+interrupt the engine. Pass the flag directly to Compose before exporting to Bake:
 
 ```bash
 if docker compose version >/dev/null 2>&1; then
@@ -350,14 +352,16 @@ else
   AAVA_COMPOSE=(docker-compose)
 fi
 ( set -o pipefail
-  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent build --no-cache --print ai_engine admin_ui |
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent build --no-cache --print admin_ui |
     docker buildx bake --file - --allow=network.host --load
-) && "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate ai_engine admin_ui
+) && "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui
 ```
 
 Keep any selected Compose file flags identical for build and startup. This path
 works with either the plugin or standalone executable and does not require newer
-helper options.
+helper options. For recovery that also needs the engine, use the installation
+guide's NumPy recovery procedure only after stopping new admissions and draining
+active calls; do not widen this Admin UI-only recipe.
 
 ## Compatibility aliases
 

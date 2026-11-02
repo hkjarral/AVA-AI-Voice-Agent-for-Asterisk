@@ -81,7 +81,7 @@ specific Compose/Buildx host-network entitlement error with an explicit
 Open `http://<server-ip>:3003`. Retrieve the one-time admin password:
 
 ```bash
-"${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent logs admin_ui | grep -i password
+docker logs admin_ui | grep -i password
 ```
 
 Change the password at first login. **Restrict port 3003 to trusted access** using

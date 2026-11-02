@@ -88,7 +88,7 @@ http://localhost:3003
 **Login Credentials**:
 - Username: `admin`
 - Password: the one-time password printed to the admin_ui logs on first start
-  (`"${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent logs admin_ui | grep -i password`) —
+  (`docker logs admin_ui | grep -i password`) —
   `admin`/`admin` no longer works.
 
 ⚠️ **Important**: You'll be required to set a new password at first login.
@@ -226,9 +226,15 @@ Open your browser to:
 http://localhost:3003
 ```
 
-Log in with the one-time password printed to the admin_ui logs on first start
-(`"${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent logs admin_ui | grep -i password`); you'll be
-required to set a new password at first login. `admin`/`admin` no longer works.
+For this non-Docker installation, retrieve the one-time password from the
+terminal running the backend, or from `admin_ui.log` if you used the `nohup`
+command above. For systemd, use:
+
+```bash
+sudo journalctl -u admin-ui --no-pager | grep -i password
+```
+
+Set a new password at first login. `admin`/`admin` no longer works.
 
 ---
 
@@ -237,10 +243,14 @@ required to set a new password at first login. `admin`/`admin` no longer works.
 ### Default Credentials
 
 **Username**: `admin`  
-**Password**: a one-time password generated on first run (printed to the admin_ui logs):
+**Password**: a one-time password generated on first run. For Docker, this command
+works in a new shell with either Compose installation mode:
 ```
-"${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent logs admin_ui | grep -i password
+docker logs admin_ui | grep -i password
 ```
+
+For a non-Docker installation, use the process log or systemd journal described
+above.
 
 The `admin` account is created automatically on first run with this one-time
 password — `admin`/`admin` no longer works. The user data is stored in:
@@ -291,7 +301,7 @@ kill $(cat admin_ui.pid) && nohup python main.py > admin_ui.log 2>&1 &
 **If you forget your password**:
 ```bash
 # Delete the users file. On next start a new one-time password is generated and
-# printed to the admin_ui logs (retrieve with: "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent logs admin_ui | grep -i password).
+# printed to Docker logs, or the process/systemd logs for a non-Docker installation.
 rm config/users.json
 
 # Restart admin-ui

@@ -169,12 +169,13 @@ def test_legacy_no_cache_recipe_bypasses_helper(tmp_path, standalone):
     env["TEST_COMPOSE_MISSING"] = "1" if standalone else "0"
     source = (ROOT / "docs/CLI_TOOLS_GUIDE.md").read_text()
     blocks = re.findall(r"^```bash\n(.*?)^```", source, re.S | re.M)
-    recipe = next(block for block in blocks if "build --no-cache --print ai_engine admin_ui" in block)
+    recipe = next(block for block in blocks if "build --no-cache --print admin_ui" in block)
     result = subprocess.run(["bash", "-c", recipe], cwd=tmp_path, env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     builds = [call for call in log.read_text().splitlines() if " build " in call]
-    assert builds == ["compose -p asterisk-ai-voice-agent build --no-cache --print ai_engine admin_ui"]
+    assert builds == ["compose -p asterisk-ai-voice-agent build --no-cache --print admin_ui"]
     selected = "docker-compose" if standalone else "docker"
     operations = [line for line in (tmp_path / "executables").read_text().splitlines()
                   if " build " in line or " up " in line]
     assert operations and all(line.startswith(selected + "|") for line in operations)
+    assert all("ai_engine" not in line and "local_ai_server" not in line for line in operations)
