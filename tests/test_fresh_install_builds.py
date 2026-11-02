@@ -12,12 +12,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def prepare_project(tmp_path, failure):
+    """Create isolated Docker/Compose shims with selectable build failures."""
     (tmp_path / "scripts").mkdir()
     shutil.copy(ROOT / "scripts/compose-build.sh", tmp_path / "scripts/compose-build.sh")
     log = tmp_path / "commands"
     docker = tmp_path / "docker"
     docker.write_text('''#!/bin/bash
 echo "$*" >> "$TEST_COMMANDS"
+if [[ "$*" == "compose version" && "${TEST_COMPOSE_MISSING:-}" == 1 ]]; then
+  exit 1
+fi
 if [[ " $* " == *" --print "* ]]; then
   echo '{"target":{"admin_ui":{"network":"host"}}}'
 elif [[ "$1 $2" == "buildx bake" ]]; then
@@ -42,6 +46,7 @@ fi
 @pytest.mark.parametrize("failure", ["none", "entitlement", "unrelated"])
 @pytest.mark.parametrize("standalone", [False, True])
 def test_installer_build_failure_never_starts_service(tmp_path, failure, standalone):
+    """Start only the selected image, and only after its build succeeds."""
     env, log = prepare_project(tmp_path, failure)
     source = (ROOT / "install.sh").read_text()
     start = source.index("build_and_start_service() (")
@@ -63,6 +68,7 @@ def test_installer_build_failure_never_starts_service(tmp_path, failure, standal
 @pytest.mark.parametrize("warnings,local_only", [(False, False), (True, False), (False, True)])
 @pytest.mark.parametrize("standalone", [False, True])
 def test_preflight_prints_working_selected_build_sequence(tmp_path, warnings, local_only, standalone):
+    """Execute preflight's printed commands in both supported Compose modes."""
     env, log = prepare_project(tmp_path, "entitlement")
     source = (ROOT / "preflight.sh").read_text()
     start = source.index("print_summary() {\n")
@@ -92,7 +98,31 @@ print_summary
 
 @pytest.mark.parametrize("options", [[], ["--no-cache"], ["--push", "admin_ui"], ["-f"], ["--build-arg", "--no-cache", "admin_ui"]])
 def test_helper_rejects_missing_services_and_unsupported_options(tmp_path, options):
+    """Reject invalid input before invoking Docker or creating runtime effects."""
     env, log = prepare_project(tmp_path, "none")
     result = subprocess.run(["bash", str(ROOT / "scripts/compose-build.sh"), *options], env=env, capture_output=True)
     assert result.returncode == 2
     assert not log.exists()
+
+
+@pytest.mark.parametrize("failure", ["none", "entitlement", "unrelated"])
+@pytest.mark.parametrize("standalone,selected", [(False, False), (True, False), (False, True), (True, True)])
+def test_preflight_recovery_hint_builds_before_recreation(tmp_path, failure, standalone, selected):
+    """Recovery hints work before Compose detection and with no existing image."""
+    env, log = prepare_project(tmp_path, failure)
+    env["TEST_COMPOSE_MISSING"] = "1" if standalone else "0"
+    source = (ROOT / "preflight.sh").read_text()
+    start = source.index("admin_ui_recreate_command() {\n")
+    end = source.index("\n}\n", start) + 3
+    mode = ("docker-compose" if standalone else "docker compose") if selected else ""
+    script = source[start:end] + f'\nCOMPOSE_CMD="{mode}"\nadmin_ui_recreate_command\n'
+    printed = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=True)
+    command = printed.stdout.strip()
+    assert ("AAVA_COMPOSE_BIN=docker-compose" in command) == standalone
+    assert "./scripts/compose-build.sh admin_ui &&" in command
+    result = subprocess.run(["bash", "-c", command], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert (result.returncode == 0) == (failure != "unrelated"), result.stderr
+    starts = [call for call in log.read_text().splitlines() if " up " in call]
+    assert starts == ([] if failure == "unrelated" else [
+        "compose -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui",
+    ])
