@@ -48,12 +48,28 @@ Before publication, use the latest published release for stable installations.
 For maintainer source evaluation only (unstable):
 `git clone --branch main https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git`.
 
+Run the block in Bash. The selector matches preflight's choice in your current
+shell; a `sudo` subprocess cannot export that choice back to it. Keep the selected
+`AAVA_COMPOSE` array for subsequent commands in this shell. On standalone-Compose
+hosts using v7.7.1's older helper, use the [standalone recovery commands](docs/CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers)
+instead of the helper commands below.
+
 ```bash
 git clone --branch v7.7.1 https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
 cd AVA-AI-Voice-Agent-for-Asterisk
 sudo ./preflight.sh --apply-fixes
+
+# Select the same Compose mode for both commands (Bash).
+if docker compose version >/dev/null 2>&1; then
+  export AAVA_COMPOSE_BIN=""
+  AAVA_COMPOSE=(docker compose)
+else
+  export AAVA_COMPOSE_BIN=docker-compose
+  AAVA_COMPOSE=(docker-compose)
+fi
+
 COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
-  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
 ```
 
 Preflight prepares `.env`, generates the JWT secret, and checks PBX/media
@@ -65,7 +81,7 @@ specific Compose/Buildx host-network entitlement error with an explicit
 Open `http://<server-ip>:3003`. Retrieve the one-time admin password:
 
 ```bash
-docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password
+"${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent logs admin_ui | grep -i password
 ```
 
 Change the password at first login. **Restrict port 3003 to trusted access** using

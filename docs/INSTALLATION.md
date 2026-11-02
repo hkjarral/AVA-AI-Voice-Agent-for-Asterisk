@@ -11,6 +11,24 @@ For release-specific behavior changes, also read the
 [v7.7.1 migration notes](MIGRATION.md#v770-to-v771). Operators upgrading from
 v7.3.x or earlier must also follow the [v7.4 Agent migration](MIGRATION.md#v73x-to-v740).
 
+## Select Compose for build/start commands
+
+Use Bash and select Compose in each new shell before the build/start examples
+below. This matches preflight's choice for both the helper and startup. Keep the
+`AAVA_COMPOSE` array in that shell. For an older standalone helper (including
+v7.7.1), use the [standalone recovery commands](CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
+
+```bash
+# Select the same Compose mode for both commands (Bash).
+if docker compose version >/dev/null 2>&1; then
+  export AAVA_COMPOSE_BIN=""
+  AAVA_COMPOSE=(docker compose)
+else
+  export AAVA_COMPOSE_BIN=docker-compose
+  AAVA_COMPOSE=(docker-compose)
+fi
+```
+
 ## Three Setup Paths
 
 Choose the path that best fits your experience level:
@@ -441,7 +459,7 @@ The updater normally performs this step. If you are recovering manually:
 
 ```bash
 ./scripts/compose-build.sh admin_ui ai_engine &&
-  docker compose up -d --no-build --pull never --force-recreate admin_ui ai_engine
+  "${AAVA_COMPOSE[@]}" up -d --no-build --pull never --force-recreate admin_ui ai_engine
 ```
 
 Builds finish before recreation. If the selected release predates this helper,
@@ -454,7 +472,7 @@ If your configuration requires local inference:
 
 ```bash
 ./scripts/compose-build.sh local_ai_server &&
-  docker compose up -d --no-build --pull never --force-recreate local_ai_server
+  "${AAVA_COMPOSE[@]}" up -d --no-build --pull never --force-recreate local_ai_server
 ```
 
 ### 5) Verify the upgrade
@@ -498,6 +516,12 @@ Then verify in the Admin UI:
 
 **5-minute visual setup** with the new web-based Admin UI:
 
+Run the following block in Bash. It selects the same Compose mode as preflight
+for the build helper and startup. Reuse `AAVA_COMPOSE` for later examples in the
+same shell; repeat the selection block when opening a new shell. On standalone
+Compose with an older helper (including v7.7.1), use the
+[standalone recovery commands](CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
+
 ```bash
 git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
 cd AVA-AI-Voice-Agent-for-Asterisk
@@ -505,13 +529,22 @@ cd AVA-AI-Voice-Agent-for-Asterisk
 # Run preflight (REQUIRED - creates .env, generates JWT_SECRET)
 sudo ./preflight.sh --apply-fixes
 
+# Select the same Compose mode for both commands (Bash).
+if docker compose version >/dev/null 2>&1; then
+  export AAVA_COMPOSE_BIN=""
+  AAVA_COMPOSE=(docker compose)
+else
+  export AAVA_COMPOSE_BIN=docker-compose
+  AAVA_COMPOSE=(docker-compose)
+fi
+
 # Start Admin UI first
 COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
-  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui
 
 # Complete the Setup Wizard in Admin UI, then start ai_engine
 COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh ai_engine &&
-  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never ai_engine
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never ai_engine
 ```
 
 The helper handles the specific `--allow=network.host` Compose/Buildx failure
@@ -723,7 +756,7 @@ If your host uses **rootless Docker**, the Admin UI needs the rootless socket mo
 ```bash
 export DOCKER_SOCK=/run/user/$(id -u)/docker.sock
 COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
-  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui
 ```
 
 `./preflight.sh` prints the exact command for your system when it detects rootless Docker.
@@ -799,7 +832,7 @@ Once the configuration is complete, the script will prompt you to build and star
 
 ```bash
 COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh ai_engine admin_ui &&
-  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never ai_engine admin_ui
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never ai_engine admin_ui
 ```
 
 > IMPORTANT: First startup time (local models)
@@ -817,7 +850,7 @@ Use the same GPU overlay for both steps when GPU acceleration is configured:
 
 ```bash
 ./scripts/compose-build.sh -p asterisk-ai-voice-agent -f docker-compose.yml -f docker-compose.gpu.yml local_ai_server &&
-  docker compose -p asterisk-ai-voice-agent -f docker-compose.yml -f docker-compose.gpu.yml up -d --no-build --pull never local_ai_server
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent -f docker-compose.yml -f docker-compose.gpu.yml up -d --no-build --pull never local_ai_server
 ```
 
 For CPU-only Local AI, omit both `-f` flags from both commands and leave
@@ -1013,7 +1046,7 @@ asterisk -rx "dialplan reload"
 
   # Rebuild containers with --no-cache to force fresh install
   ./scripts/compose-build.sh -p asterisk-ai-voice-agent --no-cache ai_engine admin_ui &&
-    docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate ai_engine admin_ui
+    "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate ai_engine admin_ui
   ```
 
   **Verify your CPU supports X86_V2** (optional diagnostic):

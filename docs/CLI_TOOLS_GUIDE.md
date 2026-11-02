@@ -316,6 +316,30 @@ environment running the update: a GUI updater container can use different Docker
 plugins from the host. See [issue #790](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/790)
 and [Docker's entitlement-forwarding fix](https://github.com/docker/compose/pull/14325).
 
+### Standalone Compose and older helpers
+
+Preflight's printed commands preserve its selected executable. To use the helper
+with standalone Compose, export `AAVA_COMPOSE_BIN=docker-compose` and use
+`docker-compose` for startup too. A `sudo ./preflight.sh` subprocess cannot export
+that selection back into your interactive shell.
+
+Older helpers, including the one tagged v7.7.1, do not read `AAVA_COMPOSE_BIN`.
+For the reported host-network entitlement error on those checkouts, use the
+explicit Bake grant instead, from the project root in Bash:
+
+```bash
+( set -o pipefail
+  docker-compose -p asterisk-ai-voice-agent build --print admin_ui |
+    docker buildx bake --file - --allow=network.host --load
+) && docker-compose -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
+```
+
+After setup, select `ai_engine` in both commands instead of `admin_ui`. Include
+`local_ai_server` only when configured, with the same Compose files for build and
+startup. These commands grant only `network.host` for the selected build; they do
+not change Docker's global configuration.
+
+
 ## Compatibility aliases
 
 These commands remain hidden for existing scripts:
