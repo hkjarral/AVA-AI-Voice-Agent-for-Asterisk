@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recover from sustained non-speech noise even if it initially opens the squelch,
   preserving configured energy thresholds and hysteresis. Bound framing/resampling
   to the detector copy; expose substitution and per-call totals in diagnostics.
-  If the detector is unavailable, preserve caller audio with a once-per-call warning.
+  Preserve unknown-evidence packets, including incomplete/oversized detector frames,
+  without counting them as suppressed. If the detector is unavailable, preserve
+  caller audio with a once-per-call warning.
   RTP, Media WebSocket, pipelines and no-input timeout detection are unchanged.
 
 - **Microsoft Calendar lost create:** a `create_event` whose POST timed out

@@ -11850,7 +11850,7 @@ class Engine:
                         # Independent non-speech evidence lets the floor recover
                         # even if startup noise opened the energy-only squelch.
                         # Do not train from speech or unclassified loud frames.
-                        if speech_evidence is False or (speech_evidence is None and not speaking and not raw_speech):
+                        if speech_evidence is False:
                             noise_ema = (1.0 - alpha) * noise_ema + alpha * float(energy)
 
                         if raw_speech:
@@ -11864,6 +11864,9 @@ class Engine:
                             if speaking and silence_frames >= max(1, end_silence_frames):
                                 speaking = False
 
+                        suppress_frame = (
+                            not speaking and detector.available and speech_evidence is not None
+                        )
                         state.update(
                             {
                                 "speaking": speaking,
@@ -11874,12 +11877,12 @@ class Engine:
                                 "last_threshold": int(threshold),
                                 "speech_evidence": speech_evidence,
                                 "frames": int(state.get("frames", 0)) + 1,
-                                "suppressed_frames": int(state.get("suppressed_frames", 0)) + int(not speaking and detector.available),
+                                "suppressed_frames": int(state.get("suppressed_frames", 0)) + int(suppress_frame),
                             }
                         )
                         session.vad_state["upstream_squelch"] = state
 
-                        if not speaking and detector.available:
+                        if suppress_frame:
                             pcm_bytes = b"\x00" * len(pcm_bytes)
                             squelch_suppressed = True
                     except Exception:

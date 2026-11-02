@@ -40,8 +40,11 @@ work is bounded to 120 ms per packet; oversized/malformed evidence is unknown.
 Partial samples and resampler/detector state reset across output gating and rate
 changes, while the learned energy floor remains call-scoped.
 
-Missing or failed classification preserves caller audio instead of applying an
-unreliable squelch; a once-per-call warning reports this bypass. Standard engine
+Unknown evidence for the current packet (including incomplete or oversized
+detector frames) preserves that packet instead of applying an unreliable squelch,
+and it neither trains the noise floor nor counts as suppressed. Missing or failed classification also
+preserves caller audio; a once-per-call warning reports an unavailable detector.
+Known-evidence packets retain the configured onset hysteresis. Standard engine
 requirements include `webrtcvad==2.0.10` and compatible setuptools, which supplies
 that version's `pkg_resources` dependency. The [binding documentation](https://github.com/wiseman/py-webrtcvad/tree/2.0.10)
 defines supported rates and frame sizes. No new external API/service is involved.

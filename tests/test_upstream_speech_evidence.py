@@ -85,6 +85,36 @@ async def test_unavailable_detector_preserves_provider_audio_and_warns_once(monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("rate,message_type,encoding", [(8000, 0x10, "slin"), (16000, 0x12, "slin16")])
+@pytest.mark.parametrize("duration_ms", [5, 200])
+@pytest.mark.parametrize("prior_floor", [0.0, 1000.0])
+async def test_unknown_packet_evidence_preserves_whole_utterance(
+    rate, message_type, encoding, duration_ms, prior_floor,
+):
+    engine, session, provider = setup(evidence=None)
+    session.vad_state["upstream_squelch"] = {"noise_ema": prior_floor}
+    await engine.session_store.upsert_call(session)
+    payload = struct.pack("<hh", 1500, -1500) * (rate * duration_ms // 2000)
+    await engine._audiosocket_handle_audio(
+        "ingress", AudioSocketAudioFrame(payload, message_type, encoding, rate),
+    )
+    assert session.upstream_speech_evidence.available
+    state = session.vad_state["upstream_squelch"]
+    assert state["speech_evidence"] is None
+    assert provider.send_audio.await_args.args[0] == payload
+    assert state["frames"] == 1
+    assert state["suppressed_frames"] == 0
+    if prior_floor:
+        # An unknown packet below the learned threshold must not raise it and
+        # mute the next confirmed speech just above that prior threshold.
+        session.upstream_speech_evidence.observe = Mock(return_value=True)
+        provider.send_audio.reset_mock()
+        await send(engine, [2550] * 3)
+        assert nonzero(provider) == 2
+        assert state["noise_ema"] == prior_floor
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["alternating", "white_noise", "tone"])
 async def test_real_noise_does_not_hold_squelch_open_and_real_speech_recovers(kind):
     import math
