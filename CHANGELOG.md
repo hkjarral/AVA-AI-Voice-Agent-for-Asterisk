@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **AudioSocket caller squelch (#799):** prevent a first speech frame from
+  poisoning the noise floor and muting the whole utterance when quiet onset
+  frames are absent. Classify before updating the noise estimate and exclude
+  candidate speech during onset confirmation. Preserve configured hysteresis;
+  expose squelch substitution and per-call totals in diagnostics. Startup favors
+  hearing callers and may admit loud noise for native provider VAD to classify.
+  RTP, Media WebSocket, pipelines and no-input timeout detection are unchanged.
+
 - **Microsoft Calendar lost create:** a `create_event` whose POST timed out
   before reaching Graph no longer leaves the call unable to book, or unable to
   cancel its other bookings, once a resend goes through. The identical retry

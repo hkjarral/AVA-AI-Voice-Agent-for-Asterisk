@@ -140,7 +140,7 @@ const VADPage = () => {
         }
     };
 
-    const updateVADConfig = (field: string, value: any) => {
+    const updateVADConfig = (field: string, value: string | number | boolean) => {
         setConfig({
             ...config,
             vad: {
@@ -494,7 +494,7 @@ const VADPage = () => {
 
             <ConfigSection
                 title="Upstream Squelch"
-                description="Optional upstream noise squelch for continuous-audio providers with server-side VAD."
+                description="AudioSocket only: optional noise squelch for continuous-audio providers with server-side VAD. Save and restart AI Engine to apply settings."
             >
                 <ConfigCard>
                     <div className="space-y-6">
@@ -502,7 +502,7 @@ const VADPage = () => {
                             <FormSwitch
                                 label="Enable Upstream Squelch"
                                 description="Replace non-speech frames with silence for server-VAD providers."
-                                tooltip="When enabled, the AI Engine analyzes inbound PCM16 energy and replaces low-energy/noise frames with silence before forwarding audio to providers that require continuous audio and have native VAD. This can improve end-of-turn detection in noisy environments, but overly aggressive settings can clip quiet speech."
+                                tooltip="On AudioSocket, replace frames below the adaptive energy threshold with silence. RTP, Media WebSocket, Local full agent and modular pipelines bypass this squelch. Startup favors hearing the caller; loud initial noise may also pass through for the provider's native VAD to classify. Aggressive thresholds can suppress quiet speech."
                                 checked={vadConfig.upstream_squelch_enabled ?? true}
                                 onChange={(e) => updateVADConfig('upstream_squelch_enabled', e.target.checked)}
                             />
@@ -515,7 +515,7 @@ const VADPage = () => {
                                 min="0"
                                 value={vadConfig.upstream_squelch_base_rms ?? 200}
                                 onChange={(e) => updateVADConfig('upstream_squelch_base_rms', parseInt(e.target.value))}
-                                tooltip="Minimum RMS threshold in PCM16 space. Higher blocks more low-energy audio (less noise leakage) but may suppress quiet callers."
+                                tooltip="Minimum RMS threshold in PCM16 space, also used as the initial threshold before a noise floor is established. Higher blocks more low-energy audio but may suppress quiet callers."
                             />
                             <FormInput
                                 label="Noise Factor"
@@ -537,7 +537,7 @@ const VADPage = () => {
                                 max="1"
                                 value={vadConfig.upstream_squelch_noise_ema_alpha ?? 0.06}
                                 onChange={(e) => updateVADConfig('upstream_squelch_noise_ema_alpha', parseFloat(e.target.value))}
-                                tooltip="Noise floor smoothing factor (0–1). Higher adapts faster to changing background noise but can overreact to short bursts."
+                                tooltip="Noise floor smoothing factor (0–1) for frames below the current threshold while not speaking. Candidate speech does not raise the floor while waiting for speech confirmation. Higher adapts faster to changing background noise."
                             />
                             <FormInput
                                 label="Min Speech Frames"

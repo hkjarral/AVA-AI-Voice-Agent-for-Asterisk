@@ -11076,6 +11076,8 @@ class Engine:
                     transferred=self._session_was_transferred(session),
                     transfer_destination=getattr(session, "transfer_destination", None) or getattr(session, "transfer_target", None) or "",
                     media_rx_confirmed=bool(getattr(session, "media_rx_confirmed", False)),
+                    upstream_squelch_frames=int(((getattr(session, "vad_state", {}) or {}).get("upstream_squelch", {}) or {}).get("frames", 0)),
+                    upstream_squelch_suppressed_frames=int(((getattr(session, "vad_state", {}) or {}).get("upstream_squelch", {}) or {}).get("suppressed_frames", 0)),
                     websocket_input_rejections=dict(getattr(session, "websocket_input_rejections", {})),
                 )
             except Exception:
@@ -11788,6 +11790,7 @@ class Engine:
                 except Exception:
                     squelch_applicable = False
 
+                squelch_suppressed = False
                 if squelch_applicable and pcm_bytes:
                     try:
                         import audioop
@@ -11815,15 +11818,23 @@ class Engine:
                         silence_frames = int(state.get("silence_frames", 0) or 0)
                         noise_ema = float(state.get("noise_ema", 0.0) or 0.0)
 
-                        # Update noise floor estimate (only when not currently speaking).
-                        if not speaking:
-                            if noise_ema <= 0.0:
-                                noise_ema = float(energy)
-                            else:
-                                noise_ema = (1.0 - alpha) * noise_ema + alpha * float(energy)
+                        # A first frame may already contain speech (including after
+                        # greeting gating). Bootstrap at no more than the base
+                        # threshold, rather than multiplying that speech by the
+                        # noise factor. Zero/low factors retain their base threshold.
+                        if noise_ema <= 0.0:
+                            noise_ema = min(
+                                float(energy), float(base_rms) / max(1.0, noise_factor)
+                            )
 
                         threshold = max(float(base_rms), noise_ema * float(noise_factor))
                         raw_speech = energy > threshold
+
+                        # Classify against the prior floor. Candidate speech must
+                        # not train the noise estimator while onset hysteresis is
+                        # still waiting for min_speech_frames confirmations.
+                        if not speaking and not raw_speech:
+                            noise_ema = (1.0 - alpha) * noise_ema + alpha * float(energy)
 
                         if raw_speech:
                             speech_frames += 1
@@ -11844,12 +11855,15 @@ class Engine:
                                 "noise_ema": noise_ema,
                                 "last_energy": energy,
                                 "last_threshold": int(threshold),
+                                "frames": int(state.get("frames", 0)) + 1,
+                                "suppressed_frames": int(state.get("suppressed_frames", 0)) + int(not speaking),
                             }
                         )
                         session.vad_state["upstream_squelch"] = state
 
                         if not speaking:
                             pcm_bytes = b"\x00" * len(pcm_bytes)
+                            squelch_suppressed = True
                     except Exception:
                         logger.debug("Upstream squelch failed", call_id=caller_channel_id, exc_info=True)
                 
@@ -11864,6 +11878,8 @@ class Engine:
                         pcm_bytes=len(pcm_bytes),
                         gating_active=needs_gating and not session.audio_capture_enabled,
                         is_silence=needs_gating and not session.audio_capture_enabled,
+                        squelch_applicable=squelch_applicable,
+                        squelch_suppressed=squelch_suppressed,
                     )
                 try:
                     self._update_audio_diagnostics(session, "provider_in", pcm_bytes, "slin16", pcm_rate)
