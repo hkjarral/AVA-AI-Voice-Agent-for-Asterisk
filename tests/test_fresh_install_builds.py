@@ -126,3 +126,27 @@ def test_preflight_recovery_hint_builds_before_recreation(tmp_path, failure, sta
     assert starts == ([] if failure == "unrelated" else [
         "compose -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui",
     ])
+
+
+@pytest.mark.parametrize("guide", ["README.md", "docs/INSTALLATION.md", "admin_ui/UI_Setup_Guide.md"])
+@pytest.mark.parametrize("failure", ["none", "entitlement", "unrelated"])
+@pytest.mark.parametrize("standalone", [False, True])
+def test_copied_quick_start_retains_compose_selection(tmp_path, guide, failure, standalone):
+    """Run each guide's actual selector and startup on both fresh-host modes."""
+    env, log = prepare_project(tmp_path, failure)
+    env["TEST_COMPOSE_MISSING"] = "1" if standalone else "0"
+    source = (ROOT / guide).read_text()
+    selector = re.search(r"# Select the same Compose mode[^\n]*\n.*?\nfi\n", source, re.S)
+    sequence = re.search(
+        r'(COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&\n[^\n]+admin_ui)',
+        source,
+    )
+    assert selector and sequence
+    result = subprocess.run(["bash", "-c", selector.group(0) + sequence.group(1)],
+                            cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert (result.returncode == 0) == (failure != "unrelated"), result.stderr
+    starts = [call for call in log.read_text().splitlines() if " up " in call]
+    assert len(starts) == int(failure != "unrelated")
+    if starts:
+        assert starts[0].endswith(" admin_ui")
+        assert "--no-build --pull never" in starts[0]
