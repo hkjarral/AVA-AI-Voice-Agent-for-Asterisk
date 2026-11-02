@@ -128,7 +128,7 @@ const VADConfig: React.FC<VADConfigProps> = ({ config, onChange }) => {
                 <h3 className="text-lg font-semibold">Upstream Squelch</h3>
                 <p className="text-sm text-muted-foreground">
                     AudioSocket only: suppress low-energy frames for continuous-audio providers with server-side VAD.
-                    Save and restart AI Engine to apply settings. Loud startup noise may pass to the provider's VAD.
+                    Save and restart AI Engine to apply settings. Independent speech evidence allows persistent non-speech noise to be learned.
                 </p>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="flex items-center space-x-2">

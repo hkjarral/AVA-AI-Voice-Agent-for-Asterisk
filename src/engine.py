@@ -100,6 +100,7 @@ from .providers.elevenlabs_agent import ElevenLabsAgentProvider
 from .providers.elevenlabs_config import ElevenLabsAgentConfig
 from .core import SessionStore, PlaybackManager, ConversationCoordinator
 from .core.vad_manager import EnhancedVADManager, VADResult
+from .core.upstream_speech_evidence import UpstreamSpeechEvidence
 from .core.streaming_playback_manager import StreamingPlaybackManager
 from .core.transport_orchestrator import TransportOrchestrator, TransportProfile, apply_context_voice
 from .core.models import CallSession
@@ -11791,6 +11792,7 @@ class Engine:
                     squelch_applicable = False
 
                 squelch_suppressed = False
+                squelch_speech_evidence = None
                 if squelch_applicable and pcm_bytes:
                     try:
                         import audioop
@@ -11827,13 +11829,28 @@ class Engine:
                                 float(energy), float(base_rms) / max(1.0, noise_factor)
                             )
 
+                        detector = session.upstream_speech_evidence
+                        if detector is None:
+                            detector = session.upstream_speech_evidence = UpstreamSpeechEvidence()
+                        speech_evidence = detector.observe(pcm_bytes, int(pcm_rate))
+                        squelch_speech_evidence = speech_evidence
+                        if not detector.available and not state.get("evidence_unavailable_warned"):
+                            state["evidence_unavailable_warned"] = True
+                            logger.warning(
+                                "Upstream squelch bypassed: speech evidence unavailable",
+                                call_id=caller_channel_id,
+                            )
+
                         threshold = max(float(base_rms), noise_ema * float(noise_factor))
+                        # Keep the configured dynamic energy threshold: a brief
+                        # classifier false positive must not reopen learned noise.
+                        # An unavailable classifier instead fails open below.
                         raw_speech = energy > threshold
 
-                        # Classify against the prior floor. Candidate speech must
-                        # not train the noise estimator while onset hysteresis is
-                        # still waiting for min_speech_frames confirmations.
-                        if not speaking and not raw_speech:
+                        # Independent non-speech evidence lets the floor recover
+                        # even if startup noise opened the energy-only squelch.
+                        # Do not train from speech or unclassified loud frames.
+                        if speech_evidence is False or (speech_evidence is None and not speaking and not raw_speech):
                             noise_ema = (1.0 - alpha) * noise_ema + alpha * float(energy)
 
                         if raw_speech:
@@ -11855,17 +11872,20 @@ class Engine:
                                 "noise_ema": noise_ema,
                                 "last_energy": energy,
                                 "last_threshold": int(threshold),
+                                "speech_evidence": speech_evidence,
                                 "frames": int(state.get("frames", 0)) + 1,
-                                "suppressed_frames": int(state.get("suppressed_frames", 0)) + int(not speaking),
+                                "suppressed_frames": int(state.get("suppressed_frames", 0)) + int(not speaking and detector.available),
                             }
                         )
                         session.vad_state["upstream_squelch"] = state
 
-                        if not speaking:
+                        if not speaking and detector.available:
                             pcm_bytes = b"\x00" * len(pcm_bytes)
                             squelch_suppressed = True
                     except Exception:
                         logger.debug("Upstream squelch failed", call_id=caller_channel_id, exc_info=True)
+                elif session.upstream_speech_evidence is not None:
+                    session.upstream_speech_evidence.pause()
                 
                 # Forward to provider
                 if frame_num <= 3 or frame_num % 250 == 0:
@@ -11880,6 +11900,7 @@ class Engine:
                         is_silence=needs_gating and not session.audio_capture_enabled,
                         squelch_applicable=squelch_applicable,
                         squelch_suppressed=squelch_suppressed,
+                        squelch_speech_evidence=squelch_speech_evidence,
                     )
                 try:
                     self._update_audio_diagnostics(session, "provider_in", pcm_bytes, "slin16", pcm_rate)

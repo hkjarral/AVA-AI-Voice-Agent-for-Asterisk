@@ -22,6 +22,8 @@ tenacity==8.2.3
 
 # WebRTC VAD for robust speech detection
 webrtcvad==2.0.10
+# webrtcvad 2.0.10 imports pkg_resources, removed in setuptools 81.
+setuptools>=65,<81
 
 # Email tools dependencies
 resend>=2.32.2

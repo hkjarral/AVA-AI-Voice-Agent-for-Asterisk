@@ -502,7 +502,7 @@ const VADPage = () => {
                             <FormSwitch
                                 label="Enable Upstream Squelch"
                                 description="Replace non-speech frames with silence for server-VAD providers."
-                                tooltip="On AudioSocket, replace frames below the adaptive energy threshold with silence. RTP, Media WebSocket, Local full agent and modular pipelines bypass this squelch. Startup favors hearing the caller; loud initial noise may also pass through for the provider's native VAD to classify. Aggressive thresholds can suppress quiet speech."
+                                tooltip="On AudioSocket, replace frames below the adaptive energy threshold with silence. Independent speech evidence protects speech from noise-floor learning and lets sustained non-speech noise raise the floor, even if it briefly opens the squelch. RTP, Media WebSocket, Local full agent and modular pipelines bypass this squelch. Speech-like noise may still pass, and aggressive thresholds can suppress quiet callers."
                                 checked={vadConfig.upstream_squelch_enabled ?? true}
                                 onChange={(e) => updateVADConfig('upstream_squelch_enabled', e.target.checked)}
                             />
@@ -537,7 +537,7 @@ const VADPage = () => {
                                 max="1"
                                 value={vadConfig.upstream_squelch_noise_ema_alpha ?? 0.06}
                                 onChange={(e) => updateVADConfig('upstream_squelch_noise_ema_alpha', parseFloat(e.target.value))}
-                                tooltip="Noise floor smoothing factor (0–1) for frames below the current threshold while not speaking. Candidate speech does not raise the floor while waiting for speech confirmation. Higher adapts faster to changing background noise."
+                                tooltip="Noise floor smoothing factor (0–1). Independently detected non-speech can update the floor even while the squelch is open; detected speech does not train it. Higher adapts faster. Zero disables noise-floor adaptation."
                             />
                             <FormInput
                                 label="Min Speech Frames"

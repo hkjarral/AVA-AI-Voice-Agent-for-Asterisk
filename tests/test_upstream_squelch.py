@@ -31,7 +31,7 @@ PROVIDERS = [
 SPEECH = [2612, 5129, 5815, 5733, 4200, 3900, 2500, 3300, 4100, 3800] * 6
 
 
-def setup(name="openai_realtime", cls=OpenAIRealtimeProvider, **vad):
+def setup(name="openai_realtime", cls=OpenAIRealtimeProvider, *, evidence=True, **vad):
     engine, session, _ = ingress_engine()
     caps = cls.__new__(cls).get_capabilities()
     provider = SimpleNamespace(
@@ -43,6 +43,11 @@ def setup(name="openai_realtime", cls=OpenAIRealtimeProvider, **vad):
     engine.provider_kinds[session.provider_name] = "google_live" if name == "vertex_live" else name
     engine._call_providers[session.call_id] = provider
     engine.config.vad = VADConfig(**vad)
+    if evidence is not None:
+        # Square waves test energy/hysteresis, not acoustic speech classification.
+        session.upstream_speech_evidence = SimpleNamespace(
+            available=True, observe=Mock(return_value=evidence), pause=Mock(),
+        )
     engine._maybe_provider_barge_in_fallback = AsyncMock()
     return engine, session, provider
 
@@ -134,14 +139,29 @@ async def test_noise_spike_tail_and_later_turn_retain_hysteresis():
 
 
 @pytest.mark.asyncio
-async def test_loud_startup_noise_is_left_to_native_provider_vad():
-    # Energy alone cannot distinguish an immediate caller from equally loud noise.
-    engine, session, provider = setup()
+async def test_independent_non_speech_recovers_loud_startup_noise():
+    engine, session, provider = setup(evidence=None)
     await engine.session_store.upsert_call(session)
-    await send(engine, [600] * 10)
-    assert nonzero(provider) == 9
-    await send(engine, [0] * 15)
+    await send(engine, [600] * 100)
+    assert session.upstream_speech_evidence.available
+    assert nonzero(provider) < 30  # Initial admission + configured end hysteresis.
+    assert all(not any(call.args[0]) for call in provider.send_audio.await_args_list[-50:])
     assert not session.vad_state["upstream_squelch"]["speaking"]
+    assert session.vad_state["upstream_squelch"]["noise_ema"] > 500
+
+
+@pytest.mark.asyncio
+async def test_confirmed_speech_preserves_learned_noise_floor():
+    engine, session, provider = setup(evidence=False)
+    await engine.session_store.upsert_call(session)
+    await send(engine, [600] * 100)
+    floor = session.vad_state["upstream_squelch"]["noise_ema"]
+    assert not session.vad_state["upstream_squelch"]["speaking"]
+    session.upstream_speech_evidence.observe.return_value = True
+    provider.send_audio.reset_mock()
+    await send(engine, [2000] * 60)
+    assert nonzero(provider) == 59
+    assert session.vad_state["upstream_squelch"]["noise_ema"] == floor
 
 
 @pytest.mark.asyncio

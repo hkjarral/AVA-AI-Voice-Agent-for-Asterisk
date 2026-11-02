@@ -12,9 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **AudioSocket caller squelch (#799):** prevent a first speech frame from
   poisoning the noise floor and muting the whole utterance when quiet onset
   frames are absent. Classify before updating the noise estimate and exclude
-  candidate speech during onset confirmation. Preserve configured hysteresis;
-  expose squelch substitution and per-call totals in diagnostics. Startup favors
-  hearing callers and may admit loud noise for native provider VAD to classify.
+  detected speech during onset confirmation. Use call-local WebRTC evidence to
+  recover from sustained non-speech noise even if it initially opens the squelch,
+  preserving configured energy thresholds and hysteresis. Bound framing/resampling
+  to the detector copy; expose substitution and per-call totals in diagnostics.
+  If the detector is unavailable, preserve caller audio with a once-per-call warning.
   RTP, Media WebSocket, pipelines and no-input timeout detection are unchanged.
 
 - **Microsoft Calendar lost create:** a `create_event` whose POST timed out

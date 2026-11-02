@@ -1164,7 +1164,7 @@ class VADConfig(BaseModel):
     upstream_squelch_base_rms: int = 200
     # Dynamic threshold multiplier: threshold = max(base_rms, noise_floor_rms * noise_factor)
     upstream_squelch_noise_factor: float = 2.5
-    # EMA factor for non-speech noise floor updates (0..1). Candidate speech never trains the floor.
+    # EMA factor for non-speech noise updates (0..1); independent speech evidence protects the floor.
     upstream_squelch_noise_ema_alpha: float = 0.06
     # Hysteresis: require N speech frames to enter speaking state, and M silence frames to exit.
     upstream_squelch_min_speech_frames: int = 2
