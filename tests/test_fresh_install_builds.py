@@ -19,7 +19,8 @@ def prepare_project(tmp_path, failure):
     docker = tmp_path / "docker"
     docker.write_text('''#!/bin/bash
 echo "$*" >> "$TEST_COMMANDS"
-if [[ "$*" == "compose version" && "${TEST_COMPOSE_MISSING:-}" == 1 ]]; then
+echo "${TEST_COMPOSE_EXECUTABLE:-docker}|$*" >> "$TEST_EXECUTABLES"
+if [[ "$1" == compose && "${TEST_COMPOSE_MISSING:-}" == 1 && "${TEST_COMPOSE_EXECUTABLE:-docker}" != docker-compose ]]; then
   exit 1
 fi
 if [[ " $* " == *" --print "* ]]; then
@@ -36,10 +37,10 @@ fi
 ''')
     docker.chmod(0o700)
     standalone = tmp_path / "docker-compose"
-    standalone.write_text('#!/bin/bash\nexec "$(dirname "$0")/docker" compose "$@"\n')
+    standalone.write_text('#!/bin/bash\nTEST_COMPOSE_EXECUTABLE=docker-compose exec "$(dirname "$0")/docker" compose "$@"\n')
     standalone.chmod(0o700)
     env = dict(os.environ, PATH=f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
-               TEST_COMMANDS=str(log), TEST_FAILURE=failure)
+               TEST_COMMANDS=str(log), TEST_EXECUTABLES=str(tmp_path / "executables"), TEST_FAILURE=failure)
     return env, log
 
 
@@ -136,17 +137,44 @@ def test_copied_quick_start_retains_compose_selection(tmp_path, guide, failure, 
     env, log = prepare_project(tmp_path, failure)
     env["TEST_COMPOSE_MISSING"] = "1" if standalone else "0"
     source = (ROOT / guide).read_text()
-    selector = re.search(r"# Select the same Compose mode[^\n]*\n.*?\nfi\n", source, re.S)
-    sequence = re.search(
-        r'(COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&\n[^\n]+admin_ui)',
-        source,
-    )
-    assert selector and sequence
-    result = subprocess.run(["bash", "-c", selector.group(0) + sequence.group(1)],
+    blocks = re.findall(r"^```bash\n(.*?)^```", source, re.S | re.M)
+    bootstrap = next(block for block in blocks if "./scripts/compose-build.sh admin_ui &&" in block)
+    # Clone/preflight are outside this CLI-sequence fixture; keep the rest of
+    # each copied block intact, including any commands after Admin UI startup.
+    for name in ["git", "sudo"]:
+        executable = tmp_path / name
+        executable.write_text("#!/bin/sh\nexit 0\n")
+        executable.chmod(0o700)
+    (tmp_path / "AVA-AI-Voice-Agent-for-Asterisk").symlink_to(tmp_path, target_is_directory=True)
+    result = subprocess.run(["bash", "-c", bootstrap],
                             cwd=tmp_path, env=env, capture_output=True, text=True)
-    assert (result.returncode == 0) == (failure != "unrelated"), result.stderr
+    if failure != "unrelated":
+        assert result.returncode == 0, result.stderr
     starts = [call for call in log.read_text().splitlines() if " up " in call]
     assert len(starts) == int(failure != "unrelated")
     if starts:
         assert starts[0].endswith(" admin_ui")
         assert "--no-build --pull never" in starts[0]
+    compose_calls = [line for line in (tmp_path / "executables").read_text().splitlines()
+                     if " build " in line or " up " in line]
+    expected = "docker-compose" if standalone else "docker"
+    assert compose_calls and all(line.startswith(expected + "|") for line in compose_calls)
+    assert all("ai_engine" not in line and "local_ai_server" not in line for line in compose_calls)
+
+
+@pytest.mark.parametrize("standalone", [False, True])
+def test_legacy_no_cache_recipe_bypasses_helper(tmp_path, standalone):
+    """Old checkouts retain cache flags through direct Compose-to-Bake export."""
+    env, log = prepare_project(tmp_path, "none")
+    env["TEST_COMPOSE_MISSING"] = "1" if standalone else "0"
+    source = (ROOT / "docs/CLI_TOOLS_GUIDE.md").read_text()
+    blocks = re.findall(r"^```bash\n(.*?)^```", source, re.S | re.M)
+    recipe = next(block for block in blocks if "build --no-cache --print ai_engine admin_ui" in block)
+    result = subprocess.run(["bash", "-c", recipe], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    builds = [call for call in log.read_text().splitlines() if " build " in call]
+    assert builds == ["compose -p asterisk-ai-voice-agent build --no-cache --print ai_engine admin_ui"]
+    selected = "docker-compose" if standalone else "docker"
+    operations = [line for line in (tmp_path / "executables").read_text().splitlines()
+                  if " build " in line or " up " in line]
+    assert operations and all(line.startswith(selected + "|") for line in operations)

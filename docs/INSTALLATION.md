@@ -15,8 +15,9 @@ v7.3.x or earlier must also follow the [v7.4 Agent migration](MIGRATION.md#v73x-
 
 Use Bash and select Compose in each new shell before the build/start examples
 below. This matches preflight's choice for both the helper and startup. Keep the
-`AAVA_COMPOSE` array in that shell. For an older standalone helper (including
-v7.7.1), use the [standalone recovery commands](CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
+`AAVA_COMPOSE` array in that shell. Older helpers (including v7.7.1) require the
+[legacy recovery commands](CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers)
+for standalone Compose or no-cache rebuilds; they do not accept the newer options.
 
 ```bash
 # Select the same Compose mode for both commands (Bash).
@@ -74,7 +75,7 @@ path with compatible Python. A CLI self-update cannot add Python to an old image
 > [Agents migration guide](OPERATOR_MIGRATION.md). In short:
 > - **Default `admin`/`admin` login is removed.** If your install was **still using `admin`/`admin`**,
 >   it is automatically rotated on first start to a one-time random password printed to the `admin_ui`
->   logs (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`), which you must
+>   logs (`"${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent logs admin_ui | grep -i password`), which you must
 >   change at first login. **If you already changed the admin password, nothing changes — your existing
 >   login keeps working** and no new password is printed.
 > - **`/api/config/export` no longer bundles `.env`** by default (pass `include_secrets=true`).
@@ -542,7 +543,12 @@ fi
 COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
   "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui
 
-# Complete the Setup Wizard in Admin UI, then start ai_engine
+```
+
+After Admin UI starts successfully, complete its Setup Wizard. Then, in the same
+Bash shell, run the engine commands separately:
+
+```bash
 COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh ai_engine &&
   "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never ai_engine
 ```
@@ -606,7 +612,7 @@ The Setup Wizard will:
 5. ✅ Start containers automatically
 
 **First login:** retrieve the one-time password from
-`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`, then change it.
+`"${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent logs admin_ui | grep -i password`, then change it.
 
 **Best for:** First-time users, production deployments, visual configuration
 
@@ -1044,9 +1050,11 @@ asterisk -rx "dialplan reload"
   # Fix admin_ui requirements
   sed -i 's/numpy>=1.24.0/numpy>=1.24.0,<2.0/g' admin_ui/backend/requirements.txt
 
-  # Rebuild containers with --no-cache to force fresh install
-  ./scripts/compose-build.sh -p asterisk-ai-voice-agent --no-cache ai_engine admin_ui &&
-    "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate ai_engine admin_ui
+  # Use direct Compose/Bake so older helpers also retain --no-cache.
+  ( set -o pipefail
+    "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent build --no-cache --print ai_engine admin_ui |
+      docker buildx bake --file - --allow=network.host --load
+  ) && "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate ai_engine admin_ui
   ```
 
   **Verify your CPU supports X86_V2** (optional diagnostic):

@@ -40,8 +40,9 @@ and [upgrade instructions](../docs/INSTALLATION.md#upgrade-to-v770-existing-chec
 
 Use Bash for this block. The selector matches preflight's Compose mode for both
 building and starting. Keep `AAVA_COMPOSE` for later commands in this shell; rerun
-the selector in a new shell. Standalone Compose with an older helper (including
-v7.7.1) requires the [standalone recovery commands](../docs/CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
+the selector in a new shell. Older helpers (including v7.7.1) require the
+[legacy recovery commands](../docs/CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers)
+for standalone Compose or no-cache rebuilds; they do not accept the newer options.
 
 ```bash
 # From your project root (runs in background)
@@ -87,7 +88,7 @@ http://localhost:3003
 **Login Credentials**:
 - Username: `admin`
 - Password: the one-time password printed to the admin_ui logs on first start
-  (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`) —
+  (`"${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent logs admin_ui | grep -i password`) —
   `admin`/`admin` no longer works.
 
 ⚠️ **Important**: You'll be required to set a new password at first login.
@@ -226,7 +227,7 @@ http://localhost:3003
 ```
 
 Log in with the one-time password printed to the admin_ui logs on first start
-(`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`); you'll be
+(`"${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent logs admin_ui | grep -i password`); you'll be
 required to set a new password at first login. `admin`/`admin` no longer works.
 
 ---
@@ -238,7 +239,7 @@ required to set a new password at first login. `admin`/`admin` no longer works.
 **Username**: `admin`  
 **Password**: a one-time password generated on first run (printed to the admin_ui logs):
 ```
-docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password
+"${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent logs admin_ui | grep -i password
 ```
 
 The `admin` account is created automatically on first run with this one-time
@@ -290,7 +291,7 @@ kill $(cat admin_ui.pid) && nohup python main.py > admin_ui.log 2>&1 &
 **If you forget your password**:
 ```bash
 # Delete the users file. On next start a new one-time password is generated and
-# printed to the admin_ui logs (retrieve with: docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password).
+# printed to the admin_ui logs (retrieve with: "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent logs admin_ui | grep -i password).
 rm config/users.json
 
 # Restart admin-ui
@@ -622,7 +623,7 @@ docker compose logs admin_ui
 - Build failed: Check Node.js/npm versions
 - Python errors: Check `requirements.txt` dependencies
 
-**Force rebuild**:
+**Force rebuild** (for an older helper, use the linked legacy no-cache recipe):
 ```bash
 COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh --no-cache admin_ui &&
   "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui
@@ -839,7 +840,7 @@ docker logs admin_ui -f
 # Restart after changes
 docker compose restart admin_ui
 
-# Rebuild from scratch
+# Rebuild from scratch with the current helper; older helpers use the legacy no-cache recipe.
 COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh --no-cache admin_ui &&
   "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
 
