@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Remote PBX checklist:** stop presenting an empty local Asterisk preflight
+  manifest as an error when Ava is configured to use Asterisk on a separate
+  host; retain live ARI/module status and identify PBX configuration checks as
+  remote-host work. Explain that restoring missing Ava-host audit evidence
+  requires write-enabled preflight and also applies system/configuration fixes.
+
 - **Consistent Docker builder/preflight (#802):** share one build policy across
   installer, CLI updates, GUI builds, updater bootstrap and packaged rollback.
   Default to the active context's built-in builder; honor explicit overrides

@@ -165,6 +165,66 @@ const AsteriskPage = () => {
     const manifest = status?.manifest;
     const mode = status?.mode;
     const appName = live?.app_name || 'asterisk-ai-voice-agent';
+    const renderManifestChecks = () => {
+        if (!manifest?.checks || Object.keys(manifest.checks).length === 0) {
+            return (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <CheckCircle2 className="w-4 h-4 text-green-500" />
+                    No configuration issues detected
+                </div>
+            );
+        }
+        return (
+            <div className="divide-y divide-border">
+                {Object.entries(manifest.checks).map(([key, check]) => {
+                    const meta = CONFIG_CHECK_LABELS[key];
+                    const label = meta?.label || key.replace(/_/g, ' ').replace(/^module /, '');
+                    const isModule = key.startsWith('module_');
+                    const fixHint = (meta?.fixHint || '').replace('{APP_NAME}', appName);
+                    return (
+                        <div key={key} className="py-2.5 first:pt-0 last:pb-0">
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                    {isModule ? (
+                                        <Package className="w-4 h-4 text-muted-foreground" />
+                                    ) : (
+                                        <FileText className="w-4 h-4 text-muted-foreground" />
+                                    )}
+                                    <div>
+                                        <span className="text-sm font-medium">{label}</span>
+                                        <p className="text-xs text-muted-foreground">{check.detail}</p>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <StatusBadge ok={check.ok} />
+                                    {!check.ok && fixHint && (
+                                        <button
+                                            onClick={() => toggleFix(key)}
+                                            className="text-xs text-primary hover:underline"
+                                        >
+                                            {expandedFixes[key] ? 'Hide fix' : 'How to fix'}
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                            {!check.ok && fixHint && expandedFixes[key] && (
+                                <div className="mt-2 ml-7">
+                                    <div className="relative">
+                                        <pre className="p-3 rounded-md bg-muted text-xs font-mono whitespace-pre-wrap overflow-x-auto">
+                                            {fixHint}
+                                        </pre>
+                                        <div className="absolute top-2 right-2">
+                                            <CopyButton text={fixHint} />
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    );
+                })}
+            </div>
+        );
+    };
 
     return (
         <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -308,57 +368,48 @@ const AsteriskPage = () => {
             </ConfigSection>
 
             {/* Configuration Checklist (from manifest) */}
-            <ConfigSection title="Configuration Checklist" description="Asterisk config file checks from the last preflight run">
+            <ConfigSection
+                title="Configuration Checklist"
+                description={mode === 'remote'
+                    ? 'PBX configuration files are owned by the remote Asterisk host'
+                    : 'Asterisk config file checks from the last preflight run'}
+            >
                 <ConfigCard>
-                    {manifest && manifest.checks && Object.keys(manifest.checks).length > 0 ? (
-                        <div className="divide-y divide-border">
-                            {Object.entries(manifest.checks).map(([key, check]) => {
-                                const meta = CONFIG_CHECK_LABELS[key];
-                                const label = meta?.label || key.replace(/_/g, ' ').replace(/^module /, '');
-                                const isModule = key.startsWith('module_');
-                                const fixHint = (meta?.fixHint || '').replace('{APP_NAME}', appName);
-                                return (
-                                    <div key={key} className="py-2.5 first:pt-0 last:pb-0">
-                                        <div className="flex items-center justify-between">
-                                            <div className="flex items-center gap-3">
-                                                {isModule ? (
-                                                    <Package className="w-4 h-4 text-muted-foreground" />
-                                                ) : (
-                                                    <FileText className="w-4 h-4 text-muted-foreground" />
-                                                )}
-                                                <div>
-                                                    <span className="text-sm font-medium">{label}</span>
-                                                    <p className="text-xs text-muted-foreground">{check.detail}</p>
-                                                </div>
-                                            </div>
-                                            <div className="flex items-center gap-2">
-                                                <StatusBadge ok={check.ok} />
-                                                {!check.ok && fixHint && (
-                                                    <button
-                                                        onClick={() => toggleFix(key)}
-                                                        className="text-xs text-primary hover:underline"
-                                                    >
-                                                        {expandedFixes[key] ? 'Hide fix' : 'How to fix'}
-                                                    </button>
-                                                )}
-                                            </div>
-                                        </div>
-                                        {!check.ok && fixHint && expandedFixes[key] && (
-                                            <div className="mt-2 ml-7">
-                                                <div className="relative">
-                                                    <pre className="p-3 rounded-md bg-muted text-xs font-mono whitespace-pre-wrap overflow-x-auto">
-                                                        {fixHint}
-                                                    </pre>
-                                                    <div className="absolute top-2 right-2">
-                                                        <CopyButton text={fixHint} />
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        )}
+                    {mode === 'remote' ? (
+                        <div className="space-y-4">
+                            <div className="flex items-start gap-2 text-sm text-muted-foreground">
+                                <Globe className="w-4 h-4 mt-0.5 text-purple-500" />
+                                <div>
+                                    <p>Remote PBX file checks belong on the Asterisk host.</p>
+                                    <p className="mt-1">
+                                        Ava verifies the remote PBX through the live ARI, module, and application checks above.
+                                        Inspect configuration files on the PBX host itself.
+                                    </p>
+                                </div>
+                            </div>
+                            {manifest === null ? (
+                                <div className="flex items-start gap-2 text-sm text-amber-600 dark:text-amber-400">
+                                    <AlertCircle className="w-4 h-4 mt-0.5" />
+                                    <div>
+                                        <p>Ava-host preflight manifest is unavailable.</p>
+                                        <p className="mt-1">To restore local audit evidence, run <code className="px-1.5 py-0.5 rounded bg-muted text-xs font-mono">sudo ./preflight.sh --apply-fixes</code> on the Ava host.</p>
+                                        <p className="mt-1">This also applies system and configuration fixes. Review <code className="px-1.5 py-0.5 rounded bg-muted text-xs font-mono">./preflight.sh</code> output first; check-only mode does not write the manifest.</p>
                                     </div>
-                                );
-                            })}
+                                </div>
+                            ) : manifest.asterisk_found ? (
+                                <div className="space-y-2">
+                                    <p className="text-sm font-medium">Ava-host local Asterisk audit results</p>
+                                    {renderManifestChecks()}
+                                </div>
+                            ) : (
+                                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                    <CheckCircle2 className="w-4 h-4 text-green-500" />
+                                    Local Asterisk audit skipped because preflight did not detect a local configuration directory. Inspect Ava-host detection before treating local checks as unnecessary.
+                                </div>
+                            )}
                         </div>
+                    ) : manifest && manifest.checks && Object.keys(manifest.checks).length > 0 ? (
+                        renderManifestChecks()
                     ) : manifest === null ? (
                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
                             <AlertCircle className="w-4 h-4" />
@@ -388,9 +439,20 @@ const AsteriskPage = () => {
             {manifest && (
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <Clock className="w-3 h-3" />
-                    Last preflight run: {manifest.timestamp ? new Date(manifest.timestamp).toLocaleString() : 'unknown'}
-                    <span className="ml-2">•</span>
-                    <span>Run <code className="px-1 py-0.5 rounded bg-muted font-mono">./preflight.sh</code> on the host to refresh</span>
+                    {mode === 'remote' ? 'Last Ava-host preflight' : 'Last preflight run'}: {manifest.timestamp ? new Date(manifest.timestamp).toLocaleString() : 'unknown'}
+                    {mode === 'remote' ? (
+                        <>
+                            <span className="ml-2">•</span>
+                            <span>{manifest.asterisk_found
+                                ? 'Local Asterisk audit completed on Ava host'
+                                : 'Local Asterisk audit skipped on Ava host'}</span>
+                        </>
+                    ) : (
+                        <>
+                            <span className="ml-2">•</span>
+                            <span>Run <code className="px-1 py-0.5 rounded bg-muted font-mono">./preflight.sh</code> on the host to refresh</span>
+                        </>
+                    )}
                 </div>
             )}
         </div>
