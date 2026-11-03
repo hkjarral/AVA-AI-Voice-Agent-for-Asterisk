@@ -34,6 +34,10 @@ paths and rerun the capability check after correcting it.
 Full preflight retains its existing CPU/RAM/disk, permissions and runtime checks;
 build readiness alone does not qualify a PBX, GPU or complete fresh installation.
 
+The UI bootstrap limits its private umask to environment-file creation. It
+prepares the data/media directory entries for runtime UID 1000, including after
+a partially applied preflight, without changing existing database or media files.
+
 ## One builder for each operation
 
 AVA uses the built-in `default` builder attached to the active Docker context.

@@ -1829,8 +1829,7 @@ print_final_summary() {
 # Bootstrap management first; the Setup Wizard owns provider/PBX configuration
 # and optional engine/Local AI startup. Existing headless installation is retained.
 bootstrap_ui() {
-    umask 077
-    ensure_env_file || return 1
+    ( umask 077; ensure_env_file ) || return 1
     # Preserve existing values; a fresh .env must bind host operations to this
     # checkout rather than the example's maintainer path.
     local host_root socket_gid jwt
@@ -1843,12 +1842,14 @@ bootstrap_ui() {
         jwt="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" || return 1
         upsert_env JWT_SECRET "$jwt"
     fi
-    # The management container needs its bind-mounted directories owned by its
-    # runtime UID. Use preflight for permission repair rather than silently
-    # claiming startup is ready on an unwritable mount.
-    mkdir -p data secrets asterisk_media || return 1
-    setup_data_directory
-    setup_secrets_directory
+    setup_data_directory || return 1
+    setup_secrets_directory || return 1
+    # Host-user writability does not establish access for the container's UID
+    # 1000 (especially after a root-run or partially applied preflight). Prepare
+    # only these directory entries; leave existing database/media files intact.
+    mkdir -p asterisk_media || return 1
+    $SUDO chown "1000:$AST_GID" data asterisk_media || return 1
+    $SUDO chmod 2775 data asterisk_media || return 1
     rm -f .env.bak
     $SUDO chown "1000:$(id -g)" .env || return 1
     $SUDO chmod 640 .env || return 1

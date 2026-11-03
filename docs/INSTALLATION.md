@@ -458,6 +458,12 @@ If preflight reports warnings or failures, resolve them first, then re-run prefl
 
 The updater normally performs this step. If you are recovering manually:
 
+Before either recreation below, stop new PBX admissions, drain active calls, and
+verify that no calls remain on every affected host, including a separate Local
+AI host. If call state cannot be verified, restore visibility before continuing.
+Direct Docker commands lack the updater's call-safety guard; never use them to
+bypass call-safety, revision, or database-mapping refusals.
+
 ```bash
 ./scripts/compose-build.sh admin_ui ai_engine &&
   "${AAVA_COMPOSE[@]}" up -d --no-build --pull never --force-recreate admin_ui ai_engine
@@ -1001,7 +1007,11 @@ asterisk -rx "dialplan reload"
   **Fix**: Pin NumPy to version 1.x (compatible with older CPUs).
   The example below assumes the engine is intended to run and recreates it.
   First stop new call admissions using your PBX's existing routing controls and
-  wait for active calls to end. If the engine is intentionally stopped, leave it
+  drain active calls. Verify that no calls remain on every affected host; if
+  call state cannot be verified, restore visibility before continuing. Direct
+  Docker commands lack the updater's call-safety guard and must not bypass
+  call-safety, revision, or database-mapping refusals.
+  If the engine is intentionally stopped, leave it
   out of the startup command; use the Admin UI-only recovery recipe instead.
 
 

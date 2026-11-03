@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   amd64-only Buildx download.
   Load direct updater-image builds into Docker when using custom builders so
   successful builds can immediately start the updater.
+  Scope private environment creation separately from data/media permissions so
+  the UI runtime can write after a root-run or partially applied preparation.
+  Clarify admission, drain and visibility requirements for manual recreation.
   Add `install.sh --ui` for management-first onboarding; manual base-image pulls
   are unnecessary. Existing call guards and pending-action recovery remain intact.
 

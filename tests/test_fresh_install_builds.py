@@ -278,3 +278,42 @@ printf '%s\\n' "${FIX_CMDS[@]}"
         assert ("apt-get" in repairs) == (family == "debian")
         assert "curl" not in repairs and "amd64" not in repairs and "v0.17" not in repairs
     assert not any("install -y" in c for c in log.read_text().splitlines()), "check-only mode must not execute repairs"
+
+
+@pytest.mark.parametrize("initial_umask", ["022", "077"])
+@pytest.mark.parametrize("existing_directories", [False, True])
+def test_ui_bootstrap_prepares_directories_without_leaking_private_umask(tmp_path, initial_umask, existing_directories):
+    """Fresh and partially prepared mounts stay usable without changing DB files."""
+    env, _ = prepare_project(tmp_path, "none")
+    source = (ROOT / "install.sh").read_text().rsplit('\nmain "$@"', 1)[0]
+    (tmp_path / "install-functions.sh").write_text(source)
+    (tmp_path / ".env.example").write_text("JWT_SECRET=\nPROVIDER_SECRET=synthetic-retained\n")
+    if existing_directories:
+        for name in ("data", "asterisk_media"):
+            (tmp_path / name).mkdir(mode=0o700)
+        sentinel = tmp_path / "data/operator-owned.db"
+        sentinel.write_bytes(b"private fixture: leave unchanged")
+        sentinel.chmod(0o600)
+    sudo = tmp_path / "sudo"
+    sudo.write_text('#!/bin/sh\ncase "$1" in mkdir|chmod) exec "$@";; *) exit 0;; esac\n')
+    sudo.chmod(0o700)
+    script = f'''source ./install-functions.sh
+SUDO=sudo
+getenforce() {{ echo Disabled; }}
+choose_compose_cmd || exit $?
+umask {initial_umask}
+bootstrap_ui || exit $?
+printf 'RESTORED_UMASK=%s\\n' "$(umask)"
+'''
+    result = subprocess.run(["bash", "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    actual_umask = re.search(r"RESTORED_UMASK=([0-7]+)", result.stdout).group(1)
+    assert int(actual_umask, 8) == int(initial_umask, 8)
+    for name in ("data", "asterisk_media"):
+        assert (tmp_path / name).stat().st_mode & 0o2775 == 0o2775
+    assert (tmp_path / "secrets").stat().st_mode & 0o2770 == 0o2770
+    assert (tmp_path / ".env").stat().st_mode & 0o777 == 0o640
+    assert "PROVIDER_SECRET=synthetic-retained" in (tmp_path / ".env").read_text()
+    if existing_directories:
+        assert sentinel.read_bytes() == b"private fixture: leave unchanged"
+        assert sentinel.stat().st_mode & 0o777 == 0o600
