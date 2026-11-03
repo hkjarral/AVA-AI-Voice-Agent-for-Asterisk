@@ -540,6 +540,9 @@ class Engine:
                 'diag_out_dir': str(getattr(config.streaming, 'diag_out_dir', '') or ''),
             }
         # Debug/diagnostics: allow broadcasting outbound frames to all AudioSocket conns
+        streaming_config['websocket_output_pacing'] = getattr(
+            getattr(config, 'websocket_media', None), 'output_pacing', 'legacy'
+        )
         try:
             streaming_config['audiosocket_broadcast_debug'] = bool(int(os.getenv('AUDIOSOCKET_BROADCAST_DEBUG', '0')))
         except Exception:
@@ -14038,6 +14041,26 @@ class Engine:
             logger.error("Failed to build DeepgramProviderConfig", error=str(exc), exc_info=True)
             return None
 
+    def _apply_provider_output_pacing(self, provider, session) -> None:
+        """Select the output clock on a call-owned instance, never saved config."""
+        if not isinstance(provider, (OpenAIRealtimeProvider, GrokProvider)):
+            return
+        configured = bool(provider.config.egress_pacer_enabled)
+        remote_pacing = (
+            self.config.audio_transport == "websocket"
+            and getattr(getattr(self.config, "websocket_media", None), "output_pacing", "legacy") == "asterisk"
+        )
+        if remote_pacing:
+            provider.config = self._clone_config(provider.config)
+            provider.config.egress_pacer_enabled = False
+            provider._egress_pacer_enabled = False
+        logger.info(
+            "Provider output pacing selected", call_id=session.call_id,
+            provider=session.provider_name, transport=self.config.audio_transport,
+            configured_pacer=configured, effective_pacer=provider._egress_pacer_enabled,
+            output_clock="asterisk" if remote_pacing else "legacy",
+        )
+
     def _build_openai_realtime_config(self, provider_cfg: Dict[str, Any], provider_key: str = "openai_realtime") -> Optional[OpenAIRealtimeProviderConfig]:
         """Construct an OpenAIRealtimeProviderConfig from raw provider settings."""
         try:
@@ -21232,6 +21255,7 @@ class Engine:
             provider = factory()
             # Apply per-call context/prompt/transport overrides before start_session reads config.
             self._apply_provider_overrides(provider, session)
+            self._apply_provider_output_pacing(provider, session)
             # Inject shared runtime helpers (latency tracking, tool context helpers).
             try:
                 if hasattr(provider, "set_session_store"):

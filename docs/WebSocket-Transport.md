@@ -173,6 +173,24 @@ different transport only after the call has ended or been drained.
 
 ## Qualification and rollback
 
+### Experimental Asterisk-owned output pacing (issue #808)
+
+The testing branch adds `websocket_media.output_pacing: asterisk`. The default
+is `legacy` until live qualification. In `asterisk` mode the streaming manager
+forwards buffered media ahead and lets chan_websocket clock playback, retaining
+XOFF/XON, interruption fences and correlated completion. OpenAI Realtime and
+Grok call instances bypass their optional provider pacers in this mode; saved
+provider settings are not rewritten. Other transports retain their pacing.
+The mode affects full providers and modular pipeline streaming TTS alike;
+provider/pipeline qualification is still required. File playback is unchanged.
+
+Changing this setting requires an AI Engine restart after draining active calls.
+To disable it on this build, set `output_pacing: legacy` and restart. Before
+downgrading to an older build, **remove** `output_pacing` from YAML and local
+overrides entirely: older strict schemas reject even `output_pacing: legacy`.
+Restore the previous image and configuration together. No database migration
+or Asterisk configuration change is required for this switch.
+
 Before downgrading to a JSON-only application build, restore the pre-deployment
 YAML (including local overrides), or remove/reset `control_format: auto/plain`
 while still on the new build. Old strict schemas reject that field even when

@@ -162,6 +162,7 @@ class StreamingPlaybackManager:
         self.fallback_playback_manager = fallback_playback_manager
         self.streaming_config = streaming_config or {}
         self.audio_transport = audio_transport
+        self.websocket_output_pacing = self.streaming_config.get('websocket_output_pacing', 'legacy')
         self.rtp_server = rtp_server
         self.audiosocket_server = audiosocket_server
         self.websocket_server = websocket_server
@@ -1236,7 +1237,8 @@ class StreamingPlaybackManager:
         jitter_buffer: asyncio.Queue,
         chunk_size_ms: Optional[int] = None,
     ) -> None:
-        """Drain jitter buffer at steady cadence so producer and consumer are independent."""
+        """Drain independently; chan_websocket may own the actual output clock."""
+        remote_pacing = self.audio_transport == "websocket" and self.websocket_output_pacing == "asterisk"
         tick_seconds = max(
             0.02,
             int(chunk_size_ms or self.chunk_size_ms) / 1000.0,
@@ -1253,7 +1255,12 @@ class StreamingPlaybackManager:
                         raise
                 else:
                     next_tick = now
-                if call_id not in self.active_streams:
+                    if remote_pacing:
+                        # Socket writes and queue reads need not suspend. Give
+                        # XOFF, interruption and other calls a turn each frame.
+                        await asyncio.sleep(0)
+                current = self.active_streams.get(call_id)
+                if not current or current.get('stream_id') != stream_id or current.get('stop_requested'):
                     break
                 status = await self._drain_next_frame(
                     call_id, stream_id, jitter_buffer
@@ -1302,7 +1309,14 @@ class StreamingPlaybackManager:
                 if status == "finished":
                     break
                 info = self.active_streams.get(call_id) or {}
-                next_tick += info.pop('greeting_tick_seconds', tick_seconds)
+                if remote_pacing and status == "sent":
+                    # Forward the local reserve now, through XOFF-aware writes.
+                    # Waiting here leaves Asterisk's independently clocked
+                    # media queue empty whenever the application wakes late.
+                    next_tick = time.perf_counter()
+                else:
+                    # Empty/startup waits remain bounded; never busy-spin.
+                    next_tick += info.pop('greeting_tick_seconds', tick_seconds)
                 now_after = time.perf_counter()
                 if next_tick < now_after:
                     next_tick = now_after

@@ -58,6 +58,7 @@ type TransportConfig = Record<string, unknown> & {
         format_policy?: 'profile';
         fallback_format?: 'ulaw' | 'alaw' | 'slin' | 'slin16';
         control_format?: 'json' | 'auto' | 'plain';
+        output_pacing?: 'legacy' | 'asterisk';
         direction?: 'both';
         handshake_timeout_ms?: number;
         media_start_timeout_ms?: number;

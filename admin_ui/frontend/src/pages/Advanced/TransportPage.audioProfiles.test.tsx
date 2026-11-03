@@ -212,6 +212,7 @@ describe('TransportPage audio profile guidance', () => {
     });
 
     it('preserves unrelated operator configuration through all transport switches', async () => {
+        Object.assign(mocks.config.websocket_media, { output_pacing: 'asterisk' });
         render(<TransportPage />);
 
         const selector = await screen.findByLabelText('Transport Method');
@@ -236,6 +237,7 @@ describe('TransportPage audio profile guidance', () => {
         expect(saved.contexts.sales.prompt).toBe('Keep the agent context unchanged.');
         expect(saved.tools.lookup.enabled).toBe(true);
         expect(saved.websocket_media.auth.password_env).toBe('ASTERISK_MEDIA_WS_PASSWORD');
+        expect(saved.websocket_media).toMatchObject({ output_pacing: 'asterisk' });
     });
 
     it('renders a scalar WebSocket allowlist and saves an edited array', async () => {

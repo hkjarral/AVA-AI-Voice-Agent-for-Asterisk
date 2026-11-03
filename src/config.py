@@ -178,6 +178,8 @@ class WebSocketMediaConfig(BaseModel):
     format_policy: Literal["profile"] = "profile"
     fallback_format: Literal["ulaw", "alaw", "slin", "slin16"] = "ulaw"
     control_format: Literal["json", "auto", "plain"] = "json"
+    # Opt-in until provider/pipeline qualification of Asterisk-owned pacing.
+    output_pacing: Literal["legacy", "asterisk"] = "legacy"
     direction: Literal["both"] = "both"
     handshake_timeout_ms: int = Field(default=5000, ge=100, le=60000)
     media_start_timeout_ms: int = Field(default=5000, ge=100, le=60000)
