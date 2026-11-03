@@ -331,40 +331,10 @@ agent troubleshoot --list
 
 ### 0. Docker Build Fails (apt-get / DNS)
 
-**Symptoms:** `docker compose up -d --build ai_engine` fails with errors like:
-- `Temporary failure resolving 'deb.debian.org'`
-- `E: Unable to locate package build-essential`
-
-**Cause:** Docker/BuildKit can’t resolve DNS or doesn’t have outbound internet during image build. This is not related to your host Debian version (Debian inside the image can differ).
-
-**Fix (recommended):**
-```bash
-# Pull latest fixes (pins the base image to Debian 12/bookworm)
-git pull
-
-# Rebuild the engine image
-docker compose build --no-cache --pull ai_engine
-docker compose up -d ai_engine
-```
-
-**If DNS is still failing inside Docker:**
-```bash
-# Quick DNS probe inside a container
-docker run --rm busybox:1.36.1 nslookup deb.debian.org
-```
-
-If the DNS probe fails, set explicit DNS servers for Docker and restart it:
-```bash
-sudo mkdir -p /etc/docker
-printf '{\"dns\":[\"1.1.1.1\",\"8.8.8.8\"]}\n' | sudo tee /etc/docker/daemon.json
-sudo systemctl restart docker
-```
-
-If you’re on a Debian/Ubuntu host using `systemd-resolved`, also confirm Docker isn’t inheriting a loopback resolver (e.g. `127.0.0.53`):
-```bash
-readlink -f /etc/resolv.conf
-cat /etc/resolv.conf
-```
+Use the [Docker build checks and recovery guide](BUILD_TROUBLESHOOTING.md).
+It distinguishes the host, Docker daemon/BuildKit metadata, and build-step
+networks. Begin with read-only preflight under the same user as the build.
+Do not replace `daemon.json` or restart a working Docker daemon as a generic fix.
 
 ### 1. No Audio (Complete Silence)
 
@@ -1525,94 +1495,26 @@ sudo sysctl --system
 
 ### DNS Resolution Failure During Build
 
-**Symptom:** Docker build fails with DNS resolution errors:
-```
-Failed to establish a new connection: [Errno -3] Temporary failure in name resolution
-ERROR: Could not find a version that satisfies the requirement websockets
-```
+See [Docker build checks and recovery](BUILD_TROUBLESHOOTING.md). Registry
+metadata timeouts and package-download DNS failures occur in different network
+layers; `network.host` on a build step cannot repair a custom BuildKit daemon's
+DNS. Keep existing Docker settings and schedule any necessary daemon restart
+with the operator after diagnosing the failing layer.
 
-**Root Cause:** Docker BuildKit networking can't resolve DNS on some networks/systems.
+### Build timeout or slow download
 
-**Solutions:**
-
-#### Solution 1: Disable BuildKit (Simplest)
-```bash
-DOCKER_BUILDKIT=0 docker compose build
-```
-
-#### Solution 2: Use Host Network for Build
-```bash
-docker build --network=host -t asterisk-ai-voice-agent-ai-engine ./
-docker build --network=host -t asterisk-ai-voice-agent-local-ai-server ./local_ai_server
-```
-
-#### Solution 3: Configure Docker DNS
-```bash
-# Edit Docker daemon config
-sudo nano /etc/docker/daemon.json
-```
-
-Add:
-```json
-{
-  "dns": ["8.8.8.8", "8.8.4.4"]
-}
-```
-
-Then restart Docker:
-```bash
-sudo systemctl restart docker
-```
-
-#### Solution 4: Check System DNS
-```bash
-# Verify DNS resolution works
-nslookup pypi.org
-
-# If not, fix system DNS
-sudo nano /etc/resolv.conf
-# Add: nameserver 8.8.8.8
-```
-
-### Build Timeout or Slow Download
-
-**Symptom:** Build hangs or times out downloading packages.
-
-**Solutions:**
-
-1. **Use pip mirror:**
-   ```bash
-   # In Dockerfile, change pip install to:
-   RUN pip install --no-cache-dir -i https://pypi.org/simple/ -r requirements.txt
-   ```
-
-2. **Increase Docker timeout:**
-   ```bash
-   COMPOSE_HTTP_TIMEOUT=200 docker compose build
-   ```
-
-3. **Build with verbose output:**
-   ```bash
-   docker compose build --progress=plain
-   ```
+Check the failing registry/package repository, proxy and TLS path in the build
+output. AVA does not retry an unrelated download failure with extra privileges.
+Retry the explicit service after connectivity is restored; inspect disk space
+before repeating a large Local AI build. See [build recovery](BUILD_TROUBLESHOOTING.md).
 
 ### docker-compose vs docker compose
 
-**Symptom:** `docker: 'compose' is not a docker command`
-
-**Root Cause:** Older Docker installations (Debian/Ubuntu packages) use `docker-compose` (v1) not `docker compose` (v2).
-
-**Solution:**
-```bash
-# Use docker-compose instead
-docker compose up -d ai_engine admin_ui
-
-# Or install Docker Compose v2
-sudo apt-get update
-sudo apt-get install docker-compose-plugin
-```
-
----
+AVA selects the Docker Compose plugin when available, then standalone Compose
+2+. Compose v1 is unsupported. Check `docker compose version` or
+`docker-compose version` and run `./preflight.sh --build-check` with the same
+identity before installation. Use `AAVA_COMPOSE_BIN=docker-compose` to select
+standalone explicitly when running the manual helper.
 
 ## Getting Help
 

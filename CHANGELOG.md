@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Consistent Docker builder/preflight (#802):** share one build policy across
+  installer, CLI updates, GUI builds, updater bootstrap and packaged rollback.
+  Default to the active context's built-in builder; honor explicit overrides
+  without global changes or silent retry switches. Check capabilities and actual
+  builder readiness under the executing identity, validate exact Bake targets,
+  and explain DNS/registry/storage failures without overwriting daemon settings.
+  Repair missing CLI capabilities using platform packages instead of an old
+  amd64-only Buildx download.
+  Load direct updater-image builds into Docker when using custom builders so
+  successful builds can immediately start the updater.
+  Scope private environment creation separately from data/media permissions so
+  the UI runtime can write after a root-run or partially applied preparation.
+  Clarify admission, drain and visibility requirements for manual recreation.
+  Accept older Compose exports containing unused Bake definitions while keeping
+  the selected group/targets scoped; make UI recovery snippets self-contained
+  and warn about placeholder JWT secrets during read-only preflight.
+  Add `install.sh --ui` for management-first onboarding; manual base-image pulls
+  are unnecessary. Existing call guards and pending-action recovery remain intact.
+
+- **Fresh-install Docker builds (#802):** route Quick Start, preflight, installer,
+  and Admin UI setup/rebuild paths through the entitlement-aware Compose build
+  helper. Preserve project/Compose overlays, no-cache rebuilds and backend build
+  arguments through the scoped `network.host` fallback. Start only after a
+  successful build with `--no-build --pull never`, so Compose cannot repeat the
+  rejected build during startup. No global Docker entitlement override is needed.
+  Recovery hints also build a missing Admin UI image and retain standalone Compose
+  selection even before the full Compose check has run. Document matching Compose
+  selection for build/start snippets, including older standalone-helper recovery,
+  and clarify CPU/GPU layer settings. Separate wizard completion from engine
+  startup, retain no-cache in legacy recovery, and use the selected Compose mode
+  for first-login instructions. Keep Admin UI recovery scoped to that service,
+  require call drain before engine recreation, and make password lookup independent
+  of prior shell state or Docker when running the backend directly.
+
 - **AudioSocket caller squelch (#799):** prevent a first speech frame from
   poisoning the noise floor and muting the whole utterance when quiet onset
   frames are absent. Classify before updating the noise estimate and exclude

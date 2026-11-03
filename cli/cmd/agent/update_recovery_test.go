@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -236,42 +235,6 @@ func TestRecoveryRestoresPreviouslyRunningDeletedLocalAI(t *testing.T) {
 	}
 }
 
-func TestBakeRecoveryUsesCleanStdoutAndExplicitGrant(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fixture uses a POSIX Docker CLI shim")
-	}
-	bin := t.TempDir()
-	inputPath, argsPath := filepath.Join(bin, "input.json"), filepath.Join(bin, "args.txt")
-	t.Setenv("AAVA_TEST_BAKE_INPUT", inputPath)
-	t.Setenv("AAVA_TEST_BAKE_ARGS", argsPath)
-	script := `#!/bin/sh
-if [ "$1 $2 $3" = "compose build --print" ]; then
-  echo 'warning from Compose' >&2
-  echo '{"target":{"ai_engine":{"network":"host","tags":["test-only:latest"]}},"group":{"default":{"targets":["ai_engine"]}}}'
-elif [ "$1 $2" = "buildx bake" ]; then
-  printf '%s\n' "$@" > "$AAVA_TEST_BAKE_ARGS"
-  cat > "$AAVA_TEST_BAKE_INPUT"
-else
-  exit 1
-fi
-`
-	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if err := buildWithHostNetworkGrant([]string{"ai_engine"}); err != nil {
-		t.Fatal(err)
-	}
-	input, _ := os.ReadFile(inputPath)
-	if !json.Valid(input) || strings.Contains(string(input), "warning") || !strings.Contains(string(input), "test-only:latest") {
-		t.Fatalf("stdin lost machine-readable Compose definition: %s", input)
-	}
-	args, _ := os.ReadFile(argsPath)
-	if string(args) != "buildx\nbake\n--file\n-\n--allow=network.host\n--load\n" {
-		t.Fatalf("unexpected Bake permissions/output: %s", args)
-	}
-}
-
 func TestPendingDockerStateRejectsUnsafeRecovery(t *testing.T) {
 	base, target := strings.Repeat("a", 40), strings.Repeat("b", 40)
 	for _, scenario := range []string{"different-head", "excluded-ui", "rebuild-none", "invalid-json", "symlink", "oversized"} {
@@ -319,80 +282,21 @@ func TestPendingDockerStateRejectsUnsafeRecovery(t *testing.T) {
 	}
 }
 
-func TestHostNetworkBuildFallback(t *testing.T) {
-	for _, scenario := range []string{"running", "verbose-output", "stopped-local", "unrelated-error", "bake-failure", "export-failure", "invalid-export", "recreate-failure"} {
-		t.Run(scenario, func(t *testing.T) {
-			commands := withDockerActionState(t, "ai_engine\n", map[string]bool{"local_ai_server": true})
-			ctx := recoveryContext(t.TempDir(), "", "")
-			service := "ai_engine"
-			if scenario == "stopped-local" {
-				service = "local_ai_server"
-			}
-			ctx.servicesToRebuild[service] = true
-			originalRun := runDockerCommandForUpdate
-			buildErr := errors.New(`additional privileges requested: pass "--allow=network.host" to grant requested privileges`)
-			buildOutput := buildErr.Error()
-			if scenario == "unrelated-error" {
-				buildErr = errors.New("package download failed")
-				buildOutput = buildErr.Error()
-			}
-			if scenario == "verbose-output" {
-				buildErr = errors.New("exit status 1")
-			}
-			runDockerCommandForUpdate = func(name string, args ...string) (string, error) {
-				out, err := originalRun(name, args...)
-				command := strings.Join(args, " ")
-				if command == "compose build ai_engine" || command == "compose build local_ai_server" {
-					return buildOutput, buildErr
-				}
-				if scenario == "recreate-failure" && command == "compose up -d --no-build --pull never ai_engine" {
-					return "", errors.New("recreate failed")
-				}
-				return out, err
-			}
-			originalExport, originalBake := exportDockerBakeForUpdate, runDockerBakeForUpdate
-			t.Cleanup(func() { exportDockerBakeForUpdate, runDockerBakeForUpdate = originalExport, originalBake })
-			exported, baked := false, false
-			definition := `{"group":{"default":{"targets":["selected"]}},"target":{"selected":{"network":"host","tags":["custom-image:latest"]}}}`
-			exportDockerBakeForUpdate = func(services []string) (string, error) {
-				exported = true
-				if !reflect.DeepEqual(services, []string{service}) {
-					t.Fatalf("export widened service scope: %v", services)
-				}
-				if scenario == "export-failure" {
-					return "", errors.New("unsupported --print")
-				}
-				if scenario == "invalid-export" {
-					return "truncated JSON", nil
-				}
-				return definition, nil
-			}
-			runDockerBakeForUpdate = func(input string) (string, error) {
-				baked = true
-				if input != definition {
-					t.Fatal("Bake definition was changed")
-				}
-				if scenario == "bake-failure" {
-					return "", errors.New("builder unavailable")
-				}
-				return "", nil
-			}
-			err := applyDockerActions(ctx)
-			wantSuccess := scenario == "running" || scenario == "verbose-output" || scenario == "stopped-local"
-			if (err == nil) != wantSuccess {
-				t.Fatalf("unexpected apply result: %v", err)
-			}
-			if scenario == "unrelated-error" && (exported || baked) {
-				t.Fatal("unrelated build failure must not grant host-network access")
-			}
-			up := commandSeen(*commands, "docker compose up -d --no-build --pull never ai_engine")
-			if up != (scenario == "running" || scenario == "verbose-output" || scenario == "recreate-failure") {
-				t.Fatalf("unexpected recreation after Bake: %v", *commands)
-			}
-			if scenario == "stopped-local" && commandContainingSeen(*commands, "compose up", service) {
-				t.Fatalf("fallback started stopped Local AI: %v", *commands)
-			}
-		})
+func TestSharedBuildFailureRetainsStateAndDoesNotRecreate(t *testing.T) {
+	commands := withDockerActionState(t, "ai_engine\n", map[string]bool{})
+	ctx := recoveryContext(t.TempDir(), "", "")
+	ctx.servicesToRebuild["ai_engine"] = true
+	runComposeBuildForUpdate = func(services []string) (string, error) {
+		if len(services) != 1 || services[0] != "ai_engine" {
+			t.Fatalf("scope widened: %v", services)
+		}
+		return "", errors.New("synthetic shared runner failure")
+	}
+	if err := applyDockerActions(ctx); err == nil {
+		t.Fatal("expected build failure")
+	}
+	if commandContainingSeen(*commands, "compose up") {
+		t.Fatal("failed build must not recreate")
 	}
 }
 

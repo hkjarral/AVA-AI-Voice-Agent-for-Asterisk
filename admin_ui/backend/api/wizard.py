@@ -1,3 +1,4 @@
+import asyncio
 import docker
 import logging
 import copy
@@ -908,100 +909,67 @@ async def start_engine(action: str = "start"):
         add_step("check_container", "running", "Checking container status...")
         client = docker.from_env()
         container_exists = False
-        container_running = False
         try:
             container = client.containers.get("ai_engine")
             container_exists = True
-            container_running = container.status == "running"
             add_step("check_container", "complete", f"Container exists, status: {container.status}")
         except docker.errors.NotFound:
             add_step("check_container", "complete", "Container does not exist")
         
-        # Step 3: Determine action
-        if action == "rebuild":
-            add_step("rebuild", "running", "Rebuilding AI Engine image...")
-            result = subprocess.run(
-                [docker_bin, "compose", "-p", "asterisk-ai-voice-agent", "build", "--no-cache", "ai_engine"],
-                cwd=PROJECT_ROOT,
-                capture_output=True, text=True, timeout=300
-            )
-            if result.returncode != 0:
-                add_step("rebuild", "error", result.stderr[:500] if result.stderr else "Build failed")
-                return {
-                    "success": False,
-                    "action": "error",
-                    "message": f"Failed to rebuild: {result.stderr[:200] if result.stderr else 'Unknown error'}",
-                    "steps": steps,
-                    "media_setup": media_setup
-                }
-            add_step("rebuild", "complete", "Image rebuilt successfully")
-        
-        # Step 4: Build image if container doesn't exist (docker compose handles image naming)
-        if not container_exists:
+        # Step 3: Build before recreation; the runner mounts the checkout at its
+        # host path so Compose's relative bind mounts resolve on the Docker host.
+        from api.system import (
+            _compose_service_command,
+            _project_host_root_from_admin_ui_container,
+            _run_updater_ephemeral,
+        )
+        host_root = _project_host_root_from_admin_ui_container()
+        needs_build = action == "rebuild" or not container_exists
+        if needs_build:
             add_step("build", "running", "Building AI Engine image (this may take 1-2 minutes)...")
-            build_result = subprocess.run(
-                [docker_bin, "compose", "-p", "asterisk-ai-voice-agent", "build", "ai_engine"],
-                cwd=PROJECT_ROOT,
-                capture_output=True, text=True, timeout=300  # 5 min timeout for build
+            code, output = await asyncio.to_thread(
+                _run_updater_ephemeral,
+                host_root,
+                env={"PROJECT_ROOT": host_root},
+                command=_compose_service_command(
+                    "ai_engine", build=True, build_only=True, no_cache=action == "rebuild",
+                ),
+                timeout_sec=300,
             )
-            if build_result.returncode != 0:
-                error_msg = build_result.stderr or build_result.stdout or "Build failed"
-                add_step("build", "error", error_msg[:500])
+            if code != 0:
+                add_step("build", "error", output[:500] or "Build failed")
                 return {
-                    "success": False,
-                    "action": "error",
-                    "message": f"Failed to build AI Engine image: {error_msg[:200]}",
-                    "steps": steps,
-                    "stdout": build_result.stdout,
-                    "stderr": build_result.stderr,
-                    "media_setup": media_setup
+                    "success": False, "action": "error",
+                    "message": f"Failed to build AI Engine: {output[:200]}",
+                    "steps": steps, "stdout": output, "stderr": "",
+                    "media_setup": media_setup,
                 }
             add_step("build", "complete", "Image built successfully")
-        
-        # Step 5: Start/restart container using docker compose
-        #
-        # NOTE: `docker compose restart` does NOT re-read env_file (.env). For wizard flows we want
-        # env updates (keys/transport/etc.) to apply reliably, so use `up --force-recreate --no-build`.
-        if action == "restart" and container_running:
-            add_step("restart", "running", "Restarting AI Engine...")
-            result = subprocess.run(
-                [docker_bin, "compose", "-p", "asterisk-ai-voice-agent", "up", "-d", "--force-recreate", "--no-build", "ai_engine"],
-                cwd=PROJECT_ROOT,
-                capture_output=True, text=True, timeout=60
-            )
-        else:
-            add_step("start", "running", "Starting AI Engine container...")
-            # Use up -d with --force-recreate if container exists
-            cmd = [docker_bin, "compose", "-p", "asterisk-ai-voice-agent", "up", "-d"]
-            if container_exists:
-                cmd.append("--force-recreate")
-            cmd.append("ai_engine")
-            
-            result = subprocess.run(
-                cmd,
-                cwd=PROJECT_ROOT,
-                capture_output=True, text=True, timeout=60  # Container start should be quick after build
-            )
-        
-        if result.returncode != 0:
-            error_msg = result.stderr or result.stdout or "Unknown error"
-            add_step("start" if action != "restart" else "restart", "error", error_msg[:500])
+
+        step = "restart" if action == "restart" else "start"
+        add_step(step, "running", "Starting AI Engine container...")
+        code, output = await asyncio.to_thread(
+            _run_updater_ephemeral,
+            host_root,
+            env={"PROJECT_ROOT": host_root},
+            command=_compose_service_command(
+                "ai_engine", build=False, recreate=container_exists,
+            ),
+            timeout_sec=60,
+        )
+        if code != 0:
+            add_step(step, "error", output[:500] or "Unknown error")
             return {
-                "success": False,
-                "action": "error",
-                "message": f"Failed to start AI Engine: {error_msg[:200]}",
-                "steps": steps,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "media_setup": media_setup
+                "success": False, "action": "error",
+                "message": f"Failed to start AI Engine: {output[:200]}",
+                "steps": steps, "stdout": output, "stderr": "",
+                "media_setup": media_setup,
             }
-        
-        add_step("start" if action != "restart" else "restart", "complete", "Container started")
-        
+        add_step(step, "complete", "Container started")
+
         # Step 5: Wait for health check
         add_step("health_check", "running", "Waiting for AI Engine to be ready...")
         import httpx
-        import asyncio
         
         health_url = "http://127.0.0.1:15000/health"
         max_attempts = 30
@@ -2209,7 +2177,7 @@ async def start_local_ai_server():
     so the selected backend library is actually baked into the image.
     """
     from api.system import (
-        _compose_files_flags_for_service,
+        _compose_service_command,
         _project_host_root_from_admin_ui_container,
         _run_updater_ephemeral,
     )
@@ -2218,16 +2186,6 @@ async def start_local_ai_server():
     print("DEBUG: Setting up media paths for local AI server...")
     media_setup = setup_media_paths()
     print(f"DEBUG: Media setup result: {media_setup}")
-
-    def _compose_up_cmd(svc: str, *, build: bool) -> str:
-        flag = "--build" if build else "--no-build"
-        compose_files = _compose_files_flags_for_service(svc)
-        compose_prefix = f"{compose_files} " if compose_files else ""
-        return (
-            "set -euo pipefail; "
-            "cd \"$PROJECT_ROOT\"; "
-            f"docker compose {compose_prefix}-p asterisk-ai-voice-agent up -d {flag} {svc}"
-        )
 
     def _needs_rebuild() -> bool:
         """Check if any INCLUDE_* flag in .env differs from the CPU defaults,
@@ -2262,10 +2220,11 @@ async def start_local_ai_server():
         if rebuild_required:
             # Backend was changed — must rebuild to include new libraries
             print("DEBUG: Non-default INCLUDE_* flags detected, forcing build+up...")
-            code, out = _run_updater_ephemeral(
+            code, out = await asyncio.to_thread(
+                _run_updater_ephemeral,
                 host_root,
                 env={"PROJECT_ROOT": host_root},
-                command=_compose_up_cmd("local_ai_server", build=True),
+                command=_compose_service_command("local_ai_server", build=True),
                 timeout_sec=1800,  # 30 min for GPU builds
             )
             if code == 0:
@@ -2283,10 +2242,11 @@ async def start_local_ai_server():
             }
 
         # Fast path: start without build if the image already exists.
-        code, out = _run_updater_ephemeral(
+        code, out = await asyncio.to_thread(
+            _run_updater_ephemeral,
             host_root,
             env={"PROJECT_ROOT": host_root},
-            command=_compose_up_cmd("local_ai_server", build=False),
+            command=_compose_service_command("local_ai_server", build=False),
             timeout_sec=120,
         )
         if code == 0:
@@ -2307,10 +2267,11 @@ async def start_local_ai_server():
         if any(m.lower() in err.lower() for m in needs_build_markers):
             # Slow path: build required
             print("DEBUG: Image needs build, starting build+up (this may take several minutes)...")
-            code2, out2 = _run_updater_ephemeral(
+            code2, out2 = await asyncio.to_thread(
+                _run_updater_ephemeral,
                 host_root,
                 env={"PROJECT_ROOT": host_root},
-                command=_compose_up_cmd("local_ai_server", build=True),
+                command=_compose_service_command("local_ai_server", build=True),
                 timeout_sec=1800,  # 30 min for GPU builds
             )
             if code2 == 0:

@@ -10,6 +10,7 @@ import logging
 import re
 import shlex
 import subprocess
+import signal
 import threading
 import tempfile
 import time
@@ -117,6 +118,30 @@ def _compose_files_flags_for_service(service_name: str) -> str:
         return ""
 
     return "-f docker-compose.yml -f docker-compose.gpu.yml"
+
+
+def _compose_service_command(
+    service: str, *, build: bool, build_only: bool = False,
+    no_cache: bool = False, build_args: Optional[List[str]] = None,
+    recreate: bool = False,
+) -> str:
+    """Build selected images before starting them, retaining the same topology."""
+    if service not in {"ai_engine", "admin_ui", "local_ai_server"}:
+        raise ValueError("Unsupported Compose service")
+    compose_options = shlex.split(_compose_files_flags_for_service(service))
+    compose_options += ["-p", "asterisk-ai-voice-agent"]
+    commands = ["set -euo pipefail", 'cd "$PROJECT_ROOT"']
+    if build:
+        options = (["--no-cache"] if no_cache else []) + list(build_args or [])
+        commands.append(shlex.join([
+            "bash", "./scripts/compose-build.sh", *compose_options, *options, service,
+        ]))
+    if not build_only:
+        commands.append(shlex.join([
+            "docker", "compose", *compose_options, "up", "-d", "--no-build", "--pull", "never",
+            *(["--force-recreate"] if recreate else []), service,
+        ]))
+    return "; ".join(commands)
 
 
 def _compose_files_flags_for_recovery(
@@ -393,23 +418,13 @@ async def start_container(container_id: str):
     host_root = _project_host_root_from_admin_ui_container()
     logger.info("Starting %s via updater-runner (host_root=%s)", _sanitize_for_log(service_name), _sanitize_for_log(host_root))
 
-    def _compose_up_cmd(svc: str, *, build: bool) -> str:
-        flag = "--build" if build else "--no-build"
-        compose_files = _compose_files_flags_for_service(svc)
-        compose_prefix = f"{compose_files} " if compose_files else ""
-        return (
-            "set -euo pipefail; "
-            "cd \"$PROJECT_ROOT\"; "
-            f"docker compose {compose_prefix}-p asterisk-ai-voice-agent up -d {flag} {svc}"
-        )
-
     try:
         if service_name == "local_ai_server":
             # Fast path: start without build if the image already exists.
             code, out = _run_updater_ephemeral(
                 host_root,
                 env={"PROJECT_ROOT": host_root},
-                command=_compose_up_cmd(service_name, build=False),
+                command=_compose_service_command(service_name, build=False),
                 timeout_sec=120,
             )
             if code == 0:
@@ -427,7 +442,7 @@ async def start_container(container_id: str):
                 code2, out2 = _run_updater_ephemeral(
                     host_root,
                     env={"PROJECT_ROOT": host_root},
-                    command=_compose_up_cmd(service_name, build=True),
+                    command=_compose_service_command(service_name, build=True),
                     timeout_sec=1800,
                 )
                 if code2 == 0:
@@ -439,7 +454,7 @@ async def start_container(container_id: str):
         code, out = _run_updater_ephemeral(
             host_root,
             env={"PROJECT_ROOT": host_root},
-            command=_compose_up_cmd(service_name, build=True),
+            command=_compose_service_command(service_name, build=True),
             timeout_sec=600,
         )
         if code == 0:
@@ -862,14 +877,9 @@ async def _start_via_compose(container_id: str, service_map: dict):
     
     try:
         host_root = _project_host_root_from_admin_ui_container()
-        build_flag = "--build" if service_name == "local_ai_server" else "--no-build"
         timeout_sec = 1800 if service_name == "local_ai_server" else 300
-        compose_files = _compose_files_flags_for_service(service_name)
-        compose_prefix = f"{compose_files} " if compose_files else ""
-        cmd = (
-            "set -euo pipefail; "
-            "cd \"$PROJECT_ROOT\"; "
-            f"docker compose {compose_prefix}-p asterisk-ai-voice-agent up -d {build_flag} {service_name}"
+        cmd = _compose_service_command(
+            service_name, build=service_name == "local_ai_server",
         )
 
         code, out = _run_updater_ephemeral(
@@ -3115,7 +3125,11 @@ def _build_checks(os_info, docker_info, compose_info, selinux_info, dir_info, as
             "action": {
                 "type": "command",
                 "label": "Rebuild Admin UI",
-                "value": "docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui",
+                "value": (
+                    "./scripts/compose-build.sh -p asterisk-ai-voice-agent admin_ui && "
+                    "docker compose -p asterisk-ai-voice-agent up -d "
+                    "--no-build --pull never --force-recreate admin_ui"
+                ),
                 "docs_url": _github_docs_url("docs/INSTALLATION.md"),
                 "docs_label": "AAVA installation docs",
             },
@@ -4132,14 +4146,22 @@ def _run_docker_with_updater_status(
         started_at=started,
     )
     try:
+        command = ["docker", *args]
+        if args[0] == "build":
+            from pathlib import Path
+            runner = Path("/usr/local/bin/aava-compose-build")
+            if not runner.is_file():  # backend development outside its image
+                runner = Path(__file__).resolve().parents[3] / "cli/internal/buildpolicy/compose-build.sh"
+            command = ["bash", str(runner), "--docker-build", *args[1:]]
         proc = subprocess.Popen(
-            ["docker", *args],
+            command,
             cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
             env=os.environ.copy(),
+            start_new_session=True,
         )
     except Exception as e:
         _write_updater_image_status(
@@ -4167,7 +4189,12 @@ def _run_docker_with_updater_status(
     try:
         while True:
             if deadline is not None and time.monotonic() > deadline:
-                proc.kill()
+                # The shared runner owns Docker subprocesses; cancel the whole
+                # process group so a timed-out build cannot continue in the background.
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 rest = ""
                 try:
                     rest, _ = proc.communicate(timeout=5)
@@ -4635,7 +4662,6 @@ def _ensure_updater_image_for_sha(
             safe_tag = _validate_docker_image_ref(tag)
             args = [
                 "build",
-                "--network=host",
                 "--label",
                 f"aava.updater.source={source_label}",
             ]
@@ -4658,26 +4684,13 @@ def _ensure_updater_image_for_sha(
                     shutil.rmtree(cleanup_context, ignore_errors=True)
             if code != 0:
                 tail = "\n".join((out or "").splitlines()[-40:]).strip()
-                # AAVA-179: Detect DNS resolution failures and provide a targeted fix
-                dns_keywords = ["could not resolve", "temporary failure in name resolution",
-                                "no such host", "dns", "getaddrinfo", "resolve host"]
-                is_dns_issue = any(k in (out or "").lower() for k in dns_keywords)
-                if is_dns_issue:
-                    hint = (
-                        "DNS resolution failed during Docker image build.\n\n"
-                        "Fix: Add DNS servers to Docker daemon config and restart:\n"
-                        '  echo \'{"dns": ["8.8.8.8", "8.8.4.4"]}\' | sudo tee /etc/docker/daemon.json\n'
-                        "  sudo systemctl restart docker\n\n"
-                        "Then retry the update from the Admin UI."
-                    )
-                else:
-                    hint = (
-                        "If this fails due to DNS/egress restrictions, try:\n"
-                        '  echo \'{"dns": ["8.8.8.8", "8.8.4.4"]}\' | sudo tee /etc/docker/daemon.json\n'
-                        "  sudo systemctl restart docker\n\n"
-                        "Or update via CLI:\n"
-                        "  agent update"
-                    )
+                hint = (
+                    "Check the builder selected by BUILDX_BUILDER (default: default) with the same Docker identity. "
+                    "FROM/registry metadata uses BuildKit daemon networking; RUN downloads use build-step networking. "
+                    "Check DNS, proxy, registry credentials/rate limits and available disk space in the failing layer. "
+                    "No Docker configuration was changed. Preserve existing daemon settings; schedule any required "
+                    "daemon changes/restart with the operator. Retry the update after resolving connectivity."
+                )
                 if tail:
                     logger.error("Updater build failed (tail):\n%s", tail)
                     raise HTTPException(status_code=500, detail=f"Failed to build updater image:\n{tail}\n\n{hint}")
@@ -4830,6 +4843,8 @@ def _run_updater_ephemeral(
             source_ref=source_ref,
         )
 
+    env = dict(env or {})
+    env.setdefault("BUILDX_BUILDER", os.environ.get("BUILDX_BUILDER") or "default")
     client = docker.from_env()
     name = f"aava-update-ephemeral-{uuid.uuid4().hex[:10]}"
 
@@ -4843,9 +4858,9 @@ def _run_updater_ephemeral(
         host_docker_sock: {"bind": "/var/run/docker.sock", "mode": "rw"},
     }
 
-    # AAVA-179: Add DNS fallback so containers can resolve hostnames even when
-    # the Docker daemon's default DNS is broken (common on Ubuntu with systemd-resolved).
-    dns_fallback = ["8.8.8.8", "8.8.4.4"]
+    # Inherit the daemon's configured resolvers/proxy environment. Public DNS
+    # overrides can break private or restricted networks and cannot repair the
+    # separate BuildKit daemon's registry/metadata resolution.
 
     try:
         if command:
@@ -4859,7 +4874,6 @@ def _run_updater_ephemeral(
                 environment=env,
                 volumes=volumes,
                 name=name,
-                dns=dns_fallback,
                 detach=True,
             )
         else:
@@ -4868,7 +4882,6 @@ def _run_updater_ephemeral(
                 environment=env,
                 volumes=volumes,
                 name=name,
-                dns=dns_fallback,
                 detach=True,
             )
 
@@ -5597,6 +5610,7 @@ async def updates_plan(
     local_changes = _validate_update_local_changes(local_changes)
     env = {
         "PROJECT_ROOT": host_root,
+        "BUILDX_BUILDER": os.environ.get("BUILDX_BUILDER") or "default",
         "AAVA_UPDATE_MODE": "plan",
         "AAVA_UPDATE_INCLUDE_UI": "true" if include_ui else "false",
         "AAVA_UPDATE_REMOTE": "origin",
@@ -5766,6 +5780,7 @@ async def updates_run(body: UpdateRunRequest):
     # Use the already validated ref.
     env = {
         "PROJECT_ROOT": host_root,
+        "BUILDX_BUILDER": os.environ.get("BUILDX_BUILDER") or "default",
         "AAVA_UPDATE_MODE": "run",
         "AAVA_UPDATE_JOB_ID": job_id,
         "AAVA_UPDATE_INCLUDE_UI": "true" if body.include_ui else "false",
@@ -5904,6 +5919,7 @@ async def updates_rollback(body: UpdateRollbackRequest):
     }
     env = {
         "PROJECT_ROOT": host_root,
+        "BUILDX_BUILDER": os.environ.get("BUILDX_BUILDER") or "default",
         "AAVA_UPDATE_MODE": "rollback",
         "AAVA_UPDATE_JOB_ID": job_id,
         "AAVA_UPDATE_ROLLBACK_FROM_JOB": from_job_id,

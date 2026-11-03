@@ -42,6 +42,10 @@ func withAIEngineRunningForActiveRouteRead(t *testing.T, running bool) {
 func withDockerActionState(t *testing.T, running string, existing map[string]bool) *[]string {
 	t.Helper()
 	commands := []string{}
+	originalBuild := runComposeBuildForUpdate
+	runComposeBuildForUpdate = func(services []string) (string, error) {
+		return runDockerCommandForUpdate("docker", append([]string{"compose", "build"}, services...)...)
+	}
 	originalRun := runDockerCommandForUpdate
 	originalProbe := queryActiveCallsForUpdate
 	queryActiveCallsForUpdate = func() (int, bool, error) { return 0, true, nil }
@@ -62,6 +66,7 @@ func withDockerActionState(t *testing.T, running string, existing map[string]boo
 	updateIncludeUI = false
 	updateForceRecreate = false
 	t.Cleanup(func() {
+		runComposeBuildForUpdate = originalBuild
 		runDockerCommandForUpdate = originalRun
 		queryActiveCallsForUpdate = originalProbe
 		existingComposeServicesForUpdate = originalExisting

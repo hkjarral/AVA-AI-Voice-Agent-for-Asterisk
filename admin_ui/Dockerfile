@@ -35,7 +35,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     && chmod a+r /etc/apt/keyrings/docker.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
+    && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin docker-buildx-plugin \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -47,6 +47,9 @@ RUN useradd --create-home -u 1000 appuser
 # Install Python dependencies (bcrypt has manylinux wheels, no gcc needed)
 COPY admin_ui/backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Package the shared build runner independently of the mounted/rollback source.
+COPY cli/internal/buildpolicy/compose-build.sh /usr/local/bin/aava-compose-build
 
 # Copy backend code
 COPY admin_ui/backend/ .

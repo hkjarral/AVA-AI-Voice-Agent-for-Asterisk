@@ -15,6 +15,17 @@ print_info() {
     echo -e "${COLOR_BLUE}INFO: $1${COLOR_RESET}"
 }
 
+# Build first so Compose startup cannot bypass the entitlement-aware helper.
+build_and_start_service() (
+    local service="$1"
+    local install_root
+    install_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    cd "$install_root" || exit 1
+    AAVA_COMPOSE_BIN="${COMPOSE_BIN:-}" COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-asterisk-ai-voice-agent}" \
+        bash ./scripts/compose-build.sh "$service" || exit 1
+    $COMPOSE up -d --no-build --pull never "$service"
+)
+
 # Determine sudo usable globally
 if [ "$(id -u)" -ne 0 ]; then SUDO="sudo"; else SUDO=""; fi
 
@@ -389,10 +400,21 @@ check_docker() {
 }
 
 choose_compose_cmd() {
-    if command -v docker-compose >/dev/null 2>&1; then
-        COMPOSE="docker-compose -p asterisk-ai-voice-agent"
+    if ! [[ "${COMPOSE_PROJECT_NAME:-asterisk-ai-voice-agent}" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+        print_error "Invalid COMPOSE_PROJECT_NAME"; return 2
+    fi
+    if [ -n "${AAVA_COMPOSE_BIN:-}" ]; then
+        if [[ "$AAVA_COMPOSE_BIN" =~ [[:space:]] ]] || ! "$AAVA_COMPOSE_BIN" version >/dev/null 2>&1; then
+            print_error "AAVA_COMPOSE_BIN must name a working Compose executable without spaces"; return 2
+        fi
+        COMPOSE_BIN="$AAVA_COMPOSE_BIN"
+        COMPOSE="$COMPOSE_BIN -p ${COMPOSE_PROJECT_NAME:-asterisk-ai-voice-agent}"
     elif docker compose version >/dev/null 2>&1; then
-        COMPOSE="docker compose -p asterisk-ai-voice-agent"
+        COMPOSE="docker compose -p ${COMPOSE_PROJECT_NAME:-asterisk-ai-voice-agent}"
+        COMPOSE_BIN=""
+    elif command -v docker-compose >/dev/null 2>&1; then
+        COMPOSE="docker-compose -p ${COMPOSE_PROJECT_NAME:-asterisk-ai-voice-agent}"
+        COMPOSE_BIN="docker-compose"
     else
         print_error "Neither 'docker-compose' nor 'docker compose' is available. Please install Docker Compose."
         exit 1
@@ -506,7 +528,7 @@ ensure_docker_sock_env() {
         print_info "Detected rootless container runtime; set DOCKER_SOCK in .env for Admin UI container control"
         print_info "  DOCKER_SOCK=$desired_sock"
         print_info "  If admin_ui is already running, recreate it to apply the mount:"
-        print_info "  docker compose -p asterisk-ai-voice-agent up -d --force-recreate admin_ui"
+        print_info "  docker compose -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui"
     fi
 }
 
@@ -764,7 +786,7 @@ wait_for_local_ai_health() {
     
     # Ensure service started (build if needed)
     print_info "Starting local_ai_server container..."
-    $COMPOSE up -d --build local_ai_server
+    build_and_start_service local_ai_server || return 1
     echo ""
     
     # Wait up to 10 minutes (60 iterations * 10s)
@@ -1008,7 +1030,7 @@ configure_env() {
     [ -f .env.bak ] && rm -f .env.bak || true
 
     print_success ".env updated."
-    print_info "If you don't have API keys now, you can add them later to .env and then recreate containers: 'docker compose -p asterisk-ai-voice-agent up -d' (use '--build' if images changed). Note: simple 'restart' will not pick up new .env values."
+    print_info "If you don't have API keys now, you can add them later to .env and recreate selected containers with '--no-build --pull never --force-recreate'. If images changed, build those services first with './scripts/compose-build.sh'. Simple 'restart' will not pick up new .env values."
 }
 
 select_config_template() {
@@ -1444,13 +1466,13 @@ start_services() {
             print_info "Note: First startup may take 5-10 minutes to load models"
             print_info "Monitor progress: $COMPOSE logs -f local_ai_server"
             echo ""
-            wait_for_local_ai_health
+            wait_for_local_ai_health || return 1
         fi
         
         # Always start ai_engine
         print_info "Starting ai_engine (orchestrator)..."
         echo ""
-        $COMPOSE up -d --build ai_engine
+        build_and_start_service ai_engine || return 1
         
         # Post-start validation
         validate_services
@@ -1502,10 +1524,11 @@ start_services() {
 
         if [[ "$start_admin_ui" =~ ^[Yy]$|^$ ]]; then
             print_info "Starting Admin UI..."
-            $COMPOSE up -d --build admin_ui
+            build_and_start_service admin_ui || return 1
         else
             print_info "Skipped starting Admin UI. You can start it later with:"
-            print_info "  $COMPOSE up -d admin_ui"
+            print_info "  AAVA_COMPOSE_BIN=${COMPOSE_BIN:-} COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&"
+            print_info "    $COMPOSE up -d --no-build --pull never admin_ui"
         fi
 
         echo ""
@@ -1539,7 +1562,8 @@ start_services() {
     else
         echo ""
         print_info "Setup complete. Start services later with:"
-        print_info "  $COMPOSE up --build -d"
+        print_info "  AAVA_COMPOSE_BIN=${COMPOSE_BIN:-} COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh ai_engine admin_ui &&"
+        print_info "    $COMPOSE up -d --no-build --pull never ai_engine admin_ui"
     fi
 
     # Always print recommended Asterisk dialplan snippet
@@ -1802,15 +1826,86 @@ print_final_summary() {
     print_info "  6. Optional: Set up monitoring (see instructions above)"
 }
 
+# Bootstrap management first; the Setup Wizard owns provider/PBX configuration
+# and optional engine/Local AI startup. Existing headless installation is retained.
+bootstrap_ui() {
+    ( umask 077; ensure_env_file ) || return 1
+    # Preserve existing values; a fresh .env must bind host operations to this
+    # checkout rather than the example's maintainer path.
+    local host_root socket_gid jwt
+    host_root="$(pwd -P)"
+    upsert_env HOST_PROJECT_ROOT "$host_root"
+    ensure_docker_sock_env
+    socket_gid="$(stat -c '%g' "${DOCKER_SOCK:-/var/run/docker.sock}" 2>/dev/null || stat -f '%g' "${DOCKER_SOCK:-/var/run/docker.sock}" 2>/dev/null || true)"
+    [ -z "$socket_gid" ] || upsert_env DOCKER_GID "$socket_gid"
+    if ! grep -qE '^JWT_SECRET=.+$' .env || grep -qE '^JWT_SECRET=(changeme|change-me-please)$' .env; then
+        jwt="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" || return 1
+        upsert_env JWT_SECRET "$jwt"
+    fi
+    setup_data_directory || return 1
+    setup_secrets_directory || return 1
+    # Host-user writability does not establish access for the container's UID
+    # 1000 (especially after a root-run or partially applied preflight). Prepare
+    # only these directory entries; leave existing database/media files intact.
+    mkdir -p asterisk_media || return 1
+    $SUDO chown "1000:$AST_GID" data asterisk_media || return 1
+    $SUDO chmod 2775 data asterisk_media || return 1
+    rm -f .env.bak
+    $SUDO chown "1000:$(id -g)" .env || return 1
+    $SUDO chmod 640 .env || return 1
+    build_and_start_service admin_ui || return 1
+    local attempt ready=false
+    for attempt in $(seq 1 30); do
+        if $COMPOSE exec -T admin_ui python -c 'import os, urllib.request; host = os.environ.get("UVICORN_HOST", "127.0.0.1"); host = "127.0.0.1" if host in ("0.0.0.0", "::") else host; port = os.environ.get("UVICORN_PORT", "3003"); host = "[" + host + "]" if ":" in host else host; urllib.request.urlopen("http://%s:%s/health" % (host, port), timeout=2)' >/dev/null 2>&1; then
+            ready=true
+            break
+        fi
+        sleep 1
+    done
+    if [ "$ready" = false ]; then
+        print_error "Admin UI did not become healthy. Inspect: $COMPOSE logs --tail 80 admin_ui"
+        return 1
+    fi
+    local ui_port
+    ui_port="$($COMPOSE exec -T admin_ui python -c 'import os; print(os.environ.get("UVICORN_PORT", "3003"))')" || return 1
+    print_success "Admin UI is healthy. Open http://<server-ip>:${ui_port:-3003}"
+    print_info "Retrieve the one-time password: $COMPOSE logs admin_ui | grep -i password"
+    print_info "Complete the Setup Wizard, then start the AI Engine and selected Local AI components. Restrict port 3003 to trusted access."
+}
+
 # --- Main ---
 main() {
     echo "=========================================="
     echo " Asterisk AI Voice Agent Installation"
     echo "=========================================="
 
-    maybe_run_preflight
+    local ui_only=false
+    case "${1:-}" in
+        --ui) ui_only=true ;;
+        "") ;;
+        --help|-h) echo "Usage: ./install.sh [--ui] (default: interactive/headless installation)"; return 0 ;;
+        *) print_error "Unknown option: $1"; return 2 ;;
+    esac
+    [ "$#" -le 1 ] || { print_error "Too many arguments"; return 2; }
+    cd "$(dirname "${BASH_SOURCE[0]}")" || return 1
+    # The UI bootstrap follows the explicit system preflight in Quick Start;
+    # avoid launching that interactive preparation a second time.
+    [ "$ui_only" = true ] || maybe_run_preflight
+    if [ -z "${DOCKER_HOST:-}" ]; then
+        export DOCKER_CONTEXT="${DOCKER_CONTEXT:-$(docker context show)}"
+    fi
     check_docker
-    choose_compose_cmd
+    choose_compose_cmd || return 1
+    # Revalidate under the actual installer identity, even if preflight ran with
+    # sudo or INSTALL_NONINTERACTIVE skipped its optional system checks.
+    export BUILDX_BUILDER="${BUILDX_BUILDER:-default}"
+    local build_report
+    build_report="$(AAVA_COMPOSE_BIN="${COMPOSE_BIN:-}" bash ./preflight.sh --build-check)" || return 1
+    print_info "Build readiness: $build_report"
+    if [ "$ui_only" = true ]; then
+        bootstrap_ui
+        return $?
+    fi
     check_asterisk_modules
     configure_env
     select_config_template
@@ -1821,4 +1916,4 @@ main() {
     start_services
 }
 
-main
+main "$@"

@@ -364,7 +364,7 @@ def test_rollback_builds_before_reconcile_and_archives_pending_only_on_success()
     assert rollback.count("guard_rollback_active_calls") == 2
     dockerfile = (ROOT / "updater" / "Dockerfile").read_text(encoding="utf-8")
     assert "docker-buildx-plugin" in dockerfile
-    assert "COPY scripts/compose-build.sh /usr/local/bin/aava-compose-build" in dockerfile
+    assert "COPY cli/internal/buildpolicy/compose-build.sh /usr/local/bin/aava-compose-build" in dockerfile
 
 
 def test_source_built_cli_is_written_as_the_project_owner() -> None:
