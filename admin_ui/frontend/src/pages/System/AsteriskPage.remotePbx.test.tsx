@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import '@testing-library/jest-dom/vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import axios from 'axios';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -46,6 +46,13 @@ describe('AsteriskPage remote PBX checklist', () => {
         render(<AsteriskPage />);
 
         await waitFor(() => expect(screen.getByText('Remote')).toBeInTheDocument());
+
+        expect(screen.getByText('Connected', { exact: true })).toBeInTheDocument();
+        expect(screen.getByText('22.0.0', { exact: true })).toBeInTheDocument();
+        const moduleRow = screen.getByText('res_ari.so', { exact: true }).closest('div.flex.items-center.justify-between');
+        expect(moduleRow).not.toBeNull();
+        expect(within(moduleRow as HTMLElement).getByText('Running', { exact: true })).toBeInTheDocument();
+        expect(screen.getByText('Registered', { exact: true })).toBeInTheDocument();
 
         expect(screen.getByText(/Remote PBX file checks belong on the Asterisk host/)).toBeInTheDocument();
         expect(screen.getByText(/Local Asterisk audit skipped because preflight did not detect a local configuration directory/)).toBeInTheDocument();

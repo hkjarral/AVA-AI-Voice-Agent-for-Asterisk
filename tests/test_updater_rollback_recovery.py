@@ -63,6 +63,11 @@ def test_rollback_recovery_preserves_runtime_and_pending_state(tmp_path, failure
     bin_path.mkdir()
     docker = bin_path / "docker"
     docker.write_text("""#!/bin/sh
+if [ "$1 $2" = 'compose version' ]; then exit 0; fi
+if [ "$1 $2" = 'context show' ]; then echo default; exit 0; fi
+if [ "$1" = info ]; then echo synthetic; exit 0; fi
+if [ "$1 $2" = 'buildx inspect' ]; then printf 'Driver: docker\\nStatus: running\\n'; exit 0; fi
+case " $* " in *' --help '*) echo '--print --allow --load'; exit 0;; esac
 printf '%s\\n' "$*" >> "$TEST_COMMANDS"
 if [ "$1 $2" = 'compose ps' ]; then
   case "$TEST_FAILURE" in remote-*) echo local_ai_server;; *)
@@ -72,7 +77,10 @@ elif [ "$1" = exec ]; then
   n=$((n + 1)); echo "$n" > "$TEST_PROBES"
   if [ "$TEST_FAILURE" = late-call ] && [ "$n" -gt 1 ]; then echo 2; else echo 0; fi
 elif [ "$1 $2 $3" = 'compose build --print' ]; then
-  echo '{"group":{"default":{"targets":["selected"]}},"target":{"selected":{"network":"host","tags":["synthetic:latest"]}}}'
+  python3 - "$@" <<'PYBAKE'
+import json, sys
+print(json.dumps({"target": {s: {"network": "host"} for s in sys.argv if s in ("admin_ui", "ai_engine", "local_ai_server")}}))
+PYBAKE
 elif [ "$1 $2" = 'compose build' ]; then
   echo 'additional privileges requested: pass "--allow=network.host" to grant requested privileges' >&2
   exit 1
@@ -134,4 +142,10 @@ exit 0
     else:
         target = "local_ai_server" if remote else "ai_engine"
         assert commands.index(f"compose build {target}") < next(i for i, command in enumerate(commands) if command.startswith("compose up"))
-        assert "buildx bake --file - --allow=network.host --load" in commands
+        bakes = [c for c in commands if c.startswith("buildx bake --file - --allow=network.host --load ")]
+        assert bakes
+        expected_targets = {"local_ai_server"} if remote else {"ai_engine", "local_ai_server"}
+        # Rollback builds each image separately, then reconciles only services
+        # that were running. Every Bake invocation must stay on that one target.
+        assert all(len(c.split()[6:]) == 1 and set(c.split()[6:]) <= expected_targets for c in bakes), bakes
+        assert {c.split()[6] for c in bakes} == expected_targets

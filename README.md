@@ -42,26 +42,35 @@ instead of cloning another installation.
 
 On the AVA host:
 
-Run the pinned commands below only after v7.7.1 appears in
-[GitHub Releases](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases).
-Before publication, use the latest published release for stable installations.
-For maintainer source evaluation only (unstable):
-`git clone --branch main https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git`.
+For a release-pinned installation, clone the version matching the release
+metadata once it is published, then follow the guide in that checkout:
 
 ```bash
 git clone --branch v7.7.1 https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
-cd AVA-AI-Voice-Agent-for-Asterisk
-sudo ./preflight.sh --apply-fixes
-docker compose -p asterisk-ai-voice-agent up -d --build admin_ui
 ```
 
-Preflight prepares `.env`, generates the JWT secret, and checks PBX/media
-permissions. Review its findings before continuing.
+For source evaluation, the separate bootstrap below includes the unreleased #802
+build fixes. v7.7.1 does not have `install.sh --ui`; use its guide and the
+[older-checkout recovery](docs/CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
+
+```bash
+git clone --branch main https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+cd AVA-AI-Voice-Agent-for-Asterisk
+sudo ./preflight.sh --apply-fixes
+./install.sh --ui
+```
+
+Review preflight's findings before continuing. The installer rechecks Docker
+build readiness as your current user, prepares `.env`, and builds/starts only the
+Admin UI. It selects Compose automatically and handles the scoped
+`network.host` entitlement retry. Builds use the active Docker context's built-in
+builder unless you explicitly set `BUILDX_BUILDER`. No preliminary `docker pull`
+or custom insecure builder is required. See [build troubleshooting](docs/BUILD_TROUBLESHOOTING.md).
 
 Open `http://<server-ip>:3003`. Retrieve the one-time admin password:
 
 ```bash
-docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password
+docker logs admin_ui | grep -i password
 ```
 
 Change the password at first login. **Restrict port 3003 to trusted access** using

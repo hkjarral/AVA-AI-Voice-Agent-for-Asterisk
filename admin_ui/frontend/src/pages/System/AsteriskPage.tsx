@@ -392,7 +392,8 @@ const AsteriskPage = () => {
                                     <AlertCircle className="w-4 h-4 mt-0.5" />
                                     <div>
                                         <p>Ava-host preflight manifest is unavailable.</p>
-                                        <p className="mt-1">Run <code className="px-1.5 py-0.5 rounded bg-muted text-xs font-mono">./preflight.sh</code> on the Ava host to restore local audit evidence.</p>
+                                        <p className="mt-1">To restore local audit evidence, run <code className="px-1.5 py-0.5 rounded bg-muted text-xs font-mono">sudo ./preflight.sh --apply-fixes</code> on the Ava host.</p>
+                                        <p className="mt-1">This also applies system and configuration fixes. Review <code className="px-1.5 py-0.5 rounded bg-muted text-xs font-mono">./preflight.sh</code> output first; check-only mode does not write the manifest.</p>
                                     </div>
                                 </div>
                             ) : manifest.asterisk_found ? (

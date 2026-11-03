@@ -26,12 +26,32 @@ log_warn() { echo -e "${YELLOW}⚠${NC} $1"; WARNINGS+=("$1"); }
 log_fail() { echo -e "${RED}✗${NC} $1"; FAILURES+=("$1"); }
 log_info() { echo -e "${BLUE}ℹ${NC} $1"; }
 
+admin_ui_recreate_command() {
+    # Some Docker/rootless hints are printed before check_compose selects a mode.
+    local compose_cmd="${COMPOSE_CMD:-}"
+    if [ -z "$compose_cmd" ]; then
+        if docker compose version >/dev/null 2>&1; then
+            compose_cmd="docker compose"
+        elif command -v docker-compose >/dev/null 2>&1; then
+            compose_cmd="docker-compose"
+        else
+            compose_cmd="docker compose"
+        fi
+    fi
+    local build_env=""
+    if [ "$compose_cmd" = docker-compose ]; then
+        build_env="AAVA_COMPOSE_BIN=docker-compose "
+    fi
+    printf '%s\n' "${build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui && ${compose_cmd} -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui"
+}
+
 # State
 WARNINGS=()
 FAILURES=()
 FIX_CMDS=()          # Commands that --apply-fixes will run
 MANUAL_CMDS=()       # Commands user must run manually (e.g., reboot/logout)
 APPLY_FIXES=false
+BUILD_CHECK_ONLY=false
 FORCE_MODE=false
 DOCKER_ROOTLESS=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -288,6 +308,7 @@ LOCAL_SERVER_ONLY=false
 for arg in "$@"; do
     case $arg in
         --apply-fixes) APPLY_FIXES=true ;;
+        --build-check) BUILD_CHECK_ONLY=true ;;
         --force) FORCE_MODE=true ;;
         --local-server|--local-ai-server) LOCAL_SERVER_ONLY=true ;;
         --local-ai-mode=*) LOCAL_AI_MODE_OVERRIDE="${arg#*=}" ;;
@@ -301,6 +322,7 @@ for arg in "$@"; do
             echo ""
             echo "Options:"
             echo "  --apply-fixes  Apply fixes automatically (requires root/sudo)"
+            echo "  --build-check  Read-only JSON build readiness for the current user/context"
             echo "  --force        Downgrade unsupported-OS failure to warning (for users with Docker pre-installed)"
             echo "  --local-server Run only checks needed to bring up local_ai_server (skips Asterisk/Admin UI)"
             echo "  --local-ai-mode=MODE  Set LOCAL_AI_MODE in .env (MODE=full|minimal)"
@@ -320,6 +342,13 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+# Machine-readable check used by the installer. It must execute under the
+# installer's identity and must never evaluate/supply shell environment files.
+if [ "$BUILD_CHECK_ONLY" = true ]; then
+    [ "$APPLY_FIXES" = false ] || { echo "ERR: --build-check cannot apply fixes" >&2; exit 2; }
+    exec bash "$SCRIPT_DIR/scripts/compose-build.sh" --check-json
+fi
 
 # Check for root/sudo when --apply-fixes is used
 if [ "$APPLY_FIXES" = true ] && [ "$(id -u)" -ne 0 ]; then
@@ -407,7 +436,7 @@ detect_os() {
                         sed -i 's/numpy>=1.24.0/numpy>=1.24.0,<2.0/g' "$SCRIPT_DIR/admin_ui/backend/requirements.txt" 2>/dev/null || true
                     fi
                     log_ok "NumPy pinned to <2.0 for CPU compatibility"
-                    log_info "  Rebuild containers: docker compose build --no-cache ai_engine admin_ui"
+                    log_info "  Rebuild containers: COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh --no-cache ai_engine admin_ui"
                 else
                     log_info "  Fix: Run with --apply-fixes to auto-pin numpy<2.0"
                     log_info "  Or manually edit requirements.txt: numpy>=1.24.0,<2.0"
@@ -790,7 +819,7 @@ check_docker() {
             print_fix_and_docs "$ROOTLESS_START_CMD" "$ROOTLESS_DOCS"
         else
             # Check if it's a permission issue vs not running
-            if sudo docker ps &>/dev/null 2>&1; then
+            if sudo -n docker ps &>/dev/null 2>&1; then
                 log_fail "Cannot access Docker daemon (permission denied)"
                 local DOCKER_GROUP_CMD
                 DOCKER_GROUP_CMD="$(platform_yaml_get docker.user_group_cmd || echo "sudo usermod -aG docker \$USER")"
@@ -842,7 +871,7 @@ check_docker() {
         ROOTLESS_DOCS="$(github_docs_url "$(platform_yaml_get docker.rootless_docs || echo "docs/CROSS_PLATFORM_PLAN.md")" 2>/dev/null || true)"
         log_info "  Admin UI (rootless) tip:"
         log_info "    export DOCKER_SOCK=$ROOTLESS_SOCKET"
-        log_info "    ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --force-recreate admin_ui"
+        log_info "    $(admin_ui_recreate_command)"
         [ -n "$ROOTLESS_DOCS" ] && log_info "    Docs: $ROOTLESS_DOCS"
     fi
 }
@@ -907,11 +936,11 @@ check_docker_gid() {
                 fi
                 rm -f "$SCRIPT_DIR/.env.bak" 2>/dev/null || true
                 log_ok "Updated .env with DOCKER_GID=$actual_gid"
-                log_info "  Recreate admin_ui: ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --force-recreate admin_ui"
+                log_info "  Recreate admin_ui: $(admin_ui_recreate_command)"
             else
                 FIX_CMDS+=("# Update .env with: DOCKER_GID=$actual_gid  (docker socket: $sock)")
                 FIX_CMDS+=("# Then recreate admin_ui:")
-                FIX_CMDS+=("${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --force-recreate admin_ui")
+                FIX_CMDS+=("$(admin_ui_recreate_command)")
             fi
         fi
     else
@@ -932,22 +961,8 @@ check_compose() {
         COMPOSE_CMD="docker compose"
         COMPOSE_VER=$(docker compose version --short 2>/dev/null | sed 's/^v//')
         
-        # Create docker-compose wrapper if it doesn't exist (needed for Admin UI)
-        if ! command -v docker-compose &>/dev/null; then
-            if [ "$APPLY_FIXES" = true ]; then
-                # Remove if it's a directory (broken state)
-                [ -d /usr/local/bin/docker-compose ] && rm -rf /usr/local/bin/docker-compose
-                
-                echo '#!/bin/bash
-docker compose "$@"' > /usr/local/bin/docker-compose
-                chmod +x /usr/local/bin/docker-compose
-                log_ok "Created docker-compose wrapper for compatibility"
-            else
-                log_warn "docker-compose command not found (Admin UI needs this)"
-                FIX_CMDS+=("echo '#!/bin/bash\ndocker compose \"\$@\"' > /usr/local/bin/docker-compose && chmod +x /usr/local/bin/docker-compose")
-                log_info "  Docs: $COMPOSE_AAVA_DOCS_URL"
-            fi
-        fi
+        # Admin UI/installer support the plugin directly; no host compatibility
+        # alias is required and no executable/directory is replaced here.
     elif command -v docker-compose &>/dev/null; then
         COMPOSE_CMD="docker-compose"
         local compose_raw
@@ -956,7 +971,7 @@ docker compose "$@"' > /usr/local/bin/docker-compose
 
         # docker-compose may be either v1 (EOL) or v2 standalone binary.
         # Only hard-fail on v1.
-        if [[ "$compose_raw" =~ ^v?2\. ]]; then
+        if [[ "$COMPOSE_VER" =~ ^([0-9]+)\. ]] && [ "${BASH_REMATCH[1]}" -ge 2 ]; then
             # v2 standalone binary - OK. Version validation happens below.
             :
         else
@@ -1002,33 +1017,58 @@ docker compose "$@"' > /usr/local/bin/docker-compose
         log_info "  Docs: $COMPOSE_AAVA_DOCS_URL"
     fi
     
-    # Check buildx (required for compose build)
-    local BUILDX_INSTALL_CMD="mkdir -p /usr/local/lib/docker/cli-plugins && curl -L https://github.com/docker/buildx/releases/download/v0.17.1/buildx-v0.17.1.linux-amd64 -o /usr/local/lib/docker/cli-plugins/docker-buildx && chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx"
+    # Install/upgrade official CLI packages for this platform. A pinned 0.17
+    # amd64 binary can be incompatible with Bake entitlements and ARM hosts.
+    local BUILDX_INSTALL_CMD=""
+    local COMPOSE_INSTALL_CMD=""
+    case "$OS_FAMILY" in
+        debian)
+            BUILDX_INSTALL_CMD="apt-get update && apt-get install -y docker-buildx-plugin"
+            COMPOSE_INSTALL_CMD="apt-get update && apt-get install -y docker-compose-plugin"
+            ;;
+        rhel)
+            local cli_pkg_mgr=yum
+            command -v dnf >/dev/null 2>&1 && cli_pkg_mgr=dnf
+            BUILDX_INSTALL_CMD="$cli_pkg_mgr install -y docker-buildx-plugin"
+            COMPOSE_INSTALL_CMD="$cli_pkg_mgr install -y docker-compose-plugin"
+            ;;
+    esac
+    local build_help=""
+    build_help="$($COMPOSE_CMD build --help 2>/dev/null || true)"
+    if ! echo "$build_help" | grep -Fq -- '--print'; then
+        log_fail "Compose build --print is required; upgrade Compose for this executing identity"
+        [ -z "$COMPOSE_INSTALL_CMD" ] || FIX_CMDS+=("$COMPOSE_INSTALL_CMD")
+    fi
     if docker buildx version &>/dev/null 2>&1; then
-        BUILDX_VER=$(docker buildx version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
-        BUILDX_MAJOR=$(echo "$BUILDX_VER" | cut -d. -f1)
-        BUILDX_MINOR=$(echo "$BUILDX_VER" | cut -d. -f2)
-
-        # Validate that version components are numeric before comparison
-        if [[ "$BUILDX_MAJOR" =~ ^[0-9]+$ ]] && [[ "$BUILDX_MINOR" =~ ^[0-9]+$ ]]; then
-            if [ "$BUILDX_MAJOR" -eq 0 ] && [ "$BUILDX_MINOR" -lt 17 ]; then
-                log_fail "Docker Buildx $BUILDX_VER too old - requires 0.17+ for compose build"
-                log_info "  Fix: $BUILDX_INSTALL_CMD"
-                log_info "  Docs: $COMPOSE_AAVA_DOCS_URL"
-                FIX_CMDS+=("$BUILDX_INSTALL_CMD")
-            else
-                log_ok "Docker Buildx: $BUILDX_VER"
-            fi
-        elif [ -n "$BUILDX_VER" ]; then
-            # Version detected but non-standard format
-            log_warn "Docker Buildx version non-standard: $BUILDX_VER"
-            log_info "  Skipping version check - ensure you have Buildx 0.17+ features"
+        log_ok "Docker Buildx: $(docker buildx version 2>/dev/null)"
+        local bake_help
+        bake_help="$(docker buildx bake --help 2>/dev/null || true)"
+        if ! echo "$bake_help" | grep -Fq -- '--allow' || ! echo "$bake_help" | grep -Fq -- '--load'; then
+            log_fail "Buildx Bake --allow and --load are required; upgrade Buildx"
+            [ -z "$BUILDX_INSTALL_CMD" ] || FIX_CMDS+=("$BUILDX_INSTALL_CMD")
         fi
     else
         log_fail "Docker Buildx not installed (required for docker compose build)"
-        log_info "  Fix: $BUILDX_INSTALL_CMD"
-        log_info "  Or install via package manager: apt install docker-buildx-plugin (Debian/Ubuntu)"
-        FIX_CMDS+=("$BUILDX_INSTALL_CMD")
+        [ -z "$BUILDX_INSTALL_CMD" ] || FIX_CMDS+=("$BUILDX_INSTALL_CMD")
+    fi
+    log_info "  CLI plugin install/upgrade docs: https://docs.docker.com/engine/install/"
+
+}
+
+# Shared read-only capability/builder check. Do not source reports or persist
+# sudo's Docker configuration for later commands run as the login user.
+check_build_policy() {
+    local report
+    local compose_bin=""
+    [ "$COMPOSE_CMD" != docker-compose ] || compose_bin=docker-compose
+    if report="$(AAVA_COMPOSE_BIN="$compose_bin" bash "$SCRIPT_DIR/scripts/compose-build.sh" --check-json)"; then
+        log_ok "Build policy: $report"
+        log_info "Builder connectivity is not probed by preflight. Host DNS/HTTPS checks do not validate BuildKit metadata or RUN networking."
+        if [ -n "${SUDO_USER:-}" ]; then
+            log_warn "Preflight ran as root via sudo; run ./scripts/compose-build.sh --check as $SUDO_USER before building. Docker identities/configuration may differ."
+        fi
+    else
+        log_fail "Docker build readiness failed for UID $(id -u); resolve the builder/capability error above using the same user as installation."
     fi
 }
 
@@ -1502,6 +1542,21 @@ check_selinux() {
 # Environment File
 # ============================================================================
 check_env() {
+    if [ "$APPLY_FIXES" = false ]; then
+        if [ ! -f "$SCRIPT_DIR/.env" ]; then
+            log_warn ".env is missing; run sudo ./preflight.sh --apply-fixes or ./install.sh --ui to prepare it"
+        else
+            log_ok ".env file exists (check only)"
+            local checked_secret
+            checked_secret="$(grep -E '^[[:space:]]*JWT_SECRET=' "$SCRIPT_DIR/.env" | tail -n1 | sed -E 's/^[[:space:]]*JWT_SECRET=//')"
+            checked_secret="$(printf '%s' "$checked_secret" | tr -d '\r' | xargs 2>/dev/null || printf '%s' "$checked_secret")"
+            if [ -z "$checked_secret" ] || [ "$checked_secret" = changeme ] || [ "$checked_secret" = change-me-please ]; then
+                log_warn "JWT_SECRET is empty or a known placeholder; configure a persistent secret with --apply-fixes before exposing Admin UI"
+            fi
+        fi
+        [ -z "$LOCAL_AI_MODE_OVERRIDE" ] || log_warn "--local-ai-mode requires --apply-fixes to change .env"
+        return 0
+    fi
     if [ -f "$SCRIPT_DIR/.env" ]; then
         log_ok ".env file exists"
         log_info "  Tip: For local_only pipeline, no API keys needed!"
@@ -1617,7 +1672,7 @@ check_env() {
                 rm -f "$SCRIPT_DIR/.env.bak" 2>/dev/null || true
                 log_ok "Set DOCKER_SOCK in .env for Admin UI container control"
                 log_info "  DOCKER_SOCK=${desired_sock}"
-                log_info "  Recreate admin_ui to apply: ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --force-recreate admin_ui"
+                log_info "  Recreate admin_ui to apply: $(admin_ui_recreate_command)"
             fi
         fi
     fi
@@ -2261,6 +2316,7 @@ _check_ast_module() {
 
 # Helper: write the JSON manifest to data/asterisk_status.json
 _write_asterisk_manifest() {
+    [ "$APPLY_FIXES" = true ] || return 0
     local ast_found="$1" ast_version="$2" config_dir="$3" fpbx_detected="$4" fpbx_version="$5" checks_json="$6"
     local MANIFEST_DIR="$SCRIPT_DIR/data"
     local MANIFEST_FILE="$MANIFEST_DIR/asterisk_status.json"
@@ -2399,6 +2455,10 @@ check_gpu() {
     log_ok "nvidia-container-toolkit installed"
 
     # Step 4: Test Docker GPU passthrough (skip if already verified on previous run)
+    if [ "$APPLY_FIXES" = false ]; then
+        log_info "GPU passthrough not probed in check-only mode; --apply-fixes can run the container test."
+        return 0
+    fi
     local gpu_marker="$SCRIPT_DIR/.gpu-passthrough-ok"
     if [ -f "$gpu_marker" ] && [ "$(find "$gpu_marker" -mmin -60 2>/dev/null)" ]; then
         log_ok "Docker GPU passthrough: verified (cached)"
@@ -2435,7 +2495,12 @@ check_gpu() {
             log_info "  To use GPU for LLM inference (optional, faster responses):"
             log_info "    1. Set LOCAL_LLM_GPU_LAYERS=-1 in .env"
             log_info "    2. Start local_ai_server with GPU override:"
-            log_info "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent -f docker-compose.yml -f docker-compose.gpu.yml up -d --build local_ai_server"
+            local compose_build_env=""
+            if [ "${COMPOSE_CMD:-docker compose}" = docker-compose ]; then
+                compose_build_env="AAVA_COMPOSE_BIN=docker-compose "
+            fi
+            log_info "       ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh -f docker-compose.yml -f docker-compose.gpu.yml local_ai_server &&"
+            log_info "         ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent -f docker-compose.yml -f docker-compose.gpu.yml up -d --no-build --pull never local_ai_server"
         else
             log_warn "Docker GPU passthrough test failed"
             log_info "  GPU detected and toolkit installed, but Docker cannot access GPU"
@@ -2447,6 +2512,10 @@ check_gpu() {
 
 # Helper: Update GPU_AVAILABLE in .env
 update_env_gpu() {
+    if [ "$APPLY_FIXES" = false ]; then
+        log_info "GPU_AVAILABLE=$1 detected; .env unchanged (check only)"
+        return 0
+    fi
     local gpu_value="$1"
     local passthrough_verified="${2:-false}"
     
@@ -2615,9 +2684,13 @@ check_host_project_root() {
 
     if [ -z "$current_root" ]; then
         # Not set — seed it with the actual project directory
-        echo "" >> "$SCRIPT_DIR/.env"
-        echo "HOST_PROJECT_ROOT=$SCRIPT_DIR" >> "$SCRIPT_DIR/.env"
-        log_ok "Set HOST_PROJECT_ROOT=$SCRIPT_DIR in .env"
+        if [ "$APPLY_FIXES" = true ]; then
+            echo "" >> "$SCRIPT_DIR/.env"
+            echo "HOST_PROJECT_ROOT=$SCRIPT_DIR" >> "$SCRIPT_DIR/.env"
+            log_ok "Set HOST_PROJECT_ROOT=$SCRIPT_DIR in .env"
+        else
+            log_warn "HOST_PROJECT_ROOT is missing; run with --apply-fixes to set the actual checkout path"
+        fi
         log_info "  Required for Admin UI container management (docker compose bind mount)"
     elif [ "$current_root" != "$SCRIPT_DIR" ]; then
         log_warn "HOST_PROJECT_ROOT=$current_root does not match actual project dir: $SCRIPT_DIR"
@@ -2669,6 +2742,7 @@ apply_fixes() {
         check_ipv6 >/dev/null 2>&1
         check_docker >/dev/null 2>&1
         check_compose >/dev/null 2>&1
+        check_build_policy >/dev/null 2>&1
         check_directories >/dev/null 2>&1
         check_project_permissions >/dev/null 2>&1
         check_data_permissions >/dev/null 2>&1
@@ -2695,6 +2769,10 @@ apply_fixes() {
 # Summary
 # ============================================================================
 print_summary() {
+    local compose_build_env=""
+    if [ "${COMPOSE_CMD:-docker compose}" = docker-compose ]; then
+        compose_build_env="AAVA_COMPOSE_BIN=docker-compose "
+    fi
     echo ""
     echo "========================================"
     echo "Pre-flight Summary"
@@ -2724,8 +2802,14 @@ print_summary() {
         echo ""
     fi
     
+    if [ "$LOCAL_SERVER_ONLY" = false ] && [ ${#FAILURES[@]} -eq 0 ]; then
+        echo "Recommended Admin UI bootstrap: ./install.sh --ui"
+        echo "  Selects Compose, checks the build identity, prepares .env and waits for UI health."
+        echo "  Complete the Setup Wizard before starting the engine or selected Local AI."
+        echo ""
+    fi
     if [ ${#FAILURES[@]} -eq 0 ] && [ ${#WARNINGS[@]} -eq 0 ]; then
-        touch "$SCRIPT_DIR/.preflight-ok"
+        [ "$APPLY_FIXES" = false ] || touch "$SCRIPT_DIR/.preflight-ok"
         echo -e "${GREEN}✓ All checks passed!${NC}"
         echo ""
 
@@ -2733,7 +2817,8 @@ print_summary() {
             echo "Next steps (Local AI Server only):"
             echo ""
             echo "  1. Start Local AI Server:"
-            echo "     ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --build local_ai_server"
+            echo "     ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh local_ai_server &&"
+            echo "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never local_ai_server"
             echo ""
             echo "  2. Verify WS health:"
             echo "     cd local_ai_server && python3 smoke_test_ws.py --url ws://127.0.0.1:${LOCAL_WS_PORT:-8765} --auth-token \"\\$LOCAL_WS_AUTH_TOKEN\" --verbose"
@@ -2767,10 +2852,12 @@ print_summary() {
         echo "     Or enable the full build (more models / larger image):"
         echo "       sudo ./preflight.sh --apply-fixes --local-ai-full"
         echo "     After changing LOCAL_AI_MODE, rebuild/recreate local_ai_server:"
-        echo "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --build --force-recreate local_ai_server"
+        echo "       ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh local_ai_server &&"
+        echo "         ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate local_ai_server"
         echo ""
         echo "  1. Start the Admin UI:"
-        echo "     ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d admin_ui"
+        echo "     ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&"
+        echo "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui"
         echo ""
         if [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]; then
             echo "  2. Access the Admin UI:"
@@ -2780,13 +2867,15 @@ print_summary() {
         fi
         echo ""
         echo "  3. Complete the Setup Wizard, then start ai_engine:"
-        echo "     ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d ai_engine"
+        echo "     ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh ai_engine &&"
+        echo "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never ai_engine"
         echo ""
         echo "  4. For local_hybrid or local_only pipeline, also start:"
-        echo "     ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d local_ai_server"
+        echo "     ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh local_ai_server &&"
+        echo "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never local_ai_server"
         echo ""
     elif [ ${#FAILURES[@]} -eq 0 ]; then
-        touch "$SCRIPT_DIR/.preflight-ok"
+        [ "$APPLY_FIXES" = false ] || touch "$SCRIPT_DIR/.preflight-ok"
         echo -e "${YELLOW}Checks passed with warnings.${NC}"
         echo ""
         echo "You can proceed, but consider addressing the warnings above."
@@ -2800,7 +2889,8 @@ print_summary() {
         echo "  Or enable the full build (more models / larger image):"
         echo "    sudo ./preflight.sh --apply-fixes --local-ai-full"
         echo "  After changing LOCAL_AI_MODE, rebuild/recreate local_ai_server:"
-        echo "    ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --build --force-recreate local_ai_server"
+        echo "    ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh local_ai_server &&"
+        echo "      ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate local_ai_server"
         echo ""
         echo "╔═══════════════════════════════════════════════════════════════════════════╗"
         echo "║  ⚠️  SECURITY NOTICE                                                       ║"
@@ -2820,7 +2910,8 @@ print_summary() {
         echo "     (For troubleshooting, add: --persist-media-mount)"
         echo ""
         echo "  1. Start the Admin UI:"
-        echo "     ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d admin_ui"
+        echo "     ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&"
+        echo "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui"
         echo ""
         if [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]; then
             echo "  2. Access the Admin UI:"
@@ -2830,10 +2921,12 @@ print_summary() {
         fi
         echo ""
         echo "  3. Complete the Setup Wizard, then start ai_engine:"
-        echo "     ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d ai_engine"
+        echo "     ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh ai_engine &&"
+        echo "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never ai_engine"
         echo ""
         echo "  4. For local_hybrid or local_only pipeline, also start:"
-        echo "     ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d local_ai_server"
+        echo "     ${compose_build_env}COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh local_ai_server &&"
+        echo "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never local_ai_server"
         echo ""
     else
         echo -e "${RED}Cannot proceed - fix failures above first.${NC}"
@@ -2859,6 +2952,7 @@ main() {
     check_ipv6
     check_docker
     check_compose
+    check_build_policy
     check_directories
     check_project_permissions
     check_data_permissions  # AAVA-150: Always runs, regardless of Asterisk location

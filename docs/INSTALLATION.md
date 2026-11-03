@@ -11,6 +11,28 @@ For release-specific behavior changes, also read the
 [v7.7.1 migration notes](MIGRATION.md#v770-to-v771). Operators upgrading from
 v7.3.x or earlier must also follow the [v7.4 Agent migration](MIGRATION.md#v73x-to-v740).
 
+## Select Compose for build/start commands
+
+Use Bash and select Compose in each new shell before the build/start examples
+below. This matches preflight's choice for both the helper and startup. Keep the
+`AAVA_COMPOSE` array in that shell. Older helpers (including v7.7.1) require the
+[legacy recovery commands](CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers)
+for standalone Compose or no-cache rebuilds; they do not accept the newer options.
+
+```bash
+# Select the same Compose mode for both commands (Bash).
+if [ -n "${AAVA_COMPOSE_BIN:-}" ]; then
+  export AAVA_COMPOSE_BIN
+  AAVA_COMPOSE=("$AAVA_COMPOSE_BIN")
+elif docker compose version >/dev/null 2>&1; then
+  export AAVA_COMPOSE_BIN=""
+  AAVA_COMPOSE=(docker compose)
+else
+  export AAVA_COMPOSE_BIN=docker-compose
+  AAVA_COMPOSE=(docker-compose)
+fi
+```
+
 ## Three Setup Paths
 
 Choose the path that best fits your experience level:
@@ -56,7 +78,7 @@ path with compatible Python. A CLI self-update cannot add Python to an old image
 > [Agents migration guide](OPERATOR_MIGRATION.md). In short:
 > - **Default `admin`/`admin` login is removed.** If your install was **still using `admin`/`admin`**,
 >   it is automatically rotated on first start to a one-time random password printed to the `admin_ui`
->   logs (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`), which you must
+>   logs (`docker logs admin_ui | grep -i password`), which you must
 >   change at first login. **If you already changed the admin password, nothing changes — your existing
 >   login keeps working** and no new password is printed.
 > - **`/api/config/export` no longer bundles `.env`** by default (pass `include_secrets=true`).
@@ -439,9 +461,15 @@ If preflight reports warnings or failures, resolve them first, then re-run prefl
 
 The updater normally performs this step. If you are recovering manually:
 
+Before either recreation below, stop new PBX admissions, drain active calls, and
+verify that no calls remain on every affected host, including a separate Local
+AI host. If call state cannot be verified, restore visibility before continuing.
+Direct Docker commands lack the updater's call-safety guard; never use them to
+bypass call-safety, revision, or database-mapping refusals.
+
 ```bash
 ./scripts/compose-build.sh admin_ui ai_engine &&
-  docker compose up -d --no-build --pull never --force-recreate admin_ui ai_engine
+  "${AAVA_COMPOSE[@]}" up -d --no-build --pull never --force-recreate admin_ui ai_engine
 ```
 
 Builds finish before recreation. If the selected release predates this helper,
@@ -454,7 +482,7 @@ If your configuration requires local inference:
 
 ```bash
 ./scripts/compose-build.sh local_ai_server &&
-  docker compose up -d --no-build --pull never --force-recreate local_ai_server
+  "${AAVA_COMPOSE[@]}" up -d --no-build --pull never --force-recreate local_ai_server
 ```
 
 ### 5) Verify the upgrade
@@ -496,33 +524,34 @@ Then verify in the Admin UI:
 
 ### Path A: Admin UI Setup Wizard (Recommended)
 
-**5-minute visual setup** with the new web-based Admin UI:
+The source bootstrap below includes unreleased #802 changes. On v7.7.1 or an
+older checkout, use the [legacy recovery procedure](CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers);
+`install.sh --ui` is not present in those releases.
 
 ```bash
 git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
 cd AVA-AI-Voice-Agent-for-Asterisk
-
-# Run preflight (REQUIRED - creates .env, generates JWT_SECRET)
 sudo ./preflight.sh --apply-fixes
-
-# Start Admin UI first
-docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
-
-# Complete the Setup Wizard in Admin UI, then start ai_engine
-docker compose -p asterisk-ai-voice-agent up -d --build ai_engine
+./install.sh --ui
 ```
 
-If you hit permission/container/health issues during setup, start with:
-- `agent check`
-- `sudo ./preflight.sh --apply-fixes`
-- `docs/TROUBLESHOOTING_GUIDE.md`
+Review preflight findings before continuing. Default `./preflight.sh` checks only;
+`--apply-fixes` explicitly authorizes preparation. The installer repeats the build
+check under its own user and Docker context, prepares `.env` without replacing
+provider credentials, and builds/starts only Admin UI. Headless/manual setup
+remains available with `./install.sh` and `INSTALL_NONINTERACTIVE=1`.
 
-**Access the Admin UI:**
-- **Local:** `http://localhost:3003`
-- **Remote server:** `http://<server-ip>:3003`
+Open `http://<server-ip>:3003`, get the one-time password with
+`docker logs admin_ui | grep -i password`, and change it on first login. Restrict
+port 3003 to trusted access. Complete the Setup Wizard, then use its AI Engine
+start action. Start Local AI only if selected by your configuration. Configure
+the generated PBX dialplan and make a test call before routing callers.
 
-> ⚠️ **Security:** The Admin UI is accessible on the network by default.  
-> **Change the admin password on first login** and restrict port 3003 (firewall/VPN/reverse proxy) for production.
+The build policy uses the active Docker context's built-in `default` builder;
+an explicit `BUILDX_BUILDER` selects a custom builder and is never silently
+replaced. No manual base-image pulls or global insecure-builder setup is required.
+See [build checks and recovery](BUILD_TROUBLESHOOTING.md) for sudo identities,
+standalone Compose, custom builders and DNS/registry/storage failures.
 
 #### Securing the Admin UI
 
@@ -558,21 +587,6 @@ so do one of: bind the Admin UI to the host's WireGuard interface IP
 (`UVICORN_HOST=<wg-interface-ip>`), run a local reverse proxy listening on that interface,
 or SSH-forward port 3003 over the tunnel. Keep 3003 firewalled on all other interfaces.
 
-The Setup Wizard will:
-1. ✅ Guide you through provider selection (OpenAI, Deepgram, Google, ElevenLabs, Local)
-2. ✅ Validate your API keys with live testing
-3. ✅ Test Asterisk ARI connection
-4. ✅ Configure contexts and greeting
-5. ✅ Start containers automatically
-
-**First login:** retrieve the one-time password from
-`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`, then change it.
-
-**Best for:** First-time users, production deployments, visual configuration
-
-See [Admin UI Setup Guide](../admin_ui/UI_Setup_Guide.md) for detailed instructions.
-
----
 
 ### Path B: CLI Quickstart (Alternative)
 
@@ -715,7 +729,8 @@ If your host uses **rootless Docker**, the Admin UI needs the rootless socket mo
 
 ```bash
 export DOCKER_SOCK=/run/user/$(id -u)/docker.sock
-docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
+COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui
 ```
 
 `./preflight.sh` prints the exact command for your system when it detects rootless Docker.
@@ -790,7 +805,8 @@ After you complete the wizard, the script will create a `.env` file in the proje
 Once the configuration is complete, the script will prompt you to build and start the Docker container. You can also do this manually.
 
 ```bash
-docker compose -p asterisk-ai-voice-agent up --build -d
+COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh ai_engine admin_ui &&
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never ai_engine admin_ui
 ```
 
 > IMPORTANT: First startup time (local models)
@@ -803,8 +819,19 @@ docker compose -p asterisk-ai-voice-agent up --build -d
 >
 > Subsequent restarts are typically much faster due to OS page cache. If startup is too slow for your hardware, consider using MEDIUM or LIGHT tier models and update the `.env` model paths accordingly.
 >
-> **GPU acceleration:** Use `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build local_ai_server` for CUDA-accelerated LLM inference. Set `LOCAL_LLM_GPU_LAYERS=-1` in `.env`. See [LOCAL_ONLY_SETUP.md](LOCAL_ONLY_SETUP.md) for the full guide.
->
+For selected Local/Hybrid installations, build and start Local AI separately.
+Use the same GPU overlay for both steps when GPU acceleration is configured:
+
+```bash
+./scripts/compose-build.sh -p asterisk-ai-voice-agent -f docker-compose.yml -f docker-compose.gpu.yml local_ai_server &&
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent -f docker-compose.yml -f docker-compose.gpu.yml up -d --no-build --pull never local_ai_server
+```
+
+For CPU-only Local AI, omit both `-f` flags from both commands and leave
+`LOCAL_LLM_GPU_LAYERS` unset or set it to `0`. For CUDA acceleration, use the GPU
+overlay above and set `LOCAL_LLM_GPU_LAYERS=-1` in `.env`. See
+[Local AI setup](LOCAL_ONLY_SETUP.md) for backend selection and model requirements.
+
 > **Runtime mode:** `local_ai_server` auto-selects runtime based on GPU availability:
 > - `GPU_AVAILABLE=true` → `full` mode (STT + LLM + TTS preloaded)
 > - `GPU_AVAILABLE=false` → `minimal` mode (STT + TTS only; LLM loaded on demand)
@@ -980,10 +1007,30 @@ asterisk -rx "dialplan reload"
   - Pre-2013 physical CPUs
   - Some cloud VPS instances with legacy CPU emulation
 
-  **Fix**: Pin NumPy to version 1.x (compatible with older CPUs):
+  **Fix**: Pin NumPy to version 1.x (compatible with older CPUs).
+  The example below assumes the engine is intended to run and recreates it.
+  First stop new call admissions using your PBX's existing routing controls and
+  drain active calls. Verify that no calls remain on every affected host; if
+  call state cannot be verified, restore visibility before continuing. Direct
+  Docker commands lack the updater's call-safety guard and must not bypass
+  call-safety, revision, or database-mapping refusals.
+  If the engine is intentionally stopped, leave it
+  out of the startup command; use the Admin UI-only recovery recipe instead.
+
 
   ```bash
   cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
+
+  # Select the same Compose mode for both commands (Bash).
+  if [ -n "${AAVA_COMPOSE_BIN:-}" ]; then
+    AAVA_COMPOSE=("$AAVA_COMPOSE_BIN")
+  elif docker compose version >/dev/null 2>&1; then
+    export AAVA_COMPOSE_BIN=""
+    AAVA_COMPOSE=(docker compose)
+  else
+    export AAVA_COMPOSE_BIN=docker-compose
+    AAVA_COMPOSE=(docker-compose)
+  fi
 
   # Fix ai_engine requirements
   sed -i 's/numpy>=1.24.0/numpy>=1.24.0,<2.0/g' requirements.txt
@@ -991,11 +1038,12 @@ asterisk -rx "dialplan reload"
   # Fix admin_ui requirements
   sed -i 's/numpy>=1.24.0/numpy>=1.24.0,<2.0/g' admin_ui/backend/requirements.txt
 
-  # Rebuild containers with --no-cache to force fresh install
-  docker compose -p asterisk-ai-voice-agent build --no-cache ai_engine admin_ui
-
-  # Recreate containers
-  docker compose -p asterisk-ai-voice-agent up -d --force-recreate ai_engine admin_ui
+  # Use direct Compose/Bake so older helpers also retain --no-cache.
+  ( set -o pipefail
+    export BUILDX_BUILDER="${BUILDX_BUILDER:-default}"
+    "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent build --no-cache --print ai_engine admin_ui |
+      docker buildx bake --file - --allow=network.host --load ai_engine admin_ui
+  ) && "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate ai_engine admin_ui
   ```
 
   **Verify your CPU supports X86_V2** (optional diagnostic):

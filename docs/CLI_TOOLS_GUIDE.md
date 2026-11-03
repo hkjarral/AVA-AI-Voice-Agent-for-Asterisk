@@ -238,6 +238,12 @@ managed credentials are not automatically rewound; follow the
 
 ### Manual builds on affected Compose/Buildx versions
 
+Current source uses the [shared build/preflight policy](BUILD_TROUBLESHOOTING.md):
+`default` in the active Docker context unless `BUILDX_BUILDER` explicitly selects
+another builder. The choice remains fixed through export/Bake; a custom builder
+failure is reported without silently switching. A host pull does not validate
+custom BuildKit DNS, and preliminary base-image pulls are unnecessary.
+
 After recording local changes, taking coherent private backups, and fetching or
 fast-forwarding to the intended release, use explicit services. With Docker access
 in your shell, from the checkout root:
@@ -249,6 +255,18 @@ in your shell, from the checkout root:
   agent check
 ```
 
+For a fresh install, select only `admin_ui`, complete the Setup Wizard, then
+select `ai_engine`; include `local_ai_server` only when configured. The same
+helper is used by the installer and Admin UI build/start paths.
+
+The helper accepts repeated `-f FILE`, `-p PROJECT`, `--no-cache`, and repeated
+`--build-arg KEY=VALUE` options. These are retained when exporting the equivalent
+Bake definition; unknown options are rejected. The default command is Docker's
+Compose plugin (`docker compose`); preflight
+and the installer retain standalone Compose selection through
+`AAVA_COMPOSE_BIN=docker-compose`. See Docker's [build options](https://docs.docker.com/reference/cli/docker/compose/build/)
+and [Bake host-network grant](https://docs.docker.com/build/bake/reference/#targetnetwork).
+
 The helper honors `COMPOSE_FILE` and `COMPOSE_PROJECT_NAME`; use the same settings
 for the build and recreation. Build Local AI only when it is installed/selected,
 and leave a stopped Local AI service stopped. Recreate during a window with no
@@ -258,8 +276,9 @@ For older checkouts without the helper, build with the explicit Bake grant:
 
 ```bash
 ( set -o pipefail
+  export BUILDX_BUILDER="${BUILDX_BUILDER:-default}"
   docker compose build --print ai_engine admin_ui |
-    docker buildx bake --file - --allow=network.host --load
+    docker buildx bake --file - --allow=network.host --load ai_engine admin_ui
 ) && docker compose up -d \
   --no-build --pull never --force-recreate ai_engine admin_ui
 ```
@@ -303,6 +322,62 @@ the selected ref, and sanitized update output. Versions must come from the
 environment running the update: a GUI updater container can use different Docker
 plugins from the host. See [issue #790](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/790)
 and [Docker's entitlement-forwarding fix](https://github.com/docker/compose/pull/14325).
+
+### Standalone Compose and older helpers
+
+Preflight's printed commands preserve its selected executable. To use the helper
+with standalone Compose, export `AAVA_COMPOSE_BIN=docker-compose` and use
+`docker-compose` for startup too. A `sudo ./preflight.sh` subprocess cannot export
+that selection back into your interactive shell.
+
+Older helpers, including the one tagged v7.7.1, do not read `AAVA_COMPOSE_BIN`.
+For the reported host-network entitlement error on those checkouts, use the
+explicit Bake grant instead, from the project root in Bash:
+
+```bash
+( set -o pipefail
+  export BUILDX_BUILDER="${BUILDX_BUILDER:-default}"
+  docker-compose -p asterisk-ai-voice-agent build --print admin_ui |
+    docker buildx bake --file - --allow=network.host --load admin_ui
+) && docker-compose -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
+```
+
+After setup, select `ai_engine` in both commands only when you intend to start
+it. Before recreating a running engine, stop new admissions using the PBX's
+existing routing controls and wait for active calls to end. Leave an intentionally
+stopped engine stopped. Include `local_ai_server` only when configured, with the
+same Compose files for build and startup. Before recreating an inference-only
+Local AI host, stop new PBX admissions and drain every consuming remote engine.
+Verify that no calls remain on every consuming engine; if their call state is
+unknown or cannot be verified from that host, restore visibility before recreating
+Local AI. Direct Docker commands lack the updater's guard and must not bypass
+call-safety, revision or database-mapping refusals. These commands grant only
+`network.host` for the selected build; they do not change Docker's global configuration.
+
+For an Admin UI-only no-cache rebuild, older helpers also reject `--no-cache`.
+The recipe below rebuilds and recreates only `admin_ui`; it does not start or
+interrupt the engine. Pass the flag directly to Compose before exporting to Bake:
+
+```bash
+if [ -n "${AAVA_COMPOSE_BIN:-}" ]; then
+  AAVA_COMPOSE=("$AAVA_COMPOSE_BIN")
+elif docker compose version >/dev/null 2>&1; then
+  AAVA_COMPOSE=(docker compose)
+else
+  AAVA_COMPOSE=(docker-compose)
+fi
+( set -o pipefail
+  export BUILDX_BUILDER="${BUILDX_BUILDER:-default}"
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent build --no-cache --print admin_ui |
+    docker buildx bake --file - --allow=network.host --load admin_ui
+) && "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui
+```
+
+Keep any selected Compose file flags identical for build and startup. This path
+works with either the plugin or standalone executable and does not require newer
+helper options. For recovery that also needs the engine, use the installation
+guide's NumPy recovery procedure only after stopping new admissions and draining
+active calls; do not widen this Admin UI-only recipe.
 
 ## Compatibility aliases
 
