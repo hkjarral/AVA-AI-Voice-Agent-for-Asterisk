@@ -152,7 +152,7 @@ explain_failure() {
   fi
 }
 if [ "$docker_build" = true ]; then
-  if docker "${docker_args[@]}" --builder "$BUILDX_BUILDER" --network=host 2>&1 | tee "$build_dir/build.log"; then
+  if docker "${docker_args[@]}" --builder "$BUILDX_BUILDER" --network=host --load 2>&1 | tee "$build_dir/build.log"; then
     exit 0
   fi
   explain_failure

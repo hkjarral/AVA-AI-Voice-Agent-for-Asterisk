@@ -41,6 +41,9 @@ It ignores a globally selected custom builder unless `BUILDX_BUILDER` explicitly
 selects it. The choice applies to Compose, export and Bake retries, CLI updates,
 Admin UI builds, updater-image builds and packaged rollback. Global builder
 selection is unchanged. Docker endpoint/context overrides remain in force.
+Direct updater-image builds explicitly load their result into Docker too; a
+successful custom-builder build must produce the local image used to start the
+updater, rather than leaving it only in BuildKit's cache.
 
 To intentionally use a custom builder:
 

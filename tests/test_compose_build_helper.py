@@ -105,7 +105,7 @@ def test_direct_updater_image_build_uses_same_builder(docker_fixture):
     env["BUILDX_BUILDER"] = "explicit-custom"
     subprocess.run(["bash", str(RUNNER), "--docker-build", "-f", "updater/Dockerfile", "-t", "synthetic:latest", "."], env=env, check=True, capture_output=True)
     calls = [json.loads(line) for line in log.read_text().splitlines()]
-    assert calls[-1]["args"] == ["build", "-f", "updater/Dockerfile", "-t", "synthetic:latest", ".", "--builder", "explicit-custom", "--network=host"]
+    assert calls[-1]["args"] == ["build", "-f", "updater/Dockerfile", "-t", "synthetic:latest", ".", "--builder", "explicit-custom", "--network=host", "--load"]
 
 
 def test_compose_build_requires_explicit_service_names(tmp_path):
