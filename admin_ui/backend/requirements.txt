@@ -2,6 +2,8 @@ fastapi==0.143.3
 uvicorn==0.54.0
 python-dotenv==1.2.4
 pyyaml==6.0.3
+# Keeps operator comments in ai-agent.local.yaml when the Admin UI saves it.
+ruamel.yaml==0.19.1
 # Docker SDK 7.1 carries the Requests 2.32+ Unix-socket adapter fix.
 docker==7.2.0
 pydantic==2.14.1

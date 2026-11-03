@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Local config comments (#809):** Admin UI saves keep the comments an
+  operator wrote in `config/ai-agent.local.yaml` instead of rewriting the file
+  without them. Comments stay with their keys and the file keeps its indents.
+  Comments between list items are lost when that list changes. A save that
+  migrates an inline secret, or whose result would not load back as exactly
+  the saved data, writes the file without comments as before.
+
 - **Remote PBX checklist:** stop presenting an empty local Asterisk preflight
   manifest as an error when Ava is configured to use Asterisk on a separate
   host; retain live ARI/module status and identify PBX configuration checks as

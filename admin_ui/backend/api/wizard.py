@@ -3394,9 +3394,17 @@ async def save_setup_config(config: SetupConfig):
                     )
                     local_override = {}
 
+            local_content = yaml.dump(local_override, default_flow_style=False, sort_keys=False)
+            try:
+                from api.config import _keep_local_comments
+
+                with open(LOCAL_CONFIG_PATH, "rb") as f:
+                    local_content = _keep_local_comments(f.read(), local_content)
+            except Exception:
+                pass  # No local file yet, or helper unavailable: write the plain dump
             atomic_write_text(
                 LOCAL_CONFIG_PATH,
-                yaml.dump(local_override, default_flow_style=False, sort_keys=False),
+                local_content,
                 mode_from_existing=True,
             )
 
