@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without global changes or silent retry switches. Check capabilities and actual
   builder readiness under the executing identity, validate exact Bake targets,
   and explain DNS/registry/storage failures without overwriting daemon settings.
+  Repair missing CLI capabilities using platform packages instead of an old
+  amd64-only Buildx download.
   Add `install.sh --ui` for management-first onboarding; manual base-image pulls
   are unnecessary. Existing call guards and pending-action recovery remain intact.
 

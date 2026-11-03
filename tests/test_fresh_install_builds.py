@@ -21,14 +21,21 @@ def prepare_project(tmp_path, failure):
 if [[ "$1 $2" == 'context show' ]]; then echo default; exit 0; fi
 if [[ "$1" == info ]]; then echo synthetic-engine; exit 0; fi
 if [[ "$1 $2" == 'buildx inspect' ]]; then printf 'Driver: docker\\nStatus: running\\n'; exit 0; fi
-if [[ " $* " == *' --help '* ]]; then echo '--print --allow --load'; exit 0; fi
+if [[ " $* " == *' --help '* ]]; then
+  if [[ "$1 $2" == 'buildx bake' && "${TEST_BAD_CAPABILITY:-}" == buildx ]]; then echo '--load'; exit 0; fi
+  if [[ "$1" == compose && "${TEST_BAD_CAPABILITY:-}" == compose ]]; then echo '--no-cache'; exit 0; fi
+  echo '--print --allow --load'; exit 0
+fi
 echo "$*" >> "$TEST_COMMANDS"
 echo "${TEST_COMPOSE_EXECUTABLE:-docker}|$*" >> "$TEST_EXECUTABLES"
 if [[ "$1" == compose && "${TEST_COMPOSE_MISSING:-}" == 1 && "${TEST_COMPOSE_EXECUTABLE:-docker}" != docker-compose ]]; then
   exit 1
 fi
 if [[ "$1 $2" == 'compose version' ]]; then echo v5.0.2; exit 0; fi
-if [[ "$1 $2" == 'buildx version' ]]; then echo v0.31.1; exit 0; fi
+if [[ "$1 $2" == 'buildx version' ]]; then
+  [[ "${TEST_BAD_CAPABILITY:-}" != missing ]] || exit 1
+  echo v0.31.1; exit 0
+fi
 if [[ " $* " == *" --print "* ]]; then
   python3 - "$@" <<'PYBAKE'
 import json, sys
@@ -242,3 +249,32 @@ check_compose
     result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=True)
     assert "FAILED" not in result.stdout
     assert "Docker Compose: 5.0.2" in result.stdout
+
+
+@pytest.mark.parametrize("family", ["debian", "rhel"])
+@pytest.mark.parametrize("capability", ["missing", "buildx", "compose", "healthy", "healthy_without_alias"])
+def test_preflight_repairs_actual_cli_capabilities_with_platform_packages(tmp_path, family, capability):
+    env, log = prepare_project(tmp_path, "none")
+    env["TEST_BAD_CAPABILITY"] = capability
+    script = _preflight_function("check_compose") + '''
+log_ok() { :; }; log_warn() { :; }; log_info() { :; }; log_fail() { :; }
+platform_yaml_get() { return 1; }; github_docs_url() { echo "$1"; }
+print_fix_and_docs() { :; }
+command() {
+    if [[ "$TEST_BAD_CAPABILITY" == healthy_without_alias && "$1 $2" == '-v docker-compose' ]]; then return 1; fi
+    builtin command "$@"
+}
+APPLY_FIXES=false; FIX_CMDS=(); OS_FAMILY="$1"
+check_compose
+printf '%s\\n' "${FIX_CMDS[@]}"
+'''
+    result = subprocess.run(["bash", "-c", script, "fixture", family], env=env, capture_output=True, text=True, check=True)
+    repairs = result.stdout.strip()
+    if capability.startswith("healthy"):
+        assert not repairs
+    else:
+        package = "docker-compose-plugin" if capability == "compose" else "docker-buildx-plugin"
+        assert package in repairs
+        assert ("apt-get" in repairs) == (family == "debian")
+        assert "curl" not in repairs and "amd64" not in repairs and "v0.17" not in repairs
+    assert not any("install -y" in c for c in log.read_text().splitlines()), "check-only mode must not execute repairs"

@@ -25,6 +25,12 @@ required to verify registry access, package downloads and image loading.
 `sudo` can change HOME, Docker credentials, context, socket and builder settings.
 A successful root check does not qualify the login user. `install.sh` consumes a
 fresh preflight build report under its own identity and stops on failure.
+The Compose plugin works directly; preflight does not require or create a
+`docker-compose` compatibility alias. Preflight proposes platform package-manager commands for missing/outdated CLI
+capabilities; it no longer installs a pinned amd64-only Buildx binary. If a
+manually installed user plugin shadows the package, inspect that user's plugin
+paths and rerun the capability check after correcting it.
+
 Full preflight retains its existing CPU/RAM/disk, permissions and runtime checks;
 build readiness alone does not qualify a PBX, GPU or complete fresh installation.
 

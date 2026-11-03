@@ -961,22 +961,8 @@ check_compose() {
         COMPOSE_CMD="docker compose"
         COMPOSE_VER=$(docker compose version --short 2>/dev/null | sed 's/^v//')
         
-        # Create docker-compose wrapper if it doesn't exist (needed for Admin UI)
-        if ! command -v docker-compose &>/dev/null; then
-            if [ "$APPLY_FIXES" = true ]; then
-                # Remove if it's a directory (broken state)
-                [ -d /usr/local/bin/docker-compose ] && rm -rf /usr/local/bin/docker-compose
-                
-                echo '#!/bin/bash
-docker compose "$@"' > /usr/local/bin/docker-compose
-                chmod +x /usr/local/bin/docker-compose
-                log_ok "Created docker-compose wrapper for compatibility"
-            else
-                log_warn "docker-compose command not found (Admin UI needs this)"
-                FIX_CMDS+=("echo '#!/bin/bash\ndocker compose \"\$@\"' > /usr/local/bin/docker-compose && chmod +x /usr/local/bin/docker-compose")
-                log_info "  Docs: $COMPOSE_AAVA_DOCS_URL"
-            fi
-        fi
+        # Admin UI/installer support the plugin directly; no host compatibility
+        # alias is required and no executable/directory is replaced here.
     elif command -v docker-compose &>/dev/null; then
         COMPOSE_CMD="docker-compose"
         local compose_raw
@@ -1031,34 +1017,42 @@ docker compose "$@"' > /usr/local/bin/docker-compose
         log_info "  Docs: $COMPOSE_AAVA_DOCS_URL"
     fi
     
-    # Check buildx (required for compose build)
-    local BUILDX_INSTALL_CMD="mkdir -p /usr/local/lib/docker/cli-plugins && curl -L https://github.com/docker/buildx/releases/download/v0.17.1/buildx-v0.17.1.linux-amd64 -o /usr/local/lib/docker/cli-plugins/docker-buildx && chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx"
+    # Install/upgrade official CLI packages for this platform. A pinned 0.17
+    # amd64 binary can be incompatible with Bake entitlements and ARM hosts.
+    local BUILDX_INSTALL_CMD=""
+    local COMPOSE_INSTALL_CMD=""
+    case "$OS_FAMILY" in
+        debian)
+            BUILDX_INSTALL_CMD="apt-get update && apt-get install -y docker-buildx-plugin"
+            COMPOSE_INSTALL_CMD="apt-get update && apt-get install -y docker-compose-plugin"
+            ;;
+        rhel)
+            local cli_pkg_mgr=yum
+            command -v dnf >/dev/null 2>&1 && cli_pkg_mgr=dnf
+            BUILDX_INSTALL_CMD="$cli_pkg_mgr install -y docker-buildx-plugin"
+            COMPOSE_INSTALL_CMD="$cli_pkg_mgr install -y docker-compose-plugin"
+            ;;
+    esac
+    local build_help=""
+    build_help="$($COMPOSE_CMD build --help 2>/dev/null || true)"
+    if ! echo "$build_help" | grep -Fq -- '--print'; then
+        log_fail "Compose build --print is required; upgrade Compose for this executing identity"
+        [ -z "$COMPOSE_INSTALL_CMD" ] || FIX_CMDS+=("$COMPOSE_INSTALL_CMD")
+    fi
     if docker buildx version &>/dev/null 2>&1; then
-        BUILDX_VER=$(docker buildx version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
-        BUILDX_MAJOR=$(echo "$BUILDX_VER" | cut -d. -f1)
-        BUILDX_MINOR=$(echo "$BUILDX_VER" | cut -d. -f2)
-
-        # Validate that version components are numeric before comparison
-        if [[ "$BUILDX_MAJOR" =~ ^[0-9]+$ ]] && [[ "$BUILDX_MINOR" =~ ^[0-9]+$ ]]; then
-            if [ "$BUILDX_MAJOR" -eq 0 ] && [ "$BUILDX_MINOR" -lt 17 ]; then
-                log_fail "Docker Buildx $BUILDX_VER too old - requires 0.17+ for compose build"
-                log_info "  Fix: $BUILDX_INSTALL_CMD"
-                log_info "  Docs: $COMPOSE_AAVA_DOCS_URL"
-                FIX_CMDS+=("$BUILDX_INSTALL_CMD")
-            else
-                log_ok "Docker Buildx: $BUILDX_VER"
-            fi
-        elif [ -n "$BUILDX_VER" ]; then
-            # Version detected but non-standard format
-            log_warn "Docker Buildx version non-standard: $BUILDX_VER"
-            log_info "  Skipping version check - ensure you have Buildx 0.17+ features"
+        log_ok "Docker Buildx: $(docker buildx version 2>/dev/null)"
+        local bake_help
+        bake_help="$(docker buildx bake --help 2>/dev/null || true)"
+        if ! echo "$bake_help" | grep -Fq -- '--allow' || ! echo "$bake_help" | grep -Fq -- '--load'; then
+            log_fail "Buildx Bake --allow and --load are required; upgrade Buildx"
+            [ -z "$BUILDX_INSTALL_CMD" ] || FIX_CMDS+=("$BUILDX_INSTALL_CMD")
         fi
     else
         log_fail "Docker Buildx not installed (required for docker compose build)"
-        log_info "  Fix: $BUILDX_INSTALL_CMD"
-        log_info "  Or install via package manager: apt install docker-buildx-plugin (Debian/Ubuntu)"
-        FIX_CMDS+=("$BUILDX_INSTALL_CMD")
+        [ -z "$BUILDX_INSTALL_CMD" ] || FIX_CMDS+=("$BUILDX_INSTALL_CMD")
     fi
+    log_info "  CLI plugin install/upgrade docs: https://docs.docker.com/engine/install/"
+
 }
 
 # Shared read-only capability/builder check. Do not source reports or persist

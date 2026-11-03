@@ -42,12 +42,19 @@ instead of cloning another installation.
 
 On the AVA host:
 
-The source bootstrap below includes the unreleased #802 build fixes. Stable
-release users should use the guide shipped with their release; v7.7.1 does not
-have `install.sh --ui`. See [older-checkout recovery](docs/CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
+For a release-pinned installation, clone the version matching the release
+metadata once it is published, then follow the guide in that checkout:
 
 ```bash
-git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+git clone --branch v7.7.1 https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+```
+
+For source evaluation, the separate bootstrap below includes the unreleased #802
+build fixes. v7.7.1 does not have `install.sh --ui`; use its guide and the
+[older-checkout recovery](docs/CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
+
+```bash
+git clone --branch main https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
 cd AVA-AI-Voice-Agent-for-Asterisk
 sudo ./preflight.sh --apply-fixes
 ./install.sh --ui
