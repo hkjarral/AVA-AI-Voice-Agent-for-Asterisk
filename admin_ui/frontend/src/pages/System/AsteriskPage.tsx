@@ -165,6 +165,66 @@ const AsteriskPage = () => {
     const manifest = status?.manifest;
     const mode = status?.mode;
     const appName = live?.app_name || 'asterisk-ai-voice-agent';
+    const renderManifestChecks = () => {
+        if (!manifest?.checks || Object.keys(manifest.checks).length === 0) {
+            return (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <CheckCircle2 className="w-4 h-4 text-green-500" />
+                    No configuration issues detected
+                </div>
+            );
+        }
+        return (
+            <div className="divide-y divide-border">
+                {Object.entries(manifest.checks).map(([key, check]) => {
+                    const meta = CONFIG_CHECK_LABELS[key];
+                    const label = meta?.label || key.replace(/_/g, ' ').replace(/^module /, '');
+                    const isModule = key.startsWith('module_');
+                    const fixHint = (meta?.fixHint || '').replace('{APP_NAME}', appName);
+                    return (
+                        <div key={key} className="py-2.5 first:pt-0 last:pb-0">
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                    {isModule ? (
+                                        <Package className="w-4 h-4 text-muted-foreground" />
+                                    ) : (
+                                        <FileText className="w-4 h-4 text-muted-foreground" />
+                                    )}
+                                    <div>
+                                        <span className="text-sm font-medium">{label}</span>
+                                        <p className="text-xs text-muted-foreground">{check.detail}</p>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <StatusBadge ok={check.ok} />
+                                    {!check.ok && fixHint && (
+                                        <button
+                                            onClick={() => toggleFix(key)}
+                                            className="text-xs text-primary hover:underline"
+                                        >
+                                            {expandedFixes[key] ? 'Hide fix' : 'How to fix'}
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                            {!check.ok && fixHint && expandedFixes[key] && (
+                                <div className="mt-2 ml-7">
+                                    <div className="relative">
+                                        <pre className="p-3 rounded-md bg-muted text-xs font-mono whitespace-pre-wrap overflow-x-auto">
+                                            {fixHint}
+                                        </pre>
+                                        <div className="absolute top-2 right-2">
+                                            <CopyButton text={fixHint} />
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    );
+                })}
+            </div>
+        );
+    };
 
     return (
         <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -316,65 +376,39 @@ const AsteriskPage = () => {
             >
                 <ConfigCard>
                     {mode === 'remote' ? (
-                        <div className="flex items-start gap-2 text-sm text-muted-foreground">
-                            <Globe className="w-4 h-4 mt-0.5 text-purple-500" />
-                            <div>
-                                <p>Local Asterisk configuration checks do not apply to this split-host deployment.</p>
-                                <p className="mt-1">
-                                    Ava verifies the remote PBX through the live ARI, module, and application checks above.
-                                    Inspect configuration files on the PBX host itself.
-                                </p>
+                        <div className="space-y-4">
+                            <div className="flex items-start gap-2 text-sm text-muted-foreground">
+                                <Globe className="w-4 h-4 mt-0.5 text-purple-500" />
+                                <div>
+                                    <p>Remote PBX file checks belong on the Asterisk host.</p>
+                                    <p className="mt-1">
+                                        Ava verifies the remote PBX through the live ARI, module, and application checks above.
+                                        Inspect configuration files on the PBX host itself.
+                                    </p>
+                                </div>
                             </div>
+                            {manifest === null ? (
+                                <div className="flex items-start gap-2 text-sm text-amber-600 dark:text-amber-400">
+                                    <AlertCircle className="w-4 h-4 mt-0.5" />
+                                    <div>
+                                        <p>Ava-host preflight manifest is unavailable.</p>
+                                        <p className="mt-1">Run <code className="px-1.5 py-0.5 rounded bg-muted text-xs font-mono">./preflight.sh</code> on the Ava host to restore local audit evidence.</p>
+                                    </div>
+                                </div>
+                            ) : manifest.asterisk_found ? (
+                                <div className="space-y-2">
+                                    <p className="text-sm font-medium">Ava-host local Asterisk audit results</p>
+                                    {renderManifestChecks()}
+                                </div>
+                            ) : (
+                                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                    <CheckCircle2 className="w-4 h-4 text-green-500" />
+                                    Local Asterisk audit skipped because this Ava host has no local Asterisk installation.
+                                </div>
+                            )}
                         </div>
                     ) : manifest && manifest.checks && Object.keys(manifest.checks).length > 0 ? (
-                        <div className="divide-y divide-border">
-                            {Object.entries(manifest.checks).map(([key, check]) => {
-                                const meta = CONFIG_CHECK_LABELS[key];
-                                const label = meta?.label || key.replace(/_/g, ' ').replace(/^module /, '');
-                                const isModule = key.startsWith('module_');
-                                const fixHint = (meta?.fixHint || '').replace('{APP_NAME}', appName);
-                                return (
-                                    <div key={key} className="py-2.5 first:pt-0 last:pb-0">
-                                        <div className="flex items-center justify-between">
-                                            <div className="flex items-center gap-3">
-                                                {isModule ? (
-                                                    <Package className="w-4 h-4 text-muted-foreground" />
-                                                ) : (
-                                                    <FileText className="w-4 h-4 text-muted-foreground" />
-                                                )}
-                                                <div>
-                                                    <span className="text-sm font-medium">{label}</span>
-                                                    <p className="text-xs text-muted-foreground">{check.detail}</p>
-                                                </div>
-                                            </div>
-                                            <div className="flex items-center gap-2">
-                                                <StatusBadge ok={check.ok} />
-                                                {!check.ok && fixHint && (
-                                                    <button
-                                                        onClick={() => toggleFix(key)}
-                                                        className="text-xs text-primary hover:underline"
-                                                    >
-                                                        {expandedFixes[key] ? 'Hide fix' : 'How to fix'}
-                                                    </button>
-                                                )}
-                                            </div>
-                                        </div>
-                                        {!check.ok && fixHint && expandedFixes[key] && (
-                                            <div className="mt-2 ml-7">
-                                                <div className="relative">
-                                                    <pre className="p-3 rounded-md bg-muted text-xs font-mono whitespace-pre-wrap overflow-x-auto">
-                                                        {fixHint}
-                                                    </pre>
-                                                    <div className="absolute top-2 right-2">
-                                                        <CopyButton text={fixHint} />
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-                                );
-                            })}
-                        </div>
+                        renderManifestChecks()
                     ) : manifest === null ? (
                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
                             <AlertCircle className="w-4 h-4" />
@@ -408,7 +442,9 @@ const AsteriskPage = () => {
                     {mode === 'remote' ? (
                         <>
                             <span className="ml-2">•</span>
-                            <span>Local Asterisk audit skipped for remote PBX</span>
+                            <span>{manifest.asterisk_found
+                                ? 'Local Asterisk audit completed on Ava host'
+                                : 'Local Asterisk audit skipped on Ava host'}</span>
                         </>
                     ) : (
                         <>

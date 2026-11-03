@@ -47,9 +47,44 @@ describe('AsteriskPage remote PBX checklist', () => {
 
         await waitFor(() => expect(screen.getByText('Remote')).toBeInTheDocument());
 
-        expect(screen.getByText(/Local Asterisk configuration checks do not apply/)).toBeInTheDocument();
-        expect(screen.getByText(/Local Asterisk audit skipped for remote PBX/)).toBeInTheDocument();
+        expect(screen.getByText(/Remote PBX file checks belong on the Asterisk host/)).toBeInTheDocument();
+        expect(screen.getByText(/Local Asterisk audit skipped because this Ava host has no local Asterisk/)).toBeInTheDocument();
+        expect(screen.getByText(/Local Asterisk audit skipped on Ava host/)).toBeInTheDocument();
         expect(screen.queryByText(/Preflight checks were not run/)).not.toBeInTheDocument();
         expect(screen.queryByText(/Run .*preflight\.sh.*manifest with checks/)).not.toBeInTheDocument();
+    });
+
+    it('shows Ava-host audit results separately from remote PBX guidance', async () => {
+        mockedGet.mockResolvedValue({
+            data: {
+                ...remoteStatus,
+                manifest: {
+                    ...remoteStatus.manifest,
+                    asterisk_found: true,
+                    checks: {
+                        ari_enabled: { ok: true, detail: 'Loaded' },
+                    },
+                },
+            },
+        });
+
+        render(<AsteriskPage />);
+
+        await waitFor(() => expect(screen.getByText('Remote')).toBeInTheDocument());
+        expect(screen.getByText(/Remote PBX file checks belong on the Asterisk host/)).toBeInTheDocument();
+        expect(screen.getByText('Ava-host local Asterisk audit results')).toBeInTheDocument();
+        expect(screen.getByText('ARI Enabled')).toBeInTheDocument();
+        expect(screen.getByText('Loaded')).toBeInTheDocument();
+        expect(screen.getByText(/Local Asterisk audit completed on Ava host/)).toBeInTheDocument();
+    });
+
+    it('distinguishes a missing Ava-host manifest from a skipped audit', async () => {
+        mockedGet.mockResolvedValue({ data: { ...remoteStatus, manifest: null } });
+
+        render(<AsteriskPage />);
+
+        await waitFor(() => expect(screen.getByText('Remote')).toBeInTheDocument());
+        expect(screen.getByText('Ava-host preflight manifest is unavailable.')).toBeInTheDocument();
+        expect(screen.queryByText(/Local Asterisk audit skipped because/)).not.toBeInTheDocument();
     });
 });
