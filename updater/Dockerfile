@@ -52,7 +52,7 @@ RUN python3 -c "import sqlite3; assert hasattr(sqlite3.Connection, 'backup')"
 
 COPY --from=agent-builder /out/agent /usr/local/bin/agent
 COPY updater/run.sh /usr/local/bin/aava-update-runner
-COPY scripts/compose-build.sh /usr/local/bin/aava-compose-build
+COPY cli/internal/buildpolicy/compose-build.sh /usr/local/bin/aava-compose-build
 RUN chmod +x /usr/local/bin/aava-update-runner /usr/local/bin/aava-compose-build
 
 ENTRYPOINT ["/usr/local/bin/aava-update-runner"]

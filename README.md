@@ -42,41 +42,23 @@ instead of cloning another installation.
 
 On the AVA host:
 
-Run the pinned commands below only after v7.7.1 appears in
-[GitHub Releases](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases).
-Before publication, use the latest published release for stable installations.
-For maintainer source evaluation only (unstable):
-`git clone --branch main https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git`.
-
-Run the block in Bash. The selector matches preflight's choice in your current
-shell; a `sudo` subprocess cannot export that choice back to it. Keep the selected
-`AAVA_COMPOSE` array for subsequent commands in this shell. On standalone-Compose
-hosts using v7.7.1's older helper, use the [standalone recovery commands](docs/CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers)
-instead of the helper commands below.
+The source bootstrap below includes the unreleased #802 build fixes. Stable
+release users should use the guide shipped with their release; v7.7.1 does not
+have `install.sh --ui`. See [older-checkout recovery](docs/CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
 
 ```bash
-git clone --branch v7.7.1 https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
 cd AVA-AI-Voice-Agent-for-Asterisk
 sudo ./preflight.sh --apply-fixes
-
-# Select the same Compose mode for both commands (Bash).
-if docker compose version >/dev/null 2>&1; then
-  export AAVA_COMPOSE_BIN=""
-  AAVA_COMPOSE=(docker compose)
-else
-  export AAVA_COMPOSE_BIN=docker-compose
-  AAVA_COMPOSE=(docker-compose)
-fi
-
-COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
-  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
+./install.sh --ui
 ```
 
-Preflight prepares `.env`, generates the JWT secret, and checks PBX/media
-permissions. Review its findings before continuing. The build helper retries the
-specific Compose/Buildx host-network entitlement error with an explicit
-`network.host` grant; startup then uses the built image. See
-[build troubleshooting](docs/CLI_TOOLS_GUIDE.md#manual-builds-on-affected-composebuildx-versions).
+Review preflight's findings before continuing. The installer rechecks Docker
+build readiness as your current user, prepares `.env`, and builds/starts only the
+Admin UI. It selects Compose automatically and handles the scoped
+`network.host` entitlement retry. Builds use the active Docker context's built-in
+builder unless you explicitly set `BUILDX_BUILDER`. No preliminary `docker pull`
+or custom insecure builder is required. See [build troubleshooting](docs/BUILD_TROUBLESHOOTING.md).
 
 Open `http://<server-ip>:3003`. Retrieve the one-time admin password:
 

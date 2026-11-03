@@ -10,6 +10,7 @@ import logging
 import re
 import shlex
 import subprocess
+import signal
 import threading
 import tempfile
 import time
@@ -4145,14 +4146,22 @@ def _run_docker_with_updater_status(
         started_at=started,
     )
     try:
+        command = ["docker", *args]
+        if args[0] == "build":
+            from pathlib import Path
+            runner = Path("/usr/local/bin/aava-compose-build")
+            if not runner.is_file():  # backend development outside its image
+                runner = Path(__file__).resolve().parents[3] / "cli/internal/buildpolicy/compose-build.sh"
+            command = ["bash", str(runner), "--docker-build", *args[1:]]
         proc = subprocess.Popen(
-            ["docker", *args],
+            command,
             cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
             env=os.environ.copy(),
+            start_new_session=True,
         )
     except Exception as e:
         _write_updater_image_status(
@@ -4180,7 +4189,12 @@ def _run_docker_with_updater_status(
     try:
         while True:
             if deadline is not None and time.monotonic() > deadline:
-                proc.kill()
+                # The shared runner owns Docker subprocesses; cancel the whole
+                # process group so a timed-out build cannot continue in the background.
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 rest = ""
                 try:
                     rest, _ = proc.communicate(timeout=5)
@@ -4648,7 +4662,6 @@ def _ensure_updater_image_for_sha(
             safe_tag = _validate_docker_image_ref(tag)
             args = [
                 "build",
-                "--network=host",
                 "--label",
                 f"aava.updater.source={source_label}",
             ]
@@ -4671,26 +4684,13 @@ def _ensure_updater_image_for_sha(
                     shutil.rmtree(cleanup_context, ignore_errors=True)
             if code != 0:
                 tail = "\n".join((out or "").splitlines()[-40:]).strip()
-                # AAVA-179: Detect DNS resolution failures and provide a targeted fix
-                dns_keywords = ["could not resolve", "temporary failure in name resolution",
-                                "no such host", "dns", "getaddrinfo", "resolve host"]
-                is_dns_issue = any(k in (out or "").lower() for k in dns_keywords)
-                if is_dns_issue:
-                    hint = (
-                        "DNS resolution failed during Docker image build.\n\n"
-                        "Fix: Add DNS servers to Docker daemon config and restart:\n"
-                        '  echo \'{"dns": ["8.8.8.8", "8.8.4.4"]}\' | sudo tee /etc/docker/daemon.json\n'
-                        "  sudo systemctl restart docker\n\n"
-                        "Then retry the update from the Admin UI."
-                    )
-                else:
-                    hint = (
-                        "If this fails due to DNS/egress restrictions, try:\n"
-                        '  echo \'{"dns": ["8.8.8.8", "8.8.4.4"]}\' | sudo tee /etc/docker/daemon.json\n'
-                        "  sudo systemctl restart docker\n\n"
-                        "Or update via CLI:\n"
-                        "  agent update"
-                    )
+                hint = (
+                    "Check the builder selected by BUILDX_BUILDER (default: default) with the same Docker identity. "
+                    "FROM/registry metadata uses BuildKit daemon networking; RUN downloads use build-step networking. "
+                    "Check DNS, proxy, registry credentials/rate limits and available disk space in the failing layer. "
+                    "No Docker configuration was changed. Preserve existing daemon settings; schedule any required "
+                    "daemon changes/restart with the operator. Retry the update after resolving connectivity."
+                )
                 if tail:
                     logger.error("Updater build failed (tail):\n%s", tail)
                     raise HTTPException(status_code=500, detail=f"Failed to build updater image:\n{tail}\n\n{hint}")
@@ -4843,6 +4843,8 @@ def _run_updater_ephemeral(
             source_ref=source_ref,
         )
 
+    env = dict(env or {})
+    env.setdefault("BUILDX_BUILDER", os.environ.get("BUILDX_BUILDER") or "default")
     client = docker.from_env()
     name = f"aava-update-ephemeral-{uuid.uuid4().hex[:10]}"
 
@@ -4856,9 +4858,9 @@ def _run_updater_ephemeral(
         host_docker_sock: {"bind": "/var/run/docker.sock", "mode": "rw"},
     }
 
-    # AAVA-179: Add DNS fallback so containers can resolve hostnames even when
-    # the Docker daemon's default DNS is broken (common on Ubuntu with systemd-resolved).
-    dns_fallback = ["8.8.8.8", "8.8.4.4"]
+    # Inherit the daemon's configured resolvers/proxy environment. Public DNS
+    # overrides can break private or restricted networks and cannot repair the
+    # separate BuildKit daemon's registry/metadata resolution.
 
     try:
         if command:
@@ -4872,7 +4874,6 @@ def _run_updater_ephemeral(
                 environment=env,
                 volumes=volumes,
                 name=name,
-                dns=dns_fallback,
                 detach=True,
             )
         else:
@@ -4881,7 +4882,6 @@ def _run_updater_ephemeral(
                 environment=env,
                 volumes=volumes,
                 name=name,
-                dns=dns_fallback,
                 detach=True,
             )
 
@@ -5610,6 +5610,7 @@ async def updates_plan(
     local_changes = _validate_update_local_changes(local_changes)
     env = {
         "PROJECT_ROOT": host_root,
+        "BUILDX_BUILDER": os.environ.get("BUILDX_BUILDER") or "default",
         "AAVA_UPDATE_MODE": "plan",
         "AAVA_UPDATE_INCLUDE_UI": "true" if include_ui else "false",
         "AAVA_UPDATE_REMOTE": "origin",
@@ -5779,6 +5780,7 @@ async def updates_run(body: UpdateRunRequest):
     # Use the already validated ref.
     env = {
         "PROJECT_ROOT": host_root,
+        "BUILDX_BUILDER": os.environ.get("BUILDX_BUILDER") or "default",
         "AAVA_UPDATE_MODE": "run",
         "AAVA_UPDATE_JOB_ID": job_id,
         "AAVA_UPDATE_INCLUDE_UI": "true" if body.include_ui else "false",
@@ -5917,6 +5919,7 @@ async def updates_rollback(body: UpdateRollbackRequest):
     }
     env = {
         "PROJECT_ROOT": host_root,
+        "BUILDX_BUILDER": os.environ.get("BUILDX_BUILDER") or "default",
         "AAVA_UPDATE_MODE": "rollback",
         "AAVA_UPDATE_JOB_ID": job_id,
         "AAVA_UPDATE_ROLLBACK_FROM_JOB": from_job_id,

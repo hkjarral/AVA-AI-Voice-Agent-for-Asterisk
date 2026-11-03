@@ -1,15 +1,15 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/hkjarral/ava-ai-voice-agent-for-asterisk/cli/internal/buildpolicy"
 )
 
 // Contains no config or credentials. Written under the existing update lock,
@@ -198,63 +198,19 @@ func clearPendingDockerActions(repoRoot string) error {
 	return nil
 }
 
-func hostNetworkEntitlementError(output string, err error) bool {
-	if err == nil {
-		return false
-	}
-	// Verbose command execution streams diagnostics and returns only the exit
-	// status in err; non-verbose execution also embeds the output in err.
-	diagnostics := output + "\n" + err.Error()
-	return strings.Contains(diagnostics, "additional privileges requested") &&
-		strings.Contains(diagnostics, "--allow=network.host")
+// The same script is shipped standalone for GUI rollback and called by install.
+// It is embedded so checking out an old target never replaces recovery policy.
+var runComposeBuildForUpdate = func(services []string) (string, error) {
+	args := append([]string{"-c", buildpolicy.Script, "aava-compose-build"}, services...)
+	return runCmd("bash", args...)
 }
 
-var runDockerBakeForUpdate = func(definition string) (string, error) {
-	return runCmdWithInput(strings.NewReader(definition), "docker", "buildx", "bake",
-		"--file", "-", "--allow=network.host", "--load")
-}
-
-var exportDockerBakeForUpdate = func(services []string) (string, error) {
-	args := append([]string{"compose", "build", "--print"}, services...)
-	cmd := exec.Command("docker", args...)
-	var diagnostics bytes.Buffer
-	cmd.Stderr = &diagnostics
-	// Keep warnings on stderr out of the machine-readable Bake definition.
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(diagnostics.String()))
-	}
-	return string(output), nil
-}
-
-func buildWithHostNetworkGrant(services []string) error {
-	printUpdateInfo("Compose did not grant host-network build access; retrying Bake with --allow=network.host")
-	definition, err := exportDockerBakeForUpdate(services)
-	if err != nil {
-		return fmt.Errorf("cannot export Compose build for host-network recovery (check docker compose/buildx versions): %w", err)
-	}
-	// --print must produce a Bake document, not a warning or partial output.
-	if !json.Valid([]byte(definition)) {
-		return errors.New("compose build --print did not produce valid JSON; check docker compose/buildx versions")
-	}
-	if _, err := runDockerBakeForUpdate(definition); err != nil {
-		return fmt.Errorf("bake host-network build failed; pending Docker actions are retained for retry (check docker compose/buildx versions): %w", err)
-	}
-	return nil
-}
-
-// buildDockerServices prepares scoped replacement images without changing any
-// container's running state, including when Compose needs the Bake workaround.
 func buildDockerServices(services []string) error {
 	if len(services) == 0 {
 		return nil
 	}
-	args := append([]string{"compose", "build"}, services...)
-	if output, err := runDockerCommandForUpdate("docker", args...); err != nil {
-		if !hostNetworkEntitlementError(output, err) {
-			return fmt.Errorf("docker compose build failed: %w", err)
-		}
-		return buildWithHostNetworkGrant(services)
+	if _, err := runComposeBuildForUpdate(services); err != nil {
+		return fmt.Errorf("compose build failed; pending Docker actions retained for retry: %w", err)
 	}
 	return nil
 }

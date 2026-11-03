@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Consistent Docker builder/preflight (#802):** share one build policy across
+  installer, CLI updates, GUI builds, updater bootstrap and packaged rollback.
+  Default to the active context's built-in builder; honor explicit overrides
+  without global changes or silent retry switches. Check capabilities and actual
+  builder readiness under the executing identity, validate exact Bake targets,
+  and explain DNS/registry/storage failures without overwriting daemon settings.
+  Add `install.sh --ui` for management-first onboarding; manual base-image pulls
+  are unnecessary. Existing call guards and pending-action recovery remain intact.
+
 - **Fresh-install Docker builds (#802):** route Quick Start, preflight, installer,
   and Admin UI setup/rebuild paths through the entitlement-aware Compose build
   helper. Preserve project/Compose overlays, no-cache rebuilds and backend build

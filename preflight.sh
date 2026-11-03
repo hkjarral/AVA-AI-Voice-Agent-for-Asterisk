@@ -51,6 +51,7 @@ FAILURES=()
 FIX_CMDS=()          # Commands that --apply-fixes will run
 MANUAL_CMDS=()       # Commands user must run manually (e.g., reboot/logout)
 APPLY_FIXES=false
+BUILD_CHECK_ONLY=false
 FORCE_MODE=false
 DOCKER_ROOTLESS=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -307,6 +308,7 @@ LOCAL_SERVER_ONLY=false
 for arg in "$@"; do
     case $arg in
         --apply-fixes) APPLY_FIXES=true ;;
+        --build-check) BUILD_CHECK_ONLY=true ;;
         --force) FORCE_MODE=true ;;
         --local-server|--local-ai-server) LOCAL_SERVER_ONLY=true ;;
         --local-ai-mode=*) LOCAL_AI_MODE_OVERRIDE="${arg#*=}" ;;
@@ -320,6 +322,7 @@ for arg in "$@"; do
             echo ""
             echo "Options:"
             echo "  --apply-fixes  Apply fixes automatically (requires root/sudo)"
+            echo "  --build-check  Read-only JSON build readiness for the current user/context"
             echo "  --force        Downgrade unsupported-OS failure to warning (for users with Docker pre-installed)"
             echo "  --local-server Run only checks needed to bring up local_ai_server (skips Asterisk/Admin UI)"
             echo "  --local-ai-mode=MODE  Set LOCAL_AI_MODE in .env (MODE=full|minimal)"
@@ -339,6 +342,13 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+# Machine-readable check used by the installer. It must execute under the
+# installer's identity and must never evaluate/supply shell environment files.
+if [ "$BUILD_CHECK_ONLY" = true ]; then
+    [ "$APPLY_FIXES" = false ] || { echo "ERR: --build-check cannot apply fixes" >&2; exit 2; }
+    exec bash "$SCRIPT_DIR/scripts/compose-build.sh" --check-json
+fi
 
 # Check for root/sudo when --apply-fixes is used
 if [ "$APPLY_FIXES" = true ] && [ "$(id -u)" -ne 0 ]; then
@@ -809,7 +819,7 @@ check_docker() {
             print_fix_and_docs "$ROOTLESS_START_CMD" "$ROOTLESS_DOCS"
         else
             # Check if it's a permission issue vs not running
-            if sudo docker ps &>/dev/null 2>&1; then
+            if sudo -n docker ps &>/dev/null 2>&1; then
                 log_fail "Cannot access Docker daemon (permission denied)"
                 local DOCKER_GROUP_CMD
                 DOCKER_GROUP_CMD="$(platform_yaml_get docker.user_group_cmd || echo "sudo usermod -aG docker \$USER")"
@@ -975,7 +985,7 @@ docker compose "$@"' > /usr/local/bin/docker-compose
 
         # docker-compose may be either v1 (EOL) or v2 standalone binary.
         # Only hard-fail on v1.
-        if [[ "$compose_raw" =~ ^v?2\. ]]; then
+        if [[ "$COMPOSE_VER" =~ ^([0-9]+)\. ]] && [ "${BASH_REMATCH[1]}" -ge 2 ]; then
             # v2 standalone binary - OK. Version validation happens below.
             :
         else
@@ -1048,6 +1058,23 @@ docker compose "$@"' > /usr/local/bin/docker-compose
         log_info "  Fix: $BUILDX_INSTALL_CMD"
         log_info "  Or install via package manager: apt install docker-buildx-plugin (Debian/Ubuntu)"
         FIX_CMDS+=("$BUILDX_INSTALL_CMD")
+    fi
+}
+
+# Shared read-only capability/builder check. Do not source reports or persist
+# sudo's Docker configuration for later commands run as the login user.
+check_build_policy() {
+    local report
+    local compose_bin=""
+    [ "$COMPOSE_CMD" != docker-compose ] || compose_bin=docker-compose
+    if report="$(AAVA_COMPOSE_BIN="$compose_bin" bash "$SCRIPT_DIR/scripts/compose-build.sh" --check-json)"; then
+        log_ok "Build policy: $report"
+        log_info "Builder connectivity is not probed by preflight. Host DNS/HTTPS checks do not validate BuildKit metadata or RUN networking."
+        if [ -n "${SUDO_USER:-}" ]; then
+            log_warn "Preflight ran as root via sudo; run ./scripts/compose-build.sh --check as $SUDO_USER before building. Docker identities/configuration may differ."
+        fi
+    else
+        log_fail "Docker build readiness failed for UID $(id -u); resolve the builder/capability error above using the same user as installation."
     fi
 }
 
@@ -1521,6 +1548,18 @@ check_selinux() {
 # Environment File
 # ============================================================================
 check_env() {
+    if [ "$APPLY_FIXES" = false ]; then
+        if [ ! -f "$SCRIPT_DIR/.env" ]; then
+            log_warn ".env is missing; run sudo ./preflight.sh --apply-fixes or ./install.sh --ui to prepare it"
+        else
+            log_ok ".env file exists (check only)"
+            if ! grep -qE '^JWT_SECRET=.+$' "$SCRIPT_DIR/.env"; then
+                log_warn "JWT_SECRET is empty; prepare it with --apply-fixes before exposing Admin UI"
+            fi
+        fi
+        [ -z "$LOCAL_AI_MODE_OVERRIDE" ] || log_warn "--local-ai-mode requires --apply-fixes to change .env"
+        return 0
+    fi
     if [ -f "$SCRIPT_DIR/.env" ]; then
         log_ok ".env file exists"
         log_info "  Tip: For local_only pipeline, no API keys needed!"
@@ -2280,6 +2319,7 @@ _check_ast_module() {
 
 # Helper: write the JSON manifest to data/asterisk_status.json
 _write_asterisk_manifest() {
+    [ "$APPLY_FIXES" = true ] || return 0
     local ast_found="$1" ast_version="$2" config_dir="$3" fpbx_detected="$4" fpbx_version="$5" checks_json="$6"
     local MANIFEST_DIR="$SCRIPT_DIR/data"
     local MANIFEST_FILE="$MANIFEST_DIR/asterisk_status.json"
@@ -2418,6 +2458,10 @@ check_gpu() {
     log_ok "nvidia-container-toolkit installed"
 
     # Step 4: Test Docker GPU passthrough (skip if already verified on previous run)
+    if [ "$APPLY_FIXES" = false ]; then
+        log_info "GPU passthrough not probed in check-only mode; --apply-fixes can run the container test."
+        return 0
+    fi
     local gpu_marker="$SCRIPT_DIR/.gpu-passthrough-ok"
     if [ -f "$gpu_marker" ] && [ "$(find "$gpu_marker" -mmin -60 2>/dev/null)" ]; then
         log_ok "Docker GPU passthrough: verified (cached)"
@@ -2471,6 +2515,10 @@ check_gpu() {
 
 # Helper: Update GPU_AVAILABLE in .env
 update_env_gpu() {
+    if [ "$APPLY_FIXES" = false ]; then
+        log_info "GPU_AVAILABLE=$1 detected; .env unchanged (check only)"
+        return 0
+    fi
     local gpu_value="$1"
     local passthrough_verified="${2:-false}"
     
@@ -2639,9 +2687,13 @@ check_host_project_root() {
 
     if [ -z "$current_root" ]; then
         # Not set — seed it with the actual project directory
-        echo "" >> "$SCRIPT_DIR/.env"
-        echo "HOST_PROJECT_ROOT=$SCRIPT_DIR" >> "$SCRIPT_DIR/.env"
-        log_ok "Set HOST_PROJECT_ROOT=$SCRIPT_DIR in .env"
+        if [ "$APPLY_FIXES" = true ]; then
+            echo "" >> "$SCRIPT_DIR/.env"
+            echo "HOST_PROJECT_ROOT=$SCRIPT_DIR" >> "$SCRIPT_DIR/.env"
+            log_ok "Set HOST_PROJECT_ROOT=$SCRIPT_DIR in .env"
+        else
+            log_warn "HOST_PROJECT_ROOT is missing; run with --apply-fixes to set the actual checkout path"
+        fi
         log_info "  Required for Admin UI container management (docker compose bind mount)"
     elif [ "$current_root" != "$SCRIPT_DIR" ]; then
         log_warn "HOST_PROJECT_ROOT=$current_root does not match actual project dir: $SCRIPT_DIR"
@@ -2693,6 +2745,7 @@ apply_fixes() {
         check_ipv6 >/dev/null 2>&1
         check_docker >/dev/null 2>&1
         check_compose >/dev/null 2>&1
+        check_build_policy >/dev/null 2>&1
         check_directories >/dev/null 2>&1
         check_project_permissions >/dev/null 2>&1
         check_data_permissions >/dev/null 2>&1
@@ -2752,8 +2805,14 @@ print_summary() {
         echo ""
     fi
     
+    if [ "$LOCAL_SERVER_ONLY" = false ] && [ ${#FAILURES[@]} -eq 0 ]; then
+        echo "Recommended Admin UI bootstrap: ./install.sh --ui"
+        echo "  Selects Compose, checks the build identity, prepares .env and waits for UI health."
+        echo "  Complete the Setup Wizard before starting the engine or selected Local AI."
+        echo ""
+    fi
     if [ ${#FAILURES[@]} -eq 0 ] && [ ${#WARNINGS[@]} -eq 0 ]; then
-        touch "$SCRIPT_DIR/.preflight-ok"
+        [ "$APPLY_FIXES" = false ] || touch "$SCRIPT_DIR/.preflight-ok"
         echo -e "${GREEN}✓ All checks passed!${NC}"
         echo ""
 
@@ -2819,7 +2878,7 @@ print_summary() {
         echo "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d --no-build --pull never local_ai_server"
         echo ""
     elif [ ${#FAILURES[@]} -eq 0 ]; then
-        touch "$SCRIPT_DIR/.preflight-ok"
+        [ "$APPLY_FIXES" = false ] || touch "$SCRIPT_DIR/.preflight-ok"
         echo -e "${YELLOW}Checks passed with warnings.${NC}"
         echo ""
         echo "You can proceed, but consider addressing the warnings above."
@@ -2896,6 +2955,7 @@ main() {
     check_ipv6
     check_docker
     check_compose
+    check_build_policy
     check_directories
     check_project_permissions
     check_data_permissions  # AAVA-150: Always runs, regardless of Asterisk location

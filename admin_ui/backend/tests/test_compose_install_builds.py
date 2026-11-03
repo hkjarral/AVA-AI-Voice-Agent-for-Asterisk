@@ -20,12 +20,17 @@ ROOT = Path(__file__).resolve().parents[3]
 def test_build_start_retains_options_and_stops_on_failure(tmp_path, monkeypatch, failure):
     project = tmp_path / "project with spaces"
     (project / "scripts").mkdir(parents=True)
-    shutil.copy(ROOT / "scripts/compose-build.sh", project / "scripts/compose-build.sh")
+    shutil.copy(ROOT / "cli/internal/buildpolicy/compose-build.sh", project / "scripts/compose-build.sh")
     commands = tmp_path / "commands.jsonl"
     docker = tmp_path / "docker"
     docker.write_text(f"#!{sys.executable}\n" + '''
 import json, os, sys
 args = sys.argv[1:]
+if args[:2] == ["compose", "version"]: sys.exit(0)
+if args[:2] == ["context", "show"]: print("default"); sys.exit(0)
+if args[0] == "info": print("synthetic-engine"); sys.exit(0)
+if args[:2] == ["buildx", "inspect"]: print("Driver: docker\\nStatus: running"); sys.exit(0)
+if "--help" in args: print("--print --allow --load"); sys.exit(0)
 with open(os.environ["TEST_COMMANDS"], "a") as log:
     log.write(json.dumps(args) + "\\n")
 failure = os.environ["TEST_FAILURE"]
@@ -40,7 +45,7 @@ if "build" in args:
         if failure == "export":
             sys.exit(3)
         print("warning on stderr", file=sys.stderr)
-        print(json.dumps({"args": args}))
+        print(json.dumps({"args": args, "target": {"local_ai_server": {"network": "host"}}}))
         sys.exit(0)
     if failure == "none":
         sys.exit(0)
@@ -160,3 +165,36 @@ def test_rebuild_job_preserves_backend_arguments(monkeypatch):
     assert "compose-build.sh" in calls[0]
     assert "--no-cache --build-arg INCLUDE_FASTER_WHISPER=true" in calls[0]
     assert " up " not in calls[0]
+
+
+def test_updater_build_timeout_cancels_runner_and_children(tmp_path, monkeypatch):
+    """Replacing Docker with a shell runner must not leave builds on timeout."""
+    import time
+
+    child_pid = tmp_path / "child.pid"
+    real_popen = subprocess.Popen
+    captured = []
+
+    def launch(command, **kwargs):
+        captured.append(command)
+        assert kwargs["start_new_session"] is True
+        return real_popen(["bash", "-c", 'sleep 60 & echo $! > "$1"; wait', "fixture", str(child_pid)], **kwargs)
+
+    monkeypatch.setattr(system.subprocess, "Popen", launch)
+    monkeypatch.setattr(system, "_write_updater_image_status", lambda **_: None)
+    code, _ = system._run_docker_with_updater_status(
+        ["build", "-f", "updater/Dockerfile", "."], cwd=str(tmp_path),
+        timeout_sec=0.2, image="synthetic:latest", phase="building", message="fixture",
+    )
+    assert code == 124
+    assert captured[0][0] == "bash" and captured[0][2] == "--docker-build"
+    assert "--network=host" not in captured[0], "the runner owns build policy"
+    monkeypatch.setattr(system.subprocess, "Popen", real_popen)
+    pid = child_pid.read_text().strip()
+    for _ in range(20):
+        state = subprocess.run(["ps", "-o", "stat=", "-p", pid], capture_output=True, text=True).stdout.strip()
+        if not state or state.startswith("Z"):
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("timed-out runner left a live child process")

@@ -238,6 +238,12 @@ managed credentials are not automatically rewound; follow the
 
 ### Manual builds on affected Compose/Buildx versions
 
+Current source uses the [shared build/preflight policy](BUILD_TROUBLESHOOTING.md):
+`default` in the active Docker context unless `BUILDX_BUILDER` explicitly selects
+another builder. The choice remains fixed through export/Bake; a custom builder
+failure is reported without silently switching. A host pull does not validate
+custom BuildKit DNS, and preliminary base-image pulls are unnecessary.
+
 After recording local changes, taking coherent private backups, and fetching or
 fast-forwarding to the intended release, use explicit services. With Docker access
 in your shell, from the checkout root:
@@ -270,8 +276,9 @@ For older checkouts without the helper, build with the explicit Bake grant:
 
 ```bash
 ( set -o pipefail
+  export BUILDX_BUILDER="${BUILDX_BUILDER:-default}"
   docker compose build --print ai_engine admin_ui |
-    docker buildx bake --file - --allow=network.host --load
+    docker buildx bake --file - --allow=network.host --load ai_engine admin_ui
 ) && docker compose up -d \
   --no-build --pull never --force-recreate ai_engine admin_ui
 ```
@@ -329,8 +336,9 @@ explicit Bake grant instead, from the project root in Bash:
 
 ```bash
 ( set -o pipefail
+  export BUILDX_BUILDER="${BUILDX_BUILDER:-default}"
   docker-compose -p asterisk-ai-voice-agent build --print admin_ui |
-    docker buildx bake --file - --allow=network.host --load
+    docker buildx bake --file - --allow=network.host --load admin_ui
 ) && docker-compose -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
 ```
 
@@ -352,8 +360,9 @@ else
   AAVA_COMPOSE=(docker-compose)
 fi
 ( set -o pipefail
+  export BUILDX_BUILDER="${BUILDX_BUILDER:-default}"
   "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent build --no-cache --print admin_ui |
-    docker buildx bake --file - --allow=network.host --load
+    docker buildx bake --file - --allow=network.host --load admin_ui
 ) && "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui
 ```
 

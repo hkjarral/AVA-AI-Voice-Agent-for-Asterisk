@@ -38,41 +38,20 @@ and [upgrade instructions](../docs/INSTALLATION.md#upgrade-to-v770-existing-chec
 
 ### 1. Start the Admin UI
 
-Use Bash for this block. The selector matches preflight's Compose mode for both
-building and starting. Keep `AAVA_COMPOSE` for later commands in this shell; rerun
-the selector in a new shell. Older helpers (including v7.7.1) require the
-[legacy recovery commands](../docs/CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers)
-for standalone Compose or no-cache rebuilds; they do not accept the newer options.
+For source checkouts containing the unreleased #802 fixes:
 
 ```bash
-# From your project root (runs in background)
-# Select the same Compose mode for both commands (Bash).
-if docker compose version >/dev/null 2>&1; then
-  export AAVA_COMPOSE_BIN=""
-  AAVA_COMPOSE=(docker compose)
-else
-  export AAVA_COMPOSE_BIN=docker-compose
-  AAVA_COMPOSE=(docker-compose)
-fi
-
-COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
-  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
-
-# View logs if needed
-"${AAVA_COMPOSE[@]}" logs -f admin_ui
+# From the project root; review preflight findings before proceeding.
+sudo ./preflight.sh --apply-fixes
+./install.sh --ui
 ```
 
-That's it! The container will:
-- ✅ Build the frontend automatically
-- ✅ Set up the backend
-- ✅ Create a default admin user
-- ✅ Mount your config files
-
-> **Note**: Run `./preflight.sh --apply-fixes` first (recommended) to create `.env` and generate a secure `JWT_SECRET`.
-> The Admin UI reads/writes `config/ai-agent.yaml` and `.env`.
-> The build helper handles the specific Compose/Buildx `--allow=network.host`
-> failure; do not add this flag to `compose up`. See
-> [build recovery](../docs/CLI_TOOLS_GUIDE.md#manual-builds-on-affected-composebuildx-versions).
+This prepares the management environment and builds/starts Admin UI. It does not
+start the AI Engine or Local AI. Complete the Setup Wizard, then start the engine
+and only the Local AI components you selected. Read the
+[build checks and recovery guide](../docs/BUILD_TROUBLESHOOTING.md) if preflight or
+a build fails. v7.7.1 and older checkouts require the
+[legacy recovery commands](../docs/CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
 
 For first-call onboarding (dialplan + transport selection + verification), see:
 - [Installation Guide](../docs/INSTALLATION.md)

@@ -14,17 +14,26 @@ ROOT = Path(__file__).resolve().parents[1]
 def prepare_project(tmp_path, failure):
     """Create isolated Docker/Compose shims with selectable build failures."""
     (tmp_path / "scripts").mkdir()
-    shutil.copy(ROOT / "scripts/compose-build.sh", tmp_path / "scripts/compose-build.sh")
+    shutil.copy(ROOT / "cli/internal/buildpolicy/compose-build.sh", tmp_path / "scripts/compose-build.sh")
     log = tmp_path / "commands"
     docker = tmp_path / "docker"
     docker.write_text('''#!/bin/bash
+if [[ "$1 $2" == 'context show' ]]; then echo default; exit 0; fi
+if [[ "$1" == info ]]; then echo synthetic-engine; exit 0; fi
+if [[ "$1 $2" == 'buildx inspect' ]]; then printf 'Driver: docker\\nStatus: running\\n'; exit 0; fi
+if [[ " $* " == *' --help '* ]]; then echo '--print --allow --load'; exit 0; fi
 echo "$*" >> "$TEST_COMMANDS"
 echo "${TEST_COMPOSE_EXECUTABLE:-docker}|$*" >> "$TEST_EXECUTABLES"
 if [[ "$1" == compose && "${TEST_COMPOSE_MISSING:-}" == 1 && "${TEST_COMPOSE_EXECUTABLE:-docker}" != docker-compose ]]; then
   exit 1
 fi
+if [[ "$1 $2" == 'compose version' ]]; then echo v5.0.2; exit 0; fi
+if [[ "$1 $2" == 'buildx version' ]]; then echo v0.31.1; exit 0; fi
 if [[ " $* " == *" --print "* ]]; then
-  echo '{"target":{"admin_ui":{"network":"host"}}}'
+  python3 - "$@" <<'PYBAKE'
+import json, sys
+print(json.dumps({"target": {s: {"network": "host"} for s in sys.argv if s in ("admin_ui", "ai_engine", "local_ai_server")}}))
+PYBAKE
 elif [[ "$1 $2" == "buildx bake" ]]; then
   cat >/dev/null
 elif [[ " $* " == *" build "* ]]; then
@@ -94,7 +103,7 @@ print_summary
     assert run.returncode == 0, run.stdout + run.stderr
     calls = log.read_text().splitlines()
     assert calls[-1] == f"compose -p asterisk-ai-voice-agent up -d --no-build --pull never {service}"
-    assert "buildx bake --file - --allow=network.host --load" in calls
+    assert f"buildx bake --file - --allow=network.host --load {service}" in calls
 
 
 @pytest.mark.parametrize("options", [[], ["--no-cache"], ["--push", "admin_ui"], ["-f"], ["--build-arg", "--no-cache", "admin_ui"]])
@@ -138,7 +147,15 @@ def test_copied_quick_start_retains_compose_selection(tmp_path, guide, failure, 
     env["TEST_COMPOSE_MISSING"] = "1" if standalone else "0"
     source = (ROOT / guide).read_text()
     blocks = re.findall(r"^```bash\n(.*?)^```", source, re.S | re.M)
-    bootstrap = next(block for block in blocks if "./scripts/compose-build.sh admin_ui &&" in block)
+    bootstrap = next(block for block in blocks if "./install.sh --ui" in block)
+    shutil.copy(ROOT / "install.sh", tmp_path / "install.sh")
+    shutil.copy(ROOT / "preflight.sh", tmp_path / "preflight.sh")
+    (tmp_path / ".env.example").write_text("JWT_SECRET=\nPROVIDER_SECRET=synthetic-retained\n")
+    env["INSTALL_NONINTERACTIVE"] = "1"
+    # Keep system preparation out of this fixture; exercise the real installer
+    # and its read-only preflight report before building/starting management.
+    (tmp_path / "id").write_text('#!/bin/sh\ncase "$1" in -u) echo 1000;; -g) echo 995;; *) echo synthetic;; esac\n')
+    (tmp_path / "id").chmod(0o700)
     # Clone/preflight are outside this CLI-sequence fixture; keep the rest of
     # each copied block intact, including any commands after Admin UI startup.
     for name in ["git", "sudo"]:
@@ -148,8 +165,8 @@ def test_copied_quick_start_retains_compose_selection(tmp_path, guide, failure, 
     (tmp_path / "AVA-AI-Voice-Agent-for-Asterisk").symlink_to(tmp_path, target_is_directory=True)
     result = subprocess.run(["bash", "-c", bootstrap],
                             cwd=tmp_path, env=env, capture_output=True, text=True)
-    if failure != "unrelated":
-        assert result.returncode == 0, result.stderr
+    assert (result.returncode == 0) == (failure != "unrelated"), result.stdout + result.stderr
+    assert "PROVIDER_SECRET=synthetic-retained" in (tmp_path / ".env").read_text()
     starts = [call for call in log.read_text().splitlines() if " up " in call]
     assert len(starts) == int(failure != "unrelated")
     if starts:
@@ -179,3 +196,49 @@ def test_legacy_no_cache_recipe_bypasses_helper(tmp_path, standalone):
                   if " build " in line or " up " in line]
     assert operations and all(line.startswith(selected + "|") for line in operations)
     assert all("ai_engine" not in line and "local_ai_server" not in line for line in operations)
+
+
+def _preflight_function(name):
+    source = (ROOT / "preflight.sh").read_text()
+    start = source.index(name + "() {\n")
+    end_start = source.index("\nMANIFESTEOF", start) if name == "_write_asterisk_manifest" else start
+    return source[start:source.index("\n}\n", end_start) + 3]
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_check_only_preflight_never_seeds_or_changes_operator_files(tmp_path, existing):
+    (tmp_path / ".env.example").write_text("JWT_SECRET=\n")
+    before = "JWT_SECRET=\nGPU_AVAILABLE=true\nPROVIDER_SECRET=synthetic-retained\n"
+    if existing:
+        (tmp_path / ".env").write_text(before)
+    functions = "\n".join(_preflight_function(n) for n in (
+        "check_env", "check_host_project_root", "update_env_gpu", "_write_asterisk_manifest",
+    ))
+    script = functions + '''
+log_ok() { :; }; log_warn() { :; }; log_info() { :; }
+APPLY_FIXES=false; SCRIPT_DIR="$1"; LOCAL_AI_MODE_OVERRIDE=minimal
+check_env
+check_host_project_root
+update_env_gpu false
+_write_asterisk_manifest false unknown /synthetic false unknown '{}'
+'''
+    subprocess.run(["bash", "-c", script, "fixture", str(tmp_path)], check=True, capture_output=True)
+    assert (tmp_path / ".env").exists() == existing
+    if existing:
+        assert (tmp_path / ".env").read_text() == before
+    assert not (tmp_path / "data").exists()
+
+
+def test_preflight_accepts_standalone_compose_new_major(tmp_path):
+    env, _ = prepare_project(tmp_path, "none")
+    env["TEST_COMPOSE_MISSING"] = "1"
+    script = _preflight_function("check_compose") + '''
+log_ok() { echo "$1"; }; log_warn() { echo "$1"; }; log_info() { :; }
+log_fail() { echo "FAILED: $1"; }; platform_yaml_get() { return 1; }
+github_docs_url() { echo "$1"; }; print_fix_and_docs() { :; }
+APPLY_FIXES=false; FIX_CMDS=()
+check_compose
+'''
+    result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=True)
+    assert "FAILED" not in result.stdout
+    assert "Docker Compose: 5.0.2" in result.stdout

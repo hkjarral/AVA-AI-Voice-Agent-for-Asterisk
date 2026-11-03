@@ -515,60 +515,34 @@ Then verify in the Admin UI:
 
 ### Path A: Admin UI Setup Wizard (Recommended)
 
-**5-minute visual setup** with the new web-based Admin UI:
-
-Run the following block in Bash. It selects the same Compose mode as preflight
-for the build helper and startup. Reuse `AAVA_COMPOSE` for later examples in the
-same shell; repeat the selection block when opening a new shell. On standalone
-Compose with an older helper (including v7.7.1), use the
-[standalone recovery commands](CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
+The source bootstrap below includes unreleased #802 changes. On v7.7.1 or an
+older checkout, use the [legacy recovery procedure](CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers);
+`install.sh --ui` is not present in those releases.
 
 ```bash
 git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
 cd AVA-AI-Voice-Agent-for-Asterisk
-
-# Run preflight (REQUIRED - creates .env, generates JWT_SECRET)
 sudo ./preflight.sh --apply-fixes
-
-# Select the same Compose mode for both commands (Bash).
-if docker compose version >/dev/null 2>&1; then
-  export AAVA_COMPOSE_BIN=""
-  AAVA_COMPOSE=(docker compose)
-else
-  export AAVA_COMPOSE_BIN=docker-compose
-  AAVA_COMPOSE=(docker-compose)
-fi
-
-# Start Admin UI first
-COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
-  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui
-
+./install.sh --ui
 ```
 
-After Admin UI starts successfully, complete its Setup Wizard. Then, in the same
-Bash shell, run the engine commands separately:
+Review preflight findings before continuing. Default `./preflight.sh` checks only;
+`--apply-fixes` explicitly authorizes preparation. The installer repeats the build
+check under its own user and Docker context, prepares `.env` without replacing
+provider credentials, and builds/starts only Admin UI. Headless/manual setup
+remains available with `./install.sh` and `INSTALL_NONINTERACTIVE=1`.
 
-```bash
-COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh ai_engine &&
-  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never ai_engine
-```
+Open `http://<server-ip>:3003`, get the one-time password with
+`docker logs admin_ui | grep -i password`, and change it on first login. Restrict
+port 3003 to trusted access. Complete the Setup Wizard, then use its AI Engine
+start action. Start Local AI only if selected by your configuration. Configure
+the generated PBX dialplan and make a test call before routing callers.
 
-The helper handles the specific `--allow=network.host` Compose/Buildx failure
-before any container is started. A failed build stops the sequence. See
-[manual build recovery](CLI_TOOLS_GUIDE.md#manual-builds-on-affected-composebuildx-versions)
-for the entitlement explanation and older checkouts.
-
-If you hit permission/container/health issues during setup, start with:
-- `agent check`
-- `sudo ./preflight.sh --apply-fixes`
-- `docs/TROUBLESHOOTING_GUIDE.md`
-
-**Access the Admin UI:**
-- **Local:** `http://localhost:3003`
-- **Remote server:** `http://<server-ip>:3003`
-
-> ⚠️ **Security:** The Admin UI is accessible on the network by default.  
-> **Change the admin password on first login** and restrict port 3003 (firewall/VPN/reverse proxy) for production.
+The build policy uses the active Docker context's built-in `default` builder;
+an explicit `BUILDX_BUILDER` selects a custom builder and is never silently
+replaced. No manual base-image pulls or global insecure-builder setup is required.
+See [build checks and recovery](BUILD_TROUBLESHOOTING.md) for sudo identities,
+standalone Compose, custom builders and DNS/registry/storage failures.
 
 #### Securing the Admin UI
 
@@ -604,21 +578,6 @@ so do one of: bind the Admin UI to the host's WireGuard interface IP
 (`UVICORN_HOST=<wg-interface-ip>`), run a local reverse proxy listening on that interface,
 or SSH-forward port 3003 over the tunnel. Keep 3003 firewalled on all other interfaces.
 
-The Setup Wizard will:
-1. ✅ Guide you through provider selection (OpenAI, Deepgram, Google, ElevenLabs, Local)
-2. ✅ Validate your API keys with live testing
-3. ✅ Test Asterisk ARI connection
-4. ✅ Configure contexts and greeting
-5. ✅ Start containers automatically
-
-**First login:** retrieve the one-time password from
-`docker logs admin_ui | grep -i password`, then change it.
-
-**Best for:** First-time users, production deployments, visual configuration
-
-See [Admin UI Setup Guide](../admin_ui/UI_Setup_Guide.md) for detailed instructions.
-
----
 
 ### Path B: CLI Quickstart (Alternative)
 
