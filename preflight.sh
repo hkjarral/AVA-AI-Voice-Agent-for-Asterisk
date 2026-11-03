@@ -1547,8 +1547,11 @@ check_env() {
             log_warn ".env is missing; run sudo ./preflight.sh --apply-fixes or ./install.sh --ui to prepare it"
         else
             log_ok ".env file exists (check only)"
-            if ! grep -qE '^JWT_SECRET=.+$' "$SCRIPT_DIR/.env"; then
-                log_warn "JWT_SECRET is empty; prepare it with --apply-fixes before exposing Admin UI"
+            local checked_secret
+            checked_secret="$(grep -E '^[[:space:]]*JWT_SECRET=' "$SCRIPT_DIR/.env" | tail -n1 | sed -E 's/^[[:space:]]*JWT_SECRET=//')"
+            checked_secret="$(printf '%s' "$checked_secret" | tr -d '\r' | xargs 2>/dev/null || printf '%s' "$checked_secret")"
+            if [ -z "$checked_secret" ] || [ "$checked_secret" = changeme ] || [ "$checked_secret" = change-me-please ]; then
+                log_warn "JWT_SECRET is empty or a known placeholder; configure a persistent secret with --apply-fixes before exposing Admin UI"
             fi
         fi
         [ -z "$LOCAL_AI_MODE_OVERRIDE" ] || log_warn "--local-ai-mode requires --apply-fixes to change .env"

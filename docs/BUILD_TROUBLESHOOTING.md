@@ -72,7 +72,8 @@ For example, with the plugin:
 ```
 
 The shared runner retries only the exact Compose host-network entitlement error.
-It exports the same services/options, validates the exact target set, and runs
+It exports the same services/options, validates the selected default group and
+requested definitions (unused definitions may be exported by older Compose), and runs
 Bake with `--allow=network.host --load` and explicit targets. It does not retry
 unrelated errors, grant `security.insecure`, or recreate containers after failure.
 Engine changes still require the updater's active-call checks and recovery journal.

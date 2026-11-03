@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Scope private environment creation separately from data/media permissions so
   the UI runtime can write after a root-run or partially applied preparation.
   Clarify admission, drain and visibility requirements for manual recreation.
+  Accept older Compose exports containing unused Bake definitions while keeping
+  the selected group/targets scoped; make UI recovery snippets self-contained
+  and warn about placeholder JWT secrets during read-only preflight.
   Add `install.sh --ui` for management-first onboarding; manual base-image pulls
   are unnecessary. Existing call guards and pending-action recovery remain intact.
 

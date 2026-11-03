@@ -173,16 +173,29 @@ if ! "${compose_options[@]}" "${build_options[@]}" --print "${services[@]}" > "$
   echo "ERR: cannot export the Compose build; check docker compose/buildx versions" >&2
   exit 1
 fi
-# Reject empty/unrelated/extra targets before granting any privilege. Use explicit
-# target argv as well, so a malformed default group cannot widen the selection.
+# Some Compose versions export unselected definitions too. Validate the selected
+# group and requested definitions, then use explicit argv so unused definitions
+# cannot widen the build. Reject groups that shadow an explicit target name.
 if ! python3 - "$build_dir/bake.json" "${services[@]}" <<'PYBAKE'
 import json, sys
 try:
     b = json.load(open(sys.argv[1]))
     targets = b.get("target")
-    if not isinstance(targets, dict) or set(targets) != set(sys.argv[2:]):
-        raise ValueError("Bake targets must exactly match the requested services")
-    for name, target in targets.items():
+    requested = set(sys.argv[2:])
+    if not isinstance(targets, dict) or not requested.issubset(targets):
+        raise ValueError("requested Bake target definitions are missing")
+    groups = b.get("group", {})
+    if not isinstance(groups, dict) or requested.intersection(groups):
+        raise ValueError("Bake groups must not shadow requested target names")
+    if "default" in groups:
+        default = groups["default"]
+        selected = default.get("targets") if isinstance(default, dict) else None
+        if not isinstance(selected, list) or set(selected) != requested:
+            raise ValueError("Bake default group must exactly select the requested services")
+    elif set(targets) != requested:
+        raise ValueError("unselected definitions require an explicit matching default group")
+    for name in requested:
+        target = targets[name]
         if not isinstance(target, dict) or not target:
             raise ValueError("empty or invalid build target: " + name)
         if target.get("inherits") or target.get("contexts"):

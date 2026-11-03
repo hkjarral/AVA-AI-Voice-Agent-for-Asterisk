@@ -70,7 +70,8 @@ Fresh-install/preflight instructions, installer and Admin UI build/start paths
 also use `scripts/compose-build.sh`, backed by the same runner embedded in the
 CLI and packaged in Admin/updater images. It resolves `BUILDX_BUILDER` once
 (default: the active Docker context's built-in builder), checks capabilities,
-and validates exact Bake targets before scoped recovery. Preflight's read-only
+and validates the selected Bake group and requested definitions before scoped
+recovery, permitting unselected definitions exported by older Compose. Preflight's read-only
 `--build-check` emits a non-secret JSON report consumed by the installer under
 its own identity. `install.sh --ui` bootstraps management before wizard-driven
 engine/optional Local AI startup. See [build checks](docs/BUILD_TROUBLESHOOTING.md).

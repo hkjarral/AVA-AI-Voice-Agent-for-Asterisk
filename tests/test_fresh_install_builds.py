@@ -317,3 +317,53 @@ printf 'RESTORED_UMASK=%s\\n' "$(umask)"
     if existing_directories:
         assert sentinel.read_bytes() == b"private fixture: leave unchanged"
         assert sentinel.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("standalone", [False, True])
+@pytest.mark.parametrize("failure", ["none", "entitlement", "unrelated"])
+def test_ui_guide_recovery_blocks_work_in_fresh_shells(tmp_path, standalone, failure):
+    """Every recovery array is defined locally and keeps build/start on one CLI."""
+    env, log = prepare_project(tmp_path, failure)
+    env["TEST_COMPOSE_MISSING"] = "1" if standalone else "0"
+    env.pop("AAVA_COMPOSE_BIN", None)
+    source = (ROOT / "admin_ui/UI_Setup_Guide.md").read_text()
+    blocks = [b for b in re.findall(r"^```bash\n(.*?)^```", source, re.S | re.M) if '${AAVA_COMPOSE[@]}' in b]
+    assert len(blocks) == 3
+    for block in blocks:
+        log.unlink(missing_ok=True)
+        executable_log = tmp_path / "executables"
+        executable_log.unlink(missing_ok=True)
+        result = subprocess.run(["bash", "-c", block], cwd=tmp_path, env=env, capture_output=True, text=True)
+        assert (result.returncode == 0) == (failure != "unrelated"), result.stdout + result.stderr
+        records = executable_log.read_text().splitlines()
+        actions = [line for line in records if any(f" {action} " in line for action in ("build", "up", "stop", "restart"))]
+        expected = "docker-compose" if standalone else "docker"
+        assert actions and all(line.startswith(expected + "|") for line in actions)
+        assert all("ai_engine" not in line and "local_ai_server" not in line for line in actions)
+        starts = [line for line in actions if " up " in line]
+        assert bool(starts) == (failure != "unrelated")
+        assert all("--no-build --pull never" in line for line in starts)
+
+
+@pytest.mark.parametrize("secret,warn", [
+    ("", True), ("changeme", True), ("change-me-please", True),
+    ('"changeme"', True), ("''", True),
+    ("synthetic-persistent-value", False), ('"synthetic persistent value"', False),
+])
+def test_check_only_preflight_warns_about_nonpersistent_jwt_without_writing(tmp_path, secret, warn):
+    """Check-only reports unsafe JWT values without printing or rewriting secrets."""
+    before = f"JWT_SECRET={secret}\nPROVIDER_SECRET=synthetic-retained\n"
+    path = tmp_path / ".env"
+    path.write_text(before)
+    script = _preflight_function("check_env") + '''
+log_ok() { :; }; log_info() { :; }; log_warn() { echo "$1"; }
+APPLY_FIXES=false; SCRIPT_DIR="$1"; LOCAL_AI_MODE_OVERRIDE=""
+check_env
+'''
+    result = subprocess.run(["bash", "-c", script, "fixture", str(tmp_path)], capture_output=True, text=True, check=True)
+    assert ("JWT_SECRET" in result.stdout) == warn
+    if warn:
+        assert "persistent secret" in result.stdout
+    assert "synthetic-persistent-value" not in result.stdout
+    assert "synthetic persistent value" not in result.stdout
+    assert path.read_text() == before

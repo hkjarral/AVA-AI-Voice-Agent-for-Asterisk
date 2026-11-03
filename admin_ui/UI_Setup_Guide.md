@@ -549,6 +549,14 @@ docker logs admin_ui
 
 **Rebuild if needed**:
 ```bash
+# Select the same Compose executable for this recovery (Bash).
+if docker compose version >/dev/null 2>&1; then
+  export AAVA_COMPOSE_BIN=""
+  AAVA_COMPOSE=(docker compose)
+else
+  export AAVA_COMPOSE_BIN=docker-compose
+  AAVA_COMPOSE=(docker-compose)
+fi
 COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
   "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
 ```
@@ -614,6 +622,14 @@ docker compose logs admin_ui
 
 **Force rebuild** (for an older helper, use the linked legacy no-cache recipe):
 ```bash
+# Select the same Compose executable for this recovery (Bash).
+if docker compose version >/dev/null 2>&1; then
+  export AAVA_COMPOSE_BIN=""
+  AAVA_COMPOSE=(docker compose)
+else
+  export AAVA_COMPOSE_BIN=docker-compose
+  AAVA_COMPOSE=(docker-compose)
+fi
 COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh --no-cache admin_ui &&
   "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui
 ```
@@ -817,17 +833,26 @@ Coming in future releases:
 ### Essential Commands
 
 ```bash
+# Select the same Compose executable for this recovery (Bash).
+if docker compose version >/dev/null 2>&1; then
+  export AAVA_COMPOSE_BIN=""
+  AAVA_COMPOSE=(docker compose)
+else
+  export AAVA_COMPOSE_BIN=docker-compose
+  AAVA_COMPOSE=(docker-compose)
+fi
 # Start Admin UI (Docker)
-docker compose up -d admin_ui
+COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
 
 # Stop Admin UI
-docker compose stop admin_ui
+"${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent stop admin_ui
 
 # View logs
 docker logs admin_ui -f
 
 # Restart after changes
-docker compose restart admin_ui
+"${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent restart admin_ui
 
 # Rebuild from scratch with the current helper; older helpers use the legacy no-cache recipe.
 COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh --no-cache admin_ui &&

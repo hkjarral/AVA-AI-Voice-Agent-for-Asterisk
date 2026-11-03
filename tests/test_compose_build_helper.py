@@ -32,9 +32,15 @@ elif "--print" in args:
     if failure == "export": sys.exit(3)
     print("Compose warning on stderr", file=sys.stderr)
     services = [a for a in args if a in ("ai_engine", "admin_ui", "local_ai_server")]
-    b = {"target": {s: {"network": "host", "tags": ["synthetic:latest"]} for s in services}}
+    b = {"group": {"default": {"targets": services}}, "target": {s: {"network": "host", "tags": ["synthetic:latest"]} for s in services}}
     if failure == "invalid": b = {"target": {}}
-    if failure == "extra": b["target"]["unexpected"] = {"network": "host"}
+    if failure == "extra":
+        b["target"]["unexpected"] = {"network": "host"}
+        b["group"]["default"]["targets"] = services + ["unexpected"]
+    if failure == "unselected": b["target"]["unexpected"] = {"inherits": ["never-build-this"]}
+    if failure == "missing-target": del b["target"][services[0]]
+    if failure == "group-alias": b["group"][services[0]] = {"targets": ["unexpected"]}
+    if failure == "no-group": del b["group"]
     if failure == "indirect": b["target"][services[0]]["inherits"] = ["unexpected"]
     print(json.dumps(b))
 elif args[:2] == ["buildx", "bake"]:
@@ -58,7 +64,7 @@ else: sys.exit(9)
     return env, log
 
 
-@pytest.mark.parametrize("failure", ["none", "entitlement", "unrelated", "export", "bake", "invalid", "extra", "indirect", "builder", "capability", "dns", "disk", "auth"])
+@pytest.mark.parametrize("failure", ["none", "entitlement", "unrelated", "export", "bake", "invalid", "extra", "indirect", "builder", "capability", "dns", "disk", "auth", "unselected", "missing-target", "group-alias", "no-group"])
 @pytest.mark.parametrize("builder", [None, "explicit-custom"])
 def test_shared_policy_scopes_builder_privilege_and_targets(tmp_path, docker_fixture, failure, builder):
     env, log = docker_fixture
@@ -66,17 +72,18 @@ def test_shared_policy_scopes_builder_privilege_and_targets(tmp_path, docker_fix
     if builder:
         env["BUILDX_BUILDER"] = builder
     result = subprocess.run(["bash", str(RUNNER), "-p", "synthetic", "--no-cache", "--build-arg", "SAFE=value with spaces;$(touch injected)", "ai_engine", "admin_ui"], env=env, capture_output=True, text=True)
-    assert (result.returncode == 0) == (failure in {"none", "entitlement"}), result.stdout + result.stderr
+    assert (result.returncode == 0) == (failure in {"none", "entitlement", "unselected", "no-group"}), result.stdout + result.stderr
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     assert all(c["builder"] == (builder or "default") for c in calls if c["args"][:2] != ["compose", "version"])
     assert all(c["context"] == "synthetic-context" for c in calls if c["args"][:2] not in (["context", "show"], ["compose", "version"]))
     assert not any("up" in c["args"] or "use" in c["args"] or "create" in c["args"] for c in calls)
     bakes = [c["args"] for c in calls if c["args"][:2] == ["buildx", "bake"] and "--help" not in c["args"]]
-    assert bool(bakes) == (failure in {"entitlement", "bake"})
+    assert bool(bakes) == (failure in {"entitlement", "bake", "unselected", "no-group"})
     if bakes:
         assert bakes == [["buildx", "bake", "--file", "-", "--allow=network.host", "--load", "ai_engine", "admin_ui"]]
         definition = json.loads((tmp_path / "definition.json").read_text())
-        assert set(definition["target"]) == {"ai_engine", "admin_ui"}
+        expected = {"ai_engine", "admin_ui"} | ({"unexpected"} if failure == "unselected" else set())
+        assert set(definition["target"]) == expected
     exports = [c["args"] for c in calls if "--print" in c["args"]]
     if exports:
         assert "--no-cache" in exports[0] and "synthetic" in exports[0]

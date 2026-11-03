@@ -346,7 +346,12 @@ After setup, select `ai_engine` in both commands only when you intend to start
 it. Before recreating a running engine, stop new admissions using the PBX's
 existing routing controls and wait for active calls to end. Leave an intentionally
 stopped engine stopped. Include `local_ai_server` only when configured, with the
-same Compose files for build and startup. These commands grant only
+same Compose files for build and startup. Before recreating an inference-only
+Local AI host, stop new PBX admissions and drain every consuming remote engine.
+Verify that no calls remain on every consuming engine; if their call state is
+unknown or cannot be verified from that host, restore visibility before recreating
+Local AI. Direct Docker commands lack the updater's guard and must not bypass
+call-safety, revision or database-mapping refusals. These commands grant only
 `network.host` for the selected build; they do not change Docker's global configuration.
 
 For an Admin UI-only no-cache rebuild, older helpers also reject `--no-cache`.
