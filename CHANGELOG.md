@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Remote PBX checklist:** stop presenting an empty local Asterisk preflight
+  manifest as an error when Ava is configured to use Asterisk on a separate
+  host; retain live ARI/module status and identify PBX configuration checks as
+  remote-host work.
+
 - **AudioSocket caller squelch (#799):** prevent a first speech frame from
   poisoning the noise floor and muting the whole utterance when quiet onset
   frames are absent. Classify before updating the noise estimate and exclude

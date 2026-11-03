@@ -308,9 +308,25 @@ const AsteriskPage = () => {
             </ConfigSection>
 
             {/* Configuration Checklist (from manifest) */}
-            <ConfigSection title="Configuration Checklist" description="Asterisk config file checks from the last preflight run">
+            <ConfigSection
+                title="Configuration Checklist"
+                description={mode === 'remote'
+                    ? 'PBX configuration files are owned by the remote Asterisk host'
+                    : 'Asterisk config file checks from the last preflight run'}
+            >
                 <ConfigCard>
-                    {manifest && manifest.checks && Object.keys(manifest.checks).length > 0 ? (
+                    {mode === 'remote' ? (
+                        <div className="flex items-start gap-2 text-sm text-muted-foreground">
+                            <Globe className="w-4 h-4 mt-0.5 text-purple-500" />
+                            <div>
+                                <p>Local Asterisk configuration checks do not apply to this split-host deployment.</p>
+                                <p className="mt-1">
+                                    Ava verifies the remote PBX through the live ARI, module, and application checks above.
+                                    Inspect configuration files on the PBX host itself.
+                                </p>
+                            </div>
+                        </div>
+                    ) : manifest && manifest.checks && Object.keys(manifest.checks).length > 0 ? (
                         <div className="divide-y divide-border">
                             {Object.entries(manifest.checks).map(([key, check]) => {
                                 const meta = CONFIG_CHECK_LABELS[key];
@@ -388,9 +404,18 @@ const AsteriskPage = () => {
             {manifest && (
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <Clock className="w-3 h-3" />
-                    Last preflight run: {manifest.timestamp ? new Date(manifest.timestamp).toLocaleString() : 'unknown'}
-                    <span className="ml-2">•</span>
-                    <span>Run <code className="px-1 py-0.5 rounded bg-muted font-mono">./preflight.sh</code> on the host to refresh</span>
+                    {mode === 'remote' ? 'Last Ava-host preflight' : 'Last preflight run'}: {manifest.timestamp ? new Date(manifest.timestamp).toLocaleString() : 'unknown'}
+                    {mode === 'remote' ? (
+                        <>
+                            <span className="ml-2">•</span>
+                            <span>Local Asterisk audit skipped for remote PBX</span>
+                        </>
+                    ) : (
+                        <>
+                            <span className="ml-2">•</span>
+                            <span>Run <code className="px-1 py-0.5 rounded bg-muted font-mono">./preflight.sh</code> on the host to refresh</span>
+                        </>
+                    )}
                 </div>
             )}
         </div>
