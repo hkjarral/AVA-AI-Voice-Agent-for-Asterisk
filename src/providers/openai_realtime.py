@@ -228,6 +228,9 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         self._pacer_start_ts: float = 0.0
         self._pacer_underruns: int = 0
         self._pacer_lock: asyncio.Lock = asyncio.Lock()
+        self._pacer_epoch: int = 0
+        self._discarding_output: bool = False
+        self._pacer_failed: bool = False
         self._fallback_pcm24k_done: bool = False
         self._reconnect_task: Optional[asyncio.Task] = None
 
@@ -548,6 +551,9 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             logger.debug("Initial response.create request failed", call_id=call_id, exc_info=True)
 
         # Reset egress pacer state at session start
+        self._discarding_output = False
+        self._pacer_epoch += 1
+        self._pacer_failed = False
         try:
             async with self._pacer_lock:
                 self._outbuf.clear()
@@ -1049,7 +1055,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             if self.websocket and self.websocket.state.name == "OPEN":
                 await self.websocket.close()
 
-            await self._emit_audio_done()
+            await self._emit_audio_done(drain=False)
         finally:
             # Cleanup pacer
             try:
@@ -1672,7 +1678,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             # Local egress can have buffered audio (pacer/outbuf). Flush it immediately so the interrupted
             # sentence does not resume locally even if OpenAI continues sending a few in-flight frames.
             try:
-                await self._emit_audio_done()
+                await self._emit_audio_done(drain=False)
             except Exception:
                 logger.debug("Failed emitting AgentAudioDone during barge-in cancel", call_id=self._call_id, exc_info=True)
             try:
@@ -1882,7 +1888,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         except Exception:
             logger.error("OpenAI Realtime receive loop error", call_id=self._call_id, exc_info=True)
         finally:
-            await self._emit_audio_done()
+            await self._emit_audio_done(drain=False)
             self._pending_response = False
             try:
                 if not self._closing and not self._closed and self._call_id:
@@ -1893,6 +1899,17 @@ class OpenAIRealtimeProvider(AIProviderInterface):
 
     async def _handle_event(self, event: Dict[str, Any]):
         event_type = event.get("type")
+        response_id = event.get("response_id") or (event.get("response") or {}).get("id")
+        audio_done = event_type in {"response.output_audio.done", "response.audio.done"} or (
+            event_type == "response.delta" and (event.get("delta") or {}).get("type") == "output_audio.done"
+        )
+        terminal = event_type in {"response.completed", "response.error", "response.cancelled", "response.done"}
+        if (audio_done or terminal) and response_id and self._current_response_id and response_id != self._current_response_id:
+            # A delayed completion must never seal another response's buffer.
+            waiter = self._response_done_events.pop(response_id, None)
+            if waiter:
+                waiter.set()
+            return
 
         # Log top-level error events with full payload to diagnose API contract issues
         if event_type == "error":
@@ -1963,6 +1980,8 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             response = event.get("response", {})
             response_id = response.get("id")
             if response_id:
+                self._discarding_output = False
+                self._pacer_failed = False
                 self._current_response_id = response_id
                 # Reset per-response audio tracking.
                 try:
@@ -2047,9 +2066,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             return
 
         if event_type == "response.audio.done":
-            # Track end of audio burst for metrics
-            if self._in_audio_burst:
-                self._in_audio_burst = False
+            # Keep burst ownership until the buffered tail is admitted below.
             # NOTE: Don't reset _response_audio_start_time here - response.audio.done fires per-segment
             # We keep the timer until the full response is done to prevent mid-sentence interruption
             
@@ -2118,8 +2135,12 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             # Note: Turn latency timer now starts on input_audio_buffer.speech_stopped
             # (moved from here for standardized measurement across providers)
             
-            handoff_flushed = await self.flush_handoff_pacer()
-            await self._emit_audio_done()
+            drain_audio = not (
+                event_type in {"response.error", "response.cancelled"}
+                or response_status in {"cancelled", "failed", "incomplete"}
+            )
+            handoff_flushed = drain_audio and await self.flush_handoff_pacer()
+            await self._emit_audio_done(drain=drain_audio)
             if had_audio_for_response and handoff_flushed:
                 await self.complete_handoff_audio(self._call_id, current_response_id)
             # response.audio.done can fire once per audio segment. Preserve FIR
@@ -2359,7 +2380,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                         except Exception:
                             logger.debug("Failed to clear OpenAI egress buffer on barge-in", call_id=self._call_id, exc_info=True)
                         try:
-                            await self._emit_audio_done()
+                            await self._emit_audio_done(drain=False)
                         except Exception:
                             logger.debug("Failed to stop OpenAI egress pacer on barge-in", call_id=self._call_id, exc_info=True)
                         logger.info(
@@ -2466,6 +2487,8 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         logger.debug("Unhandled OpenAI Realtime event", event_type=event_type)
 
     async def _handle_output_audio(self, audio_b64: str):
+        if self._discarding_output or self._closing or self._closed:
+            return  # Ignore in-flight audio of a cancelled/failed response.
         try:
             raw_bytes = base64.b64decode(audio_b64)
         except Exception:
@@ -2650,7 +2673,61 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 except Exception:
                     logger.error("Failed to emit AgentAudio event", call_id=self._call_id, exc_info=True)
 
-    async def _emit_audio_done(self, *, farewell_audio_complete: bool = False):
+    async def _seal_pacer_output(self, *, drain: bool) -> bool:
+        """Quiesce an in-flight write, then admit the tail without re-timing it.
+
+        Downstream SPM already owns legacy pacing; WebSocket can pace remotely.
+        Never wait for the duration of queued speech on the provider reader.
+        Interruption invalidates a concurrent natural completion by epoch.
+        """
+        epoch = self._pacer_epoch
+        self._pacer_running = False
+        task = self._pacer_task
+        if not drain:
+            self._pacer_epoch += 1
+            self._discarding_output = True
+            async with self._pacer_lock:
+                self._outbuf.clear()
+            if task and task is not asyncio.current_task() and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            return True
+        if task and task is not asyncio.current_task() and not task.done():
+            try:
+                # Normally just the current 10/20 ms sleep or admission callback.
+                # A stuck writer must fail rather than silently lose its frame.
+                await asyncio.wait_for(asyncio.shield(task), timeout=0.25)
+            except asyncio.TimeoutError:
+                await self._seal_pacer_output(drain=False)
+                raise RuntimeError("OpenAI pacer admission did not quiesce before completion")
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling():
+                    raise
+                return False  # An interruption cancelled the old writer.
+        if epoch != self._pacer_epoch:
+            return False
+        if self._pacer_failed:
+            await self._seal_pacer_output(drain=False)
+            raise RuntimeError("OpenAI pacer audio admission failed before completion")
+        async with self._pacer_lock:
+            tail = bytes(self._outbuf)
+            self._outbuf.clear()
+        if tail:
+            self._in_audio_burst = True
+            await self.on_event({
+                "type": "AgentAudio", "call_id": self._call_id, "data": tail,
+                "streaming_chunk": True, "_handoff_real_audio": True,
+                "encoding": self.config.target_encoding or "slin16",
+                "sample_rate": self.config.target_sample_rate_hz,
+            })
+            logger.info(
+                "OpenAI pacer tail admitted", call_id=self._call_id,
+                bytes=len(tail), response_id=self._current_response_id,
+            )
+        return epoch == self._pacer_epoch
+
+    async def _emit_audio_done(self, *, farewell_audio_complete: bool = False, drain: bool = True):
         if not self.on_event or not self._call_id:
             return
 
@@ -2660,7 +2737,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         # terminal event only after the callback returns.
         farewell_response_id = self._farewell_response_id
         farewell_completed = bool(
-            farewell_audio_complete
+            drain and farewell_audio_complete
             and self._farewell_waiting_for_audio_done
             and farewell_response_id is not None
             and self._current_response_id == farewell_response_id
@@ -2668,6 +2745,12 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         )
         if farewell_completed:
             farewell_completed = self._claim_farewell_hangup() is not None
+
+        was_active = self._in_audio_burst or bool(self._outbuf)
+        if not await self._seal_pacer_output(drain=drain):
+            return
+        # A pacer's finally block clears this flag; retain ownership until Done.
+        self._in_audio_burst = was_active
 
         try:
             if self._in_audio_burst:
@@ -3256,6 +3339,8 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                     )
                 except Exception:
                     logger.error("Failed to emit paced AgentAudio", call_id=call_id, exc_info=True)
+                    self._pacer_failed = True
+                    break
                 await asyncio.sleep(0.02)
         except asyncio.CancelledError:
             return
