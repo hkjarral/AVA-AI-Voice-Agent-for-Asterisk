@@ -359,7 +359,9 @@ The recipe below rebuilds and recreates only `admin_ui`; it does not start or
 interrupt the engine. Pass the flag directly to Compose before exporting to Bake:
 
 ```bash
-if docker compose version >/dev/null 2>&1; then
+if [ -n "${AAVA_COMPOSE_BIN:-}" ]; then
+  AAVA_COMPOSE=("$AAVA_COMPOSE_BIN")
+elif docker compose version >/dev/null 2>&1; then
   AAVA_COMPOSE=(docker compose)
 else
   AAVA_COMPOSE=(docker-compose)

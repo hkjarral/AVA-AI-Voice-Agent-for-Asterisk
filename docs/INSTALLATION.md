@@ -21,7 +21,9 @@ for standalone Compose or no-cache rebuilds; they do not accept the newer option
 
 ```bash
 # Select the same Compose mode for both commands (Bash).
-if docker compose version >/dev/null 2>&1; then
+if [ -n "${AAVA_COMPOSE_BIN:-}" ]; then
+  AAVA_COMPOSE=("$AAVA_COMPOSE_BIN")
+elif docker compose version >/dev/null 2>&1; then
   export AAVA_COMPOSE_BIN=""
   AAVA_COMPOSE=(docker compose)
 else
@@ -1018,6 +1020,17 @@ asterisk -rx "dialplan reload"
   ```bash
   cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 
+  # Select the same Compose mode for both commands (Bash).
+  if [ -n "${AAVA_COMPOSE_BIN:-}" ]; then
+    AAVA_COMPOSE=("$AAVA_COMPOSE_BIN")
+  elif docker compose version >/dev/null 2>&1; then
+    export AAVA_COMPOSE_BIN=""
+    AAVA_COMPOSE=(docker compose)
+  else
+    export AAVA_COMPOSE_BIN=docker-compose
+    AAVA_COMPOSE=(docker-compose)
+  fi
+
   # Fix ai_engine requirements
   sed -i 's/numpy>=1.24.0/numpy>=1.24.0,<2.0/g' requirements.txt
 
@@ -1026,8 +1039,9 @@ asterisk -rx "dialplan reload"
 
   # Use direct Compose/Bake so older helpers also retain --no-cache.
   ( set -o pipefail
+    export BUILDX_BUILDER="${BUILDX_BUILDER:-default}"
     "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent build --no-cache --print ai_engine admin_ui |
-      docker buildx bake --file - --allow=network.host --load
+      docker buildx bake --file - --allow=network.host --load ai_engine admin_ui
   ) && "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate ai_engine admin_ui
   ```
 

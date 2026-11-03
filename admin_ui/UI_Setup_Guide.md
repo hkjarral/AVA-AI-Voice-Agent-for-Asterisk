@@ -550,7 +550,9 @@ docker logs admin_ui
 **Rebuild if needed**:
 ```bash
 # Select the same Compose executable for this recovery (Bash).
-if docker compose version >/dev/null 2>&1; then
+if [ -n "${AAVA_COMPOSE_BIN:-}" ]; then
+  AAVA_COMPOSE=("$AAVA_COMPOSE_BIN")
+elif docker compose version >/dev/null 2>&1; then
   export AAVA_COMPOSE_BIN=""
   AAVA_COMPOSE=(docker compose)
 else
@@ -623,7 +625,9 @@ docker compose logs admin_ui
 **Force rebuild** (for an older helper, use the linked legacy no-cache recipe):
 ```bash
 # Select the same Compose executable for this recovery (Bash).
-if docker compose version >/dev/null 2>&1; then
+if [ -n "${AAVA_COMPOSE_BIN:-}" ]; then
+  AAVA_COMPOSE=("$AAVA_COMPOSE_BIN")
+elif docker compose version >/dev/null 2>&1; then
   export AAVA_COMPOSE_BIN=""
   AAVA_COMPOSE=(docker compose)
 else
@@ -834,7 +838,9 @@ Coming in future releases:
 
 ```bash
 # Select the same Compose executable for this recovery (Bash).
-if docker compose version >/dev/null 2>&1; then
+if [ -n "${AAVA_COMPOSE_BIN:-}" ]; then
+  AAVA_COMPOSE=("$AAVA_COMPOSE_BIN")
+elif docker compose version >/dev/null 2>&1; then
   export AAVA_COMPOSE_BIN=""
   AAVA_COMPOSE=(docker compose)
 else

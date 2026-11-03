@@ -26,6 +26,7 @@ if [[ " $* " == *' --help '* ]]; then
   if [[ "$1" == compose && "${TEST_BAD_CAPABILITY:-}" == compose ]]; then echo '--no-cache'; exit 0; fi
   echo '--print --allow --load'; exit 0
 fi
+[ -z "${TEST_BUILDERS:-}" ] || echo "${BUILDX_BUILDER:-unset}|$*" >> "$TEST_BUILDERS"
 echo "$*" >> "$TEST_COMMANDS"
 echo "${TEST_COMPOSE_EXECUTABLE:-docker}|$*" >> "$TEST_EXECUTABLES"
 if [[ "$1" == compose && "${TEST_COMPOSE_MISSING:-}" == 1 && "${TEST_COMPOSE_EXECUTABLE:-docker}" != docker-compose ]]; then
@@ -186,11 +187,14 @@ def test_copied_quick_start_retains_compose_selection(tmp_path, guide, failure, 
     assert all("ai_engine" not in line and "local_ai_server" not in line for line in compose_calls)
 
 
-@pytest.mark.parametrize("standalone", [False, True])
-def test_legacy_no_cache_recipe_bypasses_helper(tmp_path, standalone):
+@pytest.mark.parametrize("standalone,explicit", [(False, False), (True, False), (False, True)])
+def test_legacy_no_cache_recipe_bypasses_helper(tmp_path, standalone, explicit):
     """Old checkouts retain cache flags through direct Compose-to-Bake export."""
     env, log = prepare_project(tmp_path, "none")
     env["TEST_COMPOSE_MISSING"] = "1" if standalone else "0"
+    env.pop("AAVA_COMPOSE_BIN", None)
+    if explicit:
+        env["AAVA_COMPOSE_BIN"] = "docker-compose"
     source = (ROOT / "docs/CLI_TOOLS_GUIDE.md").read_text()
     blocks = re.findall(r"^```bash\n(.*?)^```", source, re.S | re.M)
     recipe = next(block for block in blocks if "build --no-cache --print admin_ui" in block)
@@ -198,7 +202,7 @@ def test_legacy_no_cache_recipe_bypasses_helper(tmp_path, standalone):
     assert result.returncode == 0, result.stderr
     builds = [call for call in log.read_text().splitlines() if " build " in call]
     assert builds == ["compose -p asterisk-ai-voice-agent build --no-cache --print admin_ui"]
-    selected = "docker-compose" if standalone else "docker"
+    selected = "docker-compose" if standalone or explicit else "docker"
     operations = [line for line in (tmp_path / "executables").read_text().splitlines()
                   if " build " in line or " up " in line]
     assert operations and all(line.startswith(selected + "|") for line in operations)
@@ -319,13 +323,15 @@ printf 'RESTORED_UMASK=%s\\n' "$(umask)"
         assert sentinel.stat().st_mode & 0o777 == 0o600
 
 
-@pytest.mark.parametrize("standalone", [False, True])
+@pytest.mark.parametrize("standalone,explicit", [(False, False), (True, False), (False, True)])
 @pytest.mark.parametrize("failure", ["none", "entitlement", "unrelated"])
-def test_ui_guide_recovery_blocks_work_in_fresh_shells(tmp_path, standalone, failure):
+def test_ui_guide_recovery_blocks_work_in_fresh_shells(tmp_path, standalone, explicit, failure):
     """Every recovery array is defined locally and keeps build/start on one CLI."""
     env, log = prepare_project(tmp_path, failure)
     env["TEST_COMPOSE_MISSING"] = "1" if standalone else "0"
     env.pop("AAVA_COMPOSE_BIN", None)
+    if explicit:
+        env["AAVA_COMPOSE_BIN"] = "docker-compose"
     source = (ROOT / "admin_ui/UI_Setup_Guide.md").read_text()
     blocks = [b for b in re.findall(r"^```bash\n(.*?)^```", source, re.S | re.M) if '${AAVA_COMPOSE[@]}' in b]
     assert len(blocks) == 3
@@ -337,7 +343,7 @@ def test_ui_guide_recovery_blocks_work_in_fresh_shells(tmp_path, standalone, fai
         assert (result.returncode == 0) == (failure != "unrelated"), result.stdout + result.stderr
         records = executable_log.read_text().splitlines()
         actions = [line for line in records if any(f" {action} " in line for action in ("build", "up", "stop", "restart"))]
-        expected = "docker-compose" if standalone else "docker"
+        expected = "docker-compose" if standalone or explicit else "docker"
         assert actions and all(line.startswith(expected + "|") for line in actions)
         assert all("ai_engine" not in line and "local_ai_server" not in line for line in actions)
         starts = [line for line in actions if " up " in line]
@@ -367,3 +373,42 @@ check_env
     assert "synthetic-persistent-value" not in result.stdout
     assert "synthetic persistent value" not in result.stdout
     assert path.read_text() == before
+
+
+@pytest.mark.parametrize("standalone,explicit", [(False, False), (True, False), (False, True)])
+@pytest.mark.parametrize("builder", [None, "operator-custom"])
+def test_numpy_recovery_preserves_compose_and_builder_choices(tmp_path, standalone, explicit, builder):
+    """Run the copied NumPy recipe with its own selector and a scoped builder."""
+    import sys
+    import textwrap
+
+    env, log = prepare_project(tmp_path, "none")
+    env["TEST_COMPOSE_MISSING"] = "1" if standalone else "0"
+    env["TEST_BUILDERS"] = str(tmp_path / "builders")
+    env.pop("AAVA_COMPOSE_BIN", None)
+    env.pop("BUILDX_BUILDER", None)
+    if explicit:
+        env["AAVA_COMPOSE_BIN"] = "docker-compose"
+    if builder:
+        env["BUILDX_BUILDER"] = builder
+    (tmp_path / "admin_ui/backend").mkdir(parents=True)
+    for file in (tmp_path / "requirements.txt", tmp_path / "admin_ui/backend/requirements.txt"):
+        file.write_text("numpy>=1.24.0\n")
+    if sys.platform == "darwin":
+        sed = tmp_path / "sed"
+        sed.write_text('#!/bin/sh\nif [ "$1" = -i ]; then shift; exec /usr/bin/sed -i "" "$@"; fi\nexec /usr/bin/sed "$@"\n')
+        sed.chmod(0o700)
+    guide = (ROOT / "docs/INSTALLATION.md").read_text()
+    blocks = re.findall(r"^[ \t]*```bash\n(.*?)^[ \t]*```", guide, re.S | re.M)
+    recipe = next(b for b in blocks if "build --no-cache --print ai_engine admin_ui" in b)
+    recipe = textwrap.dedent(recipe).replace("/path/to/AVA-AI-Voice-Agent-for-Asterisk", str(tmp_path))
+    result = subprocess.run(["bash", "-c", recipe], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    operations = [line for line in (tmp_path / "executables").read_text().splitlines() if " build " in line or " up " in line]
+    selected = "docker-compose" if standalone or explicit else "docker"
+    assert operations and all(line.startswith(selected + "|") for line in operations)
+    build_env = [line for line in (tmp_path / "builders").read_text().splitlines() if " build " in line or "buildx bake" in line]
+    assert len(build_env) == 2 and all(line.startswith((builder or "default") + "|") for line in build_env)
+    assert "buildx bake --file - --allow=network.host --load ai_engine admin_ui" in log.read_text()
+    assert "local_ai_server" not in log.read_text()
+    assert "numpy>=1.24.0,<2.0" in (tmp_path / "requirements.txt").read_text()
