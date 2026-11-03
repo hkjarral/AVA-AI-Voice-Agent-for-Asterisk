@@ -48,7 +48,7 @@ describe('AsteriskPage remote PBX checklist', () => {
         await waitFor(() => expect(screen.getByText('Remote')).toBeInTheDocument());
 
         expect(screen.getByText(/Remote PBX file checks belong on the Asterisk host/)).toBeInTheDocument();
-        expect(screen.getByText(/Local Asterisk audit skipped because this Ava host has no local Asterisk/)).toBeInTheDocument();
+        expect(screen.getByText(/Local Asterisk audit skipped because preflight did not detect a local configuration directory/)).toBeInTheDocument();
         expect(screen.getByText(/Local Asterisk audit skipped on Ava host/)).toBeInTheDocument();
         expect(screen.queryByText(/Preflight checks were not run/)).not.toBeInTheDocument();
         expect(screen.queryByText(/Run .*preflight\.sh.*manifest with checks/)).not.toBeInTheDocument();

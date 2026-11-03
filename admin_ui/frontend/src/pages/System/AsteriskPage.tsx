@@ -403,7 +403,7 @@ const AsteriskPage = () => {
                             ) : (
                                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                                     <CheckCircle2 className="w-4 h-4 text-green-500" />
-                                    Local Asterisk audit skipped because this Ava host has no local Asterisk installation.
+                                    Local Asterisk audit skipped because preflight did not detect a local configuration directory. Inspect Ava-host detection before treating local checks as unnecessary.
                                 </div>
                             )}
                         </div>
