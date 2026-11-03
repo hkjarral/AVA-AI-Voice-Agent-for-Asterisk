@@ -323,19 +323,21 @@ printf 'RESTORED_UMASK=%s\\n' "$(umask)"
         assert sentinel.stat().st_mode & 0o777 == 0o600
 
 
-@pytest.mark.parametrize("standalone,explicit", [(False, False), (True, False), (False, True)])
+@pytest.mark.parametrize("standalone,explicit", [(False, False), (True, False), (False, True), (False, "shell")])
 @pytest.mark.parametrize("failure", ["none", "entitlement", "unrelated"])
 def test_ui_guide_recovery_blocks_work_in_fresh_shells(tmp_path, standalone, explicit, failure):
     """Every recovery array is defined locally and keeps build/start on one CLI."""
     env, log = prepare_project(tmp_path, failure)
     env["TEST_COMPOSE_MISSING"] = "1" if standalone else "0"
     env.pop("AAVA_COMPOSE_BIN", None)
-    if explicit:
+    if explicit is True:
         env["AAVA_COMPOSE_BIN"] = "docker-compose"
     source = (ROOT / "admin_ui/UI_Setup_Guide.md").read_text()
     blocks = [b for b in re.findall(r"^```bash\n(.*?)^```", source, re.S | re.M) if '${AAVA_COMPOSE[@]}' in b]
     assert len(blocks) == 3
     for block in blocks:
+        if explicit == "shell":
+            block = "AAVA_COMPOSE_BIN=docker-compose\n" + block
         log.unlink(missing_ok=True)
         executable_log = tmp_path / "executables"
         executable_log.unlink(missing_ok=True)
@@ -349,6 +351,30 @@ def test_ui_guide_recovery_blocks_work_in_fresh_shells(tmp_path, standalone, exp
         starts = [line for line in actions if " up " in line]
         assert bool(starts) == (failure != "unrelated")
         assert all("--no-build --pull never" in line for line in starts)
+
+
+@pytest.mark.parametrize("exported", [False, True])
+@pytest.mark.parametrize("failure", ["none", "entitlement", "unrelated"])
+def test_installation_selector_shares_explicit_override_with_helper(tmp_path, exported, failure):
+    """An override stays consistent across helper and startup even if unexported."""
+    env, log = prepare_project(tmp_path, failure)
+    env.pop("AAVA_COMPOSE_BIN", None)
+    if exported:
+        env["AAVA_COMPOSE_BIN"] = "docker-compose"
+    guide = (ROOT / "docs/INSTALLATION.md").read_text()
+    selector = re.findall(r"^```bash\n(.*?)^```", guide, re.S | re.M)[0]
+    prefix = "" if exported else "AAVA_COMPOSE_BIN=docker-compose\n"
+    recipe = prefix + selector + '''
+COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
+'''
+    result = subprocess.run(["bash", "-c", recipe], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert (result.returncode == 0) == (failure != "unrelated"), result.stdout + result.stderr
+    operations = [line for line in (tmp_path / "executables").read_text().splitlines()
+                  if " build " in line or " up " in line]
+    assert operations and all(line.startswith("docker-compose|") for line in operations)
+    starts = [call for call in log.read_text().splitlines() if " up " in call]
+    assert bool(starts) == (failure != "unrelated")
 
 
 @pytest.mark.parametrize("secret,warn", [

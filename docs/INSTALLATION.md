@@ -22,6 +22,7 @@ for standalone Compose or no-cache rebuilds; they do not accept the newer option
 ```bash
 # Select the same Compose mode for both commands (Bash).
 if [ -n "${AAVA_COMPOSE_BIN:-}" ]; then
+  export AAVA_COMPOSE_BIN
   AAVA_COMPOSE=("$AAVA_COMPOSE_BIN")
 elif docker compose version >/dev/null 2>&1; then
   export AAVA_COMPOSE_BIN=""

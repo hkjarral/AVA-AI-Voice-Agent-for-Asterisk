@@ -551,6 +551,7 @@ docker logs admin_ui
 ```bash
 # Select the same Compose executable for this recovery (Bash).
 if [ -n "${AAVA_COMPOSE_BIN:-}" ]; then
+  export AAVA_COMPOSE_BIN
   AAVA_COMPOSE=("$AAVA_COMPOSE_BIN")
 elif docker compose version >/dev/null 2>&1; then
   export AAVA_COMPOSE_BIN=""
@@ -626,6 +627,7 @@ docker compose logs admin_ui
 ```bash
 # Select the same Compose executable for this recovery (Bash).
 if [ -n "${AAVA_COMPOSE_BIN:-}" ]; then
+  export AAVA_COMPOSE_BIN
   AAVA_COMPOSE=("$AAVA_COMPOSE_BIN")
 elif docker compose version >/dev/null 2>&1; then
   export AAVA_COMPOSE_BIN=""
@@ -839,6 +841,7 @@ Coming in future releases:
 ```bash
 # Select the same Compose executable for this recovery (Bash).
 if [ -n "${AAVA_COMPOSE_BIN:-}" ]; then
+  export AAVA_COMPOSE_BIN
   AAVA_COMPOSE=("$AAVA_COMPOSE_BIN")
 elif docker compose version >/dev/null 2>&1; then
   export AAVA_COMPOSE_BIN=""
