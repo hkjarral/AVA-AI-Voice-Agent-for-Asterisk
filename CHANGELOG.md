@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Streaming playback (#808):** add opt-in Asterisk-owned WebSocket pacing
+  (`websocket_media.output_pacing: asterisk`, default remains `legacy`), retaining
+  flow control and completion fences. Separately admit OpenAI's buffered audio
+  tail before natural completion, including short clips; discard interrupted
+  output. AudioSocket/RTP scheduling is unchanged. Reporter acoustic validation
+  is pending; see `docs/ISSUE_808_TESTING.md` for comparisons, captures and rollback.
+
 - **Remote PBX checklist:** stop presenting an empty local Asterisk preflight
   manifest as an error when Ava is configured to use Asterisk on a separate
   host; retain live ARI/module status and identify PBX configuration checks as

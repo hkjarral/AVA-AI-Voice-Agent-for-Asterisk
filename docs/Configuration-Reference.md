@@ -425,6 +425,7 @@ Applies when `audio_transport: websocket` (opt-in; see [WebSocket Transport](Web
 - websocket_media.fallback_format: `ulaw` | `alaw` | `slin` | `slin16` (default `ulaw`); used when the profile does not pin a wire format.
 - websocket_media.control_format: `json` | `auto` | `plain` (default `json`). Explicit `plain` is experimental and limited to Asterisk 20.17.0. `auto` opts into plain on exactly 20.17.0 and selects JSON on 20.18+, 22.8+, or 23.2+; unsupported release lines fail closed. See the Transports section above.
 - websocket_media.direction: `both` (only value).
+- websocket_media.output_pacing: `legacy` | `asterisk` (default `legacy`). Experimental issue #808 mode: `asterisk` forwards buffered streaming media ahead and bypasses optional OpenAI/Grok provider pacers on call-owned instances. Asterisk owns playback timing; XOFF/XON and correlated completion remain active. Other transports keep their pacing. Requires engine restart after call drain. Remove this field entirely before downgrading to older strict schemas. See [reporter testing](ISSUE_808_TESTING.md).
 - websocket_media.handshake_timeout_ms: WebSocket open/close handshake timeout (default `5000`; 100–60000).
 - websocket_media.media_start_timeout_ms: Max wait for the per-call connection to become ready (`MEDIA_START`) before the call fails (default `5000`; 100–60000).
 - websocket_media.drain_timeout_ms: Max wait for queued playback to drain (e.g. farewell audio) before hangup proceeds (default `30000`; 1000–120000).
