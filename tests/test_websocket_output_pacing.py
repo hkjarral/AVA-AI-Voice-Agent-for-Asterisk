@@ -136,6 +136,7 @@ def test_remote_position_never_counts_unacknowledged_queue(acknowledged, expecte
     mgr, server, _ = manager("slin", 8000)
     mgr.websocket_output_pacing = "asterisk"
     mgr.active_streams["call"]["real_tx_bytes"] = 20 * 16000
+    mgr.active_streams["call"]["websocket_output_item_key"] = ("assistant-1", 0)
     server.get_confirmed_playback_ms = lambda call: acknowledged
     assert mgr.get_playback_position_ms("call") == expected
     mgr.websocket_output_pacing = "legacy"
@@ -148,6 +149,7 @@ async def test_grok_interruption_truncates_to_confirmed_progress_including_zero(
     mgr, server, store = manager("slin", 8000)
     mgr.websocket_output_pacing = "asterisk"
     mgr.active_streams["call"]["real_tx_bytes"] = 20 * 16000
+    mgr.active_streams["call"]["websocket_output_item_key"] = ("assistant-1", 0)
     server.get_confirmed_playback_ms = lambda call: confirmed
     mgr.stop_streaming_playback = AsyncMock()
     session = playback.CallSession(call_id="call", caller_channel_id="call", media_rx_confirmed=True)
@@ -173,6 +175,49 @@ async def test_grok_interruption_truncates_to_confirmed_progress_including_zero(
     assert truncation["type"] == "conversation.item.truncate"
     assert truncation["item_id"] == "assistant-1"
     assert truncation["audio_end_ms"] == confirmed
+
+
+@pytest.mark.asyncio
+async def test_new_item_queued_behind_old_audio_cannot_inherit_its_playback_ack():
+    """Provider generation may advance while an older item drains remotely."""
+    mgr, server, store = manager("slin", 8000)
+    mgr.websocket_output_pacing = "asterisk"
+    await store.upsert_call(playback.CallSession(call_id="call", caller_channel_id="call"))
+    state = {"generation": 0, "played": 0}
+    async def begin(call):
+        state["generation"] += 1
+        state["played"] = 0
+        return state["generation"]
+    server.begin_output.side_effect = begin
+    server.get_confirmed_playback_ms = lambda call: state["played"]
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def finish(call, generation):
+        entered.set()
+        await release.wait()
+        return True
+    server.finish_output.side_effect = finish
+    boundary = playback._TransportBoundary()
+    q = asyncio.Queue()
+    q.put_nowait(playback.ProviderAudioChunk(b"\x01\x00" * 320, "old-item"))
+    q.put_nowait(boundary)
+    q.put_nowait(playback.ProviderAudioChunk(b"\x02\x00" * 160, "new-item"))
+    assert await mgr._drain_next_frame("call", "stream", q) == "sent"
+    assert await mgr._drain_next_frame("call", "stream", q) == "sent"
+    state["played"] = 40
+    assert mgr.get_playback_position_ms("call", audio_item_id="old-item") == 40
+    assert mgr.get_playback_position_ms("call", audio_item_id="old-item", content_index=1) == 0
+    assert mgr.get_playback_position_ms("call", audio_item_id="new-item") == 0
+    finishing = asyncio.create_task(mgr._drain_next_frame("call", "stream", q))
+    await entered.wait()
+    assert mgr.get_playback_position_ms("call", audio_item_id="new-item") == 0
+    release.set()
+    await finishing
+    assert boundary.completed.result() is True
+    assert await mgr._drain_next_frame("call", "stream", q) == "sent"
+    assert mgr.get_playback_position_ms("call", audio_item_id="new-item") == 0
+    state["played"] = 20
+    assert mgr.get_playback_position_ms("call", audio_item_id="new-item") == 20
+    assert mgr.get_playback_position_ms("call", audio_item_id="old-item") == 0
 
 
 def test_pacing_config_round_trip_and_validation():

@@ -46,6 +46,15 @@ logger = structlog.get_logger(__name__)
 
 _JITTER_SENTINEL = object()
 
+class ProviderAudioChunk(bytes):
+    """Keep provider item identity attached to its queued bytes until wire admission."""
+
+    def __new__(cls, payload: bytes, audio_item_id: str, content_index: int = 0):
+        chunk = super().__new__(cls, payload)
+        chunk.audio_item_key = (audio_item_id, content_index)
+        return chunk
+
+
 class _TransportBoundary:
     """An output boundary ordered with provider bytes, not provider callbacks."""
 
@@ -1387,6 +1396,7 @@ class StreamingPlaybackManager:
             if isinstance(chunk, _TransportBoundary):
                 stream_info["transport_pending_boundary"] = chunk
                 break
+            stream_info["transport_pending_item_key"] = getattr(chunk, "audio_item_key", None)
             processed_chunk = await self._process_audio_chunk(call_id, chunk)
             if stream_info.get('greeting_media_guard') and self.active_streams.get(call_id) is not stream_info:
                 return 'greeting-cancelled'
@@ -3144,6 +3154,7 @@ class StreamingPlaybackManager:
                     if stream_info.get("stop_requested") or self.active_streams.get(call_id) is not stream_info:
                         return False
                     stream_info["websocket_output_generation"] = generation
+                    stream_info["websocket_output_item_key"] = stream_info.get("transport_pending_item_key")
                 success = await self._selected_output_transport().write(OutputFrame(
                     call_id, chunk, stream_info.get("target_format", "ulaw"),
                     int(stream_info.get("target_sample_rate") or self.sample_rate),
@@ -3994,7 +4005,7 @@ class StreamingPlaybackManager:
             logger.error("Error stopping streaming playback", call_id=call_id, error=str(e), exc_info=True)
             return False
 
-    def get_playback_position_ms(self, call_id: str) -> int:
+    def get_playback_position_ms(self, call_id: str, *, audio_item_id: Optional[str] = None, content_index: int = 0) -> int:
         """Return sent audio for legacy clocks, confirmed playback for remote pacing."""
         info = self.active_streams.get(call_id) or {}
         try:
@@ -4009,6 +4020,8 @@ class StreamingPlaybackManager:
             real_bytes = max(0, real_bytes - baseline)
             sent_ms = int(round((real_bytes * 1000.0) / float(bytes_per_sample * rate)))
             if self.audio_transport == "websocket" and self.websocket_output_pacing == "asterisk":
+                if audio_item_id is not None and info.get("websocket_output_item_key") != (audio_item_id, content_index):
+                    return 0  # A newer item may still be queued behind older speech.
                 confirmed = getattr(self.websocket_server, "get_confirmed_playback_ms", None)
                 # No acknowledgment must never be interpreted as all queued
                 # speech having played. Zero safely truncates an interrupted

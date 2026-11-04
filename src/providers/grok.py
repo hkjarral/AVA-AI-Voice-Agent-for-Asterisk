@@ -2594,6 +2594,8 @@ class GrokProvider(AIProviderInterface):
                     await self.on_event(
                         {
                             "type": "AgentAudio",
+                            "audio_item_id": self._assistant_audio_item_id,
+                            "audio_content_index": self._assistant_audio_content_index,
                             "data": outbound,
                             "streaming_chunk": True,
                             "call_id": self._call_id,

@@ -1,7 +1,9 @@
 # Issue #808: reporter testing and capture guide
 
-Status: testing branch; production defaults are unchanged. Live acoustic
-acceptance remains pending. The two fixes are separate commits:
+Historical reporter comparison points are listed below. The reporter qualified
+the original fixes with the OpenAI mock on certified 22.8-cert4; later hardening
+and other provider/pipeline combinations require their own qualification.
+Production defaults are unchanged. The original fixes were separate commits:
 
 | Ref | Purpose |
 | --- | --- |
@@ -9,10 +11,11 @@ acceptance remains pending. The two fixes are separate commits:
 | `114413ce` | A: opt-in Asterisk-owned WebSocket output pacing |
 | `c17da6c7` | B: OpenAI natural-completion tail, layered on A |
 
-Branch: `codex/issue-808-websocket-pacing-openai-tail`. Record the exact full
-SHA used for each run rather than assuming a moving branch still has the same
-contents. B can be cherry-picked onto the baseline independently; the branch
-also supports testing B with A's pacing mode left disabled.
+Historical comparison branch: `codex/issue-808-websocket-pacing-openai-tail`.
+These refs document the reported experiment; they are not current rollout
+targets and may not remain reachable after squash merge. Pin the release or
+PR head to its exact full SHA for new runs. B was independently cherry-picked
+onto the baseline, and was also tested with A's pacing mode disabled.
 
 ## What changes
 
@@ -60,6 +63,14 @@ The default is `output_pacing: legacy`. With legacy mode and provider pacing
 enabled, B remains active and should preserve full response tails, while the
 WebSocket starvation addressed by A may remain.
 
+A full provider output queue in Asterisk pacing mode is an explicit call
+failure: the engine logs an error, aborts queued output and terminates the call
+rather than delivering silently truncated speech or claiming transfer audio
+completed. The 256-entry provider queue remains bounded; stress qualification
+must include bursts beyond that budget. Legacy overflow policy is unchanged.
+Failed engine-requested announcements return failure, including a failure that
+races transport drain; aborted audio is not recorded as a spoken apology.
+
 ## UI selection and final-candidate qualification
 
 On builds including the UI hardening, choose **Advanced Settings → Audio
@@ -85,7 +96,9 @@ recovery, and JSON playback progress marks. Record the exact new SHA when
 qualifying it. Check that `MARK_MEDIA`/`MEDIA_MARK_PROCESSED` progress does not
 change media order, XOFF/XON behavior, or completion/FLUSH fences. For Grok,
 confirm `conversation.item.truncate.audio_end_ms` follows acknowledged playback,
-not seconds of queued audio. Before the first mark, zero is intentional; plain
+not seconds of queued audio. Queue a following response behind older speech
+and interrupt before its first frame: it must retain zero, never inherit the
+older item's acknowledgment. Before the first mark, zero is intentional; plain
 controls retain zero until a segment completion is acknowledged.
 
 Repeat a long/bursty answer **without interrupting it** through natural
@@ -218,7 +231,6 @@ previous image for a full rollback. Before running an older build, remove
 `output_pacing` from every YAML/override file entirely and restore the matching
 configuration/image together. No database migration is involved.
 
-Keep the PR in draft while reporter validation is pending. After results are
-reviewed, batch any fixes, re-run affected tests, freeze the exact head and use
-the repository's final CI/review gate. Promote only qualified combinations to
-canary use before considering a default change.
+Promote only qualified combinations to canary use before considering a
+default change. The branch and commit references above are historical reporter
+comparison points, not a promise that later builds are acoustically qualified.

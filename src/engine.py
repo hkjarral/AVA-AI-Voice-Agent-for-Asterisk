@@ -1488,6 +1488,7 @@ class Engine:
             "created_at": time.time(),
             "audio_started": asyncio.Event(),
             "generation_done": asyncio.Event(),
+            "failed": False,
         }
         operations[call_id] = operation
         return operation
@@ -1534,6 +1535,52 @@ class Engine:
         self._close_google_audio_backlog(call_id)
         await self.streaming_playback_manager.stop_streaming_playback(call_id)
         await self._terminate_call_after_audio(call_id, reason=reason, audio_already_drained=True)
+
+    async def _provider_audio_queue_overflow(self, call_id, session) -> None:
+        """Keep legacy policy; fail an overflowing remote-clock call visibly.
+
+        Awaiting a full queue indefinitely on a provider's serial reader would
+        prevent it from receiving interruption events. Never hide sample loss
+        behind successful completion instead: abort and use the existing call
+        termination owner outside the reader task.
+        """
+        if self._google_long_audio_provider(session) is not None:
+            self._google_audio_backlog_overflow(call_id, session)
+            return
+        if not (self.config.audio_transport == "websocket" and
+                getattr(getattr(self.config, "websocket_media", None), "output_pacing", "legacy") == "asterisk"):
+            return
+        if session.audio_diagnostics.get("provider_queue_failed"):
+            return
+        session.audio_diagnostics["provider_queue_failed"] = True
+        logger.error("WebSocket provider audio queue overflow; terminating call", call_id=call_id)
+        # Stop/flush first, then hang up. The background owner may safely stop
+        # the provider reader; a receive callback must not await its own teardown.
+        self._fire_and_forget_for_call(
+            call_id, self._terminate_overflowed_provider_audio(call_id),
+            name=f"provider-audio-overflow-{call_id}",
+        )
+
+    async def _terminate_overflowed_provider_audio(self, call_id: str) -> None:
+        """Abort overflowed output and terminate even if playback cleanup fails."""
+        try:
+            await self.on_provider_event({"type": "AgentAudioFailed", "call_id": call_id})
+        finally:
+            session = await self.session_store.get_by_call_id(call_id)
+            action = getattr(session, "pending_deferred_transfer", None) if session else None
+            try:
+                if (session and isinstance(action, dict)
+                        and not self._provider_audio_blocked_by_transfer_commit(call_id, session)
+                        and not self._session_was_transferred(session)):
+                    # Reuse exact-action cancellation, journal and predial-leg
+                    # ownership. Never retract a transfer whose commit owns it.
+                    await self._recover_failed_deferred_transfer(call_id, action_id=action.get("id"))
+            except Exception:
+                logger.exception("Overflow transfer cancellation failed", call_id=call_id)
+            finally:
+                await self._terminate_call_after_audio(
+                    call_id, reason="provider_audio_queue_overflow", audio_already_drained=True,
+                )
 
     def _google_audio_backlog_overflow(self, call_id, session):
         provider = self._google_long_audio_provider(session)
@@ -1603,11 +1650,18 @@ class Engine:
         session: Optional[CallSession],
         *,
         clear_tts_gating_after_drain: bool = False,
+        failed: bool = False,
     ) -> None:
         """Observe generation completion and defer idle timing until transport drain."""
         operations = getattr(self, "_provider_output_operations", {})
         operation = operations.get(call_id)
-        if operation and operation["audio_started"].is_set():
+        if operation and failed:
+            operation["failed"] = True
+            # Wake either announcement wait, including failure before its first
+            # audio. These are wakeups; the failed result is authoritative.
+            operation["audio_started"].set()
+            operation["generation_done"].set()
+        elif operation and operation["audio_started"].is_set():
             operation["generation_done"].set()
         preserve_policy_state = bool(
             operation and str(operation.get("purpose") or "").startswith("no_input_")
@@ -13159,7 +13213,18 @@ class Engine:
                 _sinfo = self.streaming_playback_manager.active_streams.get(call_id)
                 if _sinfo is not None:
                     _sinfo['end_reason'] = 'barge-in'
-                    playback_position_ms = int(self.streaming_playback_manager.get_playback_position_ms(call_id))
+                    remote_item = isinstance(provider, GrokProvider) and (
+                        self.config.audio_transport == "websocket"
+                        and getattr(self.streaming_playback_manager, "websocket_output_pacing", "legacy") == "asterisk"
+                    )
+                    if remote_item:
+                        item_id = getattr(provider, "_assistant_audio_item_id", None)
+                        playback_position_ms = int(self.streaming_playback_manager.get_playback_position_ms(
+                            call_id, audio_item_id=item_id,
+                            content_index=int(getattr(provider, "_assistant_audio_content_index", 0) or 0),
+                        )) if item_id else 0
+                    else:
+                        playback_position_ms = int(self.streaming_playback_manager.get_playback_position_ms(call_id))
             except Exception:
                 pass
             try:
@@ -14486,6 +14551,10 @@ class Engine:
             ):
                 return
 
+            if (getattr(session, "audio_diagnostics", {}).get("provider_queue_failed")
+                    and etype != "AgentAudioFailed"):
+                return  # A failed call cannot admit new media, tools or transfer completion.
+
             # Observe completion before any playback await: close admission before
             # another provider task can enqueue a repeat while commit wakes up.
             self._observe_transfer_handoff(call_id, session, event)
@@ -14560,7 +14629,7 @@ class Engine:
                 self._provider_coalesce_buf.pop(call_id, None)
                 self._segment_tts_active.discard(call_id)
                 await self._note_provider_output_end(
-                    call_id, session, clear_tts_gating_after_drain=True,
+                    call_id, session, clear_tts_gating_after_drain=True, failed=True,
                 )
                 logger.error("Provider response audio failed", call_id=call_id,
                              response_id=event.get("response_id"))
@@ -14910,6 +14979,12 @@ class Engine:
                         )
                     except Exception:
                         logger.debug("Provider chunk resample failed; passing original", call_id=call_id, exc_info=True)
+                if (isinstance((getattr(self, "_call_providers", {}) or {}).get(call_id), GrokProvider)
+                        and self.config.audio_transport == "websocket"
+                        and getattr(getattr(self.config, "websocket_media", None), "output_pacing", "legacy") == "asterisk"
+                        and isinstance(event.get("audio_item_id"), str)):
+                    from src.core.streaming_playback_manager import ProviderAudioChunk
+                    out_chunk = ProviderAudioChunk(out_chunk, event["audio_item_id"], int(event.get("audio_content_index") or 0))
                 fmt_entry["playback_encoding"] = enc
                 fmt_entry["playback_sample_rate"] = playback_rate
                 self._provider_stream_formats[call_id] = fmt_entry
@@ -15104,7 +15179,7 @@ class Engine:
                                 pass
                         except asyncio.QueueFull:
                             logger.debug("Coalesced enqueue dropped (queue full)", call_id=call_id)
-                            self._google_audio_backlog_overflow(call_id, session)
+                            await self._provider_audio_queue_overflow(call_id, session)
                         self._provider_coalesce_buf.pop(call_id, None)
                         return
                     except Exception:
@@ -15227,7 +15302,7 @@ class Engine:
                             self._enqueued_bytes[call_id] = int(self._enqueued_bytes.get(call_id, 0)) + len(out_chunk)
                     except asyncio.QueueFull:
                         logger.debug("Provider streaming queue full; dropping chunk", call_id=call_id)
-                        self._google_audio_backlog_overflow(call_id, session)
+                        await self._provider_audio_queue_overflow(call_id, session)
             elif etype in ("AgentAudioDone", "GoogleAudioGenerationComplete"):
                 generation_only = etype == "GoogleAudioGenerationComplete"
                 google_audio_provider = self._google_long_audio_provider(session)
@@ -15486,7 +15561,7 @@ class Engine:
                                 q2.put_nowait(None)
                             except asyncio.QueueFull:
                                 logger.debug("Coalesced enqueue dropped at end (queue full)", call_id=call_id)
-                                self._google_audio_backlog_overflow(call_id, session)
+                                await self._provider_audio_queue_overflow(call_id, session)
                         except Exception:
                             logger.error("Coalesced streaming failed at segment end", call_id=call_id, exc_info=True)
                 
@@ -15928,6 +16003,8 @@ class Engine:
         started_at = time.monotonic()
         try:
             await asyncio.wait_for(operation["audio_started"].wait(), timeout=timeout_sec)
+            if operation.get("failed"):
+                return False
             remaining = max(0.1, timeout_sec - (time.monotonic() - started_at))
             await asyncio.wait_for(operation["generation_done"].wait(), timeout=remaining)
         except asyncio.TimeoutError:
@@ -15940,6 +16017,9 @@ class Engine:
             )
             return False
 
+        if operation.get("failed"):
+            return False
+
         # AgentAudioDone/turnComplete ends provider generation, but continuous
         # playback may still have seconds queued. Keep a dedicated gating token
         # through transport drain so the remaining tail cannot echo upstream.
@@ -15950,12 +16030,13 @@ class Engine:
                 drain_gated = bool(await self.conversation_coordinator.on_tts_start(call_id, drain_token))
             else:
                 drain_gated = bool(await self.session_store.set_gating_token(call_id, drain_token))
-            return await self._wait_for_call_audio_drain(
+            drained = await self._wait_for_call_audio_drain(
                 call_id,
                 timeout_sec=30.0,
                 quiet_sec=self._terminal_transport_quiet_sec(),
                 reason="no_input_announcement",
             )
+            return bool(drained and not operation.get("failed"))
         finally:
             if drain_gated:
                 try:
@@ -22658,7 +22739,7 @@ class Engine:
         commit_failed: bool = False,
         preparation_failed: bool = False,
     ) -> Optional[Dict[str, Any]]:
-        """Cancel the exact failed action and return the caller to the AI."""
+        """Cancel the exact failed action; resume AI unless its output has failed."""
         error_code = "deferred_transfer_commit_failed" if commit_failed else "deferred_audio_drain_timeout"
         message = (
             "Deferred transfer cancelled because the transfer commit failed."
@@ -22685,6 +22766,10 @@ class Engine:
             )
             return None
 
+        queue_failed = bool(session.audio_diagnostics.get("provider_queue_failed"))
+        if queue_failed:
+            error_code = "provider_audio_queue_overflow"
+            message = "Deferred transfer cancelled because provider audio exceeded its bounded queue."
         current_action = getattr(session, "current_action", None)
         predial_channel_id = str(
             ((action.get("payload") or {}).get("predial") or {}).get("channel_id")
@@ -22779,6 +22864,18 @@ class Engine:
                 call_id=call_id,
                 exc_info=True,
             )
+
+        if queue_failed:
+            # The overflow owner is terminating this failed call. Its output
+            # latch intentionally blocks new provider audio, so do not request
+            # or claim an apology that cannot be admitted. A transfer owner may
+            # reach recovery after the overflow owner deferred to its commit;
+            # request terminal ownership here too, after cancelling the action.
+            await self._terminate_call_after_audio(
+                call_id, reason="provider_audio_queue_overflow", audio_already_drained=True,
+            )
+            return {"status": "failed", "error_code": error_code, "message": message,
+                    "transfer_cancelled": True, "apology_spoken": False}
 
         tools_cfg = (self._tool_config_for_session(session).get("tools") or {})
         transfer_cfg = tools_cfg.get("transfer", {}) if isinstance(tools_cfg, dict) else {}

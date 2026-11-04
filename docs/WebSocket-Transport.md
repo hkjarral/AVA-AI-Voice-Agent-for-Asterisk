@@ -196,6 +196,8 @@ for streaming calls in Asterisk pacing mode.
 In JSON/Asterisk pacing mode, correlated `MARK_MEDIA` acknowledgments track a
 conservative playback lower bound at 100 ms intervals. Grok interruption
 history uses that acknowledged position rather than the amount queued ahead.
+Queued Grok bytes retain their item/content identity, so an acknowledgment for
+an older item cannot be applied to a newer response waiting behind it.
 Unacknowledged audio is never assumed played. Plain 20.17 controls lack progress
 marks: truncation conservatively retains zero audio until correlated segment
 completion. This can omit heard content from an interrupted Grok item; plain
@@ -208,6 +210,15 @@ notify the engine to stop its playback. They do not publish successful audio
 completion or reset the provider connection. Pending handoff audio retains its
 existing timeout/recovery policy; a failed farewell uses an explicit failure
 terminal notification. The next response can start cleanly.
+
+If the bounded 256-entry provider queue overflows in Asterisk pacing mode,
+the engine logs an explicit error, blocks further provider events for that
+failed call, aborts its output and requests termination through the existing
+routing-aware owner. An uncommitted deferred transfer is cancelled through its
+existing journal/predial cleanup; a transfer whose commit already owns the call
+keeps that ownership. Overflow never counts as successful announcement audio.
+Legacy queue policy is unchanged. Qualify larger bursts against this budget
+before rollout; an overflowing call is not silently allowed to omit words.
 
 Changing this setting requires an AI Engine restart after draining active calls.
 To disable it on this build, set `output_pacing: legacy` and restart. Before

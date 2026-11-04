@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output. Add an Output pacing selector with saved/running status under Audio
   Transport → WebSocket. Preserve provider pacing in file mode, use confirmed
   remote playback marks for Grok interruption history, and contain OpenAI
-  admission failures to the response instead of resetting its session.
+  admission failures to the response instead of resetting its session. Bind
+  Grok acknowledgments to the queued item/content, fail overflowing remote-clock
+  calls visibly, and report aborted announcements as failed rather than spoken.
   AudioSocket/RTP scheduling is unchanged. Reporter mock validation on certified
   22.8-cert4 confirms gap removal, complete tails and controlled lifecycle
   behavior; other providers/pipelines still require qualification. See
