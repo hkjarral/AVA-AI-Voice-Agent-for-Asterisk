@@ -267,6 +267,51 @@ async def test_failed_farewell_has_one_explicit_failure_terminal_notification():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("interruption", ["cancel", "stop"])
+@pytest.mark.parametrize("blocked_at", ["pacer", "tail"])
+async def test_claimed_farewell_interruption_retains_exactly_one_terminal_owner(interruption, blocked_at):
+    entered, release = asyncio.Event(), asyncio.Event()
+    events = []
+
+    async def receive(event):
+        if event["type"] == "AgentAudio":
+            entered.set()
+            await release.wait()
+        events.append(event)
+
+    obj = provider(receive)
+    obj._farewell_response_id = "response-1"
+    obj._farewell_waiting_for_audio_done = True
+    obj._audio_seen_response_ids.add("response-1")
+    obj._start_farewell_timeout()
+    payload = b"\x12" * (4000 if blocked_at == "pacer" else 10)
+    await obj._handle_output_audio(base64.b64encode(payload).decode())
+    if blocked_at == "pacer":
+        await asyncio.wait_for(entered.wait(), 1)
+    done = asyncio.create_task(obj._finish_audio_output(farewell_audio_complete=True))
+    if blocked_at == "tail":
+        await asyncio.wait_for(entered.wait(), 1)
+    else:
+        await asyncio.sleep(0)
+    assert obj._farewell_timeout_task is None
+    assert not obj._farewell_waiting_for_audio_done
+    if interruption == "stop":
+        await obj.stop_session()
+    else:
+        await obj._cancel_response("response-1")
+    release.set()
+    assert not await asyncio.wait_for(done, 1)
+    await obj._finish_audio_output(farewell_audio_complete=True)
+    terminals = [event for event in events if event["type"] == "HangupReady"]
+    if interruption == "stop":
+        assert not terminals  # Session teardown already owns terminal cleanup.
+    else:
+        assert len(terminals) == 1
+        assert terminals[0]["reason"] == "farewell_interrupted"
+    assert not obj._outbuf
+
+
+@pytest.mark.asyncio
 async def test_failed_greeting_releases_transport_input_guard():
     async def fail_audio(e):
         if e["type"] == "AgentAudio":

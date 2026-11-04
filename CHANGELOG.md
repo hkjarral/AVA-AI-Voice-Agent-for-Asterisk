@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   admission failures to the response instead of resetting its session. Bind
   Grok acknowledgments to the queued item/content, fail overflowing remote-clock
   calls visibly, and report aborted announcements as failed rather than spoken.
+  Retain terminal notification when cancellation interrupts a claimed farewell.
   AudioSocket/RTP scheduling is unchanged. Reporter mock validation on certified
   22.8-cert4 confirms gap removal, complete tails and controlled lifecycle
   behavior; other providers/pipelines still require qualification. See

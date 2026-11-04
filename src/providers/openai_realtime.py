@@ -2797,6 +2797,16 @@ class OpenAIRealtimeProvider(AIProviderInterface):
 
         was_active = self._in_audio_burst or bool(self._outbuf)
         if not await self._seal_pacer_output(drain=drain):
+            # The claim already cancelled the fallback. Interruption must still
+            # hand terminal ownership to the engine, unless teardown owns it.
+            if farewell_completed and not self._closing and not self._closed:
+                try:
+                    await self.on_event({
+                        "type": "HangupReady", "call_id": self._call_id,
+                        "reason": "farewell_interrupted", "had_audio": True,
+                    })
+                except Exception:
+                    logger.exception("Failed to notify interrupted farewell", call_id=self._call_id)
             return False
         # A pacer's finally block clears this flag; retain ownership until Done.
         self._in_audio_burst = was_active
