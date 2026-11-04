@@ -95,6 +95,7 @@ type SystemHealth = {
             audio_transport?: string | null;
             websocket_media?: {
                 listening?: boolean;
+                output_pacing?: 'legacy' | 'asterisk';
                 requested_control_format?: string;
                 effective_control_format?: string | null;
                 modules_ready?: boolean;
@@ -174,6 +175,9 @@ const validateWebSocketSnippet = (
     return errors;
 };
 
+const pacingLabel = (mode: string | undefined): string =>
+    mode === 'asterisk' ? 'Asterisk pacing' : mode === 'legacy' ? 'Legacy' : 'Unknown';
+
 const TransportPage = () => {
     const { confirm } = useConfirmDialog();
     const [config, setConfig] = useState<TransportConfig>(
@@ -192,6 +196,11 @@ const TransportPage = () => {
     const [websocketStatus, setWebsocketStatus] = useState<WebSocketMediaStatus | null>(null);
     const [asteriskStatus, setAsteriskStatus] = useState<AsteriskStatus | null>(null);
     const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
+    const [savedPacing, setSavedPacing] = useState<string>(
+        () =>
+            (getCachedConfig()?.config as TransportConfig | undefined)?.websocket_media
+                ?.output_pacing || 'legacy'
+    );
     const [savedTransport, setSavedTransport] = useState<string>(
         () =>
             (getCachedConfig()?.config as TransportConfig | undefined)?.audio_transport ||
@@ -241,6 +250,9 @@ const TransportPage = () => {
             const r = await loadConfigYaml(force);
             setConfig(r.config as TransportConfig);
             setSavedTransport((r.config as TransportConfig).audio_transport || 'audiosocket');
+            setSavedPacing(
+                (r.config as TransportConfig).websocket_media?.output_pacing || 'legacy'
+            );
             setYamlError(r.yamlError);
         } catch (err) {
             console.error('Failed to load config', err);
@@ -285,6 +297,9 @@ const TransportPage = () => {
             const method = response.data?.recommended_apply_method || 'restart';
             setApplyMethod(method);
             setSavedTransport((sanitized as TransportConfig).audio_transport || 'audiosocket');
+            setSavedPacing(
+                (sanitized as TransportConfig).websocket_media?.output_pacing || 'legacy'
+            );
             await refetch();
             await fetchWebSocketStatus();
 
@@ -511,6 +526,14 @@ const TransportPage = () => {
             : undefined;
     const runningWebSocketHealth = systemHealth?.ai_engine?.details?.websocket_media;
     const selectionEdited = transportType !== savedTransport;
+    const editorPacing = websocketMediaConfig.output_pacing || 'legacy';
+    const runningPacing =
+        runningTransport === 'websocket' ? runningWebSocketHealth?.output_pacing : undefined;
+    const pacingEdited = editorPacing !== savedPacing;
+    const pacingUnapplied =
+        runningTransport === 'websocket' &&
+        runningPacing !== undefined &&
+        savedPacing !== runningPacing;
 
     // Determine banner message based on apply method
     const bannerMessage =
@@ -984,6 +1007,19 @@ const TransportPage = () => {
                                             {websocketMediaConfig.control_format || 'json'}.
                                         </p>
                                     )}
+                                    <p
+                                        className="text-xs mt-2"
+                                        aria-label="WebSocket output pacing status"
+                                    >
+                                        Saved output pacing: {pacingLabel(savedPacing)}. Running
+                                        output pacing: {pacingLabel(runningPacing)}.
+                                        {pacingEdited
+                                            ? ` Editor output pacing: ${pacingLabel(editorPacing)}; save before applying.`
+                                            : ''}
+                                        {pacingUnapplied
+                                            ? ' Saved pacing is not active; recreate AI Engine after calls have drained.'
+                                            : ''}
+                                    </p>
                                     {(selectionEdited ||
                                         (runningTransport &&
                                             runningTransport !== savedTransport)) && (
@@ -1201,6 +1237,37 @@ const TransportPage = () => {
                                         ]}
                                         tooltip="Used only when a per-call audio profile has no explicit wire format; availability here is not live provider/codec certification."
                                     />
+                                    <div>
+                                        <FormSelect
+                                            label="Output pacing"
+                                            aria-describedby="websocket-pacing-help"
+                                            value={editorPacing}
+                                            onChange={e =>
+                                                updateSectionConfig(
+                                                    'websocket_media',
+                                                    'output_pacing',
+                                                    e.target.value
+                                                )
+                                            }
+                                            options={[
+                                                { value: 'legacy', label: 'Legacy — default' },
+                                                {
+                                                    value: 'asterisk',
+                                                    label: 'Asterisk pacing — experimental',
+                                                },
+                                            ]}
+                                            tooltip="Legacy retains AVA timing. Asterisk pacing sends available streamed audio ahead and lets Asterisk time playback. It applies to all streaming providers and pipelines on WebSocket; file playback retains provider pacing."
+                                        />
+                                        <p
+                                            id="websocket-pacing-help"
+                                            className="text-xs text-muted-foreground"
+                                        >
+                                            Opt-in: validated with the OpenAI mock on certified
+                                            22.8-cert4. Qualify your provider and pipeline before
+                                            rollout. Save, drain active calls, then recreate AI
+                                            Engine to activate.
+                                        </p>
+                                    </div>
                                     <FormSelect
                                         label="Control Format"
                                         value={websocketMediaConfig.control_format || 'json'}

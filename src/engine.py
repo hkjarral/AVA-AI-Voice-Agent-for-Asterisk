@@ -13154,12 +13154,12 @@ class Engine:
             # Stop/flush streaming playback first (prevents tail audio).
             self._close_google_audio_backlog(call_id)
             # Mark end_reason so cleanup skips remainder flush (avoids oversized RTP packets).
-            playback_position_ms = 0
+            playback_position_ms = None
             try:
                 _sinfo = self.streaming_playback_manager.active_streams.get(call_id)
                 if _sinfo is not None:
                     _sinfo['end_reason'] = 'barge-in'
-                playback_position_ms = int(self.streaming_playback_manager.get_playback_position_ms(call_id))
+                    playback_position_ms = int(self.streaming_playback_manager.get_playback_position_ms(call_id))
             except Exception:
                 pass
             try:
@@ -13193,10 +13193,16 @@ class Engine:
 
             # Direct-WebSocket realtime providers can generate faster than the
             # telephony pacer plays.  Give providers an optional hook to truncate
-            # their assistant item to the exact amount sent before the local flush.
+            # their assistant item to acknowledged playback on a remote clock,
+            # or the locally sent position on legacy clocks, before the flush.
             try:
                 truncate_audio = getattr(provider, "truncate_assistant_audio", None)
-                if callable(truncate_audio) and playback_position_ms > 0:
+                if callable(truncate_audio) and playback_position_ms is not None and (
+                    playback_position_ms > 0 or (
+                        self.config.audio_transport == "websocket"
+                        and getattr(self.streaming_playback_manager, "websocket_output_pacing", "legacy") == "asterisk"
+                    )
+                ):
                     await truncate_audio(playback_position_ms)
             except Exception:
                 logger.debug("Provider conversation truncation failed during barge-in", call_id=call_id, exc_info=True)
@@ -14049,6 +14055,7 @@ class Engine:
         remote_pacing = (
             self.config.audio_transport == "websocket"
             and getattr(getattr(self.config, "websocket_media", None), "output_pacing", "legacy") == "asterisk"
+            and getattr(self.config, "downstream_mode", "stream") != "file"
         )
         if remote_pacing:
             provider.config = self._clone_config(provider.config)
@@ -14538,6 +14545,25 @@ class Engine:
                     )
                 except Exception:
                     logger.error("Failed to apply provider barge-in", call_id=call_id, event_type=etype, exc_info=True)
+                return
+
+            if etype == "AgentAudioFailed":
+                # This is an aborted response, never a successful completion or
+                # permission to commit a deferred transfer. Keep its existing
+                # handoff timeout/recovery owner and release playback ownership.
+                stream = self.streaming_playback_manager.active_streams.get(call_id)
+                if stream is not None:
+                    stream['end_reason'] = 'interrupted'
+                await self.streaming_playback_manager.stop_streaming_playback(call_id)
+                self._provider_stream_queues.pop(call_id, None)
+                self._provider_stream_formats.pop(call_id, None)
+                self._provider_coalesce_buf.pop(call_id, None)
+                self._segment_tts_active.discard(call_id)
+                await self._note_provider_output_end(
+                    call_id, session, clear_tts_gating_after_drain=True,
+                )
+                logger.error("Provider response audio failed", call_id=call_id,
+                             response_id=event.get("response_id"))
                 return
 
             # Provider requests early TTS gating clear (e.g., OpenAI greeting complete)
@@ -24124,6 +24150,7 @@ class Engine:
                 },
                 "websocket_media": {
                     **websocket_status,
+                    "output_pacing": getattr(self.config.websocket_media, "output_pacing", "legacy"),
                     "version_compatible": self._websocket_control_format() is not None,
                     "asterisk_version": getattr(self.ari_client, "asterisk_version", None),
                 },

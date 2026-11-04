@@ -60,6 +60,42 @@ The default is `output_pacing: legacy`. With legacy mode and provider pacing
 enabled, B remains active and should preserve full response tails, while the
 WebSocket starvation addressed by A may remain.
 
+## UI selection and final-candidate qualification
+
+On builds including the UI hardening, choose **Advanced Settings → Audio
+Transport → WebSocket → Output pacing**. The options are **Legacy — default**
+and **Asterisk pacing — experimental**. Save, verify that the readiness card
+shows the saved mode separately from the running mode, drain active calls,
+and use **Recreate AI Engine**. Confirm running pacing after apply. Returning
+to the page or switching transports must preserve the saved choice. Raw YAML
+remains an alternative; edit the existing authenticated block rather than
+replacing it with the minimal example above.
+
+The reporter qualified `2ea738b0` on certified 22.8-cert4 with the pinned mock:
+[comparison and follow-up](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/808#issuecomment-6624744622).
+The follow-up confirms the full tail, including all 13 namespace-captured legacy
+answers ending on the clip's last non-zero sample. The earlier 60 ms deficit
+was a reference/voiced-threshold comparison error. Normalization-off runs used
+a separate schema-only diagnostic patch; that patch is not part of this fix.
+The existing normalizer configuration and caller-input gate remain separate
+issues. Injected `speech_started` events verify cancellation, not acoustic VAD.
+
+The final hardening adds UI selection, file-mode protection, response failure
+recovery, and JSON playback progress marks. Record the exact new SHA when
+qualifying it. Check that `MARK_MEDIA`/`MEDIA_MARK_PROCESSED` progress does not
+change media order, XOFF/XON behavior, or completion/FLUSH fences. For Grok,
+confirm `conversation.item.truncate.audio_end_ms` follows acknowledged playback,
+not seconds of queued audio. Before the first mark, zero is intentional; plain
+controls retain zero until a segment completion is acknowledged.
+
+Repeat a long/bursty answer **without interrupting it** through natural
+completion: the prior 1,261-frame burst was admitted completely but the caller
+flushed playback after roughly 14 seconds. Automated regressions now exercise
+full natural drain through repeated flow-control cycles. Retain the previous
+short-clip, next-response, farewell and transfer checks on the final candidate.
+Real providers, modular pipelines, other codecs/versions and load remain scoped
+qualification work; the mock results do not certify every combination.
+
 ## Reproduce with rtpbench 0.4.0
 
 Use the same mock, clip, seed, Asterisk certified 22.8-cert4, profiles and machine

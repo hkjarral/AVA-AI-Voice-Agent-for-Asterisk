@@ -13,8 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`websocket_media.output_pacing: asterisk`, default remains `legacy`), retaining
   flow control and completion fences. Separately admit OpenAI's buffered audio
   tail before natural completion, including short clips; discard interrupted
-  output. AudioSocket/RTP scheduling is unchanged. Reporter acoustic validation
-  is pending; see `docs/ISSUE_808_TESTING.md` for comparisons, captures and rollback.
+  output. Add an Output pacing selector with saved/running status under Audio
+  Transport → WebSocket. Preserve provider pacing in file mode, use confirmed
+  remote playback marks for Grok interruption history, and contain OpenAI
+  admission failures to the response instead of resetting its session.
+  AudioSocket/RTP scheduling is unchanged. Reporter mock validation on certified
+  22.8-cert4 confirms gap removal, complete tails and controlled lifecycle
+  behavior; other providers/pipelines still require qualification. See
+  `docs/ISSUE_808_TESTING.md` for evidence, comparisons, captures and rollback.
 
 - **Remote PBX checklist:** stop presenting an empty local Asterisk preflight
   manifest as an error when Ava is configured to use Asterisk on a separate

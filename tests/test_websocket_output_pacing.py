@@ -66,15 +66,113 @@ async def test_independently_clocked_consumer_keeps_buffered_audio_under_schedul
 @pytest.mark.parametrize("provider_class,config_class", [
     (OpenAIRealtimeProvider, OpenAIRealtimeProviderConfig), (GrokProvider, GrokProviderConfig),
 ])
-def test_provider_pacing_policy_is_call_local(transport, mode, expected, provider_class, config_class):
+@pytest.mark.parametrize("downstream", ["stream", "file"])
+def test_provider_pacing_policy_is_call_local(transport, mode, expected, provider_class, config_class, downstream):
     engine = Engine.__new__(Engine)
-    engine.config = SimpleNamespace(audio_transport=transport, websocket_media=WebSocketMediaConfig(output_pacing=mode))
+    engine.config = SimpleNamespace(audio_transport=transport, downstream_mode=downstream,
+                                    websocket_media=WebSocketMediaConfig(output_pacing=mode))
+    expected = expected or downstream == "file"
     saved = config_class(api_key="test", egress_pacer_enabled=True)
     provider = provider_class(saved, on_event=AsyncMock())
     engine._apply_provider_output_pacing(provider, SimpleNamespace(call_id="call", provider_name="custom-instance"))
     assert provider._egress_pacer_enabled is expected
     assert provider.config.egress_pacer_enabled is expected
     assert saved.egress_pacer_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_long_remote_burst_recovers_flow_control_and_drains_naturally():
+    """An independently consumed 25 s burst must finish, without a caller FLUSH."""
+    mgr, server, store = manager("slin", 8000)
+    mgr.websocket_output_pacing = "asterisk"
+    await store.upsert_call(playback.CallSession(call_id="call", caller_channel_id="call"))
+    expected = [i.to_bytes(2, "little") * 160 for i in range(1, 1262)]
+    wire, heard = deque(), []
+    writable, drained = asyncio.Event(), asyncio.Event()
+    writable.set()
+    xoff = 0
+
+    async def send(call, payload, generation):
+        nonlocal xoff
+        await writable.wait()
+        wire.append(payload)
+        if len(wire) >= 40:
+            writable.clear()
+            xoff += 1
+        return True
+
+    async def consume():
+        while len(heard) < len(expected):
+            for _ in range(3):
+                await asyncio.sleep(0)
+            if wire:
+                heard.append(wire.popleft())
+            if len(wire) <= 20:
+                writable.set()
+        drained.set()
+
+    async def finish(call, generation):
+        await drained.wait()
+        return True
+
+    server.send_audio.side_effect = send
+    server.finish_output.side_effect = finish
+    q = asyncio.Queue()
+    for frame in expected:
+        q.put_nowait(frame)
+    boundary = playback._TransportBoundary()
+    q.put_nowait(boundary)
+    q.put_nowait(_JITTER_SENTINEL)
+    await asyncio.wait_for(asyncio.gather(mgr._pacer_loop("call", "stream", q), consume()), 5)
+    assert heard == expected
+    assert xoff >= 4
+    server.finish_output.assert_awaited_once()
+    assert boundary.completed.result() is True
+    server.abort_output.assert_not_awaited()
+
+
+@pytest.mark.parametrize("acknowledged,expected", [(0, 0), (4000, 4000), (25000, 20000)])
+def test_remote_position_never_counts_unacknowledged_queue(acknowledged, expected):
+    mgr, server, _ = manager("slin", 8000)
+    mgr.websocket_output_pacing = "asterisk"
+    mgr.active_streams["call"]["real_tx_bytes"] = 20 * 16000
+    server.get_confirmed_playback_ms = lambda call: acknowledged
+    assert mgr.get_playback_position_ms("call") == expected
+    mgr.websocket_output_pacing = "legacy"
+    assert mgr.get_playback_position_ms("call") == 20000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirmed", [0, 4000])
+async def test_grok_interruption_truncates_to_confirmed_progress_including_zero(confirmed):
+    mgr, server, store = manager("slin", 8000)
+    mgr.websocket_output_pacing = "asterisk"
+    mgr.active_streams["call"]["real_tx_bytes"] = 20 * 16000
+    server.get_confirmed_playback_ms = lambda call: confirmed
+    mgr.stop_streaming_playback = AsyncMock()
+    session = playback.CallSession(call_id="call", caller_channel_id="call", media_rx_confirmed=True)
+    await store.upsert_call(session)
+    grok = GrokProvider(GrokProviderConfig(api_key="test"), on_event=AsyncMock())
+    grok._assistant_audio_item_id = "assistant-1"
+    grok.websocket = SimpleNamespace(state=SimpleNamespace(name="OPEN"))
+    grok._send_json = AsyncMock()
+    engine = Engine.__new__(Engine)
+    engine.config = SimpleNamespace(audio_transport="websocket")
+    engine.session_store = store
+    engine.streaming_playback_manager = mgr
+    engine._call_providers = {"call": grok}
+    engine._close_google_audio_backlog = lambda call: None
+    engine._google_long_audio_provider = lambda session: None
+    engine._provider_stream_queues = {}
+    engine._provider_stream_formats = {}
+    engine._provider_coalesce_buf = {}
+    engine.conversation_coordinator = None
+    await engine._apply_barge_in_action("call", source="provider_event", reason="test")
+    mgr.stop_streaming_playback.assert_awaited_once_with("call")
+    truncation = grok._send_json.await_args.args[0]
+    assert truncation["type"] == "conversation.item.truncate"
+    assert truncation["item_id"] == "assistant-1"
+    assert truncation["audio_end_ms"] == confirmed
 
 
 def test_pacing_config_round_trip_and_validation():

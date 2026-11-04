@@ -184,6 +184,31 @@ provider settings are not rewritten. Other transports retain their pacing.
 The mode affects full providers and modular pipeline streaming TTS alike;
 provider/pipeline qualification is still required. File playback is unchanged.
 
+Choose **Advanced Settings → Audio Transport → WebSocket → Output pacing**:
+**Legacy — default** or **Asterisk pacing — experimental**. The readiness card
+shows editor, saved and running pacing independently; an older/unreachable
+engine is shown as unknown rather than assumed to be running the saved mode.
+Save, drain active calls, then use **Recreate AI Engine**. The setting applies
+to all streamed WebSocket providers and pipeline TTS, not to ARI file playback.
+OpenAI/Grok saved provider pacer settings are preserved and are bypassed only
+for streaming calls in Asterisk pacing mode.
+
+In JSON/Asterisk pacing mode, correlated `MARK_MEDIA` acknowledgments track a
+conservative playback lower bound at 100 ms intervals. Grok interruption
+history uses that acknowledged position rather than the amount queued ahead.
+Unacknowledged audio is never assumed played. Plain 20.17 controls lack progress
+marks: truncation conservatively retains zero audio until correlated segment
+completion. This can omit heard content from an interrupted Grok item; plain
+provider/pipeline qualification remains experimental. Progress marks are
+bounded per call, isolated by output generation and invalidated by FLUSH.
+See the [upstream control contract](https://docs.asterisk.org/Configuration/Channel-Drivers/WebSocket/).
+
+OpenAI audio admission/completion failures discard the affected response and
+notify the engine to stop its playback. They do not publish successful audio
+completion or reset the provider connection. Pending handoff audio retains its
+existing timeout/recovery policy; a failed farewell uses an explicit failure
+terminal notification. The next response can start cleanly.
+
 Changing this setting requires an AI Engine restart after draining active calls.
 To disable it on this build, set `output_pacing: legacy` and restart. Before
 downgrading to an older build, **remove** `output_pacing` from YAML and local

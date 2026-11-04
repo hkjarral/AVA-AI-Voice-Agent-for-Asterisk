@@ -231,6 +231,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         self._pacer_epoch: int = 0
         self._discarding_output: bool = False
         self._pacer_failed: bool = False
+        self._audio_failure_reported: bool = False
         self._fallback_pcm24k_done: bool = False
         self._reconnect_task: Optional[asyncio.Task] = None
 
@@ -554,6 +555,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         self._discarding_output = False
         self._pacer_epoch += 1
         self._pacer_failed = False
+        self._audio_failure_reported = False
         try:
             async with self._pacer_lock:
                 self._outbuf.clear()
@@ -1982,6 +1984,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             if response_id:
                 self._discarding_output = False
                 self._pacer_failed = False
+                self._audio_failure_reported = False
                 self._current_response_id = response_id
                 # Reset per-response audio tracking.
                 try:
@@ -2023,7 +2026,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 if audio_b64:
                     await self._handle_output_audio(audio_b64)
             elif delta_type == "output_audio.done":
-                await self._emit_audio_done(farewell_audio_complete=True)
+                await self._finish_audio_output(farewell_audio_complete=True)
             elif delta_type == "output_text.delta":
                 text = delta.get("text")
                 if text:
@@ -2047,7 +2050,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             return
 
         if event_type == "response.output_audio.done":
-            await self._emit_audio_done(farewell_audio_complete=True)
+            await self._finish_audio_output(farewell_audio_complete=True)
             return
 
         # Additional modern variant used by some previews
@@ -2074,7 +2077,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             # Do NOT re-enable VAD here - it will trigger too early!
             # VAD re-enable handled in response.done event
             
-            await self._emit_audio_done(farewell_audio_complete=True)
+            await self._finish_audio_output(farewell_audio_complete=True)
             return
 
         if event_type == "response.audio_transcript.delta":
@@ -2139,8 +2142,14 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 event_type in {"response.error", "response.cancelled"}
                 or response_status in {"cancelled", "failed", "incomplete"}
             )
-            handoff_flushed = drain_audio and await self.flush_handoff_pacer()
-            await self._emit_audio_done(drain=drain_audio)
+            handoff_flushed = False
+            try:
+                handoff_flushed = drain_audio and await self.flush_handoff_pacer()
+            except Exception:
+                self._pacer_failed = True
+                logger.exception("OpenAI handoff audio admission failed", call_id=self._call_id)
+            audio_completed = await self._finish_audio_output(drain=drain_audio)
+            handoff_flushed = handoff_flushed and audio_completed
             if had_audio_for_response and handoff_flushed:
                 await self.complete_handoff_audio(self._call_id, current_response_id)
             # response.audio.done can fire once per audio segment. Preserve FIR
@@ -2671,6 +2680,8 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                         }
                     )
                 except Exception:
+                    self._pacer_failed = True
+                    self._discarding_output = True
                     logger.error("Failed to emit AgentAudio event", call_id=self._call_id, exc_info=True)
 
     async def _seal_pacer_output(self, *, drain: bool) -> bool:
@@ -2727,9 +2738,47 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             )
         return epoch == self._pacer_epoch
 
-    async def _emit_audio_done(self, *, farewell_audio_complete: bool = False, drain: bool = True):
+    async def _finish_audio_output(self, *, farewell_audio_complete: bool = False, drain: bool = True) -> bool:
+        """Contain admission failure to one response; never reconnect or claim success.
+
+        Failed handoff audio stays interrupted so its existing timeout/recovery
+        owner cannot mistake this notification for an announcement completion.
+        """
+        if self._audio_failure_reported:
+            return False
+        farewell = bool(self._farewell_waiting_for_audio_done and self._farewell_response_id)
+        try:
+            return await self._emit_audio_done(farewell_audio_complete=farewell_audio_complete, drain=drain)
+        except Exception:
+            self._audio_failure_reported = True
+            logger.exception("OpenAI response audio admission failed; discarding response", call_id=self._call_id)
+            await self._seal_pacer_output(drain=False)
+            self._in_audio_burst = False
+            self._first_output_chunk_logged = False
+            self.interrupt_handoff(self._call_id)
+            # A greeting that failed admission must not keep caller input
+            # guarded forever while waiting for a drain that cannot happen.
+            if self._current_response_id == self._greeting_response_id:
+                await self.release_greeting_transport_guard()
+            try:
+                if self.on_event:
+                    await self.on_event({"type": "AgentAudioFailed", "call_id": self._call_id,
+                                         "response_id": self._current_response_id})
+            except Exception:
+                logger.exception("Failed to notify response audio failure", call_id=self._call_id)
+            if farewell:
+                self.release_terminal_output_protection()
+                try:
+                    if self.on_event:
+                        await self.on_event({"type": "HangupReady", "call_id": self._call_id,
+                                             "reason": "farewell_audio_failed", "had_audio": False})
+                except Exception:
+                    logger.exception("Failed to notify failed farewell", call_id=self._call_id)
+            return False
+
+    async def _emit_audio_done(self, *, farewell_audio_complete: bool = False, drain: bool = True) -> bool:
         if not self.on_event or not self._call_id:
-            return
+            return False
 
         # AgentAudioDone may block while downstream WebSocket playback reaches
         # its correlated boundary. Claim and cancel the no-audio fallback first
@@ -2748,7 +2797,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
 
         was_active = self._in_audio_burst or bool(self._outbuf)
         if not await self._seal_pacer_output(drain=drain):
-            return
+            return False
         # A pacer's finally block clears this flag; retain ownership until Done.
         self._in_audio_burst = was_active
 
@@ -2771,6 +2820,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 )
         except Exception:
             logger.error("Failed to emit AgentAudioDone event", call_id=self._call_id, exc_info=True)
+            raise
         finally:
             self._in_audio_burst = False
             # Pause pacer between bursts so we don't emit prolonged silence
@@ -2795,6 +2845,8 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 )
             except Exception:
                 logger.error("Failed to emit HangupReady after output_audio.done", call_id=self._call_id, exc_info=True)
+
+        return True
 
     async def _emit_transcript(self, text: str, *, is_final: bool):
         if not self.on_event or not self._call_id:

@@ -180,3 +180,117 @@ async def test_failed_inflight_callback_cannot_silently_complete_remaining_audio
     await obj._handle_output_audio(base64.b64encode(b"fresh").decode())
     await obj._emit_audio_done()
     assert obj.on_event.call_args_list[0].args[0]["data"] == b"fresh"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("done_type", ["response.done", "response.output_audio.done", "response.audio.done", "response.delta"])
+@pytest.mark.parametrize("failure", ["tail", "pacer", "blocked", "handoff", "immediate"])
+async def test_receive_loop_survives_failed_response_and_accepts_next(done_type, failure):
+    """Exercise actual event dispatch, not only the low-level seal helper."""
+    events = []
+    entered = asyncio.Event()
+
+    async def receive(e):
+        if e["type"] == "AgentAudio" and e["data"] != b"fresh":
+            if failure == "blocked":
+                entered.set()
+                await asyncio.Event().wait()
+            raise RuntimeError("admission failed")
+        events.append(e)
+
+    obj = provider(receive)
+    obj._outbuf.extend(b"tail")
+    obj._in_audio_burst = True
+    obj.complete_handoff_audio = AsyncMock()
+    if failure == "immediate":
+        obj._egress_pacer_enabled = False
+        obj._outbuf.clear()
+        await obj._handle_output_audio(base64.b64encode(b"old").decode())
+    if failure in {"pacer", "blocked"}:
+        obj._outbuf.clear()
+        await obj._handle_output_audio(base64.b64encode(b"\x12" * 4000).decode())
+        await asyncio.sleep(0)
+        if failure == "blocked":
+            await asyncio.wait_for(entered.wait(), 1)
+    if failure == "handoff":
+        obj.flush_handoff_pacer = AsyncMock(side_effect=RuntimeError("handoff callback failed"))
+        # Handoff flushing belongs to the complete response event.
+        done_type = "response.done"
+    done = {"type": done_type, "response_id": "response-1"}
+    if done_type == "response.done":
+        done["response"] = {"id": "response-1", "status": "completed"}
+    if done_type == "response.delta":
+        done["delta"] = {"type": "output_audio.done"}
+
+    import json
+    class Socket:
+        async def __aiter__(self):
+            yield json.dumps(done)
+            yield json.dumps(done)  # Duplicate failure cannot publish success.
+            assert [e["type"] for e in events] == ["AgentAudioFailed"]
+            obj.complete_handoff_audio.assert_not_awaited()
+            assert obj._discarding_output and not obj._outbuf
+            obj.flush_handoff_pacer = AsyncMock(return_value=True)
+            yield json.dumps({"type": "response.created", "response": {"id": "response-2"}})
+            yield json.dumps({"type": "response.output_audio.delta", "delta": base64.b64encode(b"fresh").decode()})
+            yield json.dumps({"type": "response.done", "response": {"id": "response-2", "status": "completed"}})
+            obj._closing = True
+
+    obj.websocket = Socket()
+    obj._reconnect_with_backoff = AsyncMock()
+    await obj._receive_loop()
+    assert [e["type"] for e in events] == ["AgentAudioFailed", "AgentAudio", "AgentAudioDone"]
+    assert events[1]["data"] == b"fresh"
+    obj._reconnect_with_backoff.assert_not_awaited()
+    assert obj._reconnect_task is None
+
+
+@pytest.mark.asyncio
+async def test_failed_farewell_has_one_explicit_failure_terminal_notification():
+    events = []
+    async def receive(e):
+        if e["type"] == "AgentAudio":
+            raise RuntimeError("failed farewell")
+        events.append(e)
+    obj = provider(receive)
+    obj._outbuf.extend(b"tail")
+    obj._in_audio_burst = True
+    obj._farewell_response_id = "response-1"
+    obj._farewell_waiting_for_audio_done = True
+    obj._audio_seen_response_ids.add("response-1")
+    obj._start_farewell_timeout()
+    await obj._handle_event({"type": "response.output_audio.done"})
+    await obj._handle_event({"type": "response.output_audio.done"})
+    assert [e["type"] for e in events] == ["AgentAudioFailed", "HangupReady"]
+    assert events[-1]["reason"] == "farewell_audio_failed"
+    assert obj._farewell_timeout_task is None
+
+
+@pytest.mark.asyncio
+async def test_failed_greeting_releases_transport_input_guard():
+    async def fail_audio(e):
+        if e["type"] == "AgentAudio":
+            raise RuntimeError("admission failed")
+    obj = provider(fail_audio)
+    obj._greeting_response_id = "response-1"
+    obj._greeting_transport_guard_active = True
+    obj._outbuf.extend(b"tail")
+    assert not await obj._finish_audio_output()
+    assert not obj._greeting_transport_guard_active
+
+
+@pytest.mark.asyncio
+async def test_failed_downstream_boundary_is_not_handoff_success():
+    events = []
+    async def receive(e):
+        if e["type"] == "AgentAudioDone":
+            raise RuntimeError("boundary admission failed")
+        events.append(e)
+    obj = provider(receive)
+    obj.complete_handoff_audio = AsyncMock()
+    obj._outbuf.extend(b"tail")
+    obj._in_audio_burst = True
+    obj._audio_seen_response_ids.add("response-1")
+    await obj._handle_event({"type": "response.done", "response": {"id": "response-1", "status": "completed"}})
+    assert [e["type"] for e in events] == ["AgentAudio", "AgentAudioFailed"]
+    obj.complete_handoff_audio.assert_not_awaited()

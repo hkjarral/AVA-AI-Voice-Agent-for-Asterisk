@@ -3995,7 +3995,7 @@ class StreamingPlaybackManager:
             return False
 
     def get_playback_position_ms(self, call_id: str) -> int:
-        """Return real (non-filler) audio sent for the active stream in milliseconds."""
+        """Return sent audio for legacy clocks, confirmed playback for remote pacing."""
         info = self.active_streams.get(call_id) or {}
         try:
             fmt = self._canonicalize_encoding(info.get("target_format")) or "ulaw"
@@ -4007,7 +4007,14 @@ class StreamingPlaybackManager:
                 int(info.get("real_tx_bytes_segment_baseline", 0) or 0),
             )
             real_bytes = max(0, real_bytes - baseline)
-            return int(round((real_bytes * 1000.0) / float(bytes_per_sample * rate)))
+            sent_ms = int(round((real_bytes * 1000.0) / float(bytes_per_sample * rate)))
+            if self.audio_transport == "websocket" and self.websocket_output_pacing == "asterisk":
+                confirmed = getattr(self.websocket_server, "get_confirmed_playback_ms", None)
+                # No acknowledgment must never be interpreted as all queued
+                # speech having played. Zero safely truncates an interrupted
+                # Grok item before its first mark (also on plain controls).
+                return min(sent_ms, max(0, int(confirmed(call_id)))) if callable(confirmed) else 0
+            return sent_ms
         except Exception:
             return 0
 
