@@ -309,11 +309,14 @@ def test_websocket_config_api_status_allows_inactive_missing_secret(tmp_path, mo
     assert response.json()["secret_reference"] == "ASTERISK_MEDIA_WS_PASSWORD"
 
 
-def test_yaml_validation_allows_websocket_selection_without_secret_at_save_time(tmp_path, monkeypatch):
+@pytest.mark.parametrize("pacing", ["legacy", "asterisk"])
+def test_yaml_validation_allows_websocket_selection_without_secret_at_save_time(tmp_path, monkeypatch, pacing):
     """The Admin API validates structure, not ai_engine's future env namespace."""
     parsed = yaml.safe_load(Path(config.settings.CONFIG_PATH).read_text())
     parsed["audio_transport"] = "websocket"
-    parsed["websocket_media"] = {"auth": {"password_env": "ASTERISK_MEDIA_WS_PASSWORD"}}
+    parsed["websocket_media"] = {
+        "auth": {"password_env": "ASTERISK_MEDIA_WS_PASSWORD"}, "output_pacing": pacing,
+    }
     env_path = tmp_path / ".env"
     env_path.write_text("ASTERISK_ARI_USERNAME=test\nASTERISK_ARI_PASSWORD=test\n")
     monkeypatch.setattr(config.settings, "ENV_PATH", str(env_path))
@@ -327,6 +330,10 @@ def test_yaml_validation_allows_websocket_selection_without_secret_at_save_time(
 @pytest.mark.parametrize(
     ("mutate", "location"),
     [
+        (
+            lambda parsed: parsed.setdefault("websocket_media", {}).update(output_pacing="not-a-mode"),
+            "websocket_media.output_pacing",
+        ),
         (
             lambda parsed: parsed["providers"]["openai_realtime"].update(
                 output_resampler="not-a-mode"

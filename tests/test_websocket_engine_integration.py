@@ -65,6 +65,29 @@ def _bare_engine():
 
 
 @pytest.mark.asyncio
+async def test_failed_provider_response_flushes_without_committing_transfer_or_completion():
+    engine = _bare_engine()
+    await engine.session_store.upsert_call(CallSession(call_id="call", caller_channel_id="call"))
+    engine._provider_stream_queues = {"call": asyncio.Queue()}
+    engine._provider_stream_formats = {"call": {}}
+    engine._provider_coalesce_buf = {"call": bytearray(b"old")}
+    engine._segment_tts_active = {"call"}
+    stream = {}
+    engine.streaming_playback_manager = SimpleNamespace(stop_streaming_playback=AsyncMock(), active_streams={"call": stream})
+    engine._note_provider_output_end = AsyncMock()
+    engine._commit_pending_deferred_transfer_for_call = AsyncMock()
+    engine._terminate_call_after_audio = AsyncMock()
+    await engine.on_provider_event({"type": "AgentAudioFailed", "call_id": "call", "response_id": "failed"})
+    engine.streaming_playback_manager.stop_streaming_playback.assert_awaited_once_with("call")
+    assert stream["end_reason"] == "interrupted"
+    engine._note_provider_output_end.assert_awaited_once()
+    assert "call" not in engine._provider_stream_queues
+    assert "call" not in engine._provider_coalesce_buf
+    engine._commit_pending_deferred_transfer_for_call.assert_not_awaited()
+    engine._terminate_call_after_audio.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_ari_external_media_websocket_request_keeps_rtp_defaults_optional():
     client = ARIClient.__new__(ARIClient)
     client.send_command = AsyncMock(return_value={"id": "media-1"})

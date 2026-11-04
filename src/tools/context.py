@@ -155,6 +155,16 @@ class ToolExecutionContext:
             )
             return None
 
+        if (getattr(session, "audio_diagnostics", None) or {}).get("provider_queue_failed"):
+            # Native OpenAI/Grok adapters invoke tools directly, independently
+            # of the engine event callback. Keep this boundary closed while the
+            # overflow owner flushes media and performs routing-aware teardown.
+            return {
+                "status": "error",
+                "error_code": "provider_audio_queue_overflow",
+                "message": "Provider audio failed; the call is terminating and cannot execute tools.",
+            }
+
         no_input_state = getattr(session, "no_input_state", None) or {}
         if isinstance(no_input_state, dict) and bool(no_input_state.get("announcement_active", False)):
             logger.warning(
