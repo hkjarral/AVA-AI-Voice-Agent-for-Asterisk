@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A2A agent delegation:** add an optional YAML-configured in-call tool that
+  delegates one bounded text request to a separately deployed Agent2Agent 1.0
+  service through the official SDK. Agent Card discovery is public; authenticated
+  task traffic stays on the configured origin, credentials come only from the
+  Engine environment, and uncertain requests are never retried automatically.
+
 ### Fixed
 
 - **Streaming playback (#808):** add opt-in Asterisk-owned WebSocket pacing

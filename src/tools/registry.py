@@ -778,7 +778,14 @@ Tool Definitions:
                 self._register_pushover_tool_from_config(tool_name, tool_config, in_call=True)
                 continue
 
-            if kind == 'in_call_http_lookup':
+            if kind == 'a2a_agent':
+                from src.tools.a2a_agent import create_a2a_agent_tool
+                tool = create_a2a_agent_tool(tool_name, tool_config)
+                self.register_instance(tool)
+                in_call_tool_count += 1
+                logger.info("Registered A2A agent tool: %s", tool_name)
+
+            elif kind == 'in_call_http_lookup':
                 from src.tools.http.template_contract import assert_valid_template
                 assert_valid_template(tool_config, "in_call")
                 try:

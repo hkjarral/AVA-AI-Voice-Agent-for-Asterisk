@@ -62,6 +62,7 @@ retain their immediate operations; they are not undone by returning to the list.
 Appointment booking can use a self-hosted calendar through the existing
 [Streamable HTTP MCP route](../docs/Appointment-booking-providers.md). Optional
 native integrations have separate guides: [Calendly](../docs/Calendly-calendar-tool.md),
+[A2A agent delegation](../docs/A2A-Agent-Tool.md),
 [Pushover](../docs/Pushover.md), [generated summaries](../docs/In-Call-Summaries.md)
 and [Microsoft Teams verification](../docs/Microsoft-teams-verification.md).
 Calendly submission uncertainty must not be retried blindly. Pushover remains a
