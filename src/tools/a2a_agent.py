@@ -117,6 +117,16 @@ class A2AAgentConfig:
             raise ValueError(
                 "A2A bearer_token_env must be an environment variable name"
             )
+        if self.bearer_token_env is not None:
+            parsed = urlsplit(self.agent_url)
+            if parsed.scheme != "https" and parsed.hostname not in {
+                "localhost",
+                "127.0.0.1",
+                "::1",
+            }:
+                raise ValueError(
+                    "A2A Bearer authentication requires HTTPS except on loopback"
+                )
         if not 1000 <= int(self.timeout_ms) <= 120000:
             raise ValueError("A2A timeout_ms must be between 1000 and 120000")
         if not 50 <= int(self.poll_interval_ms) <= 5000:
@@ -160,26 +170,21 @@ class A2AAgentTool(Tool):
             raise ValueError(
                 "A2A bearer token environment variable is missing or invalid"
             )
-        parsed = urlsplit(self.config.agent_url)
-        if parsed.scheme != "https" and parsed.hostname not in {
-            "localhost",
-            "127.0.0.1",
-            "::1",
-        }:
-            raise ValueError(
-                "A2A Bearer authentication requires HTTPS except on loopback"
-            )
         return {"Authorization": f"Bearer {token}"}
 
     @asynccontextmanager
-    async def _open_client(self) -> AsyncIterator[Any]:
+    async def _open_client(self, deadline: float) -> AsyncIterator[Any]:
         timeout = self.config.timeout_ms / 1000
         async with httpx.AsyncClient(
             timeout=timeout, follow_redirects=False
         ) as discovery:
-            card = await A2ACardResolver(
-                discovery, self.config.agent_url
-            ).get_agent_card()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            card = await asyncio.wait_for(
+                A2ACardResolver(discovery, self.config.agent_url).get_agent_card(),
+                timeout=remaining,
+            )
         _validate_agent_card(card, self.config.agent_url)
         transport = httpx.AsyncClient(
             headers=self._headers(), timeout=timeout, follow_redirects=False
@@ -321,7 +326,7 @@ class A2AAgentTool(Tool):
         deadline = time.monotonic() + (self.config.timeout_ms / 1000)
         request_state: dict[str, str | None] = {"task_id": None}
         try:
-            async with self._open_client() as client:
+            async with self._open_client(deadline) as client:
                 try:
                     return await asyncio.wait_for(
                         self._run(

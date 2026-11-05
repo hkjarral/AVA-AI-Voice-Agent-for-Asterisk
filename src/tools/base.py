@@ -323,7 +323,7 @@ class Tool(ABC):
         
         Returns:
             Result dictionary with:
-            - status: "success" | "failed" | "error"
+            - status: "success" | "failed" | "error" | "pending"
             - message: Human-readable message for AI to speak
             - Additional tool-specific fields
         

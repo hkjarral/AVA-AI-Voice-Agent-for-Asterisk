@@ -67,7 +67,7 @@ def _tool(client, **overrides):
     tool = A2AAgentTool(config)
 
     @asynccontextmanager
-    async def open_client():
+    async def open_client(deadline):
         yield client
 
     tool._open_client = open_client
@@ -160,6 +160,38 @@ def test_bearer_token_requires_environment_reference(monkeypatch):
     monkeypatch.setenv("A2A_TOKEN", "secret")
     assert A2AAgentTool(config)._headers() == {"Authorization": "Bearer secret"}
 
+    with pytest.raises(ValueError, match="requires HTTPS"):
+        A2AAgentConfig(
+            name="delegate",
+            agent_url="http://agent.example",
+            bearer_token_env="A2A_TOKEN",
+        )
+
+
+@pytest.mark.asyncio
+async def test_agent_card_discovery_obeys_total_deadline(monkeypatch):
+    class BlockingResolver:
+        def __init__(self, client, agent_url):
+            pass
+
+        async def get_agent_card(self):
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr("src.tools.a2a_agent.A2ACardResolver", BlockingResolver)
+    tool = A2AAgentTool(
+        A2AAgentConfig(
+            name="delegate",
+            agent_url="https://agent.example",
+            timeout_ms=1000,
+        )
+    )
+
+    result = await tool.execute(
+        {"message": "Please investigate"}, ToolExecutionContext(call_id="call-1")
+    )
+
+    assert result["status"] == "error"
+
 
 def test_agent_card_cannot_redirect_credentials_to_another_origin():
     class Interface:
@@ -198,4 +230,19 @@ def test_registry_rejects_invalid_a2a_config():
     with pytest.raises(ValueError, match="agent_url"):
         registry.initialize_in_call_http_tools_from_config(
             {"delegate": {"kind": "a2a_agent", "agent_url": "file:///tmp/agent"}}
+        )
+
+
+def test_registry_rejects_a2a_alias_shadowing():
+    from src.tools.registry import ToolRegistry
+
+    registry = ToolRegistry.isolated()
+    with pytest.raises(ValueError, match="reserved or invalid"):
+        registry.initialize_in_call_http_tools_from_config(
+            {
+                "transfer_call": {
+                    "kind": "a2a_agent",
+                    "agent_url": "https://agent.example",
+                }
+            }
         )

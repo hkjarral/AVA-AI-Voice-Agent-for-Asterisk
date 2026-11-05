@@ -779,7 +779,15 @@ Tool Definitions:
                 continue
 
             if kind == 'a2a_agent':
-                from src.tools.a2a_agent import create_a2a_agent_tool
+                from src.tools.a2a_agent import A2AAgentTool, create_a2a_agent_tool
+                existing = self._tools.get(tool_name)
+                if (
+                    not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", str(tool_name))
+                    or tool_name in self.TOOL_ALIASES
+                    or str(tool_name).startswith("mcp_")
+                    or (existing is not None and not isinstance(existing, A2AAgentTool))
+                ):
+                    raise ValueError("A2A tool name is reserved or invalid")
                 tool = create_a2a_agent_tool(tool_name, tool_config)
                 self.register_instance(tool)
                 in_call_tool_count += 1
