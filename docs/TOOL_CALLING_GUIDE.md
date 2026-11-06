@@ -262,7 +262,7 @@ AI: "Transferring you to Sales team ring group now."
 - Destination must press **DTMF** to accept/decline:
   - Default: `1 = accept`, `2 = decline`, timeout = decline.
 - On accept: AI audio is removed and the engine bridges **caller ↔ destination** directly.
-- On decline/timeout: MOH stops and the AI resumes with the caller (optionally plays a short “unable to transfer” prompt).
+- On decline, timeout, or the destination hanging up before accepting: MOH stops and the AI resumes with the caller (optionally plays a short “unable to transfer” prompt).
 - Engine remains alive as a passive bridge supervisor until hangup.
 - After an accepted handoff, a phone-initiated onward transfer can replace the
   destination leg. AVA adopts the new channel identified by
@@ -1964,6 +1964,25 @@ it is instructed not to redial automatically. This recovery response does not
 require Local AI Server TTS. A configured `caller_declined_prompt` is supplied to
 Google Live as the preferred failure response. Other providers retain their
 existing local failure-prompt path.
+
+If the destination answers and then hangs up before pressing the accept digit
+(during the announcement, the screening clip or briefing, or the accept prompt),
+AVA now treats it as a decline. Previously this ended the caller's call. MOH
+stops, the caller stays connected, the AI resumes, and Call History records
+`Transfer failed (target-hangup).` If the destination pressed the decline digit
+before hanging up, it is recorded as `declined` instead. Recovery runs once,
+even when the leg's end arrives as more than one channel event.
+
+Recovery follows the same provider split as other failures. Google Live receives
+the failure event; other providers play `caller_declined_prompt` locally, as they
+do for `declined`, `timeout`, `no-answer` and `dial-timeout`.
+
+Once the destination has accepted, behavior is unchanged: a hangup on that leg
+ends the call. Known limit: a hangup after the accept digit but before the
+bridge still counts as an accepted leg ending, so the call ends. That window
+includes `caller_connected_prompt`: its TTS and playback can take up to five
+times `tts_timeout_seconds` (40 seconds at the default of 8), so a long
+connected prompt widens it.
 
 Call History records **Transfer initiated** separately from **Transfer failed** or
 **Transfer completed**. Initiation and terminal outcomes retain the

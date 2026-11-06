@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Attended transfer destination hangup:** behavior change. A destination that
+  answers and hangs up before accepting no longer ends the caller's call. AVA
+  treats it as a decline: MOH stops, the AI resumes, the failure is recorded as
+  `target-hangup` (or `declined` if the decline digit came first), and
+  non-Google providers play `caller_declined_prompt`.
+  Accepted legs, onward-transfer replacement and pickup ownership are unchanged.
+  The screening handler no longer fails on a cancelled DTMF wait when the leg is
+  retired.
+
 ## [7.7.2] - 2026-11-08
 
 Prepared from main `77c03386` through #820 and the security fixes in #822. This
