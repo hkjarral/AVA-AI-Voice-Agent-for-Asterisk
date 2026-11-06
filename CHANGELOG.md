@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Deferred transfers:** a deferred blind, attended or live-agent transfer no
+  longer waits forever when the model sends no audio after the tool result. The
+  new `tools.transfer.deferred_silent_commit_timeout_sec` (default 4 s, 0
+  disables, Admin UI field) commits it through the normal path. The timer starts
+  once the tool result has been sent to the model, pauses while the caller is
+  talking and restarts after a barge-in that cuts the reply. Behaviour changes
+  only when no reply audio follows; handoff announcements and pipelines are
+  unchanged.
+
 ## [7.7.2] - 2026-11-08
 
 Prepared from main `77c03386` through #820 and the security fixes in #822. This

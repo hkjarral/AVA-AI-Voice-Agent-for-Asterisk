@@ -1507,7 +1507,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                             tooltip="How long Asterisk should keep ringing the pre-dialed destination leg."
                                         />
                                     </div>
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                         <FormInput
                                             label="Deferred Audio Drain Timeout (seconds)"
                                             type="number"
@@ -1539,6 +1539,23 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                                 );
                                             }}
                                             tooltip="How long the caller-facing audio path must remain empty before the deferred transfer can commit."
+                                        />
+                                        <FormInput
+                                            label="Silent Reply Commit Timeout (seconds)"
+                                            type="number"
+                                            min={0}
+                                            max={30}
+                                            step={0.5}
+                                            value={config.transfer?.deferred_silent_commit_timeout_sec ?? 4}
+                                            onChange={(e) => {
+                                                const parsed = parseFloat(e.target.value);
+                                                updateNestedConfig(
+                                                    'transfer',
+                                                    'deferred_silent_commit_timeout_sec',
+                                                    Number.isFinite(parsed) ? Math.max(0, Math.min(30, parsed)) : 4,
+                                                );
+                                            }}
+                                            tooltip="If the agent starts no reply audio within this many seconds of a transfer tool result, the transfer goes ahead anyway. Has no effect when a transfer announcement is configured. 0 disables it."
                                         />
                                     </div>
                                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

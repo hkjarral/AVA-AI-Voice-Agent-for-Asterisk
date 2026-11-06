@@ -944,6 +944,57 @@ contexts:
     background_music: "ambient"  # MOH class name
 ```
 
+### Deferred transfer silent-reply timeout (`tools.transfer`)
+
+A deferred transfer commits when the agent's handoff reply finishes. If the
+model sends no audio after the transfer tool result (seen with Vertex Live
+models), no completion event arrives and the transfer stays armed.
+`deferred_silent_commit_timeout_sec` bounds that wait.
+
+```yaml
+tools:
+  transfer:
+    defer_until_playback_complete: true
+    deferred_silent_commit_timeout_sec: 4   # 0 disables; range 0-30
+```
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `tools.transfer.deferred_silent_commit_timeout_sec` | `4` | `0`-`30` | Seconds to wait for reply audio after the transfer tool result. `0` disables the timer. |
+
+- **Scope:** deferred blind, attended and live-agent transfers on full-agent
+  providers, when no handoff announcement is configured. Transfers with a
+  handoff announcement use `handoff.start_timeout_sec`. Modular pipelines commit
+  after their own announcement and are not affected.
+- **Behaviour:** the timer starts when the provider has sent the tool result to
+  the model. For OpenAI Realtime and Grok that is after the parent
+  `response.done` arrives, which can take up to 5 s. If no agent audio has
+  started when the timer expires, the engine commits the armed transfer through
+  the normal drain-and-commit path. If agent audio starts first, the timer
+  holds and the transfer commits when that reply finishes, as before.
+- **Caller speech:** provider VAD holds the model's reply while the caller
+  talks, so caller speech does not count as silence. OpenAI Realtime, Grok and
+  Deepgram report when the caller starts and stops (Deepgram's stop is its
+  final user transcript). The timer pauses at the start and restarts at the
+  full timeout when the caller stops. If no stop arrives, the transfer commits
+  30 s after the start. Google Live, ElevenLabs and the local provider report
+  caller activity without an end event, so each transcription fragment, user
+  transcript or interruption restarts the full timeout.
+- **Barge-in:** if the caller interrupts the reply and the provider reports a
+  barge-in (`ProviderBargeIn` or `interruption`), the timer starts again, so a
+  cut-off reply cannot leave the transfer waiting.
+- **Known limit:** once reply audio has started, the timer only resumes on a
+  barge-in. A reply that stalls part-way without a barge-in and without a
+  final completion event still leaves the transfer armed until the call ends.
+- **Slow providers:** if a provider's first reply audio can take longer than the
+  timeout (for example a local model on CPU), raise the value. Otherwise the
+  transfer goes ahead without its handoff line.
+- **Log line:** `deferred_transfer_watchdog_commit`, with the call id and action
+  id, is logged at warning level when the timer commits a transfer.
+- **Admin UI:** **Tools → Transfer → Advanced transfer settings** shows the
+  field as "Silent Reply Commit Timeout (seconds)". Saving applies to new calls;
+  active calls keep their configuration snapshot.
+
 ## Environment Variable Resolution
 
 Environment variable placeholders (`${VAR}`, `${VAR:-default}`) are expanded for the **entire YAML file** when `config/ai-agent.yaml` is loaded.

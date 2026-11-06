@@ -1059,6 +1059,27 @@ replacement before its own handoff completes. Timeout recovery clears the
 pending transfer before requesting an apology, so the apology can play.
 Local handoff playback and modular pipeline transfer prompts bypass this gate.
 
+A deferred transfer normally commits when the agent's handoff reply finishes. If
+the model sends no audio after the transfer tool result (seen with Vertex Live
+models), no completion event ever arrives and the transfer would stay armed.
+`tools.transfer.deferred_silent_commit_timeout_sec` (default 4, range 0-30,
+0 disables) bounds that wait: if no reply audio has started by then, the engine
+commits the armed transfer through the normal drain-and-commit path. The timer
+starts once the provider has sent the tool result to the model (for OpenAI
+Realtime and Grok, after the parent `response.done`). It holds while agent audio
+plays, after which the transfer commits when that reply finishes, as before. It
+also pauses while the caller is talking, because provider VAD holds the reply
+until they stop, and restarts at the full timeout when they finish. Providers
+that report no end of caller speech restart it on each sign of caller activity
+instead. A barge-in that cuts the reply restarts it too. A reply that stalls
+part-way with no barge-in and no completion event is not covered. Providers
+whose first reply audio can take longer than the timeout (for example a local
+model on CPU) should raise the value, or the transfer goes ahead without its
+handoff line. It does not apply to transfers with a handoff
+announcement, which use `handoff.start_timeout_sec`, or to modular pipelines,
+which commit after their own announcement. When it fires the engine logs
+`deferred_transfer_watchdog_commit` with the call id and action id.
+
 The provider can still generate the repeated turn, so its transcript may show
 the handoff twice. With opt-in Google Developer long-response playback, repeats
 queued before the commit begins can still be heard.
@@ -1079,6 +1100,7 @@ tools:
     deferred_strategy: "drain_then_dial"   # Or "predial_then_bridge" to dial while handoff audio plays
     deferred_audio_drain_timeout_sec: 15   # Safety ceiling; timeout cancels the transfer and resumes the AI
     deferred_audio_drain_quiet_ms: 500     # Require this much quiet after the caller-facing queue drains
+    deferred_silent_commit_timeout_sec: 4  # Commit if no reply audio starts after the tool result (0 disables)
     predial_bridge_wait_timeout_sec: 10    # Wait after handoff audio for a predialed destination answer
     predial_timeout_seconds: 30            # Asterisk originate timeout for predialed destination leg
     predial_wait_moh_class: "default"      # MOH class while waiting for predial destination answer

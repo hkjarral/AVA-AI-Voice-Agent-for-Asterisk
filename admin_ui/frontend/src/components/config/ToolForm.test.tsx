@@ -22,6 +22,7 @@ type TestToolConfig = {
         enabled?: boolean;
         deferred_audio_drain_timeout_sec?: number;
         deferred_audio_drain_quiet_ms?: number;
+        deferred_silent_commit_timeout_sec?: number;
     };
     extensions?: {
         internal?: Record<string, {
@@ -99,6 +100,30 @@ describe('ToolForm — deferred transfer audio safety (issue #662)', () => {
         lastCall = onChange.mock.calls[onChange.mock.calls.length - 1][0];
         expect(lastCall.transfer.deferred_audio_drain_timeout_sec).toBe(20);
         expect(lastCall.transfer.deferred_audio_drain_quiet_ms).toBe(750);
+    });
+});
+
+describe('ToolForm — deferred transfer silent reply commit timeout', () => {
+    it('defaults to 4 seconds, clamps to 0-30 and persists operator changes', async () => {
+        const onChange = vi.fn();
+
+        render(<Harness onChange={onChange} />);
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+
+        const input = screen.getByLabelText('Silent Reply Commit Timeout (seconds)');
+        expect(input).toHaveValue(4);
+        expect(input).toHaveAttribute('min', '0');
+        expect(input).toHaveAttribute('max', '30');
+
+        const last = () => onChange.mock.calls[onChange.mock.calls.length - 1][0];
+        fireEvent.change(input, { target: { value: '0' } });
+        expect(last().transfer.deferred_silent_commit_timeout_sec).toBe(0);
+        fireEvent.change(input, { target: { value: '45' } });
+        expect(last().transfer.deferred_silent_commit_timeout_sec).toBe(30);
+        fireEvent.change(input, { target: { value: '2.5' } });
+        expect(last().transfer.deferred_silent_commit_timeout_sec).toBe(2.5);
     });
 });
 
