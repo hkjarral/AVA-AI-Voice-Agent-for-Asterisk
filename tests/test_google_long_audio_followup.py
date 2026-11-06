@@ -268,7 +268,7 @@ async def test_disconnect_observer_is_deduplicated_and_bounds_stalled_transfer()
     e,s=bare_engine(provider())
     s.current_action={'type':'attended_transfer','decision':'pending'}
     await e.session_store.upsert_call(s)
-    e._google_disconnect_transfer_wait_sec=lambda:0.02
+    e._google_disconnect_transfer_wait_sec=lambda *_args:0.02
     event={'type':'ProviderDisconnected','call_id':s.call_id,'code':1007}
     await e.on_provider_event(event)
     await e.on_provider_event(event)

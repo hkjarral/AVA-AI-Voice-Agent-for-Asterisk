@@ -1406,6 +1406,21 @@ class Engine:
         attended_cfg = tools_cfg.get("attended_transfer") if isinstance(tools_cfg, dict) else None
         return attended_cfg if isinstance(attended_cfg, dict) else {}
 
+    def _attended_transfer_config_for_session(self, session: Optional[CallSession]) -> Dict[str, Any]:
+        """Attended-transfer settings for this call.
+
+        The attended_transfer tool originates the leg from the call's tool
+        snapshot, so answer handling and recovery read the same snapshot. A
+        call without a snapshot falls back to the current tool generation,
+        then to the global config. With no session at all, the global config
+        applies.
+        """
+        if session is None:
+            return self._get_attended_transfer_config()
+        tools_cfg = self._tool_config_for_session(session).get("tools") or {}
+        attended_cfg = tools_cfg.get("attended_transfer") if isinstance(tools_cfg, dict) else None
+        return attended_cfg if isinstance(attended_cfg, dict) else {}
+
     @staticmethod
     def _session_was_transferred(session: Optional["CallSession"]) -> bool:
         if not session:
@@ -5288,10 +5303,19 @@ class Engine:
         """Helper-leg RTP audio is currently ignored; DTMF stays on the SIP/PJSIP agent channel."""
         return
 
-    async def _ensure_attended_transfer_helper_rtp_server_started(self) -> Optional[RTPServer]:
+    async def _ensure_attended_transfer_helper_rtp_server_started(
+        self, *, streaming_requested: bool = False
+    ) -> Optional[RTPServer]:
+        """Start the shared helper RTP server once per process.
+
+        Startup starts it when the global config streams. A call whose own
+        settings stream passes ``streaming_requested`` to start it on demand.
+        Bind settings always come from the global config because one server
+        serves every call.
+        """
         if self.attended_transfer_rtp_server and getattr(self.attended_transfer_rtp_server, "running", False):
             return self.attended_transfer_rtp_server
-        if not self._attended_transfer_streaming_enabled():
+        if not streaming_requested and not self._attended_transfer_streaming_enabled():
             return None
 
         async with self._attended_transfer_helper_rtp_lock:
@@ -5350,7 +5374,21 @@ class Engine:
         agent_channel_id: str,
         attended_cfg: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        server = await self._ensure_attended_transfer_helper_rtp_server_started()
+        # Only reached when this call's settings stream. If the server cannot
+        # start (for example malformed global helper settings), treat it like
+        # an unavailable server so the handler's existing fallback (file
+        # playback, or stream-unavailable recovery) applies. Per-call port
+        # bind failures are handled further down, in the media setup below.
+        try:
+            server = await self._ensure_attended_transfer_helper_rtp_server_started(streaming_requested=True)
+        except Exception:
+            logger.warning(
+                "Attended transfer helper RTP server failed to start",
+                call_id=call_id,
+                agent_channel_id=agent_channel_id,
+                exc_info=True,
+            )
+            server = None
         if not server:
             logger.warning(
                 "Attended transfer helper RTP server unavailable",
@@ -9186,9 +9224,16 @@ class Engine:
             await self.ari_client.hangup_channel(channel_id)
             return
 
-        tools_cfg = getattr(self.config, "tools", {}) or {}
-        attended_cfg = tools_cfg.get("attended_transfer") if isinstance(tools_cfg, dict) else None
-        if not isinstance(attended_cfg, dict) or not bool(attended_cfg.get("enabled", False)):
+        # Use the settings this call started with. The attended_transfer tool
+        # originated this leg from the same snapshot, so a config reload during
+        # the call cannot change the transfer's rules halfway through.
+        session_tools = self._tool_config_for_session(session).get("tools") or {}
+        if not isinstance(session_tools, dict):
+            session_tools = {}
+        attended_cfg = session_tools.get("attended_transfer")
+        if not isinstance(attended_cfg, dict):
+            attended_cfg = {}
+        if not bool(attended_cfg.get("enabled", False)):
             logger.info("Attended transfer disabled - hanging up agent channel", call_id=caller_id, channel_id=channel_id)
             self._unregister_attended_transfer_agent_channel(channel_id)
             await self.ari_client.hangup_channel(channel_id)
@@ -9213,7 +9258,7 @@ class Engine:
         except Exception:
             logger.debug("Failed to mark attended transfer answered", call_id=caller_id, exc_info=True)
 
-        transfer_cfg = tools_cfg.get("transfer") if isinstance(tools_cfg, dict) else None
+        transfer_cfg = session_tools.get("transfer")
         destinations = (transfer_cfg.get("destinations") or {}) if isinstance(transfer_cfg, dict) else {}
         dest_cfg = destinations.get(destination_key) if isinstance(destinations, dict) else None
         dest_desc = None
@@ -9557,8 +9602,7 @@ class Engine:
 
         # Optional: play a short caller-facing prompt on decline/timeout so the call doesn't feel "dead".
         try:
-            tools_cfg = getattr(self.config, "tools", {}) or {}
-            attended_cfg = tools_cfg.get("attended_transfer") if isinstance(tools_cfg, dict) else None
+            attended_cfg = self._attended_transfer_config_for_session(session)
             if not provider_recovery and isinstance(attended_cfg, dict) and reason in {"declined", "timeout", "no-answer", "dial-timeout"}:
                 caller_prompt = str(
                     attended_cfg.get(
@@ -9609,7 +9653,7 @@ class Engine:
             # end event cannot notify twice or race a timeout into the same recovery.
             if provider_recovery:
                 try:
-                    configured = (self._tool_config_for_session(session).get("tools") or {}).get("attended_transfer") or {}
+                    configured = self._attended_transfer_config_for_session(session)
                     caller_prompt = str(configured.get("caller_declined_prompt") or "")
                     if caller_prompt:
                         caller_prompt = self._apply_prompt_template_substitution(
@@ -16229,12 +16273,13 @@ class Engine:
         )
         return False
 
-    def _google_disconnect_transfer_wait_sec(self) -> float:
-        """Bound transfer observation using configured phase budgets plus grace."""
-        tools = getattr(self.config, "tools", {}) or {}
-        cfg = tools.get("attended_transfer", {}) if isinstance(tools, dict) else {}
-        if not isinstance(cfg, dict):
-            cfg = {}
+    def _google_disconnect_transfer_wait_sec(self, session: Optional[CallSession] = None) -> float:
+        """Bound transfer observation using configured phase budgets plus grace.
+
+        A live call is budgeted from its own transfer settings; without a
+        session the global config applies.
+        """
+        cfg = self._attended_transfer_config_for_session(session)
 
         def seconds(key: str, default: float) -> float:
             try:
@@ -16255,9 +16300,13 @@ class Engine:
 
     async def _finish_google_provider_disconnect(self, call_id: str) -> None:
         """Drain failed Google playback without taking routing from a transfer."""
-        deadline = time.monotonic() + self._google_disconnect_transfer_wait_sec()
+        session = await self.session_store.get_by_call_id(call_id)
+        deadline = time.monotonic() + self._google_disconnect_transfer_wait_sec(session)
+        first_pass = True
         while True:
-            session = await self.session_store.get_by_call_id(call_id)
+            if not first_pass:
+                session = await self.session_store.get_by_call_id(call_id)
+            first_pass = False
             if not session or session.cleanup_in_progress or self._session_was_transferred(session):
                 return
             if self._session_has_pending_attended_transfer(session):
