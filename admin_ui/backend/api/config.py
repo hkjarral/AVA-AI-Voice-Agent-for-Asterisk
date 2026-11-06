@@ -3664,6 +3664,264 @@ async def get_llm_provider_options():
     }
 
 
+# Default labels for the pipeline TTS components the engine can build.
+_TTS_OPTION_LABELS = {
+    "google_tts": "Google Cloud Text-to-Speech",
+    "deepgram_tts": "Deepgram Aura",
+    "openai_tts": "OpenAI TTS",
+    "elevenlabs_tts": "ElevenLabs",
+    "groq_tts": "Groq TTS",
+    "azure_tts": "Azure Speech",
+    "cambai_tts": "CAMB AI",
+    "fishaudio_tts": "Fish Audio",
+}
+
+_TTS_ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}")
+
+
+def _tts_provider_block(providers: Dict[str, Any], name: str) -> Optional[Dict[str, Any]]:
+    block = providers.get(name)
+    return block if isinstance(block, dict) and block else None
+
+
+def _is_tts_component_key(name: Any) -> bool:
+    parts = str(name).rsplit("_", 1)
+    return len(parts) == 2 and parts[1] == "tts"
+
+
+def _tts_secret_configured(
+    provider_cfg: Dict[str, Any],
+    *,
+    env_names: tuple[str, ...],
+    inline: bool,
+    file_fields: bool,
+) -> bool:
+    """Report whether the engine would find a key, without returning it.
+
+    ``inline=False`` is for providers whose inline YAML ``api_key`` the engine
+    replaces with the environment variable at load time
+    (``inject_provider_api_keys``). ``file_fields=False`` is for adapters that
+    never read ``api_key_file`` / ``api_key_env``.
+    """
+    candidate: Dict[str, Any] = {}
+    if file_fields:
+        for field in ("api_key_file", "api_key_env"):
+            value = str(provider_cfg.get(field) or "").strip()
+            if value:
+                candidate[field] = value
+    if inline:
+        raw = str(provider_cfg.get("api_key") or "").strip()
+        env_ref = _TTS_ENV_REFERENCE.fullmatch(raw)
+        if env_ref:
+            candidate.setdefault("api_key_env", env_ref.group(1))
+        elif raw:
+            candidate["api_key"] = raw
+    resolved = str(
+        _provider_instances_module()["resolve_secret_value"](
+            candidate,
+            file_field="api_key_file",
+            env_field="api_key_env",
+            inline_field="api_key",
+            legacy_env_names=env_names,
+        )
+        or ""
+    ).strip()
+    return bool(resolved) and resolved.lower() != "not-needed"
+
+
+def _google_service_account_file_present() -> bool:
+    """Google pipeline adapters read only GOOGLE_APPLICATION_CREDENTIALS.
+
+    The engine points that variable at the shared service-account file when
+    the file exists and drops a stale path, so the file has to exist to count.
+    ``providers.google.credentials_path`` is never read by these adapters.
+    """
+    env_path = str(os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
+    if env_path and os.path.isfile(env_path):
+        return True
+    return os.path.isfile(VERTEX_CREDENTIALS_PATH)
+
+
+def _tts_component_disabled(providers: Dict[str, Any], component_key: str) -> bool:
+    """Mirror ``PipelineOrchestrator._provider_explicitly_disabled``.
+
+    The engine checks a block named after the component key, then the
+    provider prefix (``google_tts`` -> ``google``), and the first block found
+    decides.
+    """
+    parts = component_key.rsplit("_", 1)
+    prefix = parts[0] if len(parts) == 2 else None
+    for key in (component_key, prefix):
+        if not key or key not in providers:
+            continue
+        block = providers.get(key)
+        if isinstance(block, dict):
+            return block.get("enabled") is False
+    return False
+
+
+@router.get("/providers/tts-options")
+async def get_tts_provider_options():
+    """Return a secret-safe catalog for the attended-transfer announcement voice.
+
+    Lists the pipeline TTS components the engine registers from configured
+    provider blocks, in its registration order so a later registration of the
+    same key wins (``PipelineOrchestrator._register_builtin_factories``).
+    ``local_tts`` is omitted: leaving ``tts_provider`` unset already uses
+    Local AI Server. Readiness counts only credentials the engine reads.
+
+    Deliberately stricter than the engine in a few places, so it under-reports
+    on purpose: Deepgram without a key, CAMB, and the non-canonical ElevenLabs
+    blocks are reported not ready even where the engine might still build them.
+    """
+    merged = _read_merged_config_dict()
+    providers = merged.get("providers") if isinstance(merged.get("providers"), dict) else {}
+    # component key -> (provider block, credential configured, voice configured)
+    entries: Dict[str, tuple[Dict[str, Any], bool, bool]] = {}
+
+    deepgram = _tts_provider_block(providers, "deepgram")
+    if deepgram:
+        entries["deepgram_tts"] = (
+            deepgram,
+            _tts_secret_configured(
+                deepgram, env_names=("DEEPGRAM_API_KEY",), inline=False, file_fields=False
+            ),
+            True,
+        )
+
+    openai_base = _tts_provider_block(providers, "openai")
+    openai_tts = _tts_provider_block(providers, "openai_tts")
+    openai_block = openai_tts or openai_base
+    if openai_block:
+        openai_cfg: Dict[str, Any] = {}
+        if openai_tts and openai_base and openai_base.get("enabled", True):
+            openai_cfg.update(openai_base)
+        openai_cfg.update(openai_block)
+        entries["openai_tts"] = (
+            openai_block,
+            _tts_secret_configured(
+                openai_cfg, env_names=("OPENAI_API_KEY",), inline=False, file_fields=True
+            ),
+            True,
+        )
+
+    google = _tts_provider_block(providers, "google")
+    if google:
+        entries["google_tts"] = (
+            google,
+            _tts_secret_configured(
+                google, env_names=("GOOGLE_API_KEY",), inline=True, file_fields=True
+            )
+            or _google_service_account_file_present(),
+            True,
+        )
+
+    groq = _tts_provider_block(providers, "groq_tts")
+    if not groq:
+        for name, cfg in providers.items():
+            if (
+                isinstance(cfg, dict)
+                and _is_tts_component_key(name)
+                and str(cfg.get("type", "")).lower() == "groq"
+            ):
+                groq = cfg
+                break
+    if groq:
+        entries["groq_tts"] = (
+            groq,
+            _tts_secret_configured(
+                groq, env_names=("GROQ_API_KEY",), inline=False, file_fields=False
+            ),
+            True,
+        )
+
+    elevenlabs = _tts_provider_block(providers, "elevenlabs")
+    if not elevenlabs:
+        for name, cfg in providers.items():
+            if not isinstance(cfg, dict):
+                continue
+            cfg_type = str(cfg.get("type", "")).lower()
+            if cfg_type in ("elevenlabs_agent", "full"):
+                continue
+            caps = cfg.get("capabilities", [])
+            if isinstance(caps, list) and "stt" in caps and "llm" in caps and "tts" in caps:
+                continue
+            if str(name).lower().startswith("elevenlabs_") or cfg_type == "elevenlabs":
+                elevenlabs = cfg or None
+                break
+    if elevenlabs:
+        entries["elevenlabs_tts"] = (
+            elevenlabs,
+            _tts_secret_configured(
+                elevenlabs, env_names=("ELEVENLABS_API_KEY",), inline=False, file_fields=False
+            ),
+            True,
+        )
+
+    cambai = _tts_provider_block(providers, "cambai") or _tts_provider_block(providers, "cambai_tts")
+    if cambai:
+        entries["cambai_tts"] = (
+            cambai,
+            _tts_secret_configured(
+                cambai, env_names=("CAMB_API_KEY",), inline=True, file_fields=False
+            ),
+            True,
+        )
+
+    fish_blocks: Dict[str, Dict[str, Any]] = {}
+    for name, cfg in providers.items():
+        if not isinstance(cfg, dict):
+            continue
+        key = str(name)
+        if key in {"fishaudio", "fishaudio_tts"} or (
+            _is_tts_component_key(key) and str(cfg.get("type") or "").strip().lower() == "fishaudio"
+        ):
+            fish_blocks["fishaudio_tts" if key == "fishaudio" else key] = cfg
+    for component_key, cfg in fish_blocks.items():
+        entries[component_key] = (
+            cfg,
+            _tts_secret_configured(
+                cfg, env_names=("FISH_AUDIO_API_KEY",), inline=True, file_fields=True
+            ),
+            bool(str(cfg.get("reference_id") or "").strip()),
+        )
+
+    azure = _tts_provider_block(providers, "azure_tts")
+    if azure:
+        entries["azure_tts"] = (
+            azure,
+            _tts_secret_configured(
+                azure, env_names=("AZURE_SPEECH_KEY",), inline=False, file_fields=False
+            ),
+            True,
+        )
+
+    options: list[Dict[str, Any]] = []
+    for component_key, (cfg, credential_configured, voice_configured) in entries.items():
+        if cfg.get("enabled") is False or _tts_component_disabled(providers, component_key):
+            reason = "disabled"
+        elif not credential_configured:
+            reason = "credential_missing"
+        elif not voice_configured:
+            reason = "voice_missing"
+        else:
+            reason = ""
+        option: Dict[str, Any] = {
+            "key": component_key,
+            "label": str(
+                cfg.get("display_name")
+                or _TTS_OPTION_LABELS.get(component_key)
+                or cfg.get("name")
+                or component_key
+            ),
+            "ready": not reason,
+        }
+        if reason:
+            option["reason"] = reason
+        options.append(option)
+    return sorted(options, key=lambda item: item["label"].lower())
+
+
 @router.get("/providers/{provider_key}/credentials")
 async def get_provider_credentials_status(provider_key: str):
     merged, provider_cfg, kind = _get_provider_block(provider_key)
