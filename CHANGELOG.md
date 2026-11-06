@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Attended transfer settings:** the answer handler and failure recovery now read
+  the call's tool snapshot from call start, not the live global config, so a
+  mid-call reload can no longer change or hang up a transfer in progress. Stream
+  delivery starts the helper RTP server on demand, and if it cannot start (for
+  example, malformed helper settings) the call falls back per
+  `stream_fallback_to_file`.
+
 ## [7.7.2] - 2026-11-08
 
 Prepared from main `77c03386` through #820 and the security fixes in #822. This

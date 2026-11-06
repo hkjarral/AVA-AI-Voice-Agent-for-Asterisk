@@ -944,6 +944,52 @@ contexts:
     background_music: "ambient"  # MOH class name
 ```
 
+## Attended transfer (`tools.attended_transfer`)
+
+Attended (warm) transfer keeps the caller on hold music while the destination extension hears an announcement and accepts or declines with a DTMF digit. Destinations come from `tools.transfer.destinations.<key>` and must have `type: extension` and `attended_allowed: true`. See "Attended Transfer" in [TOOL_CALLING_GUIDE.md](TOOL_CALLING_GUIDE.md) for the call flow.
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | Read when the destination answers. If false, the answered leg is hung up. The model's access to the tool comes from the context or agent tool list, not from this key. |
+| `moh_class` | `"default"` | Asterisk MOH class played to the caller while dialling and screening. |
+| `dial_timeout_seconds` | `30` | Originate timeout for the destination leg (integer). |
+| `screening_mode` | `"basic_tts"` | `basic_tts`, `caller_recording` or `ai_briefing`. The legacy value `ai_summary` maps to `ai_briefing` with a deprecation warning. |
+| `pass_caller_info_to_context` | `false` | Deprecated. `true` with no `screening_mode` selects `ai_briefing`. |
+| `caller_screening_prompt` | `"Before I connect you, please say your name and the reason for your call."` | `caller_recording` mode only. Spoken to the caller. |
+| `caller_screening_max_seconds` | `6` | `caller_recording`: maximum caller clip length. |
+| `caller_screening_silence_ms` | `1200` | `caller_recording`: silence that ends the clip. |
+| `ai_briefing_timeout_seconds` | `2.0` | `ai_briefing`: Local AI Server summary timeout. On failure the transfer falls back to `basic_tts`. |
+| `ai_briefing_language` | `""` (none) | `ai_briefing`: summary language hint. |
+| `ai_briefing_intro_template` | `"Hi, this is Ava. Here is a short summary of the caller."` | `ai_briefing`: announcement intro. |
+| `announcement_template` | `"Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."` | With a `caller_recording` clip the default is `"Hi, this is Ava. Here is the caller's screening."`. Blank means default. |
+| `agent_accept_prompt_template` | `"Press 1 to accept this transfer, or 2 to decline."` | Wins over `agent_accept_prompt` when the key is present. The default text does not follow custom digits; set it when you change them. |
+| `agent_accept_prompt` | none | Legacy alias of `agent_accept_prompt_template`. |
+| `accept_digit` | `"1"` | Digit that accepts the transfer. |
+| `decline_digit` | `"2"` | Digit that declines. No digit before the timeout counts as a decline. |
+| `accept_timeout_seconds` | `15` | Wins over `agent_accept_timeout_seconds` when the key is present. |
+| `agent_accept_timeout_seconds` | `15` | Legacy alias of `accept_timeout_seconds`. |
+| `tts_timeout_seconds` | `8` | Local AI Server TTS timeout per prompt. File playback waits up to `max(3, 4 × this)`. |
+| `caller_connected_prompt` | `""` (none) | Played to the caller on accept. |
+| `caller_declined_prompt` | `"I’m not able to complete that transfer right now. Would you like me to take a message, or is there anything else I can help with?"` | Local playback after a decline, timeout, `no-answer` or `dial-timeout` for non-Google providers. A missing key uses this default; `""` plays nothing. Google Live receives only a configured value and otherwise words its own recovery. |
+| `delivery_mode` | `"file"` | `file` (ARI playback on the destination) or `stream` (helper ExternalMedia RTP). Enabling the tool in the Admin UI writes `stream`. |
+| `stream_fallback_to_file` | `true` | If stream setup or a stream send fails, use file playback. If false, the transfer fails with `stream-unavailable` and the AI resumes. |
+| `external_media_helper.bind_host` | `external_media.rtp_host`, else `"0.0.0.0"` | Process-wide. |
+| `external_media_helper.rtp_port` | `external_media.rtp_port` (default 18080) + 100 | Process-wide. |
+| `external_media_helper.port_range` | Same width as `external_media.port_range`, starting at `rtp_port` | Process-wide. |
+| `external_media_helper.allowed_remote_hosts` | `external_media.allowed_remote_hosts`, else `asterisk.host` | Process-wide. |
+| `external_media_helper.lock_remote_endpoint` | `true` | Process-wide. |
+| `external_media_helper.advertise_host` | `external_media.advertise_host`, else the bind host. `0.0.0.0` or `::` resolves to a derived routable address | Per call. |
+| `external_media_helper.endpoint_wait_ms` | `1000` (each wait lasts at least 200 ms) | Per call. |
+| `external_media_helper.direction` | `"both"` | Per call. The helper codec is fixed at ulaw 8 kHz. |
+
+### When settings apply
+
+Each call keeps the tool settings it started with: the tool generation in force at call start, with the agent's transfer destination policy applied. The `attended_transfer` tool, the answer and acceptance handler, and failure recovery all read that same per-call copy. A config reload applies to calls that start after it; calls in progress finish with their own settings. Agents cannot override `attended_transfer` keys. Agent tool policy only narrows `tools.transfer.destinations`.
+
+The exception is the helper RTP server's bind settings (`bind_host`, `rtp_port`, `port_range`, `allowed_remote_hosts`, `lock_remote_endpoint`). They are read from the global config once, when the server starts: at engine start if the global `delivery_mode` is `stream`, otherwise on the first call that streams. Changing them needs an engine restart. If the server cannot start, or a per-call RTP port cannot be bound, `stream_fallback_to_file` decides what happens.
+
+Numeric keys treat `0` or blank as "use the default". For example, `accept_timeout_seconds: 0` means 15.
+
 ## Environment Variable Resolution
 
 Environment variable placeholders (`${VAR}`, `${VAR:-default}`) are expanded for the **entire YAML file** when `config/ai-agent.yaml` is loaded.

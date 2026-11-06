@@ -294,6 +294,7 @@ migration is required. Existing in-memory sessions are not recovered on restart.
 - Only supported for `type: extension` destinations.
 - Requires **Local AI Server** (announcement/prompt TTS is mandatory).
 - Config compatibility: `agent_accept_prompt_template` is the canonical key; `agent_accept_prompt` is accepted as a legacy alias.
+- Settings are fixed per call at call start, so a config reload applies to the next call, not a transfer in progress. Helper RTP bind settings are process-wide and need a restart. Keys: [Configuration-Reference](Configuration-Reference.md#attended-transfer-toolsattended_transfer).
 
 **How destination selection works**:
 - The tool parameter is `destination` and it maps to a key under `tools.transfer.destinations`.
