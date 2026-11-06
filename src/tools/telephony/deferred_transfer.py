@@ -137,7 +137,11 @@ async def commit_deferred_transfer_action(
     tool = tool_registry.get(commit_tool) if commit_tool else None
     if not tool or not hasattr(tool, "commit_deferred_action"):
         message = f"Deferred transfer commit tool unavailable: {commit_tool or 'unknown'}"
-        logger.error(message, call_id=context.call_id, action=action)
+        logger.error(
+            message,
+            call_id=context.call_id,
+            action={key: value for key, value in action.items() if not str(key).startswith("_")},
+        )
         return {"status": "error", "message": message}
 
     return await tool.commit_deferred_action(action, context)
