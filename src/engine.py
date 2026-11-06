@@ -9069,6 +9069,60 @@ class Engine:
             logger.debug("Local AI Server TTS failed", call_id=call_id, exc_info=True)
             return None
 
+    async def _attended_transfer_tts(
+        self,
+        *,
+        call_id: str,
+        text: str,
+        timeout_sec: float,
+        attended_cfg: Optional[Dict[str, Any]],
+    ) -> Optional[bytes]:
+        """Synthesize mu-law 8 kHz attended-transfer audio.
+
+        Without ``tools.attended_transfer.tts_provider`` this is exactly the
+        Local AI Server path. With it, the named pipeline TTS component is
+        used through ``synthesize_once``. A failure returns None so the call
+        site keeps its existing abort or skip behaviour; it never falls back
+        to Local AI Server or another provider. Errors are logged by class
+        only because provider errors can carry URLs or credentials.
+        """
+        cfg = attended_cfg if isinstance(attended_cfg, dict) else {}
+        provider = str(cfg.get("tts_provider") or "").strip()
+        if not provider:
+            return await self._local_ai_server_tts(call_id=call_id, text=text, timeout_sec=timeout_sec)
+
+        orchestrator = getattr(self, "pipeline_orchestrator", None)
+        if orchestrator is None or not hasattr(orchestrator, "synthesize_once"):
+            logger.warning(
+                "attended_transfer_tts_failed",
+                call_id=call_id,
+                provider=provider,
+                error_type="OrchestratorUnavailable",
+            )
+            return None
+        tts_options = cfg.get("tts_options") if isinstance(cfg.get("tts_options"), dict) else None
+        timeout = max(0.1, float(timeout_sec))
+        try:
+            audio = await asyncio.wait_for(
+                orchestrator.synthesize_once(
+                    provider,
+                    call_id=f"attended-transfer:{call_id}",
+                    text=text,
+                    options=tts_options,
+                    timeout_sec=timeout,
+                ),
+                timeout=timeout,
+            )
+        except Exception as exc:
+            logger.warning(
+                "attended_transfer_tts_failed",
+                call_id=call_id,
+                provider=provider,
+                error_type=exc.__class__.__name__,
+            )
+            return None
+        return audio or None
+
     async def _authenticate_local_ai_server_ws(
         self,
         *,
@@ -9357,10 +9411,16 @@ class Engine:
                 await self._attended_transfer_abort_and_resume(session, channel_id, reason="stream-unavailable")
                 return
 
-        # Step A: Play one-way announcement to agent (hard requirement: Local AI Server TTS).
-        announcement_audio = await self._local_ai_server_tts(call_id=caller_id, text=announcement_text, timeout_sec=tts_timeout)
+        # Step A: Play one-way announcement to agent (Local AI Server TTS unless
+        # tools.attended_transfer.tts_provider names a pipeline TTS component).
+        announcement_audio = await self._attended_transfer_tts(
+            call_id=caller_id,
+            text=announcement_text,
+            timeout_sec=tts_timeout,
+            attended_cfg=attended_cfg,
+        )
         if not announcement_audio:
-            logger.warning("Attended transfer requires Local AI Server TTS; aborting", call_id=caller_id)
+            logger.warning("Attended transfer announcement TTS unavailable; aborting", call_id=caller_id)
             await self._attended_transfer_abort_and_resume(session, channel_id, reason="tts-unavailable")
             return
 
@@ -9417,7 +9477,12 @@ class Engine:
                 await self._attended_transfer_abort_and_resume(session, channel_id, reason="stream-unavailable")
                 return
         elif ai_briefing_text:
-            briefing_audio = await self._local_ai_server_tts(call_id=caller_id, text=ai_briefing_text, timeout_sec=tts_timeout)
+            briefing_audio = await self._attended_transfer_tts(
+                call_id=caller_id,
+                text=ai_briefing_text,
+                timeout_sec=tts_timeout,
+                attended_cfg=attended_cfg,
+            )
             if briefing_audio:
                 briefing_ok = True
                 if use_streaming:
@@ -9441,7 +9506,12 @@ class Engine:
         # Step B: Collect DTMF acceptance/decline (early digits during announcement are honored).
         digit = self._attended_transfer_dtmf_digits.get(channel_id)
         if digit not in {accept_digit, decline_digit}:
-            prompt_audio = await self._local_ai_server_tts(call_id=caller_id, text=prompt_text, timeout_sec=tts_timeout)
+            prompt_audio = await self._attended_transfer_tts(
+                call_id=caller_id,
+                text=prompt_text,
+                timeout_sec=tts_timeout,
+                attended_cfg=attended_cfg,
+            )
             if not prompt_audio:
                 logger.warning("Attended transfer prompt TTS failed; aborting", call_id=caller_id)
                 await self._attended_transfer_abort_and_resume(session, channel_id, reason="tts-unavailable")
@@ -9492,6 +9562,7 @@ class Engine:
             caller_connected_prompt=caller_connected_prompt,
             tts_timeout=tts_timeout,
             template_vars=template_vars,
+            attended_cfg=attended_cfg,
         )
 
     async def recover_attended_transfer_failure(
@@ -9582,7 +9653,12 @@ class Engine:
                         session,
                         extra_substitutions=template_vars,
                     )
-                    prompt_audio = await self._local_ai_server_tts(call_id=call_id, text=prompt_text, timeout_sec=tts_timeout)
+                    prompt_audio = await self._attended_transfer_tts(
+                        call_id=call_id,
+                        text=prompt_text,
+                        timeout_sec=tts_timeout,
+                        attended_cfg=attended_cfg,
+                    )
                     if prompt_audio:
                         await self._play_ulaw_bytes_on_channel_and_wait(
                             channel_id=session.caller_channel_id,
@@ -9670,6 +9746,7 @@ class Engine:
         caller_connected_prompt: str,
         tts_timeout: float,
         template_vars: Optional[Dict[str, Any]] = None,
+        attended_cfg: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Finish an accepted transfer and append the successful handoff outcome.
 
@@ -9691,10 +9768,11 @@ class Engine:
                 session,
                 extra_substitutions=template_vars or self._build_attended_transfer_template_vars(session),
             )
-            prompt_audio = await self._local_ai_server_tts(
+            prompt_audio = await self._attended_transfer_tts(
                 call_id=call_id,
                 text=prompt_text,
                 timeout_sec=float(tts_timeout),
+                attended_cfg=attended_cfg,
             )
             if prompt_audio:
                 await self._play_ulaw_bytes_on_channel_and_wait(
