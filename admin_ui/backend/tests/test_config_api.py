@@ -309,11 +309,14 @@ def test_websocket_config_api_status_allows_inactive_missing_secret(tmp_path, mo
     assert response.json()["secret_reference"] == "ASTERISK_MEDIA_WS_PASSWORD"
 
 
-def test_yaml_validation_allows_websocket_selection_without_secret_at_save_time(tmp_path, monkeypatch):
+@pytest.mark.parametrize("pacing", ["legacy", "asterisk"])
+def test_yaml_validation_allows_websocket_selection_without_secret_at_save_time(tmp_path, monkeypatch, pacing):
     """The Admin API validates structure, not ai_engine's future env namespace."""
     parsed = yaml.safe_load(Path(config.settings.CONFIG_PATH).read_text())
     parsed["audio_transport"] = "websocket"
-    parsed["websocket_media"] = {"auth": {"password_env": "ASTERISK_MEDIA_WS_PASSWORD"}}
+    parsed["websocket_media"] = {
+        "auth": {"password_env": "ASTERISK_MEDIA_WS_PASSWORD"}, "output_pacing": pacing,
+    }
     env_path = tmp_path / ".env"
     env_path.write_text("ASTERISK_ARI_USERNAME=test\nASTERISK_ARI_PASSWORD=test\n")
     monkeypatch.setattr(config.settings, "ENV_PATH", str(env_path))
@@ -327,6 +330,10 @@ def test_yaml_validation_allows_websocket_selection_without_secret_at_save_time(
 @pytest.mark.parametrize(
     ("mutate", "location"),
     [
+        (
+            lambda parsed: parsed.setdefault("websocket_media", {}).update(output_pacing="not-a-mode"),
+            "websocket_media.output_pacing",
+        ),
         (
             lambda parsed: parsed["providers"]["openai_realtime"].update(
                 output_resampler="not-a-mode"
@@ -792,3 +799,85 @@ def test_local_write_without_keep_comments_writes_plain_dump(monkeypatch, tmp_pa
     config._write_local_config(content, keep_comments=False)
 
     assert local_path.read_text() == content
+
+
+@pytest.mark.parametrize("reference", ["${AAVA_TEST_GREETING}", "$AAVA_TEST_GREETING"])
+def test_yaml_save_preserves_engine_config_with_environment_reference(monkeypatch, tmp_path, reference):
+    from src.config.loaders import load_yaml_with_local_override
+
+    base = tmp_path / "ai-agent.yaml"
+    base.write_text(
+        "default_provider: openai_realtime\n"
+        "providers:\n  openai_realtime:\n    enabled: true\n    greeting: Base greeting\n"
+        "asterisk:\n  app_name: base-route\n"
+    )
+    local = _use_local_file(
+        monkeypatch,
+        tmp_path,
+        "# Keep the greeting short\n"
+        "providers:\n  openai_realtime:\n    greeting: 'Hello'\n"
+        "asterisk:\n  app_name: local-route\n",
+    )
+    monkeypatch.setattr(config.settings, "CONFIG_PATH", str(base))
+    monkeypatch.setattr(config.settings, "ENV_PATH", str(tmp_path / ".env"))
+    monkeypatch.setenv("AAVA_TEST_GREETING", "Welcome to O'Brien's office")
+    monkeypatch.setenv("ASTERISK_ARI_USERNAME", "test")
+    monkeypatch.setenv("ASTERISK_ARI_PASSWORD", "test")
+
+    desired = config._read_merged_config_dict()
+    desired["providers"]["openai_realtime"]["greeting"] = reference
+    config.persist_config_content(yaml.safe_dump(desired, sort_keys=False))
+
+    assert f"greeting: {reference}\n" in local.read_text()
+    effective = load_yaml_with_local_override(str(base))
+    assert effective["providers"]["openai_realtime"]["greeting"] == "Welcome to O'Brien's office"
+    assert effective["asterisk"]["app_name"] == "local-route"
+
+
+def test_comment_only_file_with_environment_reference_falls_back():
+    content = yaml.safe_dump({"asterisk": {"app_name": "local-route"}})
+
+    assert config._keep_local_comments(b"# Example: ${AAVA_TEST_GREETING}\n", content) == content
+
+
+@pytest.mark.asyncio
+async def test_wizard_save_keeps_comments_in_worker_thread(monkeypatch, tmp_path):
+    import threading
+
+    from api import wizard
+
+    base = tmp_path / "ai-agent.yaml"
+    base.write_text("asterisk:\n  app_name: base-route\n")
+    local = _use_local_file(monkeypatch, tmp_path, "# Keep this note\nasterisk:\n  app_name: local-route\n")
+    monkeypatch.setattr(config.settings, "CONFIG_PATH", str(base))
+    monkeypatch.setattr(wizard, "CONFIG_PATH", str(base))
+    monkeypatch.setattr(wizard, "LOCAL_CONFIG_PATH", str(local))
+    monkeypatch.setattr(wizard, "ENV_PATH", str(tmp_path / ".env"))
+    monkeypatch.setenv("AGENTS_DB_PATH", str(tmp_path / "agents.db"))
+    loop_thread = threading.get_ident()
+    rewrite_threads = []
+    keep_comments = config._keep_local_comments
+
+    def track_rewrite(previous, content):
+        rewrite_threads.append(threading.get_ident())
+        return keep_comments(previous, content)
+
+    monkeypatch.setattr(config, "_keep_local_comments", track_rewrite)
+    setup = wizard.SetupConfig(
+        asterisk_host="127.0.0.1",
+        asterisk_username="test",
+        asterisk_password="test",
+        asterisk_app="local-route",
+        openai_key="test",
+        greeting="Hello",
+        ai_name="Test",
+        ai_role="Test assistant",
+    )
+
+    result = await wizard.save_setup_config(setup)
+
+    assert result["status"] == "success"
+    assert len(rewrite_threads) == 1
+    assert rewrite_threads[0] != loop_thread
+    assert "# Keep this note\n" in local.read_text()
+    assert yaml.safe_load(local.read_text())["asterisk"]["app_name"] == "local-route"

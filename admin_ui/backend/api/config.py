@@ -740,6 +740,9 @@ def _guess_map_indent(text: str) -> int:
     return 2
 
 
+_YAML_ENV_REFERENCE = re.compile(r"\$(?:\{|\w)")
+
+
 def _keep_local_comments(previous: bytes, content: str) -> str:
     """
     Carry comments from the current local file into *content*.
@@ -750,12 +753,17 @@ def _keep_local_comments(previous: bytes, content: str) -> str:
     Otherwise *content* is returned unchanged.
     """
     try:
-        desired = _safe_load_no_duplicates(content)
-        if not isinstance(desired, dict) or b"#" not in previous:
+        # The engine expands references in the YAML source before parsing.
+        # Quotes, layout and even comments can change the expanded document.
+        # Keep the plain dump when the file can depend on the engine's env.
+        if b"#" not in previous or _YAML_ENV_REFERENCE.search(content):
             return content
         text = previous.decode("utf-8")
-        if "\r" in text:
-            return content  # mixed line endings would follow
+        if "\r" in text or _YAML_ENV_REFERENCE.search(text):
+            return content
+        desired = _safe_load_no_duplicates(content)
+        if not isinstance(desired, dict):
+            return content
         if all(not line.strip() or line.lstrip().startswith("#") for line in text.splitlines()):
             # Only comments so far, such as a starter template: keep them on top.
             kept = text if text.endswith("\n") else text + "\n"

@@ -2946,7 +2946,29 @@ def _validate_setup_provider_credentials(config: SetupConfig) -> None:
 async def save_setup_config(config: SetupConfig):
     """Persist wizard configuration into `.env` and baseline config files."""
     _validate_setup_provider_credentials(config)
+    selected_google_live_model = GOOGLE_LIVE_DEFAULT_MODEL
+    if config.provider == "google_live" and config.google_key:
+        discovered_model = await _discover_google_live_model(config.google_key)
+        if discovered_model:
+            selected_google_live_model = discovered_model
+            logger.info("Resolved Google Live model for setup: %s", selected_google_live_model)
+        else:
+            logger.warning(
+                "Could not resolve Google Live model during setup; falling back to default: %s",
+                selected_google_live_model,
+            )
 
+    from api.config import _CONFIG_UPDATE_LOCK
+
+    def save() -> dict:
+        with _CONFIG_UPDATE_LOCK:
+            return _save_setup_config_locked(config, selected_google_live_model)
+
+    return await asyncio.to_thread(save)
+
+
+def _save_setup_config_locked(config: SetupConfig, selected_google_live_model: str) -> dict:
+    """Persist the wizard setup in a worker holding the shared config lock."""
     try:
         import shutil
         import datetime
@@ -3134,18 +3156,6 @@ async def save_setup_config(config: SetupConfig):
             def provider_exists(name: str) -> bool:
                 return name in providers and len(providers[name]) > 1  # More than just 'enabled'
 
-            selected_google_live_model = GOOGLE_LIVE_DEFAULT_MODEL
-            if config.provider == "google_live" and config.google_key:
-                discovered_model = await _discover_google_live_model(config.google_key)
-                if discovered_model:
-                    selected_google_live_model = discovered_model
-                    logger.info("Resolved Google Live model for setup: %s", selected_google_live_model)
-                else:
-                    logger.warning(
-                        "Could not resolve Google Live model during setup; falling back to default: %s",
-                        selected_google_live_model,
-                    )
-            
             # Full agent providers - clear active_pipeline when setting as default
             if config.provider in ["openai_realtime", "deepgram", "google_live", "elevenlabs_agent", "local", "grok"]:
                 yaml_config["default_provider"] = config.provider

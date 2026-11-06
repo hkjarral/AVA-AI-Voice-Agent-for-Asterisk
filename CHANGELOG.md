@@ -13,8 +13,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   operator wrote in `config/ai-agent.local.yaml` instead of rewriting the file
   without them. Comments stay with their keys and the file keeps its indents.
   Comments between list items are lost when that list changes. A save that
-  migrates an inline secret, or whose result would not load back as exactly
-  the saved data, writes the file without comments as before.
+  migrates an inline secret, encounters environment variable references, or
+  cannot verify the round trip writes the plain YAML dump. The setup wizard
+  performs the rewrite in a worker thread.
+
+- **Streaming playback (#808):** add opt-in Asterisk-owned WebSocket pacing
+  (`websocket_media.output_pacing: asterisk`, default remains `legacy`), retaining
+  flow control and completion fences. Separately admit OpenAI's buffered audio
+  tail before natural completion, including short clips; discard interrupted
+  output. Add an Output pacing selector with saved/running status under Audio
+  Transport → WebSocket. Preserve provider pacing in file mode, use confirmed
+  remote playback marks for Grok interruption history, and contain OpenAI
+  admission failures to the response instead of resetting its session. Bind
+  Grok acknowledgments to the queued item/content, fail overflowing remote-clock
+  calls visibly, and report aborted announcements as failed rather than spoken.
+  Retain terminal notification when cancellation interrupts a claimed farewell.
+  AudioSocket/RTP scheduling is unchanged. Reporter mock validation on certified
+  22.8-cert4 confirms gap removal, complete tails and controlled lifecycle
+  behavior; other providers/pipelines still require qualification. See
+  `docs/ISSUE_808_TESTING.md` for evidence, comparisons, captures and rollback.
 
 - **Remote PBX checklist:** stop presenting an empty local Asterisk preflight
   manifest as an error when Ava is configured to use Asterisk on a separate

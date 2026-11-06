@@ -173,6 +173,60 @@ different transport only after the call has ended or been drained.
 
 ## Qualification and rollback
 
+### Experimental Asterisk-owned output pacing (issue #808)
+
+The testing branch adds `websocket_media.output_pacing: asterisk`. The default
+is `legacy` until live qualification. In `asterisk` mode the streaming manager
+forwards buffered media ahead and lets chan_websocket clock playback, retaining
+XOFF/XON, interruption fences and correlated completion. OpenAI Realtime and
+Grok call instances bypass their optional provider pacers in this mode; saved
+provider settings are not rewritten. Other transports retain their pacing.
+The mode affects full providers and modular pipeline streaming TTS alike;
+provider/pipeline qualification is still required. File playback is unchanged.
+
+Choose **Advanced Settings → Audio Transport → WebSocket → Output pacing**:
+**Legacy — default** or **Asterisk pacing — experimental**. The readiness card
+shows editor, saved and running pacing independently; an older/unreachable
+engine is shown as unknown rather than assumed to be running the saved mode.
+Save, drain active calls, then use **Recreate AI Engine**. The setting applies
+to all streamed WebSocket providers and pipeline TTS, not to ARI file playback.
+OpenAI/Grok saved provider pacer settings are preserved and are bypassed only
+for streaming calls in Asterisk pacing mode.
+
+In JSON/Asterisk pacing mode, correlated `MARK_MEDIA` acknowledgments track a
+conservative playback lower bound at 100 ms intervals. Grok interruption
+history uses that acknowledged position rather than the amount queued ahead.
+Queued Grok bytes retain their item/content identity, so an acknowledgment for
+an older item cannot be applied to a newer response waiting behind it.
+Unacknowledged audio is never assumed played. Plain 20.17 controls lack progress
+marks: truncation conservatively retains zero audio until correlated segment
+completion. This can omit heard content from an interrupted Grok item; plain
+provider/pipeline qualification remains experimental. Progress marks are
+bounded per call, isolated by output generation and invalidated by FLUSH.
+See the [upstream control contract](https://docs.asterisk.org/Configuration/Channel-Drivers/WebSocket/).
+
+OpenAI audio admission/completion failures discard the affected response and
+notify the engine to stop its playback. They do not publish successful audio
+completion or reset the provider connection. Pending handoff audio retains its
+existing timeout/recovery policy; a failed farewell uses an explicit failure
+terminal notification. The next response can start cleanly.
+
+If the bounded 256-entry provider queue overflows in Asterisk pacing mode,
+the engine logs an explicit error, blocks further provider events for that
+failed call, aborts its output and requests termination through the existing
+routing-aware owner. An uncommitted deferred transfer is cancelled through its
+existing journal/predial cleanup; a transfer whose commit already owns the call
+keeps that ownership. Overflow never counts as successful announcement audio.
+Legacy queue policy is unchanged. Qualify larger bursts against this budget
+before rollout; an overflowing call is not silently allowed to omit words.
+
+Changing this setting requires an AI Engine restart after draining active calls.
+To disable it on this build, set `output_pacing: legacy` and restart. Before
+downgrading to an older build, **remove** `output_pacing` from YAML and local
+overrides entirely: older strict schemas reject even `output_pacing: legacy`.
+Restore the previous image and configuration together. No database migration
+or Asterisk configuration change is required for this switch.
+
 Before downgrading to a JSON-only application build, restore the pre-deployment
 YAML (including local overrides), or remove/reset `control_format: auto/plain`
 while still on the new build. Old strict schemas reject that field even when

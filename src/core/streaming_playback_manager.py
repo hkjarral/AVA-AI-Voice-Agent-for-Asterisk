@@ -46,6 +46,15 @@ logger = structlog.get_logger(__name__)
 
 _JITTER_SENTINEL = object()
 
+class ProviderAudioChunk(bytes):
+    """Keep provider item identity attached to its queued bytes until wire admission."""
+
+    def __new__(cls, payload: bytes, audio_item_id: str, content_index: int = 0):
+        chunk = super().__new__(cls, payload)
+        chunk.audio_item_key = (audio_item_id, content_index)
+        return chunk
+
+
 class _TransportBoundary:
     """An output boundary ordered with provider bytes, not provider callbacks."""
 
@@ -162,6 +171,7 @@ class StreamingPlaybackManager:
         self.fallback_playback_manager = fallback_playback_manager
         self.streaming_config = streaming_config or {}
         self.audio_transport = audio_transport
+        self.websocket_output_pacing = self.streaming_config.get('websocket_output_pacing', 'legacy')
         self.rtp_server = rtp_server
         self.audiosocket_server = audiosocket_server
         self.websocket_server = websocket_server
@@ -1236,7 +1246,8 @@ class StreamingPlaybackManager:
         jitter_buffer: asyncio.Queue,
         chunk_size_ms: Optional[int] = None,
     ) -> None:
-        """Drain jitter buffer at steady cadence so producer and consumer are independent."""
+        """Drain independently; chan_websocket may own the actual output clock."""
+        remote_pacing = self.audio_transport == "websocket" and self.websocket_output_pacing == "asterisk"
         tick_seconds = max(
             0.02,
             int(chunk_size_ms or self.chunk_size_ms) / 1000.0,
@@ -1253,7 +1264,12 @@ class StreamingPlaybackManager:
                         raise
                 else:
                     next_tick = now
-                if call_id not in self.active_streams:
+                    if remote_pacing:
+                        # Socket writes and queue reads need not suspend. Give
+                        # XOFF, interruption and other calls a turn each frame.
+                        await asyncio.sleep(0)
+                current = self.active_streams.get(call_id)
+                if not current or current.get('stream_id') != stream_id or current.get('stop_requested'):
                     break
                 status = await self._drain_next_frame(
                     call_id, stream_id, jitter_buffer
@@ -1302,7 +1318,14 @@ class StreamingPlaybackManager:
                 if status == "finished":
                     break
                 info = self.active_streams.get(call_id) or {}
-                next_tick += info.pop('greeting_tick_seconds', tick_seconds)
+                if remote_pacing and status == "sent":
+                    # Forward the local reserve now, through XOFF-aware writes.
+                    # Waiting here leaves Asterisk's independently clocked
+                    # media queue empty whenever the application wakes late.
+                    next_tick = time.perf_counter()
+                else:
+                    # Empty/startup waits remain bounded; never busy-spin.
+                    next_tick += info.pop('greeting_tick_seconds', tick_seconds)
                 now_after = time.perf_counter()
                 if next_tick < now_after:
                     next_tick = now_after
@@ -1373,6 +1396,7 @@ class StreamingPlaybackManager:
             if isinstance(chunk, _TransportBoundary):
                 stream_info["transport_pending_boundary"] = chunk
                 break
+            stream_info["transport_pending_item_key"] = getattr(chunk, "audio_item_key", None)
             processed_chunk = await self._process_audio_chunk(call_id, chunk)
             if stream_info.get('greeting_media_guard') and self.active_streams.get(call_id) is not stream_info:
                 return 'greeting-cancelled'
@@ -3130,6 +3154,7 @@ class StreamingPlaybackManager:
                     if stream_info.get("stop_requested") or self.active_streams.get(call_id) is not stream_info:
                         return False
                     stream_info["websocket_output_generation"] = generation
+                    stream_info["websocket_output_item_key"] = stream_info.get("transport_pending_item_key")
                 success = await self._selected_output_transport().write(OutputFrame(
                     call_id, chunk, stream_info.get("target_format", "ulaw"),
                     int(stream_info.get("target_sample_rate") or self.sample_rate),
@@ -3980,8 +4005,8 @@ class StreamingPlaybackManager:
             logger.error("Error stopping streaming playback", call_id=call_id, error=str(e), exc_info=True)
             return False
 
-    def get_playback_position_ms(self, call_id: str) -> int:
-        """Return real (non-filler) audio sent for the active stream in milliseconds."""
+    def get_playback_position_ms(self, call_id: str, *, audio_item_id: Optional[str] = None, content_index: int = 0) -> int:
+        """Return sent audio for legacy clocks, confirmed playback for remote pacing."""
         info = self.active_streams.get(call_id) or {}
         try:
             fmt = self._canonicalize_encoding(info.get("target_format")) or "ulaw"
@@ -3993,7 +4018,16 @@ class StreamingPlaybackManager:
                 int(info.get("real_tx_bytes_segment_baseline", 0) or 0),
             )
             real_bytes = max(0, real_bytes - baseline)
-            return int(round((real_bytes * 1000.0) / float(bytes_per_sample * rate)))
+            sent_ms = int(round((real_bytes * 1000.0) / float(bytes_per_sample * rate)))
+            if self.audio_transport == "websocket" and self.websocket_output_pacing == "asterisk":
+                if audio_item_id is not None and info.get("websocket_output_item_key") != (audio_item_id, content_index):
+                    return 0  # A newer item may still be queued behind older speech.
+                confirmed = getattr(self.websocket_server, "get_confirmed_playback_ms", None)
+                # No acknowledgment must never be interpreted as all queued
+                # speech having played. Zero safely truncates an interrupted
+                # Grok item before its first mark (also on plain controls).
+                return min(sent_ms, max(0, int(confirmed(call_id)))) if callable(confirmed) else 0
+            return sent_ms
         except Exception:
             return 0
 

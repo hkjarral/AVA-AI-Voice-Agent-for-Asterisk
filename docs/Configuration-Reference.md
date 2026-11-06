@@ -21,7 +21,7 @@ Operator customizations are stored in `config/ai-agent.local.yaml` (git-ignored)
 
 Keys in the local file win over the base file (deep merge — nested dicts are merged recursively, scalars are replaced). If the local file does not exist, the base file is used as-is.
 
-Comments you write in the local file itself are kept when the Admin UI saves it. The Raw YAML editor shows the merged configuration without comments, so a comment typed there is not saved.
+Admin UI saves preserve comments already in the local file when the rewrite can be verified. Saves fall back to plain YAML if the local file or saved data contains environment variable references such as `${NAME}` or `$NAME`, or if the save migrates an inline provider secret. The engine expands references before parsing the file, so retaining quotes or comments can change the expanded configuration. The Raw YAML editor shows the merged configuration without comments, so a comment typed there is discarded on save.
 
 This separation means `git pull` during updates will never conflict with operator config, eliminating the merge-conflict problem on `ai-agent.yaml`.
 
@@ -427,6 +427,7 @@ Applies when `audio_transport: websocket` (opt-in; see [WebSocket Transport](Web
 - websocket_media.fallback_format: `ulaw` | `alaw` | `slin` | `slin16` (default `ulaw`); used when the profile does not pin a wire format.
 - websocket_media.control_format: `json` | `auto` | `plain` (default `json`). Explicit `plain` is experimental and limited to Asterisk 20.17.0. `auto` opts into plain on exactly 20.17.0 and selects JSON on 20.18+, 22.8+, or 23.2+; unsupported release lines fail closed. See the Transports section above.
 - websocket_media.direction: `both` (only value).
+- websocket_media.output_pacing: `legacy` | `asterisk` (default `legacy`). Select in **Advanced Settings → Audio Transport → WebSocket → Output pacing**; the readiness card distinguishes saved and running modes. Experimental issue #808 mode: `asterisk` forwards buffered streaming media ahead and bypasses optional OpenAI/Grok provider pacers on call-owned instances. Asterisk owns playback timing; XOFF/XON and correlated completion remain active. Other transports keep their pacing. Requires engine restart after call drain. Remove this field entirely before downgrading to older strict schemas. See [reporter testing](ISSUE_808_TESTING.md).
 - websocket_media.handshake_timeout_ms: WebSocket open/close handshake timeout (default `5000`; 100–60000).
 - websocket_media.media_start_timeout_ms: Max wait for the per-call connection to become ready (`MEDIA_START`) before the call fails (default `5000`; 100–60000).
 - websocket_media.drain_timeout_ms: Max wait for queued playback to drain (e.g. farewell audio) before hangup proceeds (default `30000`; 1000–120000).

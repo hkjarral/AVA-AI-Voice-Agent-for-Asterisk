@@ -2572,14 +2572,11 @@ class GrokProvider(AIProviderInterface):
             if not outbound:
                 return
 
-        # Append to egress buffer and start pacer, or emit immediately if disabled
-        try:
+        # Retain bytes only when a provider pacer will consume them. The
+        # immediate/transport-paced path must not accumulate a second copy.
+        if self._egress_pacer_enabled:
             async with self._pacer_lock:
                 self._outbuf.extend(outbound)
-        except Exception:
-            logger.debug("Failed appending to pacer buffer", call_id=self._call_id, exc_info=True)
-
-        if self._egress_pacer_enabled:
             await self._ensure_pacer_started()
         else:
             # Fallback to immediate emit (legacy behavior)
@@ -2597,6 +2594,8 @@ class GrokProvider(AIProviderInterface):
                     await self.on_event(
                         {
                             "type": "AgentAudio",
+                            "audio_item_id": self._assistant_audio_item_id,
+                            "audio_content_index": self._assistant_audio_content_index,
                             "data": outbound,
                             "streaming_chunk": True,
                             "call_id": self._call_id,
