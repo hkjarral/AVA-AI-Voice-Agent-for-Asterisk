@@ -9,7 +9,7 @@ The engine then:
 """
 
 import asyncio
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 import time
 import structlog
 
@@ -258,6 +258,16 @@ class AttendedTransferTool(Tool):
                 "type": "attended_transfer",
             }
 
+        prepared, moh_started = await self._prepare_announcement_audio(
+            context, description=description, moh_class=moh_class
+        )
+        if not prepared:
+            await self._cleanup_failed_originate(context, call_id, reason="tts-unavailable")
+            return {
+                "status": "failed",
+                "message": f"{description} could not be reached right now. Offer to take a message instead.",
+            }
+
         result = await self._originate_attended_transfer_leg(
             context=context,
             destination=destination,
@@ -265,6 +275,7 @@ class AttendedTransferTool(Tool):
             dial_endpoint=dial_endpoint,
             dial_timeout_sec=dial_timeout_sec,
             moh_class=moh_class,
+            moh_started=moh_started,
         )
         if not result:
             return {
@@ -444,6 +455,82 @@ class AttendedTransferTool(Tool):
         except Exception:
             logger.debug("Failed to persist cleared attended transfer state", call_id=context.call_id, reason=reason, exc_info=True)
 
+    async def _prepare_announcement_audio(
+        self,
+        context: ToolExecutionContext,
+        *,
+        description: str,
+        moh_class: str,
+        attempt: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, bool]:
+        """Synthesize the agent-facing audio before dialling when a TTS provider is set.
+
+        Without ``tools.attended_transfer.tts_provider`` nothing happens here
+        and the engine synthesizes after answer, as before. Hosts without the
+        engine hook also keep answer-time synthesis. Otherwise caller audio
+        capture is turned off and hold music started first, so the caller
+        does not sit in silence and the model neither hears nor answers the
+        caller while the audio is synthesized. Failure cleanup restores
+        capture.
+
+        Returns ``(ok, moh_started)``. ``ok`` False means no leg may be
+        originated; the caller is responsible for stopping the hold music.
+        """
+        cfg = context.get_config_value("tools.attended_transfer") or {}
+        if not isinstance(cfg, dict) or not str(cfg.get("tts_provider") or "").strip():
+            return True, False
+        engine = getattr(context.ari_client, "engine", None)
+        prepare = getattr(engine, "prepare_attended_transfer_audio", None)
+        if not callable(prepare):
+            logger.debug(
+                "Attended transfer TTS provider set but engine cannot prepare audio; synthesizing at answer",
+                call_id=context.call_id,
+            )
+            return True, False
+        try:
+            session = await context.get_session()
+            if attempt is not None and (session.cleanup_in_progress or session.current_action is not attempt):
+                return False, False
+            action = session.current_action
+            if isinstance(action, dict) and action.get("type") == "attended_transfer":
+                action.setdefault(
+                    "pre_transfer_audio_capture_enabled",
+                    bool(getattr(session, "audio_capture_enabled", True)),
+                )
+            session.audio_capture_enabled = False
+            await context.session_store.upsert_call(session)
+        except Exception:
+            if attempt is not None:
+                return False, False
+            logger.debug(
+                "Failed to disable audio capture before attended transfer synthesis",
+                call_id=context.call_id,
+                exc_info=True,
+            )
+        moh_started = False
+        try:
+            await self._start_moh(context, moh_class)
+            moh_started = True
+        except Exception:
+            logger.warning("Failed to start MOH for attended transfer", call_id=context.call_id, exc_info=True)
+        try:
+            ok = bool(
+                await prepare(
+                    call_id=context.call_id,
+                    destination_description=description,
+                    attended_cfg=cfg,
+                    attempt=attempt,
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "Attended transfer audio preparation failed",
+                call_id=context.call_id,
+                error_type=exc.__class__.__name__,
+            )
+            ok = False
+        return ok, moh_started
+
     async def _start_moh(self, context: ToolExecutionContext, moh_class: str) -> None:
         await context.ari_client.send_command(
             method="POST",
@@ -461,24 +548,28 @@ class AttendedTransferTool(Tool):
         dial_timeout_sec: int,
         moh_class: str,
         attempt: Optional[Dict[str, Any]] = None,
+        moh_started: bool = False,
     ) -> Optional[Dict[str, Any]]:
         call_id = context.call_id
         if attempt is not None:
             session = await context.get_session()
             if session.cleanup_in_progress or session.current_action is not attempt:
                 return None
-        try:
-            await self._start_moh(context, moh_class)
-        except Exception:
-            logger.warning("Failed to start MOH for attended transfer", call_id=call_id, exc_info=True)
+        if not moh_started:
+            try:
+                await self._start_moh(context, moh_class)
+            except Exception:
+                logger.warning("Failed to start MOH for attended transfer", call_id=call_id, exc_info=True)
 
         try:
             session = await context.get_session()
             if attempt is not None and (session.cleanup_in_progress or session.current_action is not attempt):
                 return None
             if session.current_action and session.current_action.get("type") == "attended_transfer":
-                session.current_action["pre_transfer_audio_capture_enabled"] = bool(
-                    getattr(session, "audio_capture_enabled", True)
+                # Pre-dial synthesis may already have recorded (and disabled) capture.
+                session.current_action.setdefault(
+                    "pre_transfer_audio_capture_enabled",
+                    bool(getattr(session, "audio_capture_enabled", True)),
                 )
                 session.current_action["screening_status"] = session.current_action.get("screening_status") or "skipped"
             session.audio_capture_enabled = False
@@ -605,6 +696,13 @@ class AttendedTransferTool(Tool):
             await self._recover_background_failure(context, attempt, reason="screening-failed")
             return
 
+        prepared, moh_started = await self._prepare_announcement_audio(
+            context, description=description, moh_class=moh_class, attempt=attempt
+        )
+        if not prepared:
+            await self._recover_background_failure(context, attempt, reason="tts-unavailable")
+            return
+
         result = await self._originate_attended_transfer_leg(
             context=context,
             destination=destination,
@@ -613,6 +711,7 @@ class AttendedTransferTool(Tool):
             dial_timeout_sec=dial_timeout_sec,
             moh_class=moh_class,
             attempt=attempt,
+            moh_started=moh_started,
         )
         if result:
             return
@@ -629,10 +728,15 @@ class AttendedTransferTool(Tool):
         # Standalone/custom tool hosts retain best-effort cleanup.
         session = await context.get_session()
         if session.current_action is attempt and not session.cleanup_in_progress:
-            await self._cleanup_failed_originate(context, context.call_id, attempt=attempt)
+            await self._cleanup_failed_originate(context, context.call_id, attempt=attempt, reason=reason)
 
     async def _cleanup_failed_originate(
-        self, context: ToolExecutionContext, call_id: str, *, attempt: Optional[Dict[str, Any]] = None
+        self,
+        context: ToolExecutionContext,
+        call_id: str,
+        *,
+        attempt: Optional[Dict[str, Any]] = None,
+        reason: str = "originate-failed",
     ) -> None:
         try:
             await context.ari_client.send_command(
@@ -646,6 +750,6 @@ class AttendedTransferTool(Tool):
             context,
             clear_current_action=True,
             restore_audio_capture=True,
-            reason="originate-failed",
+            reason=reason,
             expected_action=attempt,
         )
