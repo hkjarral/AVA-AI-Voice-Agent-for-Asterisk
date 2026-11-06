@@ -300,3 +300,15 @@ def sanitize_tool_result_for_json_string(
     if len(json.dumps(minimal, ensure_ascii=False).encode("utf-8")) <= max_bytes:
         return minimal
     return {} if max_bytes >= 2 else payload
+
+
+async def notify_result_not_sent(result: Any, context: Dict[str, Any]) -> None:
+    """Report a tool result that never reached the model.
+
+    Providers hook delivery through ``context["handoff_result_sent"]``; a
+    deferred transfer is timed from that report, so an early return must
+    still make it, as a failed send.
+    """
+    notify = context.get("handoff_result_sent") if isinstance(context, dict) else None
+    if notify:
+        await notify(result, context.get("call_id"), success=False)

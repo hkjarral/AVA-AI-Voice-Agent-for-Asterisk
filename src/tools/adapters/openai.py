@@ -7,7 +7,7 @@ Handles translation between unified tool format and OpenAI's function calling fo
 from typing import Dict, Any, List, Optional
 from src.tools.registry import ToolRegistry
 from src.tools.context import ToolExecutionContext
-from src.tools.adapters.sanitize import sanitize_tool_result_for_json_string
+from src.tools.adapters.sanitize import notify_result_not_sent, sanitize_tool_result_for_json_string
 import structlog
 import json
 
@@ -252,6 +252,7 @@ class OpenAIToolAdapter:
         websocket = context.get('websocket')
         if not websocket:
             logger.error("No websocket in context, cannot send tool result")
+            await notify_result_not_sent(result, context)
             return
         
         # Extract call_id and function_name from result
@@ -260,6 +261,7 @@ class OpenAIToolAdapter:
         
         if not call_id:
             logger.error("No call_id in result, cannot send response")
+            await notify_result_not_sent(result, context)
             return
         
         output_sent = False
