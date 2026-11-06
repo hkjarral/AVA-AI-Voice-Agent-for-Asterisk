@@ -252,3 +252,22 @@ describe('ToolForm farewell delay deprecation (issue #677)', () => {
         expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ farewell_hangup_delay_sec: 4 }));
     });
 });
+
+describe('ToolForm attended transfer announcement placeholders', () => {
+    it('explains that screened_* placeholders come from what the caller told the agent', async () => {
+        render(
+            <ToolForm
+                config={{ ...baseConfig(), attended_transfer: { enabled: true, screening_mode: 'basic_tts' } }}
+                onChange={vi.fn()}
+            />
+        );
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Help for Agent Announcement Template' }));
+        const tooltip = await screen.findByRole('tooltip');
+        expect(tooltip).toHaveTextContent('{caller_name} is the caller ID name.');
+        expect(tooltip).toHaveTextContent(
+            'The screened_* placeholders are filled from the name and reason the caller told the agent'
+        );
+    });
+});

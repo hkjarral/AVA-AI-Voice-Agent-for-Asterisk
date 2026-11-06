@@ -1809,7 +1809,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 
                             {config.attended_transfer?.screening_mode === 'basic_tts' && (
                                 <div className="space-y-2">
-                                    <FormLabel tooltip="Spoken to the destination agent (one-way) before requesting DTMF acceptance. Placeholders: {caller_display}, {caller_name}, {caller_number}, {context_name}, {destination_description}, {screening_summary}, {screened_caller_name}, {screened_call_reason}, {screened_caller_display}, {screened_reason_display}.">
+                                    <FormLabel tooltip="Spoken to the destination agent (one-way) before requesting DTMF acceptance. Placeholders: {caller_display}, {caller_name}, {caller_number}, {context_name}, {destination_description}, {screening_summary}, {screened_caller_name}, {screened_call_reason}, {screened_caller_display}, {screened_reason_display}. {caller_name} is the caller ID name. The screened_* placeholders are filled from the name and reason the caller told the agent; {screened_caller_display} falls back to {caller_display}, and {screened_reason_display} falls back to the screening summary, then {context_name}.">
                                         Agent Announcement Template
                                     </FormLabel>
                                     <textarea
