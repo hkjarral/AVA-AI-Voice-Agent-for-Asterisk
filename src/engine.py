@@ -975,7 +975,10 @@ class Engine:
             in_call_tools_config = getattr(self.config, 'in_call_tools', None)
             if in_call_tools_config:
                 tool_registry.initialize_in_call_http_tools_from_config(
-                    in_call_tools_config, cache_key="global", skip_invalid_a2a=True
+                    in_call_tools_config,
+                    cache_key="global",
+                    skip_invalid_a2a=True,
+                    reserved_tool_names=(tools_config or {}).keys(),
                 )
             logger.info("✅ Tool calling system initialized", tool_count=len(tool_registry.list_tools()))
         except Exception as e:
@@ -19900,11 +19903,18 @@ class Engine:
                 registry.initialize_in_call_http_tools_from_config(
                     inline_http,
                     cache_key=f"agent:{session.context_name or session.call_id}",
+                    reserved_tool_names=(
+                        effective.config.get("tools") or {}
+                    ).keys(),
                 )
             except TemplateError as exc:
                 # Use the existing fail-closed Agent policy path, never a
                 # partially constructed registry or a fallback Agent.
                 raise ToolConfigPolicyError("Invalid Agent HTTP template: " + exc.code) from None
+            except (TypeError, ValueError):
+                raise ToolConfigPolicyError(
+                    "Invalid Agent in-call tool configuration"
+                ) from None
         from src.tools.pushover import NotificationState
         if getattr(session, "notification_state", None) is None:
             session.notification_state = NotificationState()

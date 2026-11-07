@@ -163,6 +163,20 @@ class A2AAgentTool(Tool):
             )
             return "outcome_unknown"
 
+    async def _cancel_before_propagating(
+        self, client: Any, task_id: str
+    ) -> None:
+        """Keep the transport open until bounded remote cancellation finishes."""
+        cancel_task = asyncio.create_task(self._cancel(client, task_id, 1.0))
+        while not cancel_task.done():
+            try:
+                await asyncio.shield(cancel_task)
+            except asyncio.CancelledError:
+                # Repeated caller cancellation must not close the client before
+                # the already-started remote cancellation completes.
+                continue
+        await cancel_task
+
     async def _run(
         self,
         client: Any,
@@ -281,8 +295,8 @@ class A2AAgentTool(Tool):
                     )
                 except asyncio.CancelledError:
                     if request_state["task_id"]:
-                        await asyncio.shield(
-                            self._cancel(client, request_state["task_id"], 1.0)
+                        await self._cancel_before_propagating(
+                            client, request_state["task_id"]
                         )
                     raise
                 except (

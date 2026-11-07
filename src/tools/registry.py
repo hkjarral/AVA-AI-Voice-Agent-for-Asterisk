@@ -742,6 +742,7 @@ Tool Definitions:
         *,
         cache_key: Optional[str] = None,
         skip_invalid_a2a: bool = False,
+        reserved_tool_names: Optional[Iterable[Any]] = None,
     ) -> None:
         """
         Initialize in-call HTTP tools from YAML config.
@@ -767,6 +768,7 @@ Tool Definitions:
             return
         
         in_call_tool_count = 0
+        reserved_names = {str(name) for name in (reserved_tool_names or ())}
         
         for tool_name, tool_config in in_call_tools_config.items():
             if not isinstance(tool_config, dict):
@@ -792,6 +794,7 @@ Tool Definitions:
                         tool_name in self.TOOL_ALIASES
                         or tool_name == "ai_identity"
                         or str(tool_name).startswith("mcp_")
+                        or str(tool_name) in reserved_names
                         or (existing is not None and not isinstance(existing, A2AAgentTool))
                     ):
                         raise ValueError("A2A tool name is reserved or invalid")

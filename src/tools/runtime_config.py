@@ -552,6 +552,7 @@ class ToolRuntimeGeneration:
             snapshot.get("in_call_tools") or {},
             cache_key="global",
             skip_invalid_a2a=skip_invalid_http_templates,
+            reserved_tool_names=(snapshot.get("tools") or {}).keys(),
         )
         for tool in preserved_tools or ():
             name = getattr(getattr(tool, "definition", None), "name", None)

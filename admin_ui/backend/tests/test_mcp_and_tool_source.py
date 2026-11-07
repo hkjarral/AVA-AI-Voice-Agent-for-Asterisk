@@ -171,4 +171,5 @@ async def test_a2a_tools_remain_in_catalog_fallback_without_sdk(monkeypatch):
     assert result.source == "local_fallback"
     tools = {tool.name: tool for tool in result.tools}
     assert tools["delegate"].phase == "in_call"
+    assert tools["delegate"].source == "http"
     assert "hangup_call" in tools

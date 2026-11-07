@@ -233,6 +233,27 @@ def test_registry_rejects_invalid_a2a_config():
         )
 
 
+def test_registry_rejects_a2a_name_reserved_by_global_tools():
+    from src.tools.runtime_config import ToolRuntimeGeneration
+
+    config = {
+        "tools": {"delegate": {"enabled": False}},
+        "in_call_tools": {
+            "delegate": {
+                "kind": "a2a_agent",
+                "agent_url": "https://agent.example",
+            }
+        },
+    }
+    generation = ToolRuntimeGeneration.build(
+        generation_id=1, config=config, skip_invalid_http_templates=True
+    )
+    assert not generation.registry.has("delegate")
+
+    with pytest.raises(ValueError, match="reserved or invalid"):
+        ToolRuntimeGeneration.build(generation_id=2, config=config)
+
+
 def test_registry_rejects_a2a_alias_shadowing():
     from src.tools.registry import ToolRegistry
 
@@ -314,8 +335,9 @@ async def test_sdk_connection_loss_preserves_uncertain_outcome(
     )
 
 
+@pytest.mark.parametrize("model", ["gemini-3.8-live", "gemini-2.5-flash-native-audio"])
 @pytest.mark.asyncio
-async def test_google_teardown_allows_remote_cancel_to_finish(monkeypatch):
+async def test_google_teardown_allows_remote_cancel_to_finish(monkeypatch, model):
     from src.config import GoogleProviderConfig
     from src.providers.google_live import GoogleLiveProvider
     from src.tools.registry import ToolRegistry
@@ -336,7 +358,7 @@ async def test_google_teardown_allows_remote_cancel_to_finish(monkeypatch):
 
     client = BlockingClient(_task_event(TaskState.TASK_STATE_WORKING))
     provider = GoogleLiveProvider(
-        config=GoogleProviderConfig(llm_model="gemini-3.8-live"),
+        config=GoogleProviderConfig(llm_model=model),
         on_event=lambda event: None,
     )
     provider._call_id = "call-1"
@@ -364,6 +386,56 @@ async def test_google_teardown_allows_remote_cancel_to_finish(monkeypatch):
     await asyncio.sleep(0)
     finish_cancel.set()
     await asyncio.wait_for(teardown, 1)
+    assert client.canceled == ["task-1"]
+
+
+@pytest.mark.asyncio
+async def test_repeated_caller_cancellation_keeps_client_open_for_remote_cancel():
+    polling = asyncio.Event()
+    cancel_started = asyncio.Event()
+    finish_cancel = asyncio.Event()
+    client_closed = False
+
+    class BlockingClient(FakeClient):
+        async def get_task(self, request, *, context=None):
+            polling.set()
+            await asyncio.Event().wait()
+
+        async def cancel_task(self, request, *, context=None):
+            assert not client_closed
+            cancel_started.set()
+            await finish_cancel.wait()
+            assert not client_closed
+            return await super().cancel_task(request, context=context)
+
+    client = BlockingClient(_task_event(TaskState.TASK_STATE_WORKING))
+    tool = _tool(client)
+
+    @asynccontextmanager
+    async def open_client(deadline):
+        nonlocal client_closed
+        try:
+            yield client
+        finally:
+            client_closed = True
+
+    tool._open_client = open_client
+    operation = asyncio.create_task(
+        tool.execute(
+            {"message": "Please investigate"},
+            ToolExecutionContext(call_id="call-1"),
+        )
+    )
+    await asyncio.wait_for(polling.wait(), 1)
+    operation.cancel()
+    await asyncio.wait_for(cancel_started.wait(), 1)
+    operation.cancel()
+    await asyncio.sleep(0)
+    assert not client_closed
+    finish_cancel.set()
+    with pytest.raises(asyncio.CancelledError):
+        await operation
+    assert client_closed
     assert client.canceled == ["task-1"]
 
 
