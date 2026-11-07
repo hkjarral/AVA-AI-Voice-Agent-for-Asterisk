@@ -4,49 +4,28 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from json import JSONDecodeError
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
 import structlog
-from a2a.client import (
-    A2ACardResolver,
-    A2AClientTimeoutError,
-    ClientCallContext,
-    ClientConfig,
-    ClientFactory,
-)
-from a2a.types import (
-    CancelTaskRequest,
-    GetTaskRequest,
-    Message,
-    Part,
-    Role,
-    SendMessageConfiguration,
-    SendMessageRequest,
-    TaskState,
-)
 
-from src.tools.base import Tool, ToolCategory, ToolDefinition, ToolParameter
+from src.tools.a2a_config import A2AAgentConfig, parse_a2a_agent_config
+from src.tools.base import (
+    Tool,
+    ToolCategory,
+    ToolDefinition,
+    ToolExecutionBehavior,
+    ToolParameter,
+)
 from src.tools.context import ToolExecutionContext
 
 logger = structlog.get_logger(__name__)
-
-_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_TERMINAL_STATES = {
-    TaskState.TASK_STATE_COMPLETED,
-    TaskState.TASK_STATE_FAILED,
-    TaskState.TASK_STATE_CANCELED,
-    TaskState.TASK_STATE_INPUT_REQUIRED,
-    TaskState.TASK_STATE_REJECTED,
-    TaskState.TASK_STATE_AUTH_REQUIRED,
-}
 
 
 def _origin(url: str) -> tuple[str, str, int]:
@@ -57,28 +36,6 @@ def _origin(url: str) -> tuple[str, str, int]:
         (parsed.hostname or "").lower(),
         parsed.port or default_port,
     )
-
-
-def _validate_base_url(url: str) -> str:
-    value = str(url or "").strip().rstrip("/")
-    try:
-        parsed = urlsplit(value)
-        _ = parsed.port
-    except ValueError as exc:
-        raise ValueError("A2A agent_url is invalid") from exc
-    if (
-        len(value) > 2048
-        or parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError(
-            "A2A agent_url must be an HTTP(S) base URL without credentials, query or fragment"
-        )
-    return value
 
 
 def _validate_agent_card(card: Any, base_url: str) -> None:
@@ -95,46 +52,6 @@ def _validate_agent_card(card: Any, base_url: str) -> None:
         raise ValueError(
             "A2A Agent Card JSONRPC endpoint must use the configured origin"
         )
-
-
-@dataclass(frozen=True)
-class A2AAgentConfig:
-    name: str
-    agent_url: str
-    description: str = "Delegate a request to a remote A2A agent."
-    bearer_token_env: str | None = None
-    timeout_ms: int = 15000
-    poll_interval_ms: int = 250
-    max_input_chars: int = 4000
-    max_response_chars: int = 1000
-    error_message: str = "The remote agent could not complete that request."
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "agent_url", _validate_base_url(self.agent_url))
-        if self.bearer_token_env is not None and not _ENV_NAME.fullmatch(
-            self.bearer_token_env
-        ):
-            raise ValueError(
-                "A2A bearer_token_env must be an environment variable name"
-            )
-        if self.bearer_token_env is not None:
-            parsed = urlsplit(self.agent_url)
-            if parsed.scheme != "https" and parsed.hostname not in {
-                "localhost",
-                "127.0.0.1",
-                "::1",
-            }:
-                raise ValueError(
-                    "A2A Bearer authentication requires HTTPS except on loopback"
-                )
-        if not 1000 <= int(self.timeout_ms) <= 120000:
-            raise ValueError("A2A timeout_ms must be between 1000 and 120000")
-        if not 50 <= int(self.poll_interval_ms) <= 5000:
-            raise ValueError("A2A poll_interval_ms must be between 50 and 5000")
-        if not 1 <= int(self.max_input_chars) <= 16000:
-            raise ValueError("A2A max_input_chars must be between 1 and 16000")
-        if not 1 <= int(self.max_response_chars) <= 8000:
-            raise ValueError("A2A max_response_chars must be between 1 and 8000")
 
 
 class A2AAgentTool(Tool):
@@ -156,6 +73,7 @@ class A2AAgentTool(Tool):
             ],
             max_execution_time=max(1, int(config.timeout_ms / 1000)),
             timeout_ms=config.timeout_ms,
+            execution_behavior=ToolExecutionBehavior.NON_BLOCKING,
         )
 
     @property
@@ -174,6 +92,8 @@ class A2AAgentTool(Tool):
 
     @asynccontextmanager
     async def _open_client(self, deadline: float) -> AsyncIterator[Any]:
+        from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
+
         timeout = self.config.timeout_ms / 1000
         async with httpx.AsyncClient(
             timeout=timeout, follow_redirects=False
@@ -186,22 +106,19 @@ class A2AAgentTool(Tool):
                 timeout=remaining,
             )
         _validate_agent_card(card, self.config.agent_url)
-        transport = httpx.AsyncClient(
+        async with httpx.AsyncClient(
             headers=self._headers(), timeout=timeout, follow_redirects=False
-        )
-        client = ClientFactory(
-            ClientConfig(
-                streaming=False,
-                polling=True,
-                httpx_client=transport,
-                supported_protocol_bindings=["JSONRPC"],
-                accepted_output_modes=["text/plain"],
-            )
-        ).create(card)
-        try:
+        ) as transport:
+            client = ClientFactory(
+                ClientConfig(
+                    streaming=False,
+                    polling=True,
+                    httpx_client=transport,
+                    supported_protocol_bindings=["JSONRPC"],
+                    accepted_output_modes=["text/plain"],
+                )
+            ).create(card)
             yield client
-        finally:
-            await client.close()
 
     @staticmethod
     def _task_text(task: Any) -> str:
@@ -228,6 +145,9 @@ class A2AAgentTool(Tool):
         return text
 
     async def _cancel(self, client: Any, task_id: str, remaining: float) -> str:
+        from a2a.client import ClientCallContext
+        from a2a.types import CancelTaskRequest
+
         try:
             await asyncio.wait_for(
                 client.cancel_task(
@@ -251,6 +171,25 @@ class A2AAgentTool(Tool):
         deadline: float,
         request_state: dict[str, str | None],
     ) -> dict[str, Any]:
+        from a2a.client import ClientCallContext
+        from a2a.types import (
+            GetTaskRequest,
+            Message,
+            Part,
+            Role,
+            SendMessageConfiguration,
+            SendMessageRequest,
+            TaskState,
+        )
+
+        terminal_states = {
+            TaskState.TASK_STATE_COMPLETED,
+            TaskState.TASK_STATE_FAILED,
+            TaskState.TASK_STATE_CANCELED,
+            TaskState.TASK_STATE_INPUT_REQUIRED,
+            TaskState.TASK_STATE_REJECTED,
+            TaskState.TASK_STATE_AUTH_REQUIRED,
+        }
         request = SendMessageRequest(
             message=Message(
                 role=Role.ROLE_USER,
@@ -282,7 +221,7 @@ class A2AAgentTool(Tool):
         if not task_id:
             raise ValueError("A2A task response did not include a task ID")
         request_state["task_id"] = task_id
-        while task.status.state not in _TERMINAL_STATES:
+        while task.status.state not in terminal_states:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError
@@ -326,6 +265,9 @@ class A2AAgentTool(Tool):
         deadline = time.monotonic() + (self.config.timeout_ms / 1000)
         request_state: dict[str, str | None] = {"task_id": None}
         try:
+            from a2a.client import A2AClientError, A2AClientTimeoutError
+            from google.protobuf.json_format import ParseError
+
             async with self._open_client(deadline) as client:
                 try:
                     return await asyncio.wait_for(
@@ -343,7 +285,35 @@ class A2AAgentTool(Tool):
                             self._cancel(client, request_state["task_id"], 1.0)
                         )
                     raise
-                except (TimeoutError, A2AClientTimeoutError, httpx.TimeoutException):
+                except (
+                    TimeoutError,
+                    A2AClientError,
+                    httpx.TransportError,
+                    ParseError,
+                ) as exc:
+                    # A lost response or upstream failure can follow acceptance.
+                    # Explicit protocol errors and pre-send connection failures
+                    # can still return the normal failure result.
+                    cause = exc.__cause__ or exc
+                    uncertain = (
+                        isinstance(exc, (TimeoutError, A2AClientTimeoutError))
+                        or isinstance(cause, (JSONDecodeError, ParseError))
+                        or (
+                            isinstance(cause, httpx.TransportError)
+                            and (
+                                request_state["task_id"] is not None
+                                or not isinstance(
+                                    cause, (httpx.ConnectError, httpx.PoolTimeout)
+                                )
+                            )
+                        )
+                        or (
+                            isinstance(cause, httpx.HTTPStatusError)
+                            and cause.response.status_code >= 500
+                        )
+                    )
+                    if not uncertain:
+                        raise
                     state = "outcome_unknown"
                     if request_state["task_id"]:
                         state = await self._cancel(
@@ -360,15 +330,5 @@ class A2AAgentTool(Tool):
 
 
 def create_a2a_agent_tool(name: str, config: dict[str, Any]) -> A2AAgentTool:
-    allowed = {
-        "agent_url",
-        "description",
-        "bearer_token_env",
-        "timeout_ms",
-        "poll_interval_ms",
-        "max_input_chars",
-        "max_response_chars",
-        "error_message",
-    }
-    values = {key: value for key, value in config.items() if key in allowed}
-    return A2AAgentTool(A2AAgentConfig(name=name, **values))
+    """Build tool metadata even when the SDK is unavailable in Admin."""
+    return A2AAgentTool(parse_a2a_agent_config(name, config))

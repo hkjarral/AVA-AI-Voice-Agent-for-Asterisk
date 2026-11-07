@@ -549,7 +549,9 @@ class ToolRuntimeGeneration:
                         raise ToolConfigPolicyError("Invalid managed Pushover tool configuration") from None
         registry.initialize_http_tools_from_config(snapshot.get("tools") or {})
         registry.initialize_in_call_http_tools_from_config(
-            snapshot.get("in_call_tools") or {}, cache_key="global"
+            snapshot.get("in_call_tools") or {},
+            cache_key="global",
+            skip_invalid_a2a=skip_invalid_http_templates,
         )
         for tool in preserved_tools or ():
             name = getattr(getattr(tool, "definition", None), "name", None)

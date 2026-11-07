@@ -974,7 +974,9 @@ class Engine:
             # Initialize in-call HTTP tools from config
             in_call_tools_config = getattr(self.config, 'in_call_tools', None)
             if in_call_tools_config:
-                tool_registry.initialize_in_call_http_tools_from_config(in_call_tools_config, cache_key="global")
+                tool_registry.initialize_in_call_http_tools_from_config(
+                    in_call_tools_config, cache_key="global", skip_invalid_a2a=True
+                )
             logger.info("✅ Tool calling system initialized", tool_count=len(tool_registry.list_tools()))
         except Exception as e:
             logger.warning(f"Failed to initialize tool calling system: {e}", exc_info=True)

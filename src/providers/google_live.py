@@ -2819,7 +2819,7 @@ class GoogleLiveProvider(AIProviderInterface):
                     # state. Let its own guarded lifecycle finish; cancelling the
                     # coroutine here could strand a channel or partial write.
                     logger.warning("Ignoring cancellation of active call-state tool", call_id=self._call_id, tool_call_id=tool_call_id, function=tool_name)
-                else:
+                elif not task.cancelling():
                     task.cancel()
 
     def _schedule_3_8_tool_calls(self, data: Dict[str, Any]) -> None:
@@ -3076,7 +3076,7 @@ class GoogleLiveProvider(AIProviderInterface):
                 behavior, _ = self._tool_policy(self._tool_call_names.get(call_id, ""))
                 if call_id in self._active_tool_call_ids and behavior == ToolExecutionBehavior.BLOCKING:
                     protected.append((call_id, task))
-                else:
+                elif not task.cancelling():
                     task.cancel()
 
             pending = {task for _, task in entries}

@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   service through the official SDK. Agent Card discovery is public; authenticated
   task traffic stays on the configured origin, credentials come only from the
   Engine environment, and uncertain requests are never retried automatically.
+  Keep other tools available when an A2A entry is invalid at startup or Admin
+  cannot reach the Engine. Cancel known remote work on Google Live teardown
+  and preserve uncertain outcomes when a task connection is lost.
 
 ### Fixed
 

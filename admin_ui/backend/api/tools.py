@@ -487,7 +487,9 @@ async def get_tool_catalog():
         if isinstance(tools_cfg, dict):
             tool_registry.initialize_http_tools_from_config(tools_cfg)
         if isinstance(in_call_cfg, dict):
-            tool_registry.initialize_in_call_http_tools_from_config(in_call_cfg, cache_key="global")
+            tool_registry.initialize_in_call_http_tools_from_config(
+                in_call_cfg, cache_key="global", skip_invalid_a2a=True
+            )
 
         out: List[ToolDefinitionInfo] = []
         for d in tool_registry.get_definitions():

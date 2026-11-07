@@ -1231,6 +1231,25 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
                         raise ValueError()
                 except Exception:
                     raise HTTPException(400, "Invalid managed Pushover tool configuration") from None
+            elif isinstance(doc, dict) and doc.get("kind") == "a2a_agent":
+                from src.tools.a2a_config import parse_a2a_agent_config
+                from src.tools.registry import ToolRegistry
+                from .tools import RESERVED_TOOL_NAMES, _reserved_builtin_names
+
+                if block != "in_call_tools":
+                    raise HTTPException(400, "A2A tools belong under in_call_tools")
+                if (
+                    name in RESERVED_TOOL_NAMES
+                    or name in _reserved_builtin_names()
+                    or name in ToolRegistry.TOOL_ALIASES
+                    or str(name).startswith("mcp_")
+                    or name in (parsed.get("tools") or {})
+                ):
+                    raise HTTPException(400, "A2A tool name is reserved or already in use")
+                try:
+                    parse_a2a_agent_config(name, doc)
+                except (TypeError, ValueError) as exc:
+                    raise HTTPException(400, str(exc)) from None
 
     warnings: list[str] = []
 

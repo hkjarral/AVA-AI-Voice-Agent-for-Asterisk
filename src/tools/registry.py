@@ -736,7 +736,13 @@ Tool Definitions:
         if http_tool_count > 0:
             logger.info(f"🌐 Initialized {http_tool_count} HTTP tools from config")
 
-    def initialize_in_call_http_tools_from_config(self, in_call_tools_config: Dict[str, Any], *, cache_key: Optional[str] = None) -> None:
+    def initialize_in_call_http_tools_from_config(
+        self,
+        in_call_tools_config: Dict[str, Any],
+        *,
+        cache_key: Optional[str] = None,
+        skip_invalid_a2a: bool = False,
+    ) -> None:
         """
         Initialize in-call HTTP tools from YAML config.
         
@@ -780,15 +786,21 @@ Tool Definitions:
 
             if kind == 'a2a_agent':
                 from src.tools.a2a_agent import A2AAgentTool, create_a2a_agent_tool
-                existing = self._tools.get(tool_name)
-                if (
-                    not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", str(tool_name))
-                    or tool_name in self.TOOL_ALIASES
-                    or str(tool_name).startswith("mcp_")
-                    or (existing is not None and not isinstance(existing, A2AAgentTool))
-                ):
-                    raise ValueError("A2A tool name is reserved or invalid")
-                tool = create_a2a_agent_tool(tool_name, tool_config)
+                try:
+                    existing = self._tools.get(tool_name)
+                    if (
+                        tool_name in self.TOOL_ALIASES
+                        or tool_name == "ai_identity"
+                        or str(tool_name).startswith("mcp_")
+                        or (existing is not None and not isinstance(existing, A2AAgentTool))
+                    ):
+                        raise ValueError("A2A tool name is reserved or invalid")
+                    tool = create_a2a_agent_tool(tool_name, tool_config)
+                except (TypeError, ValueError):
+                    if not skip_invalid_a2a:
+                        raise
+                    logger.warning("Skipping invalid A2A tool: %r", tool_name)
+                    continue
                 self.register_instance(tool)
                 in_call_tool_count += 1
                 logger.info("Registered A2A agent tool: %s", tool_name)

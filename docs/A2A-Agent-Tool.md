@@ -8,7 +8,8 @@ provider implementation.
 
 ## Configure
 
-Add an entry under `in_call_tools` in `config/ai-agent.yaml`:
+Add an entry under `in_call_tools` in the local override
+`config/ai-agent.local.yaml`:
 
 ```yaml
 in_call_tools:
@@ -28,7 +29,12 @@ Set the named environment variable in the Engine environment. Never place a
 Bearer token or credentials in YAML or in the URL. Bearer authentication
 requires HTTPS, except for a service reached through loopback.
 
-Enable the configured tool for the intended Agent under **Agents -> Tools**.
+Apply the YAML change to the Engine before assigning the tool. If you change
+Compose's `.env` file, recreate the Engine container so it loads the new
+environment. Enable the tool for the intended Agent under **Agents → Tools →
+In-call**. Invalid entries are skipped with an Engine warning on startup.
+Admin saves reject invalid A2A settings, and a failed Engine reload keeps the
+running tool configuration.
 The first release is YAML-configured; it does not add an Admin UI editor for A2A
 endpoints.
 
@@ -43,16 +49,17 @@ endpoints.
   `max_response_chars`. Oversized or non-text results fail closed.
 - If AVA has a task ID when the call or tool is cancelled, it requests
   `CancelTask` before closing the client.
-- An initial timeout may have occurred after the service accepted the request.
-  AVA reports that outcome as unknown and never automatically resends it.
-- A timeout after a task ID is known performs one best-effort cancellation and
-  reports the retained task ID for operator diagnostics.
+- The service may accept a request before a timeout or connection failure loses
+  its reply. AVA reports this outcome as uncertain and never resends the request
+  automatically.
+- A timeout or connection failure during polling triggers one best-effort
+  cancellation and retains the task ID for diagnostics.
 
 The integration does not claim A2A streaming, push notifications, audio
 transport, or proof that a human consumed a remote result.
 
 ## Service boundary
 
-Any standards-compliant A2A 1.0 service with a JSON-RPC interface can be used.
+The service must expose a public Agent Card and a same-origin A2A 1.0 JSON-RPC endpoint.
 For example, `pi0n00r/A2A` can run as an independent network service while AVA
 stays under its existing license and deployment lifecycle.

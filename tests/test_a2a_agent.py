@@ -177,7 +177,7 @@ async def test_agent_card_discovery_obeys_total_deadline(monkeypatch):
         async def get_agent_card(self):
             await asyncio.Event().wait()
 
-    monkeypatch.setattr("src.tools.a2a_agent.A2ACardResolver", BlockingResolver)
+    monkeypatch.setattr("a2a.client.A2ACardResolver", BlockingResolver)
     tool = A2AAgentTool(
         A2AAgentConfig(
             name="delegate",
@@ -246,3 +246,142 @@ def test_registry_rejects_a2a_alias_shadowing():
                 }
             }
         )
+
+
+@pytest.mark.parametrize("during_poll", [False, True])
+@pytest.mark.asyncio
+async def test_sdk_connection_loss_preserves_uncertain_outcome(
+    monkeypatch, during_poll
+):
+    import json
+
+    calls = []
+
+    def handle(request):
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "name": "Test agent",
+                    "supportedInterfaces": [
+                        {
+                            "url": "https://agent.example/rpc",
+                            "protocolBinding": "JSONRPC",
+                            "protocolVersion": "1.0",
+                        }
+                    ],
+                },
+            )
+
+        rpc = json.loads(request.content)
+        method = rpc["method"]
+        calls.append(method)
+        if method == ("GetTask" if during_poll else "SendMessage"):
+            raise httpx.ReadError("Response lost", request=request)
+        task = {"id": "task-1", "status": {"state": "TASK_STATE_WORKING"}}
+        if method == "SendMessage":
+            result = {"task": task}
+        else:
+            assert method == "CancelTask"
+            assert rpc["params"]["id"] == "task-1"
+            result = {**task, "status": {"state": "TASK_STATE_CANCELED"}}
+        return httpx.Response(
+            200, json={"jsonrpc": "2.0", "id": rpc["id"], "result": result}
+        )
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "src.tools.a2a_agent.httpx.AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handle), **kwargs),
+    )
+    tool = A2AAgentTool(
+        A2AAgentConfig(
+            name="delegate", agent_url="https://agent.example", poll_interval_ms=50
+        )
+    )
+    result = await tool.execute(
+        {"message": "Please investigate"}, ToolExecutionContext(call_id="call-1")
+    )
+
+    assert result["status"] == "pending"
+    assert calls == (
+        ["SendMessage", "GetTask", "CancelTask"] if during_poll else ["SendMessage"]
+    )
+    assert result["result"] == (
+        {"task_id": "task-1", "state": "cancel_requested"}
+        if during_poll
+        else {"task_id": None, "state": "outcome_unknown"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_google_teardown_allows_remote_cancel_to_finish(monkeypatch):
+    from src.config import GoogleProviderConfig
+    from src.providers.google_live import GoogleLiveProvider
+    from src.tools.registry import ToolRegistry
+
+    polling = asyncio.Event()
+    cancel_started = asyncio.Event()
+    finish_cancel = asyncio.Event()
+
+    class BlockingClient(FakeClient):
+        async def get_task(self, request, *, context=None):
+            polling.set()
+            await asyncio.Event().wait()
+
+        async def cancel_task(self, request, *, context=None):
+            cancel_started.set()
+            await finish_cancel.wait()
+            return await super().cancel_task(request, context=context)
+
+    client = BlockingClient(_task_event(TaskState.TASK_STATE_WORKING))
+    provider = GoogleLiveProvider(
+        config=GoogleProviderConfig(llm_model="gemini-3.8-live"),
+        on_event=lambda event: None,
+    )
+    provider._call_id = "call-1"
+    provider._allowed_tools = ["delegate"]
+    registry = ToolRegistry.isolated()
+    registry.register_instance(_tool(client))
+    monkeypatch.setattr(provider._tool_adapter, "registry", registry)
+    await provider._handle_server_message(
+        {
+            "toolCall": {
+                "functionCalls": [
+                    {
+                        "id": "func-1",
+                        "name": "delegate",
+                        "args": {"message": "Please investigate"},
+                    },
+                ]
+            }
+        }
+    )
+    await asyncio.wait_for(polling.wait(), 1)
+    await provider._handle_server_message({"toolCallCancellation": {"ids": ["func-1"]}})
+    await asyncio.wait_for(cancel_started.wait(), 1)
+    teardown = asyncio.create_task(provider.stop_session())
+    await asyncio.sleep(0)
+    finish_cancel.set()
+    await asyncio.wait_for(teardown, 1)
+    assert client.canceled == ["task-1"]
+
+
+def test_startup_skips_invalid_a2a_but_reload_rejects_it():
+    from src.tools.runtime_config import ToolRuntimeGeneration
+
+    config = {
+        "in_call_tools": {
+            "broken": {"kind": "a2a_agent", "agent_url": "file:///tmp/agent"},
+            "delegate": {"kind": "a2a_agent", "agent_url": "https://agent.example"},
+        }
+    }
+    generation = ToolRuntimeGeneration.build(
+        generation_id=1, config=config, skip_invalid_http_templates=True
+    )
+    assert generation.registry.has("delegate")
+    assert not generation.registry.has("broken")
+    assert generation.registry.has("hangup_call")
+
+    with pytest.raises(ValueError, match="agent_url"):
+        ToolRuntimeGeneration.build(generation_id=2, config=config)
