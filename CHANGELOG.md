@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Keep other tools available when an A2A entry is invalid at startup or Admin
   cannot reach the Engine. Cancel known remote work on Google Live teardown
   and preserve uncertain outcomes when a task connection is lost.
+  Keep the transport open through bounded remote cancellation when a caller
+  hangs up during timeout cleanup, then propagate the original hangup signal.
 
 ### Fixed
 

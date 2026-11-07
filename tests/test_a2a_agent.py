@@ -457,3 +457,77 @@ def test_startup_skips_invalid_a2a_but_reload_rejects_it():
 
     with pytest.raises(ValueError, match="agent_url"):
         ToolRuntimeGeneration.build(generation_id=2, config=config)
+
+
+@pytest.mark.parametrize("cancel_completes", [True, False])
+@pytest.mark.asyncio
+async def test_hangup_during_timeout_cancel_keeps_transport_open(cancel_completes):
+    cancel_started = asyncio.Event()
+    release_cancel = asyncio.Event()
+    cancel_finished = asyncio.Event()
+    client_closed = False
+    cancel_attempts = 0
+
+    class TimeoutClient(FakeClient):
+        async def cancel_task(self, request, *, context=None):
+            nonlocal cancel_attempts
+            cancel_attempts += 1
+            assert not client_closed
+            cancel_started.set()
+            try:
+                await release_cancel.wait()
+                return await super().cancel_task(request, context=context)
+            finally:
+                assert not client_closed
+                cancel_finished.set()
+
+    client = TimeoutClient(
+        _task_event(TaskState.TASK_STATE_WORKING),
+        get_error=httpx.ReadTimeout("poll response lost"),
+    )
+    tool = _tool(client)
+
+    @asynccontextmanager
+    async def open_client(deadline):
+        nonlocal client_closed
+        try:
+            yield client
+        finally:
+            client_closed = True
+
+    tool._open_client = open_client
+    operation = asyncio.create_task(
+        tool.execute(
+            {"message": "Please investigate"}, ToolExecutionContext(call_id="call-1")
+        )
+    )
+    try:
+        await asyncio.wait_for(cancel_started.wait(), 1)
+        operation.cancel("caller hung up")
+        await asyncio.sleep(0)
+        assert not operation.done()
+        assert not cancel_finished.is_set()
+        assert not client_closed
+        operation.cancel("duplicate signal")
+        await asyncio.sleep(0)
+        assert not operation.done()
+        assert not cancel_finished.is_set()
+        assert not client_closed
+        if cancel_completes:
+            release_cancel.set()
+        with pytest.raises(asyncio.CancelledError) as exc:
+            await asyncio.wait_for(operation, 2)
+        assert exc.value.args == ("caller hung up",)
+        assert cancel_finished.is_set()
+        assert client_closed
+        assert cancel_attempts == 1
+        assert client.canceled == (["task-1"] if cancel_completes else [])
+        assert client.sent == 1
+    finally:
+        release_cancel.set()
+        if not operation.done():
+            operation.cancel()
+        try:
+            await operation
+        except asyncio.CancelledError:
+            pass

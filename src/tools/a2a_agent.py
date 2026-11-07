@@ -163,19 +163,25 @@ class A2AAgentTool(Tool):
             )
             return "outcome_unknown"
 
-    async def _cancel_before_propagating(
-        self, client: Any, task_id: str
-    ) -> None:
-        """Keep the transport open until bounded remote cancellation finishes."""
+    async def _cancel_known_task(
+        self,
+        client: Any,
+        task_id: str,
+        cancellation: asyncio.CancelledError | None = None,
+    ) -> str:
+        """Finish bounded cancellation before closing or propagating hangup."""
         cancel_task = asyncio.create_task(self._cancel(client, task_id, 1.0))
         while not cancel_task.done():
             try:
                 await asyncio.shield(cancel_task)
-            except asyncio.CancelledError:
-                # Repeated caller cancellation must not close the client before
-                # the already-started remote cancellation completes.
-                continue
-        await cancel_task
+            except asyncio.CancelledError as exc:
+                # Keep the first cancellation while repeated signals arrive.
+                if cancellation is None:
+                    cancellation = exc
+        state = await cancel_task
+        if cancellation is not None:
+            raise cancellation
+        return state
 
     async def _run(
         self,
@@ -293,10 +299,10 @@ class A2AAgentTool(Tool):
                         ),
                         timeout=max(0.05, deadline - time.monotonic()),
                     )
-                except asyncio.CancelledError:
+                except asyncio.CancelledError as exc:
                     if request_state["task_id"]:
-                        await self._cancel_before_propagating(
-                            client, request_state["task_id"]
+                        await self._cancel_known_task(
+                            client, request_state["task_id"], cancellation=exc
                         )
                     raise
                 except (
@@ -330,8 +336,8 @@ class A2AAgentTool(Tool):
                         raise
                     state = "outcome_unknown"
                     if request_state["task_id"]:
-                        state = await self._cancel(
-                            client, request_state["task_id"], 1.0
+                        state = await self._cancel_known_task(
+                            client, request_state["task_id"]
                         )
                     return {
                         "status": "pending",
