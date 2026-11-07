@@ -83,7 +83,7 @@ async def test_unknown_ai_agent_records_failure_before_default_provider_resoluti
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["policy", "http_template"])
+@pytest.mark.parametrize("failure", ["policy", "http_template", "a2a_config"])
 async def test_invalid_agent_tool_policy_records_failure_before_provider_resolution(failure):
     engine = Engine.__new__(Engine)
     engine.config = SimpleNamespace(default_provider="local")
@@ -107,6 +107,18 @@ async def test_invalid_agent_tool_policy_records_failure_before_provider_resolut
             "broken_inline": {"url": "https://example.com", "method": "POST", "body_template": '{"broken":'},
         }
         engine._tool_generation = ToolRuntimeGeneration.build(generation_id=1, config={})
+    elif failure == "a2a_config":
+        context_config.tool_configs = None
+        context_config.in_call_http_tools = {
+            "delegate": {
+                "kind": "a2a_agent",
+                "agent_url": "https://agent.example",
+            }
+        }
+        engine._tool_generation = ToolRuntimeGeneration.build(
+            generation_id=1,
+            config={"tools": {"delegate": {"enabled": False}}},
+        )
     engine._save_session = AsyncMock()
     engine._configure_no_input_watchdog = AsyncMock()
     engine.ari_client = MagicMock()
@@ -128,11 +140,19 @@ async def test_invalid_agent_tool_policy_records_failure_before_provider_resolut
     await Engine._resolve_audio_profile(engine, session, "chan-bad-policy")
 
     assert "invalid Agent tool policy" in session.context_resolution_error
-    assert ("unsupported_scope" if failure == "policy" else "invalid_json_template") in session.context_resolution_error
+    expected_detail = {
+        "policy": "unsupported_scope",
+        "http_template": "invalid_json_template",
+        "a2a_config": "Invalid Agent in-call tool configuration",
+    }[failure]
+    assert expected_detail in session.context_resolution_error
     assert session.error_message == session.context_resolution_error
     engine.transport_orchestrator.resolve_transport.assert_not_called()
     engine._configure_no_input_watchdog.assert_not_awaited()
     if failure == "http_template":
         assert not engine._tool_generation.registry.has("working_inline")
         assert not engine._tool_generation.registry.has("broken_inline")
+        assert session.tool_runtime_registry is None
+    elif failure == "a2a_config":
+        assert not engine._tool_generation.registry.has("delegate")
         assert session.tool_runtime_registry is None

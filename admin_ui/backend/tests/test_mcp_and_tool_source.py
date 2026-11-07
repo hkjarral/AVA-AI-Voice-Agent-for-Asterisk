@@ -149,3 +149,28 @@ async def test_catalog_falls_back_to_heuristic_without_engine_source(monkeypatch
     result = await tools_module.get_tool_catalog()
     assert len(result.tools) == 1
     assert result.tools[0].source == "mcp"
+
+
+@pytest.mark.asyncio
+async def test_a2a_tools_remain_in_catalog_fallback_without_sdk(monkeypatch):
+    import sys
+
+    from src.tools.registry import ToolRegistry
+
+    monkeypatch.setitem(sys.modules, "a2a", None)
+    monkeypatch.setattr("src.tools.registry.tool_registry", ToolRegistry.isolated())
+    monkeypatch.setattr(tools_module, "_ai_engine_base_urls", lambda: [])
+    monkeypatch.setattr(tools_module.config_api, "_read_merged_config_dict", lambda: {
+        "tools": ["malformed-but-nonempty"],
+        "in_call_tools": {
+            "delegate": {"kind": "a2a_agent", "agent_url": "https://agent.example"},
+        },
+    })
+
+    result = await tools_module.get_tool_catalog()
+
+    assert result.source == "local_fallback"
+    tools = {tool.name: tool for tool in result.tools}
+    assert tools["delegate"].phase == "in_call"
+    assert tools["delegate"].source == "http"
+    assert "hangup_call" in tools

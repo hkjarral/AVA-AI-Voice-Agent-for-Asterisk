@@ -352,7 +352,7 @@ def _http_tool_names_from_config(cfg: dict) -> set[str]:
             if not isinstance(tool_cfg, dict):
                 continue
             kind = str(tool_cfg.get("kind") or "in_call_http_lookup").strip()
-            if kind in {"in_call_http_lookup", "pushover"}:
+            if kind in {"in_call_http_lookup", "pushover", "a2a_agent"}:
                 names.add(name)
     return names
 
@@ -487,7 +487,12 @@ async def get_tool_catalog():
         if isinstance(tools_cfg, dict):
             tool_registry.initialize_http_tools_from_config(tools_cfg)
         if isinstance(in_call_cfg, dict):
-            tool_registry.initialize_in_call_http_tools_from_config(in_call_cfg, cache_key="global")
+            tool_registry.initialize_in_call_http_tools_from_config(
+                in_call_cfg,
+                cache_key="global",
+                skip_invalid_a2a=True,
+                reserved_tool_names=(tools_cfg if isinstance(tools_cfg, dict) else {}).keys(),
+            )
 
         out: List[ToolDefinitionInfo] = []
         for d in tool_registry.get_definitions():

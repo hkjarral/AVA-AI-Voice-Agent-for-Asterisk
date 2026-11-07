@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A2A agent delegation:** add an optional YAML-configured in-call tool that
+  delegates one bounded text request to a separately deployed Agent2Agent 1.0
+  service through the official SDK. Agent Card discovery is public; authenticated
+  task traffic stays on the configured origin, credentials come only from the
+  Engine environment, and uncertain requests are never retried automatically.
+  Keep other tools available when an A2A entry is invalid at startup or Admin
+  cannot reach the Engine. Cancel known remote work on Google Live teardown
+  and preserve uncertain outcomes when a task connection is lost.
+  Keep the transport open through bounded remote cancellation when a caller
+  hangs up during timeout cleanup, then propagate the original hangup signal.
+
 ### Fixed
 
 - **Local config comments (#809):** Admin UI saves keep the comments an

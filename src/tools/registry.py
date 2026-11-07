@@ -736,7 +736,14 @@ Tool Definitions:
         if http_tool_count > 0:
             logger.info(f"🌐 Initialized {http_tool_count} HTTP tools from config")
 
-    def initialize_in_call_http_tools_from_config(self, in_call_tools_config: Dict[str, Any], *, cache_key: Optional[str] = None) -> None:
+    def initialize_in_call_http_tools_from_config(
+        self,
+        in_call_tools_config: Dict[str, Any],
+        *,
+        cache_key: Optional[str] = None,
+        skip_invalid_a2a: bool = False,
+        reserved_tool_names: Optional[Iterable[Any]] = None,
+    ) -> None:
         """
         Initialize in-call HTTP tools from YAML config.
         
@@ -761,6 +768,7 @@ Tool Definitions:
             return
         
         in_call_tool_count = 0
+        reserved_names = {str(name) for name in (reserved_tool_names or ())}
         
         for tool_name, tool_config in in_call_tools_config.items():
             if not isinstance(tool_config, dict):
@@ -778,7 +786,29 @@ Tool Definitions:
                 self._register_pushover_tool_from_config(tool_name, tool_config, in_call=True)
                 continue
 
-            if kind == 'in_call_http_lookup':
+            if kind == 'a2a_agent':
+                from src.tools.a2a_agent import A2AAgentTool, create_a2a_agent_tool
+                try:
+                    existing = self._tools.get(tool_name)
+                    if (
+                        tool_name in self.TOOL_ALIASES
+                        or tool_name == "ai_identity"
+                        or str(tool_name).startswith("mcp_")
+                        or str(tool_name) in reserved_names
+                        or (existing is not None and not isinstance(existing, A2AAgentTool))
+                    ):
+                        raise ValueError("A2A tool name is reserved or invalid")
+                    tool = create_a2a_agent_tool(tool_name, tool_config)
+                except (TypeError, ValueError):
+                    if not skip_invalid_a2a:
+                        raise
+                    logger.warning("Skipping invalid A2A tool: %r", tool_name)
+                    continue
+                self.register_instance(tool)
+                in_call_tool_count += 1
+                logger.info("Registered A2A agent tool: %s", tool_name)
+
+            elif kind == 'in_call_http_lookup':
                 from src.tools.http.template_contract import assert_valid_template
                 assert_valid_template(tool_config, "in_call")
                 try:

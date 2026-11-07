@@ -1725,8 +1725,18 @@ class GoogleLiveProvider(AIProviderInterface):
         elif message_type == "serverContent":
             await self._handle_server_content(data)
         elif message_type == "toolCall":
-            if self._normalize_model_name(self.config.llm_model) == self.GEMINI_3_8_LIVE_MODEL:
-                self._schedule_3_8_tool_calls(data)
+            function_calls = (data.get("toolCall") or {}).get("functionCalls", [])
+            has_non_blocking = any(
+                self._tool_policy(call.get("name") or "")[0]
+                == ToolExecutionBehavior.NON_BLOCKING
+                for call in function_calls
+            )
+            if (
+                self._normalize_model_name(self.config.llm_model)
+                == self.GEMINI_3_8_LIVE_MODEL
+                or has_non_blocking
+            ):
+                self._schedule_tool_calls(data)
             else:
                 await self._handle_tool_call(data)
         elif message_type == "toolCallCancellation":
@@ -2819,20 +2829,20 @@ class GoogleLiveProvider(AIProviderInterface):
                     # state. Let its own guarded lifecycle finish; cancelling the
                     # coroutine here could strand a channel or partial write.
                     logger.warning("Ignoring cancellation of active call-state tool", call_id=self._call_id, tool_call_id=tool_call_id, function=tool_name)
-                else:
+                elif not task.cancelling():
                     task.cancel()
 
-    def _schedule_3_8_tool_calls(self, data: Dict[str, Any]) -> None:
-        """Keep the receive loop responsive to 3.8 cancellation and audio frames."""
+    def _schedule_tool_calls(self, data: Dict[str, Any]) -> None:
+        """Keep the receive loop responsive to cancellation and audio frames."""
         if self._closing or self._closed:
             return
         for function_call in (data.get("toolCall") or {}).get("functionCalls", []):
             tool_call_id = function_call.get("id")
             if not tool_call_id:
-                logger.error("Gemini 3.8 tool call has no id; refusing execution", call_id=self._call_id)
+                logger.error("Gemini tool call has no id; refusing execution", call_id=self._call_id)
                 continue
             if tool_call_id in self._seen_tool_call_ids:
-                logger.warning("Duplicate Gemini 3.8 tool call id ignored", call_id=self._call_id, tool_call_id=tool_call_id)
+                logger.warning("Duplicate Gemini tool call id ignored", call_id=self._call_id, tool_call_id=tool_call_id)
                 continue
             self._seen_tool_call_ids.add(tool_call_id)
 
@@ -2854,14 +2864,18 @@ class GoogleLiveProvider(AIProviderInterface):
 
             owner_call_id = self._call_id
 
-            def finish_tool(done: asyncio.Task, call_id: str = tool_call_id) -> None:
+            def finish_tool(
+                done: asyncio.Task,
+                call_id: str = tool_call_id,
+                owner_call_id: str = owner_call_id,
+            ) -> None:
                 if self._tool_call_tasks.get(call_id) is done:
                     self._tool_call_tasks.pop(call_id, None)
                     self._active_tool_call_ids.discard(call_id)
                     self._tool_call_names.pop(call_id, None)
                 self._detached_tool_tasks.discard(done)
                 if not done.cancelled() and done.exception():
-                    logger.error("Gemini 3.8 tool task failed", call_id=owner_call_id, tool_call_id=call_id, error=str(done.exception()))
+                    logger.error("Gemini tool task failed", call_id=owner_call_id, tool_call_id=call_id, error=str(done.exception()))
 
             task.add_done_callback(finish_tool)
 
@@ -3076,7 +3090,7 @@ class GoogleLiveProvider(AIProviderInterface):
                 behavior, _ = self._tool_policy(self._tool_call_names.get(call_id, ""))
                 if call_id in self._active_tool_call_ids and behavior == ToolExecutionBehavior.BLOCKING:
                     protected.append((call_id, task))
-                else:
+                elif not task.cancelling():
                     task.cancel()
 
             pending = {task for _, task in entries}
