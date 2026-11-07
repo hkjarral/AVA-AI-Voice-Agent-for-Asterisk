@@ -491,7 +491,7 @@ async def get_tool_catalog():
                 in_call_cfg,
                 cache_key="global",
                 skip_invalid_a2a=True,
-                reserved_tool_names=(tools_cfg or {}).keys(),
+                reserved_tool_names=(tools_cfg if isinstance(tools_cfg, dict) else {}).keys(),
             )
 
         out: List[ToolDefinitionInfo] = []

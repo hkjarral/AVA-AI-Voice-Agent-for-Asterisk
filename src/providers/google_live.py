@@ -2864,7 +2864,11 @@ class GoogleLiveProvider(AIProviderInterface):
 
             owner_call_id = self._call_id
 
-            def finish_tool(done: asyncio.Task, call_id: str = tool_call_id) -> None:
+            def finish_tool(
+                done: asyncio.Task,
+                call_id: str = tool_call_id,
+                owner_call_id: str = owner_call_id,
+            ) -> None:
                 if self._tool_call_tasks.get(call_id) is done:
                     self._tool_call_tasks.pop(call_id, None)
                     self._active_tool_call_ids.discard(call_id)
