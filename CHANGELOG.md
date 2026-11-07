@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Local config comments (#809):** Admin UI saves keep the comments an
+  operator wrote in `config/ai-agent.local.yaml` instead of rewriting the file
+  without them. Comments stay with their keys and the file keeps its indents.
+  Comments between list items are lost when that list changes. A save that
+  migrates an inline secret, encounters environment variable references, or
+  cannot verify the round trip writes the plain YAML dump. The setup wizard
+  performs the rewrite in a worker thread.
+
 - **Streaming playback (#808):** add opt-in Asterisk-owned WebSocket pacing
   (`websocket_media.output_pacing: asterisk`, default remains `legacy`), retaining
   flow control and completion fences. Separately admit OpenAI's buffered audio

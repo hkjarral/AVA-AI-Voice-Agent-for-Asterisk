@@ -611,3 +611,273 @@ def test_greeting_media_save_reopen_and_unrelated_edit_preserve_yaml(monkeypatch
     assert saved["streaming"]["greeting_rtp_wait_ms"] == original["streaming"]["greeting_rtp_wait_ms"]
     assert saved["providers"] == original["providers"]
     assert result["recommended_apply_method"] == "restart"
+
+
+_COMMENTED_LOCAL = """# Why these values are pinned
+llm:
+  # keep low, see ticket 12
+  temperature: 0.3  # inline note
+old_key: 1
+"""
+
+
+def _use_local_file(monkeypatch, tmp_path, text):
+    local_path = tmp_path / "ai-agent.local.yaml"
+    local_path.write_text(text)
+    monkeypatch.setattr(config.settings, "LOCAL_CONFIG_PATH", str(local_path))
+    return local_path
+
+
+def test_local_write_keeps_operator_comments(monkeypatch, tmp_path):
+    local_path = _use_local_file(monkeypatch, tmp_path, _COMMENTED_LOCAL)
+    desired = {"llm": {"temperature": 0.3, "max_tokens": 512}, "new": {"mode": "on"}}
+
+    config._write_local_config(yaml.dump(desired, sort_keys=False))
+
+    saved = local_path.read_text()
+    assert "# Why these values are pinned" in saved
+    assert "# keep low, see ticket 12" in saved
+    assert "# inline note" in saved
+    assert "old_key" not in saved
+    assert yaml.safe_load(saved) == desired
+
+
+def test_raw_yaml_save_keeps_operator_comments(monkeypatch, tmp_path):
+    local_path = _use_local_file(monkeypatch, tmp_path, _COMMENTED_LOCAL)
+    merged = yaml.safe_load(_COMMENTED_LOCAL)
+    merged["llm"]["max_tokens"] = 512
+    monkeypatch.setattr(config, "_migrate_inline_provider_secrets", lambda _cfg: False)
+    monkeypatch.setattr(config, "_assert_in_use_audio_profiles_unchanged", lambda *_a, **_kw: None)
+    monkeypatch.setattr(config, "_validate_ai_agent_config", lambda _content: {})
+    monkeypatch.setattr(config, "_read_merged_config_dict", lambda: yaml.safe_load(_COMMENTED_LOCAL))
+    monkeypatch.setattr(config, "_read_base_config_dict", lambda: {})
+
+    config.persist_config_content(yaml.safe_dump(merged, sort_keys=False))
+
+    saved = local_path.read_text()
+    assert "# keep low, see ticket 12" in saved
+    assert yaml.safe_load(saved) == merged
+
+
+@pytest.mark.parametrize("previous", [
+    "llm:\n  temperature: 0.3\n",  # no comments: nothing to keep
+    "# note\nllm: [unclosed\n",  # unreadable: fall back
+    "# note\n- a list\n",  # not a mapping: fall back
+    "# note\r\nllm:\r\n  temperature: 0.3\r\n",  # CRLF: would come out mixed
+])
+def test_local_write_falls_back_to_plain_dump(monkeypatch, tmp_path, previous):
+    content = yaml.dump({"llm": {"temperature": 0.5}}, sort_keys=False)
+
+    assert config._keep_local_comments(previous.encode(), content) == content
+
+
+def test_kept_comments_never_change_the_saved_data(monkeypatch, tmp_path):
+    local_path = _use_local_file(
+        monkeypatch, tmp_path, "# note\nflags:\n  a: yes\n  n: 0\n  f: 1.0\n  t: true\n"
+    )
+    desired = {"flags": {"a": True, "n": False, "f": 1, "t": 1, "b": "off", "c": "12:30", "d": "~"}}
+
+    config._write_local_config(yaml.dump(desired, sort_keys=False))
+
+    saved = local_path.read_text()
+    assert "# note" in saved
+    loaded = yaml.safe_load(saved)["flags"]
+    assert loaded == desired["flags"]
+    assert [type(loaded[k]) for k in desired["flags"]] == [type(v) for v in desired["flags"].values()]
+
+
+@pytest.mark.parametrize("previous,desired,expected", [
+    (  # a deleted key takes its own comment with it
+        "a: 1\n# B is pinned, ticket 9\nb: 2\n# C: do not touch\nc: 3\n",
+        {"a": 1, "c": 3},
+        "a: 1\n# C: do not touch\nc: 3\n",
+    ),
+    (  # first key; a header above a blank line stays
+        "# header\n\n# A explains a\na: 1\n# B explains b\nb: 2\n",
+        {"b": 2},
+        "# header\n\n# B explains b\nb: 2\n",
+    ),
+    (  # last nested key; the comment above the next top-level key stays there
+        "p:\n  x: 1\n  # y note\n  y: 2\n# Q note\nq: 1\n",
+        {"p": {"x": 1}, "q": 1},
+        "p:\n  x: 1\n# Q note\nq: 1\n",
+    ),
+    (  # a key added to a nested map goes above the next key's comment
+        "p:\n  x: 1\n# Q note\nq: 1\n",
+        {"p": {"x": 1, "z": 2}, "q": 1},
+        "p:\n  x: 1\n  z: 2\n# Q note\nq: 1\n",
+    ),
+    (  # a shortened list keeps the comment above the next key
+        "s:\n- a\n- b\n# T note\nt: 1\n",
+        {"s": ["a"], "t": 1},
+        "s:\n- a\n# T note\nt: 1\n",
+    ),
+    (  # a flow value keeps its trailing comments on its own key
+        "a: [1, 2]  # a eol\n# B why\nb: 2\n# C why\nc: 3\n",
+        {"a": [1, 2], "c": 3},
+        "a: [1, 2]  # a eol\n# C why\nc: 3\n",
+    ),
+    (  # after a block scalar there is no end-of-line comment
+        "a: |\n  t\n# B why\nb: 2\n# C why\nc: 3\n",
+        {"a": "t\n", "c": 3},
+        "a: |\n  t\n# C why\nc: 3\n",
+    ),
+    (  # deleting a first key with no comment above it keeps the next one's
+        "# Local overrides\nproviders:\n  openai: 1\n  # Deepgram for STT\n  deepgram: 2\n",
+        {"providers": {"deepgram": 2}},
+        "# Local overrides\nproviders:\n  # Deepgram for STT\n  deepgram: 2\n",
+    ),
+    (  # first nested key with a comment above it
+        "p:\n  # X why\n  x: 1\n  # Y why\n  y: 2\n",
+        {"p": {"y": 2}},
+        "p:\n  # Y why\n  y: 2\n",
+    ),
+    (  # a comment indented inside the map above is not the deleted key's
+        "p:\n  x: 1\n  # inside p\n# Q why\nq: 2\nr: 1\n",
+        {"p": {"x": 1}, "r": 1},
+        "p:\n  x: 1\n  # inside p\nr: 1\n",
+    ),
+    (  # deleting the key after a block scalar leaves no empty comment behind
+        "# hdr\na: |\n  t\n# B\nb: 2\n",
+        {"a": "t\n"},
+        "# hdr\na: |\n  t\n",
+    ),
+    (  # adding a key after a block scalar keeps the footer last
+        "# hdr\na: |\n  t\n# footer\n",
+        {"a": "t\n", "z": 1},
+        "# hdr\na: |\n  t\nz: 1\n# footer\n",
+    ),
+    (  # first nested key under a parent with an end-of-line comment
+        "# hdr\np:  # P eol\n  # X why\n  x: 1\n  # Y why\n  y: 2\n",
+        {"p": {"y": 2}},
+        "# hdr\np:  # P eol\n  # Y why\n  y: 2\n",
+    ),
+    (  # a document start marker stays
+        "---\n# n\na: 1\n",
+        {"a": 2},
+        "---\n# n\na: 2\n",
+    ),
+])
+def test_kept_comments_stay_with_their_keys(previous, desired, expected):
+    assert config._keep_local_comments(previous.encode(), yaml.dump(desired, sort_keys=False)) == expected
+
+
+def test_kept_comments_keep_the_file_layout():
+    previous = "a:\n    b:\n        - x\n        - y  # y\n    t: null\n    q: '18080:18099'\n"
+    desired = {"a": {"b": ["x", "y"], "t": None, "q": "18080:18099", "n": 2}}
+
+    kept = config._keep_local_comments(previous.encode(), yaml.dump(desired, sort_keys=False))
+
+    assert kept == previous + "    n: 2\n"
+
+
+def test_comment_only_local_file_keeps_its_comments():
+    previous = "# Operator overrides go here\n# llm:\n#   temperature: 0.2\n"
+    content = yaml.dump({"llm": {"temperature": 0.3}}, sort_keys=False)
+
+    assert config._keep_local_comments(previous.encode(), content) == previous + content
+
+
+def test_secret_migration_drops_local_comments(monkeypatch):
+    writes = []
+    monkeypatch.setattr(config, "_migrate_inline_provider_secrets", lambda _cfg: True)
+    monkeypatch.setattr(config, "_assert_in_use_audio_profiles_unchanged", lambda *_a, **_kw: None)
+    monkeypatch.setattr(config, "_validate_ai_agent_config", lambda _content: {})
+    monkeypatch.setattr(config, "_read_merged_config_dict", lambda: {})
+    monkeypatch.setattr(config, "_read_base_config_dict", lambda: {})
+    monkeypatch.setattr(config, "_write_local_config", lambda content, **kw: writes.append(kw))
+
+    config.persist_config_content("llm:\n  temperature: 0.3\n")
+
+    assert writes == [{"keep_comments": False}]
+
+
+def test_local_write_without_keep_comments_writes_plain_dump(monkeypatch, tmp_path):
+    local_path = _use_local_file(monkeypatch, tmp_path, "# old: sk-old\nllm:\n  temperature: 0.3\n")
+    content = yaml.dump({"llm": {"temperature": 0.5}}, sort_keys=False)
+
+    config._write_local_config(content, keep_comments=False)
+
+    assert local_path.read_text() == content
+
+
+@pytest.mark.parametrize("reference", ["${AAVA_TEST_GREETING}", "$AAVA_TEST_GREETING"])
+def test_yaml_save_preserves_engine_config_with_environment_reference(monkeypatch, tmp_path, reference):
+    from src.config.loaders import load_yaml_with_local_override
+
+    base = tmp_path / "ai-agent.yaml"
+    base.write_text(
+        "default_provider: openai_realtime\n"
+        "providers:\n  openai_realtime:\n    enabled: true\n    greeting: Base greeting\n"
+        "asterisk:\n  app_name: base-route\n"
+    )
+    local = _use_local_file(
+        monkeypatch,
+        tmp_path,
+        "# Keep the greeting short\n"
+        "providers:\n  openai_realtime:\n    greeting: 'Hello'\n"
+        "asterisk:\n  app_name: local-route\n",
+    )
+    monkeypatch.setattr(config.settings, "CONFIG_PATH", str(base))
+    monkeypatch.setattr(config.settings, "ENV_PATH", str(tmp_path / ".env"))
+    monkeypatch.setenv("AAVA_TEST_GREETING", "Welcome to O'Brien's office")
+    monkeypatch.setenv("ASTERISK_ARI_USERNAME", "test")
+    monkeypatch.setenv("ASTERISK_ARI_PASSWORD", "test")
+
+    desired = config._read_merged_config_dict()
+    desired["providers"]["openai_realtime"]["greeting"] = reference
+    config.persist_config_content(yaml.safe_dump(desired, sort_keys=False))
+
+    assert f"greeting: {reference}\n" in local.read_text()
+    effective = load_yaml_with_local_override(str(base))
+    assert effective["providers"]["openai_realtime"]["greeting"] == "Welcome to O'Brien's office"
+    assert effective["asterisk"]["app_name"] == "local-route"
+
+
+def test_comment_only_file_with_environment_reference_falls_back():
+    content = yaml.safe_dump({"asterisk": {"app_name": "local-route"}})
+
+    assert config._keep_local_comments(b"# Example: ${AAVA_TEST_GREETING}\n", content) == content
+
+
+@pytest.mark.asyncio
+async def test_wizard_save_keeps_comments_in_worker_thread(monkeypatch, tmp_path):
+    import threading
+
+    from api import wizard
+
+    base = tmp_path / "ai-agent.yaml"
+    base.write_text("asterisk:\n  app_name: base-route\n")
+    local = _use_local_file(monkeypatch, tmp_path, "# Keep this note\nasterisk:\n  app_name: local-route\n")
+    monkeypatch.setattr(config.settings, "CONFIG_PATH", str(base))
+    monkeypatch.setattr(wizard, "CONFIG_PATH", str(base))
+    monkeypatch.setattr(wizard, "LOCAL_CONFIG_PATH", str(local))
+    monkeypatch.setattr(wizard, "ENV_PATH", str(tmp_path / ".env"))
+    monkeypatch.setenv("AGENTS_DB_PATH", str(tmp_path / "agents.db"))
+    loop_thread = threading.get_ident()
+    rewrite_threads = []
+    keep_comments = config._keep_local_comments
+
+    def track_rewrite(previous, content):
+        rewrite_threads.append(threading.get_ident())
+        return keep_comments(previous, content)
+
+    monkeypatch.setattr(config, "_keep_local_comments", track_rewrite)
+    setup = wizard.SetupConfig(
+        asterisk_host="127.0.0.1",
+        asterisk_username="test",
+        asterisk_password="test",
+        asterisk_app="local-route",
+        openai_key="test",
+        greeting="Hello",
+        ai_name="Test",
+        ai_role="Test assistant",
+    )
+
+    result = await wizard.save_setup_config(setup)
+
+    assert result["status"] == "success"
+    assert len(rewrite_threads) == 1
+    assert rewrite_threads[0] != loop_thread
+    assert "# Keep this note\n" in local.read_text()
+    assert yaml.safe_load(local.read_text())["asterisk"]["app_name"] == "local-route"

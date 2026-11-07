@@ -3,6 +3,7 @@ import yaml
 from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode, SequenceNode, ScalarNode
 import errno
+import io
 import os
 import re
 import asyncio
@@ -526,7 +527,279 @@ def _read_merged_config_content() -> str:
     return yaml.dump(merged, default_flow_style=False, sort_keys=False) if merged else ""
 
 
-def _write_local_config(content: str) -> None:
+class _CommentsNotKept(Exception):
+    """The local file's comments cannot be carried safely; write the plain dump."""
+
+
+def _kind(value) -> str:
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, dict):
+        return "map"
+    if isinstance(value, list):
+        return "seq"
+    if value is None:
+        return "null"
+    return type(value).__name__
+
+
+def _same(a, b) -> bool:
+    """Equality that also tells ``True`` from ``1`` and ``1`` from ``1.0``."""
+    if _kind(a) != _kind(b):
+        return False
+    if isinstance(a, dict):
+        if {(_kind(k), k) for k in a} != {(_kind(k), k) for k in b}:
+            return False
+        return all(_same(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    return a == b
+
+
+def _to_round_trip(value):
+    """Convert plain data for the round-trip dumper, quoting strings such as
+    ``on`` that a YAML 1.1 reader would not load as text."""
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+    from ruamel.yaml.scalarstring import SingleQuotedScalarString
+
+    if isinstance(value, dict):
+        out = CommentedMap()
+        for k, v in value.items():
+            out[k] = _to_round_trip(v)
+        return out
+    if isinstance(value, list):
+        return CommentedSeq(_to_round_trip(v) for v in value)
+    if isinstance(value, str):
+        tag = yaml.SafeLoader.resolve(yaml.SafeLoader, ScalarNode, value, (True, False))
+        if tag != "tag:yaml.org,2002:str":
+            return SingleQuotedScalarString(value)
+    return value
+
+
+# ruamel keeps the comment lines that follow an entry on the token that ends
+# it: the end-of-line comment, then every full-line comment up to the next key.
+# For a nested block value that token sits on its last leaf; a flow value keeps
+# it on its own key. After a ``|`` or ``>`` block scalar there is no
+# end-of-line part.
+
+def _tail_slot(node, key):
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+    from ruamel.yaml.scalarstring import FoldedScalarString, LiteralScalarString
+
+    value = node[key]
+    if isinstance(value, (CommentedMap, CommentedSeq)) and len(value) and not value.fa.flow_style():
+        last = list(value)[-1] if isinstance(value, CommentedMap) else len(value) - 1
+        return _tail_slot(value, last)
+    block = isinstance(value, (LiteralScalarString, FoldedScalarString))
+    return node, key, 0 if isinstance(node, CommentedSeq) else 2, block
+
+
+def _split_eol(text: str, block: bool = False):
+    if block:
+        return "", text
+    cut = text.find("\n") + 1
+    return (text[:cut], text[cut:]) if cut else (text, "")
+
+
+def _split_leading(text: str, column=None):
+    """Split *text* into what stays and the comment block that ends it, which
+    belongs to the key below at *column* (lines before a blank line, or at
+    another indent, belong to no key)."""
+    lines = text.splitlines(keepends=True)
+    cut = len(lines)
+    while cut:
+        line = lines[cut - 1]
+        body = line.lstrip(" ")
+        if not body.startswith("#") or (column is not None and len(line) - len(body) != column):
+            break
+        cut -= 1
+    return "".join(lines[:cut]), "".join(lines[cut:])
+
+
+def _key_column(node, key):
+    try:
+        return node.lc.key(key)[1]
+    except Exception:
+        return None
+
+
+def _take_tail(node, key) -> str:
+    owner, slot, pos, block = _tail_slot(node, key)
+    entry = owner.ca.items.get(slot)
+    if not entry or entry[pos] is None:
+        return ""
+    eol, rest = _split_eol(entry[pos].value, block)
+    # ruamel cannot emit an empty comment token, so drop it instead.
+    entry[pos] = _set_token(entry[pos], eol)
+    return rest
+
+
+def _give_tail(node, key, text: str, leading_column=False) -> None:
+    """Append *text* after the entry *key*. With *leading_column* set, first
+    drop the comment block above the next key at that column."""
+    from ruamel.yaml.error import CommentMark
+    from ruamel.yaml.tokens import CommentToken
+
+    owner, slot, pos, block = _tail_slot(node, key)
+    entry = owner.ca.items.setdefault(slot, [None, None, None, None])
+    token = entry[pos]
+    if token is None:
+        if text:
+            entry[pos] = CommentToken(("" if block else "\n") + text, CommentMark(0), None)
+        return
+    eol, rest = _split_eol(token.value, block)
+    if leading_column is not False:
+        rest = _split_leading(rest, leading_column)[0]
+    entry[pos] = _set_token(token, eol + rest + text)
+
+
+def _set_token(token, value: str):
+    token.value = value
+    return token if value else None
+
+
+def _delete_commented(node, key) -> None:
+    """Delete *key*, dropping its own comments and keeping the ones above the
+    next key where they were."""
+    from ruamel.yaml.error import CommentMark
+    from ruamel.yaml.tokens import CommentToken
+
+    keys = list(node)
+    index = keys.index(key)
+    column = _key_column(node, key)
+    tail = _take_tail(node, key)
+    if index:
+        _give_tail(node, keys[index - 1], tail, leading_column=column)
+    elif node.ca.comment and node.ca.comment[0] is not None:
+        # The parent key has an end-of-line comment: ruamel keeps the comment
+        # above this first key in that same token, shared with the parent.
+        token = node.ca.comment[0]
+        eol, rest = _split_eol(token.value)
+        lines = (_split_leading(rest, column)[0] + tail).splitlines(keepends=True)
+        pad = " " * (column or 0)
+        token.value = eol + "".join(pad + line.lstrip(" ") if line.strip() else line for line in lines)
+    else:
+        tokens = node.ca.comment[1] if node.ca.comment and node.ca.comment[1] else []
+        # These tokens hold their lines without the indent, so no column test.
+        above = _split_leading("".join(t.value for t in tokens))[0]
+        lines = (above + tail).splitlines(keepends=True)
+        # Comments above a first key are printed at the key's column.
+        fresh = [CommentToken(line.lstrip(" "), CommentMark(column or 0), None) for line in lines]
+        for token in tokens:
+            token.value = ""  # a parent entry may hold the same tokens
+        if node.ca.comment and node.ca.comment[1] is not None:
+            node.ca.comment[1][:] = fresh  # the parent entry shares this list
+        elif node.ca.comment:
+            node.ca.comment[1] = fresh
+        elif fresh:
+            node.ca.comment = [None, fresh]
+    del node[key]
+    if not len(node) and tail:
+        raise _CommentsNotKept("mapping emptied")
+
+
+def _sync_commented(target, desired: dict) -> None:
+    """Make round-trip mapping *target* equal *desired*, keeping its comments."""
+    for key in [k for k in target if k not in desired]:
+        _delete_commented(target, key)
+    added = [k for k in desired if k not in target]
+    for key, value in desired.items():
+        if key not in target:
+            continue
+        current = target[key]
+        if isinstance(value, dict) and isinstance(current, dict):
+            _sync_commented(current, value)
+        elif not _same(current, value):
+            tail = _take_tail(target, key)
+            target[key] = _to_round_trip(value)
+            _give_tail(target, key, tail)
+    if added:
+        tail = _take_tail(target, list(target)[-1]) if len(target) else ""
+        for key in added:
+            target[key] = _to_round_trip(desired[key])
+        _give_tail(target, added[-1], tail)
+
+
+def _guess_map_indent(text: str) -> int:
+    """Indent of the first nested mapping, as the file already uses it."""
+    parent = None
+    for line in text.splitlines():
+        body = line.strip()
+        if not body or body.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if parent is not None and indent > parent and not body.startswith("-"):
+            return indent - parent
+        parent = indent if body.endswith(":") else None
+    return 2
+
+
+_YAML_ENV_REFERENCE = re.compile(r"\$(?:\{|\w)")
+
+
+def _keep_local_comments(previous: bytes, content: str) -> str:
+    """
+    Carry comments from the current local file into *content*.
+
+    Callers build *content* with ``yaml.dump``, which drops every comment an
+    operator wrote in the file. Load the old file round-trip, change only the
+    keys that differ, and use the result if it loads to exactly the same data.
+    Otherwise *content* is returned unchanged.
+    """
+    try:
+        # The engine expands references in the YAML source before parsing.
+        # Quotes, layout and even comments can change the expanded document.
+        # Keep the plain dump when the file can depend on the engine's env.
+        if b"#" not in previous or _YAML_ENV_REFERENCE.search(content):
+            return content
+        text = previous.decode("utf-8")
+        if "\r" in text or _YAML_ENV_REFERENCE.search(text):
+            return content
+        desired = _safe_load_no_duplicates(content)
+        if not isinstance(desired, dict):
+            return content
+        if all(not line.strip() or line.lstrip().startswith("#") for line in text.splitlines()):
+            # Only comments so far, such as a starter template: keep them on top.
+            kept = text if text.endswith("\n") else text + "\n"
+            kept += content if desired else ""
+            return kept if _same(_safe_load_no_duplicates(kept) or {}, desired) else content
+        from ruamel.yaml import YAML
+        from ruamel.yaml.util import load_yaml_guess_indent
+
+        rt = YAML()
+        rt.preserve_quotes = True
+        # ruamel cannot keep how a long string was wrapped; writing it on one
+        # line changes fewer lines than re-wrapping it at another width.
+        rt.width = 4096
+        target, seq_indent, offset = load_yaml_guess_indent(text, yaml=rt)
+        if not isinstance(target, dict):
+            return content
+        map_indent = _guess_map_indent(text)
+        rt.indent(mapping=map_indent, sequence=seq_indent or map_indent, offset=offset or 0)
+        rt.representer.add_representer(
+            type(None), lambda r, _d: r.represent_scalar("tag:yaml.org,2002:null", "null")
+        )
+        first = next((s for s in (l.strip() for l in text.splitlines()) if s and not s.startswith("#")), "")
+        rt.explicit_start = first == "---"
+        _sync_commented(target, desired)
+        out = io.StringIO()
+        rt.dump(target, out)
+        kept = out.getvalue()
+        if not _same(_safe_load_no_duplicates(kept), desired):
+            return content
+        return kept
+    except Exception:
+        logger.debug("Could not keep comments in local config", exc_info=True)
+        return content
+
+
+def _write_local_config(content: str, *, keep_comments: bool = True) -> None:
     """
     Write *content* to the local override config file.
 
@@ -534,13 +807,14 @@ def _write_local_config(content: str) -> None:
     and normally performs an atomic temp-file + rename write. Docker cannot
     replace a path that is itself a bind-mount target (``EBUSY``), so that
     topology falls back to a validated, fsynced in-place rewrite with automatic
-    rollback to the backup if the rewrite fails.
+    rollback to the backup if the rewrite fails. Comments in the existing
+    file are kept unless *keep_comments* is false.
     """
     with _CONFIG_UPDATE_LOCK:
-        _write_local_config_locked(content)
+        _write_local_config_locked(content, keep_comments=keep_comments)
 
 
-def _write_local_config_locked(content: str) -> None:
+def _write_local_config_locked(content: str, *, keep_comments: bool = True) -> None:
     """Persist local config while the process-wide writer lock is held."""
     import datetime
     dir_path = os.path.dirname(settings.LOCAL_CONFIG_PATH)
@@ -560,6 +834,8 @@ def _write_local_config_locked(content: str) -> None:
                 dst.flush()
                 os.fsync(dst.fileno())
         _rotate_backups(settings.LOCAL_CONFIG_PATH)
+        if keep_comments:
+            content = _keep_local_comments(previous_bytes, content)
 
     # Preserve permissions from existing local or base file
     original_mode = None
@@ -1089,7 +1365,8 @@ def _persist_config_content_locked(
         migrated_warnings = validation.get("warnings")
         warnings = warnings if migrated_warnings is None else migrated_warnings
 
-    if _migrate_inline_provider_secrets(new_parsed):
+    secrets_migrated = _migrate_inline_provider_secrets(new_parsed)
+    if secrets_migrated:
         content = yaml.dump(new_parsed, default_flow_style=False, sort_keys=False)
         validation = _validate_ai_agent_config(content)
         migrated_warnings = validation.get("warnings")
@@ -1113,7 +1390,12 @@ def _persist_config_content_locked(
     local_content = yaml.dump(local_override or {}, default_flow_style=False, sort_keys=False)
 
     # Write to LOCAL override file (keeps base ai-agent.yaml clean for git)
-    _write_local_config(local_content)
+    if secrets_migrated:
+        # Comments may hold the old key material (a commented-out key line,
+        # "old: sk-..."); write the file without them.
+        _write_local_config(local_content, keep_comments=False)
+    else:
+        _write_local_config(local_content)
 
     decision = classify_config_change(old_merged, new_parsed)
     recommended_method = decision.recommended_apply_method

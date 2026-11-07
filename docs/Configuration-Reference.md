@@ -21,6 +21,8 @@ Operator customizations are stored in `config/ai-agent.local.yaml` (git-ignored)
 
 Keys in the local file win over the base file (deep merge — nested dicts are merged recursively, scalars are replaced). If the local file does not exist, the base file is used as-is.
 
+Admin UI saves preserve comments already in the local file when the rewrite can be verified. Saves fall back to plain YAML if the local file or saved data contains environment variable references such as `${NAME}` or `$NAME`, or if the save migrates an inline provider secret. The engine expands references before parsing the file, so retaining quotes or comments can change the expanded configuration. The Raw YAML editor shows the merged configuration without comments, so a comment typed there is discarded on save.
+
 This separation means `git pull` during updates will never conflict with operator config, eliminating the merge-conflict problem on `ai-agent.yaml`.
 
 ### ARI WebSocket silent-failure detection
