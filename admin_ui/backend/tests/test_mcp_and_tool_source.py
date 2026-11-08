@@ -163,7 +163,7 @@ async def test_a2a_tools_remain_in_catalog_fallback_without_sdk(monkeypatch):
     monkeypatch.setattr(tools_module.config_api, "_read_merged_config_dict", lambda: {
         "tools": ["malformed-but-nonempty"],
         "in_call_tools": {
-            "delegate": {"kind": "a2a_agent", "agent_url": "https://agent.example"},
+            "delegate": {"kind": "a2a_agent", "agent_url": "https://agent.example", "enabled": False},
         },
     })
 
@@ -172,5 +172,5 @@ async def test_a2a_tools_remain_in_catalog_fallback_without_sdk(monkeypatch):
     assert result.source == "local_fallback"
     tools = {tool.name: tool for tool in result.tools}
     assert tools["delegate"].phase == "in_call"
-    assert tools["delegate"].source == "http"
+    assert tools["delegate"].source == "a2a"
     assert "hangup_call" in tools

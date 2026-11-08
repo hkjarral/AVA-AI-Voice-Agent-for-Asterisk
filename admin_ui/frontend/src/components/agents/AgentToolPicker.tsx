@@ -31,6 +31,7 @@ const SOURCE_BADGE: Record<string, string> = {
     builtin: 'bg-indigo-100 text-indigo-700',
     http: 'bg-green-100 text-green-700',
     mcp: 'bg-amber-100 text-amber-700',
+    a2a: 'bg-violet-100 text-violet-700',
 };
 
 const AgentToolPicker: React.FC<Props> = ({
@@ -110,7 +111,7 @@ const AgentToolPicker: React.FC<Props> = ({
                                             {tool.description ? <HelpTooltip content={tool.description} /> : null}
                                             {tool.source ? (
                                                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${SOURCE_BADGE[tool.source] || 'bg-muted text-muted-foreground'}`}>
-                                                    {tool.source}
+                                                    {tool.source === 'a2a' ? 'A2A' : tool.source}
                                                 </span>
                                             ) : null}
                                             {tool.is_global ? (

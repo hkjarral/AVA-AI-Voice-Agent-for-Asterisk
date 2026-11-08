@@ -207,7 +207,7 @@ class ToolRegistry:
         """
         return [
             tool for tool in self._tools.values()
-            if tool.definition.phase == phase
+            if tool.definition.phase == phase and getattr(tool, "is_enabled", True)
         ]
     
     def get_global_tools(self, phase: Optional[ToolPhase] = None) -> List[Tool]:
@@ -222,7 +222,7 @@ class ToolRegistry:
         """
         tools = [
             tool for tool in self._tools.values()
-            if tool.definition.is_global
+            if tool.definition.is_global and getattr(tool, "is_enabled", True)
         ]
         if phase is not None:
             tools = [t for t in tools if t.definition.phase == phase]
@@ -304,7 +304,7 @@ class ToolRegistry:
         if context_tool_names:
             for name in context_tool_names:
                 tool = self.get(name)
-                if tool and tool.definition.phase == phase:
+                if tool and getattr(tool, "is_enabled", True) and tool.definition.phase == phase:
                     result_tools[tool.definition.name] = tool
         
         return list(result_tools.values())
@@ -320,12 +320,12 @@ class ToolRegistry:
 
     def _iter_tools_filtered(self, tool_names: Optional[List[str]]) -> Iterable[Tool]:
         if tool_names is None:
-            return self._tools.values()
+            return [tool for tool in self._tools.values() if getattr(tool, "is_enabled", True)]
         seen: Set[str] = set()
         tools: List[Tool] = []
         for name in tool_names:
             tool = self.get(name)
-            if not tool:
+            if not tool or not getattr(tool, "is_enabled", True):
                 continue
             tname = tool.definition.name
             if tname in seen:
@@ -341,7 +341,7 @@ class ToolRegistry:
         Returns:
             List of tool schemas for Deepgram
         """
-        return [tool.definition.to_deepgram_schema() for tool in self._tools.values()]
+        return [tool.definition.to_deepgram_schema() for tool in self._iter_tools_filtered(None)]
 
     def to_deepgram_schema_filtered(self, tool_names: Optional[List[str]]) -> List[Dict]:
         return [tool.definition.to_deepgram_schema() for tool in self._iter_tools_filtered(tool_names)]
@@ -353,7 +353,7 @@ class ToolRegistry:
         Returns:
             List of tool schemas for OpenAI Chat Completions (nested format)
         """
-        return [tool.definition.to_openai_schema() for tool in self._tools.values()]
+        return [tool.definition.to_openai_schema() for tool in self._iter_tools_filtered(None)]
 
     def to_openai_schema_filtered(self, tool_names: Optional[List[str]]) -> List[Dict]:
         return [tool.definition.to_openai_schema() for tool in self._iter_tools_filtered(tool_names)]
@@ -365,7 +365,7 @@ class ToolRegistry:
         Returns:
             List of tool schemas for OpenAI Realtime API (flat format)
         """
-        return [tool.definition.to_openai_realtime_schema() for tool in self._tools.values()]
+        return [tool.definition.to_openai_realtime_schema() for tool in self._iter_tools_filtered(None)]
 
     def to_openai_realtime_schema_filtered(self, tool_names: Optional[List[str]]) -> List[Dict]:
         return [tool.definition.to_openai_realtime_schema() for tool in self._iter_tools_filtered(tool_names)]
@@ -377,7 +377,7 @@ class ToolRegistry:
         Returns:
             List of tool schemas for ElevenLabs (client-side execution)
         """
-        return [tool.definition.to_elevenlabs_schema() for tool in self._tools.values()]
+        return [tool.definition.to_elevenlabs_schema() for tool in self._iter_tools_filtered(None)]
 
     def to_elevenlabs_schema_filtered(self, tool_names: Optional[List[str]]) -> List[Dict]:
         return [tool.definition.to_elevenlabs_schema() for tool in self._iter_tools_filtered(tool_names)]
@@ -389,11 +389,11 @@ class ToolRegistry:
         Returns:
             Formatted text description of all tools
         """
-        if not self._tools:
+        if not list(self._iter_tools_filtered(None)):
             return ""
         
         lines = ["Available tools:\n"]
-        for tool in self._tools.values():
+        for tool in self._iter_tools_filtered(None):
             lines.append(tool.definition.to_prompt_text())
             lines.append("")  # Blank line between tools
         
@@ -408,7 +408,7 @@ class ToolRegistry:
         """
         return [
             tool.definition.to_local_llm_schema()
-            for tool in self._tools.values()
+            for tool in self._iter_tools_filtered(None)
         ]
 
     def to_local_llm_schema_filtered(self, tool_names: Optional[List[str]]) -> List[Dict]:
@@ -422,14 +422,14 @@ class ToolRegistry:
         for local LLMs like Phi-3, Llama, etc.
         """
         import json
-        if not self._tools:
+        if not list(self._iter_tools_filtered(None)):
             return ""
         
         tools_json = json.dumps(self.to_local_llm_schema(), indent=2)
 
         # Keep rule text scoped to the tools we actually expose, to reduce
         # hallucinated tool calls (especially on smaller local models).
-        available_tool_names = [tool.definition.name for tool in self._tools.values()]
+        available_tool_names = [tool.definition.name for tool in self._iter_tools_filtered(None)]
         important_rules: list[str] = [
             "- Tool calls MUST use the exact <tool_call>...</tool_call> wrapper shown above. Do NOT invent other wrappers like <hangup_call>...</hangup_call>.",
             "- Tool name MUST match exactly one of the Tool Definitions. Never invent tool names. If no tool applies, respond normally without any tool call.",

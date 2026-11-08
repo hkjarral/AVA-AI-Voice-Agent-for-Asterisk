@@ -3,7 +3,7 @@ Tools API endpoints for testing HTTP tools before saving.
 """
 import asyncio
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 from typing import Dict, Any, Optional, List, Literal
 import httpx
@@ -26,6 +26,60 @@ from services.ari_endpoint_discovery import DestinationReview, validate_addition
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+async def _a2a_request(request: Request):
+    """Read bounded JSON without echoing credential-bearing validation input."""
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > 16384:
+            raise HTTPException(413, "A2A request is too large")
+        raw.extend(chunk)
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError()
+        return data
+    except (ValueError, UnicodeError):
+        raise HTTPException(422, "Expected an A2A settings object") from None
+
+
+@router.post("/a2a/credentials")
+async def stage_a2a_credentials(request: Request):
+    """Write an immutable private credential and return only its managed reference."""
+    from uuid import uuid4
+    raw = await _a2a_request(request)
+    token = raw.get("token")
+    if set(raw) != {"token"} or not isinstance(token, str) or not 1 <= len(token) <= 4096 or not re.fullmatch(r"[A-Za-z0-9._~+/-]+=*", token):
+        raise HTTPException(422, "Enter a valid Bearer token of at most 4096 characters")
+    identifier = "a2a-tool-" + uuid4().hex
+    await asyncio.to_thread(config_api._write_provider_secret, identifier, "api-key", token.encode())
+    return {"bearer_token_file": config_api._provider_secret_path(identifier, "api-key")}
+
+
+@router.post("/a2a/validate")
+async def validate_a2a_settings(request: Request):
+    """Validate draft A2A settings without contacting the remote service."""
+    from services.a2a_tools import validate_document
+    raw = await _a2a_request(request)
+    name, doc = raw.get("name"), raw.get("config")
+    if not isinstance(name, str) or not isinstance(doc, dict):
+        raise HTTPException(422, "Enter a tool name and A2A settings")
+    _validate_tool_name(name, max_length=64)
+    cfg = _load_cfg()
+    previous = (cfg.get("in_call_tools") or {}).get(name)
+    if _raw_name_exists(cfg, name) and (not isinstance(previous, dict) or previous.get("kind") != "a2a_agent"):
+        raise HTTPException(409, "That tool name is already in use")
+    validate_document(name, doc, previous)
+    return {"valid": True}
+
+
+@router.get("/a2a/{name}/usage")
+def get_a2a_usage(name: str):
+    """Return saved Agent assignments before offering tool deletion."""
+    from services.a2a_tools import agent_usage
+    _validate_tool_name(name, max_length=64)
+    return {"agents": agent_usage({name})[name]}
 
 
 @router.post("/transfer-destinations/validate")
@@ -91,7 +145,7 @@ async def review_http_template(request: HTTPTemplateReview):
 
 
 def _validate_http_tool_template(doc: Dict[str, Any], phase: str) -> None:
-    if doc.get("kind") == "pushover":
+    if doc.get("kind") in {"pushover", "a2a_agent"}:
         return
     try:
         assert_valid_template(doc, phase)
@@ -357,7 +411,7 @@ def _http_tool_names_from_config(cfg: dict) -> set[str]:
     return names
 
 
-def _classify_tool_source(name: str, http_tool_names: set[str]) -> str:
+def _classify_tool_source(name: str, http_tool_names: set[str], a2a_tool_names=None) -> str:
     """Best-effort classification of a tool's origin (builtin / http / mcp).
 
     LOW-T6: the engine does not expose an authoritative `source` field on its
@@ -375,6 +429,8 @@ def _classify_tool_source(name: str, http_tool_names: set[str]) -> str:
     If a future engine release adds an explicit `source` on tool definitions,
     prefer it over this heuristic at the call site.
     """
+    if name in (a2a_tool_names or set()):
+        return "a2a"
     if name.startswith("mcp_"):
         return "mcp"
     if name in http_tool_names:
@@ -399,6 +455,10 @@ async def get_tool_catalog():
         merged_cfg = {}
 
     http_tool_names = _http_tool_names_from_config(merged_cfg)
+    a2a_tool_names = {
+        name for name, doc in (merged_cfg.get("in_call_tools") if isinstance(merged_cfg.get("in_call_tools"), dict) else {}).items()
+        if isinstance(doc, dict) and doc.get("kind") == "a2a_agent"
+    }
 
     # Preferred: ask ai-engine (authoritative for what is actually registered/runnable).
     for base in _ai_engine_base_urls():
@@ -423,10 +483,12 @@ async def get_tool_catalog():
                 # LOW-T6: prefer an engine-provided authoritative source if present;
                 # otherwise fall back to the (robustified) heuristic.
                 engine_source = str(item.get("source") or "").strip().lower()
-                if engine_source in ("builtin", "http", "mcp"):
+                if name in a2a_tool_names:
+                    source = "a2a"
+                elif engine_source in ("builtin", "http", "mcp", "a2a"):
                     source = engine_source
                 else:
-                    source = _classify_tool_source(name, http_tool_names)
+                    source = _classify_tool_source(name, http_tool_names, a2a_tool_names)
 
                 params_raw = item.get("parameters") if isinstance(item.get("parameters"), list) else []
                 params_out: List[ToolParameterInfo] = []
@@ -499,7 +561,7 @@ async def get_tool_catalog():
             name = str(getattr(d, "name", "") or "").strip()
             if not name:
                 continue
-            source = _classify_tool_source(name, http_tool_names)  # LOW-T6
+            source = _classify_tool_source(name, http_tool_names, a2a_tool_names)  # LOW-T6
             params_out: List[ToolParameterInfo] = []
             for p in (getattr(d, "parameters", None) or []):
                 params_out.append(
@@ -994,7 +1056,7 @@ _PHASE_TO_KIND = {
 }
 # Recognized `kind` values per config block.
 _TOOLS_BLOCK_KINDS = {"generic_http_lookup", "generic_webhook", "pushover"}
-_IN_CALL_BLOCK_KINDS = {"in_call_http_lookup", "pushover"}
+_IN_CALL_BLOCK_KINDS = {"in_call_http_lookup", "pushover", "a2a_agent"}
 
 _SUPPORTED_HTTP_METHODS = frozenset(
     {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
@@ -1120,6 +1182,12 @@ class ManagedToolWrite(BaseModel):
     parameters: Optional[List[ManagedToolParameter]] = None
     return_raw_json: Optional[bool] = None
     error_message: Optional[str] = None
+    agent_url: Optional[str] = None
+    bearer_token_file: Optional[str] = None
+    bearer_token_env: Optional[str] = None
+    poll_interval_ms: Optional[int] = None
+    max_input_chars: Optional[int] = None
+    max_response_chars: Optional[int] = None
 
     recipients: Optional[Dict[str, Any]] = None
     token_file: Optional[str] = None
@@ -1214,6 +1282,12 @@ class ManagedToolPatch(BaseModel):
     parameters: Optional[List[ManagedToolParameter]] = None
     return_raw_json: Optional[bool] = None
     error_message: Optional[str] = None
+    agent_url: Optional[str] = None
+    bearer_token_file: Optional[str] = None
+    bearer_token_env: Optional[str] = None
+    poll_interval_ms: Optional[int] = None
+    max_input_chars: Optional[int] = None
+    max_response_chars: Optional[int] = None
 
     recipients: Optional[Dict[str, Any]] = None
     token_file: Optional[str] = None
@@ -1422,6 +1496,10 @@ def _resolve_kind(phase: str, kind: Optional[str]) -> str:
     a mismatched or unknown value is rejected with 422. An empty/missing value
     is derived from the phase.
     """
+    if kind == "a2a_agent":
+        if phase != "in_call":
+            raise HTTPException(422, "A2A tools only support the in-call phase")
+        return kind
     if kind == "pushover":
         return "pushover"
     expected = _kind_for_phase(phase)
@@ -1437,6 +1515,11 @@ def _resolve_kind(phase: str, kind: Optional[str]) -> str:
 
 def _build_tool_doc(data: Dict[str, Any], phase: str) -> Dict[str, Any]:
     """Build the stored tool config dict from validated input (None values dropped)."""
+    if data.get("kind") == "a2a_agent":
+        from services.a2a_tools import validate_document
+        doc = {key: value for key, value in data.items() if value is not None and key not in {"name", "method", "headers"}}
+        previous = ((_load_cfg().get("in_call_tools") or {}).get(data.get("name")) or {})
+        return validate_document(data.get("name") or "a2a_tool", {**doc, "phase": phase}, previous)
     if data.get("kind") == "pushover":
         from src.integrations.pushover import PushoverToolConfig
         from src.integrations.pushover_templates import review_templates
@@ -1551,6 +1634,8 @@ def _to_out(
     apply_result: Optional[dict] = None,
 ) -> ManagedToolOut:
     phase = _phase_for(block, doc)
+    if doc.get("kind") == "a2a_agent":
+        doc = {key: value for key, value in doc.items() if key not in {"token", "bearer_token", "api_key"}}
     return ManagedToolOut(
         name=name,
         phase=phase,
@@ -1614,14 +1699,14 @@ async def list_managed_tools():
 async def create_managed_tool(body: ManagedToolWrite):
     """Create a new managed HTTP tool and persist it to the config."""
     name = (body.name or "").strip()
-    _validate_tool_name(name, max_length=64 if body.kind == "pushover" else None)
+    _validate_tool_name(name, max_length=64 if body.kind in {"pushover", "a2a_agent"} else None)
 
     cfg = _load_cfg()
     if _raw_name_exists(cfg, name):
         raise HTTPException(status_code=409, detail=f"A tool named '{name}' already exists")
 
     block = _block_for_phase(body.phase)
-    doc = _build_tool_doc(body.model_dump(exclude_none=True), body.phase)
+    doc = _build_tool_doc({**body.model_dump(exclude_none=True), "name": name}, body.phase)
     await _validate_summary_provider_selection(doc)
 
     section = cfg.setdefault(block, {})
@@ -1646,14 +1731,14 @@ async def get_managed_tool(name: str):
 @router.put("/managed/{name}", response_model=ManagedToolOut)
 async def replace_managed_tool(name: str, body: ManagedToolWrite):
     """Replace a managed HTTP tool's full configuration (changing phase moves it between blocks)."""
-    _validate_tool_name(name, max_length=64 if body.kind == "pushover" else None)
+    _validate_tool_name(name, max_length=64 if body.kind in {"pushover", "a2a_agent"} else None)
     cfg = _load_cfg()
     cur_block, _ = _find_managed_tool(cfg, name)
     if cur_block is None:
         raise HTTPException(status_code=404, detail=f"Tool '{name}' not found")
 
     target_block = _block_for_phase(body.phase)
-    doc = _build_tool_doc(body.model_dump(exclude_none=True), body.phase)
+    doc = _build_tool_doc({**body.model_dump(exclude_none=True), "name": name}, body.phase)
     await _validate_summary_provider_selection(doc)
 
     _remove_tool_everywhere(cfg, name)
@@ -1697,6 +1782,14 @@ async def patch_managed_tool(name: str, body: ManagedToolPatch):
     # rejecting any mismatched client-supplied kind.
     current_kind = cur_doc.get("kind")
     requested_kind = patch.get("kind")
+    if current_kind == "a2a_agent":
+        from services.a2a_tools import validate_document
+        if requested_kind not in (None, "a2a_agent") or new_phase != "in_call":
+            raise HTTPException(422, "A2A tool type and phase cannot change")
+        validate_document(name, merged, cur_doc)
+        cfg[cur_block][name] = merged
+        apply_result = await _persist_cfg(cfg)
+        return _to_out(cur_block, name, merged, apply_result)
     if current_kind == "pushover" and requested_kind not in (None, "", "pushover"):
         raise HTTPException(status_code=422, detail="kind cannot be changed for a Pushover tool")
     merged["kind"] = _resolve_kind(

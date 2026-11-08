@@ -9,10 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A2A Admin setup (#817):** configure remote A2A endpoints, managed Bearer
+  credentials and execution limits in Tools; assign access under Agents → Tools
+  with an A2A badge. Preserve YAML-defined settings, protect assigned tools from
+  deletion, and omit disabled tools from model offers while retaining Admin
+  catalog discovery.
+
 - **A2A agent delegation:** add an optional YAML-configured in-call tool that
   delegates one bounded text request to a separately deployed Agent2Agent 1.0
   service through the official SDK. Agent Card discovery is public; authenticated
-  task traffic stays on the configured origin, credentials come only from the
+  task traffic stays on the configured origin, credentials come from managed files or the
   Engine environment, and uncertain requests are never retried automatically.
   Keep other tools available when an A2A entry is invalid at startup or Admin
   cannot reach the Engine. Cancel known remote work on Google Live teardown

@@ -437,3 +437,92 @@ describe('Tools persistence and apply outcomes', () => {
         expect(axios.post).not.toHaveBeenCalled();
     });
 });
+
+describe('A2A setup', () => {
+    const credential = '/app/project/secrets/providers/a2a-tool-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/api-key';
+    it('creates a credential-backed A2A tool and saves/applies without changing HTTP tools', async () => {
+        vi.mocked(axios.post).mockImplementation(async url => ({ data: url === '/api/tools/a2a/credentials' ? { bearer_token_file: credential } : url === '/api/tools/a2a/validate' ? { valid: true } : url === '/api/config/yaml' ? { recommended_apply_method: 'hot_reload' } : { tool_generation: 9 } }));
+        render(<ToolsPage />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Add Tool' }));
+        fireEvent.change(screen.getByLabelText('Tool type'), { target: { value: 'a2a_agent' } });
+        fireEvent.change(screen.getByLabelText('Tool Name'), { target: { value: 'delegate' } });
+        fireEvent.change(screen.getByLabelText('Agent endpoint'), { target: { value: 'https://agent.example.com' } });
+        fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Research a caller request' } });
+        fireEvent.change(screen.getByLabelText('Authentication'), { target: { value: 'token' } });
+        fireEvent.change(screen.getByLabelText('Bearer token'), { target: { value: 'fixture-private-token' } });
+        expect(screen.queryByRole('button', { name: 'Send test request' })).not.toBeInTheDocument();
+        expect(screen.queryByLabelText('Global (all contexts)')).not.toBeInTheDocument();
+        expect(screen.queryByLabelText('Generate AI Summary')).not.toBeInTheDocument();
+        expect(screen.queryByText(/Test sends a real HTTP request/)).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Update tool' }));
+        await screen.findByRole('button', { name: 'Configure delegate' });
+        fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
+        await screen.findByText(/Applied as tool generation 9/);
+        const saved = postedConfig();
+        const a2a = (saved.in_call_tools as Record<string, unknown>).delegate;
+        expect(a2a).toEqual({kind: 'a2a_agent', phase: 'in_call', enabled: true, agent_url: 'https://agent.example.com', description: 'Research a caller request', timeout_ms: 15000, bearer_token_file: credential});
+        expect(saved.in_call_tools.lookup).toEqual(fixture().in_call_tools.lookup);
+        expect(saved.tools).toEqual(fixture().tools);
+        expect(JSON.stringify(saved)).not.toContain('fixture-private-token');
+    });
+
+    it('retains YAML extension fields and existing credentials on edit', async () => {
+        const cfg = {...fixture(), in_call_tools: {...fixture().in_call_tools, delegate: {kind: 'a2a_agent', agent_url: 'https://agent.example.com', bearer_token_env: 'OLD_TOKEN', extension: { keep: true }}}};
+        mocks.load.mockResolvedValue({ config: cfg, yamlError: null });
+        render(<ToolsPage />);
+        await open('delegate');
+        expect(screen.getByText(/Engine environment reference · OLD_TOKEN/)).toBeInTheDocument();
+        fireEvent.change(screen.getByLabelText('Agent endpoint'), { target: { value: 'https://agent.example.com/v2' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Update tool' }));
+        await screen.findByRole('button', { name: 'Configure delegate' });
+        fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
+        await screen.findByText(/Applied as tool generation 9/);
+        expect((postedConfig().in_call_tools as Record<string, unknown>).delegate).toEqual({...cfg.in_call_tools.delegate, agent_url: 'https://agent.example.com/v2'});
+    });
+
+    it('keeps the editor open after validation fails', async () => {
+        vi.mocked(axios.post).mockRejectedValue({response: {data: {detail: 'A2A agent_url is invalid'}}});
+        render(<ToolsPage />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Add Tool' }));
+        fireEvent.change(screen.getByLabelText('Tool type'), { target: { value: 'a2a_agent' } });
+        fireEvent.change(screen.getByLabelText('Tool Name'), { target: { value: 'delegate' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Update tool' }));
+        expect(await screen.findByRole('alert')).toHaveTextContent('A2A agent_url is invalid');
+        expect(screen.getByLabelText('Tool Name')).toHaveValue('delegate');
+        expect(screen.queryByRole('button', { name: 'Configure delegate' })).not.toBeInTheDocument();
+    });
+});
+
+it.each([true, false])('blocks A2A deletion while assigned or usage is unavailable (%s)', async assigned => {
+    const cfg = {...fixture(), in_call_tools: {...fixture().in_call_tools, delegate: {kind: 'a2a_agent', agent_url: 'https://agent.example.com'}}};
+    mocks.load.mockResolvedValue({ config: cfg, yamlError: null });
+    vi.mocked(axios.get).mockImplementation(async url => {
+        if (String(url).endsWith('/delegate/usage')) {
+            if (!assigned) throw new Error('Offline');
+            return {data: {agents: [{slug: 'sales', name: 'Sales'}]}};
+        }
+        return {data: {tools: [], providers: []}};
+    });
+    render(<ToolsPage />);
+    fireEvent.click(await screen.findByRole('button', {name: 'Delete delegate'}));
+    await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/tools/a2a/delegate/usage'));
+    await act(async () => {});
+    expect(mocks.confirm).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', {name: 'Configure delegate'})).toBeInTheDocument();
+    expect(screen.queryByRole('button', {name: 'Save & Apply'})).not.toBeInTheDocument();
+});
+
+it('does not stage a cancelled A2A edit when validation finishes late', async () => {
+    let finish: ((result: {data: {valid: boolean}}) => void) | undefined;
+    vi.mocked(axios.post).mockImplementation(url => String(url).endsWith('/a2a/validate') ? new Promise(resolve => { finish = resolve; }) : Promise.resolve({data: {}}));
+    render(<ToolsPage />);
+    fireEvent.click(await screen.findByRole('button', {name: 'Add Tool'}));
+    fireEvent.change(screen.getByLabelText('Tool type'), {target: {value: 'a2a_agent'}});
+    fireEvent.change(screen.getByLabelText('Tool Name'), {target: {value: 'delegate'}});
+    fireEvent.click(screen.getByRole('button', {name: 'Update tool'}));
+    await waitFor(() => expect(finish).toBeDefined());
+    fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
+    await act(async () => { finish?.({data: {valid: true}}); });
+    expect(screen.queryByRole('button', {name: 'Configure delegate'})).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', {name: 'Save & Apply'})).not.toBeInTheDocument();
+});
