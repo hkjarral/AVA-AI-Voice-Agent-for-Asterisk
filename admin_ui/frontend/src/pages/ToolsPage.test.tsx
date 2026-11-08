@@ -446,7 +446,7 @@ describe('A2A setup', () => {
         fireEvent.click(await screen.findByRole('button', { name: 'Add Tool' }));
         fireEvent.change(screen.getByLabelText('Tool type'), { target: { value: 'a2a_agent' } });
         fireEvent.change(screen.getByLabelText('Tool Name'), { target: { value: 'delegate' } });
-        fireEvent.change(screen.getByLabelText('Agent endpoint'), { target: { value: 'https://agent.example' } });
+        fireEvent.change(screen.getByLabelText('Agent endpoint'), { target: { value: 'https://agent.example.com' } });
         fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Research a caller request' } });
         fireEvent.change(screen.getByLabelText('Authentication'), { target: { value: 'token' } });
         fireEvent.change(screen.getByLabelText('Bearer token'), { target: { value: 'fixture-private-token' } });
@@ -460,24 +460,24 @@ describe('A2A setup', () => {
         await screen.findByText(/Applied as tool generation 9/);
         const saved = postedConfig();
         const a2a = (saved.in_call_tools as Record<string, unknown>).delegate;
-        expect(a2a).toEqual({kind: 'a2a_agent', phase: 'in_call', enabled: true, agent_url: 'https://agent.example', description: 'Research a caller request', timeout_ms: 15000, bearer_token_file: credential});
+        expect(a2a).toEqual({kind: 'a2a_agent', phase: 'in_call', enabled: true, agent_url: 'https://agent.example.com', description: 'Research a caller request', timeout_ms: 15000, bearer_token_file: credential});
         expect(saved.in_call_tools.lookup).toEqual(fixture().in_call_tools.lookup);
         expect(saved.tools).toEqual(fixture().tools);
         expect(JSON.stringify(saved)).not.toContain('fixture-private-token');
     });
 
     it('retains YAML extension fields and existing credentials on edit', async () => {
-        const cfg = {...fixture(), in_call_tools: {...fixture().in_call_tools, delegate: {kind: 'a2a_agent', agent_url: 'https://agent.example', bearer_token_env: 'OLD_TOKEN', extension: { keep: true }}}};
+        const cfg = {...fixture(), in_call_tools: {...fixture().in_call_tools, delegate: {kind: 'a2a_agent', agent_url: 'https://agent.example.com', bearer_token_env: 'OLD_TOKEN', extension: { keep: true }}}};
         mocks.load.mockResolvedValue({ config: cfg, yamlError: null });
         render(<ToolsPage />);
         await open('delegate');
         expect(screen.getByText(/Engine environment reference · OLD_TOKEN/)).toBeInTheDocument();
-        fireEvent.change(screen.getByLabelText('Agent endpoint'), { target: { value: 'https://agent.example/v2' } });
+        fireEvent.change(screen.getByLabelText('Agent endpoint'), { target: { value: 'https://agent.example.com/v2' } });
         fireEvent.click(screen.getByRole('button', { name: 'Update tool' }));
         await screen.findByRole('button', { name: 'Configure delegate' });
         fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
         await screen.findByText(/Applied as tool generation 9/);
-        expect((postedConfig().in_call_tools as Record<string, unknown>).delegate).toEqual({...cfg.in_call_tools.delegate, agent_url: 'https://agent.example/v2'});
+        expect((postedConfig().in_call_tools as Record<string, unknown>).delegate).toEqual({...cfg.in_call_tools.delegate, agent_url: 'https://agent.example.com/v2'});
     });
 
     it('keeps the editor open after validation fails', async () => {
@@ -494,7 +494,7 @@ describe('A2A setup', () => {
 });
 
 it.each([true, false])('blocks A2A deletion while assigned or usage is unavailable (%s)', async assigned => {
-    const cfg = {...fixture(), in_call_tools: {...fixture().in_call_tools, delegate: {kind: 'a2a_agent', agent_url: 'https://agent.example'}}};
+    const cfg = {...fixture(), in_call_tools: {...fixture().in_call_tools, delegate: {kind: 'a2a_agent', agent_url: 'https://agent.example.com'}}};
     mocks.load.mockResolvedValue({ config: cfg, yamlError: null });
     vi.mocked(axios.get).mockImplementation(async url => {
         if (String(url).endsWith('/delegate/usage')) {
