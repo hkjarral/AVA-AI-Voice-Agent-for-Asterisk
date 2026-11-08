@@ -1248,6 +1248,9 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
                     raise HTTPException(400, "A2A tool name is reserved or already in use")
                 try:
                     parse_a2a_agent_config(name, doc)
+                    from services.a2a_tools import validate_document
+                    previous = ((_read_merged_config_dict() or {}).get("in_call_tools") or {}).get(name)
+                    validate_document(name, doc, previous)
                 except (TypeError, ValueError) as exc:
                     raise HTTPException(400, str(exc)) from None
 
@@ -1402,6 +1405,9 @@ def _persist_config_content_locked(
         new_parsed,
         trusted_profile_reset=trusted_profile_reset,
     )
+
+    from services.a2a_tools import protect_assigned_tools
+    protect_assigned_tools(old_merged, new_parsed)
 
     # Convert desired merged config into a minimal local override (supports deletions).
     base = _read_base_config_dict()
@@ -1712,6 +1718,9 @@ def _redact_websocket_media_secrets(config: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(section, dict):
             continue
         for doc in section.values():
+            if isinstance(doc, dict) and doc.get("kind") == "a2a_agent":
+                for secret in ("token", "bearer_token", "api_key"):
+                    doc.pop(secret, None)
             if isinstance(doc, dict) and doc.get("kind") == "pushover":
                 for secret in ("token", "application_token", "app_token", "user", "user_key", "group_key", "key", "recipient_key"):
                     doc.pop(secret, None)

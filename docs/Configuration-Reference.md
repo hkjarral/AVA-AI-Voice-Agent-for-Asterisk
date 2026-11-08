@@ -892,6 +892,27 @@ HTTP tools are configured in YAML and/or via the Admin UI:
 
 See `docs/TOOL_CALLING_GUIDE.md` for full examples and variable substitution details.
 
+### A2A tools
+
+A2A tools live under `in_call_tools:<name>` with `kind: a2a_agent`. Configure them
+in **Tools → In-Call → Add Tool → A2A Agent**, then assign under **Agents → Tools
+→ In-call**. They require explicit Agent access.
+
+- `agent_url`: A2A 1.0 service base URL; no credentials, query or fragment.
+- `description`: explains when the voice agent should delegate.
+- `enabled`: boolean, defaults to `true`; disabled tools cannot execute.
+- `bearer_token_file`: optional managed A2A credential reference, created by Admin.
+- `bearer_token_env`: optional Engine environment variable; mutually exclusive
+  with the file reference. New Admin references require `AVA_A2A_` or `AAVA_A2A_`.
+- `timeout_ms`: 1,000–120,000 (default 15,000).
+- `poll_interval_ms`: 50–5,000 (default 250).
+- `max_input_chars`: 1–16,000 (default 4,000).
+- `max_response_chars`: 1–8,000 (default 1,000).
+- `error_message`: caller-facing failure text.
+
+Bearer authentication requires HTTPS except on loopback. See the
+[A2A setup guide](A2A-Agent-Tool.md) for credential backup, lifecycle and deletion.
+
 ### Background Music
 
 Play ambient music during AI conversations. Music is mixed into the call audio.

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
+A2A_SECRETS_ROOT = "/app/project/secrets/providers"
+
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -36,6 +38,8 @@ class A2AAgentConfig:
     agent_url: str
     description: str = "Delegate a request to a remote A2A agent."
     bearer_token_env: str | None = None
+    bearer_token_file: str | None = None
+    enabled: bool = True
     timeout_ms: int = 15000
     poll_interval_ms: int = 250
     max_input_chars: int = 4000
@@ -57,7 +61,24 @@ class A2AAgentConfig:
             self.error_message, str
         ):
             raise TypeError("A2A description and error_message must be text")
-        if self.bearer_token_env is not None:
+        if type(self.enabled) is not bool:
+            raise ValueError("A2A enabled must be a boolean")
+        if self.bearer_token_file is not None and not isinstance(self.bearer_token_file, str):
+            raise ValueError("A2A bearer_token_file must be a managed credential path")
+        if self.bearer_token_file:
+            from pathlib import Path
+
+            from src.config.provider_instances import safe_secret_path
+
+            path = Path(self.bearer_token_file)
+            if not re.fullmatch(r"a2a-tool-[a-f0-9]{32}", path.parent.name):
+                raise ValueError("A2A token must reference a managed A2A credential")
+            expected = safe_secret_path(path.parent.name, "api-key", root=A2A_SECRETS_ROOT)
+            if str(path) != expected:
+                raise ValueError("A2A token must reference a managed A2A credential")
+            if self.bearer_token_env:
+                raise ValueError("Choose one A2A credential source")
+        if self.bearer_token_env or self.bearer_token_file:
             parsed = urlsplit(self.agent_url)
             if parsed.scheme != "https" and parsed.hostname not in {
                 "localhost",
@@ -92,6 +113,8 @@ def parse_a2a_agent_config(name: str, config: dict[str, Any]) -> A2AAgentConfig:
         "agent_url",
         "description",
         "bearer_token_env",
+        "bearer_token_file",
+        "enabled",
         "timeout_ms",
         "poll_interval_ms",
         "max_input_chars",

@@ -81,12 +81,22 @@ class A2AAgentTool(Tool):
         return self._definition
 
     def _headers(self) -> dict[str, str]:
-        if not self.config.bearer_token_env:
+        if self.config.bearer_token_file:
+            from pathlib import Path
+
+            from src.config.provider_instances import read_secret_file_for_provider
+            from src.tools.a2a_config import A2A_SECRETS_ROOT
+
+            token = read_secret_file_for_provider(
+                Path(self.config.bearer_token_file).parent.name, "api-key", root=A2A_SECRETS_ROOT
+            )
+        elif self.config.bearer_token_env:
+            token = os.environ.get(self.config.bearer_token_env)
+        else:
             return {}
-        token = os.environ.get(self.config.bearer_token_env)
         if not token or token != token.strip() or "\r" in token or "\n" in token:
             raise ValueError(
-                "A2A bearer token environment variable is missing or invalid"
+                "A2A bearer credential is missing or invalid"
             )
         return {"Authorization": f"Bearer {token}"}
 
@@ -107,7 +117,7 @@ class A2AAgentTool(Tool):
             )
         _validate_agent_card(card, self.config.agent_url)
         async with httpx.AsyncClient(
-            headers=self._headers(), timeout=timeout, follow_redirects=False
+            headers=await asyncio.to_thread(self._headers), timeout=timeout, follow_redirects=False
         ) as transport:
             client = ClientFactory(
                 ClientConfig(
@@ -272,6 +282,8 @@ class A2AAgentTool(Tool):
     async def execute(
         self, parameters: dict[str, Any], context: ToolExecutionContext
     ) -> dict[str, Any]:
+        if not self.config.enabled:
+            return {"status": "error", "message": "This A2A tool is disabled."}
         message = parameters.get("message")
         if not isinstance(message, str) or not message.strip():
             return {

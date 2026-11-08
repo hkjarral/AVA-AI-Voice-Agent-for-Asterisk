@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseAgentConfig, serializeAgentConfig } from './agentToolConfig';
+import { parseAgentConfig, serializeAgentConfig, isToolChecked, toggleTool } from './agentToolConfig';
 
 describe('Calendly appointment policy matches runtime defaults', () => {
     it('shows and preserves inherited access when no policy is stored', () => {
@@ -257,5 +257,30 @@ describe('per-agent calendar and voicemail resource policies', () => {
         expect(stored.voicemail).toEqual({
             mailbox_policy: 'future_policy', mailbox_key: 'executive',
         });
+    });
+});
+
+describe('A2A assignment', () => {
+    it('stores new A2A access in tools_json and preserves inline HTTP configuration', () => {
+        const state = parseAgentConfig({tools_json: JSON.stringify(['hangup_call']), extra_json: JSON.stringify({in_call_http_tools: {inline_lookup: {url: 'https://example.com'}}})});
+        const tool = {name: 'delegate', phase: 'in_call', source: 'a2a'};
+        const selected = toggleTool(state, tool);
+        expect(isToolChecked(selected, tool)).toBe(true);
+        const saved = serializeAgentConfig(selected);
+        expect(JSON.parse(saved.tools_json || '[]')).toEqual(['hangup_call', 'delegate']);
+        expect(JSON.parse(saved.extra_json || '{}').in_call_http_tools).toEqual({inline_lookup: {url: 'https://example.com'}});
+    });
+
+    it('shows and revokes older A2A selections from either list without disturbing HTTP tools', () => {
+        const tool = {name: 'delegate', phase: 'in_call', source: 'a2a'};
+        const state = parseAgentConfig({tools_json: JSON.stringify(['delegate', 'hangup_call']), extra_json: JSON.stringify({in_call_http_tools: ['delegate', 'lookup']})});
+        expect(isToolChecked(state, tool)).toBe(true);
+        const revoked = toggleTool(state, tool);
+        expect(isToolChecked(revoked, tool)).toBe(false);
+        expect(revoked.inCallTools).toEqual(['hangup_call']);
+        expect(revoked.inCallHttpTools).toEqual(['lookup']);
+        const selected = toggleTool(revoked, tool);
+        expect(selected.inCallTools).toEqual(['hangup_call', 'delegate']);
+        expect(selected.inCallHttpTools).toEqual(['lookup']);
     });
 });

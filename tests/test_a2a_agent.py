@@ -531,3 +531,29 @@ async def test_hangup_during_timeout_cancel_keeps_transport_open(cancel_complete
             await operation
         except asyncio.CancelledError:
             pass
+
+
+@pytest.mark.asyncio
+async def test_disabled_tool_never_discovers_or_sends():
+    client = FakeClient(_task_event(TaskState.TASK_STATE_COMPLETED))
+    tool = _tool(client, enabled=False)
+    result = await tool.execute({'message': 'Hello'}, None)
+    assert result['status'] == 'error'
+    assert client.sent == 0
+
+
+def test_managed_credential_headers_and_symlink_rejection(monkeypatch, tmp_path):
+    from src.tools import a2a_config
+    monkeypatch.setattr(a2a_config, 'A2A_SECRETS_ROOT', str(tmp_path))
+    folder = tmp_path / ('a2a-tool-' + 'a' * 32)
+    folder.mkdir()
+    token = folder / 'api-key'
+    token.write_text('fixture-bearer')
+    tool = A2AAgentTool(A2AAgentConfig(name='delegate', agent_url='https://agent.example', bearer_token_file=str(token)))
+    assert tool._headers() == {'Authorization': 'Bearer fixture-bearer'}
+    token.unlink()
+    outside = tmp_path / 'other-secret'
+    outside.write_text('private')
+    token.symlink_to(outside)
+    with pytest.raises(OSError):
+        tool._headers()

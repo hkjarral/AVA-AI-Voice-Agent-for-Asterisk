@@ -47,6 +47,15 @@ apply/restart controls. Stale engine status is labeled rather than treated as
 success. Existing credential upload/connect/disconnect and email-template saves
 retain their immediate operations; they are not undone by returning to the list.
 
+### A2A remote agents
+
+Use **Tools → In-Call → Add Tool → A2A Agent** for endpoint, description,
+optional Bearer credential and timeout. **Update tool** stages the edit and
+**Save & Apply** activates it for new calls. Then grant access under **Agents →
+Edit Agent → Tools → In-call** using the **A2A** badge. Assigned tools cannot be
+deleted until removed from all saved Agents. See the [A2A setup guide](../docs/A2A-Agent-Tool.md)
+for advanced limits, YAML compatibility and credential backup.
+
 ### What You'll Learn
 
 - Setting up pre-call CRM lookups (fetch customer data before AI speaks)
