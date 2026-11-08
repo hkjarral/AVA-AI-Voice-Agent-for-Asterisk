@@ -77,6 +77,11 @@ class A2AAgentTool(Tool):
         )
 
     @property
+    def is_enabled(self) -> bool:
+        """Keep disabled A2A tools discoverable but out of per-call offers."""
+        return self.config.enabled
+
+    @property
     def definition(self) -> ToolDefinition:
         return self._definition
 

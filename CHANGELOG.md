@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A2A Admin setup (#817):** configure remote A2A endpoints, managed Bearer
   credentials and execution limits in Tools; assign access under Agents → Tools
   with an A2A badge. Preserve YAML-defined settings, protect assigned tools from
-  deletion, and support disabling execution and offline catalog discovery.
+  deletion, and omit disabled tools from model offers while retaining Admin
+  catalog discovery.
 
 - **A2A agent delegation:** add an optional YAML-configured in-call tool that
   delegates one bounded text request to a separately deployed Agent2Agent 1.0

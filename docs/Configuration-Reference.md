@@ -900,7 +900,8 @@ in **Tools → In-Call → Add Tool → A2A Agent**, then assign under **Agents 
 
 - `agent_url`: A2A 1.0 service base URL; no credentials, query or fragment.
 - `description`: explains when the voice agent should delegate.
-- `enabled`: boolean, defaults to `true`; disabled tools cannot execute.
+- `enabled`: boolean, defaults to `true`; disabled tools cannot execute and are
+  omitted from model offers, while remaining visible in the Admin catalog.
 - `bearer_token_file`: optional managed A2A credential reference, created by Admin.
 - `bearer_token_env`: optional Engine environment variable; mutually exclusive
   with the file reference. New Admin references require `AVA_A2A_` or `AAVA_A2A_`.

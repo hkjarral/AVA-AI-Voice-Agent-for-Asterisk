@@ -70,7 +70,8 @@ restore it alongside configuration. Do not copy tokens into exported YAML.
 Credential replacements create a new immutable file so active calls are safe;
 old files are retained for existing snapshots and rollback.
 
-Use `enabled: false` to stop execution. A2A is always in-call and requires
+Use `enabled: false` to stop execution and omit the tool from model offers.
+Disabled tools remain in the Admin catalog so existing assignments can be managed. A2A is always in-call and requires
 per-agent opt-in; `is_global: true` is rejected by Admin.
 
 ## Clean up retained credentials

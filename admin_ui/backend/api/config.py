@@ -42,6 +42,7 @@ from src.fish_audio_url import (
     fish_audio_verification_url,
 )
 from src.config.loaders import substitute_braced_env_vars
+from src.config.provider_instances import PROVIDER_SECRETS_ROOT
 from src.tools.execution_history import CALL_HISTORY_TOOL_REDACTION_MODES
 from services.provider_validation import (
     MODULAR_HTTP_KINDS, test_modular_provider,
@@ -3074,7 +3075,6 @@ async def get_provider_options(provider_type: str):
 
 # Store in project secrets dir - Admin UI has write access, ai_engine mounts it
 VERTEX_CREDENTIALS_PATH = "/app/project/secrets/gcp-service-account.json"
-PROVIDER_SECRETS_ROOT = "/app/project/secrets/providers"
 
 
 def _provider_instances_module():

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from unittest.mock import Mock
 
@@ -561,3 +562,72 @@ def test_managed_credential_headers_and_symlink_rejection(monkeypatch, tmp_path)
     token.symlink_to(outside)
     with pytest.raises(OSError):
         tool._headers()
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_a2a_model_offers_respect_enabled_without_hiding_catalog(enabled):
+    """Cover every schema export while preserving disabled catalog metadata."""
+    from src.tools.adapters.elevenlabs import ElevenLabsToolAdapter
+    from src.tools.adapters.google import GoogleToolAdapter
+    from src.tools.base import ToolPhase
+    from src.tools.registry import ToolRegistry
+
+    registry = ToolRegistry.isolated()
+    registry.initialize_default_tools()
+    registry.register_instance(A2AAgentTool(A2AAgentConfig(
+        name='delegate', agent_url='https://agent.example', enabled=enabled,
+    )))
+    assert 'delegate' in {definition.name for definition in registry.get_definitions()}
+    assert registry.get('delegate') is not None
+    offered = registry.get_tools_for_context(ToolPhase.IN_CALL, ['delegate', 'hangup_call'])
+    assert ('delegate' in {tool.definition.name for tool in offered}) == enabled
+    assert 'hangup_call' in {tool.definition.name for tool in offered}
+    assert ('delegate' in {tool.definition.name for tool in registry.get_in_call_tools()}) == enabled
+    for format_name in ('openai', 'openai_realtime', 'deepgram', 'elevenlabs', 'local_llm'):
+        for names in (None, ['delegate', 'hangup_call']):
+            schemas = getattr(registry, 'to_' + format_name + '_schema_filtered')(names)
+            assert ('delegate' in json.dumps(schemas)) == enabled, (format_name, names)
+            assert 'hangup_call' in json.dumps(schemas)
+        schemas = getattr(registry, 'to_' + format_name + '_schema')()
+        assert ('delegate' in json.dumps(schemas)) == enabled, format_name
+    for prompt in (registry.to_prompt_text(), registry.to_local_llm_prompt(),
+                   registry.to_local_llm_prompt_filtered(['delegate', 'hangup_call']),
+                   registry.to_local_llm_prompt_filtered_compact(['delegate', 'hangup_call'])):
+        assert ('delegate' in prompt) == enabled
+    adapter = GoogleToolAdapter(registry)
+    elevenlabs = ElevenLabsToolAdapter(registry)
+    for schemas in (adapter.get_tools_config(), adapter.format_tools(['delegate', 'hangup_call']),
+                    elevenlabs.get_tools_schema(), elevenlabs._convert_tools_to_elevenlabs()):
+        assert ('delegate' in json.dumps(schemas)) == enabled
+
+
+def test_pipeline_schemas_do_not_offer_disabled_a2a():
+    """Direct pipeline schema builders also reject a requested disabled tool."""
+    from src.pipelines.ollama import OllamaLLMAdapter
+    from src.pipelines.openai import OpenAILLMAdapter
+    from src.tools.registry import ToolRegistry
+
+    registry = ToolRegistry.isolated()
+    registry.initialize_default_tools()
+    registry.register_instance(A2AAgentTool(A2AAgentConfig(
+        name='delegate', agent_url='https://agent.example', enabled=False,
+    )))
+    openai = OpenAILLMAdapter.__new__(OpenAILLMAdapter)
+    ollama = OllamaLLMAdapter.__new__(OllamaLLMAdapter)
+    ollama._call_tool_registry = registry
+    for schemas in (openai._in_call_tool_schemas({'tools': ['delegate', 'hangup_call']}, registry),
+                    ollama._build_tools_schema(['delegate', 'hangup_call'])):
+        assert [schema['function']['name'] for schema in schemas] == ['hangup_call']
+
+
+def test_disabled_a2a_reload_preserves_an_active_call_snapshot():
+    """Disabling affects new calls while the earlier tool generation stays usable."""
+    from src.tools.base import ToolPhase
+    from src.tools.runtime_config import ToolRuntimeGeneration
+
+    doc = {'kind': 'a2a_agent', 'agent_url': 'https://agent.example'}
+    old = ToolRuntimeGeneration.build(generation_id=1, config={'in_call_tools': {'delegate': doc}})
+    new = ToolRuntimeGeneration.build(generation_id=2, config={'in_call_tools': {'delegate': {**doc, 'enabled': False}}})
+    assert 'delegate' in {tool.definition.name for tool in old.registry.get_tools_for_context(ToolPhase.IN_CALL, ['delegate'])}
+    assert 'delegate' not in {tool.definition.name for tool in new.registry.get_tools_for_context(ToolPhase.IN_CALL, ['delegate'])}
+    assert 'delegate' in {definition.name for definition in new.registry.get_definitions()}

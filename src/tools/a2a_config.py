@@ -5,7 +5,9 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
-A2A_SECRETS_ROOT = "/app/project/secrets/providers"
+from src.config.provider_instances import PROVIDER_SECRETS_ROOT
+
+A2A_SECRETS_ROOT = PROVIDER_SECRETS_ROOT
 
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
