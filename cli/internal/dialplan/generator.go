@@ -15,27 +15,32 @@ type Context struct {
 
 // GenerateSnippet generates dialplan snippet for a provider
 func GenerateSnippet(provider string) string {
-	return GenerateAgentSnippet("default", provider)
+	return GenerateAgentSnippet("", provider)
 }
 
 // GenerateAgentSnippet emits the v7 dialplan form. AI_AGENT selects the
 // operator-managed agent; AI_PROVIDER is optional and only needed as an
 // explicit per-call override.
-func GenerateAgentSnippet(agent, provider string) string {
+func GenerateAgentSnippet(agent, provider string, appNames ...string) string {
 	ctx := getContextForProvider(provider)
-	if strings.TrimSpace(agent) == "" {
-		agent = "default"
+	app := "asterisk-ai-voice-agent"
+	if len(appNames) > 0 && strings.TrimSpace(appNames[0]) != "" {
+		app = strings.TrimSpace(appNames[0])
 	}
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("; AI Voice Agent - %s\n", ctx.Description))
 	sb.WriteString(fmt.Sprintf("[%s]\n", ctx.Name))
 	sb.WriteString(fmt.Sprintf("exten => s,1,NoOp(%s)\n", ctx.Description))
-	sb.WriteString(fmt.Sprintf(" same => n,Set(AI_AGENT=%s)\n", agent))
+	if strings.TrimSpace(agent) != "" {
+		sb.WriteString(fmt.Sprintf(" same => n,Set(AI_AGENT=%s)\n", strings.TrimSpace(agent)))
+	} else {
+		sb.WriteString(" ; Uses the active default Agent selected in Admin UI > Agents\n")
+	}
 	if strings.TrimSpace(provider) != "" {
 		sb.WriteString(fmt.Sprintf(" same => n,Set(AI_PROVIDER=%s)\n", ctx.Provider))
 	}
-	sb.WriteString(" same => n,Stasis(asterisk-ai-voice-agent)\n")
+	sb.WriteString(fmt.Sprintf(" same => n,Stasis(%s)\n", app))
 	sb.WriteString(" same => n,Hangup()\n")
 
 	return sb.String()

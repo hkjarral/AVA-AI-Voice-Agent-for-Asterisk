@@ -28,6 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **First-call onboarding:** distinguish preflight environment preparation from
+  saved setup; preserve existing installations and resume unfinished onboarding.
+  Generate Agent-backed dialplans with the effective Stasis name and no forced
+  provider/pipeline override. Guide same-host/remote media configuration, report
+  engine readiness separately from saving, and include FreePBX/plain-Asterisk
+  routing plus explicit test-call acceptance. Reopen merged settings, retain
+  non-secret tab drafts, and keep passwords/keys out of browser draft storage.
+  Align Agent/CLI dialplans and first-call documentation. No runtime routing or
+  Agent database migration changes.
+
 - **Local config comments (#809):** Admin UI saves keep the comments an
   operator wrote in `config/ai-agent.local.yaml` instead of rewriting the file
   without them. Comments stay with their keys and the file keeps its indents.

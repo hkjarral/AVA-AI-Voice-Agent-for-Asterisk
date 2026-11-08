@@ -125,9 +125,18 @@ Validation accepts `default_provider` targets that refer to either a full provid
 
 ## Dialplan generation
 
+Use an existing active Agent slug. Omitting `--agent` leaves `AI_AGENT` unset so
+the database default is selected; it does not assume a literal `default` Agent.
+The Stasis name comes from base + local YAML; `--app-name` explicitly overrides it.
+Run from the project root. Provider overrides are opt-in and must use exact instance
+or pipeline names. `agent setup` prints the effective Stasis handoff and test steps,
+but does not provision an Agent database: create/select an active Agent in Admin UI
+(or complete the legacy import) before calling. See [First successful call](FIRST_CALL.md).
+
+
 ```bash
 # Select an operator-managed agent; use its configured target
-agent dialplan --agent default
+agent dialplan --agent receptionist
 
 # Add an optional per-call provider or pipeline override
 agent dialplan --agent sales --provider local_hybrid

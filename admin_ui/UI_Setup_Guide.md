@@ -76,18 +76,23 @@ http://localhost:3003
 
 If this is a new installation, you'll see the Setup Wizard:
 
-1. **Choose Provider** - Select from 5 options:
-   - **Google Gemini Live** - Real-time bidirectional streaming (recommended)
-   - **OpenAI Realtime** - Low-latency voice interactions
-   - **Deepgram Voice Agent** - Enterprise-grade with 'Think' stage
-   - **Local Hybrid** - Privacy-focused (audio local, LLM in cloud)
-   - **Local (Full)** - 100% on-premises, no API keys required
-2. **Enter API Keys** - Keys will be validated before proceeding (not required for Local Full)
-3. **Configure Asterisk** - Enter your Asterisk ARI connection details
-4. **Set AI Personality** - Choose greeting and assistant name
-5. **Complete** - Configuration is saved to `config/ai-agent.yaml` and `.env`
+1. **Choose Provider** — Google Live, OpenAI Realtime, Deepgram, ElevenLabs Agent, Grok, Local Hybrid or Fully Local.
+2. **Credentials and models** — validate the selected cloud keys or prepare local models.
+3. **Asterisk and topology** — enter ARI settings and choose same-host or remote PBX. A remote PBX needs the reachable AVA media address as well as its ARI address.
+4. **Save configuration** — `.env` stores credentials, `config/ai-agent.local.yaml` stores overrides, and a fresh install creates Receptionist/Sales/Support in `agents.db`. Existing Agents are preserved.
+5. **First call** — start/apply the engine, check readiness, install the generated dialplan, attach a PBX test route, and verify greeting, two-way audio, hangup and Call History.
 
-If you already have a working configuration, the wizard will be skipped automatically.
+Follow [First successful call](../docs/FIRST_CALL.md) for the exact FreePBX and plain-Asterisk steps.
+The generated snippet uses the actual active Agent and saved Stasis name, without
+forcing a different provider/pipeline. `default` is not a special Agent slug.
+
+Preflight creating `.env` no longer skips fresh onboarding. Existing Agents and
+legacy migrations are recognized, and **Skip Setup** explicitly selects manual
+configuration. Saved incomplete setup resumes at the first-call step; unsaved
+non-secret choices survive a refresh within the same tab, but keys/passwords must
+be reentered. “Configuration saved” and “First call verified” are separate states.
+These improvements apply to source checkouts containing the Unreleased onboarding
+changes; older releases retain their previous wizard behavior.
 
 ---
 

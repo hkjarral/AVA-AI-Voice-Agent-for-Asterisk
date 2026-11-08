@@ -1,14 +1,18 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { AlertCircle, ArrowRight, Loader2, Cloud, Server, Shield, Zap, SkipForward, CheckCircle, CheckCircle2, XCircle, Terminal, Copy, HardDrive, Play, RefreshCw, Info, AlertTriangle, Wrench } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { AlertCircle, ArrowRight, Loader2, Cloud, Server, Shield, Zap, SkipForward, CheckCircle, CheckCircle2, XCircle, HardDrive, Play, RefreshCw, Info, AlertTriangle } from 'lucide-react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import HelpTooltip from '../components/ui/HelpTooltip';
-import { buildAgentDialplan } from '../utils/dialplan';
+import SetupHandoff from '../components/SetupHandoff';
+import { readWizardDraft, saveWizardDraft, clearWizardDraft } from '../utils/wizardDraft';
 
 interface SetupConfig {
     provider: string;
+    deployment_topology?: 'same_host' | 'remote';
+    audio_transport?: 'audiosocket' | 'externalmedia' | 'websocket';
+    media_advertise_host?: string;
     asterisk_host: string;
     asterisk_username: string;
     asterisk_password: string;
@@ -68,11 +72,16 @@ const Wizard = () => {
     const navigate = useNavigate();
     const { confirm } = useConfirmDialog();
     const [step, setStep] = useState(1);
+    const [loaded, setLoaded] = useState(false);
+    const [resumedDraft, setResumedDraft] = useState(false);
     const [loading, setLoading] = useState(false);
     const [showAdvancedKokoro, setShowAdvancedKokoro] = useState(false);
 
     const [config, setConfig] = useState<SetupConfig>({
         provider: 'openai_realtime',
+        deployment_topology: 'same_host',
+        audio_transport: 'audiosocket',
+        media_advertise_host: '',
         asterisk_host: '127.0.0.1',
         asterisk_username: 'asterisk',
         asterisk_password: '',
@@ -126,7 +135,7 @@ const Wizard = () => {
     // Check if hostname is being used (requires server IP for RTP security)
     const isUsingHostname = !isIPAddress(config.asterisk_host) && config.asterisk_host !== 'localhost';
 
-    const nonLocalDialplanSnippet = buildAgentDialplan(config.provider, config.asterisk_app);
+    const [loadError, setLoadError] = useState(false);
 
     const showToast = (message: string, type: 'success' | 'error' | 'warning') => {
         if (type === 'success') toast.success(message);
@@ -206,23 +215,47 @@ const Wizard = () => {
 
     // Load existing config from .env on mount
     useEffect(() => {
+        let cancelled = false;
         const loadExistingConfig = async () => {
             try {
                 const res = await axios.get('/api/wizard/load-config');
+                if (cancelled) return;
                 if (res.data) {
+                    const draft = ['configuration_saved', 'verified', 'existing'].includes(res.data.onboarding?.stage) ? null : readWizardDraft();
                     setConfig(prev => ({
                         ...prev,
                         ...res.data,
+                        ...draft?.config,
                         // Keep provider selection if not set in loaded config
-                        provider: res.data.provider || prev.provider
+                        provider: draft?.config.provider as string || res.data.provider || prev.provider
                     }));
+                    if (draft) { setStep(draft.step); setResumedDraft(true); }
+                    setLoaded(true);
+                    if (['configuration_saved', 'verified'].includes(res.data.onboarding?.stage)) {
+                        setStep(5);
+                        try {
+                            const engine = await axios.get('/api/wizard/engine-status');
+                            setEngineStatus({ ...engine.data, checked: true });
+                            if (res.data.provider === 'local') {
+                                const local = await axios.get('/api/wizard/local/server-logs');
+                                setLocalAIStatus(prev => ({ ...prev, serverReady: !!local.data.ready, serverStarted: !!local.data.ready }));
+                            }
+                        } catch {
+                            setEngineStatus({ running: false, exists: false, checked: true });
+                        }
+                    }
                 }
             } catch {
-                // Non-fatal - continue with defaults
+                if (!cancelled) setLoadError(true);
             }
         };
         loadExistingConfig();
+        return () => { cancelled = true; };
     }, []);
+
+    useEffect(() => {
+        if (loaded && step < 5) saveWizardDraft(step, config);
+    }, [loaded, step, config]);
 
     // Load available languages and models when reaching local AI step
     useEffect(() => {
@@ -447,6 +480,7 @@ const Wizard = () => {
     const confirmSkip = async () => {
         try {
             await axios.post('/api/wizard/skip');
+            clearWizardDraft();
             navigate('/');
         } catch (err: any) {
             showToast('Failed to skip setup: ' + err.message, 'error');
@@ -792,6 +826,7 @@ const Wizard = () => {
         : localHybridTtsNeedsDownload && !localHybridTtsInstalled;
 
     const handleNext = async () => {
+        if (loadError) return;
 
         // Basic required-field validation for non-technical users
         if (step === 4) {
@@ -800,8 +835,11 @@ const Wizard = () => {
             if (!config.asterisk_username) missing.push('ARI username');
             if (!config.asterisk_password) missing.push('ARI password');
 
+            if (config.deployment_topology === 'remote' && config.audio_transport !== 'websocket' && !config.media_advertise_host) {
+                missing.push('AVA media IPv4 address reachable from Asterisk');
+            }
             // Require server IP when using hostname (for RTP security)
-            if (isUsingHostname && !config.asterisk_server_ip) {
+            if (isUsingHostname && config.audio_transport === 'externalmedia' && !config.asterisk_server_ip) {
                 missing.push('Asterisk Server IP (required when using hostname)');
             }
 
@@ -1012,6 +1050,7 @@ const Wizard = () => {
             setLoading(true);
             try {
                 await axios.post('/api/wizard/save', config);
+                clearWizardDraft();
 
                 // Check engine status for completion step
                 try {
@@ -1071,22 +1110,22 @@ const Wizard = () => {
 
     return (
         <div className="min-h-screen bg-background flex items-center justify-center p-4">
-            <div className="max-w-3xl w-full bg-card border border-border rounded-lg shadow-lg p-8">
-                <div className="mb-8 flex justify-between items-start">
-                    <div>
+            <div className="max-w-3xl w-full bg-card border border-border rounded-lg shadow-lg p-4 sm:p-8">
+                <div className="mb-8 flex justify-between items-start gap-3">
+                    <div className="min-w-0 flex-1">
                         <h1 className="text-3xl font-bold text-foreground mb-2">Setup Wizard</h1>
-                        <div className="flex items-center space-x-2 text-sm text-muted-foreground overflow-x-auto">
+                        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                             <span className={step >= 1 ? "text-primary font-medium whitespace-nowrap" : "whitespace-nowrap"}>1. Welcome</span>
                             <span>&rarr;</span>
                             <span className={step >= 2 ? "text-primary font-medium whitespace-nowrap" : "whitespace-nowrap"}>2. Provider</span>
                             <span>&rarr;</span>
                             <span className={step >= 3 ? "text-primary font-medium whitespace-nowrap" : "whitespace-nowrap"}>3. API Keys</span>
                             <span>&rarr;</span>
-                            <span className={step >= 4 ? "text-primary font-medium whitespace-nowrap" : "whitespace-nowrap"}>4. Config</span>
+                            <span className={step >= 4 ? "text-primary font-medium whitespace-nowrap" : "whitespace-nowrap"}>4. Asterisk &amp; Agent</span>
                             {step === 5 && (
                                 <>
                                     <span>&rarr;</span>
-                                    <span className="text-primary font-medium whitespace-nowrap">5. Done</span>
+                                    <span className="text-primary font-medium whitespace-nowrap">5. First call</span>
                                 </>
                             )}
                         </div>
@@ -1104,16 +1143,18 @@ const Wizard = () => {
                 </div>
 
 
+                {resumedDraft && step < 5 && <p role="status" className="text-sm mb-4">Your choices were restored for this tab. Unsaved passwords and API keys must be entered again.</p>}
+                {loadError && <div role="alert" className="p-4 border rounded mb-4">Saved settings could not be loaded. Check the Admin UI connection and permissions before saving. <button onClick={() => window.location.reload()} className="underline">Retry</button></div>}
                 {step === 1 && (
                     <div className="space-y-6">
                         <div className="prose dark:prose-invert">
                             <p className="text-lg">Welcome to the Asterisk AI Voice Agent setup.</p>
-                            <p>This wizard will help you configure the essential settings to get your agent up and running in minutes.</p>
+                            <p>This wizard guides you through provider settings, connecting Asterisk, and verifying your first call.</p>
                             <div className="bg-muted p-4 rounded-lg">
                                 <h3 className="font-medium mb-2">You will need:</h3>
                                 <ul className="list-disc list-inside space-y-1">
-                                    <li>API Keys (OpenAI, Deepgram, or Google)</li>
-                                    <li>Asterisk Connection Details (Host, Username, Password)</li>
+                                    <li>An API key for your chosen cloud provider, or sufficient disk/RAM for local models</li>
+                                    <li>Asterisk ARI credentials and access to edit PBX routing (a phone for the test call)</li>
                                 </ul>
                             </div>
                         </div>
@@ -2709,6 +2750,26 @@ const Wizard = () => {
                 {step === 4 && (
                     <div className="space-y-4">
                         <h2 className="text-xl font-semibold mb-4">Agent Configuration</h2>
+                        <div className="rounded-lg border p-4 space-y-3">
+                            <label className="block text-sm font-medium">Where is Asterisk?
+                                <select aria-label="Deployment topology" className="block w-full p-2 mt-1 border rounded bg-background" value={config.deployment_topology} onChange={e => setConfig({ ...config, deployment_topology: e.target.value as 'same_host' | 'remote' })}>
+                                    <option value="same_host">On the same machine as AVA</option>
+                                    <option value="remote">On a separate machine</option>
+                                </select>
+                            </label>
+                            <label className="block text-sm font-medium">Audio transport
+                                <select aria-label="Audio transport" className="block w-full p-2 mt-1 border rounded bg-background" value={config.audio_transport} onChange={e => setConfig({ ...config, audio_transport: e.target.value as SetupConfig['audio_transport'] })}>
+                                    <option value="audiosocket">AudioSocket (TCP)</option>
+                                    <option value="externalmedia">ExternalMedia (RTP/UDP)</option>
+                                    {config.audio_transport === 'websocket' && <option value="websocket">Existing authenticated WebSocket setup</option>}
+                                </select>
+                            </label>
+                            {config.deployment_topology === 'remote' && config.audio_transport !== 'websocket' && <label className="block text-sm font-medium">AVA media IPv4 address reachable from Asterisk
+                                <input aria-label="AVA media IPv4 address" className="block w-full p-2 mt-1 border rounded bg-background" value={config.media_advertise_host || ''} onChange={e => setConfig({ ...config, media_advertise_host: e.target.value })} placeholder="e.g. 192.0.2.20" />
+                                <span className="text-xs text-muted-foreground">This is the AVA machine&apos;s LAN/VPN address, not the PBX address. The media listener will bind to all IPv4 interfaces; firewall it to the PBX only. ARI tests check call control, not two-way audio.</span>
+                            </label>}
+                            {config.audio_transport === 'websocket' && <p className="text-sm">Existing WebSocket authentication and listener settings are preserved. Manage them under Advanced Settings → Audio Transport.</p>}
+                        </div>
                         <div className="grid grid-cols-2 gap-4">
                             <div className="space-y-2">
                                 <div className="flex items-center gap-1.5">
@@ -2744,7 +2805,7 @@ const Wizard = () => {
                                                 <strong>ARI Username</strong> — the user defined in <code>ari.conf</code> on the Asterisk server.
                                                 <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                                     <li>Default in many configs is <code>asterisk</code></li>
-                                                    <li>Must have <code>read = all</code> and <code>write = all</code></li>
+                                                    <li>Must have <code>read_only = no</code></li>
                                                 </ul>
                                             </>
                                         }
@@ -2847,7 +2908,7 @@ const Wizard = () => {
                         </div>
 
                         {/* Show Server IP field when using hostname for RTP security */}
-                        {isUsingHostname && (
+                        {isUsingHostname && config.audio_transport === 'externalmedia' && (
                             <div className="p-4 rounded-md border border-yellow-500/50 bg-yellow-500/10">
                                 <div className="flex items-start gap-2 mb-3">
                                     <AlertTriangle className="w-5 h-5 text-yellow-500 mt-0.5" />
@@ -3053,7 +3114,7 @@ const Wizard = () => {
                 {step === 5 && (
                     <div className="space-y-6 text-center">
                         {/* Show different header based on local server readiness */}
-                        {config.provider === 'local' && !localAIStatus.serverReady ? (
+                        {config.provider === 'local' && (startingLocalServer || localAIStatus.serverStarted) && !localAIStatus.serverReady ? (
                             <>
                                 <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
                                     <Loader2 className="w-8 h-8 animate-spin" />
@@ -3070,37 +3131,12 @@ const Wizard = () => {
                                 <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-4">
                                     <CheckCircle className="w-8 h-8" />
                                 </div>
-                                <h2 className="text-2xl font-bold">Setup Complete!</h2>
+                                <h2 className="text-2xl font-bold">Configuration saved</h2>
                                 <p className="text-muted-foreground">
-                                    Your AI Agent is configured and ready.
+                                    Next, start or apply the engine, connect Asterisk, and verify your first call.
                                 </p>
                             </>
                         )}
-
-                        {/* Next steps signpost — Tools.
-                            The wizard configures providers and base settings, but in-call
-                            capabilities (calendar booking, transfers, voicemail, post-call
-                            email summaries, MCP tools) are configured separately on the
-                            Tools page. Without this signpost, first-time users finish the
-                            wizard and don't realize there's another configuration surface
-                            they need to visit. */}
-                        <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-200 dark:border-blue-800 text-left">
-                            <h3 className="font-semibold mb-2 flex items-center text-blue-800 dark:text-blue-300">
-                                <Wrench className="w-4 h-4 mr-2" />
-                                Next: configure Tools (optional)
-                            </h3>
-                            <p className="text-sm text-blue-700 dark:text-blue-400 mb-2">
-                                In-call capabilities — Google Calendar booking, blind/attended transfers,
-                                live agent escalation, voicemail, post-call email summaries, MCP tools —
-                                are configured separately under <strong>Tools</strong>.
-                            </p>
-                            <Link
-                                to="/tools"
-                                className="inline-flex items-center text-sm text-blue-700 dark:text-blue-400 hover:underline font-medium"
-                            >
-                                Open Tools →
-                            </Link>
-                        </div>
 
                         {/* Local AI Server Setup - Only for Local provider */}
                         {config.provider === 'local' && (
@@ -3203,6 +3239,10 @@ const Wizard = () => {
                                                     // Update progress from response
                                                     if (res.data.steps) {
                                                         setEngineProgress({ steps: res.data.steps, currentStep: '' });
+                                                    }
+                                                    if (res.data.started) {
+                                                        const status = await axios.get('/api/wizard/engine-status');
+                                                        setEngineStatus({ ...status.data, checked: true });
                                                     }
                                                     if (res.data.success) {
                                                         setEngineStatus({ ...engineStatus, running: true, exists: true });
@@ -3345,23 +3385,7 @@ const Wizard = () => {
                                     </div>
                                 )}
 
-                                {/* Dialplan for Local */}
-                                {localAIStatus.serverReady && engineStatus.running && (
-                                    <div className="bg-muted p-4 rounded-lg">
-                                        <h3 className="font-semibold mb-2 flex items-center">
-                                            <Terminal className="w-4 h-4 mr-2" />
-                                            Asterisk Dialplan for Local Provider
-                                        </h3>
-                                        <pre className="bg-black text-green-400 p-3 rounded-md overflow-x-auto text-xs font-mono">
-                                            {`[from-ai-agent-local]
-exten => s,1,NoOp(AI Agent - Local Full)
- same => n,Set(AI_AGENT=default)
- same => n,Set(AI_PROVIDER=local)
- same => n,Stasis(${config.asterisk_app || 'asterisk-ai-voice-agent'})
- same => n,Hangup()`}
-                                        </pre>
-                                    </div>
-                                )}
+
                             </div>
                         )}
 
@@ -3375,13 +3399,8 @@ exten => s,1,NoOp(AI Agent - Local Full)
                                 <p className="text-sm text-blue-700 dark:text-blue-400 mb-4">
                                     {engineStatus.exists
                                         ? "The AI Engine container exists but is not running. Click below to start it."
-                                        : "The AI Engine container needs to be created. Run the command below, then click Start."}
+                                        : "Click Start AI Engine to build and create the container. The first build can take several minutes."}
                                 </p>
-                                {!engineStatus.exists && (
-                                    <pre className="bg-black text-green-400 p-3 rounded-md text-xs font-mono mb-4 overflow-x-auto">
-                                        docker compose up -d ai_engine
-                                    </pre>
-                                )}
                                 <button
                                     onClick={async () => {
                                         setStartingEngine(true);
@@ -3392,6 +3411,10 @@ exten => s,1,NoOp(AI Agent - Local Full)
                                             // Update progress from response
                                             if (res.data.steps) {
                                                 setEngineProgress({ steps: res.data.steps, currentStep: '' });
+                                            }
+                                            if (res.data.started) {
+                                                const status = await axios.get('/api/wizard/engine-status');
+                                                setEngineStatus({ ...status.data, checked: true });
                                             }
                                             if (res.data.success) {
                                                 setEngineStatus({ ...engineStatus, running: true, exists: true });
@@ -3510,46 +3533,10 @@ exten => s,1,NoOp(AI Agent - Local Full)
                             </div>
                         )}
 
-                        {/* Dialplan Section - non-local providers */}
-                        {config.provider !== 'local' && (
-                            <>
-                                <div className="bg-muted p-4 rounded-lg text-left">
-                                    <h3 className="font-semibold mb-2 flex items-center">
-                                        <Terminal className="w-4 h-4 mr-2" />
-                                        Next Step: Update Asterisk Dialplan
-                                    </h3>
-                                    <p className="text-sm text-muted-foreground mb-3">
-                                        Add this to your <code>extensions_custom.conf</code> to route calls to the agent:
-                                    </p>
-                                    <div className="relative group">
-                                        <pre className="bg-black text-green-400 p-4 rounded-md overflow-x-auto text-sm font-mono">
-                                            {nonLocalDialplanSnippet}
-                                        </pre>
-                                        <button
-                                            onClick={() => {
-                                                navigator.clipboard.writeText(nonLocalDialplanSnippet)
-                                                    .then(() => showToast('Copied to clipboard!', 'success'))
-                                                    .catch(() => showToast('Failed to copy to clipboard', 'error'));
-                                            }}
-                                            className="absolute top-2 right-2 p-1 bg-white/10 rounded hover:bg-white/20 text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                                            aria-label="Copy to clipboard"
-                                            title="Copy to clipboard"
-                                        >
-                                            <Copy className="w-4 h-4" />
-                                        </button>
-                                    </div>
-                                </div>
+                        <SetupHandoff />
+                        <button type="button" className="text-sm underline" onClick={() => setStep(4)}>Edit setup settings</button>
+                        <p className="text-xs text-muted-foreground">Existing Agents keep their configured provider and conversation. Edit them in Agents; rerunning setup does not overwrite them.</p>
 
-                                <div className="pt-4">
-                                    <button
-                                        onClick={() => navigate('/')}
-                                        className="w-full px-4 py-3 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 font-medium"
-                                    >
-                                        Go to Dashboard
-                                    </button>
-                                </div>
-                            </>
-                        )}
                     </div>
                 )}
 
@@ -3568,7 +3555,7 @@ exten => s,1,NoOp(AI Agent - Local Full)
                         <button
                             onClick={handleNext}
                             disabled={
-                                loading ||
+                                !loaded || loadError || loading ||
                                 (step === 3 &&
                                     ((config.provider === 'local' &&
                                         (localAIStatus.downloading ||

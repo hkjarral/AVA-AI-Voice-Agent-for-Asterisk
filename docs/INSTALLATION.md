@@ -524,6 +524,11 @@ Then verify in the Admin UI:
 
 ### Path A: Admin UI Setup Wizard (Recommended)
 
+For the complete wizard → PBX routing → verified conversation journey, use
+[First successful call](FIRST_CALL.md). It includes remote media addressing, exact
+FreePBX destination targets, plain-Asterisk reload steps, and interrupted-setup recovery.
+
+
 The source bootstrap below includes unreleased #802 changes. On v7.7.1 or an
 older checkout, use the [legacy recovery procedure](CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers);
 `install.sh --ui` is not present in those releases.

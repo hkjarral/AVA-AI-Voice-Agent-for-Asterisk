@@ -21,19 +21,31 @@ var (
 	dialplanProvider string
 	dialplanAgent    string
 	dialplanFile     string
+	dialplanApp      string
 )
 
 func init() {
 	dialplanCmd.Flags().StringVar(&dialplanProvider, "provider", "", "Provider to generate dialplan for (openai_realtime, deepgram, local_hybrid, google_live)")
-	dialplanCmd.Flags().StringVar(&dialplanAgent, "agent", "default", "Agent slug to select with AI_AGENT")
+	dialplanCmd.Flags().StringVar(&dialplanAgent, "agent", "", "Existing Agent slug (omit to use the active database default)")
 	dialplanCmd.Flags().StringVar(&dialplanFile, "file", "/etc/asterisk/extensions_custom.conf", "Target dialplan file location")
 
+	dialplanCmd.Flags().StringVar(&dialplanApp, "app-name", "", "Stasis app name (default: effective YAML setting)")
 	rootCmd.AddCommand(dialplanCmd)
 }
 
 func runDialplan(cmd *cobra.Command, args []string) error {
-	// Generate snippet
-	snippet := dialplan.GenerateAgentSnippet(dialplanAgent, dialplanProvider)
+	app := dialplanApp
+	if app == "" {
+		var err error
+		app, err = dialplan.ConfiguredAppName("config")
+		if err != nil {
+			return err
+		}
+	}
+	if err := dialplan.ValidateIdentifiers(dialplanAgent, dialplanProvider, app); err != nil {
+		return err
+	}
+	snippet := dialplan.GenerateAgentSnippet(dialplanAgent, dialplanProvider, app)
 	providerName := dialplan.GetProviderDisplayName(dialplanProvider)
 	if dialplanProvider == "" {
 		providerName = "configured agent provider"
@@ -52,6 +64,7 @@ func runDialplan(cmd *cobra.Command, args []string) error {
 	fmt.Println("Add this snippet to:", dialplanFile)
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("")
+	fmt.Println("Ensure this Agent (or the database default) exists and is active in Admin UI → Agents.")
 	fmt.Println(snippet)
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("")

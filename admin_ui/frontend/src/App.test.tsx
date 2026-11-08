@@ -25,6 +25,19 @@ describe('SetupGuard', () => {
     vi.mocked(axios.isAxiosError).mockReset();
   });
 
+  it.each([{ configured: false }, { configured: true, resume_required: true }])('routes fresh/incomplete setup to the wizard and permits an explicit return to Dashboard', async (status) => {
+    vi.mocked(axios.get).mockResolvedValue({ data: status });
+    render(<MemoryRouter initialEntries={['/']}><SetupGuard><Routes>
+      <Route path="/" element={<span>Dashboard content</span>} />
+      <Route path="/wizard" element={<><span>First call setup</span><Link to="/">Continue to Dashboard</Link></>} />
+    </Routes></SetupGuard></MemoryRouter>);
+    expect(await screen.findByText('First call setup')).toBeTruthy();
+    expect(screen.queryByText('Dashboard content')).toBeNull();
+    fireEvent.click(screen.getByText('Continue to Dashboard'));
+    expect(await screen.findByText('Dashboard content')).toBeTruthy();
+    expect(axios.get).toHaveBeenCalledTimes(1);
+  });
+
   it('does not repeat setup detection on ordinary route changes', async () => {
     vi.mocked(axios.get).mockResolvedValue({ data: { configured: true } });
     render(guardedRoutes);

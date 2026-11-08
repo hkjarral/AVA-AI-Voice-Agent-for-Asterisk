@@ -2,7 +2,10 @@ package wizard
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
+
+	"github.com/hkjarral/ava-ai-voice-agent-for-asterisk/cli/internal/dialplan"
 )
 
 // Wizard orchestrates the interactive configuration
@@ -395,9 +398,20 @@ func (w *Wizard) stepReviewAndApply() error {
 	// Next steps
 	fmt.Println()
 	fmt.Println("═══════════════════════════════════════════")
-	PrintSuccess("Configuration complete!")
+	PrintSuccess("Configuration saved — connect Asterisk and verify a call next")
 	fmt.Println("═══════════════════════════════════════════")
 	fmt.Println()
+	app, err := dialplan.ConfiguredAppName(filepath.Dir(w.config.YAMLPath))
+	if err != nil {
+		return err
+	}
+	fmt.Println("Ensure an active default Agent exists in Admin UI → Agents before calling.")
+	fmt.Println(dialplan.GenerateAgentSnippet("", "", app))
+	fmt.Println("FreePBX: add to extensions_custom.conf, Apply Config, create Custom Destination from-ai-agent,s,1,")
+	fmt.Println("then attach it to a test inbound route, IVR option or unused Misc Application feature code.")
+	fmt.Println("Plain Asterisk: include this context, route an unused test extension with Goto(from-ai-agent,s,1),")
+	fmt.Println("then run: asterisk -rx \"dialplan reload\"")
+	fmt.Println("Test: hear the greeting, speak and hear a reply, hang up, then inspect Call History.")
 	fmt.Println("Next steps:")
 	fmt.Println("  • agent check      (verify health)")
 	fmt.Println("  • Make a test call")
