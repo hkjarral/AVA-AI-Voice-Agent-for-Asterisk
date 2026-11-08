@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -534,11 +535,14 @@ async def test_hangup_during_timeout_cancel_keeps_transport_open(cancel_complete
 
 
 @pytest.mark.asyncio
-async def test_disabled_tool_never_discovers_or_sends():
+async def test_disabled_tool_never_discovers_or_sends(monkeypatch):
     client = FakeClient(_task_event(TaskState.TASK_STATE_COMPLETED))
     tool = _tool(client, enabled=False)
+    open_client = Mock(side_effect=AssertionError('Disabled tools must not discover'))
+    monkeypatch.setattr(tool, '_open_client', open_client)
     result = await tool.execute({'message': 'Hello'}, None)
-    assert result['status'] == 'error'
+    assert result == {'status': 'error', 'message': 'This A2A tool is disabled.'}
+    open_client.assert_not_called()
     assert client.sent == 0
 
 

@@ -73,6 +73,36 @@ old files are retained for existing snapshots and rollback.
 Use `enabled: false` to stop execution. A2A is always in-call and requires
 per-agent opt-in; `is_global: true` is rejected by Admin.
 
+## Clean up retained credentials
+
+Credential uploads can leave unused files after a cancelled or invalid edit,
+replacement, or deletion. Cleanup is manual because file age does not establish
+whether a running call, browser draft or retained rollback still needs a token.
+
+1. Finish or discard all Tools edits and close the editors. Export the current
+   **merged** configuration from Raw YAML, including local overrides, and keep
+   its credential references alongside the rollback/configuration backups you
+   intend to retain. Keep those backups private.
+2. During a maintenance window, prevent new calls, let active calls finish, then
+   stop the Engine and Admin UI. This releases active-call snapshots and prevents
+   new credential uploads or configuration writes during cleanup.
+3. From the deployment checkout, list candidate directories without reading
+   their token contents:
+
+   ```bash
+   find secrets/providers -mindepth 1 -maxdepth 1 -type d -name 'a2a-tool-*' -print
+   ```
+
+4. For each candidate, confirm it is an Admin-generated `a2a-tool-<32 hex digits>`
+   directory. Keep it if **any** credential reference in the exported merged
+   configuration or a retained rollback/configuration backup points into it.
+   Keep candidates whose ownership or references you cannot establish. Remove
+   only individually reviewed, unreferenced directories; do not bulk-delete by
+   prefix or age. Never remove another provider's credential directory.
+5. Restart Admin and Engine, verify Engine health and saved tool settings, then
+   allow calls again. A rollback whose credential file was removed requires the
+   credential to be entered again before its tool can authenticate.
+
 ## Runtime contract
 
 - AVA discovers the public Agent Card and requires a JSON-RPC 1.0 interface on

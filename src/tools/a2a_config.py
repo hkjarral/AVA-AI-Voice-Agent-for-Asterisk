@@ -47,6 +47,7 @@ class A2AAgentConfig:
     error_message: str = "The remote agent could not complete that request."
 
     def __post_init__(self) -> None:
+        """Validate execution bounds and credential references before registration."""
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", str(self.name)):
             raise ValueError("A2A tool name is invalid")
         object.__setattr__(self, "agent_url", _validate_base_url(self.agent_url))

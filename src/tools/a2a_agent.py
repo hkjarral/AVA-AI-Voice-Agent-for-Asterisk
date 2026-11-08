@@ -81,6 +81,7 @@ class A2AAgentTool(Tool):
         return self._definition
 
     def _headers(self) -> dict[str, str]:
+        """Load the configured credential for same-origin authenticated task traffic."""
         if self.config.bearer_token_file:
             from pathlib import Path
 

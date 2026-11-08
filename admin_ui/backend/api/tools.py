@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _a2a_request(request: Request):
+    """Read bounded JSON without echoing credential-bearing validation input."""
     raw = bytearray()
     async for chunk in request.stream():
         if len(raw) + len(chunk) > 16384:
@@ -45,6 +46,7 @@ async def _a2a_request(request: Request):
 
 @router.post("/a2a/credentials")
 async def stage_a2a_credentials(request: Request):
+    """Write an immutable private credential and return only its managed reference."""
     from uuid import uuid4
     raw = await _a2a_request(request)
     token = raw.get("token")
@@ -57,6 +59,7 @@ async def stage_a2a_credentials(request: Request):
 
 @router.post("/a2a/validate")
 async def validate_a2a_settings(request: Request):
+    """Validate draft A2A settings without contacting the remote service."""
     from services.a2a_tools import validate_document
     raw = await _a2a_request(request)
     name, doc = raw.get("name"), raw.get("config")
@@ -73,6 +76,7 @@ async def validate_a2a_settings(request: Request):
 
 @router.get("/a2a/{name}/usage")
 def get_a2a_usage(name: str):
+    """Return saved Agent assignments before offering tool deletion."""
     from services.a2a_tools import agent_usage
     _validate_tool_name(name, max_length=64)
     return {"agents": agent_usage({name})[name]}

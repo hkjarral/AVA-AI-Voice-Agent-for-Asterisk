@@ -12,6 +12,7 @@ from src.tools.a2a_config import parse_a2a_agent_config
 
 
 def validate_document(name, doc, previous=None):
+    """Apply shared runtime validation plus Admin phase and credential policy."""
     if doc.get('phase', 'in_call') != 'in_call' or doc.get('is_global', False):
         raise HTTPException(422, 'A2A tools run in-call and require per-agent assignment')
     if any(key in doc for key in ('bearer_token', 'token', 'api_key')):
@@ -53,6 +54,7 @@ def agent_usage(names):
 
 
 def protect_assigned_tools(old, new):
+    """Reject removal or kind changes for A2A tools referenced by saved Agents."""
     before = old.get('in_call_tools') or {}
     after = new.get('in_call_tools') or {}
     removed = {
