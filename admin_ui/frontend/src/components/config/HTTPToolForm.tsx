@@ -841,7 +841,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                 </div>
             )}
 
-            {filteredTools.length === 0 && Object.keys(httpTools).length > 0 && <p className="text-sm text-muted-foreground py-4">No HTTP tools match this search.</p>}
+            {filteredTools.length === 0 && Object.keys(httpTools).length > 0 && <p className="text-sm text-muted-foreground py-4">No tools match this search.</p>}
             </div>
             <ToolEditorSurface
                 inline={presentation === 'page'}
@@ -850,6 +850,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                 onClose={closeEditor}
                 size="xl"
                 allowFullscreen
+                testRequestAvailable={toolForm.kind !== 'a2a_agent'}
                 title={
                     editingTool === 'new_tool'
                         ? toolForm.kind === 'a2a_agent' ? 'Add A2A Agent' : toolForm.kind === 'pushover' ? 'Add Pushover Tool' : `Add ${phase === 'pre_call' ? 'HTTP Lookup' : phase === 'in_call' ? 'In-Call HTTP Tool' : 'Webhook'}`
@@ -1891,7 +1892,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
 
                     </>}
                     {/* Shared summary controls */}
-                    {phase !== 'pre_call' && (
+                    {phase !== 'pre_call' && toolForm.kind !== 'a2a_agent' && (
                         <>
                             <div className="border border-border rounded-lg p-3 bg-card/30">
                                 <FormSwitch

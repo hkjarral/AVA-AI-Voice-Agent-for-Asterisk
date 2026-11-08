@@ -452,6 +452,8 @@ describe('A2A setup', () => {
         fireEvent.change(screen.getByLabelText('Bearer token'), { target: { value: 'fixture-private-token' } });
         expect(screen.queryByRole('button', { name: 'Send test request' })).not.toBeInTheDocument();
         expect(screen.queryByLabelText('Global (all contexts)')).not.toBeInTheDocument();
+        expect(screen.queryByLabelText('Generate AI Summary')).not.toBeInTheDocument();
+        expect(screen.queryByText(/Test sends a real HTTP request/)).not.toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: 'Update tool' }));
         await screen.findByRole('button', { name: 'Configure delegate' });
         fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
