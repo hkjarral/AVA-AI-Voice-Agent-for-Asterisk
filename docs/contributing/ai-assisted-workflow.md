@@ -254,7 +254,9 @@ For each added or changed control, collect evidence against its scoped contract:
   outcome accurately. Check older configurations with the field absent and the
   documented way to restore the previous value.
 - [ ] Include sanitized browser steps/results and automated test commands/results
-  in the PR, plus call IDs and observed behavior when call validation is applicable.
+  in the PR, plus observed behavior when call validation is applicable. Keep call
+  IDs in a private handoff unless they are revision-pinned release/RCA evidence
+  without caller identity, as permitted by [AVA.mdc](../../AVA.mdc#engineering-rules).
   Label unavailable browser or real-call checks as pending with a concrete handoff.
 
 Give a repeatable call script with expected outcomes. A useful baseline is greeting,
