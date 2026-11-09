@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Update Engine `msgpack` and `dnspython` to patched releases for the Fish Audio
+  WebSocket decoder and transcript DNS validation dependencies. Require Debian's
+  DSA-6613-1 `zlib1g` fix in the Trixie-based CPU Local AI runtime image.
+  Use Python 3.11 for source installs and local Core tests, matching the Engine
+  container and CI.
+
 ### Changed
 
 - **AI-assisted UI guidance:** add per-setting design and verification checklists
