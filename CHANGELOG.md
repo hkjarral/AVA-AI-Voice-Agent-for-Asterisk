@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **AI-assisted UI guidance:** add per-setting design and verification checklists
+  to `AVA.mdc` and the contributor workflow, covering UI controls, validation,
+  persistence, runtime activation, and PR evidence or explicit UI exceptions.
+
 ### Added
 
 - **A2A Admin setup (#817):** configure remote A2A endpoints, managed Bearer
