@@ -49,8 +49,7 @@ for that version's pinned instructions.
 
 ### Upgrade, images and persistent state
 
-Drain calls and prevent new PBX admissions before the
-[pinned upgrade](INSTALLATION.md#upgrade-to-v771-existing-checkout). Update Engine
+Drain calls and prevent new PBX admissions before upgrading. Update Engine
 and Admin UI together, replace the host CLI/updater image, and update Local AI
 when installed/selected. Its batch worker, protocol and optional Faster-Whisper
 image packaging changed; retain build flags, model volumes and intentionally

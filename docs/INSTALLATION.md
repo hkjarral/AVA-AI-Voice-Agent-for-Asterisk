@@ -46,6 +46,9 @@ Choose the path that best fits your experience level:
 
 <a id="upgrade-to-v771-existing-checkout"></a>
 
+For a historical upgrade to v7.7.1, use the
+[v7.7.1 installation guide](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/v7.7.1/docs/INSTALLATION.md#upgrade-to-v771-existing-checkout).
+
 ## Upgrade to v7.7.2 (Existing Checkout)
 
 When upgrading from v7.7.1, drain calls and rebuild/recreate the engine and Admin UI.
