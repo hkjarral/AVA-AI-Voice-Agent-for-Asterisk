@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.7.2] - 2026-11-08
+
+Prepared from main `77c03386` through #820. This patch release includes optional
+A2A delegation, guided first-call setup, media and calendar reliability fixes,
+and installer recovery improvements. See the [migration guide](docs/MIGRATION.md#v771-to-v772)
+and [validation matrix](docs/baselines/golden/v7.7.2-validation-matrix.md) for the
+upgrade path, existing evidence and open publication gates. Supported trains
+remain 7.7.x and 7.6.x.
+
+Thanks to Chris Wilson (`cswilsnetex`) for Calendar retries and YAML comment
+preservation, `pi0n00r` for A2A and remote PBX guidance, `jjaroztegi` for media
+reports and reproduction, `ibewackofreak` for the installer report, and
+`hkjarral` for implementation and validation. See [contributors](CONTRIBUTORS.md).
+
 ### Changed
 
 - **AI-assisted UI guidance:** add per-setting design and verification checklists
@@ -129,6 +143,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   landed unseen should come back as the same event, and the event is read back before
   it is reported. A Graph 400 `ErrorDuplicateTransactionId` is reported as
   uncertain, not as a failure.
+
+### Security
+
+- The engine still pins `dnspython 2.8.0` and `msgpack 1.2.1`. The applicable
+  image scan reported both tracked advisories. Transcript email DNS validation
+  is off by default. Fish Audio WebSocket can reach the MessagePack C decoder
+  when selected. Upstream has not confirmed the earliest affected MessagePack
+  release. See the [validation matrix](docs/baselines/golden/v7.7.2-validation-matrix.md#security).
 
 ## [7.7.1] - 2026-10-30
 

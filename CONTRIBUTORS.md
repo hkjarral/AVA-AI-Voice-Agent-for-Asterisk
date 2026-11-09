@@ -35,10 +35,25 @@ Thanks to all the people who have contributed to the Asterisk AI Voice Agent!
 | <img src="https://github.com/lucamancusodev.png" width="50" alt="lucamancusodev"> | **[lucamancusodev](https://github.com/lucamancusodev)** | Reports and Requirements — onward transfers ([#699](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/699)) and notification timing ([#766](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/766)); broader post-transfer requirements remain follow-up |
 | <img src="https://github.com/abaichuan1017.png" width="50" alt="abaichuan1017"> | **[Kai (abaichuan1017)](https://github.com/abaichuan1017)** | Docs — Local/Hybrid First-turn Diagnostics ([#777](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/777)); diagnosis guidance, not a claim to fix #439 |
 | <img src="https://github.com/Andrew-Engelbrecht.png" width="50" alt="Andrew-Engelbrecht"> | **[Andrew-Engelbrecht](https://github.com/Andrew-Engelbrecht)** | Report — Compose/Bake Upgrade Failure ([#790](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/790)); implementation and recovery audit in #791 by the maintainer |
+| <img src="https://github.com/jjaroztegi.png" width="50" alt="jjaroztegi"> | **[jjaroztegi](https://github.com/jjaroztegi)** | Report — AudioSocket squelch and WebSocket pacing reports ([#799](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/799), [#808](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/808)) |
+| <img src="https://github.com/ibewackofreak.png" width="50" alt="ibewackofreak"> | **[ibewackofreak](https://github.com/ibewackofreak)** | Report — Docker entitlement failure during Quick Start ([#802](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/802)) |
 
 <!-- markdownlint-restore -->
 <!-- prettier-ignore-end -->
 <!-- ALL-CONTRIBUTORS-LIST:END -->
+
+### v7.7.2 contribution updates
+
+- **Chris Wilson (`cswilsnetex`):** Microsoft Calendar retry recovery
+  ([#798](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/798))
+  and local YAML comment preservation
+  ([#810](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/810)).
+- **pi0n00r:** A2A delegation
+  ([#815](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/815))
+  and remote PBX checklist
+  ([#806](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/806)).
+- **hkjarral:** AudioSocket and WebSocket media work, Docker bootstrap and recovery,
+  A2A Admin controls, UI contributor guidance, first-call onboarding, and validation.
 
 ### v7.7.1 contribution updates
 

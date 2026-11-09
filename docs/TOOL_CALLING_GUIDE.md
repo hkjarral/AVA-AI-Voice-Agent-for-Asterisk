@@ -1,6 +1,6 @@
 # Tool Calling Guide
 
-**Version**: 7.7.1 (release preparation)<br>
+**Version**: 7.7.2<br>
 **Status**: Provider-specific qualification (see setup guides)<br>
 **Last Updated**: October 2026
 
@@ -17,6 +17,7 @@ Complete guide to AI tool calling in Asterisk AI Voice Agent—enabling AI agent
 - [Calendar Booking Boundaries](#calendar-booking-boundaries)
 - [Pre-Call Tools (HTTP Lookups)](#pre-call-tools-http-lookups)
 - [Native Pushover Tools](#native-pushover-tools)
+- [A2A agent delegation](A2A-Agent-Tool.md)
 - [Native Calendly Booking](#native-calendly-booking)
 - [In-call Generated Summaries](#in-call-generated-summaries)
 - [In-Call HTTP Tools](#in-call-http-tools)
@@ -1950,7 +1951,7 @@ Tools written once, work with any provider.
 ---
 
 **Last Updated**: October 2026<br>
-**Version**: 7.7.1 (release preparation)<br>
+**Version**: 7.7.2<br>
 **Status**: Provider-specific qualification (see setup guides)
 
 

@@ -21,8 +21,8 @@
 
 ---
 
-The supported trains are 7.7.x and 7.6.x. Preparing v7.7.1 does not change this
-two-minor policy or end 7.6.x support, and does not itself publish a tag. 7.5.x is
+The supported trains are 7.7.x and 7.6.x. v7.7.2 is part of the existing
+7.7.x train. 7.5.x is
 unsupported.
 The 7.5.x HTTP-template fix is not claimed shipped: upgrade to a fixed 7.6.x/7.7.x
 release or disable affected HTTP

@@ -2,13 +2,50 @@
 
 This guide covers upgrading between releases of Asterisk AI Voice Agent.
 
+## v7.7.1 to v7.7.2
+
+Use the [pinned upgrade](INSTALLATION.md#upgrade-to-v772-existing-checkout) once
+the tag and artifacts are published. Drain calls and update Engine and Admin UI
+together. Use the target CLI and updater for updated build and recovery behavior.
+Keep saved provider selections, transport and Audio Profile settings, models,
+configuration overlays and intentionally stopped services.
+
+- **Build and recovery.** Use the active Docker context's built-in builder or
+  an explicitly selected `BUILDX_BUILDER`. Preserve Compose files, profiles and
+  project across build and startup. The helper scopes the Bake entitlement
+  retry to selected services. On success, startup uses `--no-build --pull never`.
+  For existing checkouts and older helpers, see [build recovery](BUILD_TROUBLESHOOTING.md)
+  and [legacy Compose instructions](CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
+- **First-call setup.** `install.sh --ui` bootstraps management. The wizard saves
+  non-secret progress separately in `data/operator/onboarding.json`. Existing
+  Agents and pending legacy migration are preserved. Older versions ignore the
+  progress file. Keep configuration backups for recovery from partial saves.
+  See [First successful call](FIRST_CALL.md) for custom Stasis, remote media
+  and PBX routing instructions.
+- **A2A.** Rebuild the Engine to include the new SDK. A2A is optional, in-call,
+  and assigned per Agent. Back up private managed credentials and their
+  configuration references together. When reverting to an older runtime,
+  retain the backup and remove unsupported A2A configuration and assignments
+  from the active configuration if required. A local rollback does not undo
+  remote tasks. See [A2A setup and credential cleanup](A2A-Agent-Tool.md).
+- **Media.** AudioSocket squelch recovers first-frame speech with call-local
+  speech detection. Media WebSocket pacing remains `legacy` unless an operator
+  opts into `asterisk` on a qualified setup. Restore the saved pacing choice
+  during rollback. OpenAI audio-tail admission respects interruption and
+  completion ownership. See [media qualification](ISSUE_808_TESTING.md).
+- **Calendar and YAML.** Identical uncertain Microsoft creates reuse the original
+  transaction ID and read back the result. Reconcile uncertain external state
+  before recovery. The Admin writer preserves local YAML comments when it can
+  verify the round trip, with documented plain-dump fallback cases.
+
+Supported trains remain 7.7.x and 7.6.x. Existing verification is scoped by
+revision and configuration in the [v7.7.2 matrix](baselines/golden/v7.7.2-validation-matrix.md).
+
 ## v7.7.0 to v7.7.1
 
-The maintainer selected a patch tag for the merged recovery and reliability work,
-including new local transcription and template-editor capabilities. The tag and
-artifacts are not published by this preparation PR. Use the latest published
-guide for stable installations until v7.7.1 is published; do not silently fall
-back to main when a release ref is missing.
+This historical release added recovery and reliability work, local transcription,
+and template-editor capabilities. Use the [published v7.7.1 guide](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/v7.7.1/docs/INSTALLATION.md#upgrade-to-v771-existing-checkout)
+for that version's pinned instructions.
 
 ### Upgrade, images and persistent state
 
@@ -77,7 +114,7 @@ runtime, live-call and upgrade testing, including exact-candidate call acceptanc
 and the successful-call baseline requirement. Existing evidence and unverified
 cases remain labelled as such in the [validation matrix](baselines/golden/v7.7.1-validation-matrix.md).
 Required CI, automated checks, reviews and security assessment are not waived.
-This is not an inherited v7.7.0 waiver. Merge and tag remain separately held.
+This waiver applied specifically to v7.7.1.
 
 Keep current state/models/credentials when reverting code or images. Reconcile
 uncertain external writes with staff before any data recovery; restoring local
