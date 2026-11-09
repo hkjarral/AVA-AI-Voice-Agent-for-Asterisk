@@ -608,8 +608,9 @@ def setup_host_symlink() -> dict:
         else:
             results["messages"].append("Could not detect host project path from mounts")
             
-    except Exception as e:
-        results["errors"].append(f"Symlink setup error: {e}")
+    except Exception:
+        logger.exception("Host symlink setup failed")
+        results["errors"].append("Host symlink setup failed. Check Admin UI container logs.")
     
     return results
 
@@ -643,8 +644,9 @@ def setup_media_paths() -> dict:
         os.chmod(os.path.dirname(host_media_dir), 0o775)
         os.chmod(host_media_dir, 0o775)
         results["messages"].append(f"Created media directory: {host_media_dir}")
-    except Exception as e:
-        results["errors"].append(f"Failed to create media directory: {e}")
+    except Exception:
+        logger.exception("Media directory creation failed")
+        results["errors"].append("Failed to create media directory. Check permissions and Admin UI container logs.")
         results["success"] = False
     
     # 2. Try to create symlink on host via docker exec on host system
@@ -701,9 +703,10 @@ def setup_media_paths() -> dict:
             results["messages"].append("Pulled alpine image")
         except:
             results["errors"].append("Could not pull alpine image for symlink setup")
-    except Exception as e:
-        # Symlink creation failed, provide manual instructions
-        results["messages"].append(f"Auto symlink setup skipped: {e}")
+    except Exception:
+        logger.exception("Media symlink setup failed")
+        # Symlink creation failed, provide manual instructions without raw errors.
+        results["messages"].append("Auto symlink setup skipped. Check Admin UI container logs.")
         results["messages"].append(
             "Manual setup required: Run on host:\n"
             f"  sudo ln -sfn {PROJECT_ROOT}/asterisk_media/ai-generated /var/lib/asterisk/sounds/ai-generated"

@@ -269,3 +269,18 @@ def test_engine_start_failure_does_not_expose_exception(install, monkeypatch):
     assert response.json()["success"] is False
     assert "container logs" in response.json()["message"]
     assert "synthetic-secret" not in response.text
+
+
+def test_media_setup_errors_do_not_expose_exceptions(install, monkeypatch):
+    client, _ = install
+    def fail(*args, **kwargs):
+        raise RuntimeError("synthetic-secret-in-exception")
+    monkeypatch.setattr(wizard.docker, "from_env", fail)
+    monkeypatch.setattr(wizard.os, "makedirs", fail)
+    response = client.post("/wizard/setup-media-paths")
+    assert response.status_code == 200
+    result = response.json()
+    assert result["success"] is False
+    assert len(result["errors"]) == 2
+    assert "Manual setup required" in response.text
+    assert "synthetic-secret" not in response.text
