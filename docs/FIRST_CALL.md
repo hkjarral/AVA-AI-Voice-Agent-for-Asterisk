@@ -145,7 +145,8 @@ calendar booking and notifications in **Tools** after the first conversation wor
 
 ## Resume, existing installations and rollback
 
-Unsaved non-secret choices survive refresh within the same browser tab. Unsaved
+Unsaved connection, provider and model selections survive refresh within the same
+browser tab. Unsaved greeting, AI name, AI role and Kokoro voice are not retained.
 API keys and passwords are never written to browser storage and must be reentered.
 Saved onboarding resumes at the first-call step after a restart/login; the Dashboard
 also offers **Resume setup**. Effective base + local YAML and the current default

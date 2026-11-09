@@ -48,4 +48,27 @@ describe('First call handoff', () => {
         fireEvent.click(screen.getByText('Recheck readiness'));
         await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     });
+    it('preserves observations across a failed poll but resets them for a different Agent', async () => {
+        const changed = response(true);
+        changed.data.agent_slug = 'sales';
+        vi.mocked(axios.get).mockResolvedValueOnce(response(true))
+            .mockRejectedValueOnce(new Error('timeout'))
+            .mockResolvedValueOnce(response(true)).mockResolvedValue(changed);
+        render(<MemoryRouter><SetupHandoff /></MemoryRouter>);
+        await screen.findByDisplayValue(/AI_AGENT=receptionist/);
+        screen.getAllByRole('checkbox').forEach(box => fireEvent.click(box));
+        const button = screen.getByRole('button', { name: 'Confirm successful test call' });
+        expect(button).toBeEnabled();
+        fireEvent.click(screen.getByText('Recheck readiness'));
+        await screen.findByRole('alert');
+        expect(button).toBeDisabled();
+        screen.getAllByRole('checkbox').forEach(box => expect(box).toBeChecked());
+        fireEvent.click(screen.getByText('Recheck readiness'));
+        await waitFor(() => expect(button).toBeEnabled());
+        fireEvent.click(screen.getByText('Recheck readiness'));
+        await screen.findByText('2. Route a test call to sales');
+        await waitFor(() => screen.getAllByRole('checkbox').forEach(box => expect(box).not.toBeChecked()));
+        expect(button).toBeDisabled();
+    });
+
 });

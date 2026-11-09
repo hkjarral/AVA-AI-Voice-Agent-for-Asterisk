@@ -2757,6 +2757,7 @@ const Wizard = () => {
                                     <option value="remote">On a separate machine</option>
                                 </select>
                             </label>
+                            <p className="text-xs text-muted-foreground">Same-machine setup uses loopback for media. If Asterisk runs on another machine, choose “On a separate machine” and enter AVA&apos;s reachable media address, even when the ARI connection test passes. A LAN address can also belong to this machine; choose the actual deployment location.</p>
                             <label className="block text-sm font-medium">Audio transport
                                 <select aria-label="Audio transport" className="block w-full p-2 mt-1 border rounded bg-background" value={config.audio_transport} onChange={e => setConfig({ ...config, audio_transport: e.target.value as SetupConfig['audio_transport'] })}>
                                     <option value="audiosocket">AudioSocket (TCP)</option>

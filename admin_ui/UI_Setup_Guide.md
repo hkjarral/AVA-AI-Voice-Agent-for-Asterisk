@@ -89,8 +89,9 @@ forcing a different provider/pipeline. `default` is not a special Agent slug.
 Preflight creating `.env` no longer skips fresh onboarding. Existing Agents and
 legacy migrations are recognized, and **Skip Setup** explicitly selects manual
 configuration. Saved incomplete setup resumes at the first-call step; unsaved
-non-secret choices survive a refresh within the same tab, but keys/passwords must
-be reentered. “Configuration saved” and “First call verified” are separate states.
+connection, provider and model selections survive a refresh within the same tab.
+Unsaved greeting, AI name, AI role and Kokoro voice are not retained; keys/passwords
+must be reentered. “Configuration saved” and “First call verified” are separate states.
 These improvements apply to source checkouts containing the Unreleased onboarding
 changes; older releases retain their previous wizard behavior.
 

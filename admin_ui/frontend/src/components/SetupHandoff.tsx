@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { copyTextToClipboard } from '../utils/clipboard';
@@ -25,9 +25,13 @@ export default function SetupHandoff() {
     const [confirmed, setConfirmed] = useState<Record<string, boolean>>({});
     const [saving, setSaving] = useState(false);
     const [refresh, setRefresh] = useState(0);
+    const identityRef = useRef<string | null>(null);
     useEffect(() => {
-        setConfirmed({});
-    }, [result?.agent_slug, result?.app_name, result?.agent_provider, result?.agent_pipeline]);
+        if (!result) return;
+        const identity = JSON.stringify([result.agent_slug, result.app_name, result.agent_provider, result.agent_pipeline, result.audio_transport]);
+        if (identityRef.current !== null && identityRef.current !== identity) setConfirmed({});
+        identityRef.current = identity;
+    }, [result]);
     useEffect(() => {
         let cancelled = false;
         let timer: ReturnType<typeof setTimeout>;
