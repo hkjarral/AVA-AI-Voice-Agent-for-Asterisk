@@ -90,6 +90,36 @@ Ask with recommended choices when an architectural/product decision remains.
 Small fixes need a short scope; cross-cutting work benefits from the
 [milestone template](milestones/TEMPLATE.md). Keep research proportional to the task.
 
+### UI Control Design Checklist
+
+Apply this checklist to every new feature or changed operator setting, including
+providers, pipelines, and pre-/in-/post-call tools. During scoping, record the
+following for **each setting** in a short table or checklist; use it to guide
+implementation and PR verification. A backend option is not complete operator UI
+support until its applicable control is implemented and verified. Explain any
+API/YAML-only setting or feature with no applicable UI in the scope and PR; record
+deferred UI work and its limitation explicitly.
+
+| Decision | Record before implementation |
+| --- | --- |
+| Location and control | Existing page/section and affected setup-wizard or Agent flows; checkbox, select, numeric input, credential picker, or other suitable existing component. Avoid duplicate controls for the same setting. |
+| Operator explanation | Plain-language label, units, and `HelpTooltip` text describing purpose, consequences, and constraints; provide accessible labels and keyboard operation. |
+| Value contract | Type, default, valid range/options, required/optional status, and distinct meanings of missing, empty, cleared, zero, disabled, and inherited values where relevant. Match frontend and backend validation. |
+| Dependencies and access | Supported providers/transports/tool phases, prerequisites, conditional visibility or disabled states with reasons, edit permissions, and managed-secret masking/preserve/replace/clear behavior. Enforce authorization in the backend. |
+| Scope and storage | Global/provider/pipeline/tool/Agent ownership, override precedence, API field, persistent configuration/store, and runtime consumer. Preserve unrelated settings and backward-compatible defaults. |
+| Activation | Save versus Apply, next-call versus active-call behavior, required service restart/recreation, and how the operator can distinguish saved settings from effective settings. |
+| Acceptance | Valid and invalid examples, persistence and runtime assertions, compatibility/failure cases, browser steps, and applicable real-call checks. Record unsupported combinations explicitly. |
+
+For example, if a feature adds an operator-configurable tool timeout, place a
+numeric field in the appropriate tool form, label its units, and explain what
+happens when it expires. Determine the default and allowed bounds from the scoped
+runtime/API contract; do not invent them in the UI. Map the field through the API
+and storage to the timeout actually enforced, and state when a saved value takes
+effect. Verify a non-default value survives save/reopen and changes the observed
+timeout, while invalid values are rejected through both the form and direct API.
+This example defines acceptance criteria, not a claim that a particular tool
+already exposes such a field.
+
 ### Scope a New Provider or Tool
 
 Start the scope with a short research record: official URLs and date checked,
@@ -123,6 +153,12 @@ Create one focused branch from current upstream `main`; identify which remote is
 the upstream project and which is the user's fork. Preserve unrelated changes,
 using an isolated worktree when appropriate. When continuing a contributor's PR,
 preserve their commits and credit and work within authorized branch access.
+
+Implement the [UI control contract](#ui-control-design-checklist) across frontend,
+API, storage, and runtime in the same feature PR. Reuse existing forms/selectors
+and `HelpTooltip`; backend validation remains authoritative. Add focused tests
+for the new value contract, persistence, and runtime use, including rejection
+through direct API requests rather than relying only on browser validation.
 
 Run the relevant checks in the appropriate environment. These are common entry
 points; use current [.github/workflows/ci.yml](../../.github/workflows/ci.yml) for
@@ -201,6 +237,28 @@ responses, and relevant empty/accessibility states. Check the backend and runtim
 effect as well as the visible control. If browser access is unavailable, supply an
 exact manual checklist and mark it pending until the user provides results.
 
+For each added or changed control, collect evidence against its scoped contract:
+
+- [ ] Open the intended page with representative existing settings; verify labels,
+  units, defaults/inheritance, dependencies, supported modes, and keyboard access.
+- [ ] Exercise valid values and relevant boundaries, empty/clear/disabled states,
+  invalid input, and API rejection. Check permission failures and secret handling
+  where applicable; do not expose credential values in screenshots or test evidence.
+- [ ] Save a non-default value, leave and reopen the form, then reload it. Confirm
+  API and persistent state agree and unrelated settings remain intact.
+- [ ] Apply/restart only as required by the scoped contract. Verify the effective
+  runtime value and resulting behavior, including override precedence and active
+  versus subsequent-call behavior where relevant. A successful save alone is not
+  evidence that the runtime uses the value.
+- [ ] Exercise relevant load/save/apply failures and confirm the UI reports the
+  outcome accurately. Check older configurations with the field absent and the
+  documented way to restore the previous value.
+- [ ] Include sanitized browser steps/results and automated test commands/results
+  in the PR, plus observed behavior when call validation is applicable. Keep call
+  IDs in a private handoff unless they are revision-pinned release/RCA evidence
+  without caller identity, as permitted by [AVA.mdc](../../AVA.mdc#engineering-rules).
+  Label unavailable browser or real-call checks as pending with a concrete handoff.
+
 Give a repeatable call script with expected outcomes. A useful baseline is greeting,
 two-way conversation, interruption, the changed tool/feature, farewell, hangup, and
 post-call cleanup. Add timeout, retry, caller disconnect, transfer failure, or
@@ -220,6 +278,9 @@ Required live validation can be handed to a willing tester as described in
 Update relevant docs and changelog before opening the coherent draft. Use the
 [PR template](../../.github/pull_request_template.md) and
 [current PR workflow](PULL_REQUEST_WORKFLOW.md) for CI and final review commands.
+Summarize UI control coverage, API/YAML-only exceptions, and verification evidence
+in the PR's Implementation Notes and Testing sections; identify any deferred UI
+work rather than describing it as delivered.
 Triage current actionable feedback together; explain declined suggestions and
 avoid unrelated changes or repeated review requests. Revalidate fixes at the new
 head, including deployment/calls when their evidence is invalidated.
