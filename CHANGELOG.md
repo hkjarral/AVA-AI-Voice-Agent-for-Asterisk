@@ -138,8 +138,8 @@ reports and reproduction, `ibewackofreak` for the installer report, and
 
 - **Microsoft Calendar lost create:** a `create_event` whose POST timed out
   before reaching Graph no longer leaves the call unable to book, or unable to
-  cancel its other bookings, once a resend goes through. The identical retry
-  resends the first request on the same `transactionId`, so a create that
+  cancel its other bookings, once a resend goes through. The identical
+  in-process retry resends the first request on the same `transactionId`, so a create that
   landed unseen should come back as the same event, and the event is read back before
   it is reported. A Graph 400 `ErrorDuplicateTransactionId` is reported as
   uncertain, not as a failure.

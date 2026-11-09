@@ -38,10 +38,15 @@ configuration overlays and intentionally stopped services.
   opts into `asterisk` on a qualified setup. Restore the saved pacing choice
   during rollback. OpenAI audio-tail admission respects interruption and
   completion ownership. See [media qualification](ISSUE_808_TESTING.md).
-- **Calendar and YAML.** Identical uncertain Microsoft creates reuse the original
-  transaction ID and read back the result. Reconcile uncertain external state
-  before recovery. The Admin writer preserves local YAML comments when it can
-  verify the round trip, with documented plain-dump fallback cases.
+- **Calendar and YAML.** An identical in-process retry of an uncertain Microsoft
+  create reuses the transaction ID and reads back the event before confirming it.
+  After a restart,
+  the same call ID and arguments can reproduce the transaction ID, but a new
+  create attempt lacks the in-process readback. Follow the
+  [restart recovery guide](Microsoft-calendar-tool.md#failures-concurrency-and-restart-recovery)
+  before retrying an uncertain booking. The Admin writer preserves local YAML
+  comments when it can verify the round trip, with documented plain-dump
+  fallback cases.
 
 Supported trains remain 7.7.x and 7.6.x. Existing verification is scoped by
 revision and configuration in the [v7.7.2 matrix](baselines/golden/v7.7.2-validation-matrix.md).
