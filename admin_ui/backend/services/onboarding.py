@@ -1,5 +1,6 @@
 """Non-secret onboarding progress. Configuration and Agents retain ownership of settings."""
 import json
+import logging
 import os
 import sqlite3
 import uuid
@@ -61,9 +62,14 @@ def status() -> dict:
     # Upgrades with real Agents or pending legacy Contexts are already configured.
     # A preflight-created .env alone is never evidence of completed setup.
     from agents_migration import merged_effective_contexts
-    existing = bool(active_agents()) or bool(merged_effective_contexts(
-        settings.CONFIG_PATH, str(Path(settings.CONFIG_PATH).parent / "contexts")
-    ))
+    try:
+        existing = bool(active_agents()) or bool(merged_effective_contexts(
+            settings.CONFIG_PATH, str(Path(settings.CONFIG_PATH).parent / "contexts")
+        ))
+    except Exception:
+        # Keep repair pages reachable when an existing config or DB is unreadable.
+        logging.getLogger(__name__).warning("Could not classify existing setup; allowing configuration repair")
+        existing = True
     return {"configured": existing, "stage": "existing" if existing else "not_started", "resume_required": False}
 
 

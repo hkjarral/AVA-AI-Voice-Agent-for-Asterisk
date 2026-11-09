@@ -36,8 +36,11 @@ func init() {
 func runDialplan(cmd *cobra.Command, args []string) error {
 	app := dialplanApp
 	if app == "" {
-		var err error
-		app, err = dialplan.ConfiguredAppName("config")
+		dir, err := dialplan.ConfigDirectory()
+		if err != nil {
+			return err
+		}
+		app, err = dialplan.ConfiguredAppName(dir)
 		if err != nil {
 			return err
 		}

@@ -853,8 +853,11 @@ async def _probe_engine_readiness() -> dict:
 @router.get("/readiness")
 async def setup_readiness():
     from services.onboarding import effective_config, handoff
-    config = await asyncio.to_thread(effective_config)
-    result = await asyncio.to_thread(handoff, config or {})
+    try:
+        config = await asyncio.to_thread(effective_config)
+        result = await asyncio.to_thread(handoff, config or {})
+    except ValueError:
+        raise HTTPException(400, "Invalid setup configuration. Check the Stasis application name and default Agent identifier in configuration and Agents.") from None
     result["checks"] = await _probe_engine_readiness()
     result["checks"]["agent_resolved"] = bool(result["agent_slug"])
     result["ready_for_test"] = result["checks"]["ready"] and result["checks"]["agent_resolved"]
@@ -1038,8 +1041,8 @@ async def start_engine(action: str = "start"):
             "steps": steps, "media_setup": media_setup,
         }
 
-    except subprocess.TimeoutExpired as e:
-        add_step("timeout", "error", f"Operation timed out after {e.timeout}s")
+    except subprocess.TimeoutExpired:
+        add_step("timeout", "error", "Operation timed out. Check container logs.")
         return {
             "success": False,
             "action": "timeout",
@@ -1047,12 +1050,14 @@ async def start_engine(action: str = "start"):
             "steps": steps,
             "media_setup": media_setup
         }
-    except Exception as e:
-        add_step("error", "error", str(e))
+    except Exception:
+        logger.exception("Engine startup failed")
+        message = "Engine startup failed. Check Admin UI container logs and retry."
+        add_step("error", "error", message)
         return {
             "success": False,
             "action": "error",
-            "message": str(e),
+            "message": message,
             "steps": steps,
             "media_setup": media_setup
         }
@@ -3016,16 +3021,6 @@ def _save_setup_config_locked(config: SetupConfig, selected_google_live_model: s
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         from services.onboarding import write_state, effective_config
         yaml_config = effective_config()
-        # A failed multi-file save must never retain a previously verified marker.
-        write_state("in_progress")
-
-        # Backup existing files
-        if os.path.exists(ENV_PATH):
-            shutil.copy2(ENV_PATH, f"{ENV_PATH}.bak.{timestamp}")
-            
-        if os.path.exists(CONFIG_PATH):
-            shutil.copy2(CONFIG_PATH, f"{CONFIG_PATH}.bak.{timestamp}")
-
         # 1. Update .env
         env_updates = {
             "ASTERISK_HOST": config.asterisk_host,
@@ -3167,6 +3162,23 @@ def _save_setup_config_locked(config: SetupConfig, selected_google_live_model: s
                 elif llm_model and llm_model.get("model_path"):
                     env_updates["LOCAL_LLM_MODEL_PATH"] = _safe_join_under_dir("/app/models/llm", llm_model["model_path"])
 
+        # Validate the existing Agent selector with the newly requested app before
+        # changing configuration or downgrading a previously verified setup.
+        from services.onboarding import handoff
+        candidate = copy.deepcopy(yaml_config or {})
+        candidate["asterisk"] = {"app_name": config.asterisk_app}
+        try:
+            handoff(candidate)
+        except ValueError:
+            raise HTTPException(400, "Invalid default Agent configuration. Check its identifier and settings in Agents.") from None
+
+        # Back up only after pure validation. A failed multi-file save must never
+        # retain a previously verified marker once configuration writes begin.
+        if os.path.exists(ENV_PATH):
+            shutil.copy2(ENV_PATH, f"{ENV_PATH}.bak.{timestamp}")
+        if os.path.exists(CONFIG_PATH):
+            shutil.copy2(CONFIG_PATH, f"{CONFIG_PATH}.bak.{timestamp}")
+        write_state("in_progress")
         upsert_env_vars(ENV_PATH, env_updates, header="Setup Wizard")
 
         # 2. Update ai-agent.yaml - APPEND MODE
@@ -3493,13 +3505,18 @@ def _save_setup_config_locked(config: SetupConfig, selected_google_live_model: s
             )
         
         from services.onboarding import write_state, handoff
+        try:
+            saved_handoff = handoff(yaml_config or {})
+        except ValueError:
+            raise HTTPException(400, "Configuration was saved, but the default Agent handoff is invalid. Check its identifier and settings in Agents, then retry setup.") from None
         write_state("configuration_saved")
+        saved_handoff["stage"] = "configuration_saved"
         # Saving is distinct from engine readiness and an operator-confirmed call.
         return {
             "status": "success",
             "provider": config.provider,
             "starter_agents": starter_result,
-            "handoff": handoff(yaml_config or {}),
+            "handoff": saved_handoff,
         }
     except HTTPException:
         raise

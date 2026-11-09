@@ -199,3 +199,73 @@ def test_complete_requires_operator_confirmation_and_live_readiness(install, mon
 def test_dialplan_rejects_injected_identifiers(slug, app):
     with pytest.raises(ValueError):
         agent_dialplan(slug, app)
+
+
+@pytest.mark.parametrize("source", ["malformed_yaml", "list_yaml", "unreadable_db"])
+def test_existing_install_repair_pages_remain_accessible(install, source):
+    client, root = install
+    if source == "unreadable_db":
+        path = root / "data/operator/agents.db"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"not a sqlite database")
+    else:
+        (root / "config/ai-agent.yaml").write_text("asterisk: [" if source == "malformed_yaml" else "- item\n")
+    response = client.get("/wizard/status")
+    assert response.status_code == 200
+    assert response.json() == {"configured": True, "stage": "existing", "resume_required": False}
+
+
+def test_invalid_app_readiness_and_completion_are_actionable(install):
+    client, root = install
+    assert client.post("/wizard/save", json=setup()).status_code == 200
+    (root / "config/ai-agent.local.yaml").write_text("asterisk:\n  app_name: invalid,app\n")
+    before = onboarding.state_path().read_bytes()
+    for response in (
+        client.get("/wizard/readiness"),
+        client.post("/wizard/complete", json=dict(greeting_heard=True, two_way_audio=True, clean_hangup=True, history_checked=True)),
+    ):
+        assert response.status_code == 400
+        assert "Stasis application" in response.json()["detail"]
+    assert onboarding.state_path().read_bytes() == before
+
+
+@pytest.mark.parametrize("stage", ["verified", "configuration_saved"])
+def test_rejected_local_model_does_not_reset_saved_progress(install, stage):
+    client, root = install
+    onboarding.write_state(stage)
+    before = onboarding.state_path().read_bytes()
+    env_before = (root / ".env").read_bytes()
+    response = client.post("/wizard/save", json=setup(provider="local", local_llm_model="custom_gguf_url", local_llm_custom_filename="../bad.gguf"))
+    assert response.status_code == 400, response.text
+    assert onboarding.state_path().read_bytes() == before
+    assert (root / ".env").read_bytes() == env_before
+    assert not list(root.glob(".env.bak.*"))
+
+
+def test_invalid_existing_agent_is_rejected_before_save(install):
+    import os
+    import sqlite3
+    client, root = install
+    assert client.post("/wizard/save", json=setup()).status_code == 200
+    with sqlite3.connect(os.environ["AGENTS_DB_PATH"]) as db:
+        db.execute("UPDATE agents SET slug='bad,slug' WHERE is_default=1")
+    before = onboarding.state_path().read_bytes()
+    env_before = (root / ".env").read_bytes()
+    response = client.post("/wizard/save", json=setup(ai_name="Changed"))
+    assert response.status_code == 400
+    assert "Agent" in response.json()["detail"]
+    assert onboarding.state_path().read_bytes() == before
+    assert (root / ".env").read_bytes() == env_before
+
+
+def test_engine_start_failure_does_not_expose_exception(install, monkeypatch):
+    client, _ = install
+    monkeypatch.setattr(wizard, "setup_media_paths", lambda: {})
+    def fail(*args):
+        raise RuntimeError("synthetic-secret-in-exception")
+    monkeypatch.setattr("shutil.which", fail)
+    response = client.post("/wizard/start-engine")
+    assert response.status_code == 200
+    assert response.json()["success"] is False
+    assert "container logs" in response.json()["message"]
+    assert "synthetic-secret" not in response.text

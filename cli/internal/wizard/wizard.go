@@ -358,6 +358,12 @@ func (w *Wizard) stepReviewAndApply() error {
 		return nil
 	}
 
+	// Validate the handoff before saving credentials or rebuilding services.
+	app, err := dialplan.ConfiguredAppName(filepath.Dir(w.config.YAMLPath))
+	if err != nil {
+		return err
+	}
+
 	// Save .env
 	fmt.Println()
 	PrintInfo("Saving .env...")
@@ -401,10 +407,6 @@ func (w *Wizard) stepReviewAndApply() error {
 	PrintSuccess("Configuration saved — connect Asterisk and verify a call next")
 	fmt.Println("═══════════════════════════════════════════")
 	fmt.Println()
-	app, err := dialplan.ConfiguredAppName(filepath.Dir(w.config.YAMLPath))
-	if err != nil {
-		return err
-	}
 	fmt.Println("Ensure an active default Agent exists in Admin UI → Agents before calling.")
 	fmt.Println(dialplan.GenerateAgentSnippet("", "", app))
 	fmt.Println("FreePBX: add to extensions_custom.conf, Apply Config, create Custom Destination from-ai-agent,s,1,")

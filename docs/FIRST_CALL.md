@@ -93,8 +93,11 @@ exten => s,1,NoOp(AVA agent receptionist)
 
 There is deliberately no `AI_PROVIDER` override: the Agent owns its provider/pipeline.
 `AI_AGENT=default` selects a literal slug; omitting `AI_AGENT` selects the database
-default. Unknown/deactivated Agents fail closed. Do not add `AudioSocket()` here;
-the engine creates the media channel through ARI.
+default. Resolution tries an active exact slug, normalized slug, then display name.
+If no active Agent matches, the call fails closed. Remove or update PBX routes when
+deactivating an Agent: its old selector can otherwise match another active Agent's
+display name. Do not add `AudioSocket()` here; the engine creates the media channel
+through ARI.
 
 ### FreePBX
 

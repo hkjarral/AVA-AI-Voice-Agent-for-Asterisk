@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine readiness separately from saving, and include FreePBX/plain-Asterisk
   routing plus explicit test-call acceptance. Reopen merged settings, retain
   non-secret tab drafts, and keep passwords/keys out of browser draft storage.
+  Keep repair pages reachable for corrupt existing configuration; validate before
+  resetting setup progress or saving CLI changes, and return safe startup errors.
   Align Agent/CLI dialplans and first-call documentation. No runtime routing or
   Agent database migration changes.
 
