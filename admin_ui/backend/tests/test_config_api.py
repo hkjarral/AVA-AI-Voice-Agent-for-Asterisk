@@ -854,6 +854,7 @@ async def test_wizard_save_keeps_comments_in_worker_thread(monkeypatch, tmp_path
     monkeypatch.setattr(wizard, "LOCAL_CONFIG_PATH", str(local))
     monkeypatch.setattr(wizard, "ENV_PATH", str(tmp_path / ".env"))
     monkeypatch.setenv("AGENTS_DB_PATH", str(tmp_path / "agents.db"))
+    monkeypatch.setattr(config.settings, "PROJECT_ROOT", str(tmp_path))
     loop_thread = threading.get_ident()
     rewrite_threads = []
     keep_comments = config._keep_local_comments

@@ -11,6 +11,8 @@ import yaml
 import subprocess
 import stat
 from typing import Dict, Any, Optional, List, Tuple
+from typing import Literal
+import ipaddress
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 import hashlib
@@ -606,8 +608,9 @@ def setup_host_symlink() -> dict:
         else:
             results["messages"].append("Could not detect host project path from mounts")
             
-    except Exception as e:
-        results["errors"].append(f"Symlink setup error: {e}")
+    except Exception:
+        logger.exception("Host symlink setup failed")
+        results["errors"].append("Host symlink setup failed. Check Admin UI container logs.")
     
     return results
 
@@ -641,8 +644,9 @@ def setup_media_paths() -> dict:
         os.chmod(os.path.dirname(host_media_dir), 0o775)
         os.chmod(host_media_dir, 0o775)
         results["messages"].append(f"Created media directory: {host_media_dir}")
-    except Exception as e:
-        results["errors"].append(f"Failed to create media directory: {e}")
+    except Exception:
+        logger.exception("Media directory creation failed")
+        results["errors"].append("Failed to create media directory. Check permissions and Admin UI container logs.")
         results["success"] = False
     
     # 2. Try to create symlink on host via docker exec on host system
@@ -699,9 +703,10 @@ def setup_media_paths() -> dict:
             results["messages"].append("Pulled alpine image")
         except:
             results["errors"].append("Could not pull alpine image for symlink setup")
-    except Exception as e:
-        # Symlink creation failed, provide manual instructions
-        results["messages"].append(f"Auto symlink setup skipped: {e}")
+    except Exception:
+        logger.exception("Media symlink setup failed")
+        # Symlink creation failed, provide manual instructions without raw errors.
+        results["messages"].append("Auto symlink setup skipped. Check Admin UI container logs.")
         results["messages"].append(
             "Manual setup required: Run on host:\n"
             f"  sudo ln -sfn {PROJECT_ROOT}/asterisk_media/ai-generated /var/lib/asterisk/sounds/ai-generated"
@@ -731,6 +736,7 @@ async def load_existing_config():
     import re
     
     config = {}
+    env_values = {}
     
     # Load from .env if it exists
     if os.path.exists(ENV_PATH):
@@ -765,47 +771,38 @@ async def load_existing_config():
             "local_llm_model": "",
         }
     
-    # Load AI config from YAML if it exists
-    if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, 'r') as f:
-                yaml_config = yaml.safe_load(f)
-
-            # Canonical: app name lives in YAML (asterisk.app_name)
-            asterisk_yaml = (yaml_config.get("asterisk") or {}) if isinstance(yaml_config.get("asterisk"), dict) else {}
-            if asterisk_yaml.get("app_name"):
-                config["asterisk_app"] = asterisk_yaml.get("app_name")
-            
-            # Get default context settings
-            default_ctx = yaml_config.get("contexts", {}).get("default", {})
-            prompt = (default_ctx.get("prompt") or "").strip()
-            greeting = (default_ctx.get("greeting") or "").strip()
-
-            # Wizard stores prompt as: "You are <ai_name>, a <ai_role>. ..."
-            # Best-effort parse to prepopulate ai_name/ai_role without inventing new YAML keys.
-            ai_name = "Asterisk Agent"
-            ai_role = "Helpful Assistant"
-            if prompt:
-                match = re.match(r"^You are\s+(?P<name>[^,]+),\s*a\s+(?P<role>[^.]+)\.", prompt, flags=re.IGNORECASE)
-                if match:
-                    ai_name = (match.group("name") or "").strip() or ai_name
-                    ai_role = (match.group("role") or "").strip() or ai_role
-
-            config["ai_name"] = ai_name
-            config["ai_role"] = ai_role
-            if greeting:
-                config["greeting"] = greeting
-            
-            active_pipeline = (yaml_config.get("active_pipeline") or "").strip()
-            if active_pipeline == "local_hybrid" or active_pipeline.startswith("local_hybrid_"):
-                config["provider"] = "local_hybrid"
-            elif default_ctx.get("provider"):
-                config["provider"] = default_ctx.get("provider")
-            elif yaml_config.get("default_provider"):
-                config["provider"] = yaml_config.get("default_provider")
-        except:
-            pass
-    
+    from services.onboarding import effective_config, handoff, status
+    try:
+        yaml_config = await asyncio.to_thread(effective_config)
+        config["asterisk_app"] = (yaml_config.get("asterisk") or {}).get("app_name") or config.get("asterisk_app", "asterisk-ai-voice-agent")
+        config["ai_name"] = env_values.get("AI_NAME") or "Asterisk Agent"
+        config["ai_role"] = env_values.get("AI_ROLE") or "Helpful Assistant"
+        config["greeting"] = env_values.get("GREETING") or "Hello, how can I help you today?"
+        target = str(yaml_config.get("active_pipeline") or yaml_config.get("default_provider") or "openai_realtime")
+        if target == "local_hybrid" or target.startswith("local_hybrid_"):
+            config["provider"] = "local_hybrid"
+            config["hybrid_llm_provider"] = "groq" if target.endswith("_groq") else "ollama" if target.endswith("_ollama") else "openai"
+        else:
+            config["provider"] = target
+        transport = yaml_config.get("audio_transport", "audiosocket")
+        config["audio_transport"] = transport
+        config["deployment_topology"] = "same_host" if config.get("asterisk_host", "127.0.0.1") in {"localhost", "127.0.0.1", "::1"} else "remote"
+        media = yaml_config.get("audiosocket" if transport == "audiosocket" else "external_media") or {}
+        advertise_key = "AUDIOSOCKET_ADVERTISE_HOST" if transport == "audiosocket" else "EXTERNAL_MEDIA_ADVERTISE_HOST"
+        config["media_advertise_host"] = env_values.get(advertise_key) or media.get("advertise_host") or ""
+        allowed = (yaml_config.get("external_media") or {}).get("allowed_remote_hosts") or []
+        config["asterisk_server_ip"] = allowed[0] if len(allowed) == 1 and allowed[0] not in {"127.0.0.1", "::1"} else ""
+        config["asterisk_ssl_verify"] = _parse_optional_bool(env_values.get("ASTERISK_ARI_SSL_VERIFY")) is not False
+        from services.onboarding import active_agents
+        rows = await asyncio.to_thread(active_agents)
+        selected = next((row for row in rows if row.get("is_default")), None)
+        if selected and selected.get("greeting"):
+            config["greeting"] = selected["greeting"]
+        config["onboarding"] = await asyncio.to_thread(status)
+        config["handoff"] = await asyncio.to_thread(handoff, yaml_config)
+    except Exception:
+        logger.exception("Could not load effective setup configuration")
+        raise HTTPException(503, "Could not load saved settings. Check config/data permissions and retry before saving.")
     return config
 
 
@@ -838,6 +835,65 @@ async def get_engine_status():
             "exists": False,
             "error": str(e)
         }
+
+
+async def _probe_engine_readiness() -> dict:
+    from api.system import _configured_ai_engine_health_port
+    port = await asyncio.to_thread(_configured_ai_engine_health_port)
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(f"http://127.0.0.1:{port}/ready")
+            data = response.json()
+        return {
+            "reachable": True,
+            "ready": response.status_code == 200 and data.get("ready") is True,
+            **{key: data.get(key) is True for key in ("ari_connected", "transport_ok", "provider_ok", "pipeline_ok")},
+        }
+    except Exception:
+        return {"reachable": False, "ready": False, "ari_connected": False, "transport_ok": False, "provider_ok": False, "pipeline_ok": False}
+
+
+@router.get("/readiness")
+async def setup_readiness():
+    from services.onboarding import effective_config, handoff
+    try:
+        config = await asyncio.to_thread(effective_config)
+        result = await asyncio.to_thread(handoff, config or {})
+    except ValueError:
+        raise HTTPException(400, "Invalid setup configuration. Check the Stasis application name and default Agent identifier in configuration and Agents.") from None
+    result["checks"] = await _probe_engine_readiness()
+    result["checks"]["agent_resolved"] = bool(result["agent_slug"])
+    result["ready_for_test"] = result["checks"]["ready"] and result["checks"]["agent_resolved"]
+    return result
+
+
+class TestCallConfirmation(BaseModel):
+    greeting_heard: bool
+    two_way_audio: bool
+    clean_hangup: bool
+    history_checked: bool
+
+
+@router.post("/complete")
+async def complete_setup(confirmation: TestCallConfirmation):
+    """Record explicit operator acceptance; a health probe cannot hear a call."""
+    from api.config import _CONFIG_UPDATE_LOCK
+    from services.onboarding import read_state, write_state
+    if not all(confirmation.model_dump().values()):
+        raise HTTPException(400, "Confirm the greeting, two-way audio, hangup and Call History before completing setup")
+    before = await asyncio.to_thread(read_state)
+    if before.get("stage") not in {"configuration_saved", "verified"}:
+        raise HTTPException(409, "Save setup successfully before recording a verified call")
+    result = await setup_readiness()
+    if not result["ready_for_test"]:
+        raise HTTPException(409, "Readiness checks are incomplete. Resolve them and retry.")
+    def complete():
+        with _CONFIG_UPDATE_LOCK:
+            if read_state() != before:
+                raise HTTPException(409, "Setup changed during verification. Refresh and check again.")
+            write_state("verified")
+    await asyncio.to_thread(complete)
+    return {"status": "success", "stage": "verified"}
 
 
 @router.post("/setup-media-paths")
@@ -971,38 +1027,25 @@ async def start_engine(action: str = "start"):
         add_step("health_check", "running", "Waiting for AI Engine to be ready...")
         import httpx
         
-        health_url = "http://127.0.0.1:15000/health"
-        max_attempts = 30
-        for attempt in range(max_attempts):
-            try:
-                async with httpx.AsyncClient(timeout=2.0) as http_client:
-                    resp = await http_client.get(health_url)
-                    if resp.status_code == 200:
-                        health_data = resp.json()
-                        add_step("health_check", "complete", f"AI Engine healthy - {len(health_data.get('providers', {}))} providers loaded")
-                        return {
-                            "success": True,
-                            "action": action,
-                            "message": "AI Engine started successfully",
-                            "steps": steps,
-                            "health": health_data,
-                            "media_setup": media_setup
-                        }
-            except Exception:
-                pass
+        for attempt in range(30):
+            health_data = await _probe_engine_readiness()
+            if health_data["ready"]:
+                add_step("health_check", "complete", "Engine readiness checks passed; place a test call next")
+                return {
+                    "success": True, "started": True, "ready": True, "action": action,
+                    "message": "AI Engine started and readiness checks passed",
+                    "steps": steps, "health": health_data, "media_setup": media_setup,
+                }
             await asyncio.sleep(1)
-        
-        add_step("health_check", "warning", "Health check timed out but container is running")
+        add_step("health_check", "warning", "Engine start requested, but readiness checks have not passed. Check status and retry readiness.")
         return {
-            "success": True,
-            "action": action,
-            "message": "AI Engine started (health check pending)",
-            "steps": steps,
-            "media_setup": media_setup
+            "success": False, "started": True, "ready": False, "action": action,
+            "message": "Engine start requested; readiness timed out. Check ARI, media and provider status below.",
+            "steps": steps, "media_setup": media_setup,
         }
-        
-    except subprocess.TimeoutExpired as e:
-        add_step("timeout", "error", f"Operation timed out after {e.timeout}s")
+
+    except subprocess.TimeoutExpired:
+        add_step("timeout", "error", "Operation timed out. Check container logs.")
         return {
             "success": False,
             "action": "timeout",
@@ -1010,12 +1053,14 @@ async def start_engine(action: str = "start"):
             "steps": steps,
             "media_setup": media_setup
         }
-    except Exception as e:
-        add_step("error", "error", str(e))
+    except Exception:
+        logger.exception("Engine startup failed")
+        message = "Engine startup failed. Check Admin UI container logs and retry."
+        add_step("error", "error", message)
         return {
             "success": False,
             "action": "error",
-            "message": str(e),
+            "message": message,
             "steps": steps,
             "media_setup": media_setup
         }
@@ -2855,27 +2900,14 @@ async def validate_asterisk_connection(conn: AsteriskConnection):
 
 @router.get("/status")
 async def get_setup_status():
-    """
-    Check if initial setup has been completed
-    Returns configured: true if .env exists with required keys
-    """
+    """Distinguish a prepared environment from saved or existing operator setup."""
+    from services.onboarding import status
     try:
-        if not os.path.exists(ENV_PATH):
-            return {"configured": False, "message": "Environment file not found"}
-        
-        # Read .env and check for minimal required config
-        with open(ENV_PATH, 'r') as f:
-            content = f.read()
-            has_asterisk_host = "ASTERISK_HOST=" in content
-            has_username = "ASTERISK_ARI_USERNAME=" in content
-            
-            if has_asterisk_host and has_username:
-                return {"configured": True, "message": "Setup complete"}
-            else:
-                return {"configured": False, "message": "Incomplete configuration"}
-                
-    except Exception as e:
-        return {"configured": False, "message": str(e)}
+        return await asyncio.to_thread(status)
+    except Exception:
+        logger.exception("Could not read onboarding state")
+        raise HTTPException(503, "Could not read setup state. Check configuration/data permissions and retry.")
+
 
 class SetupConfig(BaseModel):
     provider: str = "openai_realtime"
@@ -2887,6 +2919,9 @@ class SetupConfig(BaseModel):
     asterisk_app: str = "asterisk-ai-voice-agent"
     asterisk_server_ip: Optional[str] = None  # Required when asterisk_host is a hostname (for RTP security)
     asterisk_ssl_verify: bool = True  # Set to False to skip SSL certificate verification
+    deployment_topology: Optional[Literal["same_host", "remote"]] = None
+    audio_transport: Optional[Literal["audiosocket", "externalmedia", "websocket"]] = None
+    media_advertise_host: Optional[str] = None
     openai_key: Optional[str] = None
     groq_key: Optional[str] = None
     deepgram_key: Optional[str] = None
@@ -2946,6 +2981,19 @@ def _validate_setup_provider_credentials(config: SetupConfig) -> None:
 async def save_setup_config(config: SetupConfig):
     """Persist wizard configuration into `.env` and baseline config files."""
     _validate_setup_provider_credentials(config)
+    from services.dialplan import identifier
+    try:
+        config.asterisk_app = identifier(config.asterisk_app, "Stasis application")
+        if config.deployment_topology == "remote" and config.audio_transport != "websocket":
+            address = ipaddress.IPv4Address(config.media_advertise_host or "")
+            if address.is_loopback or address.is_unspecified or address.is_multicast:
+                raise ValueError("Use an AVA IPv4 address reachable from the PBX")
+            if config.asterisk_host in {"localhost", "127.0.0.1", "::1"}:
+                raise ValueError("Enter the remote PBX address, not localhost")
+            if config.audio_transport == "externalmedia":
+                ipaddress.ip_address(config.asterisk_server_ip or config.asterisk_host)
+    except ValueError as exc:
+        raise HTTPException(400, f"Media/application configuration: {exc}")
     selected_google_live_model = GOOGLE_LIVE_DEFAULT_MODEL
     if config.provider == "google_live" and config.google_key:
         discovered_model = await _discover_google_live_model(config.google_key)
@@ -2974,14 +3022,8 @@ def _save_setup_config_locked(config: SetupConfig, selected_google_live_model: s
         import datetime
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        # Backup existing files
-        if os.path.exists(ENV_PATH):
-            shutil.copy2(ENV_PATH, f"{ENV_PATH}.bak.{timestamp}")
-            
-        if os.path.exists(CONFIG_PATH):
-            shutil.copy2(CONFIG_PATH, f"{CONFIG_PATH}.bak.{timestamp}")
-
+        from services.onboarding import write_state, effective_config
+        yaml_config = effective_config()
         # 1. Update .env
         env_updates = {
             "ASTERISK_HOST": config.asterisk_host,
@@ -2994,6 +3036,10 @@ def _save_setup_config_locked(config: SetupConfig, selected_google_live_model: s
             "AI_ROLE": config.ai_role,
             "GREETING": config.greeting,
         }
+        if config.deployment_topology and config.audio_transport in {"audiosocket", "externalmedia"}:
+            key = "AUDIOSOCKET_ADVERTISE_HOST" if config.audio_transport == "audiosocket" else "EXTERNAL_MEDIA_ADVERTISE_HOST"
+            # Runtime environment overrides YAML for these two fields.
+            env_updates[key] = config.media_advertise_host if config.deployment_topology == "remote" else "127.0.0.1"
         
         if config.openai_key:
             env_updates["OPENAI_API_KEY"] = config.openai_key
@@ -3119,6 +3165,23 @@ def _save_setup_config_locked(config: SetupConfig, selected_google_live_model: s
                 elif llm_model and llm_model.get("model_path"):
                     env_updates["LOCAL_LLM_MODEL_PATH"] = _safe_join_under_dir("/app/models/llm", llm_model["model_path"])
 
+        # Validate the existing Agent selector with the newly requested app before
+        # changing configuration or downgrading a previously verified setup.
+        from services.onboarding import handoff
+        candidate = copy.deepcopy(yaml_config or {})
+        candidate["asterisk"] = {"app_name": config.asterisk_app}
+        try:
+            handoff(candidate)
+        except ValueError:
+            raise HTTPException(400, "Invalid default Agent configuration. Check its identifier and settings in Agents.") from None
+
+        # Back up only after pure validation. A failed multi-file save must never
+        # retain a previously verified marker once configuration writes begin.
+        if os.path.exists(ENV_PATH):
+            shutil.copy2(ENV_PATH, f"{ENV_PATH}.bak.{timestamp}")
+        if os.path.exists(CONFIG_PATH):
+            shutil.copy2(CONFIG_PATH, f"{CONFIG_PATH}.bak.{timestamp}")
+        write_state("in_progress")
         upsert_env_vars(ENV_PATH, env_updates, header="Setup Wizard")
 
         # 2. Update ai-agent.yaml - APPEND MODE
@@ -3126,19 +3189,9 @@ def _save_setup_config_locked(config: SetupConfig, selected_google_live_model: s
         # If provider doesn't exist, create full config
         # Don't auto-disable other providers (user manages via Dashboard)
         # Read merged config (base + local override) so wizard sees operator changes.
-        compute_local_override_fn = None
-        try:
-            from api.config import _read_merged_config_dict, _read_base_config_dict, _compute_local_override
-            yaml_config = _read_merged_config_dict()
-            base_config = _read_base_config_dict()
-            compute_local_override_fn = _compute_local_override
-        except Exception as exc:
-            logger.warning("Wizard config helper import failed; using fallback override diff: %s", exc)
-            yaml_config = None
-            base_config = None
-        if not yaml_config and os.path.exists(CONFIG_PATH):
-            with open(CONFIG_PATH, "r") as f:
-                yaml_config = yaml.safe_load(f)
+        from api.config import _read_base_config_dict, _compute_local_override
+        base_config = _read_base_config_dict()
+        compute_local_override_fn = _compute_local_override
         pipeline_name = None
         if config.provider == "local_hybrid":
             llm_provider = (config.hybrid_llm_provider or "groq").lower()
@@ -3374,8 +3427,23 @@ def _save_setup_config_locked(config: SetupConfig, selected_google_live_model: s
                 asterisk_block = {}
                 yaml_config["asterisk"] = asterisk_block
             asterisk_block["app_name"] = config.asterisk_app
+            if config.audio_transport:
+                yaml_config["audio_transport"] = config.audio_transport
+            if config.deployment_topology:
+                transport = yaml_config.get("audio_transport", "audiosocket")
+                if transport in {"audiosocket", "externalmedia"}:
+                    # Configure both listener and callback address. ARI reachability
+                    # alone does not establish a return audio path from the PBX.
+                    block_name = "audiosocket" if transport == "audiosocket" else "external_media"
+                    bind_key = "host" if transport == "audiosocket" else "rtp_host"
+                    media = yaml_config.setdefault(block_name, {})
+                    remote = config.deployment_topology == "remote"
+                    media[bind_key] = "0.0.0.0" if remote else "127.0.0.1"
+                    media["advertise_host"] = config.media_advertise_host if remote else "127.0.0.1"
+                    if transport == "externalmedia":
+                        media["allowed_remote_hosts"] = [config.asterisk_server_ip or config.asterisk_host] if remote else ["127.0.0.1"]
             # Set allowed_remote_hosts when using hostname (for RTP security)
-            if config.asterisk_server_ip:
+            if config.asterisk_server_ip and not config.deployment_topology:
                 yaml_config.setdefault("external_media", {})["allowed_remote_hosts"] = [config.asterisk_server_ip]
 
             local_override = None
@@ -3439,11 +3507,19 @@ def _save_setup_config_locked(config: SetupConfig, selected_google_live_model: s
                 ),
             )
         
-        # Config saved - engine start will be handled by completion step UI
+        from services.onboarding import write_state, handoff
+        try:
+            saved_handoff = handoff(yaml_config or {})
+        except ValueError:
+            raise HTTPException(400, "Configuration was saved, but the default Agent handoff is invalid. Check its identifier and settings in Agents, then retry setup.") from None
+        write_state("configuration_saved")
+        saved_handoff["stage"] = "configuration_saved"
+        # Saving is distinct from engine readiness and an operator-confirmed call.
         return {
             "status": "success",
             "provider": config.provider,
             "starter_agents": starter_result,
+            "handoff": saved_handoff,
         }
     except HTTPException:
         raise
@@ -3452,27 +3528,14 @@ def _save_setup_config_locked(config: SetupConfig, selected_google_live_model: s
 
 @router.post("/skip")
 async def skip_setup():
-    """
-    Skip the setup wizard by creating a minimal .env file
-    This allows advanced users to configure manually
-    """
-    try:
-        # Create minimal .env with a marker that setup was acknowledged
-        if not os.path.exists(ENV_PATH):
-            atomic_write_text(
-                ENV_PATH,
-                (
-                    "# Setup wizard skipped - configure manually\n"
-                    "ASTERISK_HOST=127.0.0.1\n"
-                    "ASTERISK_ARI_USERNAME=asterisk\n"
-                    "ASTERISK_ARI_PASSWORD=\n"
-                ),
-                mode_from_existing=True,
-            )
-        
-        return {"status": "success", "message": "Setup skipped successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """Explicitly acknowledge manual setup without changing credentials/config."""
+    from api.config import _CONFIG_UPDATE_LOCK
+    from services.onboarding import write_state
+    def skip():
+        with _CONFIG_UPDATE_LOCK:
+            write_state("manual")
+    await asyncio.to_thread(skip)
+    return {"status": "success", "message": "Manual setup selected"}
 
 
 # ============== Backend Rebuild Endpoints ==============

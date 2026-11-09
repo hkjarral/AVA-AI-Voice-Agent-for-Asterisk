@@ -73,13 +73,13 @@ Open `http://<server-ip>:3003`. Retrieve the one-time admin password:
 docker logs admin_ui | grep -i password
 ```
 
-Change the password at first login. **Restrict port 3003 to trusted access** using
+Sign in as **admin** and change the password at first login. **Restrict port 3003 to trusted access** using
 a firewall, VPN, or an authenticated TLS reverse proxy; do not expose plain HTTP
 admin access to the public internet.
 
-Complete the Setup Wizard, configure the generated Asterisk dialplan, and start
-the AI Engine as described in the [installation guide](docs/INSTALLATION.md).
-Verify engine health and make a test call before routing callers to the agent.
+Complete the Setup Wizard, then follow [First successful call](docs/FIRST_CALL.md)
+for engine readiness, the generated dialplan, FreePBX/plain-Asterisk routing, and
+a verified two-way conversation. Saving settings alone does not complete setup.
 The guide also covers CLI/manual installation, permissions, and recovery;
 [local AI setup](docs/LOCAL_ONLY_SETUP.md) covers CPU/GPU configurations.
 
