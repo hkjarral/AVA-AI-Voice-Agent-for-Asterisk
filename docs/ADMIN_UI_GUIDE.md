@@ -4,7 +4,7 @@ The Admin UI is a web-based interface for configuring, monitoring, and managing 
 
 ## Quick Start
 
-For v7.7.1, read [migration](MIGRATION.md#v770-to-v771),
+For v7.7.2, read [migration](MIGRATION.md#v771-to-v772),
 [Agents workspace](AGENTS_EXPERIENCE_ROLLOUT.md), and [integration backups](INTEGRATION_BACKUPS.md).
 Hard-refresh after rebuilding Admin UI. Agents now use searchable cards/list,
 a routed four-section editor and changed-field saves. Visual avatars do not
@@ -13,18 +13,14 @@ change voice or routing; tool counts describe configuration, not health.
 Tools opens focused editors. **Update tool** stages HTTP/native edits; **Save & Apply**
 saves/publishes new-call settings. Follow the explicit setup, consent and recovery
 steps for [Calendly](Calendly-calendar-tool.md), [Pushover](Pushover.md),
-[summaries](In-Call-Summaries.md) and [Teams](Microsoft-calendar-tool.md).
+[summaries](In-Call-Summaries.md), [Teams](Microsoft-calendar-tool.md), and
+[optional A2A delegation](A2A-Agent-Tool.md).
 Preview/verification is not a booking/send; explicitly approved setup tests can
 create real external effects.
 
-```bash
-# Start the Admin UI container
-docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
-
-# Access at:
-#   Local:  http://localhost:3003
-#   Remote: http://<server-ip>:3003
-```
+For a fresh install, follow the [v7.7.2 installer](INSTALLATION.md#path-a-admin-ui-setup-wizard-recommended)
+and [first-call walkthrough](FIRST_CALL.md). The installer prepares and starts
+Admin UI at port 3003. Engine startup and PBX routing follow in the wizard.
 
 **First login**: a one-time password is printed to the admin_ui logs on first start (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`); you must change it at first login. `admin`/`admin` no longer works.
 

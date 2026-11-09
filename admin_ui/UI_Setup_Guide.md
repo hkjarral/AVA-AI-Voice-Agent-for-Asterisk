@@ -1,8 +1,8 @@
 # Admin UI Setup Guide
 
-**Applies to**: v7.7.1 release preparation (Admin UI introduced in v4.4.1)
+**Applies to**: v7.7.2 (Admin UI introduced in v4.4.1)
 
-**Last reviewed**: October 2026
+**Last reviewed**: November 2026
 **Quick Start**: 5 minutes to get running
 
 ---
@@ -30,7 +30,7 @@ their immediate behavior. Tool hot reload affects new calls; process changes
 still need an explicit restart.
 See the [Admin UI guide](../docs/ADMIN_UI_GUIDE.md),
 [Tools guide](Tools_Setup_Guide.md), [Agents rollout](../docs/AGENTS_EXPERIENCE_ROLLOUT.md)
-and [upgrade instructions](../docs/INSTALLATION.md#upgrade-to-v770-existing-checkout).
+and [upgrade instructions](../docs/INSTALLATION.md#upgrade-to-v772-existing-checkout).
 
 ## 🚀 Quick Start (Docker)
 
@@ -38,7 +38,7 @@ and [upgrade instructions](../docs/INSTALLATION.md#upgrade-to-v770-existing-chec
 
 ### 1. Start the Admin UI
 
-For source checkouts containing the unreleased #802 fixes:
+From a v7.7.2 checkout:
 
 ```bash
 # From the project root; review preflight findings before proceeding.
@@ -92,8 +92,7 @@ configuration. Saved incomplete setup resumes at the first-call step; unsaved
 connection, provider and model selections survive a refresh within the same tab.
 Unsaved greeting, AI name, AI role and Kokoro voice are not retained; keys/passwords
 must be reentered. “Configuration saved” and “First call verified” are separate states.
-These improvements apply to source checkouts containing the Unreleased onboarding
-changes; older releases retain their previous wizard behavior.
+The guided first-call flow is available in v7.7.2.
 
 ---
 
@@ -394,7 +393,7 @@ If you've been using `install.sh` and the Agent CLI, the Admin UI works alongsid
 
 1. **Follow the supported upgrade and backup procedure**:
 
-   Read the [Installation and Upgrade Guide](../docs/INSTALLATION.md#upgrade-to-v771-existing-checkout),
+   Read the [Installation and Upgrade Guide](../docs/INSTALLATION.md#upgrade-to-v772-existing-checkout),
    especially when upgrading from v7.3.0–v7.3.3 or when the updater reports
    `Failed to compute update plan`. Preserve configuration and local overlays,
    `.env`, managed secrets and the actual configured Agent/Call History databases
