@@ -54,6 +54,10 @@ in automated fixtures.
 
 ## Running Tests Locally
 
+Use Python 3.11 to install the Core Engine requirements and run the
+root Python test suite. The CUDA Local AI image manages its own Python 3.10
+environment and dependencies.
+
 ```bash
 # Python tests (from repo root)
 pip install -r requirements.txt -r requirements-dev.txt

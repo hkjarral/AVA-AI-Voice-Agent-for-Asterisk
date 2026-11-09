@@ -16,6 +16,11 @@ configuration overlays and intentionally stopped services.
   retry to selected services. On success, startup uses `--no-build --pull never`.
   For existing checkouts and older helpers, see [build recovery](BUILD_TROUBLESHOOTING.md)
   and [legacy Compose instructions](CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
+- **Security.** Use the v7.7.2 Engine image for the patched Python dependencies.
+  If you run CPU Local AI, update that image using the same build profile to
+  receive Debian's `zlib1g` fix. Keep intentionally stopped services stopped.
+  See the [Bookworm exception](baselines/golden/v7.7.2-validation-matrix.md#bookworm-exception-for-v772)
+  for the remaining exposure in the Engine, Admin UI and updater images.
 - **First-call setup.** `install.sh --ui` bootstraps management. The wizard saves
   non-secret progress separately in `data/operator/onboarding.json`. Existing
   Agents and pending legacy migration are preserved. Older versions ignore the

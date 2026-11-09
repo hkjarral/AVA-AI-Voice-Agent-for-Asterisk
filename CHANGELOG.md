@@ -9,11 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [7.7.2] - 2026-11-08
 
-Prepared from main `77c03386` through #820. This patch release includes optional
-A2A delegation, guided first-call setup, media and calendar reliability fixes,
+Prepared from main `77c03386` through #820 and the security fixes in #822. This
+patch release includes optional A2A delegation, guided first-call setup, media and calendar reliability fixes,
 and installer recovery improvements. See the [migration guide](docs/MIGRATION.md#v771-to-v772)
 and [validation matrix](docs/baselines/golden/v7.7.2-validation-matrix.md) for the
-upgrade path, existing evidence and open publication gates. Supported trains
+upgrade path, existing evidence and security disposition. Supported trains
 remain 7.7.x and 7.6.x.
 
 Thanks to Chris Wilson (`cswilsnetex`) for Calendar retries and YAML comment
@@ -146,11 +146,14 @@ reports and reproduction, `ibewackofreak` for the installer report, and
 
 ### Security
 
-- The engine still pins `dnspython 2.8.0` and `msgpack 1.2.1`. The applicable
-  image scan reported both tracked advisories. Transcript email DNS validation
-  is off by default. Fish Audio WebSocket can reach the MessagePack C decoder
-  when selected. Upstream has not confirmed the earliest affected MessagePack
-  release. See the [validation matrix](docs/baselines/golden/v7.7.2-validation-matrix.md#security).
+- Update Engine `msgpack` to 1.2.3 and `dnspython` to 2.9.2. Require Debian's
+  DSA-6613-1 `zlib1g` fix in the Trixie-based CPU Local AI runtime image (#822).
+  Use Python 3.11 for source installs and local Core tests, matching the Engine
+  container and CI.
+- The Bookworm Engine, Admin UI and updater images retain an affected `zlib1g`
+  package. The maintainer approved a v7.7.2-only exception pending a vendor fix
+  or image-base remediation. See the [validation matrix](docs/baselines/golden/v7.7.2-validation-matrix.md#security)
+  for advisory IDs, exposure limits and the review deadline.
 
 ## [7.7.1] - 2026-10-30
 
