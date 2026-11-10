@@ -19,9 +19,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get -o Acquire::Retries=5 update && \
     apt-get install -y --no-install-recommends \
-        python3 \
-        python3-venv \
-        python3-pip \
+        ca-certificates \
         build-essential \
         cmake \
         git \
@@ -29,8 +27,12 @@ RUN apt-get -o Acquire::Retries=5 update && \
 
 WORKDIR /usr/src/app
 
-# Create virtual environment
-RUN python3 -m venv /opt/venv
+# WebSockets 17 requires Python >=3.11; Ubuntu 22.04's system Python is 3.10.
+# Keep CUDA unchanged and use a checksum-pinned uv bootstrap for the interpreter.
+COPY --from=ghcr.io/astral-sh/uv:0.12.3@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa45d82797b53fa3abc /uv /usr/local/bin/uv
+ENV UV_PYTHON_INSTALL_DIR=/opt/python
+RUN uv python install 3.11.15 && \
+    uv venv --python 3.11.15 --seed /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 ENV NLTK_DATA="/opt/venv/nltk_data"
 ENV CUDA_HOME=/usr/local/cuda
@@ -172,8 +174,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install runtime dependencies
 RUN apt-get -o Acquire::Retries=5 update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-venv \
+    ca-certificates \
     tzdata \
     libsndfile1 \
     libasound2 \
@@ -219,15 +220,17 @@ WORKDIR /app
 RUN useradd --create-home appuser
 USER appuser
 
-# Copy the virtual environment from builder
+# The venv points at this managed interpreter; copy both at identical paths.
+COPY --from=builder /opt/python /opt/python
 COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN python -c "import sys, ssl, sqlite3; assert sys.version_info[:2] == (3, 11)"
 COPY --from=builder --chown=appuser:appuser /opt/silero-cache /app/models/tts/silero
 
 # Copy application source code
 COPY --chown=appuser:appuser . .
 
-# Set PATH for virtual environment
-ENV PATH="/opt/venv/bin:$PATH"
+# Runtime data for optional TTS backends
 ENV NLTK_DATA="/opt/venv/nltk_data"
 
 # Document the WebSocket server port (informational; host networking ignores EXPOSE)
