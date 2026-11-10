@@ -61,7 +61,7 @@ jobs:
         run: |
           docker run --rm local-ai-server-gpu:${{ github.sha }} \
             bash -ec '
-              python -c "import sys, ssl, sqlite3, websockets; assert sys.version_info[:2] == (3, 11); print(sys.version, websockets.__version__)"
+              python -c "import sys, ssl, sqlite3, websockets; assert sys.version_info[:2] == (3, 11); assert ssl.create_default_context().cert_store_stats()[\"x509_ca\"] > 0; print(sys.version, websockets.__version__)"
               python -c "import faster_whisper, kokoro, importlib.util; assert importlib.util.find_spec(\"llama_cpp\"); print(\"GPU-independent imports succeed and llama_cpp is packaged\")"
               LLAMA_LIB="$(find /opt/venv/lib -path "*/site-packages/llama_cpp/lib/libllama.so" -print -quit)"
               test -n "$LLAMA_LIB"

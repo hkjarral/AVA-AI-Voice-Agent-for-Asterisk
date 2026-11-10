@@ -159,7 +159,8 @@ The GPU image packages Python 3.11.15 in both build and runtime stages because
 WebSockets 17.4 requires Python 3.11 or newer. It retains CUDA 12.4.1/cuDNN and
 does not use Ubuntu 22.04's Python 3.10. A digest-pinned uv bootstrap downloads
 the managed interpreter during the build; the runtime contains the interpreter
-and venv at the same paths, without requiring uv or host Python. Native GPU
+and venv at the same paths, without requiring uv or host Python. Both stages
+point Python TLS at Ubuntu's maintained CA bundle. Native GPU
 inference still requires the NVIDIA driver/toolkit and separate hardware testing.
 
 > AVA's supported GPU image is NVIDIA CUDA-only. AMD/ROCm and Apple Metal are

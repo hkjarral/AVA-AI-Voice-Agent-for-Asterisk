@@ -16,6 +16,9 @@ ARG LLAMA_CUDA_ARCHITECTURES=""
 ARG MELOTTS_GIT_REF=209145371cff8fc3bd60d7be902ea69cbdb7965a
 
 ENV DEBIAN_FRONTEND=noninteractive
+# Managed Python must use Ubuntu's maintained CA bundle for outbound TLS.
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV SSL_CERT_DIR=/etc/ssl/certs
 
 RUN apt-get -o Acquire::Retries=5 update && \
     apt-get install -y --no-install-recommends \
@@ -171,6 +174,9 @@ FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 ARG INCLUDE_KROKO_EMBEDDED=false
 
 ENV DEBIAN_FRONTEND=noninteractive
+# Managed Python must use Ubuntu's maintained CA bundle for outbound TLS.
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV SSL_CERT_DIR=/etc/ssl/certs
 
 # Install runtime dependencies
 RUN apt-get -o Acquire::Retries=5 update && apt-get install -y --no-install-recommends \
@@ -224,7 +230,7 @@ USER appuser
 COPY --from=builder /opt/python /opt/python
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-RUN python -c "import sys, ssl, sqlite3; assert sys.version_info[:2] == (3, 11)"
+RUN python -c "import sys, ssl, sqlite3; assert sys.version_info[:2] == (3, 11); assert ssl.create_default_context().cert_store_stats()['x509_ca'] > 0"
 COPY --from=builder --chown=appuser:appuser /opt/silero-cache /app/models/tts/silero
 
 # Copy application source code
