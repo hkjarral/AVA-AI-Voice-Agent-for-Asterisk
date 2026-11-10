@@ -169,7 +169,7 @@ FROM python:3.11-slim-trixie
 # Build argument to optionally include Kroko embedded server
 ARG INCLUDE_KROKO_EMBEDDED=false
 
-# Install runtime dependencies
+# Install runtime dependencies. Require the Debian Trixie zlib fix (DSA-6613-1).
 RUN apt-get -o Acquire::Retries=5 update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     tzdata \
     libsndfile1 \
@@ -180,6 +180,8 @@ RUN apt-get -o Acquire::Retries=5 update && DEBIAN_FRONTEND=noninteractive apt-g
     sox \
     wget \
     espeak-ng \
+    zlib1g \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' zlib1g)" ge '1:1.3.dfsg+really1.3.1-1+deb13u1' \
     && rm -rf /var/lib/apt/lists/*
 
 # ─────────────────────────────────────────────────────────────────────────────

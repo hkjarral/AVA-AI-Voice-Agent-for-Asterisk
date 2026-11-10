@@ -19,6 +19,7 @@ import {
 import { useAuth } from '../../auth/AuthContext';
 import { FormInput, FormSwitch, FormSelect, FormLabel } from '../ui/FormComponents';
 import { ToolEditorSurface } from './ToolEditorSurface';
+import { A2AToolFields } from './A2AToolFields';
 import { PushoverToolFields } from './PushoverToolFields';
 import { HTTPTemplateEditor, HTTPTemplateGuidance, useHTTPTemplateReview } from './HTTPTemplateGuidance';
 import { pushoverDocument, credentialPayload, applyPushoverRefs, type PushoverCredentials } from './pushoverToolConfig';
@@ -75,6 +76,7 @@ interface HTTPToolConfig {
     parameters?: ToolParameter[];
     return_raw_json?: boolean;
     error_message?: string;
+    agent_url?: string;
 }
 
 const DEFAULT_WEBHOOK_PAYLOAD = `{
@@ -187,6 +189,11 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
 
     // Test functionality state
     const [testValues, setTestValues] = useState<Record<string, string>>(DEFAULT_TEST_VALUES);
+    const a2aRequest = useRef(0);
+    useEffect(() => () => { a2aRequest.current += 1; }, []);
+    const [a2aToken, setA2AToken] = useState('');
+    const [savingA2A, setSavingA2A] = useState(false);
+    const [a2aError, setA2AError] = useState('');
     const [testing, setTesting] = useState(false);
     const [testResult, setTestResult] = useState<TestResult | null>(null);
     const [showTestPanel, setShowTestPanel] = useState(false);
@@ -228,12 +235,14 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
     const commitDraftRowsToState = () => {
         const committed = withDraftRowsCommitted(toolForm);
         setToolForm(committed);
+        setA2AToken('');
+        setA2AError('');
         resetDraftRows();
         return committed;
     };
 
     const { review: templateReview, error: templateReviewError, refresh: refreshTemplateReview } = useHTTPTemplateReview(
-        editingTool ? toolForm.kind === 'pushover' ? Object.fromEntries(['kind', 'title', 'body', 'generate_summary', 'summary_provider', 'summary_prompt', 'summary_max_words', 'priority', 'sound'].map(key => [key, toolForm[key]])) : withDraftRowsCommitted(toolForm) : null, phase, token
+        editingTool && toolForm.kind !== 'a2a_agent' ? toolForm.kind === 'pushover' ? Object.fromEntries(['kind', 'title', 'body', 'generate_summary', 'summary_provider', 'summary_prompt', 'summary_max_words', 'priority', 'sound'].map(key => [key, toolForm[key]])) : withDraftRowsCommitted(toolForm) : null, phase, token
     );
 
     const useTemplateExample = (body: string, title?: string) => {
@@ -249,8 +258,11 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
     };
 
     const closeEditor = () => {
+        a2aRequest.current += 1;
         setPushoverCredentials({token: "", recipients: {}});
         setEditingTool(null);
+        setA2AToken('');
+        setA2AError('');
         resetDraftRows();
         setTestResult(null);
         setShowTestPanel(false);
@@ -261,7 +273,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
         if (!value || typeof value !== 'object' || !value.kind) return false;
         if (phase === 'in_call') {
             return (
-                value.phase === 'in_call' || (!value.phase && value.kind === 'in_call_http_lookup')
+                value.phase === 'in_call' || (!value.phase && ['in_call_http_lookup', 'a2a_agent'].includes(value.kind))
             );
         }
         return value.phase === phase;
@@ -281,6 +293,8 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
 
     const handleAddTool = () => {
         setPushoverCredentials({token: "", recipients: {}});
+        setA2AToken('');
+        setA2AError('');
         resetDraftRows();
         setTestResult(null);
         setShowTestPanel(false);
@@ -321,6 +335,8 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
     };
 
     const handleEditTool = (key: string, data: HTTPToolConfig) => {
+        setA2AToken('');
+        setA2AError('');
         resetDraftRows();
         setTestResult(null);
         setShowTestPanel(false);
@@ -331,6 +347,39 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
     };
 
     const handleSaveTool = async () => {
+        if (toolForm.kind === 'a2a_agent') {
+            const requestId = ++a2aRequest.current;
+            setA2AError('');
+            const { key, a2a_auth, ...document } = toolForm;
+            if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key || '') || (editingTool === 'new_tool' && config[key])) {
+                setA2AError('Choose a unique name using letters, numbers and underscores (up to 64 characters).');
+                return;
+            }
+            if (a2a_auth === 'token' && !a2aToken && !document.bearer_token_file) {
+                setA2AError('Enter a Bearer token or select None.');
+                return;
+            }
+            setSavingA2A(true);
+            try {
+                if (a2aToken) {
+                    const response = await axios.post('/api/tools/a2a/credentials', { token: a2aToken });
+                    if (requestId !== a2aRequest.current) return;
+                    document.bearer_token_file = response.data.bearer_token_file;
+                    delete document.bearer_token_env;
+                    setToolForm({ ...toolForm, ...document });
+                    setA2AToken('');
+                }
+                await axios.post('/api/tools/a2a/validate', { name: key, config: document });
+                if (requestId !== a2aRequest.current) return;
+                onChange({ ...config, [key]: document });
+                closeEditor();
+            } catch (error: unknown) {
+                const detail = (error as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
+                if (requestId !== a2aRequest.current) return;
+                setA2AError(typeof detail === 'string' ? detail : 'Unable to validate or store A2A settings.');
+            } finally { setSavingA2A(false); }
+            return;
+        }
         let committedToolForm = withDraftRowsCommitted(toolForm);
         if ((committedToolForm.kind === 'pushover' || committedToolForm.enabled !== false) && templateReview?.valid !== true) {
             toast.error('Wait for a valid template review before saving this tool.');
@@ -455,6 +504,20 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
 
     const handleDeleteTool = async (key: string) => {
         const toolData = config[key] as HTTPToolConfig;
+        if (toolData?.kind === 'a2a_agent') {
+            try {
+                const response = await axios.get(`/api/tools/a2a/${encodeURIComponent(key)}/usage`);
+                const agents = response.data.agents;
+                if (!Array.isArray(agents)) throw new Error('Invalid usage response');
+                if (agents.length) {
+                    toast.error(`Remove this tool from Agents before deleting it: ${agents.map((agent: { name: string }) => agent.name).join(', ')}`);
+                    return;
+                }
+            } catch {
+                toast.error('Cannot verify Agent usage. Try again before deleting this A2A tool.');
+                return;
+            }
+        }
         let confirmed = false;
 
         // P2 Fix: Check if tool is global - affects ALL contexts
@@ -487,14 +550,14 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
 
             if (usingContexts.length > 0) {
                 confirmed = await confirm({
-                    title: 'Delete HTTP Tool?',
+                    title: toolData?.kind === 'a2a_agent' ? 'Delete A2A Tool?' : 'Delete HTTP Tool?',
                     description: `HTTP tool "${key}" is used by ${usingContexts.length} context(s): ${usingContexts.join(', ')}.\n\nDeleting will remove it from those contexts.`,
                     confirmText: 'Delete',
                     variant: 'destructive',
                 });
             } else {
                 confirmed = await confirm({
-                    title: 'Delete HTTP Tool?',
+                    title: toolData?.kind === 'a2a_agent' ? 'Delete A2A Tool?' : 'Delete HTTP Tool?',
                     description: `Delete "${key}"?`,
                     confirmText: 'Delete',
                     variant: 'destructive',
@@ -502,7 +565,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
             }
         } else {
             confirmed = await confirm({
-                title: 'Delete HTTP Tool?',
+                title: toolData?.kind === 'a2a_agent' ? 'Delete A2A Tool?' : 'Delete HTTP Tool?',
                 description: `Delete "${key}"?`,
                 confirmText: 'Delete',
                 variant: 'destructive',
@@ -681,7 +744,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                 return {
                     icon: <Search className="w-4 h-4" />,
                     title: 'In-Call Tools',
-                    desc: 'Configure HTTP and Pushover tools the AI can invoke during conversation. Agent access is managed in Agents.',
+                    desc: 'Configure HTTP, A2A and Pushover tools the AI can invoke during conversation. Agent access is managed in Agents.',
                     addLabel: 'Add Tool',
                     emptyLabel: 'in-call tools',
                 };
@@ -700,7 +763,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
     const phaseConfig = getPhaseConfig();
     useEffect(() => { onEditingChange?.(!!editingTool); }, [editingTool, onEditingChange]);
     const filteredTools = Object.entries(httpTools).filter(([key, tool]) =>
-        `${key} ${tool.description || ''} ${tool.url || ''}`.toLowerCase().includes(query.trim().toLowerCase())
+        `${key} ${tool.description || ''} ${tool.url || tool.agent_url || ''}`.toLowerCase().includes(query.trim().toLowerCase())
     );
 
     return (
@@ -735,12 +798,12 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                         >
                             <div className="flex items-center gap-3 min-w-0">
                                 <div
-                                    className={`w-2 h-2 rounded-full ${tool.enabled ? 'bg-green-500' : 'bg-gray-400'}`}
+                                    className={`w-2 h-2 rounded-full ${tool.enabled !== false ? 'bg-green-500' : 'bg-gray-400'}`}
                                 />
                                 <div>
                                     <div className="font-medium text-sm flex flex-wrap items-center gap-2 break-all">
                                         {key}
-                                        <span className="text-xs font-normal text-muted-foreground">{tool.enabled ? 'Enabled' : 'Disabled'}</span>
+                                        <span className="text-xs font-normal text-muted-foreground">{tool.enabled !== false ? 'Enabled' : 'Disabled'}</span>
                                         {tool.is_global && (
                                             <span className="text-xs bg-blue-500/20 text-blue-600 px-1.5 py-0.5 rounded flex items-center gap-1">
                                                 <Lock className="w-3 h-3" /> Global
@@ -748,7 +811,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                                         )}
                                     </div>
                                     <div className="text-xs text-muted-foreground">
-                                        {tool.kind === 'pushover' ? `Pushover • ${tool.recipient_label || 'Recipient'}` : <>{tool.method} •{' '}
+                                        {tool.kind === 'a2a_agent' ? `A2A • ${tool.agent_url || ''}` : tool.kind === 'pushover' ? `Pushover • ${tool.recipient_label || 'Recipient'}` : <>{tool.method} •{' '}
                                         {tool.url
                                             ? tool.url.length > 50
                                                 ? tool.url.substring(0, 50) + '...'
@@ -778,7 +841,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                 </div>
             )}
 
-            {filteredTools.length === 0 && Object.keys(httpTools).length > 0 && <p className="text-sm text-muted-foreground py-4">No HTTP tools match this search.</p>}
+            {filteredTools.length === 0 && Object.keys(httpTools).length > 0 && <p className="text-sm text-muted-foreground py-4">No tools match this search.</p>}
             </div>
             <ToolEditorSurface
                 inline={presentation === 'page'}
@@ -787,9 +850,10 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                 onClose={closeEditor}
                 size="xl"
                 allowFullscreen
+                testRequestAvailable={toolForm.kind !== 'a2a_agent'}
                 title={
                     editingTool === 'new_tool'
-                        ? toolForm.kind === 'pushover' ? 'Add Pushover Tool' : `Add ${phase === 'pre_call' ? 'HTTP Lookup' : phase === 'in_call' ? 'In-Call HTTP Tool' : 'Webhook'}`
+                        ? toolForm.kind === 'a2a_agent' ? 'Add A2A Agent' : toolForm.kind === 'pushover' ? 'Add Pushover Tool' : `Add ${phase === 'pre_call' ? 'HTTP Lookup' : phase === 'in_call' ? 'In-Call HTTP Tool' : 'Webhook'}`
                         : `Edit ${toolForm.key}`
                 }
                 footer={
@@ -800,7 +864,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                         >
                             Cancel
                         </button>
-                        {toolForm.kind !== 'pushover' && <button
+                        {!['pushover', 'a2a_agent'].includes(toolForm.kind) && <button
                             onClick={handleTestTool}
                             disabled={testing || !toolForm.url || toolForm.kind === 'pushover'}
                             className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
@@ -813,7 +877,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                             {testing ? 'Testing...' : 'Send test request'}
                         </button>}
                         <button
-                            disabled={savingPushover || ((toolForm.kind === 'pushover' || toolForm.enabled !== false) && templateReview?.valid !== true)}
+                            disabled={savingA2A || savingPushover || (toolForm.kind !== 'a2a_agent' && (toolForm.kind === 'pushover' || toolForm.enabled !== false) && templateReview?.valid !== true)}
                             onClick={() => void handleSaveTool()}
                             className="px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90"
                         >
@@ -823,11 +887,19 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                 }
             >
                 <div className="space-y-4">
-                    <HTTPTemplateGuidance phase={phase} kind={toolForm.kind === 'pushover' ? 'pushover' : 'http'} review={templateReview}
-                        error={templateReviewError} refresh={refreshTemplateReview} onUseExample={useTemplateExample} />
-                    <FormSelect label="Tool type" value={toolForm.kind === 'pushover' ? 'pushover' : 'http'} disabled={editingTool !== 'new_tool'} options={[{value: 'http', label: 'HTTP'}, {value: 'pushover', label: 'Pushover'}]} onChange={e => {
+                    {a2aError && <p role="alert" className="text-sm text-destructive">{a2aError}</p>}
+                    {toolForm.kind !== 'a2a_agent' && <HTTPTemplateGuidance phase={phase} kind={toolForm.kind === 'pushover' ? 'pushover' : 'http'} review={templateReview}
+                        error={templateReviewError} refresh={refreshTemplateReview} onUseExample={useTemplateExample} />}
+                    <FormSelect label="Tool type" value={toolForm.kind === 'a2a_agent' ? 'a2a_agent' : toolForm.kind === 'pushover' ? 'pushover' : 'http'} disabled={editingTool !== 'new_tool'} options={[{value: 'http', label: 'HTTP'}, {value: 'pushover', label: 'Pushover'}, ...(phase === 'in_call' ? [{value: 'a2a_agent', label: 'A2A Agent'}] : [])]} onChange={e => {
+                        setA2AToken('');
+                        setA2AError('');
+                        if (e.target.value === 'a2a_agent') {
+                            setToolForm({ key: toolForm.key, kind: 'a2a_agent', phase: 'in_call', enabled: true, agent_url: '', description: '', timeout_ms: 15000 });
+                            return;
+                        }
+                        const base = toolForm.kind === 'a2a_agent' ? { key: toolForm.key, phase, enabled: true, url: '', method: 'POST', headers: {} } : toolForm;
                         const kind = e.target.value === 'pushover' ? 'pushover' : ({pre_call: 'generic_http_lookup', in_call: 'in_call_http_lookup', post_call: 'generic_webhook'}[phase]);
-                        setToolForm({...toolForm, kind, priority: 0, summary_prompt: recommendedSummaryPrompt, summary_failure_policy: 'continue'});
+                        setToolForm({...base, kind, priority: 0, summary_prompt: recommendedSummaryPrompt, summary_failure_policy: 'continue'});
                         setPushoverCredentials({token: '', recipients: {}});
                     }} />
                     {toolForm.kind === 'pushover' && <p className="text-sm text-muted-foreground"><a href="https://pushover.net/api" target="_blank" rel="noopener noreferrer" className="text-primary underline">Official Pushover documentation: application tokens, users and delivery groups</a></p>}
@@ -850,16 +922,16 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                             checked={toolForm.enabled ?? true}
                             onChange={e => setToolForm({ ...toolForm, enabled: e.target.checked })}
                         />
-                        <FormSwitch
+                        {toolForm.kind !== 'a2a_agent' && <FormSwitch
                             label="Global (all contexts)"
                             checked={toolForm.is_global ?? false}
                             onChange={e =>
                                 setToolForm({ ...toolForm, is_global: e.target.checked })
                             }
-                        />
+                        />}
                     </div>
 
-                    {toolForm.kind === 'pushover' ? <PushoverToolFields value={toolForm} onChange={setToolForm} credentials={pushoverCredentials} onCredentialsChange={setPushoverCredentials} templateReview={templateReview} /> : <>
+                    {toolForm.kind === 'a2a_agent' ? <A2AToolFields value={toolForm} onChange={setToolForm} token={a2aToken} onTokenChange={setA2AToken} /> : toolForm.kind === 'pushover' ? <PushoverToolFields value={toolForm} onChange={setToolForm} credentials={pushoverCredentials} onCredentialsChange={setPushoverCredentials} templateReview={templateReview} /> : <>
                     <FormInput
                         label="URL"
                         value={toolForm.url || ''}
@@ -1820,7 +1892,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
 
                     </>}
                     {/* Shared summary controls */}
-                    {phase !== 'pre_call' && (
+                    {phase !== 'pre_call' && toolForm.kind !== 'a2a_agent' && (
                         <>
                             <div className="border border-border rounded-lg p-3 bg-card/30">
                                 <FormSwitch

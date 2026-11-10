@@ -205,7 +205,7 @@ class OllamaLLMAdapter(LLMComponent):
         call_tool_registry = self.tool_registry_or(tool_registry)
         for name in tool_names:
             tool = call_tool_registry.get(name)
-            if tool:
+            if tool and getattr(tool, "is_enabled", True):
                 # Ollama uses same format as OpenAI for tools
                 tools.append({
                     "type": "function",

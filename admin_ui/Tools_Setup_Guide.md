@@ -2,7 +2,7 @@
 
 **Version**: 1.1.0
 **Last Updated**: October 2026
-**Applies to**: v7.7.1 (release preparation; tag pending approval)
+**Applies to**: v7.7.2
 
 ---
 
@@ -47,6 +47,15 @@ apply/restart controls. Stale engine status is labeled rather than treated as
 success. Existing credential upload/connect/disconnect and email-template saves
 retain their immediate operations; they are not undone by returning to the list.
 
+### A2A remote agents
+
+Use **Tools → In-Call → Add Tool → A2A Agent** for endpoint, description,
+optional Bearer credential and timeout. **Update tool** stages the edit and
+**Save & Apply** activates it for new calls. Then grant access under **Agents →
+Edit Agent → Tools → In-call** using the **A2A** badge. Assigned tools cannot be
+deleted until removed from all saved Agents. See the [A2A setup guide](../docs/A2A-Agent-Tool.md)
+for advanced limits, YAML compatibility and credential backup.
+
 ### What You'll Learn
 
 - Setting up pre-call CRM lookups (fetch customer data before AI speaks)
@@ -62,6 +71,7 @@ retain their immediate operations; they are not undone by returning to the list.
 Appointment booking can use a self-hosted calendar through the existing
 [Streamable HTTP MCP route](../docs/Appointment-booking-providers.md). Optional
 native integrations have separate guides: [Calendly](../docs/Calendly-calendar-tool.md),
+[A2A agent delegation](../docs/A2A-Agent-Tool.md),
 [Pushover](../docs/Pushover.md), [generated summaries](../docs/In-Call-Summaries.md)
 and [Microsoft Teams verification](../docs/Microsoft-teams-verification.md).
 Calendly submission uncertainty must not be retried blindly. Pushover remains a

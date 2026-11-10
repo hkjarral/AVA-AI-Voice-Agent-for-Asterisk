@@ -207,7 +207,7 @@ class ToolRegistry:
         """
         return [
             tool for tool in self._tools.values()
-            if tool.definition.phase == phase
+            if tool.definition.phase == phase and getattr(tool, "is_enabled", True)
         ]
     
     def get_global_tools(self, phase: Optional[ToolPhase] = None) -> List[Tool]:
@@ -222,7 +222,7 @@ class ToolRegistry:
         """
         tools = [
             tool for tool in self._tools.values()
-            if tool.definition.is_global
+            if tool.definition.is_global and getattr(tool, "is_enabled", True)
         ]
         if phase is not None:
             tools = [t for t in tools if t.definition.phase == phase]
@@ -304,7 +304,7 @@ class ToolRegistry:
         if context_tool_names:
             for name in context_tool_names:
                 tool = self.get(name)
-                if tool and tool.definition.phase == phase:
+                if tool and getattr(tool, "is_enabled", True) and tool.definition.phase == phase:
                     result_tools[tool.definition.name] = tool
         
         return list(result_tools.values())
@@ -320,12 +320,12 @@ class ToolRegistry:
 
     def _iter_tools_filtered(self, tool_names: Optional[List[str]]) -> Iterable[Tool]:
         if tool_names is None:
-            return self._tools.values()
+            return [tool for tool in self._tools.values() if getattr(tool, "is_enabled", True)]
         seen: Set[str] = set()
         tools: List[Tool] = []
         for name in tool_names:
             tool = self.get(name)
-            if not tool:
+            if not tool or not getattr(tool, "is_enabled", True):
                 continue
             tname = tool.definition.name
             if tname in seen:
@@ -341,7 +341,7 @@ class ToolRegistry:
         Returns:
             List of tool schemas for Deepgram
         """
-        return [tool.definition.to_deepgram_schema() for tool in self._tools.values()]
+        return [tool.definition.to_deepgram_schema() for tool in self._iter_tools_filtered(None)]
 
     def to_deepgram_schema_filtered(self, tool_names: Optional[List[str]]) -> List[Dict]:
         return [tool.definition.to_deepgram_schema() for tool in self._iter_tools_filtered(tool_names)]
@@ -353,7 +353,7 @@ class ToolRegistry:
         Returns:
             List of tool schemas for OpenAI Chat Completions (nested format)
         """
-        return [tool.definition.to_openai_schema() for tool in self._tools.values()]
+        return [tool.definition.to_openai_schema() for tool in self._iter_tools_filtered(None)]
 
     def to_openai_schema_filtered(self, tool_names: Optional[List[str]]) -> List[Dict]:
         return [tool.definition.to_openai_schema() for tool in self._iter_tools_filtered(tool_names)]
@@ -365,7 +365,7 @@ class ToolRegistry:
         Returns:
             List of tool schemas for OpenAI Realtime API (flat format)
         """
-        return [tool.definition.to_openai_realtime_schema() for tool in self._tools.values()]
+        return [tool.definition.to_openai_realtime_schema() for tool in self._iter_tools_filtered(None)]
 
     def to_openai_realtime_schema_filtered(self, tool_names: Optional[List[str]]) -> List[Dict]:
         return [tool.definition.to_openai_realtime_schema() for tool in self._iter_tools_filtered(tool_names)]
@@ -377,7 +377,7 @@ class ToolRegistry:
         Returns:
             List of tool schemas for ElevenLabs (client-side execution)
         """
-        return [tool.definition.to_elevenlabs_schema() for tool in self._tools.values()]
+        return [tool.definition.to_elevenlabs_schema() for tool in self._iter_tools_filtered(None)]
 
     def to_elevenlabs_schema_filtered(self, tool_names: Optional[List[str]]) -> List[Dict]:
         return [tool.definition.to_elevenlabs_schema() for tool in self._iter_tools_filtered(tool_names)]
@@ -389,11 +389,11 @@ class ToolRegistry:
         Returns:
             Formatted text description of all tools
         """
-        if not self._tools:
+        if not list(self._iter_tools_filtered(None)):
             return ""
         
         lines = ["Available tools:\n"]
-        for tool in self._tools.values():
+        for tool in self._iter_tools_filtered(None):
             lines.append(tool.definition.to_prompt_text())
             lines.append("")  # Blank line between tools
         
@@ -408,7 +408,7 @@ class ToolRegistry:
         """
         return [
             tool.definition.to_local_llm_schema()
-            for tool in self._tools.values()
+            for tool in self._iter_tools_filtered(None)
         ]
 
     def to_local_llm_schema_filtered(self, tool_names: Optional[List[str]]) -> List[Dict]:
@@ -422,14 +422,14 @@ class ToolRegistry:
         for local LLMs like Phi-3, Llama, etc.
         """
         import json
-        if not self._tools:
+        if not list(self._iter_tools_filtered(None)):
             return ""
         
         tools_json = json.dumps(self.to_local_llm_schema(), indent=2)
 
         # Keep rule text scoped to the tools we actually expose, to reduce
         # hallucinated tool calls (especially on smaller local models).
-        available_tool_names = [tool.definition.name for tool in self._tools.values()]
+        available_tool_names = [tool.definition.name for tool in self._iter_tools_filtered(None)]
         important_rules: list[str] = [
             "- Tool calls MUST use the exact <tool_call>...</tool_call> wrapper shown above. Do NOT invent other wrappers like <hangup_call>...</hangup_call>.",
             "- Tool name MUST match exactly one of the Tool Definitions. Never invent tool names. If no tool applies, respond normally without any tool call.",
@@ -736,7 +736,14 @@ Tool Definitions:
         if http_tool_count > 0:
             logger.info(f"🌐 Initialized {http_tool_count} HTTP tools from config")
 
-    def initialize_in_call_http_tools_from_config(self, in_call_tools_config: Dict[str, Any], *, cache_key: Optional[str] = None) -> None:
+    def initialize_in_call_http_tools_from_config(
+        self,
+        in_call_tools_config: Dict[str, Any],
+        *,
+        cache_key: Optional[str] = None,
+        skip_invalid_a2a: bool = False,
+        reserved_tool_names: Optional[Iterable[Any]] = None,
+    ) -> None:
         """
         Initialize in-call HTTP tools from YAML config.
         
@@ -761,6 +768,7 @@ Tool Definitions:
             return
         
         in_call_tool_count = 0
+        reserved_names = {str(name) for name in (reserved_tool_names or ())}
         
         for tool_name, tool_config in in_call_tools_config.items():
             if not isinstance(tool_config, dict):
@@ -778,7 +786,29 @@ Tool Definitions:
                 self._register_pushover_tool_from_config(tool_name, tool_config, in_call=True)
                 continue
 
-            if kind == 'in_call_http_lookup':
+            if kind == 'a2a_agent':
+                from src.tools.a2a_agent import A2AAgentTool, create_a2a_agent_tool
+                try:
+                    existing = self._tools.get(tool_name)
+                    if (
+                        tool_name in self.TOOL_ALIASES
+                        or tool_name == "ai_identity"
+                        or str(tool_name).startswith("mcp_")
+                        or str(tool_name) in reserved_names
+                        or (existing is not None and not isinstance(existing, A2AAgentTool))
+                    ):
+                        raise ValueError("A2A tool name is reserved or invalid")
+                    tool = create_a2a_agent_tool(tool_name, tool_config)
+                except (TypeError, ValueError):
+                    if not skip_invalid_a2a:
+                        raise
+                    logger.warning("Skipping invalid A2A tool: %r", tool_name)
+                    continue
+                self.register_instance(tool)
+                in_call_tool_count += 1
+                logger.info("Registered A2A agent tool: %s", tool_name)
+
+            elif kind == 'in_call_http_lookup':
                 from src.tools.http.template_contract import assert_valid_template
                 assert_valid_template(tool_config, "in_call")
                 try:

@@ -63,6 +63,22 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
         updateConfig(phase, newTools);
     };
 
+    const handleInCallHttpToolToggle = (toolName: string) => {
+        const selectedInCall = Array.isArray(config.in_call_http_tools)
+            ? config.in_call_http_tools
+            : [];
+        const selectedLegacy = Array.isArray(config.tools) ? config.tools : [];
+        const isSelected = selectedInCall.includes(toolName) || selectedLegacy.includes(toolName);
+        if (isSelected) {
+            updateConfigPatch({
+                in_call_http_tools: selectedInCall.filter((name: string) => name !== toolName),
+                tools: selectedLegacy.filter((name: string) => name !== toolName),
+            });
+            return;
+        }
+        updateConfig('in_call_http_tools', [...selectedInCall, toolName]);
+    };
+
     const handleGlobalToolDisable = (phase: 'disable_global_pre_call_tools' | 'disable_global_post_call_tools' | 'disable_global_in_call_tools', toolName: string) => {
         const currentDisabled = config[phase] || [];
         const newDisabled = currentDisabled.includes(toolName)
@@ -457,8 +473,8 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
                                                 <input
                                                     type="checkbox"
                                                     className="rounded border-input text-primary focus:ring-primary"
-                                                    checked={(config.in_call_http_tools || []).includes(tool.name)}
-                                                    onChange={() => handlePhaseToolToggle('in_call_http_tools', tool.name)}
+                                                    checked={(config.in_call_http_tools || []).includes(tool.name) || (config.tools || []).includes(tool.name)}
+                                                    onChange={() => handleInCallHttpToolToggle(tool.name)}
                                                 />
                                             )}
                                             <span className="text-xs font-medium">{tool.name}</span>

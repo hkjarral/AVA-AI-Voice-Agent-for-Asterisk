@@ -52,6 +52,11 @@ exten => s,1,NoOp(AI Agent - Sales)
  same => n,Hangup()
 ```
 
+The wizard creates `receptionist`, `sales` and `support` on fresh installs.
+`default` is not a special slug; omit `AI_AGENT` to use the active database default.
+Generated snippets use the effective Stasis application from base + local YAML.
+See [First successful call](FIRST_CALL.md) for PBX routing and verification.
+
 Set `AI_AGENT` to the agent's **slug** (the identifier shown on each agent card in the Admin UI). The engine resolves the full configuration from `agents.db` and uses it for the call.
 
 ### AI_CONTEXT (deprecated compatibility alias)

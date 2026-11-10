@@ -63,6 +63,8 @@ class ElevenLabsToolAdapter:
         
         try:
             for tool_name, tool in self.registry._tools.items():
+                if not getattr(tool, "is_enabled", True):
+                    continue
                 definition = tool.definition
                 
                 # Use input_schema if available (e.g., MCP tools), otherwise build from parameters

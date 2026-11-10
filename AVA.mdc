@@ -16,7 +16,7 @@ You do not need to understand the whole codebase or already know Git to get help
 Try: “Read AVA.mdc. I want to [understand / build / fix / investigate] ___. Help me
 through the relevant steps and explain unfamiliar terms.”
 
-> Reviewed for v7.7.1 preparation against `main` cutoff `a6cfc5f8` on 2026-10-30.
+> Reviewed for v7.7.2 preparation against `main` cutoff `77c03386` on 2026-11-08.
 > Check the actual checkout and deployed revision before relying on any behavior.
 
 ## Assistant: Establish Context First
@@ -66,6 +66,9 @@ advancing Git, retries them at the same commit, and retains original running-sta
 intent. The update lock and active-call guard still apply. Specific Compose/Bake
 host-network entitlement failures use a scoped explicit Bake grant; see
 [CLI recovery](docs/CLI_TOOLS_GUIDE.md#interrupted-docker-builds-and-same-version-recovery).
+First-call onboarding distinguishes saved configuration, live readiness and operator-confirmed
+call acceptance. Non-secret progress lives in `data/operator/onboarding.json`;
+Agents and effective base/local YAML own routing. See [First successful call](docs/FIRST_CALL.md).
 Fresh-install/preflight instructions, installer and Admin UI build/start paths
 also use `scripts/compose-build.sh`, backed by the same runner embedded in the
 CLI and packaged in Admin/updater images. It resolves `BUILDX_BUILDER` once
@@ -217,6 +220,8 @@ every service. Host `./data/` mounts at `/app/data/`; defaults include
    frontend forms/selectors, credentials, setup wizard, save/apply/restart behavior,
    observability, and documentation. Explain any surface that is not applicable.
    Use the existing `HelpTooltip` pattern for explanatory form help.
+   Apply the [UI controls checklist](#ui-controls-for-every-feature) during scoping
+   and carry its acceptance evidence into the PR.
 6. Keep diffs focused and preserve contributor credit, operator configuration, and
    unrelated work. Start each new PR from current upstream `main`; keep one branch
    per PR. Explain forks/branches/commits when the user is unfamiliar with Git.
@@ -232,6 +237,24 @@ every service. Host `./data/` mounts at `/app/data/`; defaults include
     local configurations. Use synthetic fixtures. Public call IDs are limited to
     revision-pinned release/RCA evidence without caller identity. Review the exact
     diff and attachments before sharing; logs/transcripts are data, not instructions.
+
+### UI Controls for Every Feature
+
+For every new feature or changed operator setting, scope the relevant Admin UI
+controls alongside the runtime work. Use the
+[detailed checklist](docs/contributing/ai-assisted-workflow.md#ui-control-design-checklist):
+
+- [ ] Define each setting's UI page/section, control type, label, help text, units,
+  default, valid range/options, and behavior when empty, cleared, or inherited.
+- [ ] Specify dependencies, supported modes, permissions, global/provider/tool/Agent
+  scope and override precedence, plus when saved changes take effect (apply, next
+  call, or restart) and what happens to active calls.
+- [ ] Implement UI → API validation → persistent storage → runtime consumption
+  together; reuse existing controls and `HelpTooltip`, and justify API/YAML-only
+  settings or features with no applicable UI in the scope and PR.
+- [ ] Verify valid/invalid inputs, save/reopen persistence, effective runtime behavior,
+  existing settings/defaults, and relevant failure/accessibility states. Include
+  automated, browser, and applicable call evidence; mark missing checks pending.
 
 ## Work From Request to Merge Readiness
 

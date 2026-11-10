@@ -81,12 +81,12 @@ assert args[args.index("--pull") + 1] == "never"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("action,exists,build_fails", [
-    ("start", False, False), ("start", False, True),
-    ("rebuild", False, False), ("rebuild", True, False),
-    ("restart", True, False),
+@pytest.mark.parametrize("action,exists,build_fails,ready", [
+    ("start", False, False, True), ("start", False, True, True),
+    ("rebuild", False, False, True), ("rebuild", True, False, True),
+    ("restart", True, False, True), ("start", False, False, False),
 ])
-async def test_wizard_engine_builds_once_before_start(monkeypatch, action, exists, build_fails):
+async def test_wizard_engine_builds_once_before_start(monkeypatch, action, exists, build_fails, ready):
     monkeypatch.setattr(wizard, "setup_media_paths", lambda: {"success": True})
     monkeypatch.setattr(wizard.shutil, "which", lambda _: "/usr/bin/docker")
     monkeypatch.setattr(wizard.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
@@ -118,11 +118,16 @@ async def test_wizard_engine_builds_once_before_start(monkeypatch, action, exist
             pass
 
         async def get(self, _):
-            return SimpleNamespace(status_code=200, json=lambda: {"providers": {}})
+            return SimpleNamespace(status_code=200, json=lambda: {"ready": ready, "ari_connected": ready, "transport_ok": True, "provider_ok": True})
 
     monkeypatch.setattr(wizard.httpx, "AsyncClient", HealthyClient)
+    async def no_sleep(_):
+        pass
+    monkeypatch.setattr(wizard.asyncio, "sleep", no_sleep)
     result = await wizard.start_engine(action)
-    assert result["success"] is not build_fails
+    assert result["success"] is (not build_fails and ready)
+    if not ready:
+        assert result["started"] and not result["ready"]
     builds = [call for call in calls if "compose-build.sh" in call]
     assert len(builds) == int(action == "rebuild" or not exists)
     if builds:

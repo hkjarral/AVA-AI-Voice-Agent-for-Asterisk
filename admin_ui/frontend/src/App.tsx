@@ -57,6 +57,7 @@ const PageLoader = () => (
 // Auth/Setup Guard
 export const SetupGuard = ({ children }: { children: React.ReactNode }) => {
     const [loading, setLoading] = useState(true);
+    const [redirectingToWizard, setRedirectingToWizard] = useState(false);
     const [error, setError] = useState<{ kind: 'http' | 'transport'; message: string } | null>(null);
     const [retryCount, setRetryCount] = useState(0);
     const navigate = useNavigate();
@@ -65,6 +66,9 @@ export const SetupGuard = ({ children }: { children: React.ReactNode }) => {
     const locationPathRef = useRef(location.pathname);
     navigateRef.current = navigate;
     locationPathRef.current = location.pathname;
+    useEffect(() => {
+        if (location.pathname === '/wizard') setRedirectingToWizard(false);
+    }, [location.pathname]);
 
     useEffect(() => {
         let mounted = true;
@@ -81,15 +85,16 @@ export const SetupGuard = ({ children }: { children: React.ReactNode }) => {
 
                 if (mounted) {
                     // If not configured and not already on wizard, redirect
-                    if (!res.data.configured && locationPathRef.current !== '/wizard') {
+                    if ((!res.data.configured || res.data.resume_required) && locationPathRef.current !== '/wizard') {
+                        setRedirectingToWizard(true);
                         navigateRef.current('/wizard');
                     }
                     setError(null);
                     setLoading(false);
                 }
             } catch (err) {
-                console.error('Failed to check setup status', err);
                 if (!mounted) return;
+                console.error('Failed to check setup status', err);
 
                 // A single delayed probe should not replace the entire UI with a
                 // persistent outage screen. Retry once after a short pause.
@@ -125,7 +130,7 @@ export const SetupGuard = ({ children }: { children: React.ReactNode }) => {
         };
     }, [retryCount]);
 
-    if (loading) {
+    if (loading || (redirectingToWizard && location.pathname !== '/wizard')) {
         return (
             <div className="min-h-screen flex items-center justify-center flex-col gap-4">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>

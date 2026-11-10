@@ -769,3 +769,20 @@ def test_legacy_post_call_prompt_formatting_is_preserved(client):
     response = api.post("/api/tools/managed", json=payload)
     assert response.status_code == 201
     assert response.json()["config"]["summary_prompt"] == payload["summary_prompt"]
+
+
+def test_a2a_managed_roundtrip_and_legacy_reference(client):
+    doc = {'name': 'delegate', 'kind': 'a2a_agent', 'phase': 'in_call', 'agent_url': 'https://agent.example', 'description': 'Delegate requests'}
+    response = client.post('/api/tools/managed', json=doc)
+    assert response.status_code == 201, response.text
+    assert response.json()['config']['agent_url'] == doc['agent_url']
+    assert 'delegate' in {t['name'] for t in client.get('/api/tools/managed').json()}
+    # YAML-defined credentials can be kept while editing other fields.
+    client.cfg_state['cfg']['in_call_tools']['delegate']['bearer_token_env'] = 'OLD_TOKEN'
+    response = client.put('/api/tools/managed/delegate', json={**doc, 'name': None, 'bearer_token_env': 'OLD_TOKEN', 'description': 'Updated'})
+    assert response.status_code == 200, response.text
+    response = client.patch('/api/tools/managed/delegate', json={'enabled': False, 'timeout_ms': 3000})
+    assert response.status_code == 200, response.text
+    assert response.json()['config']['enabled'] is False
+    assert client.patch('/api/tools/managed/delegate', json={'phase': 'post_call'}).status_code == 422
+    assert client.delete('/api/tools/managed/delegate').status_code == 200

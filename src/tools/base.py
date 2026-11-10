@@ -303,6 +303,11 @@ class Tool(ABC):
     """
     
     @property
+    def is_enabled(self) -> bool:
+        """Whether this tool may be offered to a model; catalog discovery is separate."""
+        return True
+
+    @property
     @abstractmethod
     def definition(self) -> ToolDefinition:
         """Return tool definition with metadata."""
@@ -323,7 +328,7 @@ class Tool(ABC):
         
         Returns:
             Result dictionary with:
-            - status: "success" | "failed" | "error"
+            - status: "success" | "failed" | "error" | "pending"
             - message: Human-readable message for AI to speak
             - Additional tool-specific fields
         

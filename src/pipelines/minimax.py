@@ -307,7 +307,7 @@ class MiniMaxLLMAdapter(LLMComponent):
         if tools_list and isinstance(tools_list, list):
             for tool_name in tools_list:
                 tool = call_tool_registry.get(tool_name)
-                if tool:
+                if tool and getattr(tool, "is_enabled", True):
                     try:
                         from ..tools.base import ToolPhase
 

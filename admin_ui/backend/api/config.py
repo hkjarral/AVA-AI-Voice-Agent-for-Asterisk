@@ -42,6 +42,7 @@ from src.fish_audio_url import (
     fish_audio_verification_url,
 )
 from src.config.loaders import substitute_braced_env_vars
+from src.config.provider_instances import PROVIDER_SECRETS_ROOT
 from src.tools.execution_history import CALL_HISTORY_TOOL_REDACTION_MODES
 from services.provider_validation import (
     MODULAR_HTTP_KINDS, test_modular_provider,
@@ -1231,6 +1232,28 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
                         raise ValueError()
                 except Exception:
                     raise HTTPException(400, "Invalid managed Pushover tool configuration") from None
+            elif isinstance(doc, dict) and doc.get("kind") == "a2a_agent":
+                from src.tools.a2a_config import parse_a2a_agent_config
+                from src.tools.registry import ToolRegistry
+                from .tools import RESERVED_TOOL_NAMES, _reserved_builtin_names
+
+                if block != "in_call_tools":
+                    raise HTTPException(400, "A2A tools belong under in_call_tools")
+                if (
+                    name in RESERVED_TOOL_NAMES
+                    or name in _reserved_builtin_names()
+                    or name in ToolRegistry.TOOL_ALIASES
+                    or str(name).startswith("mcp_")
+                    or name in (parsed.get("tools") or {})
+                ):
+                    raise HTTPException(400, "A2A tool name is reserved or already in use")
+                try:
+                    parse_a2a_agent_config(name, doc)
+                    from services.a2a_tools import validate_document
+                    previous = ((_read_merged_config_dict() or {}).get("in_call_tools") or {}).get(name)
+                    validate_document(name, doc, previous)
+                except (TypeError, ValueError) as exc:
+                    raise HTTPException(400, str(exc)) from None
 
     warnings: list[str] = []
 
@@ -1383,6 +1406,9 @@ def _persist_config_content_locked(
         new_parsed,
         trusted_profile_reset=trusted_profile_reset,
     )
+
+    from services.a2a_tools import protect_assigned_tools
+    protect_assigned_tools(old_merged, new_parsed)
 
     # Convert desired merged config into a minimal local override (supports deletions).
     base = _read_base_config_dict()
@@ -1693,6 +1719,9 @@ def _redact_websocket_media_secrets(config: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(section, dict):
             continue
         for doc in section.values():
+            if isinstance(doc, dict) and doc.get("kind") == "a2a_agent":
+                for secret in ("token", "bearer_token", "api_key"):
+                    doc.pop(secret, None)
             if isinstance(doc, dict) and doc.get("kind") == "pushover":
                 for secret in ("token", "application_token", "app_token", "user", "user_key", "group_key", "key", "recipient_key"):
                     doc.pop(secret, None)
@@ -3046,7 +3075,6 @@ async def get_provider_options(provider_type: str):
 
 # Store in project secrets dir - Admin UI has write access, ai_engine mounts it
 VERTEX_CREDENTIALS_PATH = "/app/project/secrets/gcp-service-account.json"
-PROVIDER_SECRETS_ROOT = "/app/project/secrets/providers"
 
 
 def _provider_instances_module():

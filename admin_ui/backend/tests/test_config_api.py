@@ -854,6 +854,7 @@ async def test_wizard_save_keeps_comments_in_worker_thread(monkeypatch, tmp_path
     monkeypatch.setattr(wizard, "LOCAL_CONFIG_PATH", str(local))
     monkeypatch.setattr(wizard, "ENV_PATH", str(tmp_path / ".env"))
     monkeypatch.setenv("AGENTS_DB_PATH", str(tmp_path / "agents.db"))
+    monkeypatch.setattr(config.settings, "PROJECT_ROOT", str(tmp_path))
     loop_thread = threading.get_ident()
     rewrite_threads = []
     keep_comments = config._keep_local_comments
@@ -881,3 +882,20 @@ async def test_wizard_save_keeps_comments_in_worker_thread(monkeypatch, tmp_path
     assert rewrite_threads[0] != loop_thread
     assert "# Keep this note\n" in local.read_text()
     assert yaml.safe_load(local.read_text())["asterisk"]["app_name"] == "local-route"
+
+
+@pytest.mark.parametrize("settings", [
+    {},
+    {"agent_url": "file:///tmp/agent"},
+    {"agent_url": "http://agent.example", "bearer_token_env": "A2A_TOKEN"},
+    {"agent_url": "https://agent.example", "timeout_ms": "1500"},
+])
+def test_config_validation_rejects_invalid_a2a_settings(settings):
+    parsed = yaml.safe_load(Path(config.settings.CONFIG_PATH).read_text())
+    parsed.setdefault("in_call_tools", {})["delegate"] = {"kind": "a2a_agent", **settings}
+
+    with pytest.raises(HTTPException) as exc:
+        config._validate_ai_agent_config(yaml.safe_dump(parsed))
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail.startswith("A2A ")

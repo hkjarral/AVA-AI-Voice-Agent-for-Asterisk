@@ -561,17 +561,19 @@ def dialplan(slug: str):
     row = _store().get_by_slug(slug)
     if not row:
         raise HTTPException(404)
-    ext = row["extension"] or "XXXX"
-    safe_name = (row['display_name'] or "").replace('\n', ' ').replace('\r', '')
-    text = (
-        f"; AVA agent: {safe_name} — paste into extensions_custom.conf\n"
-        f"[from-internal-custom]\n"
-        f"exten => {ext},1,NoOp(AVA agent {slug})\n"
-        f" same => n,Set(AI_AGENT={slug})\n"
-        f" same => n,Stasis({STASIS_APP})\n"
-        f" same => n,Hangup()\n"
-        f"; AI_CONTEXT={slug} is a deprecated compatibility alias; use AI_AGENT\n")
-    return {"dialplan": text, "extension": ext, "stasis_app": STASIS_APP}
+    if not row.get("is_active"):
+        raise HTTPException(409, "Activate this Agent before routing calls to it")
+    from services.onboarding import effective_config
+    from services.dialplan import agent_dialplan, stasis_app
+    ext = row["extension"] or "s"
+    context = "from-internal-custom" if row["extension"] else f"from-ai-agent-{slug}"
+    try:
+        app = stasis_app(effective_config())
+        text = agent_dialplan(slug, app, context=context, extension=ext)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"dialplan": text, "extension": ext, "stasis_app": app}
+
 
 @router.get("/agents-migration/status")
 def migration_status(request: Request):

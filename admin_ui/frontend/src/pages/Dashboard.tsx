@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { SystemTopology } from '../components/SystemTopology';
 import { ApiErrorInfo, buildDockerAccessHints, describeApiError } from '../utils/apiErrors';
 import DonationBanner from '../components/DonationBanner';
+import OnboardingBanner from '../components/OnboardingBanner';
 import { useDonationReminder } from '../hooks/useDonationReminder';
 import { useLiveStatus } from '../hooks/useLiveStatus';
 import {
@@ -311,6 +312,7 @@ const Dashboard = () => {
                 </button>
             </div>
 
+            <OnboardingBanner />
             {donation.show && (
                 <DonationBanner
                     callCount={donation.callCount}

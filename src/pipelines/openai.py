@@ -888,7 +888,7 @@ class OpenAILLMAdapter(LLMComponent):
         if tools_list and isinstance(tools_list, list):
             for tool_name in tools_list:
                 tool = call_tool_registry.get(tool_name)
-                if tool:
+                if tool and getattr(tool, "is_enabled", True):
                     try:
                         from src.tools.base import ToolPhase
                         if getattr(tool.definition, "phase", ToolPhase.IN_CALL) != ToolPhase.IN_CALL:

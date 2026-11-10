@@ -7,7 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.7.2] - 2026-11-08
+
+Prepared from main `77c03386` through #820 and the security fixes in #822. This
+patch release includes optional A2A delegation, guided first-call setup, media and calendar reliability fixes,
+and installer recovery improvements. See the [migration guide](docs/MIGRATION.md#v771-to-v772)
+and [validation matrix](docs/baselines/golden/v7.7.2-validation-matrix.md) for the
+upgrade path, existing evidence and security disposition. Supported trains
+remain 7.7.x and 7.6.x.
+
+Thanks to Chris Wilson (`cswilsnetex`) for Calendar retries and YAML comment
+preservation, `pi0n00r` for A2A and remote PBX guidance, `jjaroztegi` for media
+reports and reproduction, `ibewackofreak` for the installer report, and
+`hkjarral` for implementation and validation. See [contributors](CONTRIBUTORS.md).
+
+### Changed
+
+- **AI-assisted UI guidance:** add per-setting design and verification checklists
+  to `AVA.mdc` and the contributor workflow, covering UI controls, validation,
+  persistence, runtime activation, and PR evidence or explicit UI exceptions.
+
+### Added
+
+- **A2A Admin setup (#817):** configure remote A2A endpoints, managed Bearer
+  credentials and execution limits in Tools; assign access under Agents → Tools
+  with an A2A badge. Preserve YAML-defined settings, protect assigned tools from
+  deletion, and omit disabled tools from model offers while retaining Admin
+  catalog discovery.
+
+- **A2A agent delegation:** add an optional YAML-configured in-call tool that
+  delegates one bounded text request to a separately deployed Agent2Agent 1.0
+  service through the official SDK. Agent Card discovery is public; authenticated
+  task traffic stays on the configured origin, credentials come from managed files or the
+  Engine environment, and uncertain requests are never retried automatically.
+  Keep other tools available when an A2A entry is invalid at startup or Admin
+  cannot reach the Engine. Cancel known remote work on Google Live teardown
+  and preserve uncertain outcomes when a task connection is lost.
+  Keep the transport open through bounded remote cancellation when a caller
+  hangs up during timeout cleanup, then propagate the original hangup signal.
+
 ### Fixed
+
+- **First-call onboarding:** distinguish preflight environment preparation from
+  saved setup; preserve existing installations and resume unfinished onboarding.
+  Generate Agent-backed dialplans with the effective Stasis name and no forced
+  provider/pipeline override. Guide same-host/remote media configuration, report
+  engine readiness separately from saving, and include FreePBX/plain-Asterisk
+  routing plus explicit test-call acceptance. Reopen merged settings, retain
+  non-secret tab drafts, and keep passwords/keys out of browser draft storage.
+  Keep repair pages reachable for corrupt existing configuration; validate before
+  resetting setup progress or saving CLI changes, and return safe startup errors.
+  Align Agent/CLI dialplans and first-call documentation. No runtime routing or
+  Agent database migration changes.
 
 - **Local config comments (#809):** Admin UI saves keep the comments an
   operator wrote in `config/ai-agent.local.yaml` instead of rewriting the file
@@ -87,11 +138,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Microsoft Calendar lost create:** a `create_event` whose POST timed out
   before reaching Graph no longer leaves the call unable to book, or unable to
-  cancel its other bookings, once a resend goes through. The identical retry
-  resends the first request on the same `transactionId`, so a create that
+  cancel its other bookings, once a resend goes through. The identical
+  in-process retry resends the first request on the same `transactionId`, so a create that
   landed unseen should come back as the same event, and the event is read back before
   it is reported. A Graph 400 `ErrorDuplicateTransactionId` is reported as
   uncertain, not as a failure.
+
+### Security
+
+- Update Engine `msgpack` to 1.2.3 and `dnspython` to 2.9.2. Require Debian's
+  DSA-6613-1 `zlib1g` fix in the Trixie-based CPU Local AI runtime image (#822).
+  Use Python 3.11 for source installs and local Core tests, matching the Engine
+  container and CI.
+- The Bookworm Engine, Admin UI and updater images retain an affected `zlib1g`
+  package. The maintainer approved a v7.7.2-only exception pending a vendor fix
+  or image-base remediation. See the [validation matrix](docs/baselines/golden/v7.7.2-validation-matrix.md#security)
+  for advisory IDs, exposure limits and the review deadline.
 
 ## [7.7.1] - 2026-10-30
 
