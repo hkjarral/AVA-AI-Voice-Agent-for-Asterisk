@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-Google providers play `caller_declined_prompt`.
   Accepted legs, onward-transfer replacement and pickup ownership are unchanged.
   The screening handler no longer fails on a cancelled DTMF wait when the leg is
-  retired.
+  retired. Late AI briefing generation or persistence cannot recreate a cleared
+  transfer, interrupt caller recovery, or start playback for a retired attempt.
 
 ## [7.7.2] - 2026-11-08
 

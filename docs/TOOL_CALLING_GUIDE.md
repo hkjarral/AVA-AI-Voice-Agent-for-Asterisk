@@ -1973,6 +1973,11 @@ stops, the caller stays connected, the AI resumes, and Call History records
 before hanging up, it is recorded as `declined` instead. Recovery runs once,
 even when the leg's end arrives as more than one channel event.
 
+If AI briefing generation completes during or after recovery, its result is
+discarded. Ownership is checked again after saving the briefing, so caller
+cleanup or a newer transfer during that save cannot restart the old announcement
+or interfere with recovery releasing caller capture.
+
 Recovery follows the same provider split as other failures. Google Live receives
 the failure event; other providers play `caller_declined_prompt` locally, as they
 do for `declined`, `timeout`, `no-answer` and `dial-timeout`.

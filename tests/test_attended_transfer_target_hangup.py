@@ -139,6 +139,123 @@ async def test_hangup_during_announcement_declines(screening, monkeypatch, annou
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("completion_phase", ["during-recovery", "after-recovery"])
+@pytest.mark.parametrize("briefing_text", ["The caller needs support.", None])
+async def test_briefing_completion_after_leg_end_preserves_recovery(
+    screening, monkeypatch, completion_phase, briefing_text
+):
+    engine, session, rec = screening
+    agent = "agent-briefing"
+    engine.config.tools["attended_transfer"]["screening_mode"] = "ai_briefing"
+    generating = asyncio.Event()
+    finish_generation = asyncio.Event()
+    recovering = asyncio.Event()
+    finish_recovery = asyncio.Event()
+    base_tts = engine._local_ai_server_tts
+
+    async def generate(**kwargs):
+        generating.set()
+        await finish_generation.wait()
+        return briefing_text
+
+    async def tts(**kwargs):
+        if kwargs["text"] == "Sorry, Support agent is not available.":
+            recovering.set()
+            await finish_recovery.wait()
+        return await base_tts(**kwargs)
+
+    monkeypatch.setattr(engine, "_generate_attended_transfer_briefing_text", generate)
+    monkeypatch.setattr(engine, "_local_ai_server_tts", tts)
+    handler = asyncio.create_task(engine._handle_attended_transfer_answered(
+        agent, ["attended-transfer", session.call_id, "support_agent"]
+    ))
+    end = None
+    try:
+        await asyncio.wait_for(generating.wait(), 1)
+        attempt = session.current_action
+        end = asyncio.create_task(_end_leg(engine, agent, "StasisEnd"))
+        await asyncio.wait_for(recovering.wait(), 1)
+        if completion_phase == "after-recovery":
+            finish_recovery.set()
+            await asyncio.wait_for(end, 1)
+        finish_generation.set()
+        await asyncio.wait_for(handler, 1)
+        if completion_phase == "during-recovery":
+            assert session.current_action is attempt
+        finish_recovery.set()
+        await asyncio.wait_for(end, 1)
+    finally:
+        for task in (handler, end):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(*(task for task in (handler, end) if task is not None), return_exceptions=True)
+
+    assert await engine.session_store.get_by_call_id(session.call_id) is session
+    _assert_declined_once(engine, session, rec, agent)
+    assert "screening_payload" not in attempt
+    assert all(channel == session.caller_channel_id for channel, _ in rec["plays"])
+    assert rec["tts"] == ["Sorry, Support agent is not available."]
+    engine.ari_client.add_channel_to_bridge.assert_not_awaited()
+    engine._persist_call_history.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["generation", "save"])
+@pytest.mark.parametrize("owner", ["recovery", "caller-cleanup", "new-attempt"])
+async def test_briefing_stops_when_ownership_changes(screening, monkeypatch, boundary, owner):
+    engine, session, rec = screening
+    agent = "agent-briefing"
+    engine.config.tools["attended_transfer"]["screening_mode"] = "ai_briefing"
+    replacement = {"type": "attended_transfer", "agent_channel_id": "agent-new"}
+    base_save = engine._save_session
+
+    async def change_owner():
+        if owner == "recovery":
+            await _end_leg(engine, agent, "StasisEnd")
+        elif owner == "caller-cleanup":
+            session.cleanup_in_progress = True
+            await engine.session_store.remove_call(session.call_id)
+            engine._unregister_attended_transfer_agent_channel(agent)
+        else:
+            session.current_action = replacement
+            engine.register_attended_transfer_agent_channel(session.call_id, "agent-new")
+            engine._unregister_attended_transfer_agent_channel(agent)
+
+    async def generate(**kwargs):
+        if boundary == "generation":
+            await change_owner()
+        return "The caller needs support."
+
+    async def save(session_obj, **kwargs):
+        # The initial answered-state save happens before generation. The
+        # guarded briefing save is the boundary under review.
+        if kwargs.get("require_current"):
+            await change_owner()
+        await base_save(session_obj, **kwargs)
+
+    monkeypatch.setattr(engine, "_generate_attended_transfer_briefing_text", generate)
+    if boundary == "save":
+        monkeypatch.setattr(engine, "_save_session", save)
+    await engine._handle_attended_transfer_answered(
+        agent, ["attended-transfer", session.call_id, "support_agent"]
+    )
+
+    if owner == "recovery":
+        _assert_declined_once(engine, session, rec, agent)
+        assert rec["tts"] == ["Sorry, Support agent is not available."]
+    else:
+        assert rec["tts"] == []
+        assert rec["plays"] == []
+        if owner == "caller-cleanup":
+            assert await engine.session_store.get_by_call_id(session.call_id) is None
+        else:
+            assert session.current_action is replacement
+            assert replacement == {"type": "attended_transfer", "agent_channel_id": "agent-new"}
+            assert engine._attended_transfer_agent_channel_to_call_id["agent-new"] == session.call_id
+    engine.ari_client.add_channel_to_bridge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_hangup_during_digit_wait_declines_and_handler_ends_cleanly(screening):
     engine, session, rec = screening
     agent = "agent-dtmf"

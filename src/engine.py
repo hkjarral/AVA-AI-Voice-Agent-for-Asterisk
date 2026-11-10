@@ -9265,24 +9265,47 @@ class Engine:
                 replacement="tools.attended_transfer.screening_mode=ai_briefing",
             )
         if screening_mode == "ai_briefing":
+            attempt = session.current_action
+
+            async def briefing_is_current() -> bool:
+                current_session = await self.session_store.get_by_call_id(caller_id)
+                return (
+                    current_session is session
+                    and not session.cleanup_in_progress
+                    and session.current_action is attempt
+                    and isinstance(attempt, dict)
+                    and not attempt.get("recovery_started")
+                    and not self._attended_transfer_leg_retired(caller_id, channel_id)
+                )
+
             briefing_text = await self._generate_attended_transfer_briefing_text(
                 session=session,
                 destination_description=dest_desc,
                 timeout_sec=ai_briefing_timeout,
                 briefing_language=ai_briefing_language or None,
             )
+            # Generation yields to hangup recovery, caller cleanup, or a newer
+            # attempt. Check ownership before persisting or playing its result;
+            # recovery relies on the original action object's identity.
+            if not await briefing_is_current():
+                await self._leave_retired_attended_transfer_leg(caller_id, channel_id, stage="briefing-generation")
+                return
             if briefing_text:
                 try:
-                    session.current_action = dict(session.current_action or {})
-                    session.current_action["screening_payload"] = {
+                    attempt["screening_payload"] = {
                         "kind": "ai_briefing",
                         "text": briefing_text,
                         "source": "local_ai_server",
                         "generated_at": time.time(),
                     }
-                    await self._save_session(session)
+                    await self._save_session(session, require_current=True)
                 except Exception:
                     logger.debug("Failed to persist attended transfer AI briefing", call_id=caller_id, exc_info=True)
+                # Saving can wait on the store lock or coordinator. Do not
+                # start announcement playback after ownership changed there.
+                if not await briefing_is_current():
+                    await self._leave_retired_attended_transfer_leg(caller_id, channel_id, stage="briefing-save")
+                    return
             else:
                 logger.warning(
                     "Attended transfer AI briefing unavailable; falling back to basic_tts",
