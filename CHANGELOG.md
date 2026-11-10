@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Admin frontend dependencies (#823):** retain React Refresh ESLint plugin
+  0.4.x with ESLint 8 so clean frontend installs succeed. Keep the ESLint 9/10
+  migration separate from the compatible dependency updates.
+
 ## [7.7.2] - 2026-11-08
 
 Prepared from main `77c03386` through #820 and the security fixes in #822. This
