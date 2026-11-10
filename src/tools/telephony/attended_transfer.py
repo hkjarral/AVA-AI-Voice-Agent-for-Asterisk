@@ -207,7 +207,9 @@ class AttendedTransferTool(Tool):
             deferred_action_id=action.get("id"),
         )
 
-        session.current_action = {
+        # Keep this exact attempt across awaits: a newer transfer may replace it
+        # while synthesis or origination is in flight.
+        attempt = {
             "id": action.get("id"),
             "_tool_history_origin": action.get("_tool_history_origin"),
             "type": "attended_transfer",
@@ -224,19 +226,26 @@ class AttendedTransferTool(Tool):
             "decision_digit": None,
             "screening_mode": screening_mode,
         }
+        previous = session.current_action
+        if isinstance(previous, dict) and previous.get("type") == "attended_transfer":
+            # A replacement inherits the original capture state, not the pause
+            # applied by the transfer it supersedes.
+            if "pre_transfer_audio_capture_enabled" in previous:
+                attempt["pre_transfer_audio_capture_enabled"] = previous["pre_transfer_audio_capture_enabled"]
+        session.current_action = attempt
         await context.session_store.upsert_call(session)
 
         if screening_mode == "caller_recording":
-            session.current_action["screening_status"] = "pending"
-            session.current_action["caller_screening_prompt"] = caller_screening_prompt
-            session.current_action["caller_screening_max_seconds"] = caller_screening_max_seconds
-            session.current_action["caller_screening_silence_ms"] = caller_screening_silence_ms
+            attempt["screening_status"] = "pending"
+            attempt["caller_screening_prompt"] = caller_screening_prompt
+            attempt["caller_screening_max_seconds"] = caller_screening_max_seconds
+            attempt["caller_screening_silence_ms"] = caller_screening_silence_ms
             await context.session_store.upsert_call(session)
 
             engine = getattr(context.ari_client, "engine", None)
             workflow = self._complete_caller_recording_transfer(
                 context=context,
-                attempt=session.current_action,
+                attempt=attempt,
                 destination=destination,
                 extension=extension,
                 description=description,
@@ -258,11 +267,15 @@ class AttendedTransferTool(Tool):
                 "type": "attended_transfer",
             }
 
-        prepared, moh_started = await self._prepare_announcement_audio(
-            context, description=description, moh_class=moh_class
-        )
+        try:
+            prepared, moh_started = await self._prepare_announcement_audio(
+                context, description=description, moh_class=moh_class, attempt=attempt
+            )
+        except asyncio.CancelledError:
+            await self._cleanup_failed_originate(context, call_id, attempt=attempt, reason="tts-cancelled")
+            raise
         if not prepared:
-            await self._cleanup_failed_originate(context, call_id, reason="tts-unavailable")
+            await self._cleanup_failed_originate(context, call_id, attempt=attempt, reason="tts-unavailable")
             return {
                 "status": "failed",
                 "message": f"{description} could not be reached right now. Offer to take a message instead.",
@@ -275,6 +288,7 @@ class AttendedTransferTool(Tool):
             dial_endpoint=dial_endpoint,
             dial_timeout_sec=dial_timeout_sec,
             moh_class=moh_class,
+            attempt=attempt,
             moh_started=moh_started,
         )
         if not result:
@@ -552,7 +566,10 @@ class AttendedTransferTool(Tool):
     ) -> Optional[Dict[str, Any]]:
         call_id = context.call_id
         if attempt is not None:
-            session = await context.get_session()
+            try:
+                session = await context.get_session()
+            except RuntimeError:
+                return None
             if session.cleanup_in_progress or session.current_action is not attempt:
                 return None
         if not moh_started:
@@ -578,6 +595,14 @@ class AttendedTransferTool(Tool):
             if attempt is not None:
                 return None
             logger.debug("Failed to update session before attended transfer originate", call_id=call_id, exc_info=True)
+
+        if attempt is not None:
+            try:
+                session = await context.get_session()
+            except RuntimeError:
+                return None
+            if session.cleanup_in_progress or session.current_action is not attempt:
+                return None
 
         caller_id = self._build_ai_caller_id(context)
         app = str(context.get_config_value("asterisk.app_name", "asterisk-ai-voice-agent") or "asterisk-ai-voice-agent")
@@ -621,13 +646,25 @@ class AttendedTransferTool(Tool):
                 await context.ari_client.send_command(method="DELETE", resource=f"channels/{agent_channel_id}")
                 return None
         try:
-            session = await context.get_session()
+            # With an attempt, use the session validated above without opening
+            # another await between the ownership check and the mutation.
+            if attempt is None:
+                session = await context.get_session()
             if session.current_action and session.current_action.get("type") == "attended_transfer":
                 session.current_action["agent_channel_id"] = agent_channel_id
                 session.current_action["screening_status"] = session.current_action.get("screening_status") or "skipped"
                 await context.session_store.upsert_call(session)
         except Exception:
             logger.debug("Failed to persist attended transfer originate state", call_id=call_id, exc_info=True)
+
+        if attempt is not None:
+            try:
+                session = await context.get_session()
+            except RuntimeError:
+                session = None
+            if not session or session.cleanup_in_progress or session.current_action is not attempt:
+                await context.ari_client.send_command(method="DELETE", resource=f"channels/{agent_channel_id}")
+                return None
 
         try:
             engine = getattr(context.ari_client, "engine", None)
@@ -696,9 +733,13 @@ class AttendedTransferTool(Tool):
             await self._recover_background_failure(context, attempt, reason="screening-failed")
             return
 
-        prepared, moh_started = await self._prepare_announcement_audio(
-            context, description=description, moh_class=moh_class, attempt=attempt
-        )
+        try:
+            prepared, moh_started = await self._prepare_announcement_audio(
+                context, description=description, moh_class=moh_class, attempt=attempt
+            )
+        except asyncio.CancelledError:
+            await self._cleanup_failed_originate(context, call_id, attempt=attempt, reason="tts-cancelled")
+            raise
         if not prepared:
             await self._recover_background_failure(context, attempt, reason="tts-unavailable")
             return
@@ -738,6 +779,14 @@ class AttendedTransferTool(Tool):
         attempt: Optional[Dict[str, Any]] = None,
         reason: str = "originate-failed",
     ) -> None:
+        if attempt is not None:
+            try:
+                session = await context.get_session()
+            except RuntimeError:
+                return
+            # MOH belongs to the current attempt too, not just its stored state.
+            if session.cleanup_in_progress or session.current_action is not attempt:
+                return
         try:
             await context.ari_client.send_command(
                 method="DELETE",

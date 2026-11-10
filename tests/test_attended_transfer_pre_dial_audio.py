@@ -111,7 +111,7 @@ async def test_pre_dial_success_synthesizes_before_originate():
     assert result["status"] == "success"
     assert engine.events == ["moh_start", "prepare", "originate"]
     assert len(_posted(ari, "/moh")) == 1
-    assert engine.calls[0]["attempt"] is None
+    assert engine.calls[0]["attempt"] is session.current_action
 
 
 @pytest.mark.asyncio
