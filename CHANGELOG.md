@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Admin frontend tooling (#220, #722):** use Node 22 (minimum 22.12) for
+  frontend CI, Docker builds, and local development; upgrade Jest DOM to 7.0.1.
+  Preserve the existing ESLint versions, configuration, and warning threshold.
+
 ## [7.7.2] - 2026-11-08
 
 Prepared from main `77c03386` through #820 and the security fixes in #822. This

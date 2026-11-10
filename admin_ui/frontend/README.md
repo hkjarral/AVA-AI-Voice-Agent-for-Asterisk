@@ -15,14 +15,19 @@ React-based administration interface for Asterisk AI Voice Agent.
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 22 (22.12.0 or newer within 22.x)
 - npm 9+
 
 ### Installation
 
+The commands below use nvm to select the version in `.nvmrc`. If Node 22.12+
+within 22.x is already installed another way, skip the two `nvm` commands.
+
 ```bash
 cd admin_ui/frontend
-npm install
+nvm install
+nvm use
+npm ci
 ```
 
 ### Development

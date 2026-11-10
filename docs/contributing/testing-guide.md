@@ -18,8 +18,13 @@ pytest tests/ --cov=src --cov-report=term-missing
 # CLI tests (Go)
 cd cli && go test ./...
 
-# Admin UI build check
-cd admin_ui/frontend && npm ci && npm run build
+# Admin UI checks (Node 22.12+ within 22.x; nvm is optional)
+cd admin_ui/frontend
+nvm install && nvm use
+npm ci
+npm run lint
+npm test
+npm run build
 ```
 
 ## CI Integration
