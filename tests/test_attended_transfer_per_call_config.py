@@ -298,3 +298,78 @@ def test_google_disconnect_budget_reads_call_snapshot():
     assert engine._google_disconnect_transfer_wait_sec(session) == 316
     # Global defaults: 30 + 6 + 2 + 15 + 20 * 8 + 10
     assert engine._google_disconnect_transfer_wait_sec() == 223
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("server_already_started", [False, True])
+@pytest.mark.parametrize(
+    "bind_host,helper_advertise,global_advertise,expected_host",
+    [
+        ("192.0.2.20", None, None, "192.0.2.20"),
+        ("192.0.2.20", "203.0.113.10", None, "203.0.113.10"),
+        ("0.0.0.0", "203.0.113.10", None, "203.0.113.10"),
+        ("192.0.2.20", "203.0.113.10", "203.0.113.20", "203.0.113.10"),
+        ("192.0.2.20", None, "203.0.113.20", "203.0.113.20"),
+        ("0.0.0.0", None, None, "192.0.2.30"),
+    ],
+)
+async def test_helper_external_host_after_reload(
+    monkeypatch, server_already_started, bind_host, helper_advertise,
+    global_advertise, expected_host,
+):
+    # The call captured address A. A tools reload moves the process-wide helper
+    # to B before it answers; another call may already have started that server.
+    engine = _build_engine({
+        "enabled": True, "delivery_mode": "file",
+        "external_media_helper": {"bind_host": bind_host},
+    })
+    engine.config.external_media.advertise_host = global_advertise
+    snapshot = {
+        "enabled": True, "delivery_mode": "stream",
+        "external_media_helper": {"bind_host": "192.0.2.10"},
+    }
+    if helper_advertise:
+        snapshot["external_media_helper"]["advertise_host"] = helper_advertise
+    servers = []
+
+    class FakeRTPServer:
+        def __init__(self, **kwargs):
+            self.host = kwargs["host"]
+            self.running = False
+            self.allocate_session = AsyncMock(return_value=18180)
+            servers.append(self)
+
+        async def start(self):
+            self.running = True
+
+        def has_remote_endpoint(self, session_id):
+            return True
+
+    def derive_host(host):
+        return "192.0.2.30" if host == "0.0.0.0" else host
+
+    monkeypatch.setattr(engine_module, "RTPServer", FakeRTPServer)
+    monkeypatch.setattr(engine, "_derive_routable_advertise_host", derive_host)
+    monkeypatch.setattr(engine.ari_client, "create_bridge", AsyncMock(return_value="helper-bridge"))
+    monkeypatch.setattr(engine.ari_client, "add_channel_to_bridge", AsyncMock(return_value=True))
+    create_media = AsyncMock(return_value={"id": "helper-media"})
+    monkeypatch.setattr(engine.ari_client, "create_external_media_channel", create_media)
+    monkeypatch.setattr(engine, "_kick_rtp_flow", AsyncMock())
+    if server_already_started:
+        await engine._ensure_attended_transfer_helper_rtp_server_started(streaming_requested=True)
+        # A further reload must not make the call advertise the newest global
+        # bind either: the running server still owns its original address.
+        engine.config.tools["attended_transfer"]["external_media_helper"]["bind_host"] = "192.0.2.40"
+
+    state = await engine._start_attended_transfer_helper_media(
+        call_id="reload-call", agent_channel_id="reload-agent", attended_cfg=snapshot,
+    )
+
+    assert len(servers) == 1
+    assert servers[0].host == bind_host
+    servers[0].allocate_session.assert_awaited_once_with("attx:reload-call:reload-agent")
+    create_media.assert_awaited_once_with(
+        app=engine.config.asterisk.app_name, external_host=f"{expected_host}:18180",
+        format="ulaw", direction="both", encapsulation="rtp",
+    )
+    assert state["external_host"] == f"{expected_host}:18180"

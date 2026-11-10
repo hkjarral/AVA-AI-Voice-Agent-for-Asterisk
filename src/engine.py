@@ -2025,13 +2025,22 @@ class Engine:
             )
         return ""
 
-    def _get_attended_transfer_helper_settings(self, attended_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _get_attended_transfer_helper_settings(
+        self,
+        attended_cfg: Optional[Dict[str, Any]] = None,
+        *,
+        server_bind_host: Optional[str] = None,
+    ) -> Dict[str, Any]:
         cfg = attended_cfg if isinstance(attended_cfg, dict) else self._get_attended_transfer_config()
         helper_cfg = cfg.get("external_media_helper") if isinstance(cfg.get("external_media_helper"), dict) else {}
         global_external = getattr(self.config, "external_media", None)
 
+        # Once the shared server exists, inherited advertise addresses must
+        # follow its actual bind rather than a potentially stale call snapshot.
+        # Explicit helper/global advertise addresses still take precedence for NAT.
         bind_host = str(
-            helper_cfg.get("bind_host")
+            server_bind_host
+            or helper_cfg.get("bind_host")
             or getattr(global_external, "rtp_host", None)
             or "0.0.0.0"
         ).strip() or "0.0.0.0"
@@ -5401,7 +5410,9 @@ class Engine:
         if existing:
             return existing
 
-        helper_settings = self._get_attended_transfer_helper_settings(attended_cfg)
+        helper_settings = self._get_attended_transfer_helper_settings(
+            attended_cfg, server_bind_host=server.host
+        )
         if not str(helper_settings.get("advertise_host") or "").strip():
             logger.error(
                 "Attended transfer helper streaming disabled because advertise_host could not be derived",

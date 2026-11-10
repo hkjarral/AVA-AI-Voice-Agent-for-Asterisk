@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mid-call reload can no longer change or hang up a transfer in progress. Stream
   delivery starts the helper RTP server on demand, and if it cannot start (for
   example, malformed helper settings) the call falls back per
-  `stream_fallback_to_file`.
+  `stream_fallback_to_file`. Inherited helper advertise addresses follow the
+  active server bind across reloads, while explicit NAT addresses are preserved.
 
 ## [7.7.2] - 2026-11-08
 

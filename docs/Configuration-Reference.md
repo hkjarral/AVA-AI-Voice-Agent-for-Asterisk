@@ -972,13 +972,13 @@ Attended (warm) transfer keeps the caller on hold music while the destination ex
 | `caller_connected_prompt` | `""` (none) | Played to the caller on accept. |
 | `caller_declined_prompt` | `"I’m not able to complete that transfer right now. Would you like me to take a message, or is there anything else I can help with?"` | Local playback after a decline, timeout, `no-answer` or `dial-timeout` for non-Google providers. A missing key uses this default; `""` plays nothing. Google Live receives only a configured value and otherwise words its own recovery. |
 | `delivery_mode` | `"file"` | `file` (ARI playback on the destination) or `stream` (helper ExternalMedia RTP). Enabling the tool in the Admin UI writes `stream`. |
-| `stream_fallback_to_file` | `true` | If stream setup or a stream send fails, use file playback. If false, the transfer fails with `stream-unavailable` and the AI resumes. |
+| `stream_fallback_to_file` | `true` | If stream setup or a stream send fails, use file playback. If false, setup, announcement, caller-recording, or acceptance-prompt failures cause `stream-unavailable` and the AI resumes. A failed AI briefing send logs a warning and continues to acceptance handling. |
 | `external_media_helper.bind_host` | `external_media.rtp_host`, else `"0.0.0.0"` | Process-wide. |
 | `external_media_helper.rtp_port` | `external_media.rtp_port` (default 18080) + 100 | Process-wide. |
 | `external_media_helper.port_range` | Same width as `external_media.port_range`, starting at `rtp_port` | Process-wide. |
 | `external_media_helper.allowed_remote_hosts` | `external_media.allowed_remote_hosts`, else `asterisk.host` | Process-wide. |
 | `external_media_helper.lock_remote_endpoint` | `true` | Process-wide. |
-| `external_media_helper.advertise_host` | `external_media.advertise_host`, else the bind host. `0.0.0.0` or `::` resolves to a derived routable address | Per call. |
+| `external_media_helper.advertise_host` | `external_media.advertise_host`, else the active helper server’s bind host. Explicit advertise addresses are preserved for NAT. `0.0.0.0` or `::` resolves to a derived routable address | Per call. |
 | `external_media_helper.endpoint_wait_ms` | `1000` (each wait lasts at least 200 ms) | Per call. |
 | `external_media_helper.direction` | `"both"` | Per call. The helper codec is fixed at ulaw 8 kHz. |
 
