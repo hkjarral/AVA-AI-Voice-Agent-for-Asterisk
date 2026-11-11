@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The screening handler no longer fails on a cancelled DTMF wait when the leg is
   retired. Late AI briefing generation or persistence cannot recreate a cleared
   transfer, interrupt caller recovery, or start playback for a retired attempt.
+  The final frontend gate now waits for A2A validation and the restored Save &
+  Apply control instead of racing the editor's closing state.
 
 - **AudioSocket inbound audio:** since v5.1.7 a function-local `import audioop`
   in the AudioSocket audio handler made every earlier `audioop` call fail
