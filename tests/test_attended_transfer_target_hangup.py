@@ -115,6 +115,32 @@ def _assert_declined_once(engine, session, rec, agent):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("digit", "reason"), [("9", "declined"), ("2", "target-hangup")])
+async def test_hangup_classifies_buffered_digit_from_call_snapshot(screening, digit, reason):
+    engine, session, rec = screening
+    agent = "agent-ringing"
+    engine.config.tools["attended_transfer"]["decline_digit"] = "2"
+    session.tool_runtime_config = {"tools": {"attended_transfer": {
+        **engine.config.tools["attended_transfer"], "decline_digit": "9",
+    }}}
+    session.current_action["answered"] = True
+    engine._attended_transfer_dtmf_digits[agent] = digit
+
+    await _end_leg(engine, agent, "StasisEnd")
+    await _end_leg(engine, agent, "ChannelDestroyed")
+
+    assert [e for e in rec["events"] if e[0] == "abort"] == [("abort", agent, reason)]
+    assert _outcomes(session) == [f"Transfer failed ({reason})."]
+    assert len(rec["claims"]) == 1
+    assert rec["tts"].count("Sorry, Support agent is not available.") == 1
+    assert await engine.session_store.get_by_call_id(session.call_id) is session
+    assert session.current_action is None
+    assert session.audio_capture_enabled is True
+    assert agent not in engine._attended_transfer_agent_channel_to_call_id
+    assert agent not in engine._attended_transfer_dtmf_waiters
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("announcement_result", [None, "attx-ann-ok"])
 async def test_hangup_during_announcement_declines(screening, monkeypatch, announcement_result):
     engine, session, rec = screening
