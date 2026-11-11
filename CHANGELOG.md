@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Admin frontend React migration (#750, #220):** upgrade React and React DOM
+  together to 19.3.1 with matching React 19 type packages and a compatible Lucide
+  release. Preserve Node 22, existing security overrides, and operator settings.
 - **Admin action feedback (#344):** show pending spinners and prevent repeated
   Call History deletes and Pipeline/Profile saves/deletes. Preserve confirmations
   and deletion safeguards; failed Pipeline saves now retain the editable draft
