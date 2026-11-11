@@ -262,7 +262,7 @@ AI: "Transferring you to Sales team ring group now."
 - Destination must press **DTMF** to accept/decline:
   - Default: `1 = accept`, `2 = decline`, timeout = decline.
 - On accept: AI audio is removed and the engine bridges **caller ↔ destination** directly.
-- On decline/timeout: MOH stops and the AI resumes with the caller (optionally plays a short “unable to transfer” prompt).
+- On decline, timeout, or the destination hanging up before accepting: MOH stops and the AI resumes with the caller (optionally plays a short “unable to transfer” prompt).
 - Engine remains alive as a passive bridge supervisor until hangup.
 - After an accepted handoff, a phone-initiated onward transfer can replace the
   destination leg. AVA adopts the new channel identified by
@@ -296,6 +296,7 @@ migration is required. Existing in-memory sessions are not recovered on restart.
 - A configured `tts_provider` fails closed: there is no fallback to Local AI Server or to another provider. The accept prompt (and the announcement in `basic_tts` and `caller_recording`) is synthesized before dialling, while the caller hears hold music. If that synthesis fails, the music stops, no call is placed to the destination and the AI carries on with the caller. In `basic_tts`, the commit returns a failure. In `caller_recording`, the tool has already acknowledged initiation with success; its background workflow invokes engine recovery instead of changing that tool result.
 - `ai_briefing` still needs Local AI Server LLM capability to write the briefing. Only the speaking moves to `tts_provider`.
 - Config compatibility: `agent_accept_prompt_template` is the canonical key; `agent_accept_prompt` is accepted as a legacy alias.
+- Settings are fixed per call at call start, so a config reload applies to the next call, not a transfer in progress. Helper RTP bind settings are process-wide and need a restart. Keys: [Configuration-Reference](Configuration-Reference.md#attended-transfer-toolsattended_transfer).
 
 #### Announcement voice (`tts_provider`)
 
@@ -317,6 +318,23 @@ For Google, `google_tts` authenticates with an API key or `GOOGLE_APPLICATION_CR
 - The tool parameter is `destination` and it maps to a key under `tools.transfer.destinations`.
   - Example: `destination: "support_agent"` → dials `target: "6000"`.
 - The engine supports fuzzy matching for common user terms (e.g., `"sales"`, `"support"`, `"6000"`), but for deterministic behavior configure prompts to use destination keys.
+
+**Caller briefing parameters**:
+- `attended_transfer` takes two optional string parameters, `caller_name` and `call_reason`, alongside the required `destination`.
+- The model passes them only when the caller has said their name or reason. The tool description tells it never to guess and never to use caller ID.
+- The tool drops control and format characters (except the joiners U+200C and U+200D, which some scripts need), collapses whitespace, and caps `caller_name` at 80 characters and `call_reason` at 200, cutting at a word boundary. Empty values and common placeholder text (`unknown`, `n/a`, `none`, `not provided`, `not given`, `-`, case-insensitive) are ignored, so the fallbacks apply.
+- They fill `{screened_caller_name}` and `{screened_call_reason}`. `{screened_caller_display}` falls back to `{caller_display}`. `{screened_reason_display}` falls back to the AI-briefing summary, then `{context_name}`. `{caller_name}` keeps meaning the caller ID name.
+- In `ai_briefing` mode, a model-supplied `call_reason` takes priority over the AI summary in `{screened_reason_display}`. The summary stays available as `{screening_summary}`.
+- The default announcement does not use these placeholders, so nothing changes until your `announcement_template` references them (`basic_tts` mode).
+- In `caller_recording` mode the recorded clip is the briefing, and the parameters are ignored.
+- The tool and the engine keep the values out of their own logs and out of tool results. The speech backend receives the rendered announcement text and may log it, so check its log level if the template includes these placeholders. Call history redacts `caller_name` and `call_reason` in `strict` and `show_routing` modes.
+
+```yaml
+tools:
+  attended_transfer:
+    screening_mode: "basic_tts"
+    announcement_template: "Hi, this is Ava. I'm transferring {screened_caller_display} about {screened_reason_display}."
+```
 
 **Recommended context policy**:
 - For predictable behavior, enable either `transfer` or `attended_transfer` per context/pipeline.
@@ -1077,6 +1095,29 @@ replacement before its own handoff completes. Timeout recovery clears the
 pending transfer before requesting an apology, so the apology can play.
 Local handoff playback and modular pipeline transfer prompts bypass this gate.
 
+A deferred transfer normally commits when the agent's handoff reply finishes. If
+the model sends no audio after the transfer tool result (seen with Vertex Live
+models), no completion event ever arrives and the transfer would stay armed.
+`tools.transfer.deferred_silent_commit_timeout_sec` (default 4, range 0-30,
+0 disables) bounds that wait: if no reply audio has started by then, the engine
+commits the armed transfer through the normal drain-and-commit path. The timer
+starts once the provider has sent the tool result to the model or reports a
+failed send via `handoff_result_sent(..., success=False)`. Successful delivery
+is not required for the transfer to commit. For OpenAI
+Realtime and Grok, sending follows the parent `response.done`. It holds while agent audio
+plays, after which the transfer commits when that reply finishes, as before. It
+also pauses while the caller is talking, because provider VAD holds the reply
+until they stop, and restarts at the full timeout when they finish. Providers
+that report no end of caller speech restart it on each sign of caller activity
+instead. A barge-in that cuts the reply restarts it too. A reply that stalls
+part-way with no barge-in and no completion event is not covered. Providers
+whose first reply audio can take longer than the timeout (for example a local
+model on CPU) should raise the value, or the transfer goes ahead without its
+handoff line. It does not apply to transfers with a handoff
+announcement, which use `handoff.start_timeout_sec`, or to modular pipelines,
+which commit after their own announcement. When it fires the engine logs
+`deferred_transfer_watchdog_commit` with the call id and action id.
+
 The provider can still generate the repeated turn, so its transcript may show
 the handoff twice. With opt-in Google Developer long-response playback, repeats
 queued before the commit begins can still be heard.
@@ -1097,6 +1138,7 @@ tools:
     deferred_strategy: "drain_then_dial"   # Or "predial_then_bridge" to dial while handoff audio plays
     deferred_audio_drain_timeout_sec: 15   # Safety ceiling; timeout cancels the transfer and resumes the AI
     deferred_audio_drain_quiet_ms: 500     # Require this much quiet after the caller-facing queue drains
+    deferred_silent_commit_timeout_sec: 4  # Commit if no reply audio starts after the tool result (0 disables)
     predial_bridge_wait_timeout_sec: 10    # Wait after handoff audio for a predialed destination answer
     predial_timeout_seconds: 30            # Asterisk originate timeout for predialed destination leg
     predial_wait_moh_class: "default"      # MOH class while waiting for predial destination answer
@@ -1207,6 +1249,7 @@ tools:
     caller_screening_silence_ms: 1200
     accept_digit: "1"
     decline_digit: "2"
+    # {screened_caller_display} / {screened_reason_display} use caller_name / call_reason when given
     announcement_template: "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."
     agent_accept_prompt_template: "Press 1 to accept this transfer, or 2 to decline."
     caller_connected_prompt: "Connecting you now."  # Optional
@@ -1988,6 +2031,31 @@ it is instructed not to redial automatically. This recovery response does not
 require Local AI Server TTS. A configured `caller_declined_prompt` is supplied to
 Google Live as the preferred failure response. Other providers speak `caller_declined_prompt`
 with the announcement voice: `tts_provider` when set, otherwise Local AI Server.
+
+If the destination answers and then hangs up before pressing the accept digit
+(during the announcement, the screening clip or briefing, or the accept prompt),
+AVA now treats it as a decline. Previously this ended the caller's call. MOH
+stops, the caller stays connected, the AI resumes, and Call History records
+`Transfer failed (target-hangup).` If the destination pressed the decline digit
+before hanging up, it is recorded as `declined` instead. Recovery runs once,
+even when the leg's end arrives as more than one channel event.
+
+If AI briefing generation completes during or after recovery, its result is
+discarded. Ownership is checked again after saving the briefing, so caller
+cleanup or a newer transfer during that save cannot restart the old announcement
+or interfere with recovery releasing caller capture.
+
+Recovery follows the same provider split as other failures. Google Live receives
+the failure event; other providers speak `caller_declined_prompt` with the
+configured announcement TTS provider (Local AI Server by default), as they do
+for `declined`, `timeout`, `no-answer` and `dial-timeout`.
+
+Once the destination has accepted, behavior is unchanged: a hangup on that leg
+ends the call. Known limit: a hangup after the accept digit but before the
+bridge still counts as an accepted leg ending, so the call ends. That window
+includes `caller_connected_prompt`: its TTS and playback can take up to five
+times `tts_timeout_seconds` (40 seconds at the default of 8), so a long
+connected prompt widens it.
 
 Call History records **Transfer initiated** separately from **Transfer failed** or
 **Transfer completed**. Initiation and terminal outcomes retain the

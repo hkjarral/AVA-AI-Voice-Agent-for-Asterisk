@@ -2216,6 +2216,12 @@ class GrokProvider(AIProviderInterface):
 
         # Optional acks/telemetry for audio buffer operations
         if event_type and event_type.startswith("input_audio_buffer"):
+            if event_type in ("input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"):
+                # Both VAD edges, so the engine can hold a deferred transfer's
+                # silent-reply timer while the caller is talking.
+                await self.emit_caller_speech(
+                    self._call_id, started=event_type.endswith("speech_started"),
+                )
             # Track turn start time when user STOPS speaking (Milestone 21)
             # This measures: speech end → first AI audio response
             if event_type == "input_audio_buffer.speech_stopped":

@@ -7,7 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Admin backend dependencies (#783, #220):** upgrade psutil from 5.9.8 to
+  7.2.2 for system metrics and Local AI hardware recommendations.
+- **Admin frontend tooling (#220, #722):** use Node 22 (minimum 22.12) for
+  frontend CI, Docker builds, and local development; upgrade Jest DOM to 7.0.1.
+  Preserve the existing ESLint versions, configuration, and warning threshold.
+### Security
+
+- Update the Admin frontend lockfile to follow-redirects 1.16.3, preserving
+  custom sensitive-header handling across JavaScript realms when Node clients
+  follow redirects (GHSA-mrwp-f3q8-3g9p).
+
 ### Added
+
+- **Attended transfer caller briefing:** `attended_transfer` accepts optional
+  `caller_name` and `call_reason` and uses them to fill the existing
+  `{screened_*}` announcement placeholders. The model is told to pass only what
+  the caller actually said. Values are normalised and capped (80 and 200
+  characters; control and format characters are dropped, but the joiners U+200C
+  and U+200D are kept) and kept out of tool results and out of the tool's and
+  engine's own logs. Placeholder values such as `unknown` or
+  `N/A` are treated as missing. The speech backend receives the rendered
+  announcement text and may log it. Call history now redacts
+  a `call_reason` parameter on any tool, as it already did `caller_name`. In
+  `caller_recording` mode, `attended_transfer` ignores `caller_name` and
+  `call_reason`. The default announcement is unchanged. Local-provider parser
+  debug logs omit tool argument values across all supported wrapper formats.
 
 - **Attended transfer announcement voice:** new optional
   `tools.attended_transfer.tts_provider` (a pipeline TTS component key such as
@@ -23,6 +50,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Restore Local AI GPU builds with WebSockets 17.4 by packaging the same Python 3.11.15 interpreter in the CUDA builder and runtime images. Keep engine and Local AI WebSockets pins aligned; CUDA and model dependency versions are unchanged.
+- **Deferred transfers:** a deferred blind, attended or live-agent transfer no
+  longer waits forever when the model sends no audio after the tool result. The
+  new `tools.transfer.deferred_silent_commit_timeout_sec` (default 4 s, 0
+  disables, Admin UI field) commits it through the normal path. The timer starts
+  once the tool result has been sent to the model, pauses while the caller is
+  talking and restarts after a barge-in that cuts the reply. Behaviour changes
+  only when no reply audio follows; handoff announcements and pipelines are
+  unchanged.
+
+- **Attended transfer destination hangup:** behavior change. A destination that
+  answers and hangs up before accepting no longer ends the caller's call. AVA
+  treats it as a decline: MOH stops, the AI resumes, the failure is recorded as
+  `target-hangup` (or `declined` if the decline digit came first), and
+  non-Google providers play `caller_declined_prompt`.
+  Accepted legs, onward-transfer replacement and pickup ownership are unchanged.
+  The screening handler no longer fails on a cancelled DTMF wait when the leg is
+  retired. Late AI briefing generation or persistence cannot recreate a cleared
+  transfer, interrupt caller recovery, or start playback for a retired attempt.
+  Hangup classification uses the call's captured decline digit across config
+  reloads, matching the answer handler and failure recovery.
+  The final frontend gate now waits for A2A validation and the restored Save &
+  Apply control instead of racing the editor's closing state.
+
+- **Attended transfer settings:** the answer handler and failure recovery now
+  retain settings from the call-start tool snapshot when available. Calls without
+  a snapshot keep the existing generation/global configuration fallback. Helper
+  RTP bind settings remain process-wide; unavailable binds or helper startup
+  failures still follow `stream_fallback_to_file`. Inherited helper advertise addresses follow the
+  active server bind across reloads, while explicit NAT addresses are preserved.
+  Failed RTP socket setup releases its reserved port and closes any created socket,
+  so repeated bind failures cannot exhaust the shared range for later calls.
+
+- **Admin frontend dependencies (#823):** retain React Refresh ESLint plugin
+  0.4.x with ESLint 8 so clean frontend installs succeed. Keep the ESLint 9/10
+  migration separate from the compatible dependency updates.
+
 - **AudioSocket inbound audio:** since v5.1.7 a function-local `import audioop`
   in the AudioSocket audio handler made every earlier `audioop` call fail
   silently. With it removed, the first-frame "AudioSocket frame probe" logs
@@ -33,6 +96,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   16 kHz first frame could otherwise swap the whole call. Per-frame DC removal
   stays disabled, as it has been since v5.1.7, because subtracting each frame's
   mean adds a frame-edge artifact measured at -15 to -30 dB relative to speech.
+
+### Changed
+
+- **Admin backend dependencies (#816):** update FastAPI to 0.162.0, Pydantic to
+  2.14.3, python-multipart to 0.0.33, WebSockets to 17.4, and the bundled
+  FFmpeg decoder package to 0.8.1.
 
 ## [7.7.2] - 2026-11-08
 

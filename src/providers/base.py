@@ -4,6 +4,10 @@ from typing import List, Callable, Dict, Any, Optional
 import time
 import asyncio
 
+from structlog import get_logger
+
+logger = get_logger(__name__)
+
 class AIProviderInterface(ABC):
     """
     Abstract Base Class for AI Providers.
@@ -47,11 +51,52 @@ class AIProviderInterface(ABC):
 
     async def handoff_result_sent(self, result, call_id, *, success=True):
         action = result.get("deferred_transfer") if isinstance(result, dict) else None
-        if not isinstance(action, dict) or not action.get("handoff") or not self.on_event:
+        if not isinstance(action, dict) or not self.on_event:
+            return
+        if not action.get("handoff"):
+            # No announcement bounds the wait for the reply turn that commits
+            # this action, so let the engine time it from here: the model has
+            # the result now. A failed send arms it too, since no reply follows.
+            # Per-call flags live in the handoff evidence, which every provider
+            # resets when a call's session starts and stops.
+            flags = self._handoff_evidence.deferred_flags(call_id)
+            flags["result_sent"] = True
+            await self.on_event({"type": "DeferredTransferArmed", "call_id": call_id,
+                                 "action_id": action.get("id"), "success": success})
+            if flags["caller_speaking"]:
+                await self.emit_caller_speech(call_id, started=True)  # Still talking.
             return
         await self.on_event({"type": "HandoffToolResultSent", "call_id": call_id,
                              "action_id": action["id"], "sent_at": time.monotonic(),
                              "success": success})
+
+    async def emit_caller_speech(self, call_id, *, started):
+        """Report a provider VAD caller-speech start or end to the engine.
+
+        Only for providers that report both edges; the engine pauses the
+        deferred-transfer silent-reply timer between them. Sent only once this
+        provider has delivered an unannounced deferred-transfer result on the
+        call, so other calls see no new events.
+        """
+        if not call_id or not self.on_event:
+            return
+        evidence = self._handoff_evidence
+        if call_id not in evidence.deferred and not started:
+            return  # Nothing to track or report for this call.
+        flags = evidence.deferred_flags(call_id)
+        flags["caller_speaking"] = bool(started)
+        if not flags["result_sent"]:
+            return
+        event = {
+            "type": "CallerSpeechStarted" if started else "CallerSpeechStopped",
+            "call_id": call_id,
+            "provider": self.provider_event_name(),
+            "vad": True,
+        }
+        try:
+            await self.on_event(event)
+        except Exception:
+            logger.debug("Failed to emit caller speech edge", call_id=call_id, exc_info=True)
 
     async def complete_handoff_audio(self, call_id, native_id=None):
         event = {"type": "HandoffAudioComplete", "call_id": call_id}

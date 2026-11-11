@@ -1793,6 +1793,7 @@ class DeepgramProvider(AIProviderInterface):
                                     session_id=getattr(self, "session_id", None),
                                 )
                             elif et == "UserStartedSpeaking":
+                                await self.emit_caller_speech(self.call_id, started=True)
                                 await self._handle_user_started_speaking()
                             elif et == "UserStoppedSpeaking":
                                 logger.info(
@@ -1935,6 +1936,9 @@ class DeepgramProvider(AIProviderInterface):
                                     if role == "user" and text:
                                         self._turn_start_time = time.time()
                                         self._turn_first_audio_received = False
+                                        # The same end edge for the engine's
+                                        # deferred-transfer silent-reply timer.
+                                        await self.emit_caller_speech(self.call_id, started=False)
                                     
                                     # Track conversation for email tools
                                     # Debug: Check conditions

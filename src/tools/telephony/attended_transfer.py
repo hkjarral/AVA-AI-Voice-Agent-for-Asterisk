@@ -11,6 +11,7 @@ The engine then:
 import asyncio
 from typing import Any, Dict, Optional, Tuple
 import time
+import unicodedata
 import structlog
 
 from src.tools.base import Tool, ToolCategory, ToolDefinition, ToolParameter
@@ -24,6 +25,56 @@ from src.tools.telephony.deferred_transfer import (
 
 logger = structlog.get_logger(__name__)
 
+_CALLER_NAME_MAX_CHARS = 80
+_CALL_REASON_MAX_CHARS = 200
+_BRIEFING_KEYS = ("screened_caller_name", "screened_call_reason")
+# Joiners that correct spelling needs in Persian, Urdu, Indic scripts and some emoji sequences.
+_KEPT_FORMAT_CHARS = frozenset({"\u200c", "\u200d"})
+# Placeholder values models put in optional arguments instead of omitting them.
+_FILLER_VALUES = frozenset({"unknown", "n/a", "none", "not provided", "not given", "-"})
+
+
+def _normalize_caller_statement(value: Any, max_len: int) -> Optional[str]:
+    """Return a single-line, length-capped copy of caller-stated text, or None.
+
+    Drops Unicode control and format characters (keeping ZWNJ and ZWJ),
+    collapses whitespace, and cuts at a word boundary when one falls inside the
+    cap.
+    """
+    if not isinstance(value, str):
+        return None
+    kept = "".join(
+        ch
+        for ch in value
+        if ch.isspace() or ch in _KEPT_FORMAT_CHARS or not unicodedata.category(ch).startswith("C")
+    )
+    text = " ".join(kept.split())
+    if not text.strip("\u200c\u200d "):
+        return None
+    if len(text) > max_len:
+        cut = text[:max_len]
+        if text[max_len] != " ":
+            cut = cut.rsplit(" ", 1)[0] or cut
+        text = cut.rstrip()
+    return text or None
+
+
+def _caller_briefing_from_parameters(parameters: Dict[str, Any]) -> Dict[str, str]:
+    """Map the optional caller_name/call_reason arguments onto briefing keys."""
+    briefing: Dict[str, str] = {}
+    name = _normalize_caller_statement(parameters.get("caller_name"), _CALLER_NAME_MAX_CHARS)
+    reason = _normalize_caller_statement(parameters.get("call_reason"), _CALL_REASON_MAX_CHARS)
+    # Treat filler such as "unknown" or "N/A" as missing so the fallbacks still run.
+    if name and name.casefold().rstrip(".") in _FILLER_VALUES:
+        name = None
+    if reason and reason.casefold().rstrip(".") in _FILLER_VALUES:
+        reason = None
+    if name:
+        briefing["screened_caller_name"] = name
+    if reason:
+        briefing["screened_call_reason"] = reason
+    return briefing
+
 
 class AttendedTransferTool(Tool):
     @property
@@ -35,7 +86,10 @@ class AttendedTransferTool(Tool):
                 "then DTMF acceptance (1=accept, 2=decline). Caller is placed on MOH while the agent is contacted. "
                 "The screening payload can be a basic TTS briefing, an experimental AI-generated summary, or a caller-recorded screening clip, depending on config. "
                 "Use when you must brief a human before connecting the caller. "
-                "Use exact configured destination keys exposed in the runtime prompt/context."
+                "Use exact configured destination keys exposed in the runtime prompt/context. "
+                "If the caller has told you their name or why they are calling, pass it as caller_name or call_reason; "
+                "the announcement uses them only if its template includes {screened_caller_display} or {screened_reason_display}. "
+                "Pass only what the caller actually said; never guess."
             ),
             category=ToolCategory.TELEPHONY,
             requires_channel=True,
@@ -49,7 +103,25 @@ class AttendedTransferTool(Tool):
                         "Use a destination key configured in Tools -> Transfer Destinations."
                     ),
                     required=True,
-                )
+                ),
+                ToolParameter(
+                    name="caller_name",
+                    type="string",
+                    description=(
+                        "The caller's name as the caller stated it in this conversation. "
+                        "Omit it if the caller has not said their name. Never guess, and never use caller ID."
+                    ),
+                    required=False,
+                ),
+                ToolParameter(
+                    name="call_reason",
+                    type="string",
+                    description=(
+                        "A short phrase giving the reason for the call in the caller's own words. "
+                        "Omit it if the caller has not said why they are calling. Never guess or add detail."
+                    ),
+                    required=False,
+                ),
             ],
         )
 
@@ -153,6 +225,11 @@ class AttendedTransferTool(Tool):
                 "caller_screening_silence_ms": caller_screening_silence_ms,
             },
         )
+        briefing = _caller_briefing_from_parameters(parameters)
+        if briefing:
+            # Underscore keys stay on the armed action but are never copied into
+            # the provider-visible deferred_transfer result or its logs.
+            action["_briefing"] = briefing
 
         if transfer_deferral_enabled(context):
             await store_pending_deferred_transfer(context, action)
@@ -226,6 +303,16 @@ class AttendedTransferTool(Tool):
             "decision_digit": None,
             "screening_mode": screening_mode,
         }
+        briefing = action.get("_briefing")
+        # In caller_recording mode the caller's own clip is the briefing.
+        if screening_mode != "caller_recording" and isinstance(briefing, dict):
+            screened = {
+                key: briefing[key]
+                for key in _BRIEFING_KEYS
+                if isinstance(briefing.get(key), str) and briefing[key]
+            }
+            if screened:
+                attempt["briefing"] = screened
         previous = session.current_action
         if isinstance(previous, dict) and previous.get("type") == "attended_transfer":
             # A replacement inherits the original capture state, not the pause

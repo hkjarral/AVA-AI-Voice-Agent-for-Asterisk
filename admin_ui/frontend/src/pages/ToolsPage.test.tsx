@@ -456,7 +456,7 @@ describe('A2A setup', () => {
         expect(screen.queryByText(/Test sends a real HTTP request/)).not.toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: 'Update tool' }));
         await screen.findByRole('button', { name: 'Configure delegate' });
-        fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Save & Apply' }));
         await screen.findByText(/Applied as tool generation 9/);
         const saved = postedConfig();
         const a2a = (saved.in_call_tools as Record<string, unknown>).delegate;
@@ -467,6 +467,11 @@ describe('A2A setup', () => {
     });
 
     it('retains YAML extension fields and existing credentials on edit', async () => {
+        let finishValidation!: (value: { data: { valid: boolean } }) => void;
+        const validation = new Promise<{ data: { valid: boolean } }>(resolve => { finishValidation = resolve; });
+        vi.mocked(axios.post).mockImplementation(async url => url === '/api/tools/a2a/validate'
+            ? validation
+            : { data: url === '/api/config/yaml' ? { recommended_apply_method: 'hot_reload' } : { tool_generation: 9 } });
         const cfg = {...fixture(), in_call_tools: {...fixture().in_call_tools, delegate: {kind: 'a2a_agent', agent_url: 'https://agent.example.com', bearer_token_env: 'OLD_TOKEN', extension: { keep: true }}}};
         mocks.load.mockResolvedValue({ config: cfg, yamlError: null });
         render(<ToolsPage />);
@@ -474,8 +479,13 @@ describe('A2A setup', () => {
         expect(screen.getByText(/Engine environment reference · OLD_TOKEN/)).toBeInTheDocument();
         fireEvent.change(screen.getByLabelText('Agent endpoint'), { target: { value: 'https://agent.example.com/v2' } });
         fireEvent.click(screen.getByRole('button', { name: 'Update tool' }));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/tools/a2a/validate', expect.anything()));
+        expect(screen.queryByRole('button', { name: 'Save & Apply' })).not.toBeInTheDocument();
+        expect(vi.mocked(axios.post).mock.calls.some(([url]) => url === '/api/config/yaml')).toBe(false);
+        await act(async () => { finishValidation({ data: { valid: true } }); });
         await screen.findByRole('button', { name: 'Configure delegate' });
-        fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
+        // The list returns before the parent finishes restoring its save bar.
+        fireEvent.click(await screen.findByRole('button', { name: 'Save & Apply' }));
         await screen.findByText(/Applied as tool generation 9/);
         expect((postedConfig().in_call_tools as Record<string, unknown>).delegate).toEqual({...cfg.in_call_tools.delegate, agent_url: 'https://agent.example.com/v2'});
     });
