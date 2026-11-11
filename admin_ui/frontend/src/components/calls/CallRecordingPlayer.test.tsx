@@ -56,7 +56,8 @@ describe('recording access lifecycle', () => {
         vi.mocked(axios.get).mockReturnValueOnce(pending.promise);
         fireEvent.click(screen.getByRole('button', { name: 'Play recording' }));
         expect(screen.getByRole('button', { name: 'Download recording' })).toBeDisabled();
-        const signal = vi.mocked(axios.get).mock.calls.at(-1)?.[1]?.signal;
+        const calls = vi.mocked(axios.get).mock.calls;
+        const signal = calls[calls.length - 1]?.[1]?.signal;
         view.unmount();
         await act(async () => pending.resolve({ data: new Blob() }));
         expect(signal?.aborted).toBe(true);

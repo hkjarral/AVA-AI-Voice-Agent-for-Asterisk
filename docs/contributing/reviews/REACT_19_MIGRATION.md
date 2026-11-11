@@ -52,8 +52,10 @@ Node 22.23.4:
 - 82 test files / 634 tests passed with two workers.
 - Lint passed: zero errors and the unchanged 868-warning allowance.
 - Production build and actual Admin image build passed.
-- `tsc --noEmit` is not clean: both exact baseline and migration report 105
-  errors at the same file/line/code locations. Existing failures remain;
+- `tsc --noEmit` is not clean: exact baseline reports 105 errors and migration reports 104. The sole removed
+  diagnostic is the recording-player test’s ES2022-only `Array.at` call; use
+  ES2020-compatible indexing instead. The remaining file/line/code locations
+  match baseline. Existing failures remain;
   React's expanded type names change some diagnostic text. No new diagnostic
   locations remain after the two scoped type adjustments.
 - Chromium production-asset checks passed for rejected-login recovery,
