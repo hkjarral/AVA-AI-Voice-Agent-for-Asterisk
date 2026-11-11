@@ -53,6 +53,7 @@ logger = get_logger(__name__)
 
 ComponentFactory = Callable[[str, Dict[str, Any]], Component]
 _PLACEHOLDER_FACTORY_ATTR = "_ava_placeholder_role"
+_ONE_SHOT_CLEANUP_STEP_TIMEOUT_SEC = 2.0
 
 
 class PipelineOrchestratorError(Exception):
@@ -596,8 +597,9 @@ class PipelineOrchestrator:
         Unknown, disabled, placeholder and non-TTS components are rejected
         instead of resolving to another provider. ``options`` may carry a
         generic ``voice`` and ``language``, mapped to the adapter's own option
-        names. The whole job is bounded by ``timeout_sec``, the component is
-        always closed, and an empty result is an error.
+        names. Synthesis is bounded by ``timeout_sec``. Closing and stopping
+        each have a separate bounded budget and finish before the job returns
+        or propagates cancellation. An empty result is an error.
         """
         try:
             role = _extract_role(component_key)
@@ -649,7 +651,19 @@ class PipelineOrchestrator:
         try:
             audio = await asyncio.wait_for(_run(), timeout=timeout)
         finally:
-            await self._shutdown_one_shot_component(component, call_id)
+            # Own and drain cleanup independently of the caller's cancellation.
+            # Keep a strong reference and await completion even if cancelled
+            # again; no detached cleanup tasks survive this job.
+            cleanup = asyncio.create_task(self._shutdown_one_shot_component(component, call_id))
+            cancelled = False
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    cancelled = True
+            cleanup.result()
+            if cancelled:
+                raise asyncio.CancelledError
         if not audio:
             raise PipelineSynthesisError(f"TTS provider '{component_key}' returned no audio")
         return audio
@@ -661,30 +675,23 @@ class PipelineOrchestrator:
         ``_shutdown_component`` this never logs exception text or tracebacks.
         """
         component_key = getattr(component, "component_key", type(component).__name__)
-        try:
-            await component.close_call(call_id)
-        except NotImplementedError:
-            pass
-        except Exception as exc:
-            logger.warning(
-                "One-shot pipeline component shutdown failed",
-                call_id=call_id,
-                component_key=component_key,
-                step="close_call",
-                error_type=exc.__class__.__name__,
-            )
-        try:
-            await component.stop()
-        except NotImplementedError:
-            pass
-        except Exception as exc:
-            logger.warning(
-                "One-shot pipeline component shutdown failed",
-                call_id=call_id,
-                component_key=component_key,
-                step="stop",
-                error_type=exc.__class__.__name__,
-            )
+        for step, args in (("close_call", (call_id,)), ("stop", ())):
+            try:
+                await asyncio.wait_for(
+                    getattr(component, step)(*args), timeout=_ONE_SHOT_CLEANUP_STEP_TIMEOUT_SEC
+                )
+            except NotImplementedError:
+                pass
+            except (Exception, asyncio.CancelledError) as exc:
+                # A failed/timed-out close must never skip stop. Adapters must
+                # honor cancellation at their own cleanup deadline.
+                logger.warning(
+                    "One-shot pipeline component shutdown failed",
+                    call_id=call_id,
+                    component_key=component_key,
+                    step=step,
+                    error_type=exc.__class__.__name__,
+                )
 
     def _provider_explicitly_disabled(self, component_key: str) -> bool:
         providers = getattr(self.config, "providers", {}) or {}

@@ -123,7 +123,7 @@ async def test_set_provider_uses_synthesize_once_and_never_local(monkeypatch):
     [
         (_FakeOrchestrator(error=RuntimeError("401 for https://key:sk-secret@tts.example.invalid")), "RuntimeError"),
         (_FakeOrchestrator(error=PipelineSynthesisError("google_tts returned no audio")), "PipelineSynthesisError"),
-        (_FakeOrchestrator(hang=True), "TimeoutError"),
+        (_FakeOrchestrator(error=asyncio.TimeoutError()), "TimeoutError"),
         (None, "OrchestratorUnavailable"),
     ],
 )

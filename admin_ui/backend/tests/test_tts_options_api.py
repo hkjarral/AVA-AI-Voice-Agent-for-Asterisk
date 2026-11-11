@@ -256,3 +256,19 @@ async def test_disabled_provider_prefix_disables_custom_instance(monkeypatch):
 
     assert by_key["groq_tts"]["ready"] is False
     assert by_key["groq_tts"]["reason"] == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_tts_options_config_reads_run_off_event_loop(monkeypatch):
+    import threading
+
+    loop_thread = threading.get_ident()
+    read_threads = []
+
+    def read_config():
+        read_threads.append(threading.get_ident())
+        return {}
+
+    monkeypatch.setattr(config_api, "_read_merged_config_dict", read_config)
+    assert await config_api.get_tts_provider_options() == []
+    assert read_threads and all(thread != loop_thread for thread in read_threads)

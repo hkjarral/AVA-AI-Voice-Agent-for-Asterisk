@@ -3762,6 +3762,10 @@ def _tts_component_disabled(providers: Dict[str, Any], component_key: str) -> bo
 
 @router.get("/providers/tts-options")
 async def get_tts_provider_options():
+    return await asyncio.to_thread(_build_tts_provider_options)
+
+
+def _build_tts_provider_options() -> list[Dict[str, Any]]:
     """Return a secret-safe catalog for the attended-transfer announcement voice.
 
     Lists the pipeline TTS components the engine registers from configured

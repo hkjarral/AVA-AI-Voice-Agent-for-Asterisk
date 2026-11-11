@@ -9104,15 +9104,15 @@ class Engine:
         tts_options = cfg.get("tts_options") if isinstance(cfg.get("tts_options"), dict) else None
         timeout = max(0.1, float(timeout_sec))
         try:
-            audio = await asyncio.wait_for(
-                orchestrator.synthesize_once(
-                    provider,
-                    call_id=f"attended-transfer:{call_id}",
-                    text=text,
-                    options=tts_options,
-                    timeout_sec=timeout,
-                ),
-                timeout=timeout,
+            # The orchestrator owns the synthesis deadline and a separate
+            # cleanup budget. An outer deadline would discard valid audio
+            # while close_call/stop are still finishing.
+            audio = await orchestrator.synthesize_once(
+                provider,
+                call_id=f"attended-transfer:{call_id}",
+                text=text,
+                options=tts_options,
+                timeout_sec=timeout,
             )
         except Exception as exc:
             logger.warning(

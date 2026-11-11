@@ -643,7 +643,7 @@ class AttendedTransferTool(Tool):
                 session = None
             if not session or session.cleanup_in_progress or session.current_action is not attempt:
                 # Only the leg originated by this now-stale workflow is ours.
-                await context.ari_client.send_command(method="DELETE", resource=f"channels/{agent_channel_id}")
+                await self._hangup_stale_attended_leg(context, agent_channel_id)
                 return None
         try:
             # With an attempt, use the session validated above without opening
@@ -663,7 +663,7 @@ class AttendedTransferTool(Tool):
             except RuntimeError:
                 session = None
             if not session or session.cleanup_in_progress or session.current_action is not attempt:
-                await context.ari_client.send_command(method="DELETE", resource=f"channels/{agent_channel_id}")
+                await self._hangup_stale_attended_leg(context, agent_channel_id)
                 return None
 
         try:
@@ -682,6 +682,20 @@ class AttendedTransferTool(Tool):
             destination_key=destination,
         )
         return result
+
+    async def _hangup_stale_attended_leg(
+        self, context: ToolExecutionContext, agent_channel_id: str
+    ) -> None:
+        """Retire only this workflow's leg without failing its replacement."""
+        try:
+            await context.ari_client.send_command(method="DELETE", resource=f"channels/{agent_channel_id}")
+        except Exception as exc:
+            logger.warning(
+                "Failed to hang up stale attended transfer leg",
+                call_id=context.call_id,
+                agent_channel_id=agent_channel_id,
+                error_type=exc.__class__.__name__,
+            )
 
     async def _complete_caller_recording_transfer(
         self,

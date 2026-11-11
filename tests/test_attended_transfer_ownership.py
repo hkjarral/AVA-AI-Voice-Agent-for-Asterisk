@@ -64,7 +64,8 @@ async def test_superseded_preparation_preserves_new_transfer(screening_mode, old
 
 
 @pytest.mark.asyncio
-async def test_superseded_origination_hangs_up_only_its_own_leg():
+@pytest.mark.parametrize("delete_failure", [False, True])
+async def test_superseded_origination_hangs_up_only_its_own_leg(delete_failure):
     # Exercise the legacy/default TTS path too, where there is no preparation.
     session, ari, context = _tool_fixture({}, None, "origination-race")
     started = asyncio.Event()
@@ -75,6 +76,8 @@ async def test_superseded_origination_hangs_up_only_its_own_leg():
     async def delayed_originate(**kwargs):
         nonlocal originates
         result = await original_send(**kwargs)
+        if delete_failure and kwargs["method"] == "DELETE":
+            raise TimeoutError("ARI cleanup timeout")
         if kwargs["method"] == "POST" and kwargs["resource"] == "channels":
             originates += 1
             if originates == 1:
@@ -146,7 +149,8 @@ async def test_replacement_failure_restores_capture_from_before_first_transfer()
 
 
 @pytest.mark.asyncio
-async def test_replaced_during_originate_persistence_does_not_register_old_leg():
+@pytest.mark.parametrize("delete_failure", [False, True])
+async def test_replaced_during_originate_persistence_does_not_register_old_leg(delete_failure):
     from unittest.mock import Mock
 
     session, ari, context = _tool_fixture({}, None, "persist-race")
@@ -161,6 +165,8 @@ async def test_replaced_during_originate_persistence_does_not_register_old_leg()
     async def named_originate(**kwargs):
         nonlocal originates
         result = await original_send(**kwargs)
+        if delete_failure and kwargs["method"] == "DELETE":
+            raise TimeoutError("ARI cleanup timeout")
         if kwargs["method"] == "POST" and kwargs["resource"] == "channels":
             originates += 1
             return {"id": "old-agent" if originates == 1 else "new-agent"}

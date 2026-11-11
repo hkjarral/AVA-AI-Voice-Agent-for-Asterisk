@@ -269,3 +269,106 @@ async def test_shutdown_failure_is_logged_by_class_only(monkeypatch):
     assert failures and failures[0]["step"] == "close_call"
     assert "example.invalid" not in repr(records)
     assert all("exc_info" not in r for r in failures)
+
+
+@pytest.mark.asyncio
+async def test_engine_keeps_audio_when_cleanup_crosses_synthesis_deadline():
+    from tests.test_attended_transfer_streaming import _build_engine
+
+    events = []
+    closing = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowClose(_RecordingTTS):
+        async def close_call(self, call_id):
+            closing.set()
+            await release.wait()
+            await super().close_call(call_id)
+
+    engine = _build_engine({"enabled": True})
+    engine.pipeline_orchestrator = _orchestrator(SlowClose, events)
+    task = asyncio.create_task(engine._attended_transfer_tts(
+        call_id="cleanup-deadline", text="Hello", timeout_sec=.1,
+        attended_cfg={"tts_provider": "chosen_tts"},
+    ))
+    try:
+        await asyncio.wait_for(closing.wait(), timeout=1)
+        await asyncio.sleep(.15)  # Past the synthesis budget, still in cleanup.
+        assert not task.done()
+        release.set()
+        assert await asyncio.wait_for(task, timeout=1)
+        assert events[-1] == "stop"
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hanging_step", ["close_call", "stop"])
+async def test_cleanup_deadlines_do_not_skip_stop_or_discard_audio(monkeypatch, hanging_step):
+    monkeypatch.setattr(orchestrator_module, "_ONE_SHOT_CLEANUP_STEP_TIMEOUT_SEC", .02)
+    events = []
+
+    class HangingCleanup(_RecordingTTS):
+        async def close_call(self, call_id):
+            await super().close_call(call_id)
+            if hanging_step == "close_call":
+                await asyncio.Event().wait()
+
+        async def stop(self):
+            await super().stop()
+            if hanging_step == "stop":
+                await asyncio.Event().wait()
+
+    orchestrator = _orchestrator(HangingCleanup, events)
+    audio = await asyncio.wait_for(orchestrator.synthesize_once(
+        "chosen_tts", call_id="cleanup-timeout", text="Hi", timeout_sec=.1,
+    ), timeout=1)
+    assert audio
+    assert events[-2:] == [("close", "cleanup-timeout"), "stop"]
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_waits_for_owned_cleanup():
+    events = []
+    closing = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowClose(_RecordingTTS):
+        async def close_call(self, call_id):
+            closing.set()
+            await release.wait()
+            await super().close_call(call_id)
+
+    orchestrator = _orchestrator(SlowClose, events)
+    task = asyncio.create_task(orchestrator.synthesize_once(
+        "chosen_tts", call_id="cancel-cleanup", text="Hi", timeout_sec=1,
+    ))
+    try:
+        await asyncio.wait_for(closing.wait(), timeout=1)
+        for _ in range(2):
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1)
+        assert events[-2:] == [("close", "cancel-cleanup"), "stop"]
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_engine_times_out_real_synthesis_and_closes_adapter():
+    from tests.test_attended_transfer_streaming import _build_engine
+
+    events = []
+    engine = _build_engine({"enabled": True})
+    engine.pipeline_orchestrator = _orchestrator(_HangingTTS, events)
+    audio = await asyncio.wait_for(engine._attended_transfer_tts(
+        call_id="real-timeout", text="Hi", timeout_sec=.1,
+        attended_cfg={"tts_provider": "chosen_tts"},
+    ), timeout=1)
+    assert audio is None
+    assert events[-2:] == [("close", "attended-transfer:real-timeout"), "stop"]
