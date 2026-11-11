@@ -176,6 +176,12 @@ PIPELINE_STT_ENCODING = "linear16"
 PIPELINE_STT_CHANNELS = 1
 PIPELINE_STT_BYTES_PER_SAMPLE = 2
 CONNECTION_AUDIO_HANDOFF_TIMEOUT_SECONDS = 10.0
+# Per-frame mean subtraction on inbound AudioSocket audio. It has not run since
+# v5.1.7 (an audioop scope bug) and stays off: subtracting each 20 ms frame's
+# mean leaves a step at every frame edge, measured at -15 to -30 dB relative
+# to speech on recordings that carry no DC. A proper DC blocker is a candidate
+# follow-up.
+INBOUND_DC_REMOVAL_ENABLED = False
 OUTBOUND_ATTEMPT_STALE_SECONDS_DEFAULT = 120.0
 # Keep lead context comfortably below practical ARI/dialplan payload limits.
 # The same canonical JSON is used for originate, post-answer confirmation, and
@@ -11579,19 +11585,21 @@ class Engine:
                             rms_native=rms_native,
                             rms_swapped=rms_swapped,
                         )
-                        # Determine if inbound PCM16 appears byte-swapped (big-endian on wire)
+                        # AudioSocket slin frames are little-endian and the TLV type
+                        # states the format, so never swap them. Quiet line noise
+                        # on the first frame looks loud when swapped, and a sticky
+                        # swap decision would garble the rest of the call.
+                        vad_state['pcm16_inbound_swap'] = False
                         try:
                             frame_bytes = len(audio_bytes)
-                            # Conservative rule: only flag swap when swapped energy is clearly higher
-                            swap_flag = (
+                            swap_suspected = (
                                 frame_bytes >= 640 and  # 20ms @ 16k PCM
                                 rms_swapped >= 2048 and
                                 rms_swapped >= 16 * max(1, rms_native)
                             )
-                            vad_state['pcm16_inbound_swap'] = bool(swap_flag)
-                            if swap_flag:
-                                logger.warning(
-                                    "Inbound slin16 appears byte-swapped; will normalize to PCM16-LE for processing",
+                            if swap_suspected:
+                                logger.info(
+                                    "Inbound slin first frame is louder byte-swapped; not swapping (AudioSocket is little-endian)",
                                     call_id=caller_channel_id,
                                     rms_native=rms_native,
                                     rms_swapped=rms_swapped,
@@ -11640,8 +11648,9 @@ class Engine:
                     profile_rate = 8000
             pcm_bytes, pcm_rate = self._wire_to_pcm16(audio_bytes, profile_fmt, swap_needed_flag, profile_rate)
             # Remove DC bias ONLY (disable IIR DC-block filter - causes audio degradation)
+            # Off by default; see INBOUND_DC_REMOVAL_ENABLED.
             try:
-                if pcm_bytes:
+                if pcm_bytes and INBOUND_DC_REMOVAL_ENABLED:
                     try:
                         mean = int(audioop.avg(pcm_bytes, 2))
                     except Exception:
@@ -11912,8 +11921,6 @@ class Engine:
                 squelch_speech_evidence = None
                 if squelch_applicable and pcm_bytes:
                     try:
-                        import audioop
-
                         state = session.vad_state.setdefault("upstream_squelch", {})
                         energy = int(audioop.rms(pcm_bytes, 2)) if pcm_bytes else 0
 
