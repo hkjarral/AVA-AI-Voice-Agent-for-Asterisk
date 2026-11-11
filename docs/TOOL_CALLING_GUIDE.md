@@ -2003,8 +2003,9 @@ cleanup or a newer transfer during that save cannot restart the old announcement
 or interfere with recovery releasing caller capture.
 
 Recovery follows the same provider split as other failures. Google Live receives
-the failure event; other providers play `caller_declined_prompt` locally, as they
-do for `declined`, `timeout`, `no-answer` and `dial-timeout`.
+the failure event; other providers speak `caller_declined_prompt` with the
+configured announcement TTS provider (Local AI Server by default), as they do
+for `declined`, `timeout`, `no-answer` and `dial-timeout`.
 
 Once the destination has accepted, behavior is unchanged: a hangup on that leg
 ends the call. Known limit: a hangup after the accept digit but before the
