@@ -43,31 +43,30 @@ service or call acceptance. Record exact test results in the PR.
 Rollback restores the preceding frontend image/dependencies; this migration
 introduces no persistent-data migration.
 
-## Preparation evidence
+## Validation on final base
 
-On base `8e64c3a997cc098c66f0f07c9db7ba09a53ef859`, Node 22.23.4:
+Base `6fd8df3c10149e1868231497887cc6a27075ec4a`, after #840 / #767,
+Node 22.23.4:
 
 - Strict clean install and complete `npm ls --all` passed without peer conflicts.
-- 81 test files / 628 tests passed with two workers. The affected HTTP editor's
-  14 tests passed again after the nullable-ref type correction.
+- 82 test files / 634 tests passed with two workers.
 - Lint passed: zero errors and the unchanged 868-warning allowance.
 - Production build and actual Admin image build passed.
-- `tsc --noEmit` is not clean on baseline: both baseline and migration report
-  104 errors at the same file/line/code locations. Existing diagnostics remain;
+- `tsc --noEmit` is not clean: both exact baseline and migration report 105
+  errors at the same file/line/code locations. Existing failures remain;
   React's expanded type names change some diagnostic text. No new diagnostic
   locations remain after the two scoped type adjustments.
+- Chromium production-asset checks passed for rejected-login recovery,
+  authenticated History, detail/confirmation cancellation, refresh, Streaming
+  settings save preserving greeting values, and Monaco mount/remount with locally
+  intercepted 0.54.0 assets (the existing loader's requested version).
+- Merged recording-player smoke passed: synthetic PCM playback/pause/seek
+  availability, download byte fidelity, blob errors, ambiguous/missing/late
+  refresh, close and no page errors. All API/audio fixtures were synthetic/local.
+- Five repeated History open/close cycles passed on exact baseline and migration.
+  Earlier preparation on `8e64c3a9` intermittently left/reopened the detail modal
+  on both React 18 and 19; that observation was not reproduced in this final-base
+  run and is not attributed to the migration.
 
-These results precede the final-base refresh; rerun checks affected by integration
-before publication. Browser and final-head evidence belong in the PR report.
-
-Local production-asset Chromium checks passed for rejected-login recovery,
-authenticated History rendering, individual detail close/delete cancellation,
-refresh, Streaming settings save preserving saved greeting values, and Monaco
-mount/remount using locally intercepted 0.54.0 assets (the existing loader's
-requested version). All API responses were synthetic; external requests were
-blocked or fulfilled locally.
-
-Repeated History close attempts intermittently leave/reopen the detail modal.
-The same fixture reproduces this on unchanged React 18 base `8e64c3a9`; this is
-not attributed to the migration. Recheck after the pending #767 History work is
-integrated; do not claim repeated History lifecycle acceptance until resolved.
+No calls, provider requests, deployment, live configuration writes or service
+restarts were performed. Browser checks do not establish live call acceptance.
