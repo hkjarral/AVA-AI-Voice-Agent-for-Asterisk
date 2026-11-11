@@ -247,7 +247,7 @@ See [SECURITY.md](../SECURITY.md) section 2.1 for detailed Admin UI security gui
 In **Call History → Call Details**, use **Play recording** or **Download recording**.
 Both require the existing Admin UI login and return the same browser-playable WAV
 representation. ULAW is converted to PCM WAV; GSM and compressed WAV require SoX in
-the Admin UI image. Download does not return the original compressed source file.
+the Admin UI image and are decoded to PCM16 with seekable WAV headers. Download does not return the original compressed source file.
 The player shows duration after loading audio and supports keyboard seeking.
 **Refresh recording** retries discovery when a recording arrives late. Missing,
 empty, ambiguous, unsafe-path, and request-error states are shown separately.

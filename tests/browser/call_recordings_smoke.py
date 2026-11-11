@@ -2,7 +2,9 @@
 
 python tests/browser/call_recordings_smoke.py http://127.0.0.1:4177
 Requires Playwright Chromium. PLAYWRIGHT_CHROMIUM_EXECUTABLE can select a local
-browser. All API requests are intercepted; non-loopback traffic is blocked.
+browser. An optional second argument supplies a locally generated synthetic WAV
+(e.g. SoX-decoded GSM) instead of the default PCM fixture. Never use caller audio.
+All API requests are intercepted; non-loopback traffic is blocked.
 """
 import io
 import os
@@ -23,7 +25,7 @@ def main():
         wav.setsampwidth(2)
         wav.setframerate(8000)
         wav.writeframes(b'\0\0' * 24000)
-    audio_bytes = buffer.getvalue()
+    audio_bytes = Path(sys.argv[2]).read_bytes() if len(sys.argv) > 2 else buffer.getvalue()
     record = dict(id='synthetic-record', call_id='synthetic-call', caller_number=None,
                   caller_name='Synthetic fixture', start_time='2026-01-01T00:00:00Z',
                   duration_seconds=3, provider_name='synthetic', outcome='completed',

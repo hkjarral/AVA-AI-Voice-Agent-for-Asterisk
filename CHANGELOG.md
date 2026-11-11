@@ -59,7 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Call recording discovery now rejects ambiguous exact-ID matches and symlinks, hides filesystem paths, and handles empty files by codec. Playback and downloads use private snapshots with byte-range support and identical WAV bytes; no catalog or database migration is introduced.
+- Call recording discovery now rejects ambiguous exact-ID matches and symlinks, hides filesystem paths, and handles empty files by codec. Playback and downloads use private snapshots with byte-range support and identical WAV bytes; SoX explicitly decodes GSM/compressed WAV to PCM16 with accurate WAV lengths; no catalog or database migration is introduced.
 
 - Restore Local AI GPU builds with WebSockets 17.4 by packaging the same Python 3.11.15 interpreter in the CUDA builder and runtime images. Keep engine and Local AI WebSockets pins aligned; CUDA and model dependency versions are unchanged.
 - **Deferred transfers:** a deferred blind, attended or live-agent transfer no

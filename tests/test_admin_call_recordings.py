@@ -96,6 +96,7 @@ def test_uppercase_pcm_wav_does_not_require_transcode(tmp_path):
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import os
+import io
 import shutil
 
 from fastapi import FastAPI, Depends
@@ -259,6 +260,10 @@ def test_download_playback_fidelity_and_range(recording_api, suffix):
     assert stream.status_code == download.status_code == legacy.status_code == 200
     assert stream.content == download.content == legacy.content
     assert download.content[:4] == b'RIFF'
+    with wave.open(io.BytesIO(download.content), 'rb') as decoded:
+        assert decoded.getcomptype() == 'NONE'
+        assert decoded.getsampwidth() == 2
+        assert decoded.getnframes() == (160 if suffix == '.ulaw' else 800)
     assert stream.headers['content-disposition'].startswith('inline;')
     assert download.headers['content-disposition'].startswith('attachment;')
     assert download.headers['cache-control'] == 'private, no-store'

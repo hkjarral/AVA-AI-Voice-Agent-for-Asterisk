@@ -841,22 +841,26 @@ def _transcode_recording_to_wav_bytes(recording: Path) -> bytes:
             raw_timeout,
         )
         timeout_sec = 120.0
-    try:
-        result = subprocess.run(
-            [sox, str(recording), "-t", "wav", "-"],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout_sec,
-        )
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=504, detail="Recording transcode timed out")
+    # SoX otherwise preserves GSM encoding inside the WAV container, which
+    # browsers cannot decode. A seekable output also gets accurate WAV lengths.
+    with tempfile.TemporaryDirectory(prefix="aava-recording-decode-") as directory:
+        output = Path(directory) / "decoded.wav"
+        try:
+            result = subprocess.run(
+                [sox, str(recording), "-e", "signed-integer", "-b", "16", str(output)],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=timeout_sec,
+            )
+        except subprocess.TimeoutExpired:
+            raise HTTPException(status_code=504, detail="Recording transcode timed out")
 
-    if result.returncode != 0 or not result.stdout:
-        stderr = result.stderr.decode("utf-8", errors="replace").strip()
-        logger.warning("Failed to transcode recording for playback: %s", stderr)
-        raise HTTPException(status_code=422, detail="Recording file could not be decoded for playback")
-    return result.stdout
+        if result.returncode != 0 or not output.is_file() or output.stat().st_size <= _MIN_VALID_WAV_SIZE:
+            logger.warning("Failed to transcode recording for playback")
+            raise HTTPException(status_code=422, detail="Recording file could not be decoded for playback")
+        return output.read_bytes()
+
 
 
 def _recording_response(recording: Path):
