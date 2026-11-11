@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Admin backend dependencies (#783, #220):** upgrade psutil from 5.9.8 to
+  7.2.2 for system metrics and Local AI hardware recommendations.
 - **Admin frontend tooling (#220, #722):** use Node 22 (minimum 22.12) for
   frontend CI, Docker builds, and local development; upgrade Jest DOM to 7.0.1.
   Preserve the existing ESLint versions, configuration, and warning threshold.
