@@ -9,9 +9,10 @@ NotImplementedError when invoked. Phase 4 will replace these placeholders.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 from ..config import (
@@ -52,10 +53,15 @@ logger = get_logger(__name__)
 
 ComponentFactory = Callable[[str, Dict[str, Any]], Component]
 _PLACEHOLDER_FACTORY_ATTR = "_ava_placeholder_role"
+_ONE_SHOT_CLEANUP_STEP_TIMEOUT_SEC = 2.0
 
 
 class PipelineOrchestratorError(Exception):
     """Raised when the pipeline orchestrator cannot resolve components."""
+
+
+class PipelineSynthesisError(PipelineOrchestratorError):
+    """Raised when a one-shot TTS job is rejected or returns no audio."""
 
 
 @dataclass
@@ -190,6 +196,54 @@ def _make_placeholder_factory(role: str) -> ComponentFactory:
 
     setattr(factory, _PLACEHOLDER_FACTORY_ATTR, role)
     return factory
+
+
+# One-shot synthesis always returns telephony audio. Adapters read the output
+# format from different option shapes: ``format`` (most adapters),
+# ``target_format`` (Google; also ElevenLabs, CambAI, Fish Audio) and the flat
+# ``target_encoding``/``target_sample_rate_hz`` (Azure, local). Set them all.
+_ONE_SHOT_TTS_ENCODING = "mulaw"
+_ONE_SHOT_TTS_SAMPLE_RATE_HZ = 8000
+
+# Runtime option names for a generic ``voice`` and ``language`` per adapter.
+# ``None`` means the adapter has no runtime option for that field.
+_TTS_VOICE_LANGUAGE_KEYS: Tuple[Tuple[type, Optional[str], Optional[str]], ...] = (
+    (GoogleTTSAdapter, "voice", "language_code"),
+    (OpenAITTSAdapter, "voice", None),
+    (GroqTTSAdapter, "voice", None),
+    (ElevenLabsTTSAdapter, "voice_id", None),
+    (CambAiTTSAdapter, "voice_id", "language"),
+    (AzureTTSAdapter, "voice_name", "language"),
+    (FishAudioTTSAdapter, "reference_id", None),
+    # Deepgram Aura voices are model ids; the request uses ``model`` first.
+    (DeepgramTTSAdapter, "model", "language"),
+)
+
+
+def _tts_voice_language_options(
+    component: Component, options: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Map a generic ``voice``/``language`` to the adapter's own option names.
+
+    Adapters not listed receive ``voice`` and ``language`` unchanged. Every
+    other key in ``options`` is ignored, so a caller cannot override the
+    forced output format.
+    """
+    source = options if isinstance(options, dict) else {}
+    voice = str(source.get("voice") or "").strip()
+    language = str(source.get("language") or "").strip()
+    voice_key: Optional[str] = "voice"
+    language_key: Optional[str] = "language"
+    for adapter_cls, mapped_voice, mapped_language in _TTS_VOICE_LANGUAGE_KEYS:
+        if isinstance(component, adapter_cls):
+            voice_key, language_key = mapped_voice, mapped_language
+            break
+    mapped: Dict[str, Any] = {}
+    if voice and voice_key:
+        mapped[voice_key] = voice
+    if language and language_key:
+        mapped[language_key] = language
+    return mapped
 
 
 def _build_default_registry() -> Dict[str, ComponentFactory]:
@@ -526,6 +580,118 @@ class PipelineOrchestrator:
             return text.strip(), self._configured_llm_model(component_key)
         finally:
             await self._shutdown_component(component, call_id)
+
+    async def synthesize_once(
+        self,
+        component_key: str,
+        *,
+        call_id: str,
+        text: str,
+        options: Optional[Dict[str, Any]] = None,
+        timeout_sec: float,
+    ) -> bytes:
+        """Synthesize one utterance as mu-law 8 kHz with one configured TTS.
+
+        Like ``generate_once``, the job uses only the selected component's
+        provider configuration and is isolated from live call pipelines.
+        Unknown, disabled, placeholder and non-TTS components are rejected
+        instead of resolving to another provider. ``options`` may carry a
+        generic ``voice`` and ``language``, mapped to the adapter's own option
+        names. Synthesis is bounded by ``timeout_sec``. Closing and stopping
+        each have a separate bounded budget and finish before the job returns
+        or propagates cancellation. An empty result is an error.
+        """
+        try:
+            role = _extract_role(component_key)
+        except PipelineOrchestratorError:
+            role = ""
+        if role != "tts":
+            raise PipelineSynthesisError(f"TTS provider '{component_key}' is not a TTS component")
+        if self._provider_explicitly_disabled(component_key):
+            raise PipelineSynthesisError(f"TTS provider '{component_key}' is disabled")
+        try:
+            factory = self._resolve_factory(component_key)
+        except PipelineOrchestratorError:
+            factory = None
+        if factory is None or getattr(factory, _PLACEHOLDER_FACTORY_ATTR, None):
+            raise PipelineSynthesisError(
+                f"TTS provider '{component_key}' is unavailable or not configured"
+            )
+        if not str(text or "").strip():
+            raise PipelineSynthesisError("Nothing to synthesize")
+
+        timeout = max(0.1, float(timeout_sec))
+        job_options: Dict[str, Any] = {
+            "format": {"encoding": _ONE_SHOT_TTS_ENCODING, "sample_rate": _ONE_SHOT_TTS_SAMPLE_RATE_HZ},
+            "target_format": {"encoding": _ONE_SHOT_TTS_ENCODING, "sample_rate": _ONE_SHOT_TTS_SAMPLE_RATE_HZ},
+            "target_encoding": _ONE_SHOT_TTS_ENCODING,
+            "target_sample_rate_hz": _ONE_SHOT_TTS_SAMPLE_RATE_HZ,
+            # Google/OpenAI read timeout_sec, Azure/Groq request_timeout_sec,
+            # local response_timeout_sec; the others are bounded below.
+            "timeout_sec": timeout,
+            "request_timeout_sec": timeout,
+            "response_timeout_sec": timeout,
+        }
+        component = factory(component_key, dict(job_options))
+        if not isinstance(component, TTSComponent):
+            raise PipelineSynthesisError(
+                f"TTS provider '{component_key}' did not resolve to a TTS component"
+            )
+        job_options.update(_tts_voice_language_options(component, options))
+
+        async def _run() -> bytes:
+            await component.start()
+            await component.open_call(call_id, job_options)
+            chunks = []
+            async for chunk in component.synthesize(call_id, text, job_options):
+                if chunk:
+                    chunks.append(bytes(chunk))
+            return b"".join(chunks)
+
+        try:
+            audio = await asyncio.wait_for(_run(), timeout=timeout)
+        finally:
+            # Own and drain cleanup independently of the caller's cancellation.
+            # Keep a strong reference and await completion even if cancelled
+            # again; no detached cleanup tasks survive this job.
+            cleanup = asyncio.create_task(self._shutdown_one_shot_component(component, call_id))
+            cancelled = False
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    cancelled = True
+            cleanup.result()
+            if cancelled:
+                raise asyncio.CancelledError
+        if not audio:
+            raise PipelineSynthesisError(f"TTS provider '{component_key}' returned no audio")
+        return audio
+
+    async def _shutdown_one_shot_component(self, component: Component, call_id: str) -> None:
+        """Close a one-shot component, logging failures by exception class only.
+
+        Provider SDK errors can carry request URLs or credentials, so unlike
+        ``_shutdown_component`` this never logs exception text or tracebacks.
+        """
+        component_key = getattr(component, "component_key", type(component).__name__)
+        for step, args in (("close_call", (call_id,)), ("stop", ())):
+            try:
+                await asyncio.wait_for(
+                    getattr(component, step)(*args), timeout=_ONE_SHOT_CLEANUP_STEP_TIMEOUT_SEC
+                )
+            except NotImplementedError:
+                pass
+            except (Exception, asyncio.CancelledError) as exc:
+                # A failed/timed-out close must never skip stop. Adapters must
+                # honor cancellation at their own cleanup deadline.
+                logger.warning(
+                    "One-shot pipeline component shutdown failed",
+                    call_id=call_id,
+                    component_key=component_key,
+                    step=step,
+                    error_type=exc.__class__.__name__,
+                )
 
     def _provider_explicitly_disabled(self, component_key: str) -> bool:
         providers = getattr(self.config, "providers", {}) or {}
