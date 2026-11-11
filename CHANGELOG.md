@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Restore Local AI GPU builds with WebSockets 17.4 by packaging the same Python 3.11.15 interpreter in the CUDA builder and runtime images. Keep engine and Local AI WebSockets pins aligned; CUDA and model dependency versions are unchanged.
+- **AudioSocket inbound audio:** since v5.1.7 a function-local `import audioop`
+  in the AudioSocket audio handler made every earlier `audioop` call fail
+  silently. With it removed, the first-frame "AudioSocket frame probe" logs
+  again and "Inbound PCM guard RMS" reports real levels. The energy barge-in
+  fallback for non-continuous providers, and pipeline barge-in with TALK_DETECT
+  off, react to caller speech again. The first-frame byte-swap check is now
+  log-only, because AudioSocket frame headers define the format and a quiet
+  16 kHz first frame could otherwise swap the whole call. Per-frame DC removal
+  stays disabled, as it has been since v5.1.7, because subtracting each frame's
+  mean adds a frame-edge artifact measured at -15 to -30 dB relative to speech.
 
 ## [7.7.2] - 2026-11-08
 
