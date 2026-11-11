@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Admin backend dependencies (#816):** update FastAPI to 0.162.0, Pydantic to
+  2.14.3, python-multipart to 0.0.33, WebSockets to 17.4, and the bundled
+  FFmpeg decoder package to 0.8.1.
+
 ### Fixed
 
 - **AudioSocket inbound audio:** since v5.1.7 a function-local `import audioop`
