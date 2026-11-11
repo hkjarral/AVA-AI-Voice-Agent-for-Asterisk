@@ -4,7 +4,7 @@ import { Modal } from '../ui/Modal';
 
 // Use the same form and footer in either presentation. Embedded callers keep
 // their existing modal; the Tools page gets a full-width, accessible editor.
-export function ToolEditorSurface({ inline, fallbackFocusRef, testRequestAvailable = true, ...props }: ComponentProps<typeof Modal> & { inline?: boolean; fallbackFocusRef?: RefObject<HTMLElement>; testRequestAvailable?: boolean }) {
+export function ToolEditorSurface({ inline, fallbackFocusRef, testRequestAvailable = true, ...props }: ComponentProps<typeof Modal> & { inline?: boolean; fallbackFocusRef?: RefObject<HTMLElement | null>; testRequestAvailable?: boolean }) {
     const titleRef = useRef<HTMLHeadingElement>(null);
     useEffect(() => {
         if (!inline || !props.isOpen) return;

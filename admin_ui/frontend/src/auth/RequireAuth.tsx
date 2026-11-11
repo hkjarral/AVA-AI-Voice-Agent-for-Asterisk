@@ -4,7 +4,7 @@ import { Loader2 } from 'lucide-react';
 import { useAuth } from './AuthContext';
 import ChangePasswordModal from '../components/auth/ChangePasswordModal';
 
-export const RequireAuth: React.FC<{ children: JSX.Element }> = ({ children }) => {
+export const RequireAuth: React.FC<{ children: React.JSX.Element }> = ({ children }) => {
     const { isAuthenticated, loading, mustChangePassword } = useAuth();
     const location = useLocation();
 
