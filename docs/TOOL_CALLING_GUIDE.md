@@ -319,6 +319,23 @@ For Google, `google_tts` authenticates with an API key or `GOOGLE_APPLICATION_CR
   - Example: `destination: "support_agent"` → dials `target: "6000"`.
 - The engine supports fuzzy matching for common user terms (e.g., `"sales"`, `"support"`, `"6000"`), but for deterministic behavior configure prompts to use destination keys.
 
+**Caller briefing parameters**:
+- `attended_transfer` takes two optional string parameters, `caller_name` and `call_reason`, alongside the required `destination`.
+- The model passes them only when the caller has said their name or reason. The tool description tells it never to guess and never to use caller ID.
+- The tool drops control and format characters (except the joiners U+200C and U+200D, which some scripts need), collapses whitespace, and caps `caller_name` at 80 characters and `call_reason` at 200, cutting at a word boundary. Empty values and common placeholder text (`unknown`, `n/a`, `none`, `not provided`, `not given`, `-`, case-insensitive) are ignored, so the fallbacks apply.
+- They fill `{screened_caller_name}` and `{screened_call_reason}`. `{screened_caller_display}` falls back to `{caller_display}`. `{screened_reason_display}` falls back to the AI-briefing summary, then `{context_name}`. `{caller_name}` keeps meaning the caller ID name.
+- In `ai_briefing` mode, a model-supplied `call_reason` takes priority over the AI summary in `{screened_reason_display}`. The summary stays available as `{screening_summary}`.
+- The default announcement does not use these placeholders, so nothing changes until your `announcement_template` references them (`basic_tts` mode).
+- In `caller_recording` mode the recorded clip is the briefing, and the parameters are ignored.
+- The tool and the engine keep the values out of their own logs and out of tool results. The speech backend receives the rendered announcement text and may log it, so check its log level if the template includes these placeholders. Call history redacts `caller_name` and `call_reason` in `strict` and `show_routing` modes.
+
+```yaml
+tools:
+  attended_transfer:
+    screening_mode: "basic_tts"
+    announcement_template: "Hi, this is Ava. I'm transferring {screened_caller_display} about {screened_reason_display}."
+```
+
 **Recommended context policy**:
 - For predictable behavior, enable either `transfer` or `attended_transfer` per context/pipeline.
 - If you enable both, add an explicit rule in the context prompt describing when to use each.
@@ -1232,6 +1249,7 @@ tools:
     caller_screening_silence_ms: 1200
     accept_digit: "1"
     decline_digit: "2"
+    # {screened_caller_display} / {screened_reason_display} use caller_name / call_reason when given
     announcement_template: "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."
     agent_accept_prompt_template: "Press 1 to accept this transfer, or 2 to decline."
     caller_connected_prompt: "Connecting you now."  # Optional

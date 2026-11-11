@@ -224,9 +224,8 @@ def parse_tool_calls(response: str) -> List[Dict[str, Any]]:
                     "parameters": tool_data.get("arguments", tool_data.get("parameters", {}))
                 })
                 logger.debug(
-                    "Parsed tool call (primary format): tool=%s params=%s",
+                    "Parsed tool call (primary format): tool=%s",
                     tool_data["name"],
-                    tool_data.get("arguments", {})
                 )
         except json.JSONDecodeError as e:
             logger.warning("Failed to parse tool call JSON: %s", e)
@@ -303,9 +302,8 @@ def parse_tool_calls(response: str) -> List[Dict[str, Any]]:
             if tool_hint:
                 tool_calls.append({"name": tool_hint, "parameters": params})
                 logger.debug(
-                    "Parsed tool call (markdown prefix partial): tool=%s params=%s",
+                    "Parsed tool call (markdown prefix partial): tool=%s",
                     tool_hint,
-                    params,
                 )
     except Exception:
         pass
@@ -335,10 +333,9 @@ def parse_tool_calls(response: str) -> List[Dict[str, Any]]:
             "parameters": parameters if isinstance(parameters, dict) else {},
         })
         logger.debug(
-            "Parsed tool call (named tag): tool=%s tag=%s params=%s",
+            "Parsed tool call (named tag): tool=%s tag=%s",
             name,
             tag,
-            parameters if isinstance(parameters, dict) else {},
         )
 
     if tool_calls:
@@ -362,9 +359,8 @@ def parse_tool_calls(response: str) -> List[Dict[str, Any]]:
                     "parameters": tool_data.get("arguments", tool_data.get("parameters", {})),
                 })
                 logger.debug(
-                    "Parsed tool call (adjacent tag): tool=%s params=%s",
+                    "Parsed tool call (adjacent tag): tool=%s",
                     tool_data.get("name"),
-                    tool_data.get("arguments", {}),
                 )
     except Exception:
         # Defensive: never let parsing crash the engine.

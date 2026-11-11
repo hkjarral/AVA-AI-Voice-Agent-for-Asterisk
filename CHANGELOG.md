@@ -22,6 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Attended transfer caller briefing:** `attended_transfer` accepts optional
+  `caller_name` and `call_reason` and uses them to fill the existing
+  `{screened_*}` announcement placeholders. The model is told to pass only what
+  the caller actually said. Values are normalised and capped (80 and 200
+  characters; control and format characters are dropped, but the joiners U+200C
+  and U+200D are kept) and kept out of tool results and out of the tool's and
+  engine's own logs. Placeholder values such as `unknown` or
+  `N/A` are treated as missing. The speech backend receives the rendered
+  announcement text and may log it. Call history now redacts
+  a `call_reason` parameter on any tool, as it already did `caller_name`. In
+  `caller_recording` mode, `attended_transfer` ignores `caller_name` and
+  `call_reason`. The default announcement is unchanged. Local-provider parser
+  debug logs omit tool argument values across all supported wrapper formats.
+
 - **Attended transfer announcement voice:** new optional
   `tools.attended_transfer.tts_provider` (a pipeline TTS component key such as
   `google_tts`) and `tts_options` (`voice`, `language`) let a configured

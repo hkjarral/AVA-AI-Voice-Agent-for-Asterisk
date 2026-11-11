@@ -83,6 +83,7 @@ _PII_PARAMETER_KEYS = {
     "full_name",
     "customer_name",
     "caller_name",
+    "call_reason",
     "contact_name",
     "email",
     "email_address",

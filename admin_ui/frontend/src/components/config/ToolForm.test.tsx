@@ -428,3 +428,22 @@ describe('ToolForm attended transfer announcement voice', () => {
         expect(screen.getByText(/Prompts are spoken by the selected announcement voice/)).toBeInTheDocument();
     });
 });
+
+describe('ToolForm attended transfer announcement placeholders', () => {
+    it('explains that screened_* placeholders come from what the caller told the AI agent during the call', async () => {
+        render(
+            <MemoryRouter><ToolForm
+                config={{ ...baseConfig(), attended_transfer: { enabled: true, screening_mode: 'basic_tts' } }}
+                onChange={vi.fn()}
+            /></MemoryRouter>
+        );
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Help for Agent Announcement Template' }));
+        const tooltip = await screen.findByRole('tooltip');
+        expect(tooltip).toHaveTextContent('{caller_name} is the caller ID name.');
+        expect(tooltip).toHaveTextContent(
+            'The screened_* placeholders are filled from the name and reason the caller told the AI agent during the call'
+        );
+    });
+});
