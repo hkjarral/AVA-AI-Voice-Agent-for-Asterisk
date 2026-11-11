@@ -241,3 +241,39 @@ See [SECURITY.md](../SECURITY.md) section 2.1 for detailed Admin UI security gui
 | Config changes not taking effect | Click "Restart" on the affected container, or run `docker compose restart ai_engine` |
 | Dashboard shows disconnected | Check that `ai_engine` container is running and ARI credentials in `.env` are correct |
 | Stale data after update | Hard refresh (Ctrl+Shift+R) to clear cached frontend assets |
+
+### Call recording playback and download
+
+In **Call History → Call Details**, use **Play recording** or **Download recording**.
+Both require the existing Admin UI login and return the same browser-playable WAV
+representation. ULAW is converted to PCM WAV; GSM and compressed WAV require SoX in
+the Admin UI image. Download does not return the original compressed source file.
+The player shows duration after loading audio and supports keyboard seeking.
+**Refresh recording** retries discovery when a recording arrives late. Missing,
+empty, ambiguous, unsafe-path, and request-error states are shown separately.
+Closing or switching call details cancels pending recording requests and stops audio.
+
+Recordings remain owned by Asterisk under the configured `ASTERISK_RECORDING_PATH`
+(read-only in Admin UI). Discovery supports the flat and `YYYY/MM/DD` layouts and
+requires an exact call-ID token. The date alone never establishes an association.
+Files with the **same directory and filename stem** are considered format variants,
+with WAV preferred over ULAW, then GSM. Different stems/directories for the same ID,
+or duplicate case variants of an extension, are ambiguous: access returns 409
+until the operator resolves the files. Symlinks in the recording path are rejected,
+including links to other files within the mount. API metadata does not expose host
+filesystem paths (`file_path` is retained as null for older clients).
+
+`GET /api/calls/{record_id}/recording/download` returns an attachment; existing
+`/recording/audio` and `/recording.wav` playback routes remain available. All use a
+private request snapshot, support HTTP byte ranges on the WAV representation, and
+set `Cache-Control: private, no-store`. Source files larger than 256 MiB are rejected
+with 413; files changing during the snapshot return 409 and can be retried after
+recording finishes. A missing/deleted call record cannot be used to retrieve audio.
+Deleting history does not delete Asterisk's recording files. In-flight snapshots
+may finish after the original file or history row is deleted, and are removed when
+the response completes or disconnects. Restart discards in-flight requests; fresh
+requests rediscover files. No database migration is required; rollback is code-only.
+
+This is the smaller scope of issue #767. A durable catalog, checksums, background
+reconciliation and new recording-specific permission models remain deferred pending
+evidence and design agreement. There is no change to active calls or recording policy.

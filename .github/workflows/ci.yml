@@ -151,10 +151,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r admin_ui/backend/requirements.txt -r requirements-dev.txt
 
+      - name: Install recording codec fixture dependency
+        run: sudo apt-get update && sudo apt-get install -y sox
+
       - name: Run Admin backend tests
         run: |
           cd admin_ui/backend
-          PYTHONPATH=. pytest tests -q
+          PYTHONPATH=. pytest tests ../../tests/test_admin_call_recordings.py -q
 
   # Frontend checks must gate pull requests. The extended regression workflow
   # only runs after pushes to staging/main, which is too late to stop a broken

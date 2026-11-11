@@ -13,6 +13,9 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import stat
+import tempfile
+from contextlib import contextmanager
 import sys
 import wave
 from datetime import datetime, timedelta, timezone
@@ -22,6 +25,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from zoneinfo import ZoneInfo
 
@@ -707,60 +711,76 @@ _RECORDING_EXTENSIONS = {".wav", ".ulaw", ".gsm"}
 
 
 def _has_exact_call_id(filename: str, call_id: str) -> bool:
-    """Verify the filename contains the exact call_id as a delimited token.
+    """Match a whole identifier token, never a prefix or dotted suffix."""
+    return bool(re.search(rf"(?<![A-Za-z0-9.]){re.escape(call_id)}(?![A-Za-z0-9.])", Path(filename).stem))
 
-    Asterisk recording filenames use the pattern ``...-{epoch}.{seq}.wav``
-    where ``{epoch}.{seq}`` is the channel unique ID (our ``call_id``).
-    A naive ``*call_id*`` glob can false-match when one ID is a prefix of
-    another (e.g. ``.26`` vs ``.265``).  We check that the call_id appears
-    bounded by non-alphanumeric characters (typically ``-`` and ``.wav``).
+
+@contextmanager
+def _open_recording(recording: Path):
+    """Open beneath the trusted mount, refusing links in every component.
+
+    Directory descriptors pin ancestors against rename/replacement races. The
+    caller reads/stats this descriptor, never reopens the verified pathname.
     """
-    import re
-    return bool(re.search(rf"(?<![0-9]){re.escape(call_id)}(?![0-9])", filename))
-
-
-def _is_supported_recording(match: Path) -> bool:
-    return match.suffix.lower() in _RECORDING_EXTENSIONS
+    fds = []
+    try:
+        parts = recording.relative_to(_RECORDING_BASE).parts
+        if not parts or any(p in (".", "..") for p in parts):
+            raise ValueError("Invalid recording path")
+        fd = os.open(_RECORDING_BASE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fds.append(fd)
+        for part in parts[:-1]:
+            fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            fds.append(fd)
+        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        fds.append(fd)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("Not a regular recording")
+        with os.fdopen(os.dup(fd), "rb") as source:
+            yield source
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Recording file not found") from None
+    except (OSError, ValueError):
+        raise HTTPException(status_code=409, detail="Recording path is unavailable or unsafe") from None
+    finally:
+        for fd in reversed(fds):
+            os.close(fd)
 
 
 def _find_recording(call_id: str, start_time=None) -> Optional[Path]:
-    """Find a recording file matching the given Asterisk call_id."""
+    """Search flat and YYYY/MM/DD layouts; never guess between recordings.
+
+    Identical stems in the same directory are format variants (WAV, then ULAW,
+    then GSM). Different stems/directories or duplicate case variants conflict.
+    Date is not an ownership signal, so all supported directories are checked.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_:-]+(?:\.[A-Za-z0-9_:-]+)*", call_id or ""):
+        raise HTTPException(status_code=409, detail="Call identifier cannot be matched safely")
     base = _RECORDING_BASE
-    if not base.is_dir():
+    if not base.exists():
         return None
+    candidates = []
+    try:
+        for pattern in (f"*{call_id}*.*", f"*/*/*/*{call_id}*.*"):
+            for match in base.glob(pattern):
+                if match.suffix.lower() not in _RECORDING_EXTENSIONS or not _has_exact_call_id(match.name, call_id):
+                    continue
+                with _open_recording(match):
+                    pass
+                candidates.append(match)
+    except OSError:
+        raise HTTPException(status_code=409, detail="Recording directory is unavailable") from None
+    if not candidates:
+        return None
+    groups = {(p.parent, p.stem) for p in candidates}
+    if len(groups) != 1 or len({p.suffix.lower() for p in candidates}) != len(candidates):
+        raise HTTPException(status_code=409, detail="Multiple recordings match this call; resolve the ambiguity before playback")
+    priority = {".wav": 0, ".ulaw": 1, ".gsm": 2}
+    return min(candidates, key=lambda p: priority[p.suffix.lower()])
 
-    import glob as _glob_mod
-    safe_id = _glob_mod.escape(call_id)
-    pattern = f"*{safe_id}*.*"
 
-    def _check(match: Path) -> bool:
-        return (
-            match.is_file()
-            and match.resolve().is_relative_to(base.resolve())
-            and _is_supported_recording(match)
-            and _has_exact_call_id(match.name, call_id)
-        )
-
-    # Fast path: date-scoped directory (YYYY/MM/DD)
-    if start_time:
-        dt = start_time if isinstance(start_time, datetime) else datetime.fromisoformat(str(start_time))
-        date_dir = base / dt.strftime("%Y") / dt.strftime("%m") / dt.strftime("%d")
-        if date_dir.is_dir():
-            for match in sorted(date_dir.glob(pattern)):
-                if _check(match):
-                    return match
-
-    # Fallback: root directory (legacy flat layout)
-    for match in sorted(base.glob(pattern)):
-        if _check(match):
-            return match
-
-    # Last resort: recursive search across all date folders
-    for match in sorted(base.glob(f"*/*/*/*{safe_id}*.*")):
-        if _check(match):
-            return match
-
-    return None
+def _recording_empty(recording: Path, size: int) -> bool:
+    return size == 0 or (recording.suffix.lower() == ".wav" and size <= _MIN_VALID_WAV_SIZE)
 
 
 def _ulaw_recording_to_wav_bytes(recording: Path) -> bytes:
@@ -874,55 +894,90 @@ def _recording_response(recording: Path):
 class RecordingInfoResponse(BaseModel):
     has_recording: bool = False
     filename: Optional[str] = None
+    # Kept null for clients that used the old field; never disclose host paths.
     file_path: Optional[str] = None
     file_size_bytes: int = 0
     duration_hint: Optional[str] = None
 
 
-@router.get("/calls/{record_id}/recording", response_model=RecordingInfoResponse)
-async def get_call_recording_info(record_id: str):
-    """Check if a recording exists for a call and return metadata."""
-    store = _get_call_history_store()
-    record = await store.get(record_id)
-    if not record:
-        raise HTTPException(status_code=404, detail="Call record not found")
-
-    recording = _find_recording(record.call_id, record.start_time)
-    if not recording or not recording.is_file():
+def _recording_info(call_id, start_time):
+    recording = _find_recording(call_id, start_time)
+    if not recording:
         return RecordingInfoResponse()
-
-    size = recording.stat().st_size
+    with _open_recording(recording) as source:
+        size = os.fstat(source.fileno()).st_size
     return RecordingInfoResponse(
-        has_recording=True,
-        filename=recording.name,
-        file_path=str(recording),
-        file_size_bytes=size,
-        duration_hint="empty" if size <= _MIN_VALID_WAV_SIZE else None,
+        has_recording=True, filename=recording.name, file_size_bytes=size,
+        duration_hint="empty" if _recording_empty(recording, size) else None,
     )
 
 
-async def _stream_call_recording(record_id: str):
-    """Stream the call recording file for browser playback."""
-    store = _get_call_history_store()
-    record = await store.get(record_id)
+@router.get("/calls/{record_id}/recording", response_model=RecordingInfoResponse)
+async def get_call_recording_info(record_id: str):
+    record = await _get_call_history_store().get(record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Call record not found")
+    return await run_in_threadpool(_recording_info, record.call_id, record.start_time)
 
-    recording = _find_recording(record.call_id, record.start_time)
-    if not recording or not recording.is_file():
+
+class _RecordingFileResponse(FileResponse):
+    """Remove the private snapshot on success, disconnect, or response failure."""
+    def __init__(self, directory, path, filename, download):
+        self.directory = directory
+        super().__init__(
+            path, media_type="audio/wav", filename=filename,
+            content_disposition_type="attachment" if download else "inline",
+            headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
+    async def __call__(self, scope, receive, send):
+        try:
+            # Do not hand a temporary path to a server's deferred pathsend.
+            scope = dict(scope, extensions={k: v for k, v in scope.get("extensions", {}).items() if k != "http.response.pathsend"})
+            await super().__call__(scope, receive, send)
+        finally:
+            self.directory.cleanup()
+
+
+def _prepare_recording(call_id, start_time, download):
+    recording = _find_recording(call_id, start_time)
+    if not recording:
         raise HTTPException(status_code=404, detail="Recording file not found")
+    directory = tempfile.TemporaryDirectory(prefix="aava-recording-")
+    try:
+        snapshot = Path(directory.name) / ("source" + recording.suffix.lower())
+        with _open_recording(recording) as source, snapshot.open("wb") as dest:
+            before = os.fstat(source.fileno())
+            if _recording_empty(recording, before.st_size):
+                raise HTTPException(status_code=404, detail="Recording is empty (no audio captured)")
+            # Bound per-request input and reject growing/actively written files.
+            if before.st_size > 256 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="Recording is too large for browser access")
+            remaining = before.st_size
+            while remaining:
+                chunk = source.read(min(remaining, 1024 * 1024))
+                if not chunk:
+                    raise HTTPException(status_code=409, detail="Recording changed; retry when recording is complete")
+                dest.write(chunk)
+                remaining -= len(chunk)
+            after = os.fstat(source.fileno())
+            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise HTTPException(status_code=409, detail="Recording changed; retry when recording is complete")
+        response = _recording_response(snapshot)
+        if isinstance(response, Response) and not isinstance(response, FileResponse):
+            snapshot = Path(directory.name) / "playback.wav"
+            snapshot.write_bytes(response.body)
+        return _RecordingFileResponse(directory, snapshot, recording.with_suffix(".wav").name, download)
+    except BaseException:
+        directory.cleanup()
+        raise
 
-    # Codec-aware empty detection: the 44-byte threshold is WAV-header
-    # specific. A .ulaw / .gsm recording with 44 bytes of audio is short
-    # but valid; only reject when (a) size==0, or (b) it's a .wav and
-    # the file is at or below the bare WAV header size (CodeRabbit on
-    # PR #396).
-    size = recording.stat().st_size
-    is_wav = recording.suffix.lower() == ".wav"
-    if size == 0 or (is_wav and size <= _MIN_VALID_WAV_SIZE):
-        raise HTTPException(status_code=404, detail="Recording is empty (no audio captured)")
 
-    return _recording_response(recording)
+async def _stream_call_recording(record_id: str, download: bool = False):
+    record = await _get_call_history_store().get(record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Call record not found")
+    return await run_in_threadpool(_prepare_recording, record.call_id, record.start_time, download)
 
 
 @router.get("/calls/{record_id}/recording/audio")
@@ -933,6 +988,12 @@ async def stream_call_recording_audio(record_id: str):
 @router.get("/calls/{record_id}/recording.wav")
 async def stream_call_recording(record_id: str):
     return await _stream_call_recording(record_id)
+
+
+@router.get("/calls/{record_id}/recording/download")
+async def download_call_recording(record_id: str):
+    """Download the same browser-playable WAV representation as playback."""
+    return await _stream_call_recording(record_id, download=True)
 
 
 @router.delete("/calls/{record_id}")
