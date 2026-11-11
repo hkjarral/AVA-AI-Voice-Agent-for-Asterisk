@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Call History deletes and Pipeline/Profile saves/deletes. Preserve confirmations
   and deletion safeguards; failed Pipeline saves now retain the editable draft
   for retry. Editors stay locked until a pending write settles.
+- **Streaming greeting controls (#754):** show saved zero/custom/unset values, keep
+  unsupported controls read-only, and explain ExternalMedia provider versus pipeline
+  applicability using configured Agent routes. Preserve YAML and runtime behavior.
 
 - **Admin backend dependencies (#783, #220):** upgrade psutil from 5.9.8 to
   7.2.2 for system metrics and Local AI hardware recommendations.
