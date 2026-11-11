@@ -759,6 +759,12 @@ Notes:
 
 - google_llm.system_instruction/system_prompt: Persona; if missing, adapter falls back to `llm.prompt`.
 - google_tts/tts fields: voice, language, audio encoding/sample rate, target format.
+- google_tts/stt/llm authentication (pipelines):
+  - Credentials: an API key from `providers.google` (`api_key`, `api_key_file` or `api_key_env`) or the `GOOGLE_API_KEY` environment variable, sent as the `key` query parameter; otherwise a service-account JSON key file named by `GOOGLE_APPLICATION_CREDENTIALS`. An API key wins when both exist.
+  - The engine sets `GOOGLE_APPLICATION_CREDENTIALS` to `/app/project/secrets/gcp-service-account.json` when that file exists and the variable is unset or points to a missing file.
+  - `providers.google.credentials_path`, Application Default Credentials and the Vertex AI settings (`vertex_project`, `vertex_location`, which belong to `google_live`) are not used to authenticate the pipeline adapters.
+  - With neither credential, `google_stt` and `google_tts` are not registered, so `google_tts` is rejected as a `tts_provider`.
+  - Google Cloud: the Cloud Text-to-Speech API must be enabled for the project. Google publishes no predefined IAM role for Text-to-Speech, and `text:synthesize` requires only the `cloud-platform` OAuth scope, so the service account needs no extra role. See [Provider-Google-Setup.md](Provider-Google-Setup.md).
 - google_stt/stt fields: encoding, language, model, sampleRateHertz.
 
 ### Groq Speech (pipelines)
@@ -943,6 +949,13 @@ contexts:
     prompt: "You are a helpful support agent."
     background_music: "ambient"  # MOH class name
 ```
+
+## Attended transfer (`tools.attended_transfer`)
+
+- tools.attended_transfer.tts_provider: Optional pipeline TTS component key (`google_tts`, `deepgram_tts`, `openai_tts`, `elevenlabs_tts`, `groq_tts`, `azure_tts`, `cambai_tts`, `fishaudio_tts` or a custom Fish Audio `*_tts` instance) that speaks every attended-transfer prompt. The provider must be configured under `providers:` with working credentials. Default: unset, so Local AI Server speaks every prompt. Fails closed: an unknown, disabled or unconfigured provider, an error, empty audio or a timeout never falls back to Local AI Server or another provider. The accept prompt, and the announcement in `basic_tts` and `caller_recording`, is synthesized before dialling; if that fails, no call is placed to the destination and the AI continues with the caller. In `ai_briefing` the intro and briefing are synthesized after the destination answers (see `docs/TOOL_CALLING_GUIDE.md`). Adding or changing a TTS provider needs an AI Engine restart before attended transfers can use it; a config reload is not enough.
+- tools.attended_transfer.tts_options: Optional, used only with `tts_provider`; ignored without it. Keys: `voice` (provider voice name, for example `en-US-Chirp3-HD-Charon`) and `language` (for example `en-US`). Omitted keys fall back to the provider block's own voice and language. Default: unset.
+
+See `docs/TOOL_CALLING_GUIDE.md` for the other attended-transfer keys.
 
 ## Environment Variable Resolution
 
