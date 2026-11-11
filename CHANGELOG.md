@@ -35,6 +35,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Attended transfer destination hangup:** behavior change. A destination that
+  answers and hangs up before accepting no longer ends the caller's call. AVA
+  treats it as a decline: MOH stops, the AI resumes, the failure is recorded as
+  `target-hangup` (or `declined` if the decline digit came first), and
+  non-Google providers play `caller_declined_prompt`.
+  Accepted legs, onward-transfer replacement and pickup ownership are unchanged.
+  The screening handler no longer fails on a cancelled DTMF wait when the leg is
+  retired. Late AI briefing generation or persistence cannot recreate a cleared
+  transfer, interrupt caller recovery, or start playback for a retired attempt.
+  Hangup classification uses the call's captured decline digit across config
+  reloads, matching the answer handler and failure recovery.
+  The final frontend gate now waits for A2A validation and the restored Save &
+  Apply control instead of racing the editor's closing state.
+
 - **Attended transfer settings:** the answer handler and failure recovery now
   retain settings from the call-start tool snapshot when available. Calls without
   a snapshot keep the existing generation/global configuration fallback. Helper
