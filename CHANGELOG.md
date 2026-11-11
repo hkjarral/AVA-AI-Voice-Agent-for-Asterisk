@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Admin frontend tooling (#220, #722):** use Node 22 (minimum 22.12) for
   frontend CI, Docker builds, and local development; upgrade Jest DOM to 7.0.1.
   Preserve the existing ESLint versions, configuration, and warning threshold.
+### Security
+
+- Update the Admin frontend lockfile to follow-redirects 1.16.3, preserving
+  custom sensitive-header handling across JavaScript realms when Node clients
+  follow redirects (GHSA-mrwp-f3q8-3g9p).
+
 ### Added
 
 - **Attended transfer announcement voice:** new optional
