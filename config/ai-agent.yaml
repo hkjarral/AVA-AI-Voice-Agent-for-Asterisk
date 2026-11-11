@@ -949,6 +949,9 @@ tools:
     deferred_strategy: drain_then_dial
     deferred_audio_drain_timeout_sec: 15
     deferred_audio_drain_quiet_ms: 500
+    # Commit an armed transfer when no reply audio starts within this many
+    # seconds of the tool result (0 disables).
+    deferred_silent_commit_timeout_sec: 4
     predial_bridge_wait_timeout_sec: 10
     predial_timeout_seconds: 30
     predial_wait_moh_class: default

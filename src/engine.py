@@ -692,6 +692,10 @@ class Engine:
         self._outbound_forced_hangup_tasks: Dict[str, asyncio.Task] = {}
         self._deferred_predial_forced_hangup_tasks: Dict[str, asyncio.Task] = {}
         self._deferred_transfer_recovery_tasks: Dict[str, asyncio.Task] = {}
+        # Silent-reply watchdog per call: {"action_id": ..., "task": asyncio.Task}.
+        self._deferred_transfer_watchdogs: Dict[str, Dict[str, Any]] = {}
+        # Action ids with a commit in flight per call, so a late re-arm is ignored.
+        self._deferred_transfer_commit_actions: Dict[str, List[Any]] = {}
         # Local TTS farewells are a two-step exchange: execute hangup_call,
         # then wait for Local AI Server to synthesize the tool's farewell.
         # Keep that boundary separate from cleanup_after_tts so a stale
@@ -11141,6 +11145,8 @@ class Engine:
                 if deferred_recovery and not deferred_recovery.done():
                     deferred_recovery.cancel()
                 self._deferred_transfer_commit_locks.pop(call_id, None)
+                self._stand_down_deferred_transfer_watchdog(call_id, reason="call_cleanup")
+                (getattr(self, "_deferred_transfer_commit_actions", None) or {}).pop(call_id, None)
                 state = getattr(self, "_transfer_handoffs", {}).pop(call_id, None)
                 if state:
                     state.cancel()
@@ -14998,6 +15004,13 @@ class Engine:
             self._observe_transfer_handoff(call_id, session, event)
             if etype in {"HandoffPrepared", "HandoffToolResultSent", "HandoffTranscript", "HandoffAudioComplete"}:
                 return
+            if etype == "DeferredTransferArmed":
+                self._arm_deferred_transfer_watchdog(call_id, session, event.get("action_id"))
+                return
+            if call_id in (getattr(self, "_deferred_transfer_watchdogs", None) or {}):
+                self._note_deferred_transfer_caller_speech(call_id, etype, event)
+            if etype == "CallerSpeechStopped":
+                return
 
             # Normalize provider-native caller activity before any barge-in guards.
             # A speech-start event is useful to the inactivity watchdog even when
@@ -15217,6 +15230,10 @@ class Engine:
                 chunk: bytes = event.get("data") or b""
                 if not chunk:
                     return
+                if call_id in (getattr(self, "_deferred_transfer_watchdogs", None) or {}):
+                    # Reply audio started after the tool result was sent; its
+                    # AgentAudioDone owns the commit unless a barge-in cuts it.
+                    self._pause_deferred_transfer_watchdog(call_id, "agent_speaking")
                 if self._provider_audio_blocked_by_transfer_commit(call_id, session):
                     # The handoff line has finished and the transfer is
                     # draining. New provider speech here is a follow-up turn
@@ -22965,6 +22982,222 @@ class Engine:
                         action_id=action_id, reason=state.reason)
         return ready
 
+    def _deferred_transfer_silent_commit_timeout(self, session: Optional["CallSession"]) -> float:
+        """Seconds to wait for reply audio after a deferred transfer is armed; 0 disables."""
+        tools_cfg = (self._tool_config_for_session(session).get("tools") or {})
+        transfer_cfg = tools_cfg.get("transfer", {}) if isinstance(tools_cfg, dict) else {}
+        if not isinstance(transfer_cfg, dict):
+            transfer_cfg = {}
+        try:
+            timeout_sec = float(transfer_cfg.get("deferred_silent_commit_timeout_sec", 4.0))
+        except (TypeError, ValueError):
+            timeout_sec = 4.0
+        if not math.isfinite(timeout_sec):
+            timeout_sec = 4.0
+        return max(0.0, min(timeout_sec, 30.0))
+
+    # A caller-speech start from a provider that reports the matching end
+    # pauses the timer; this backstop bounds a pause whose end never arrives.
+    _DEFERRED_TRANSFER_CALLER_SPEECH_BACKSTOP_SEC = 30.0
+
+    def _arm_deferred_transfer_watchdog(self, call_id: str, session: "CallSession", action_id: Any) -> None:
+        """Bound the wait for the reply turn that commits a deferred transfer.
+
+        Armed when the provider has delivered the tool result to the model.
+        AgentAudioDone commits the action, but a provider that sends no audio
+        after the tool result never emits one, so the caller would wait in the
+        AI bridge with the transfer armed. Announcement actions keep their own
+        start timeout and pipelines commit inline, so neither is watched.
+        """
+        watchdogs = getattr(self, "_deferred_transfer_watchdogs", None)
+        if watchdogs is None:
+            watchdogs = self._deferred_transfer_watchdogs = {}
+        current = watchdogs.get(call_id)
+        if current and current["action_id"] == action_id:
+            return  # A suppressed duplicate request reports the same action again.
+        if action_id and self._deferred_transfer_commit_in_flight(call_id, action_id):
+            return  # Already committing; a second timer would retry that commit.
+        pending = getattr(session, "pending_deferred_transfer", None)
+        if (
+            not action_id
+            or not isinstance(pending, dict)
+            or pending.get("id") != action_id
+            or pending.get("handoff")
+            or getattr(session, "pipeline_name", None)
+        ):
+            return
+        self._stand_down_deferred_transfer_watchdog(call_id, reason="replaced")
+        timeout_sec = self._deferred_transfer_silent_commit_timeout(session)
+        if timeout_sec <= 0:
+            return
+        entry: Dict[str, Any] = {
+            "action_id": action_id,
+            "task": None,
+            "timeout_sec": timeout_sec,
+            "state": "waiting",
+            "caller_vad_speaking": False,
+        }
+        watchdogs[call_id] = entry
+        self._restart_deferred_transfer_watchdog_timer(call_id, entry, timeout_sec)
+
+    def _restart_deferred_transfer_watchdog_timer(
+        self, call_id: str, entry: Dict[str, Any], delay_sec: float,
+    ) -> None:
+        task = entry.get("task")
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+        entry["task"] = self._fire_and_forget_for_call(
+            call_id,
+            self._run_deferred_transfer_watchdog(call_id, entry["action_id"], delay_sec),
+            name=f"deferred-transfer-watchdog-{call_id}",
+        )
+
+    def _pause_deferred_transfer_watchdog(self, call_id: str, state: str) -> None:
+        """Hold the timer while the agent or the caller is speaking."""
+        entry = (getattr(self, "_deferred_transfer_watchdogs", None) or {}).get(call_id)
+        if not entry or entry["state"] == state:
+            return
+        entry["state"] = state
+        if state == "caller_speaking":
+            # The full timeout restarts when the caller's speech ends.
+            self._restart_deferred_transfer_watchdog_timer(
+                call_id, entry,
+                max(entry["timeout_sec"], self._DEFERRED_TRANSFER_CALLER_SPEECH_BACKSTOP_SEC),
+            )
+            return
+        task = entry.get("task")
+        entry["task"] = None
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    def _note_deferred_transfer_caller_speech(self, call_id: str, etype: Any, event: Dict[str, Any]) -> None:
+        """Keep the silent-reply timer from committing over the caller.
+
+        Provider VAD holds the model's reply while the caller talks, so caller
+        speech must not count as model silence. OpenAI Realtime, Grok and
+        Deepgram report a start and an end (``CallerSpeechStarted`` with
+        ``vad`` set, then ``CallerSpeechStopped``): the timer pauses on the
+        start and restarts at the full timeout on the end. Other providers
+        report only activity (Google Live input transcription fragments,
+        ElevenLabs interruptions, ElevenLabs and local user transcripts), so
+        each signal restarts
+        the full timeout. An explicit barge-in while the agent is speaking means
+        the reply was cut, so the timer resumes instead of waiting for an
+        AgentAudioDone that may never come.
+        """
+        entry = (getattr(self, "_deferred_transfer_watchdogs", None) or {}).get(call_id)
+        if not entry:
+            return
+        state = entry["state"]
+        vad = bool(event.get("vad"))
+        if etype == "CallerSpeechStarted" and vad:
+            entry["caller_vad_speaking"] = True
+            if state == "waiting":
+                self._pause_deferred_transfer_watchdog(call_id, "caller_speaking")
+            return
+        if etype == "CallerSpeechStopped":
+            entry["caller_vad_speaking"] = False
+            if state in ("caller_speaking", "waiting"):
+                entry["state"] = "waiting"
+                self._restart_deferred_transfer_watchdog_timer(call_id, entry, entry["timeout_sec"])
+            return
+        if etype in ("ProviderBargeIn", "interruption"):
+            if state == "agent_speaking":
+                if entry["caller_vad_speaking"]:
+                    self._pause_deferred_transfer_watchdog(call_id, "caller_speaking")
+                else:
+                    entry["state"] = "waiting"
+                    self._restart_deferred_transfer_watchdog_timer(call_id, entry, entry["timeout_sec"])
+            elif state == "waiting":
+                self._restart_deferred_transfer_watchdog_timer(call_id, entry, entry["timeout_sec"])
+            return
+        activity = etype in ("CallerSpeechStarted", "UserStartedSpeaking")
+        if etype == "ConversationText" and str(event.get("role") or "").lower() == "user":
+            activity = bool(str(event.get("text") or event.get("content") or "").strip())
+        elif etype == "transcript" and str(event.get("role") or "user").lower() == "user":
+            text = str(event.get("text") or "").strip()
+            activity = bool(text) and text != "..."
+        if activity and state == "waiting":
+            self._restart_deferred_transfer_watchdog_timer(call_id, entry, entry["timeout_sec"])
+
+    def _deferred_transfer_commit_in_flight(self, call_id: str, action_id: Any) -> bool:
+        claims = (getattr(self, "_deferred_transfer_commit_actions", None) or {}).get(call_id) or ()
+        return action_id in claims
+
+    def _claim_deferred_transfer_commit(self, call_id: str, action_id: Any) -> None:
+        claims = getattr(self, "_deferred_transfer_commit_actions", None)
+        if claims is None:
+            claims = self._deferred_transfer_commit_actions = {}
+        claims.setdefault(call_id, []).append(action_id)
+
+    def _release_deferred_transfer_commit(self, call_id: str, action_id: Any) -> None:
+        claims = getattr(self, "_deferred_transfer_commit_actions", None) or {}
+        held = claims.get(call_id)
+        if held and action_id in held:
+            held.remove(action_id)
+        if not held:
+            claims.pop(call_id, None)
+
+    def _stand_down_deferred_transfer_watchdog(
+        self, call_id: str, *, reason: str, action_id: Any = None,
+    ) -> None:
+        watchdogs = getattr(self, "_deferred_transfer_watchdogs", None) or {}
+        entry = watchdogs.get(call_id)
+        if not entry or (action_id is not None and entry["action_id"] != action_id):
+            return
+        watchdogs.pop(call_id, None)
+        task = entry.get("task")
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+        logger.debug(
+            "Deferred transfer watchdog stood down",
+            call_id=call_id, action_id=entry["action_id"], reason=reason,
+        )
+
+    async def _run_deferred_transfer_watchdog(self, call_id: str, action_id: Any, timeout_sec: float) -> None:
+        await asyncio.sleep(timeout_sec)
+        watchdogs = getattr(self, "_deferred_transfer_watchdogs", None) or {}
+        entry = watchdogs.get(call_id)
+        if not entry or entry["action_id"] != action_id or entry.get("task") is not asyncio.current_task():
+            return
+        # Claim before any await: reply audio or a re-arm arriving from here on
+        # finds no watchdog to cancel and an in-flight commit to respect, so
+        # this task cannot die mid-commit or be duplicated.
+        watchdogs.pop(call_id, None)
+        self._claim_deferred_transfer_commit(call_id, action_id)
+        try:
+            session = await self.session_store.get_by_call_id(call_id)
+            pending = getattr(session, "pending_deferred_transfer", None) if session else None
+            if (
+                not session
+                or getattr(session, "cleanup_in_progress", False)
+                or getattr(session, "cleanup_completed", False)
+                or not isinstance(pending, dict)
+                or pending.get("id") != action_id
+            ):
+                logger.debug(
+                    "Deferred transfer watchdog stood down",
+                    call_id=call_id, action_id=action_id, reason="action_changed",
+                )
+                return
+            if self._provider_audio_blocked_by_transfer_commit(call_id, session):
+                return  # Another trigger is already committing this exact action.
+            logger.warning(
+                "deferred_transfer_watchdog_commit",
+                call_id=call_id,
+                action_id=action_id,
+                source_tool=pending.get("source_tool"),
+                timeout_sec=timeout_sec,
+                state=entry["state"],
+            )
+            # Same path and exact-action guard as AgentAudioDone: the per-call lock
+            # and expected_action_id make a racing trigger a no-op.
+            await self._commit_pending_deferred_transfer_for_call(
+                call_id, session, expected_action_id=action_id,
+            )
+        finally:
+            self._release_deferred_transfer_commit(call_id, action_id)
+
     def _provider_audio_blocked_by_transfer_commit(
         self,
         call_id: str,
@@ -23009,6 +23242,11 @@ class Engine:
             expected_action_id = action.get("id") if isinstance(action, dict) else None
         if expected_action_id is None:
             return None
+        # Another trigger owns this action now; its silent-reply timer is moot,
+        # and a late re-arm for it must not start another one.
+        self._stand_down_deferred_transfer_watchdog(
+            call_id, reason="commit_started", action_id=expected_action_id,
+        )
         # Register this attempt for the whole commit, including the audio
         # drain wait, so on_provider_event drops provider speech that starts
         # after the handoff line. The inner routine stamps the action id once
@@ -23020,11 +23258,13 @@ class Engine:
             self._deferred_transfer_committing = committing
         marker: Dict[str, Any] = {"action_id": None}
         committing.setdefault(call_id, []).append(marker)
+        self._claim_deferred_transfer_commit(call_id, expected_action_id)
         try:
             return await self._commit_pending_deferred_transfer_for_call_inner(
                 call_id, session, commit_marker=marker, expected_action_id=expected_action_id,
             )
         finally:
+            self._release_deferred_transfer_commit(call_id, expected_action_id)
             markers = committing.get(call_id) or []
             if marker in markers:
                 markers.remove(marker)

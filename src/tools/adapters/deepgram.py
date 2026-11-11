@@ -7,7 +7,7 @@ Handles translation between unified tool format and Deepgram's function calling 
 from typing import Dict, Any, List, Optional
 from src.tools.registry import ToolRegistry
 from src.tools.context import ToolExecutionContext
-from src.tools.adapters.sanitize import sanitize_tool_result_for_json_string
+from src.tools.adapters.sanitize import notify_result_not_sent, sanitize_tool_result_for_json_string
 import structlog
 import json
 
@@ -216,6 +216,7 @@ class DeepgramToolAdapter:
         websocket = context.get('websocket')
         if not websocket:
             logger.error("No websocket in context, cannot send tool result")
+            await notify_result_not_sent(result, context)
             return
         
         # Extract function_call_id and function_name from result
@@ -224,10 +225,12 @@ class DeepgramToolAdapter:
         
         if not function_call_id:
             logger.error("No function_call_id in result, cannot send response")
+            await notify_result_not_sent(result, context)
             return
         
         if not function_name:
             logger.error("No function_name in result, cannot send response")
+            await notify_result_not_sent(result, context)
             return
         
         # Build response per actual Deepgram spec

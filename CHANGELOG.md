@@ -35,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Deferred transfers:** a deferred blind, attended or live-agent transfer no
+  longer waits forever when the model sends no audio after the tool result. The
+  new `tools.transfer.deferred_silent_commit_timeout_sec` (default 4 s, 0
+  disables, Admin UI field) commits it through the normal path. The timer starts
+  once the tool result has been sent to the model, pauses while the caller is
+  talking and restarts after a barge-in that cuts the reply. Behaviour changes
+  only when no reply audio follows; handoff announcements and pipelines are
+  unchanged.
+
 - **Attended transfer destination hangup:** behavior change. A destination that
   answers and hangs up before accepting no longer ends the caller's call. AVA
   treats it as a decline: MOH stops, the AI resumes, the failure is recorded as
@@ -61,6 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Admin frontend dependencies (#823):** retain React Refresh ESLint plugin
   0.4.x with ESLint 8 so clean frontend installs succeed. Keep the ESLint 9/10
   migration separate from the compatible dependency updates.
+
 - **AudioSocket inbound audio:** since v5.1.7 a function-local `import audioop`
   in the AudioSocket audio handler made every earlier `audioop` call fail
   silently. With it removed, the first-frame "AudioSocket frame probe" logs
