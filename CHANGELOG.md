@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Call History authenticated WAV downloads and recording refresh/error states, with request cancellation and audio/URL cleanup when leaving call details (Refs #767).
+
 - **Attended transfer caller briefing:** `attended_transfer` accepts optional
   `caller_name` and `call_reason` and uses them to fill the existing
   `{screened_*}` announcement placeholders. The model is told to pass only what
@@ -56,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GET /api/config/providers/tts-options`.
 
 ### Fixed
+
+- Call recording discovery now rejects ambiguous exact-ID matches and symlinks, hides filesystem paths, and handles empty files by codec. Playback and downloads use private snapshots with byte-range support and identical WAV bytes; SoX explicitly decodes GSM/compressed WAV to PCM16 with accurate WAV lengths; no catalog or database migration is introduced.
 
 - Restore Local AI GPU builds with WebSockets 17.4 by packaging the same Python 3.11.15 interpreter in the CUDA builder and runtime images. Keep engine and Local AI WebSockets pins aligned; CUDA and model dependency versions are unchanged.
 - **Deferred transfers:** a deferred blind, attended or live-agent transfer no
