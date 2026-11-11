@@ -296,6 +296,7 @@ migration is required. Existing in-memory sessions are not recovered on restart.
 - A configured `tts_provider` fails closed: there is no fallback to Local AI Server or to another provider. The accept prompt (and the announcement in `basic_tts` and `caller_recording`) is synthesized before dialling, while the caller hears hold music. If that synthesis fails, the music stops, no call is placed to the destination and the AI carries on with the caller. In `basic_tts`, the commit returns a failure. In `caller_recording`, the tool has already acknowledged initiation with success; its background workflow invokes engine recovery instead of changing that tool result.
 - `ai_briefing` still needs Local AI Server LLM capability to write the briefing. Only the speaking moves to `tts_provider`.
 - Config compatibility: `agent_accept_prompt_template` is the canonical key; `agent_accept_prompt` is accepted as a legacy alias.
+- Settings are fixed per call at call start, so a config reload applies to the next call, not a transfer in progress. Helper RTP bind settings are process-wide and need a restart. Keys: [Configuration-Reference](Configuration-Reference.md#attended-transfer-toolsattended_transfer).
 
 #### Announcement voice (`tts_provider`)
 

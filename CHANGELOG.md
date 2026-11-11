@@ -35,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Attended transfer settings:** the answer handler and failure recovery now
+  retain settings from the call-start tool snapshot when available. Calls without
+  a snapshot keep the existing generation/global configuration fallback. Helper
+  RTP bind settings remain process-wide; unavailable binds or helper startup
+  failures still follow `stream_fallback_to_file`. Inherited helper advertise addresses follow the
+  active server bind across reloads, while explicit NAT addresses are preserved.
+  Failed RTP socket setup releases its reserved port and closes any created socket,
+  so repeated bind failures cannot exhaust the shared range for later calls.
+
 - **Admin frontend dependencies (#823):** retain React Refresh ESLint plugin
   0.4.x with ESLint 8 so clean frontend installs succeed. Keep the ESLint 9/10
   migration separate from the compatible dependency updates.
