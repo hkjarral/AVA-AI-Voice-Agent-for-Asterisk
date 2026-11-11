@@ -155,6 +155,14 @@ LOCAL_WS_URL=ws://127.0.0.1:8765
 
 The GPU compose file (`docker-compose.gpu.yml`) builds a CUDA-enabled `local_ai_server` image using `Dockerfile.gpu`:
 
+The GPU image packages Python 3.11.15 in both build and runtime stages because
+WebSockets 17.4 requires Python 3.11 or newer. It retains CUDA 12.4.1/cuDNN and
+does not use Ubuntu 22.04's Python 3.10. A digest-pinned uv bootstrap downloads
+the managed interpreter during the build; the runtime contains the interpreter
+and venv at the same paths, without requiring uv or host Python. Both stages
+point Python TLS at Ubuntu's maintained CA bundle. Native GPU
+inference still requires the NVIDIA driver/toolkit and separate hardware testing.
+
 > AVA's supported GPU image is NVIDIA CUDA-only. AMD/ROCm and Apple Metal are
 > not currently implemented by the Docker deployment path; those hosts must use
 > CPU mode unless they maintain a custom inference server.

@@ -49,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Restore Local AI GPU builds with WebSockets 17.4 by packaging the same Python 3.11.15 interpreter in the CUDA builder and runtime images. Keep engine and Local AI WebSockets pins aligned; CUDA and model dependency versions are unchanged.
 - **Deferred transfers:** a deferred blind, attended or live-agent transfer no
   longer waits forever when the model sends no audio after the tool result. The
   new `tools.transfer.deferred_silent_commit_timeout_sec` (default 4 s, 0
