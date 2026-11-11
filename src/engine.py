@@ -9104,6 +9104,85 @@ class Engine:
             logger.debug("Local AI Server TTS failed", call_id=call_id, exc_info=True)
             return None
 
+    async def _attended_transfer_tts(
+        self,
+        *,
+        call_id: str,
+        text: str,
+        timeout_sec: float,
+        attended_cfg: Optional[Dict[str, Any]],
+        session: Optional[CallSession] = None,
+    ) -> Optional[bytes]:
+        """Synthesize mu-law 8 kHz attended-transfer audio.
+
+        Without ``tools.attended_transfer.tts_provider`` this is exactly the
+        Local AI Server path. With it, the named pipeline TTS component is
+        used through ``synthesize_once``. A failure returns None so the call
+        site keeps its existing abort or skip behaviour; it never falls back
+        to Local AI Server or another provider. Errors are logged by class
+        only because provider errors can carry URLs or credentials.
+        """
+        cfg = self._attended_transfer_tts_cfg(session, attended_cfg)
+        provider = str(cfg.get("tts_provider") or "").strip()
+        if not provider:
+            return await self._local_ai_server_tts(call_id=call_id, text=text, timeout_sec=timeout_sec)
+
+        orchestrator = getattr(self, "pipeline_orchestrator", None)
+        if orchestrator is None or not hasattr(orchestrator, "synthesize_once"):
+            logger.warning(
+                "attended_transfer_tts_failed",
+                call_id=call_id,
+                provider=provider,
+                error_type="OrchestratorUnavailable",
+            )
+            return None
+        tts_options = cfg.get("tts_options") if isinstance(cfg.get("tts_options"), dict) else None
+        timeout = max(0.1, float(timeout_sec))
+        try:
+            # The orchestrator owns the synthesis deadline and a separate
+            # cleanup budget. An outer deadline would discard valid audio
+            # while close_call/stop are still finishing.
+            audio = await orchestrator.synthesize_once(
+                provider,
+                call_id=f"attended-transfer:{call_id}",
+                text=text,
+                options=tts_options,
+                timeout_sec=timeout,
+            )
+        except Exception as exc:
+            logger.warning(
+                "attended_transfer_tts_failed",
+                call_id=call_id,
+                provider=provider,
+                error_type=exc.__class__.__name__,
+            )
+            return None
+        return audio or None
+
+    def _attended_transfer_tts_cfg(
+        self,
+        session: Optional[CallSession],
+        attended_cfg: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Return attended_cfg with ``tts_provider``/``tts_options`` from the call.
+
+        The tool prepares audio with the call's own tool config (including the
+        agent's ``tool_configs``), so the answer-time sites must use the same
+        two keys or the prepared audio is discarded. Without a session the
+        passed config is used as is.
+        """
+        cfg = dict(attended_cfg) if isinstance(attended_cfg, dict) else {}
+        if session is None:
+            return cfg
+        per_call = (self._tool_config_for_session(session).get("tools") or {}).get("attended_transfer")
+        per_call = per_call if isinstance(per_call, dict) else {}
+        for key in ("tts_provider", "tts_options"):
+            if key in per_call:
+                cfg[key] = per_call[key]
+            else:
+                cfg.pop(key, None)
+        return cfg
+
     async def _authenticate_local_ai_server_ws(
         self,
         *,
@@ -9196,6 +9275,183 @@ class Engine:
         except Exception:
             logger.debug("Failed to play ulaw bytes on channel", channel_id=channel_id, exc_info=True)
             return None
+
+    def _render_attended_transfer_texts(
+        self,
+        session: CallSession,
+        attended_cfg: Dict[str, Any],
+        *,
+        effective_screening_mode: str,
+        screening_payload: Optional[Dict[str, Any]],
+        template_vars: Dict[str, Any],
+    ) -> Tuple[str, str]:
+        """Return the agent announcement and accept prompt for one attempt."""
+        default_announcement_template = "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."
+        if effective_screening_mode == "caller_recording" and screening_payload and screening_payload.get("kind") == "caller_recording":
+            default_announcement_template = "Hi, this is Ava. Here is the caller's screening."
+
+        if effective_screening_mode == "ai_briefing":
+            announcement_template = str(
+                attended_cfg.get("ai_briefing_intro_template")
+                or "Hi, this is Ava. Here is a short summary of the caller."
+            )
+        else:
+            announcement_template = str(attended_cfg.get("announcement_template", default_announcement_template) or "")
+        prompt_template = str(
+            (
+                attended_cfg.get("agent_accept_prompt_template")
+                if "agent_accept_prompt_template" in attended_cfg
+                else attended_cfg.get("agent_accept_prompt")
+            )
+            or "Press 1 to accept this transfer, or 2 to decline."
+        )
+
+        # Treat blank templates as "use defaults" (UI may persist empty strings).
+        if not announcement_template.strip():
+            if effective_screening_mode == "caller_recording" and screening_payload and screening_payload.get("kind") == "caller_recording":
+                announcement_template = "Hi, this is Ava. Here is the caller's screening."
+            elif effective_screening_mode == "ai_briefing":
+                announcement_template = "Hi, this is Ava. Here is a short summary of the caller."
+            else:
+                announcement_template = "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."
+        if not prompt_template.strip():
+            prompt_template = "Press 1 to accept, or 2 to decline."
+
+        announcement_text = self._apply_prompt_template_substitution(
+            announcement_template,
+            session,
+            extra_substitutions=template_vars,
+        )
+        prompt_text = self._apply_prompt_template_substitution(
+            prompt_template,
+            session,
+            extra_substitutions=template_vars,
+        )
+        return announcement_text, prompt_text
+
+    def _pre_synthesized_attended_audio(
+        self,
+        session: CallSession,
+        kind: str,
+        text: str,
+        attended_cfg: Optional[Dict[str, Any]],
+    ) -> Optional[bytes]:
+        """Return audio prepared before dialling when provider and text still match."""
+        cfg = self._attended_transfer_tts_cfg(session, attended_cfg)
+        provider = str(cfg.get("tts_provider") or "").strip()
+        if not provider:
+            return None
+        action = getattr(session, "current_action", None)
+        prepared = action.get("_pre_audio") if isinstance(action, dict) else None
+        entry = prepared.get(kind) if isinstance(prepared, dict) else None
+        if not isinstance(entry, dict) or entry.get("provider") != provider or entry.get("text") != text:
+            return None
+        audio = entry.get("audio")
+        return bytes(audio) if audio else None
+
+    async def prepare_attended_transfer_audio(
+        self,
+        *,
+        call_id: str,
+        destination_description: str,
+        attended_cfg: Optional[Dict[str, Any]],
+        attempt: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Synthesize attended-transfer audio before the agent leg is dialled.
+
+        Runs only when ``tts_provider`` is set; otherwise it returns True and
+        does nothing. The accept prompt is always prepared, and the
+        announcement in ``basic_tts`` and ``caller_recording``. In
+        ``ai_briefing`` the intro and briefing depend on text generated after
+        answer, so they are synthesized then. Audio is parked on the attempt
+        under ``_pre_audio`` with its provider and exact text; the answer
+        handler plays it only while both still match, and every leg may reuse
+        it. The texts are synthesized concurrently, each bounded by
+        ``tts_timeout_seconds``, while the caller is already on hold music.
+        Returns False when any synthesis fails or the attempt is no longer
+        current, so the caller is not dialled.
+        """
+        cfg = attended_cfg if isinstance(attended_cfg, dict) else {}
+        provider = str(cfg.get("tts_provider") or "").strip()
+        if not provider:
+            return True
+        session = await self.session_store.get_by_call_id(call_id)
+        action = getattr(session, "current_action", None) if session else None
+        if (
+            not session
+            or getattr(session, "cleanup_in_progress", False)
+            or not isinstance(action, dict)
+            or action.get("type") != "attended_transfer"
+            or (attempt is not None and action is not attempt)
+        ):
+            return False
+        cfg = self._attended_transfer_tts_cfg(session, cfg)
+        provider = str(cfg.get("tts_provider") or "").strip()
+        if not provider:
+            return True
+
+        screening_mode = self._resolve_attended_transfer_screening_mode(cfg)
+        template_vars = self._build_attended_transfer_template_vars(
+            session,
+            destination_description=destination_description,
+        )
+        announcement_text, prompt_text = self._render_attended_transfer_texts(
+            session,
+            cfg,
+            effective_screening_mode=screening_mode,
+            screening_payload=dict(action.get("screening_payload") or {}),
+            template_vars=template_vars,
+        )
+        texts: Dict[str, str] = {}
+        if screening_mode in {"basic_tts", "caller_recording"}:
+            texts["announcement"] = announcement_text
+        texts["prompt"] = prompt_text
+        tts_timeout = float(cfg.get("tts_timeout_seconds", 8) or 8)
+
+        # Synthesize concurrently so the caller's wait on hold is bounded by
+        # one tts_timeout_seconds, not one per text.
+        kinds = list(texts.keys())
+        results = await asyncio.gather(
+            *(
+                self._attended_transfer_tts(
+                    call_id=call_id,
+                    text=texts[kind],
+                    timeout_sec=tts_timeout,
+                    attended_cfg=cfg,
+                    session=session,
+                )
+                for kind in kinds
+            ),
+            return_exceptions=True,
+        )
+        prepared: Dict[str, Dict[str, Any]] = {}
+        for kind, audio in zip(kinds, results):
+            text = texts[kind]
+            if isinstance(audio, BaseException) or not audio:
+                logger.warning(
+                    "Attended transfer audio could not be prepared before dialling",
+                    call_id=call_id,
+                    provider=provider,
+                    kind=kind,
+                )
+                return False
+            prepared[kind] = {"provider": provider, "text": text, "audio": audio}
+
+        # The call may have ended during synthesis; never reinsert its session.
+        current = await self.session_store.get_by_call_id(call_id)
+        if (
+            current is not session
+            or session.current_action is not action
+            or getattr(session, "cleanup_in_progress", False)
+        ):
+            return False
+        action["_pre_audio"] = prepared
+        if not await self.session_store.upsert_call(session, require_current=True):
+            action.pop("_pre_audio", None)
+            return False
+        if self.conversation_coordinator:
+            await self.conversation_coordinator.sync_from_session(session)
+        return True
 
     async def _handle_attended_transfer_answered(self, channel_id: str, args: list):
         """
@@ -9335,24 +9591,12 @@ class Engine:
             if not (isinstance(screening_payload, dict) and screening_payload.get("kind") == "ai_briefing" and str(screening_payload.get("text") or "").strip()):
                 effective_screening_mode = "basic_tts"
 
-        default_announcement_template = "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."
-        if effective_screening_mode == "caller_recording" and screening_payload and screening_payload.get("kind") == "caller_recording":
-            default_announcement_template = "Hi, this is Ava. Here is the caller's screening."
-
-        if effective_screening_mode == "ai_briefing":
-            announcement_template = str(
-                attended_cfg.get("ai_briefing_intro_template")
-                or "Hi, this is Ava. Here is a short summary of the caller."
-            )
-        else:
-            announcement_template = str(attended_cfg.get("announcement_template", default_announcement_template) or "")
-        prompt_template = str(
-            (
-                attended_cfg.get("agent_accept_prompt_template")
-                if "agent_accept_prompt_template" in attended_cfg
-                else attended_cfg.get("agent_accept_prompt")
-            )
-            or "Press 1 to accept this transfer, or 2 to decline."
+        announcement_text, prompt_text = self._render_attended_transfer_texts(
+            session,
+            attended_cfg,
+            effective_screening_mode=effective_screening_mode,
+            screening_payload=screening_payload,
+            template_vars=template_vars,
         )
         caller_connected_prompt = str(attended_cfg.get("caller_connected_prompt", "") or "")
         accept_digit = str(attended_cfg.get("accept_digit", "1") or "1")
@@ -9368,28 +9612,6 @@ class Engine:
         tts_timeout = float(attended_cfg.get("tts_timeout_seconds", 8) or 8)
         stream_fallback_to_file = bool(attended_cfg.get("stream_fallback_to_file", True))
         use_streaming = self._attended_transfer_streaming_enabled(attended_cfg)
-
-        # Treat blank templates as "use defaults" (UI may persist empty strings).
-        if not announcement_template.strip():
-            if effective_screening_mode == "caller_recording" and screening_payload and screening_payload.get("kind") == "caller_recording":
-                announcement_template = "Hi, this is Ava. Here is the caller's screening."
-            elif effective_screening_mode == "ai_briefing":
-                announcement_template = "Hi, this is Ava. Here is a short summary of the caller."
-            else:
-                announcement_template = "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."
-        if not prompt_template.strip():
-            prompt_template = "Press 1 to accept, or 2 to decline."
-
-        announcement_text = self._apply_prompt_template_substitution(
-            announcement_template,
-            session,
-            extra_substitutions=template_vars,
-        )
-        prompt_text = self._apply_prompt_template_substitution(
-            prompt_template,
-            session,
-            extra_substitutions=template_vars,
-        )
 
         logger.info(
             "🔀 ATTENDED TRANSFER - Agent answered, starting announcement",
@@ -9415,10 +9637,19 @@ class Engine:
                 await self._attended_transfer_abort_and_resume(session, channel_id, reason="stream-unavailable")
                 return
 
-        # Step A: Play one-way announcement to agent (hard requirement: Local AI Server TTS).
-        announcement_audio = await self._local_ai_server_tts(call_id=caller_id, text=announcement_text, timeout_sec=tts_timeout)
+        # Step A: Play one-way announcement to agent (Local AI Server TTS unless
+        # tools.attended_transfer.tts_provider names a pipeline TTS component).
+        announcement_audio = self._pre_synthesized_attended_audio(
+            session, "announcement", announcement_text, attended_cfg
+        ) or await self._attended_transfer_tts(
+            call_id=caller_id,
+            text=announcement_text,
+            timeout_sec=tts_timeout,
+            attended_cfg=attended_cfg,
+            session=session,
+        )
         if not announcement_audio:
-            logger.warning("Attended transfer requires Local AI Server TTS; aborting", call_id=caller_id)
+            logger.warning("Attended transfer announcement TTS unavailable; aborting", call_id=caller_id)
             await self._attended_transfer_abort_and_resume(session, channel_id, reason="tts-unavailable")
             return
 
@@ -9475,7 +9706,13 @@ class Engine:
                 await self._attended_transfer_abort_and_resume(session, channel_id, reason="stream-unavailable")
                 return
         elif ai_briefing_text:
-            briefing_audio = await self._local_ai_server_tts(call_id=caller_id, text=ai_briefing_text, timeout_sec=tts_timeout)
+            briefing_audio = await self._attended_transfer_tts(
+                call_id=caller_id,
+                text=ai_briefing_text,
+                timeout_sec=tts_timeout,
+                attended_cfg=attended_cfg,
+                session=session,
+            )
             if briefing_audio:
                 briefing_ok = True
                 if use_streaming:
@@ -9505,7 +9742,15 @@ class Engine:
         # Step B: Collect DTMF acceptance/decline (early digits during announcement are honored).
         digit = self._attended_transfer_dtmf_digits.get(channel_id)
         if digit not in {accept_digit, decline_digit}:
-            prompt_audio = await self._local_ai_server_tts(call_id=caller_id, text=prompt_text, timeout_sec=tts_timeout)
+            prompt_audio = self._pre_synthesized_attended_audio(
+                session, "prompt", prompt_text, attended_cfg
+            ) or await self._attended_transfer_tts(
+                call_id=caller_id,
+                text=prompt_text,
+                timeout_sec=tts_timeout,
+                attended_cfg=attended_cfg,
+                session=session,
+            )
             if not prompt_audio:
                 logger.warning("Attended transfer prompt TTS failed; aborting", call_id=caller_id)
                 await self._attended_transfer_abort_and_resume(session, channel_id, reason="tts-unavailable")
@@ -9566,6 +9811,7 @@ class Engine:
             caller_connected_prompt=caller_connected_prompt,
             tts_timeout=tts_timeout,
             template_vars=template_vars,
+            attended_cfg=attended_cfg,
         )
 
     async def recover_attended_transfer_failure(
@@ -9656,7 +9902,13 @@ class Engine:
                         session,
                         extra_substitutions=template_vars,
                     )
-                    prompt_audio = await self._local_ai_server_tts(call_id=call_id, text=prompt_text, timeout_sec=tts_timeout)
+                    prompt_audio = await self._attended_transfer_tts(
+                        call_id=call_id,
+                        text=prompt_text,
+                        timeout_sec=tts_timeout,
+                        attended_cfg=attended_cfg,
+                        session=session,
+                    )
                     if prompt_audio:
                         await self._play_ulaw_bytes_on_channel_and_wait(
                             channel_id=session.caller_channel_id,
@@ -9744,6 +9996,7 @@ class Engine:
         caller_connected_prompt: str,
         tts_timeout: float,
         template_vars: Optional[Dict[str, Any]] = None,
+        attended_cfg: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Finish an accepted transfer and append the successful handoff outcome.
 
@@ -9779,10 +10032,12 @@ class Engine:
                 session,
                 extra_substitutions=template_vars or self._build_attended_transfer_template_vars(session),
             )
-            prompt_audio = await self._local_ai_server_tts(
+            prompt_audio = await self._attended_transfer_tts(
                 call_id=call_id,
                 text=prompt_text,
                 timeout_sec=float(tts_timeout),
+                attended_cfg=attended_cfg,
+                session=session,
             )
             if prompt_audio:
                 await self._play_ulaw_bytes_on_channel_and_wait(
