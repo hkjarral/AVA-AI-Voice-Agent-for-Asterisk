@@ -4,6 +4,7 @@ Handles bidirectional RTP audio streams for the AI voice agent.
 """
 
 import asyncio
+from contextlib import suppress
 import socket
 import struct
 import audioop
@@ -167,9 +168,19 @@ class RTPServer:
         if port is None:
             raise RuntimeError("No free RTP ports available in configured range")
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind((self.host, port))
-        sock.setblocking(False)
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.bind((self.host, port))
+            sock.setblocking(False)
+        except Exception:
+            # No session owns these resources yet, so normal session cleanup
+            # cannot release them. Leave the port available for the next call.
+            self._release_port(port)
+            if sock is not None:
+                with suppress(OSError):
+                    sock.close()
+            raise
 
         now = time.time()
         session = RTPSession(

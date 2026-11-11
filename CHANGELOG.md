@@ -9,13 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Attended transfer settings:** the answer handler and failure recovery now read
-  the call's tool snapshot from call start, not the live global config, so a
-  mid-call reload can no longer change or hang up a transfer in progress. Stream
-  delivery starts the helper RTP server on demand, and if it cannot start (for
-  example, malformed helper settings) the call falls back per
-  `stream_fallback_to_file`. Inherited helper advertise addresses follow the
+- **Attended transfer settings:** the answer handler and failure recovery now
+  retain settings from the call-start tool snapshot when available. Calls without
+  a snapshot keep the existing generation/global configuration fallback. Helper
+  RTP bind settings remain process-wide; unavailable binds or helper startup
+  failures still follow `stream_fallback_to_file`. Inherited helper advertise addresses follow the
   active server bind across reloads, while explicit NAT addresses are preserved.
+  Failed RTP socket setup releases its reserved port and closes any created socket,
+  so repeated bind failures cannot exhaust the shared range for later calls.
 
 ## [7.7.2] - 2026-11-08
 
