@@ -466,3 +466,42 @@ async def test_pre_dial_failure_restores_caller_capture():
     assert result["status"] == "failed"
     assert session.current_action is None
     assert session.audio_capture_enabled is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["cleanup", "replacement"])
+async def test_prepare_rejected_save_returns_false_and_discards_orphan_audio(monkeypatch, change):
+    from unittest.mock import AsyncMock, Mock
+
+    engine, session = await _engine_session(CFG)
+    action = session.current_action
+    _install(monkeypatch, engine, _FakeOrchestrator())
+    engine.conversation_coordinator = Mock(sync_from_session=AsyncMock())
+    saving = asyncio.Event()
+    release = asyncio.Event()
+    original_upsert = engine.session_store.upsert_call
+
+    async def delayed_save(call, **kwargs):
+        if kwargs.get("require_current"):
+            saving.set()
+            await release.wait()
+        return await original_upsert(call, **kwargs)
+
+    monkeypatch.setattr(engine.session_store, "upsert_call", delayed_save)
+    task = asyncio.create_task(engine.prepare_attended_transfer_audio(
+        call_id=session.call_id, destination_description="Support agent", attended_cfg=CFG,
+    ))
+    try:
+        await asyncio.wait_for(saving.wait(), timeout=1)
+        if change == "cleanup":
+            session.cleanup_in_progress = True
+        else:
+            replacement = CallSession(call_id=session.call_id, caller_channel_id=session.caller_channel_id)
+            await original_upsert(replacement)
+        release.set()
+        assert await asyncio.wait_for(task, timeout=1) is False
+        assert "_pre_audio" not in action
+        engine.conversation_coordinator.sync_from_session.assert_not_awaited()
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)

@@ -293,7 +293,7 @@ migration is required. Existing in-memory sessions are not recovered on restart.
 - This tool is separate from `transfer`; it does **not** change existing transfer behavior.
 - Only supported for `type: extension` destinations.
 - Announcement and prompt TTS is mandatory. Local AI Server speaks every prompt unless `tools.attended_transfer.tts_provider` is set; when it is set, that provider speaks the agent announcement, the AI briefing, the accept/decline prompt, `caller_connected_prompt` and `caller_declined_prompt`.
-- A configured `tts_provider` fails closed: there is no fallback to Local AI Server or to another provider. The accept prompt (and the announcement in `basic_tts` and `caller_recording`) is synthesized before dialling, while the caller hears hold music. If that synthesis fails, the music stops, no call is placed to the destination, the tool returns a failure and the AI carries on with the caller.
+- A configured `tts_provider` fails closed: there is no fallback to Local AI Server or to another provider. The accept prompt (and the announcement in `basic_tts` and `caller_recording`) is synthesized before dialling, while the caller hears hold music. If that synthesis fails, the music stops, no call is placed to the destination and the AI carries on with the caller. In `basic_tts`, the commit returns a failure. In `caller_recording`, the tool has already acknowledged initiation with success; its background workflow invokes engine recovery instead of changing that tool result.
 - `ai_briefing` still needs Local AI Server LLM capability to write the briefing. Only the speaking moves to `tts_provider`.
 - Config compatibility: `agent_accept_prompt_template` is the canonical key; `agent_accept_prompt` is accepted as a legacy alias.
 

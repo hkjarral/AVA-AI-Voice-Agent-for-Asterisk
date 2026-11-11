@@ -9411,7 +9411,11 @@ class Engine:
         ):
             return False
         action["_pre_audio"] = prepared
-        await self._save_session(session, require_current=True)
+        if not await self.session_store.upsert_call(session, require_current=True):
+            action.pop("_pre_audio", None)
+            return False
+        if self.conversation_coordinator:
+            await self.conversation_coordinator.sync_from_session(session)
         return True
 
     async def _handle_attended_transfer_answered(self, channel_id: str, args: list):
