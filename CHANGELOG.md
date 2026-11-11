@@ -46,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stays disabled, as it has been since v5.1.7, because subtracting each frame's
   mean adds a frame-edge artifact measured at -15 to -30 dB relative to speech.
 
+### Changed
+
+- **Admin backend dependencies (#816):** update FastAPI to 0.162.0, Pydantic to
+  2.14.3, python-multipart to 0.0.33, WebSockets to 17.4, and the bundled
+  FFmpeg decoder package to 0.8.1.
+
 ## [7.7.2] - 2026-11-08
 
 Prepared from main `77c03386` through #820 and the security fixes in #822. This
