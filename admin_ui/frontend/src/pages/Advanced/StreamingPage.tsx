@@ -9,12 +9,15 @@ import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput, FormSelect, FormSwitch } from '../../components/ui/FormComponents';
 import { sanitizeConfigForSave } from '../../utils/configSanitizers';
 import { getCachedConfig, loadConfigYaml } from '../../utils/configCache';
+import { greetingRtpSupport, type GreetingAgent } from './greetingSupport';
 import { useRestartRequired } from '../../hooks/useRestartRequired';
 
 const StreamingPage = () => {
     const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
     const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
+    const [agents, setAgents] = useState<GreetingAgent[] | null>(null);
+    const rtpSupport = greetingRtpSupport(config, agents);
     const [saving, setSaving] = useState(false);
     const { restartRequired, refetch } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
@@ -38,6 +41,12 @@ const StreamingPage = () => {
         // interceptor invalidates the cache on every save, so a background
         // revalidate is unnecessary and could clobber in-progress form edits.
         fetchConfig();
+        let mounted = true;
+        // A failed/malformed catalog must not imply universal provider support.
+        Promise.resolve().then(() => axios.get('/api/agents')).then(response => {
+            if (mounted && Array.isArray(response.data)) setAgents(response.data);
+        }).catch(() => { /* Keep the saved value read-only when routes are unknown. */ });
+        return () => { mounted = false; };
     }, []);
 
     const fetchConfig = async (force = false) => {
@@ -328,20 +337,50 @@ const StreamingPage = () => {
                                 onChange={(e) => updateStreamingConfig('min_start_ms', parseInt(e.target.value))}
                                 tooltip="Minimum audio required before starting response playback (default: 120ms)."
                             />
-                            <FormInput
-                                label="Greeting Min Start (ms)"
-                                type="number"
-                                value={streamingConfig.greeting_min_start_ms || 40}
-                                onChange={(e) => updateStreamingConfig('greeting_min_start_ms', parseInt(e.target.value))}
-                                tooltip="Reduced min start for greetings - faster initial response (default: 40ms)."
-                            />
-                            <FormInput
-                                label="Greeting RTP Wait (ms)"
-                                type="number"
-                                value={streamingConfig.greeting_rtp_wait_ms || 250}
-                                onChange={(e) => updateStreamingConfig('greeting_rtp_wait_ms', parseInt(e.target.value))}
-                                tooltip="ExternalMedia only: How long to wait for RTP endpoint before falling back to file playback for greeting (default: 250ms). Increase if greetings are cut off."
-                            />
+                            <div>
+                                <FormInput
+                                    label="Greeting Min Start (ms)"
+                                    type="number"
+                                    value={streamingConfig.greeting_min_start_ms ?? ''}
+                                    placeholder="Unset"
+                                    readOnly
+                                    aria-disabled="true"
+                                    aria-describedby="greeting-min-support"
+                                    className="!bg-muted text-muted-foreground cursor-not-allowed"
+                                    tooltip="Saved configuration only. The engine does not currently apply this value."
+                                />
+                                <p id="greeting-min-support" className="text-xs text-muted-foreground">
+                                    {streamingConfig.greeting_min_start_ms === undefined ? 'Unset — backend default: 0 ms. ' : 'Saved configuration. '}
+                                    This value is not currently applied by the engine; it is read-only and preserved when saving.
+                                </p>
+                            </div>
+                            <div>
+                                <FormInput
+                                    label="Greeting RTP Wait (ms)"
+                                    type="number"
+                                    value={streamingConfig.greeting_rtp_wait_ms ?? ''}
+                                    placeholder="Unset"
+                                    readOnly={!rtpSupport.editable}
+                                    aria-disabled={!rtpSupport.editable}
+                                    aria-describedby="greeting-rtp-support"
+                                    className={!rtpSupport.editable ? '!bg-muted text-muted-foreground cursor-not-allowed' : ''}
+                                    onChange={(e) => {
+                                        if (!rtpSupport.editable) return;
+                                        if (e.target.value === '') {
+                                            const next = { ...config.streaming };
+                                            delete next.greeting_rtp_wait_ms;
+                                            setConfig({ ...config, streaming: next });
+                                        } else {
+                                            updateStreamingConfig('greeting_rtp_wait_ms', Number(e.target.value));
+                                        }
+                                    }}
+                                    tooltip="Saved wait for supported ExternalMedia provider greetings. Backend default: 1000 ms. A saved 0 currently also uses 1000 ms at runtime."
+                                />
+                                <p id="greeting-rtp-support" className="text-xs text-muted-foreground">
+                                    {streamingConfig.greeting_rtp_wait_ms === undefined ? 'Unset — backend default: 1000 ms; no value is added on save. ' : 'Saved configuration. '}
+                                    {rtpSupport.help} A saved 0 currently uses 1000 ms at runtime.
+                                </p>
+                            </div>
                             <FormInput
                                 label="Empty Backoff Ticks Max"
                                 type="number"

@@ -488,6 +488,27 @@ Controls the pacing and robustness of streamed agent audio.
 - streaming.egress_force_mulaw: When true, converts outbound streaming audio to μ-law 8 kHz regardless of provider encoding.
 - streaming.greeting_rtp_wait_ms: ExternalMedia-only. How long to wait (ms) for the remote RTP endpoint to be discovered during the initial greeting before falling back to file playback (prevents “dead air until caller speaks” in some Asterisk setups).
 
+### Saved greeting controls in Admin UI
+
+Advanced Settings → Streaming shows `greeting_min_start_ms` as read-only in every
+mode: its saved value is not forwarded to playback by the engine. An unset key
+is labelled unset with its backend default (0 ms), without inserting it on save.
+
+`greeting_rtp_wait_ms` is editable only when ExternalMedia and at least one
+configured active full-provider Agent route are identified. Pipeline greetings,
+AudioSocket and WebSocket do not use it. Mixed Agent routes show partial support;
+missing/loading Agent information is read-only. This describes saved routes, not
+live calls or dialplan overrides. The wait applies only to provider streams tagged
+as greetings whose remote RTP endpoint is missing, before existing file fallback.
+
+The saved value remains visible, including zero. The backend default is 1000 ms;
+a saved zero also currently uses 1000 ms at runtime. Clearing an editable wait
+unsets it. Unrelated saves preserve both keys, including their absence; making a
+control read-only never clears its value. Help remains keyboard accessible.
+Saving does not apply or restart the engine; existing apply/restart protections
+remain in place. These UI explanations do not activate Greeting Min Start or
+change timeout, routing, media-readiness, or call behavior.
+
 ### Initial greeting media readiness
 
 Advanced Settings → Streaming exposes an optional initial-greeting guard for

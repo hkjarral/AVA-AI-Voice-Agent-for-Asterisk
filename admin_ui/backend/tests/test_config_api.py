@@ -899,3 +899,27 @@ def test_config_validation_rejects_invalid_a2a_settings(settings):
 
     assert exc.value.status_code == 400
     assert exc.value.detail.startswith("A2A ")
+
+
+@pytest.mark.parametrize("greeting", [
+    {}, {"greeting_min_start_ms": 0}, {"greeting_rtp_wait_ms": 0},
+    {"greeting_min_start_ms": 0, "greeting_rtp_wait_ms": 0},
+    {"greeting_min_start_ms": 83, "greeting_rtp_wait_ms": 777},
+])
+def test_saved_greeting_controls_round_trip_without_inserting_defaults(monkeypatch, greeting):
+    parsed = yaml.safe_load(Path(config.settings.CONFIG_PATH).read_text())
+    keys = ("greeting_min_start_ms", "greeting_rtp_wait_ms")
+    for key in keys:
+        parsed["streaming"].pop(key, None)
+    parsed["streaming"].update(greeting)
+    monkeypatch.setattr(config, "_migrate_inline_provider_secrets", lambda _cfg: False)
+    monkeypatch.setattr(config, "_assert_in_use_audio_profiles_unchanged", lambda *_a, **_kw: None)
+    monkeypatch.setattr(config, "_read_merged_config_dict", lambda: deepcopy(parsed))
+    monkeypatch.setattr(config, "_read_base_config_dict", lambda: {})
+    writes = []
+    monkeypatch.setattr(config, "_write_local_config", writes.append)
+    for chunk_size in (40, 60):
+        parsed["streaming"]["chunk_size_ms"] = chunk_size
+        config.persist_config_content(yaml.safe_dump(parsed, sort_keys=False))
+        parsed = yaml.safe_load(writes[-1])
+        assert {key: parsed["streaming"][key] for key in keys if key in parsed["streaming"]} == greeting
