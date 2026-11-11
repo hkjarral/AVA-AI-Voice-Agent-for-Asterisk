@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import { useState } from 'react';
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, act, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, act, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom/vitest';
+import axios from 'axios';
+import { MemoryRouter } from 'react-router-dom';
 
 import ToolForm from './ToolForm';
 
@@ -253,13 +255,162 @@ describe('ToolForm farewell delay deprecation (issue #677)', () => {
     });
 });
 
+describe('ToolForm attended transfer announcement voice', () => {
+    const TTS_OPTIONS_URL = '/api/config/providers/tts-options';
+    const TTS_OPTIONS = [
+        { key: 'google_tts', label: 'Google Cloud Text-to-Speech', ready: true },
+        { key: 'elevenlabs_tts', label: 'ElevenLabs', ready: false, reason: 'credential_missing' },
+    ];
+
+    type AttendedConfig = { attended_transfer: Record<string, unknown> };
+
+    const attended = (extra: Record<string, unknown> = {}): AttendedConfig => ({
+        attended_transfer: { enabled: true, screening_mode: 'basic_tts', ...extra },
+    });
+
+    const AttendedHarness = ({ initial, onChange }: { initial: AttendedConfig; onChange: (c: AttendedConfig) => void }) => {
+        const [config, setConfig] = useState<AttendedConfig>(initial);
+        return (
+            <MemoryRouter>
+                <ToolForm
+                    config={config}
+                    onChange={(next) => {
+                        onChange(next);
+                        setConfig(next);
+                    }}
+                />
+            </MemoryRouter>
+        );
+    };
+
+    const lastAttended = (onChange: ReturnType<typeof vi.fn>) => {
+        const calls = onChange.mock.calls;
+        return (calls[calls.length - 1][0] as AttendedConfig).attended_transfer;
+    };
+
+    beforeEach(() => {
+        vi.mocked(axios.get).mockImplementation(async (url) => {
+            if (url === TTS_OPTIONS_URL) return { data: TTS_OPTIONS };
+            throw new Error('not mocked');
+        });
+    });
+
+    afterEach(() => {
+        vi.mocked(axios.get).mockImplementation(() => Promise.reject(new Error('not mocked')));
+    });
+
+    it('lists configured TTS providers after the Local AI Server default', async () => {
+        render(<AttendedHarness initial={attended()} onChange={vi.fn()} />);
+        const select = screen.getByLabelText('Announcement voice') as HTMLSelectElement;
+        await waitFor(() => expect(select).toHaveTextContent('ElevenLabs — not ready'));
+
+        expect(Array.from(select.options).map((option) => option.textContent)).toEqual([
+            'Local AI Server (default)',
+            'Google Cloud Text-to-Speech — ready',
+            'ElevenLabs — not ready',
+        ]);
+        expect(select).toHaveValue('');
+        expect(vi.mocked(axios.get)).toHaveBeenCalledWith(TTS_OPTIONS_URL);
+        expect(screen.queryByLabelText('Voice name')).not.toBeInTheDocument();
+    });
+
+    it('writes tts_provider and tts_options only when the operator sets them', async () => {
+        const onChange = vi.fn();
+        render(<AttendedHarness initial={attended()} onChange={onChange} />);
+        const select = screen.getByLabelText('Announcement voice');
+        await waitFor(() => expect(select).toHaveTextContent('Google Cloud Text-to-Speech — ready'));
+
+        fireEvent.change(select, { target: { value: 'google_tts' } });
+        expect(lastAttended(onChange)).toEqual({ enabled: true, screening_mode: 'basic_tts', tts_provider: 'google_tts' });
+
+        fireEvent.change(screen.getByLabelText('Voice name'), { target: { value: 'en-US-Chirp3-HD-Charon' } });
+        fireEvent.change(screen.getByLabelText('Voice language'), { target: { value: 'en-US' } });
+        expect(lastAttended(onChange)).toEqual({
+            enabled: true,
+            screening_mode: 'basic_tts',
+            tts_provider: 'google_tts',
+            tts_options: { voice: 'en-US-Chirp3-HD-Charon', language: 'en-US' },
+        });
+
+        fireEvent.change(screen.getByLabelText('Voice language'), { target: { value: '' } });
+        expect(lastAttended(onChange).tts_options).toEqual({ voice: 'en-US-Chirp3-HD-Charon' });
+    });
+
+    it('removes tts_provider and tts_options when Local AI Server is chosen again', async () => {
+        const onChange = vi.fn();
+        render(
+            <AttendedHarness
+                initial={attended({ tts_provider: 'google_tts', tts_options: { voice: 'en-US-Chirp3-HD-Charon' } })}
+                onChange={onChange}
+            />,
+        );
+        const select = screen.getByLabelText('Announcement voice');
+        await waitFor(() => expect(select).toHaveTextContent('Google Cloud Text-to-Speech — ready'));
+        expect(select).toHaveValue('google_tts');
+        expect(screen.getByLabelText('Voice name')).toHaveValue('en-US-Chirp3-HD-Charon');
+
+        fireEvent.change(select, { target: { value: '' } });
+        const saved = lastAttended(onChange);
+        expect(saved).not.toHaveProperty('tts_provider');
+        expect(saved).not.toHaveProperty('tts_options');
+        expect(saved).toEqual({ enabled: true, screening_mode: 'basic_tts' });
+    });
+
+    it('adds no TTS keys when an unrelated attended-transfer field changes', async () => {
+        const onChange = vi.fn();
+        render(<AttendedHarness initial={attended()} onChange={onChange} />);
+        await waitFor(() => expect(screen.getByLabelText('Announcement voice')).toHaveTextContent('ElevenLabs — not ready'));
+
+        fireEvent.change(screen.getByLabelText('MOH Class'), { target: { value: 'jazz' } });
+        expect(lastAttended(onChange)).toEqual({ enabled: true, screening_mode: 'basic_tts', moh_class: 'jazz' });
+    });
+
+    it('shows a not-ready status for a provider without credentials', async () => {
+        render(<AttendedHarness initial={attended({ tts_provider: 'elevenlabs_tts' })} onChange={vi.fn()} />);
+
+        expect(await screen.findByText('Provider is not ready')).toBeInTheDocument();
+        expect(screen.getByText(/Its credentials are not configured\./)).toBeInTheDocument();
+        // A new tab keeps this page's unsaved edits.
+        const link = screen.getByRole('link', { name: 'Open Providers (opens in a new tab)' });
+        expect(link).toHaveAttribute('href', '/providers');
+        expect(link).toHaveAttribute('target', '_blank');
+        expect(screen.getByText(/needs an AI Engine restart before attended transfers can use it/)).toBeInTheDocument();
+    });
+
+    it('shows an unknown state, not "not configured", when the provider list fails to load', async () => {
+        vi.mocked(axios.get).mockImplementation(async (url) => {
+            if (url === TTS_OPTIONS_URL) throw new Error('500');
+            throw new Error('not mocked');
+        });
+        render(<AttendedHarness initial={attended({ tts_provider: 'google_tts' })} onChange={vi.fn()} />);
+
+        expect(await screen.findByText("Couldn't load the provider list")).toBeInTheDocument();
+        expect(screen.queryByText('Provider is not ready')).not.toBeInTheDocument();
+        expect(screen.queryByText(/This provider is not configured/)).not.toBeInTheDocument();
+        const select = screen.getByLabelText('Announcement voice') as HTMLSelectElement;
+        expect(select).toHaveValue('google_tts');
+        expect(Array.from(select.options).map((option) => option.textContent)).toEqual([
+            'Local AI Server (default)',
+            'google_tts',
+        ]);
+    });
+
+    it('shows a ready status and no longer claims TTS requires Local AI Server', async () => {
+        render(<AttendedHarness initial={attended({ tts_provider: 'google_tts' })} onChange={vi.fn()} />);
+
+        expect(await screen.findByText('Provider is ready')).toBeInTheDocument();
+        expect(screen.queryByText(/Requires Local AI Server for TTS/)).not.toBeInTheDocument();
+        expect(screen.getByText(/Prompts are spoken by the selected announcement voice/)).toBeInTheDocument();
+    });
+});
+
 describe('ToolForm attended transfer announcement placeholders', () => {
     it('explains that screened_* placeholders come from what the caller told the agent', async () => {
         render(
-            <ToolForm
+            <MemoryRouter><ToolForm
                 config={{ ...baseConfig(), attended_transfer: { enabled: true, screening_mode: 'basic_tts' } }}
                 onChange={vi.fn()}
-            />
+            /></MemoryRouter>
         );
         await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 

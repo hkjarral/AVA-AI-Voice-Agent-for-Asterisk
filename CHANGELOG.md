@@ -22,6 +22,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are ignored in `caller_recording` mode, and the default announcement is
   unchanged.
 
+- **Attended transfer announcement voice:** new optional
+  `tools.attended_transfer.tts_provider` (a pipeline TTS component key such as
+  `google_tts`) and `tts_options` (`voice`, `language`) let a configured
+  provider speak every attended-transfer prompt. Unset keeps Local AI Server
+  TTS. A set provider fails closed, with no fallback to Local AI Server or
+  another provider, and is synthesized before dialling while the caller hears
+  hold music; if that fails, no call is placed and the agent continues with
+  the caller. `ai_briefing` still needs Local AI Server LLM capability to write
+  the briefing. The Admin UI adds an Announcement voice selector backed by
+  `GET /api/config/providers/tts-options`.
+
+### Fixed
+
+- **AudioSocket inbound audio:** since v5.1.7 a function-local `import audioop`
+  in the AudioSocket audio handler made every earlier `audioop` call fail
+  silently. With it removed, the first-frame "AudioSocket frame probe" logs
+  again and "Inbound PCM guard RMS" reports real levels. The energy barge-in
+  fallback for non-continuous providers, and pipeline barge-in with TALK_DETECT
+  off, react to caller speech again. The first-frame byte-swap check is now
+  log-only, because AudioSocket frame headers define the format and a quiet
+  16 kHz first frame could otherwise swap the whole call. Per-frame DC removal
+  stays disabled, as it has been since v5.1.7, because subtracting each frame's
+  mean adds a frame-edge artifact measured at -15 to -30 dB relative to speech.
+
 ## [7.7.2] - 2026-11-08
 
 Prepared from main `77c03386` through #820 and the security fixes in #822. This

@@ -403,3 +403,53 @@ def test_call_history_redacts_caller_statements(mode):
     assert record["params"]["call_reason"] == "***REDACTED***"
     assert "params.call_reason" in record["redacted_fields"]
     _assert_no_statement(record)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("defer", [False, True])
+async def test_caller_briefing_reaches_provider_tts_before_dial(monkeypatch, defer):
+    """The #834 pre-dial renderer must see this attempt's briefing, not its predecessor's."""
+    engine = _build_engine()
+    config = _config(defer=defer)
+    config["tools"]["attended_transfer"].update({
+        "tts_provider": "fixture_tts",
+        "announcement_template": "Transferring {screened_caller_display} about {screened_reason_display}.",
+    })
+    engine.config.tools = config["tools"]
+    session = _session("1760000000.1030")
+    previous = {
+        "type": "attended_transfer",
+        "briefing": {"screened_caller_name": "Previous Caller", "screened_call_reason": "Previous reason"},
+        "pre_transfer_audio_capture_enabled": True,
+    }
+    session.current_action = previous
+    await engine.session_store.upsert_call(session)
+    context = _context(config, session, engine=engine)
+    context.session_store = engine.session_store
+    tool = AttendedTransferTool()
+    context.tool_registry = SimpleNamespace(get=lambda name: tool if name == "attended_transfer" else None)
+    spoken = []
+
+    async def synthesize(**kwargs):
+        # Preparation must happen before any originate request.
+        assert not any(c["resource"] == "channels" for c in context.ari_client.calls)
+        spoken.append(kwargs["text"])
+        return b"fixture-audio"
+
+    monkeypatch.setattr(engine, "_attended_transfer_tts", synthesize)
+    monkeypatch.setattr(engine, "register_attended_transfer_agent_channel", lambda *args: None)
+    monkeypatch.setattr(engine, "start_attended_transfer_timeout_guard", lambda *args, **kwargs: None)
+    result = await tool.execute(
+        {"destination": "support_agent", "caller_name": CALLER_NAME, "call_reason": CALL_REASON}, context
+    )
+    if defer:
+        assert spoken == []
+        result = await commit_deferred_transfer_action(session.pending_deferred_transfer, context)
+
+    expected = f"Transferring {CALLER_NAME} about {CALL_REASON}."
+    assert result["status"] == "success"
+    assert expected in spoken
+    assert session.current_action["_pre_audio"]["announcement"]["text"] == expected
+    assert session.current_action["pre_transfer_audio_capture_enabled"] is True
+    assert previous["briefing"]["screened_caller_name"] == "Previous Caller"
+    assert any(c["resource"] == "channels" for c in context.ari_client.calls)
