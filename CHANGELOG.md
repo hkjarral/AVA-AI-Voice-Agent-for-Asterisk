@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Update the Admin frontend lockfile to follow-redirects 1.16.3, preserving
+  custom sensitive-header handling across JavaScript realms when Node clients
+  follow redirects (GHSA-mrwp-f3q8-3g9p).
+
 ### Added
 
 - **Attended transfer announcement voice:** new optional
