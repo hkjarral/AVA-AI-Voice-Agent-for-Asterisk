@@ -234,7 +234,7 @@ async def test_transfer_abort_does_not_resurrect_caller_hung_up_during_failure_p
 
 
 @pytest.mark.asyncio
-async def test_answered_attended_transfer_leg_end_keeps_terminal_ownership(monkeypatch):
+async def test_answered_leg_end_before_acceptance_declines_and_keeps_caller(monkeypatch):
     engine = _build_engine({"enabled": True})
     session = CallSession(call_id="call-answered", caller_channel_id="caller-answered")
     session.current_action = {
@@ -245,12 +245,19 @@ async def test_answered_attended_transfer_leg_end_keeps_terminal_ownership(monke
     await engine.session_store.upsert_call(session)
     engine.register_attended_transfer_agent_channel(session.call_id, "agent-answered")
 
-    async def unexpected_abort(*args, **kwargs):
-        raise AssertionError("answered agent leg must not resume AI")
+    aborts = []
 
-    monkeypatch.setattr(engine, "_attended_transfer_abort_and_resume", unexpected_abort)
+    async def fake_abort(session_obj, agent_channel_id, *, reason):
+        # Ownership is retired before recovery starts, so the paired end
+        # event cannot claim whole-call cleanup.
+        assert agent_channel_id not in engine._attended_transfer_agent_channel_to_call_id
+        aborts.append((session_obj.call_id, agent_channel_id, reason))
+
+    monkeypatch.setattr(engine, "_attended_transfer_abort_and_resume", fake_abort)
     await engine._cleanup_call("agent-answered")
-    assert await engine.session_store.get_by_call_id(session.call_id) is None
+
+    assert aborts == [("call-answered", "agent-answered", "target-hangup")]
+    assert await engine.session_store.get_by_call_id(session.call_id) is session
 
 
 @pytest.mark.asyncio

@@ -1416,6 +1416,21 @@ class Engine:
         attended_cfg = tools_cfg.get("attended_transfer") if isinstance(tools_cfg, dict) else None
         return attended_cfg if isinstance(attended_cfg, dict) else {}
 
+    def _attended_transfer_config_for_session(self, session: Optional[CallSession]) -> Dict[str, Any]:
+        """Attended-transfer settings for this call.
+
+        The attended_transfer tool originates the leg from the call's tool
+        snapshot, so answer handling and recovery read the same snapshot. A
+        call without a snapshot falls back to the current tool generation,
+        then to the global config. With no session at all, the global config
+        applies.
+        """
+        if session is None:
+            return self._get_attended_transfer_config()
+        tools_cfg = self._tool_config_for_session(session).get("tools") or {}
+        attended_cfg = tools_cfg.get("attended_transfer") if isinstance(tools_cfg, dict) else None
+        return attended_cfg if isinstance(attended_cfg, dict) else {}
+
     @staticmethod
     def _session_was_transferred(session: Optional["CallSession"]) -> bool:
         if not session:
@@ -2020,13 +2035,22 @@ class Engine:
             )
         return ""
 
-    def _get_attended_transfer_helper_settings(self, attended_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _get_attended_transfer_helper_settings(
+        self,
+        attended_cfg: Optional[Dict[str, Any]] = None,
+        *,
+        server_bind_host: Optional[str] = None,
+    ) -> Dict[str, Any]:
         cfg = attended_cfg if isinstance(attended_cfg, dict) else self._get_attended_transfer_config()
         helper_cfg = cfg.get("external_media_helper") if isinstance(cfg.get("external_media_helper"), dict) else {}
         global_external = getattr(self.config, "external_media", None)
 
+        # Once the shared server exists, inherited advertise addresses must
+        # follow its actual bind rather than a potentially stale call snapshot.
+        # Explicit helper/global advertise addresses still take precedence for NAT.
         bind_host = str(
-            helper_cfg.get("bind_host")
+            server_bind_host
+            or helper_cfg.get("bind_host")
             or getattr(global_external, "rtp_host", None)
             or "0.0.0.0"
         ).strip() or "0.0.0.0"
@@ -5298,10 +5322,19 @@ class Engine:
         """Helper-leg RTP audio is currently ignored; DTMF stays on the SIP/PJSIP agent channel."""
         return
 
-    async def _ensure_attended_transfer_helper_rtp_server_started(self) -> Optional[RTPServer]:
+    async def _ensure_attended_transfer_helper_rtp_server_started(
+        self, *, streaming_requested: bool = False
+    ) -> Optional[RTPServer]:
+        """Start the shared helper RTP server once per process.
+
+        Startup starts it when the global config streams. A call whose own
+        settings stream passes ``streaming_requested`` to start it on demand.
+        Bind settings always come from the global config because one server
+        serves every call.
+        """
         if self.attended_transfer_rtp_server and getattr(self.attended_transfer_rtp_server, "running", False):
             return self.attended_transfer_rtp_server
-        if not self._attended_transfer_streaming_enabled():
+        if not streaming_requested and not self._attended_transfer_streaming_enabled():
             return None
 
         async with self._attended_transfer_helper_rtp_lock:
@@ -5360,7 +5393,21 @@ class Engine:
         agent_channel_id: str,
         attended_cfg: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        server = await self._ensure_attended_transfer_helper_rtp_server_started()
+        # Only reached when this call's settings stream. If the server cannot
+        # start (for example malformed global helper settings), treat it like
+        # an unavailable server so the handler's existing fallback (file
+        # playback, or stream-unavailable recovery) applies. Per-call port
+        # bind failures are handled further down, in the media setup below.
+        try:
+            server = await self._ensure_attended_transfer_helper_rtp_server_started(streaming_requested=True)
+        except Exception:
+            logger.warning(
+                "Attended transfer helper RTP server failed to start",
+                call_id=call_id,
+                agent_channel_id=agent_channel_id,
+                exc_info=True,
+            )
+            server = None
         if not server:
             logger.warning(
                 "Attended transfer helper RTP server unavailable",
@@ -5373,7 +5420,9 @@ class Engine:
         if existing:
             return existing
 
-        helper_settings = self._get_attended_transfer_helper_settings(attended_cfg)
+        helper_settings = self._get_attended_transfer_helper_settings(
+            attended_cfg, server_bind_host=server.host
+        )
         if not str(helper_settings.get("advertise_host") or "").strip():
             logger.error(
                 "Attended transfer helper streaming disabled because advertise_host could not be derived",
@@ -8185,6 +8234,27 @@ class Engine:
                 except Exception:
                     pass
 
+    def _attended_transfer_leg_retired(self, call_id: str, agent_channel_id: str) -> bool:
+        """True once leg end, cancel or caller cleanup has retired this leg."""
+        return self._attended_transfer_agent_channel_to_call_id.get(agent_channel_id) != call_id
+
+    async def _leave_retired_attended_transfer_leg(self, call_id: str, agent_channel_id: str, *, stage: str) -> None:
+        """Stop screening a retired leg; whoever retired it owns the caller's recovery.
+
+        Helper media created after the abort's own cleanup would otherwise leak,
+        so release it here too (the cleanup is idempotent).
+        """
+        logger.info(
+            "Attended transfer leg retired; leaving screening",
+            call_id=call_id,
+            channel_id=agent_channel_id,
+            stage=stage,
+        )
+        try:
+            await self._cleanup_attended_transfer_helper_media(agent_channel_id)
+        except Exception:
+            logger.debug("Failed to clean up attended transfer helper media for retired leg", call_id=call_id, agent_channel_id=agent_channel_id, exc_info=True)
+
     async def _wait_for_ari_playback(self, playback_id: str, *, timeout_sec: float) -> bool:
         try:
             loop = asyncio.get_running_loop()
@@ -8653,6 +8723,14 @@ class Engine:
                 return digit
             return None
         except asyncio.TimeoutError:
+            return None
+        except asyncio.CancelledError:
+            # Retiring the leg cancels this waiter (destination hangup,
+            # cancel_transfer, caller cleanup). That ends the wait. Only a
+            # cancellation of this task itself propagates.
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise
             return None
         finally:
             self._attended_transfer_dtmf_waiters.pop(agent_channel_id, None)
@@ -9452,9 +9530,16 @@ class Engine:
             await self.ari_client.hangup_channel(channel_id)
             return
 
-        tools_cfg = getattr(self.config, "tools", {}) or {}
-        attended_cfg = tools_cfg.get("attended_transfer") if isinstance(tools_cfg, dict) else None
-        if not isinstance(attended_cfg, dict) or not bool(attended_cfg.get("enabled", False)):
+        # Use the settings this call started with. The attended_transfer tool
+        # originated this leg from the same snapshot, so a config reload during
+        # the call cannot change the transfer's rules halfway through.
+        session_tools = self._tool_config_for_session(session).get("tools") or {}
+        if not isinstance(session_tools, dict):
+            session_tools = {}
+        attended_cfg = session_tools.get("attended_transfer")
+        if not isinstance(attended_cfg, dict):
+            attended_cfg = {}
+        if not bool(attended_cfg.get("enabled", False)):
             logger.info("Attended transfer disabled - hanging up agent channel", call_id=caller_id, channel_id=channel_id)
             self._unregister_attended_transfer_agent_channel(channel_id)
             await self.ari_client.hangup_channel(channel_id)
@@ -9479,7 +9564,7 @@ class Engine:
         except Exception:
             logger.debug("Failed to mark attended transfer answered", call_id=caller_id, exc_info=True)
 
-        transfer_cfg = tools_cfg.get("transfer") if isinstance(tools_cfg, dict) else None
+        transfer_cfg = session_tools.get("transfer")
         destinations = (transfer_cfg.get("destinations") or {}) if isinstance(transfer_cfg, dict) else {}
         dest_cfg = destinations.get(destination_key) if isinstance(destinations, dict) else None
         dest_desc = None
@@ -9502,24 +9587,47 @@ class Engine:
                 replacement="tools.attended_transfer.screening_mode=ai_briefing",
             )
         if screening_mode == "ai_briefing":
+            attempt = session.current_action
+
+            async def briefing_is_current() -> bool:
+                current_session = await self.session_store.get_by_call_id(caller_id)
+                return (
+                    current_session is session
+                    and not session.cleanup_in_progress
+                    and session.current_action is attempt
+                    and isinstance(attempt, dict)
+                    and not attempt.get("recovery_started")
+                    and not self._attended_transfer_leg_retired(caller_id, channel_id)
+                )
+
             briefing_text = await self._generate_attended_transfer_briefing_text(
                 session=session,
                 destination_description=dest_desc,
                 timeout_sec=ai_briefing_timeout,
                 briefing_language=ai_briefing_language or None,
             )
+            # Generation yields to hangup recovery, caller cleanup, or a newer
+            # attempt. Check ownership before persisting or playing its result;
+            # recovery relies on the original action object's identity.
+            if not await briefing_is_current():
+                await self._leave_retired_attended_transfer_leg(caller_id, channel_id, stage="briefing-generation")
+                return
             if briefing_text:
                 try:
-                    session.current_action = dict(session.current_action or {})
-                    session.current_action["screening_payload"] = {
+                    attempt["screening_payload"] = {
                         "kind": "ai_briefing",
                         "text": briefing_text,
                         "source": "local_ai_server",
                         "generated_at": time.time(),
                     }
-                    await self._save_session(session)
+                    await self._save_session(session, require_current=True)
                 except Exception:
                     logger.debug("Failed to persist attended transfer AI briefing", call_id=caller_id, exc_info=True)
+                # Saving can wait on the store lock or coordinator. Do not
+                # start announcement playback after ownership changed there.
+                if not await briefing_is_current():
+                    await self._leave_retired_attended_transfer_leg(caller_id, channel_id, stage="briefing-save")
+                    return
             else:
                 logger.warning(
                     "Attended transfer AI briefing unavailable; falling back to basic_tts",
@@ -9685,6 +9793,12 @@ class Engine:
             else:
                 logger.warning("Attended transfer AI briefing TTS failed; continuing with prompt", call_id=caller_id)
 
+        # The destination may have hung up during the announcement; whoever
+        # retired the leg already owns the caller's recovery.
+        if self._attended_transfer_leg_retired(caller_id, channel_id):
+            await self._leave_retired_attended_transfer_leg(caller_id, channel_id, stage="announcement")
+            return
+
         # Step B: Collect DTMF acceptance/decline (early digits during announcement are honored).
         digit = self._attended_transfer_dtmf_digits.get(channel_id)
         if digit not in {accept_digit, decline_digit}:
@@ -9720,6 +9834,9 @@ class Engine:
                 await self._attended_transfer_abort_and_resume(session, channel_id, reason="stream-unavailable")
                 return
             digit = await self._wait_for_attended_transfer_dtmf(channel_id, timeout_sec=accept_timeout)
+            if self._attended_transfer_leg_retired(caller_id, channel_id):
+                await self._leave_retired_attended_transfer_leg(caller_id, channel_id, stage="accept-prompt")
+                return
 
         accepted = digit == accept_digit
         declined = digit == decline_digit or digit is None
@@ -9727,6 +9844,13 @@ class Engine:
         # Persist decision (best effort).
         try:
             session = await self.session_store.get_by_call_id(caller_id)
+            # A contended store lock yields; a hangup in that gap has already
+            # retired the leg and started recovery, so never record accepted.
+            if self._attended_transfer_leg_retired(caller_id, channel_id) or (
+                session and isinstance(session.current_action, dict) and session.current_action.get("recovery_started")
+            ):
+                await self._leave_retired_attended_transfer_leg(caller_id, channel_id, stage="decision")
+                return
             if session and session.current_action and session.current_action.get("type") == "attended_transfer":
                 session.current_action["decision_digit"] = digit
                 session.current_action["decision"] = "accepted" if accepted else "declined"
@@ -9813,9 +9937,8 @@ class Engine:
 
         # Optional: play a short caller-facing prompt on decline/timeout so the call doesn't feel "dead".
         try:
-            tools_cfg = getattr(self.config, "tools", {}) or {}
-            attended_cfg = tools_cfg.get("attended_transfer") if isinstance(tools_cfg, dict) else None
-            if not provider_recovery and isinstance(attended_cfg, dict) and reason in {"declined", "timeout", "no-answer", "dial-timeout"}:
+            attended_cfg = self._attended_transfer_config_for_session(session)
+            if not provider_recovery and isinstance(attended_cfg, dict) and reason in {"declined", "timeout", "no-answer", "dial-timeout", "target-hangup"}:
                 caller_prompt = str(
                     attended_cfg.get(
                         "caller_declined_prompt",
@@ -9871,7 +9994,7 @@ class Engine:
             # end event cannot notify twice or race a timeout into the same recovery.
             if provider_recovery:
                 try:
-                    configured = (self._tool_config_for_session(session).get("tools") or {}).get("attended_transfer") or {}
+                    configured = self._attended_transfer_config_for_session(session)
                     caller_prompt = str(configured.get("caller_declined_prompt") or "")
                     if caller_prompt:
                         caller_prompt = self._apply_prompt_template_substitution(
@@ -9941,6 +10064,20 @@ class Engine:
         recording completion does not restart a provider already stopped here.
         """
         call_id = session.call_id
+        action = session.current_action
+
+        def superseded() -> bool:
+            # Recovery (decline, hangup, cancel) owns the caller once started;
+            # bridging now would stop the AI and leave the caller in silence.
+            return (
+                not isinstance(action, dict)
+                or bool(action.get("recovery_started"))
+                or self._attended_transfer_leg_retired(call_id, agent_channel_id)
+            )
+
+        if superseded():
+            await self._leave_retired_attended_transfer_leg(call_id, agent_channel_id, stage="finalize")
+            return
 
         # Stop MOH and optionally play "connecting you now" prompt to caller.
         try:
@@ -9968,6 +10105,10 @@ class Engine:
                     playback_id_prefix="attx-caller",
                     timeout_sec=max(3.0, float(tts_timeout) * 4),
                 )
+
+        if superseded():
+            await self._leave_retired_attended_transfer_leg(call_id, agent_channel_id, stage="finalize")
+            return
 
         try:
             await self._cleanup_attended_transfer_helper_media(agent_channel_id)
@@ -10694,8 +10835,9 @@ class Engine:
                 session = await self.session_store.get_by_channel_id(channel_or_call_id)
             if not session:
                 # Attended transfer agent leg is a separate SIP channel that is not tracked in SessionStore.
-                # The agent leg's pre-answer failure must resume the caller;
-                # only an answered agent leg may own whole-call cleanup.
+                # A leg that ends before accepting (unanswered, or answered and
+                # hung up during screening) resumes the caller; only an
+                # accepted agent leg may own whole-call cleanup.
                 mapped_call_id = self._attended_transfer_agent_channel_to_call_id.get(channel_or_call_id)
                 if mapped_call_id:
                     mapped_session = await self.session_store.get_by_call_id(mapped_call_id)
@@ -10722,6 +10864,35 @@ class Engine:
                         )
                         await self._attended_transfer_abort_and_resume(
                             mapped_session, channel_or_call_id, reason="no-answer"
+                        )
+                        return
+                    decision = str(action.get("decision") or "").strip().lower()
+                    if decision != "accepted":
+                        # A decline digit already received (or recorded) means
+                        # the destination declined and then hung up; report it
+                        # as a decline. Read the digit before unregistering
+                        # clears it.
+                        attended_cfg = self._attended_transfer_config_for_session(mapped_session)
+                        decline_digit = str(attended_cfg.get("decline_digit", "2") or "2")
+                        declined_first = decision == "declined" or (
+                            self._attended_transfer_dtmf_digits.get(channel_or_call_id) == decline_digit
+                        )
+                        # The destination answered but hung up during the
+                        # announcement or the accept prompt. Treat it as a
+                        # decline. Unregister before the first await so the
+                        # paired end event and the screening handler both see
+                        # the leg as retired (this also ends its DTMF wait).
+                        self._unregister_attended_transfer_agent_channel(channel_or_call_id)
+                        logger.info(
+                            "Answered attended transfer leg ended before acceptance; resuming caller",
+                            call_id=mapped_call_id,
+                            agent_channel_id=channel_or_call_id,
+                            decision=decision or None,
+                        )
+                        await self._attended_transfer_abort_and_resume(
+                            mapped_session,
+                            channel_or_call_id,
+                            reason="declined" if declined_first else "target-hangup",
                         )
                         return
                     session = mapped_session
@@ -16508,12 +16679,13 @@ class Engine:
         )
         return False
 
-    def _google_disconnect_transfer_wait_sec(self) -> float:
-        """Bound transfer observation using configured phase budgets plus grace."""
-        tools = getattr(self.config, "tools", {}) or {}
-        cfg = tools.get("attended_transfer", {}) if isinstance(tools, dict) else {}
-        if not isinstance(cfg, dict):
-            cfg = {}
+    def _google_disconnect_transfer_wait_sec(self, session: Optional[CallSession] = None) -> float:
+        """Bound transfer observation using configured phase budgets plus grace.
+
+        A live call is budgeted from its own transfer settings; without a
+        session the global config applies.
+        """
+        cfg = self._attended_transfer_config_for_session(session)
 
         def seconds(key: str, default: float) -> float:
             try:
@@ -16534,9 +16706,13 @@ class Engine:
 
     async def _finish_google_provider_disconnect(self, call_id: str) -> None:
         """Drain failed Google playback without taking routing from a transfer."""
-        deadline = time.monotonic() + self._google_disconnect_transfer_wait_sec()
+        session = await self.session_store.get_by_call_id(call_id)
+        deadline = time.monotonic() + self._google_disconnect_transfer_wait_sec(session)
+        first_pass = True
         while True:
-            session = await self.session_store.get_by_call_id(call_id)
+            if not first_pass:
+                session = await self.session_store.get_by_call_id(call_id)
+            first_pass = False
             if not session or session.cleanup_in_progress or self._session_was_transferred(session):
                 return
             if self._session_has_pending_attended_transfer(session):

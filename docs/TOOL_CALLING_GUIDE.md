@@ -262,7 +262,7 @@ AI: "Transferring you to Sales team ring group now."
 - Destination must press **DTMF** to accept/decline:
   - Default: `1 = accept`, `2 = decline`, timeout = decline.
 - On accept: AI audio is removed and the engine bridges **caller ↔ destination** directly.
-- On decline/timeout: MOH stops and the AI resumes with the caller (optionally plays a short “unable to transfer” prompt).
+- On decline, timeout, or the destination hanging up before accepting: MOH stops and the AI resumes with the caller (optionally plays a short “unable to transfer” prompt).
 - Engine remains alive as a passive bridge supervisor until hangup.
 - After an accepted handoff, a phone-initiated onward transfer can replace the
   destination leg. AVA adopts the new channel identified by
@@ -296,6 +296,7 @@ migration is required. Existing in-memory sessions are not recovered on restart.
 - A configured `tts_provider` fails closed: there is no fallback to Local AI Server or to another provider. The accept prompt (and the announcement in `basic_tts` and `caller_recording`) is synthesized before dialling, while the caller hears hold music. If that synthesis fails, the music stops, no call is placed to the destination and the AI carries on with the caller. In `basic_tts`, the commit returns a failure. In `caller_recording`, the tool has already acknowledged initiation with success; its background workflow invokes engine recovery instead of changing that tool result.
 - `ai_briefing` still needs Local AI Server LLM capability to write the briefing. Only the speaking moves to `tts_provider`.
 - Config compatibility: `agent_accept_prompt_template` is the canonical key; `agent_accept_prompt` is accepted as a legacy alias.
+- Settings are fixed per call at call start, so a config reload applies to the next call, not a transfer in progress. Helper RTP bind settings are process-wide and need a restart. Keys: [Configuration-Reference](Configuration-Reference.md#attended-transfer-toolsattended_transfer).
 
 #### Announcement voice (`tts_provider`)
 
@@ -2012,6 +2013,31 @@ it is instructed not to redial automatically. This recovery response does not
 require Local AI Server TTS. A configured `caller_declined_prompt` is supplied to
 Google Live as the preferred failure response. Other providers speak `caller_declined_prompt`
 with the announcement voice: `tts_provider` when set, otherwise Local AI Server.
+
+If the destination answers and then hangs up before pressing the accept digit
+(during the announcement, the screening clip or briefing, or the accept prompt),
+AVA now treats it as a decline. Previously this ended the caller's call. MOH
+stops, the caller stays connected, the AI resumes, and Call History records
+`Transfer failed (target-hangup).` If the destination pressed the decline digit
+before hanging up, it is recorded as `declined` instead. Recovery runs once,
+even when the leg's end arrives as more than one channel event.
+
+If AI briefing generation completes during or after recovery, its result is
+discarded. Ownership is checked again after saving the briefing, so caller
+cleanup or a newer transfer during that save cannot restart the old announcement
+or interfere with recovery releasing caller capture.
+
+Recovery follows the same provider split as other failures. Google Live receives
+the failure event; other providers speak `caller_declined_prompt` with the
+configured announcement TTS provider (Local AI Server by default), as they do
+for `declined`, `timeout`, `no-answer` and `dial-timeout`.
+
+Once the destination has accepted, behavior is unchanged: a hangup on that leg
+ends the call. Known limit: a hangup after the accept digit but before the
+bridge still counts as an accepted leg ending, so the call ends. That window
+includes `caller_connected_prompt`: its TTS and playback can take up to five
+times `tts_timeout_seconds` (40 seconds at the default of 8), so a long
+connected prompt widens it.
 
 Call History records **Transfer initiated** separately from **Transfer failed** or
 **Transfer completed**. Initiation and terminal outcomes retain the
