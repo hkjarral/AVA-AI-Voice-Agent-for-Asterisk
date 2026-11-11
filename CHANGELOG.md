@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Admin action feedback (#344):** show pending spinners and prevent repeated
+  Call History deletes and Pipeline/Profile saves/deletes. Preserve confirmations
+  and deletion safeguards; failed Pipeline saves now retain the editable draft
+  for retry. Editors stay locked until a pending write settles.
+
 - **Admin backend dependencies (#783, #220):** upgrade psutil from 5.9.8 to
   7.2.2 for system metrics and Local AI hardware recommendations.
 - **Admin frontend tooling (#220, #722):** use Node 22 (minimum 22.12) for

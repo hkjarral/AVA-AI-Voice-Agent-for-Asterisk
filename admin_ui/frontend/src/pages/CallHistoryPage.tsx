@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, startTransition } from 'react';
 import {
-    Phone, Filter, Download, Trash2,
+    Phone, Filter, Download, Trash2, Loader2,
     ChevronLeft, ChevronRight, RefreshCw, X, MessageSquare,
     Wrench, AlertCircle, CheckCircle, ArrowRightLeft, PhoneOff,
     BarChart3, Users, Timer, Activity, TrendingUp, Zap, PieChart,
@@ -12,6 +12,7 @@ import { EmptyState } from '../components/ui/EmptyState';
 
 import { IconButton } from '../components/ui/IconButton';
 import { FullscreenPanel } from '../components/ui/FullscreenPanel';
+import { usePendingAction } from '../hooks/usePendingAction';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
@@ -259,6 +260,7 @@ const RoutingBadge = ({ method }: { method: string | null }) => {
 
 const CallHistoryPage = () => {
     const { confirm } = useConfirmDialog();
+    const { pendingAction, isPending, runAction } = usePendingAction();
     const location = useLocation();
     const navigate = useNavigate();
     const [calls, setCalls] = useState<CallRecordSummary[]>([]);
@@ -534,7 +536,7 @@ const CallHistoryPage = () => {
 
         const isTopmostModal = () => {
             const dialogs = Array.from(
-                document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')
+                document.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"]')
             );
             return dialogs[dialogs.length - 1] === dialog;
         };
@@ -544,7 +546,7 @@ const CallHistoryPage = () => {
             if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopPropagation();
-                closeCallDetails();
+                if (!isPending()) closeCallDetails();
                 return;
             }
             if (event.key !== 'Tab') return;
@@ -581,7 +583,7 @@ const CallHistoryPage = () => {
             document.body.style.overflow = previousBodyOverflow;
             previouslyFocused?.focus?.();
         };
-    }, [callDetailsOpen, closeCallDetails]);
+    }, [callDetailsOpen, closeCallDetails, isPending]);
 
     // Deep-link support: /history?id=<call_record_id>
     useEffect(() => {
@@ -644,7 +646,7 @@ const CallHistoryPage = () => {
         }
     };
 
-    const handleDelete = async (id: string) => {
+    const handleDelete = (id: string) => runAction(id, async () => {
         const confirmed = await confirm({
             title: 'Delete Call Record?',
             description: 'Are you sure you want to delete this call record?',
@@ -654,18 +656,18 @@ const CallHistoryPage = () => {
         if (!confirmed) return;
         try {
             await axios.delete(`/api/calls/${id}`);
-            fetchCalls();
-            fetchStats();
             if (selectedCall?.id === id || selectedCallSummary?.id === id) {
                 closeCallDetails();
             }
+            await Promise.all([fetchCalls(), fetchStats()]);
         } catch (err) {
             console.error('Failed to delete:', err);
             toast.error('Failed to delete call record');
         }
-    };
+    });
 
     const openCallDetails = async (call: CallRecordSummary) => {
+        if (isPending()) return;
         setSelectedCallSummary(call);
         setSelectedCall(null);
         setSelectedCallLoading(true);
@@ -1213,12 +1215,15 @@ return (
                                         <td className="px-4 py-3 text-sm tabular-nums">{call.barge_in_count}</td>
                                         <td className="px-4 py-3 text-center w-20">
                                             <IconButton
-                                                icon={Trash2}
+                                                icon={pendingAction === call.id ? Loader2 : Trash2}
+                                                disabled={!!pendingAction}
+                                                aria-busy={pendingAction === call.id}
                                                 variant="destructive"
                                                 label="Delete"
                                                 onClick={(e) => { e.stopPropagation(); handleDelete(call.id); }}
                                                 className="p-2 hover:bg-destructive/10 rounded text-destructive"
                                                 title="Delete"
+                                                iconClassName={pendingAction === call.id ? 'animate-spin' : undefined}
                                             />
                                         </td>
                                     </tr>
@@ -1283,8 +1288,10 @@ return (
                                     Troubleshoot
                                 </button>
                                 <IconButton
-                                    icon={Trash2}
-                                    iconClassName="w-5 h-5"
+                                    icon={pendingAction === modalCall.id ? Loader2 : Trash2}
+                                    disabled={!!pendingAction}
+                                    aria-busy={pendingAction === modalCall.id}
+                                    iconClassName={`w-5 h-5 ${pendingAction === modalCall.id ? 'animate-spin' : ''}`}
                                     variant="destructive"
                                     label="Delete this call"
                                     onClick={() => handleDelete(modalCall.id)}
@@ -1292,8 +1299,9 @@ return (
                                     title="Delete this call"
                                 />
                                 <button
-                                    onClick={closeCallDetails}
-                                    className="p-2 hover:bg-muted rounded-lg"
+                                    onClick={() => { if (!isPending()) closeCallDetails(); }}
+                                    disabled={!!pendingAction}
+                                    className="p-2 hover:bg-muted rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
                                     aria-label="Close call details"
                                     title="Close call details"
                                 >

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
+import { usePendingAction } from '../hooks/usePendingAction';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import yaml from 'js-yaml';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
@@ -31,6 +32,7 @@ const mergeApplyRecommendation = (
 
 const ProfilesPage = () => {
 	const { confirm } = useConfirmDialog();
+    const { pendingAction, isPending, runAction } = usePendingAction();
 	const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
 	const [agents, setAgents] = useState<any[]>([]);
 	const [agentsLoading, setAgentsLoading] = useState(true);
@@ -191,6 +193,7 @@ const ProfilesPage = () => {
 	    };
 
 	const handleEditProfile = (name: string) => {
+        if (isPending()) return;
 		setEditingProfile(name);
 		setProfileForm({ ...config.profiles?.[name] });
 		setIsNewProfile(false);
@@ -198,6 +201,7 @@ const ProfilesPage = () => {
 	};
 
 	const handleAddProfile = () => {
+        if (isPending()) return;
 		setEditingProfile('new_profile');
 		setProfileForm({
 			output_resampler: 'linear',
@@ -219,7 +223,7 @@ const ProfilesPage = () => {
 		setNewProfileName('');
 	};
 
-	const handleSaveProfile = async () => {
+	const handleSaveProfile = () => runAction('save', async () => {
 		if (!editingProfile) return;
 
 		const profileKey = isNewProfile ? newProfileName.trim() : editingProfile;
@@ -262,7 +266,7 @@ const ProfilesPage = () => {
 		setEditingProfile(null);
 		setIsNewProfile(false);
 		setNewProfileName('');
-	};
+	});
 
     const updateProfileField = (field: string, value: any) => {
         setProfileForm({ ...profileForm, [field]: value });
@@ -338,6 +342,7 @@ const ProfilesPage = () => {
     };
 
     const handleCloneProfile = (profileName: string) => {
+        if (isPending()) return;
         const sourceData = config.profiles?.[profileName] || {};
         let cloneName = `${profileName}_copy`;
         let suffix = 2;
@@ -351,7 +356,7 @@ const ProfilesPage = () => {
         setNewProfileName(cloneName);
     };
 
-    const handleDeleteProfile = async (profileName: string) => {
+    const handleDeleteProfile = (profileName: string) => runAction(`delete:${profileName}`, async () => {
         const currentProfiles = config.profiles || {};
         const currentProfileKeys = Object.keys(currentProfiles).filter((k) => k !== 'default');
         const currentDefaultProfile = currentProfiles.default || 'telephony_ulaw_8k';
@@ -428,7 +433,7 @@ const ProfilesPage = () => {
             setIsNewProfile(false);
             setNewProfileName('');
         }
-    };
+    });
 
     if (loading) return <div className="p-8 text-center text-muted-foreground">Loading profiles...</div>;
 
@@ -443,7 +448,7 @@ const ProfilesPage = () => {
     const defaultProfile = profiles.default || 'telephony_ulaw_8k';
 
 	return (
-		<div className="space-y-6">
+		<fieldset disabled={!!pendingAction} aria-busy={!!pendingAction} className="min-w-0 space-y-6">
 			{pendingApply && (
 				<div className="bg-orange-500/15 border border-orange-500/30 text-yellow-700 dark:text-yellow-400 p-4 rounded-md flex items-center justify-between">
 					<div className="flex items-center">
@@ -507,7 +512,7 @@ const ProfilesPage = () => {
 				</div>
 				<button
 					onClick={handleAddProfile}
-					className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
+					className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
 				>
 					<Plus className="w-4 h-4 mr-2" />
 					Add Profile
@@ -603,7 +608,9 @@ const ProfilesPage = () => {
 	                                            className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
 	                                        />
                                             <IconButton
-                                                icon={Trash2}
+                                                icon={pendingAction === `delete:${profileName}` ? Loader2 : Trash2}
+                                                iconClassName={pendingAction === `delete:${profileName}` ? 'animate-spin' : undefined}
+                                                aria-busy={pendingAction === `delete:${profileName}`}
                                                 variant="destructive"
                                                 onClick={(e) => {
                                                     e.stopPropagation();
@@ -678,7 +685,9 @@ const ProfilesPage = () => {
 
 				<Modal
 					isOpen={!!editingProfile}
+                    busy={!!pendingAction}
 					onClose={() => {
+                        if (isPending()) return;
 						setEditingProfile(null);
 					setIsNewProfile(false);
 					setNewProfileName('');
@@ -709,26 +718,30 @@ const ProfilesPage = () => {
                                             : profileKeys.length <= 1
                                                 ? 'Cannot delete the last remaining audio profile'
                                                 : undefined}
-                                        className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-destructive/30 text-destructive hover:bg-destructive/10 h-9 px-4 py-2"
+                                        className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 border border-destructive/30 text-destructive hover:bg-destructive/10 h-9 px-4 py-2"
                                     >
+                                        {pendingAction === `delete:${editingProfile}` && <Loader2 aria-hidden="true" className="w-4 h-4 mr-2 animate-spin" />}
                                         Delete
                                     </button>
                                 </div>
                             )}
 							<button
 								onClick={() => {
+                                    if (isPending()) return;
 									setEditingProfile(null);
 									setIsNewProfile(false);
 								setNewProfileName('');
 							}}
-							className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"
+							className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"
 						>
 							Cancel
 						</button>
                         <button
                             onClick={handleSaveProfile}
-                            className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
+                            aria-busy={pendingAction === 'save'}
+                            className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
                         >
+                            {pendingAction === 'save' && <Loader2 aria-hidden="true" className="w-4 h-4 mr-2 animate-spin" />}
                             Save Changes
                         </button>
 					</>
@@ -861,7 +874,7 @@ const ProfilesPage = () => {
                     </div>
                 </div>
             </Modal>
-        </div>
+        </fieldset>
     );
 };
 

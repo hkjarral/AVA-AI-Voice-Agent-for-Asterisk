@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom/vitest';
 import { useState } from 'react';
 import { Modal } from './Modal';
+import { ConfirmDialogProvider, useConfirmDialog } from '../../hooks/useConfirmDialog';
 
 /**
  * Accessibility coverage for the shared dialog (WCAG 2.4.3 focus order, 4.1.2
@@ -41,6 +42,18 @@ function FullscreenHarness({ initialOpen = false }: { initialOpen?: boolean }) {
             </Modal>
         </>
     );
+}
+
+function ConfirmingHarness() {
+    const { confirm } = useConfirmDialog();
+    const [busy, setBusy] = useState(false);
+    return <Modal isOpen busy={busy} onClose={() => undefined} title="Editor" footer={
+        <button onClick={async () => {
+            setBusy(true);
+            await confirm({ title: 'Confirm deletion', description: 'Synthetic confirmation', confirmText: 'Delete' });
+            setBusy(false);
+        }}>Delete item</button>
+    }><input aria-label="Draft" /></Modal>;
 }
 
 describe('Modal — dialog accessibility', () => {
@@ -98,6 +111,40 @@ describe('Modal — dialog accessibility', () => {
         await user.keyboard('{Escape}');
         expect(document.body.style.overflow).toBe('scroll'); // restored, not 'unset'
         document.body.style.overflow = '';
+    });
+
+    it('keeps focus away from disabled fieldsets while busy and restores dismissal afterward', async () => {
+        const user = userEvent.setup();
+        const close = vi.fn();
+        const content = <input aria-label="Draft" />;
+        const { rerender } = render(<Modal isOpen busy onClose={close} title="Saving" footer={<button>Save</button>}>{content}</Modal>);
+        const dialog = screen.getByRole('dialog');
+        await user.tab();
+        expect(document.activeElement).toBe(dialog);
+        await user.tab({ shift: true });
+        expect(document.activeElement).toBe(dialog);
+        await user.keyboard('{Escape}');
+        await user.click(screen.getByRole('button', { name: 'Close' }));
+        expect(close).not.toHaveBeenCalled();
+        expect(screen.getByRole('textbox', { name: 'Draft' })).toBeDisabled();
+        rerender(<Modal isOpen onClose={close} title="Saving" footer={<button>Save</button>}>{content}</Modal>);
+        expect(screen.getByRole('textbox', { name: 'Draft' })).toBeEnabled();
+        await user.keyboard('{Escape}');
+        expect(close).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets the confirmation dialog own Tab while the editor is busy', async () => {
+        const user = userEvent.setup();
+        render(<ConfirmDialogProvider><ConfirmingHarness /></ConfirmDialogProvider>);
+        await user.click(screen.getByRole('button', { name: 'Delete item' }));
+        const confirmation = screen.getByRole('alertdialog');
+        await user.tab();
+        expect(confirmation.contains(document.activeElement)).toBe(true);
+        await user.tab({ shift: true });
+        expect(confirmation.contains(document.activeElement)).toBe(true);
+        await user.click(within(confirmation).getByRole('button', { name: 'Cancel' }));
+        expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Delete item' })).toBeEnabled();
     });
 
     it('only shows the fullscreen toggle when enabled', () => {
