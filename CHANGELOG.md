@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Admin frontend dependencies (#823):** retain React Refresh ESLint plugin
   0.4.x with ESLint 8 so clean frontend installs succeed. Keep the ESLint 9/10
   migration separate from the compatible dependency updates.
+- **AudioSocket inbound audio:** since v5.1.7 a function-local `import audioop`
+  in the AudioSocket audio handler made every earlier `audioop` call fail
+  silently. With it removed, the first-frame "AudioSocket frame probe" logs
+  again and "Inbound PCM guard RMS" reports real levels. The energy barge-in
+  fallback for non-continuous providers, and pipeline barge-in with TALK_DETECT
+  off, react to caller speech again. The first-frame byte-swap check is now
+  log-only, because AudioSocket frame headers define the format and a quiet
+  16 kHz first frame could otherwise swap the whole call. Per-frame DC removal
+  stays disabled, as it has been since v5.1.7, because subtracting each frame's
+  mean adds a frame-edge artifact measured at -15 to -30 dB relative to speech.
 
 ## [7.7.2] - 2026-11-08
 
