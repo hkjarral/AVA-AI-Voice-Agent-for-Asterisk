@@ -35,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Admin frontend dependencies (#823):** retain React Refresh ESLint plugin
+  0.4.x with ESLint 8 so clean frontend installs succeed. Keep the ESLint 9/10
+  migration separate from the compatible dependency updates.
 - **AudioSocket inbound audio:** since v5.1.7 a function-local `import audioop`
   in the AudioSocket audio handler made every earlier `audioop` call fail
   silently. With it removed, the first-frame "AudioSocket frame probe" logs
