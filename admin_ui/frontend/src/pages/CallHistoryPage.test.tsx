@@ -2,6 +2,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import axios from 'axios';
+import { toast } from 'sonner';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 
@@ -10,6 +11,7 @@ import CallHistoryPage from './CallHistoryPage';
 const mocks = vi.hoisted(() => ({ confirm: vi.fn() }));
 
 vi.mock('axios');
+vi.mock('sonner', () => ({ toast: { error: vi.fn() } }));
 vi.mock('../hooks/useConfirmDialog', () => ({
     useConfirmDialog: () => ({ confirm: mocks.confirm }),
 }));
@@ -446,6 +448,43 @@ describe('CallHistoryPage deep links', () => {
         expect(screen.queryByRole('dialog', { name: 'Call Details' })).not.toBeInTheDocument();
         expect(vi.mocked(axios.get).mock.calls.some(([url]) => url === '/api/calls/record-1')).toBe(false);
         expect(screen.getByRole('button', { name: 'Delete', exact: true })).toBeInTheDocument();
+    });
+
+    it.each(['table', 'detail'])('locks %s deletion, recovers on error and retries once', async (view) => {
+        mocks.confirm.mockResolvedValue(true);
+        let reject!: (error: Error) => void;
+        let resolve!: (value: unknown) => void;
+        vi.mocked(axios.delete)
+            .mockReturnValueOnce(new Promise((_yes, no) => { reject = no; }))
+            .mockReturnValueOnce(new Promise(yes => { resolve = yes; }));
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        render(<MemoryRouter initialEntries={[view === 'detail' ? '/history?id=record-1' : '/history']}><CallHistoryPage /></MemoryRouter>);
+        const remove = await screen.findByRole('button', { name: view === 'detail' ? 'Delete this call' : 'Delete', exact: true });
+        act(() => { fireEvent.click(remove); fireEvent.click(remove); });
+        await waitFor(() => expect(axios.delete).toHaveBeenCalledTimes(1));
+        expect(mocks.confirm).toHaveBeenCalledTimes(1);
+        expect(remove).toBeDisabled();
+        expect(remove.querySelector('.animate-spin')).not.toBeNull();
+        expect(remove).toHaveClass('disabled:opacity-50', 'disabled:cursor-not-allowed');
+        if (view === 'detail') {
+            expect(screen.getByRole('button', { name: 'Close call details' })).toBeDisabled();
+            fireEvent.keyDown(document, { key: 'Escape' });
+            expect(screen.getByRole('dialog', { name: 'Call Details' })).toBeInTheDocument();
+        }
+        await act(async () => reject(new Error('delete failed')));
+        expect(toast.error).toHaveBeenCalledWith('Failed to delete call record');
+        expect(remove).toBeEnabled();
+        fireEvent.click(remove);
+        await waitFor(() => expect(axios.delete).toHaveBeenCalledTimes(2));
+        // A successful refresh must remove the record rather than restore a stale row.
+        const previousGet = vi.mocked(axios.get).getMockImplementation()!;
+        vi.mocked(axios.get).mockImplementation(async (url, ...args) => url === '/api/calls'
+            ? { data: { calls: [], total: 0, total_pages: 0 } }
+            : previousGet(url, ...args));
+        await act(async () => resolve({ data: { status: 'deleted' } }));
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Delete', exact: true })).not.toBeInTheDocument());
+        expect(screen.queryByRole('dialog', { name: 'Call Details' })).not.toBeInTheDocument();
+        consoleError.mockRestore();
     });
 
     it('updates the recording button name for play, pause, resume, and playback completion', async () => {

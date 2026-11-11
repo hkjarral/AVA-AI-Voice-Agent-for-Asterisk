@@ -102,6 +102,14 @@ for endpoint selection, scoped credentials, no-auth servers and test limits.
 #### Pipelines
 Configure modular STT/LLM/TTS pipelines for mix-and-match provider combinations.
 
+Pipeline and Audio Profile saves/deletes show a spinner while pending and disable
+other controls on that page to prevent overlapping configuration writes. The editor
+cannot be changed or dismissed until the request finishes. A failed save keeps the
+draft open for correction or retry. Call History deletion shows the same pending
+feedback in both the table and call details; confirmation and error notifications
+remain in place. Saving configuration still requires the displayed apply/restart
+action before it affects runtime behavior.
+
 #### Audio Profiles
 Transport, codec, and output-downsampling settings selected globally, by Agent, or with `AI_AUDIO_PROFILE`. Use `telephony_ulaw_8k` for the compatibility baseline or opt an Agent into `telephony_enhanced_8k` for alias-safe 16/24 kHz-to-8 kHz downsampling. On a genuinely wideband extension or SIP trunk that negotiates G.722 (or another wideband codec), `wideband_pcm_16k` requests provider-native PCM, converts it once at the 16 kHz boundary, and uses per-call `slin16` AudioSocket framing. It requires Asterisk 20.17+, 21.12+, 22.7+, or 23.1+. The engine rejects that profile on older or unknown versions instead of risking bad audio. ExternalMedia RTP supports the two 8 kHz telephony profiles; its Transport page displays this compatibility boundary. Keep G.711/PSTN Agents on an 8 kHz profile. Rollback is simply assigning the Agent back to `telephony_ulaw_8k`.
 
