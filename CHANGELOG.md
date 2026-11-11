@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Admin backend dependencies (#783, #220):** upgrade psutil from 5.9.8 to
+  7.2.2 for system metrics and Local AI hardware recommendations.
+- **Admin frontend tooling (#220, #722):** use Node 22 (minimum 22.12) for
+  frontend CI, Docker builds, and local development; upgrade Jest DOM to 7.0.1.
+  Preserve the existing ESLint versions, configuration, and warning threshold.
+### Security
+
+- Update the Admin frontend lockfile to follow-redirects 1.16.3, preserving
+  custom sensitive-header handling across JavaScript realms when Node clients
+  follow redirects (GHSA-mrwp-f3q8-3g9p).
+
 ### Added
 
 - **Attended transfer announcement voice:** new optional
@@ -35,6 +48,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   16 kHz first frame could otherwise swap the whole call. Per-frame DC removal
   stays disabled, as it has been since v5.1.7, because subtracting each frame's
   mean adds a frame-edge artifact measured at -15 to -30 dB relative to speech.
+
+### Changed
+
+- **Admin backend dependencies (#816):** update FastAPI to 0.162.0, Pydantic to
+  2.14.3, python-multipart to 0.0.33, WebSockets to 17.4, and the bundled
+  FFmpeg decoder package to 0.8.1.
 
 ## [7.7.2] - 2026-11-08
 
