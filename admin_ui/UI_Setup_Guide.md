@@ -102,7 +102,8 @@ The guided first-call flow is available in v7.7.2.
 
 ### Prerequisites
 
-- Node.js 18+ and npm
+- Node.js 22 (22.12.0 or newer within 22.x) and npm
+  (the commands below use nvm; skip `nvm install` / `nvm use` if this version is already installed)
 - Python 3.11+ (required by the Admin WebSockets dependency)
 - Git
 
@@ -112,7 +113,9 @@ The guided first-call flow is available in v7.7.2.
 
 ```bash
 cd admin_ui/frontend
-npm install
+nvm install
+nvm use
+npm ci
 npm run build
 ```
 
@@ -778,7 +781,9 @@ git pull origin main
 
 # Rebuild frontend
 cd admin_ui/frontend
-npm install
+nvm install
+nvm use
+npm ci
 npm run build
 cp -r dist/* ../backend/static/
 

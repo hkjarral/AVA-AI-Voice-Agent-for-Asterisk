@@ -13,9 +13,16 @@ from collections import OrderedDict
 class HandoffEvidence:
     def __init__(self):
         self.calls = {}
+        # Per-call flags for unannounced deferred transfers: whether a result
+        # was delivered, and whether provider VAD reports the caller talking.
+        self.deferred = {}
 
     def reset(self, call_id):
         self.calls.pop(call_id, None)
+        self.deferred.pop(call_id, None)
+
+    def deferred_flags(self, call_id):
+        return self.deferred.setdefault(call_id, {"result_sent": False, "caller_speaking": False})
 
     def state(self, call_id):
         return self.calls.setdefault(call_id, {"turns": OrderedDict(), "current": None, "active": None})
