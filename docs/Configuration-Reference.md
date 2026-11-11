@@ -973,7 +973,9 @@ tools:
   handoff announcement use `handoff.start_timeout_sec`. Modular pipelines commit
   after their own announcement and are not affected.
 - **Behaviour:** the timer starts when the provider has sent the tool result to
-  the model. For OpenAI Realtime and Grok that is after the parent
+  the model, or reports a failed send via
+  `handoff_result_sent(..., success=False)`. Successful delivery is not required
+  for a transfer to commit. For OpenAI Realtime and Grok sending follows the parent
   `response.done` arrives, which can take up to 5 s. If no agent audio has
   started when the timer expires, the engine commits the armed transfer through
   the normal drain-and-commit path. If agent audio starts first, the timer

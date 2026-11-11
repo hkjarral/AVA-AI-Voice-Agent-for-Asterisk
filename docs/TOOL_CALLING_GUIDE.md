@@ -1083,8 +1083,10 @@ models), no completion event ever arrives and the transfer would stay armed.
 `tools.transfer.deferred_silent_commit_timeout_sec` (default 4, range 0-30,
 0 disables) bounds that wait: if no reply audio has started by then, the engine
 commits the armed transfer through the normal drain-and-commit path. The timer
-starts once the provider has sent the tool result to the model (for OpenAI
-Realtime and Grok, after the parent `response.done`). It holds while agent audio
+starts once the provider has sent the tool result to the model or reports a
+failed send via `handoff_result_sent(..., success=False)`. Successful delivery
+is not required for the transfer to commit. For OpenAI
+Realtime and Grok, sending follows the parent `response.done`. It holds while agent audio
 plays, after which the transfer commits when that reply finishes, as before. It
 also pauses while the caller is talking, because provider VAD holds the reply
 until they stop, and restarts at the full timeout when they finish. Providers

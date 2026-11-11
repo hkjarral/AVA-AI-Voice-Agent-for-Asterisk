@@ -286,6 +286,21 @@ async def test_rearm_same_action_keeps_one_watchdog_and_new_action_replaces_it(m
     engine._deferred_transfer_watchdogs[call_id]["task"].cancel()
 
 
+async def test_stale_result_preserves_current_watchdog(monkeypatch):
+    call_id = "call-stale-result"
+    engine, session = await _engine_with_pending(call_id)
+    commits = _fake_commit(engine, monkeypatch)
+    action_id = session.pending_deferred_transfer["id"]
+    await engine.on_provider_event(_armed(call_id, action_id))
+    task = engine._deferred_transfer_watchdogs[call_id]["task"]
+
+    await engine.on_provider_event(_armed(call_id, "old-replaced-action"))
+
+    assert engine._deferred_transfer_watchdogs[call_id]["task"] is task
+    await asyncio.wait_for(task, timeout=2)
+    assert commits == [action_id]
+
+
 async def test_timeout_default_and_bounds():
     engine = _build_engine()
     session = await _armed_session(engine, "call-bounds")

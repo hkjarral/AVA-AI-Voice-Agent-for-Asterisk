@@ -22841,7 +22841,6 @@ class Engine:
             return  # A suppressed duplicate request reports the same action again.
         if action_id and self._deferred_transfer_commit_in_flight(call_id, action_id):
             return  # Already committing; a second timer would retry that commit.
-        self._stand_down_deferred_transfer_watchdog(call_id, reason="replaced")
         pending = getattr(session, "pending_deferred_transfer", None)
         if (
             not action_id
@@ -22851,6 +22850,7 @@ class Engine:
             or getattr(session, "pipeline_name", None)
         ):
             return
+        self._stand_down_deferred_transfer_watchdog(call_id, reason="replaced")
         timeout_sec = self._deferred_transfer_silent_commit_timeout(session)
         if timeout_sec <= 0:
             return
