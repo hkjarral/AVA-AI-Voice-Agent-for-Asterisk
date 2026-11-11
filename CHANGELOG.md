@@ -13,6 +13,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   custom sensitive-header handling across JavaScript realms when Node clients
   follow redirects (GHSA-mrwp-f3q8-3g9p).
 
+### Added
+
+- **Attended transfer announcement voice:** new optional
+  `tools.attended_transfer.tts_provider` (a pipeline TTS component key such as
+  `google_tts`) and `tts_options` (`voice`, `language`) let a configured
+  provider speak every attended-transfer prompt. Unset keeps Local AI Server
+  TTS. A set provider fails closed, with no fallback to Local AI Server or
+  another provider, and is synthesized before dialling while the caller hears
+  hold music; if that fails, no call is placed and the agent continues with
+  the caller. `ai_briefing` still needs Local AI Server LLM capability to write
+  the briefing. The Admin UI adds an Announcement voice selector backed by
+  `GET /api/config/providers/tts-options`.
+
 ### Fixed
 
 - **AudioSocket inbound audio:** since v5.1.7 a function-local `import audioop`
