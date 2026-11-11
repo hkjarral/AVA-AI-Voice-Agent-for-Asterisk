@@ -550,9 +550,10 @@ This does not repair missing inbound audio throughout a call.
 Save preserves unrelated YAML and does not restart services. Streaming changes
 require an AI Engine restart; apply them after active calls finish. Set delay back
 to **0**, save, and restart after calls finish to disable the feature. WebSocket,
-explicit file playback, and existing file fallback remain unchanged. Existing
-Greeting Min Start/Greeting RTP Wait controls (#754) and transfer handoff are
-separate work.
+explicit file playback, and existing file fallback remain unchanged. For the
+existing Greeting Min Start/Greeting RTP Wait controls, see
+[Saved greeting controls in Admin UI](#saved-greeting-controls-in-admin-ui).
+Transfer handoff remains separate work.
 
 Transport contracts: [Asterisk AudioSocket protocol](https://docs.asterisk.org/Configuration/Channel-Drivers/AudioSocket/)
 and [Python monotonic loop time](https://docs.python.org/3.11/library/asyncio-eventloop.html#asyncio.loop.time).
