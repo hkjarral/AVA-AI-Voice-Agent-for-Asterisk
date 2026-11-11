@@ -3,9 +3,10 @@ import TransferHandoffFields from './TransferHandoffFields';
 import EndpointDiscoveryModal from './EndpointDiscoveryModal';
 import { stageAdditions } from './endpointDiscovery';
 import React, { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { Plus, Trash2, Settings, Loader2, X } from 'lucide-react';
+import { Plus, Trash2, Settings, Loader2, X, CheckCircle2, XCircle, HelpCircle, ExternalLink } from 'lucide-react';
 import { FormInput, FormSwitch, FormSelect, FormLabel } from '../ui/FormComponents';
 import { Modal } from '../ui/Modal';
 import { EmailTemplateModal } from './EmailTemplateModal';
@@ -120,6 +121,26 @@ const DEVICE_STATE_STATUS_OPTIONS: { value: string; label: string }[] = [
     { value: 'away', label: 'Away' },
     { value: 'unavailable', label: 'Unavailable' },
 ];
+
+// One entry of GET /api/config/providers/tts-options (secret-safe).
+interface AnnouncementVoiceOption {
+    key: string;
+    label: string;
+    ready: boolean;
+    reason?: string;
+}
+
+const ANNOUNCEMENT_VOICE_NOT_READY: Record<string, string> = {
+    disabled: 'This provider is disabled.',
+    credential_missing: 'Its credentials are not configured.',
+    voice_missing: 'It has no voice model configured.',
+};
+
+const isAnnouncementVoiceOption = (value: unknown): value is AnnouncementVoiceOption => {
+    if (!value || typeof value !== 'object') return false;
+    const item = value as Record<string, unknown>;
+    return typeof item.key === 'string' && typeof item.label === 'string' && typeof item.ready === 'boolean';
+};
 
 const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, onSaveNow, section }: ToolFormProps) => {
     const [discoveryOpen, setDiscoveryOpen] = useState(false);
@@ -1267,6 +1288,35 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
         };
     }, []);
 
+    // Pipeline TTS components that can speak the attended-transfer prompts.
+    const [announcementVoices, setAnnouncementVoices] = useState<AnnouncementVoiceOption[]>([]);
+    const [announcementVoicesLoading, setAnnouncementVoicesLoading] = useState(true);
+    const [announcementVoicesFailed, setAnnouncementVoicesFailed] = useState(false);
+    useEffect(() => {
+        let cancelled = false;
+        const load = async () => {
+            try {
+                const res = await axios.get('/api/config/providers/tts-options');
+                const items: unknown = res?.data;
+                if (!cancelled) {
+                    setAnnouncementVoices(Array.isArray(items) ? items.filter(isAnnouncementVoiceOption) : []);
+                }
+            } catch {
+                // Readiness is unknown, not "not configured".
+                if (!cancelled) {
+                    setAnnouncementVoices([]);
+                    setAnnouncementVoicesFailed(true);
+                }
+            } finally {
+                if (!cancelled) setAnnouncementVoicesLoading(false);
+            }
+        };
+        load();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
     useEffect(() => {
         // If user has no Live Agents configured or already has an override set, keep advanced visible.
         if (!hasLiveAgents || hasLiveAgentDestinationOverride) {
@@ -1357,6 +1407,61 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
         }
         onChange({ ...config, attended_transfer: next });
     };
+
+    // tts_provider / tts_options are written only when the operator changes
+    // them, so an untouched form saves attended_transfer exactly as loaded.
+    const handleAnnouncementVoiceChange = (componentKey: string) => {
+        const next: Record<string, unknown> = { ...(config.attended_transfer || {}) };
+        if (componentKey) {
+            // Voice names are provider-specific; drop them when switching.
+            if (next.tts_provider !== componentKey) delete next.tts_options;
+            next.tts_provider = componentKey;
+        } else {
+            delete next.tts_provider;
+            delete next.tts_options;
+        }
+        onChange({ ...config, attended_transfer: next });
+    };
+
+    const handleAnnouncementVoiceOption = (field: 'voice' | 'language', value: string) => {
+        const next: Record<string, unknown> = { ...(config.attended_transfer || {}) };
+        const current = next.tts_options;
+        const options: Record<string, unknown> =
+            current && typeof current === 'object' && !Array.isArray(current)
+                ? { ...(current as Record<string, unknown>) }
+                : {};
+        if (value.trim()) options[field] = value;
+        else delete options[field];
+        if (Object.keys(options).length > 0) next.tts_options = options;
+        else delete next.tts_options;
+        onChange({ ...config, attended_transfer: next });
+    };
+
+    const selectedTtsProvider: string =
+        typeof config.attended_transfer?.tts_provider === 'string' ? config.attended_transfer.tts_provider : '';
+    const selectedAnnouncementVoice = selectedTtsProvider
+        ? announcementVoices.find((option) => option.key === selectedTtsProvider)
+        : undefined;
+    const announcementVoiceText = (field: 'voice' | 'language'): string => {
+        const value = config.attended_transfer?.tts_options?.[field];
+        return typeof value === 'string' ? value : '';
+    };
+    const announcementVoiceSelectOptions = [
+        { value: '', label: 'Local AI Server (default)' },
+        ...announcementVoices.map((option) => ({
+            value: option.key,
+            label: `${option.label} — ${option.ready ? 'ready' : 'not ready'}`,
+        })),
+        ...(selectedTtsProvider && !selectedAnnouncementVoice
+            ? [{
+                value: selectedTtsProvider,
+                label:
+                    announcementVoicesLoading || announcementVoicesFailed
+                        ? selectedTtsProvider
+                        : `${selectedTtsProvider} — not configured`,
+            }]
+            : []),
+    ];
 
     // Transfer Destinations Management
     const handleEditDestination = (key: string, data: any) => {
@@ -1697,7 +1802,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                 <div hidden={section !== undefined && section !== 'transfer'} className="border border-border rounded-lg p-4 bg-card/50">
                     <FormSwitch
                         label="Attended Transfer (Warm)"
-                        description="Warm transfer with MOH, one-way announcement to the agent, and DTMF accept/decline. Requires Local AI Server for TTS. AI Briefing is experimental, requires Local AI Server LLM capability, and falls back to Basic TTS when unavailable."
+                        description="Warm transfer with MOH, one-way announcement to the agent, and DTMF accept/decline. Prompts are spoken by the selected announcement voice (Local AI Server when none is selected). AI Briefing is experimental, needs Local AI Server LLM capability to write the summary, and falls back to Basic TTS when unavailable."
                         checked={config.attended_transfer?.enabled ?? false}
                         onChange={(e) => handleAttendedTransferToggle(e.target.checked)}
                         className="mb-0 border-0 p-0 bg-transparent"
@@ -1724,8 +1829,94 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                         { value: 'ai_briefing', label: 'AI Briefing (Experimental)' },
                                         { value: 'caller_recording', label: 'Caller Recording' },
                                     ]}
-                                    tooltip="Basic TTS uses caller ID and context. AI Briefing is experimental and generates a short AI-written summary from the live conversation using Local AI Server LLM. Caller Recording asks the caller to state their name and reason, then plays that clip to the destination agent."
+                                    tooltip="Basic TTS uses caller ID and context. AI Briefing is experimental: Local AI Server LLM writes a short summary of the live conversation, and the announcement voice speaks it. Caller Recording asks the caller to state their name and reason, then plays that clip to the destination agent."
                                 />
+                                <FormSelect
+                                    label="Announcement voice"
+                                    value={selectedTtsProvider}
+                                    onChange={(e) => handleAnnouncementVoiceChange(e.target.value)}
+                                    options={announcementVoiceSelectOptions}
+                                    tooltip="TTS provider that speaks the announcement and prompts. Local AI Server (default) keeps the built-in path. A selected provider is never replaced by another: if it fails before dialling, no call is placed to the destination and the AI carries on with the caller. In AI Briefing mode the intro and summary are spoken after the destination answers: if the intro fails, the answered destination is hung up and the AI carries on with the caller; if only the summary fails, it is skipped and the accept prompt follows."
+                                />
+                                {selectedTtsProvider && (
+                                    <>
+                                        <FormInput
+                                            label="Voice name"
+                                            value={announcementVoiceText('voice')}
+                                            onChange={(e) => handleAnnouncementVoiceOption('voice', e.target.value)}
+                                            placeholder="Provider default"
+                                            tooltip="Voice for the selected provider, for example en-US-Chirp3-HD-Charon for Google. Leave blank to use the provider's configured voice."
+                                        />
+                                        <FormInput
+                                            label="Voice language"
+                                            value={announcementVoiceText('language')}
+                                            onChange={(e) => handleAnnouncementVoiceOption('language', e.target.value)}
+                                            placeholder="Provider default"
+                                            tooltip="Language code for the selected provider, for example en-US. Leave blank to use the provider's configured language."
+                                        />
+                                        {announcementVoicesFailed ? (
+                                            <div
+                                                role="status"
+                                                className="md:col-span-2 flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground"
+                                            >
+                                                <HelpCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                                                <div>
+                                                    <p className="font-medium">{"Couldn't load the provider list"}</p>
+                                                    <p className="mt-0.5 opacity-90">
+                                                        Readiness is unknown. Reload the page to check again.
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div
+                                                role="status"
+                                                className={`md:col-span-2 flex items-start gap-2 rounded-md border p-3 text-xs ${
+                                                    selectedAnnouncementVoice?.ready
+                                                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                                                        : 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                                                }`}
+                                            >
+                                                {selectedAnnouncementVoice?.ready ? (
+                                                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                                                ) : (
+                                                    <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                                                )}
+                                                <div>
+                                                    <p className="font-medium">
+                                                        {selectedAnnouncementVoice?.ready
+                                                            ? 'Provider is ready'
+                                                            : announcementVoicesLoading
+                                                              ? 'Checking provider...'
+                                                              : 'Provider is not ready'}
+                                                    </p>
+                                                    {!selectedAnnouncementVoice?.ready && !announcementVoicesLoading && (
+                                                        <>
+                                                            <p className="mt-0.5 opacity-90">
+                                                                {selectedAnnouncementVoice
+                                                                    ? ANNOUNCEMENT_VOICE_NOT_READY[selectedAnnouncementVoice.reason ?? ''] ?? 'Check it on the Providers page.'
+                                                                    : 'This provider is not configured.'}{' '}
+                                                                Attended transfers will not ring the destination until it is ready; there is no fallback voice.
+                                                            </p>
+                                                            {/* New tab: this page has unsaved edits that navigating away would drop. */}
+                                                            <Link
+                                                                to="/providers"
+                                                                target="_blank"
+                                                                rel="noopener noreferrer"
+                                                                className="mt-1 inline-flex items-center gap-1 underline"
+                                                            >
+                                                                Open Providers <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                                                                <span className="sr-only">(opens in a new tab)</span>
+                                                            </Link>
+                                                        </>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                        <p className="md:col-span-2 text-xs text-muted-foreground">
+                                            This status reflects the saved provider settings. Adding or changing a TTS provider needs an AI Engine restart before attended transfers can use it; a reload is not enough.
+                                        </p>
+                                    </>
+                                )}
                                 <FormInput
                                     label="MOH Class"
                                     value={config.attended_transfer?.moh_class || 'default'}
@@ -1751,7 +1942,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                     type="number"
                                     value={config.attended_transfer?.tts_timeout_seconds ?? 8}
                                     onChange={(e) => updateNestedConfig('attended_transfer', 'tts_timeout_seconds', parseInt(e.target.value) || 8)}
-                                    tooltip="Max time to wait for Local AI Server TTS per prompt."
+                                    tooltip="Max time to wait for the announcement voice (Local AI Server when none is selected) to synthesize each prompt."
                                 />
                                 <FormInput
                                     label="Accept Digit"
@@ -1795,7 +1986,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                 {config.attended_transfer?.screening_mode === 'ai_briefing' && (
                                     <>
                                         <div className="md:col-span-2 space-y-2">
-                                            <FormLabel tooltip="Spoken to the destination agent before the AI-generated summary. AI Briefing is experimental, requires Local AI Server LLM capability, and falls back to Basic TTS when summary generation is unavailable.">
+                                            <FormLabel tooltip="Spoken to the destination agent before the AI-generated summary. AI Briefing is experimental, needs Local AI Server LLM capability to write the summary, and falls back to Basic TTS when summary generation is unavailable.">
                                                 AI Briefing Intro Template (Experimental)
                                             </FormLabel>
                                             <textarea
@@ -1811,14 +2002,14 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                             value={config.attended_transfer?.ai_briefing_language ?? ''}
                                             onChange={(e) => updateNestedConfig('attended_transfer', 'ai_briefing_language', e.target.value)}
                                             placeholder="e.g. German, French, Spanish (leave blank for English)"
-                                            tooltip="Language for the AI-generated briefing text. Must match the language your Local AI Server TTS voice speaks. Leave blank for English."
+                                            tooltip="Language for the AI-generated briefing text. Must match the language the announcement voice speaks (Local AI Server when none is selected). Leave blank for English."
                                         />
                                         <FormInput
                                             label="AI Briefing Timeout (seconds, Experimental)"
                                             type="number"
                                             value={config.attended_transfer?.ai_briefing_timeout_seconds ?? 2}
                                             onChange={(e) => updateNestedConfig('attended_transfer', 'ai_briefing_timeout_seconds', parseFloat(e.target.value) || 2)}
-                                            tooltip="Maximum time to wait for the experimental Local AI Server LLM briefing before falling back to Basic TTS."
+                                            tooltip="Maximum time to wait for Local AI Server LLM to write the experimental briefing before falling back to Basic TTS. Speaking it is bounded separately by TTS Timeout."
                                         />
                                     </>
                                 )}

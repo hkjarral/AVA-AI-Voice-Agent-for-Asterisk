@@ -166,7 +166,7 @@ Modular pipelines (e.g., `local_hybrid`) now support full tool execution through
 
 **Supported Tools**: All 6 tools validated in production
 - ✅ `transfer` - Tested with call transfers to ring groups
-- 🟡 `attended_transfer` - Deployed (warm transfer w/ announcement + DTMF acceptance; requires Local AI Server)
+- 🟡 `attended_transfer` - Deployed (warm transfer w/ announcement + DTMF acceptance; prompts use Local AI Server TTS or the configured `tts_provider`)
 - ✅ `hangup_call` - Tested with farewell messages
 - ✅ `send_email_summary` - Tested with auto-summaries
 - ✅ `request_transcript` - Tested with email delivery
@@ -292,8 +292,26 @@ migration is required. Existing in-memory sessions are not recovered on restart.
 **Key constraints**:
 - This tool is separate from `transfer`; it does **not** change existing transfer behavior.
 - Only supported for `type: extension` destinations.
-- Requires **Local AI Server** (announcement/prompt TTS is mandatory).
+- Announcement and prompt TTS is mandatory. Local AI Server speaks every prompt unless `tools.attended_transfer.tts_provider` is set; when it is set, that provider speaks the agent announcement, the AI briefing, the accept/decline prompt, `caller_connected_prompt` and `caller_declined_prompt`.
+- A configured `tts_provider` fails closed: there is no fallback to Local AI Server or to another provider. The accept prompt (and the announcement in `basic_tts` and `caller_recording`) is synthesized before dialling, while the caller hears hold music. If that synthesis fails, the music stops, no call is placed to the destination and the AI carries on with the caller. In `basic_tts`, the commit returns a failure. In `caller_recording`, the tool has already acknowledged initiation with success; its background workflow invokes engine recovery instead of changing that tool result.
+- `ai_briefing` still needs Local AI Server LLM capability to write the briefing. Only the speaking moves to `tts_provider`.
 - Config compatibility: `agent_accept_prompt_template` is the canonical key; `agent_accept_prompt` is accepted as a legacy alias.
+
+#### Announcement voice (`tts_provider`)
+
+`tools.attended_transfer.tts_provider` is optional. Its value is a pipeline TTS component key (`google_tts`, `deepgram_tts`, `openai_tts`, `elevenlabs_tts`, `groq_tts`, `azure_tts`, `cambai_tts`, `fishaudio_tts` or a custom Fish Audio `*_tts` instance), and the provider must be configured under `providers:` with working credentials. Unset, every prompt is synthesized by Local AI Server, as before.
+
+`tools.attended_transfer.tts_options` is optional and used only with `tts_provider`. It takes `voice` (a provider voice name, for example `en-US-Chirp3-HD-Charon` for Google) and `language` (for example `en-US`). Omitted keys fall back to the provider block's own voice and language. `language` has no effect with `openai_tts`, `groq_tts`, `elevenlabs_tts` or `fishaudio_tts`, which take a voice only.
+
+- Rendered announcement, briefing, and prompt text is sent to the selected TTS provider. This can include caller names, numbers, and conversation summaries. Consider this data transmission and any caller-notice obligations before selecting a cloud provider.
+- Output is always forced to mu-law 8 kHz, whatever the provider block says.
+- `tts_timeout_seconds` (default 8) bounds each synthesis, for Local AI Server and for the selected provider alike, and is passed to the adapter as its request timeout. A timeout counts as a failure. Pre-dial synthesis runs while the caller is on hold music, and the texts are synthesized concurrently, so synthesis adds up to one `tts_timeout_seconds` before dialing. Pipeline adapter cleanup has separate two-second budgets for closing the call and stopping the adapter (up to four additional seconds); a slow cleanup does not discard successfully synthesized audio.
+- In `ai_briefing` mode only the accept prompt is prepared before dialling. The briefing is written after the destination answers, so the intro and the briefing are synthesized then (as is the basic announcement when the briefing falls back to `basic_tts`). If the intro or fallback announcement fails, the answered destination is hung up and the AI carries on with the caller. If only the briefing fails, it is skipped and the accept prompt follows.
+- Failures are logged with the exception class only, never the message.
+- Admin UI: Tools > Transfer > Attended Transfer > **Announcement voice** lists the configured TTS providers with a ready / not ready status (from `GET /api/config/providers/tts-options`). Voice name and Voice language appear once a provider is selected. Choosing "Local AI Server (default)" removes both keys.
+- The ready status is read from the saved configuration, not from the running engine. Adding or changing a TTS provider (its `providers:` block or credentials) needs an AI Engine restart before attended transfers can use it; a config reload is not enough.
+
+For Google, `google_tts` authenticates with an API key or `GOOGLE_APPLICATION_CREDENTIALS`; see the Google (pipelines) note in [Configuration-Reference.md](Configuration-Reference.md).
 
 **How destination selection works**:
 - The tool parameter is `destination` and it maps to a key under `tools.transfer.destinations`.
@@ -1198,7 +1216,11 @@ tools:
     moh_class: "default"              # Asterisk MOH class for caller during dial/briefing
     dial_timeout_seconds: 30
     accept_timeout_seconds: 15
-    tts_timeout_seconds: 8
+    tts_timeout_seconds: 8            # Per prompt, for Local AI Server or tts_provider
+    # tts_provider: google_tts        # Optional pipeline TTS component key; unset = Local AI Server
+    # tts_options:                    # Optional, used only with tts_provider
+    #   voice: "en-US-Chirp3-HD-Charon"
+    #   language: "en-US"
     screening_mode: "basic_tts"       # basic_tts | ai_briefing (experimental) | caller_recording
     ai_briefing_timeout_seconds: 2.0  # Experimental Local AI Server LLM summary timeout; falls back to basic_tts on failure
     ai_briefing_intro_template: "Hi, this is Ava. Here is a short summary of the caller."
@@ -1211,12 +1233,14 @@ tools:
     agent_accept_prompt_template: "Press 1 to accept this transfer, or 2 to decline."
     caller_connected_prompt: "Connecting you now."  # Optional
     caller_declined_prompt: "I’m not able to complete that transfer right now. Would you like me to take a message?"  # Optional
-    # Local AI Server dependency notes:
-    # - basic_tts: requires Local AI Server TTS
-    # - caller_recording: requires Local AI Server TTS for intro/prompt
-    #                     operators are responsible for meeting local caller notice/consent requirements
+    # Announcement voice notes:
+    # - tts_provider unset: every prompt uses Local AI Server TTS (unchanged)
+    # - tts_provider set: every prompt uses that provider only; there is no fallback.
+    #   The accept prompt (and the announcement in basic_tts / caller_recording) is
+    #   synthesized before dialling; if that fails, nothing is dialled and the AI resumes.
+    # - caller_recording: operators are responsible for meeting local caller notice/consent requirements
     #                     screening audio is used transiently for the transfer workflow, not as a retained recording feature
-    # - ai_briefing (experimental): requires Local AI Server TTS and Local AI Server LLM capability
+    # - ai_briefing (experimental): the summary text requires Local AI Server LLM capability
     #                               falls back to basic_tts if summary generation is unavailable
 
   # ----------------------------------------------------------------------------
@@ -1653,7 +1677,7 @@ docker logs ai_engine | egrep "Transfer requested|Unified transfer tool"
 ### Test Attended Transfer (Warm Transfer)
 
 **1. Prerequisites**:
-- Local AI Server running (required for announcement/prompt TTS)
+- Local AI Server running, or `tools.attended_transfer.tts_provider` set to a provider shown as ready in the Admin UI (Announcement voice). `ai_briefing` also needs Local AI Server LLM capability.
 - `tools.attended_transfer.enabled: true`
 - Destination configured with `attended_allowed: true`:
   - Example: `tools.transfer.destinations.support_agent.attended_allowed: true`
@@ -1984,8 +2008,8 @@ explicit engine event to the active provider. The agent explains the failed
 connection in the caller's language and follows its configured fallback behavior;
 it is instructed not to redial automatically. This recovery response does not
 require Local AI Server TTS. A configured `caller_declined_prompt` is supplied to
-Google Live as the preferred failure response. Other providers retain their
-existing local failure-prompt path.
+Google Live as the preferred failure response. Other providers speak `caller_declined_prompt`
+with the announcement voice: `tts_provider` when set, otherwise Local AI Server.
 
 Call History records **Transfer initiated** separately from **Transfer failed** or
 **Transfer completed**. Initiation and terminal outcomes retain the
