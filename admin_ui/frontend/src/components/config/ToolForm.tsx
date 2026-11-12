@@ -2,7 +2,7 @@ import { ToolSection } from './toolSections';
 import TransferHandoffFields from './TransferHandoffFields';
 import EndpointDiscoveryModal from './EndpointDiscoveryModal';
 import { stageAdditions } from './endpointDiscovery';
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';

@@ -100,12 +100,12 @@ function safeParseObject(raw?: string | null): Record<string, unknown> {
 }
 
 export interface AgentLike {
-    provider?: string;
-    tools_json?: string;
-    mcp_json?: string;
-    extra_json?: string;
-    tool_configs_json?: string;
-    hangup_policy_json?: string;
+    provider?: string | null;
+    tools_json?: string | null;
+    mcp_json?: string | null;
+    extra_json?: string | null;
+    tool_configs_json?: string | null;
+    hangup_policy_json?: string | null;
 }
 
 export function parseAgentConfig(agent: AgentLike | null | undefined): AgentToolState {

@@ -79,10 +79,12 @@ describe('PhaseToolGroup', () => {
 describe('InCallToolGroup', () => {
     it('shows the Calendly attempt reference next to the recorded outcome', () => {
         render(<InCallToolGroup entries={[{
-            name: 'calendly_calendar', action: 'create_booking', status: 'pending',
+            name: 'calendly_calendar', action: 'create_booking', status: 'failure',
+            params: {}, result: 'pending', timestamp: '2030-01-01T00:00:00Z',
             reservation_status: 'uncertain', attempt_reference: 'request-ref-123', duration_ms: 20,
         }]} />);
         expect(screen.getByText('request-ref-123')).toBeInTheDocument();
+        expect(screen.getByText('pending')).toBeInTheDocument();
         expect(screen.getByText(/Recorded outcome: uncertain/)).toBeInTheDocument();
         expect(screen.getByRole('link', { name: 'Review Calendly requests' })).toHaveAttribute('href', '/tools?section=calendly_calendar');
     });

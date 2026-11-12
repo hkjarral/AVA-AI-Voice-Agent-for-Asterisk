@@ -186,6 +186,10 @@ jobs:
         working-directory: admin_ui/frontend
         run: npm run lint
 
+      - name: Typecheck frontend
+        working-directory: admin_ui/frontend
+        run: npm run typecheck
+
       - name: Test frontend
         working-directory: admin_ui/frontend
         run: npm test

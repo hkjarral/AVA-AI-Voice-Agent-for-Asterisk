@@ -186,7 +186,7 @@ export const InCallToolGroup = ({ entries }: { entries: InCallToolCall[] }) => {
             {entries.map((tool, i) => {
                 const succeeded = tool.status ? tool.status === 'success' : tool.result === 'success';
                 const status: ToolExecutionStatus = tool.name === 'calendly_calendar' && ['submitting', 'uncertain', 'needs_operator'].includes(tool.reservation_status || '') ? 'pending' : succeeded ? 'ok' : 'error';
-                const hasParams = tool.params && typeof tool.params === 'object' && Object.keys(tool.params).length > 0;
+                const hasParams = Boolean(tool.params && typeof tool.params === 'object' && Object.keys(tool.params).length > 0);
                 const invocationId = tool.tool_call_id || tool.call_id;
                 return (
                     <div key={`in-${invocationId || tool.name}-${i}`} className="bg-muted/30 rounded-lg p-3 text-sm">

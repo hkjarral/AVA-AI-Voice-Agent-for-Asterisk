@@ -16,7 +16,7 @@ This workflow keeps feedback early while avoiding a full review and Docker build
 
 | Stage | Trigger | Required work |
 | --- | --- | --- |
-| Draft / fast | Every PR push | Core Python tests and coverage, Admin backend tests, Admin frontend lint/tests/build, secret scan, source compilation, CLI cross-compile/tests, CodeQL |
+| Draft / fast | Every PR push | Core Python tests and coverage, Admin backend tests, Admin frontend lint/typecheck/tests/build, secret scan, source compilation, CLI cross-compile/tests, CodeQL |
 | Final | Ready-for-review transition, optional draft `full-ci` label, non-draft PR open/update, manual run, or protected-branch push | Everything above plus Docker image builds and size budgets |
 
 The stable `PR gate` check aggregates the CI jobs. It accepts an intentionally skipped Docker job on an ordinary draft, but requires that job to pass for a non-draft or `full-ci` PR. A canceled or failed dependency fails the gate. The normal final path is the ready transition, which enforces final validation without depending on a label convention. `full-ci` is an explicit override for the less common case where maintainers need the same validation while keeping the PR in draft.

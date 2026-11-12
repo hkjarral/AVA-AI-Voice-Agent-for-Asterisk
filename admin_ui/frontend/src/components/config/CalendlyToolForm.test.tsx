@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom/vitest';
-import axios from 'axios';
+import axios, { type AxiosRequestConfig } from 'axios';
 import CalendlyToolForm from './CalendlyToolForm';
 
 vi.mock('../../auth/AuthContext', () => ({ useAuth: () => ({ token: 'synthetic-admin-token' }) }));
@@ -137,10 +137,10 @@ describe('Calendly guided setup', () => {
 
 it('keeps setup operations separate across appointments and remount, and cleans only the selected operation', async () => {
     mock();
-    const original = vi.mocked(axios.request).getMockImplementation()!;
+    const original = vi.mocked(axios.request).getMockImplementation()! as (request: AxiosRequestConfig) => Promise<{ data: unknown }>;
     vi.mocked(axios.request).mockImplementation(async r => {
         const response = await original(r);
-        if (r.url?.endsWith('/test-proposals')) response.data.operation = (r.data as { operation: string }).operation;
+        if (r.url?.endsWith('/test-proposals')) response.data = { ...(response.data as Record<string, unknown>), operation: (r.data as { operation: string }).operation };
         if (r.url?.endsWith('/test-bookings')) response.data = { status: 'success', reservation_status: 'confirmed', message: 'Appointment booked', attempt_reference: 'attempt' };
         if (r.url?.endsWith('/attempts')) response.data = ['attempt', 'unrelated'].map(id => ({ id, state: 'confirmed', updated: 1 }));
         if (r.url?.includes('/attempts/')) response.data = { status: 'success', reservation_status: 'confirmed', message: 'Appointment booked', attempt_reference: r.url.split('/').pop() };
@@ -188,7 +188,7 @@ it('keeps setup operations separate across appointments and remount, and cleans 
 
 it.each([null, {}, 'invalid'])('shows a recovery-load error for malformed attempts %j', async value => {
     mock();
-    const original = vi.mocked(axios.request).getMockImplementation()!;
+    const original = vi.mocked(axios.request).getMockImplementation()! as (request: AxiosRequestConfig) => Promise<{ data: unknown }>;
     vi.mocked(axios.request).mockImplementation(async r => r.url?.endsWith('/attempts') ? { data: value } : original(r));
     render(<CalendlyToolForm config={{}} onChange={vi.fn()} onSave={vi.fn()} />);
     expect(await screen.findByRole('alert')).toHaveTextContent('Unable to load pending Calendly requests');

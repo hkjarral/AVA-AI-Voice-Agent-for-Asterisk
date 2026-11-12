@@ -273,7 +273,7 @@ const ProfilesPage = () => {
     };
 
     const updateOptionalProfileNumber = (field: string, rawValue: string) => {
-        setProfileForm((current) => {
+        setProfileForm((current: Record<string, unknown>) => {
             const next = { ...current };
             if (rawValue.trim() === '') {
                 delete next[field];

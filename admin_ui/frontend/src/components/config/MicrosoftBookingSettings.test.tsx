@@ -23,7 +23,7 @@ describe('Microsoft calendar booking settings', () => {
         fireEvent.change(screen.getByLabelText('Business name'), { target: { value: 'Example Business' } });
         fireEvent.change(screen.getByLabelText('Invitation subject template'), { target: { value: '{{business_name}}: {{meeting_purpose}}' } });
         fireEvent.change(screen.getByLabelText('Invitation body template (plain text)'), { target: { value: '{{business_name}}\n{{appointment_date}} {{start_time}}–{{end_time}}\n{{confirmed_notes}}' } });
-        const stored = saved.mock.calls.at(-1)?.[0];
+        const stored = saved.mock.calls[saved.mock.calls.length - 1]?.[0];
         expect(stored.microsoft_calendar.working_hours_start).toBe(8);
         expect(stored.microsoft_calendar.invitations_enabled).toBe(true);
         expect(stored.microsoft_calendar.accounts.default.calendar_id).toBe('named-calendar');
@@ -69,12 +69,12 @@ describe('Microsoft numeric field editing', () => {
         expect(saved).not.toHaveBeenCalled();
         fireEvent.change(input, { target: { value: String(replacement) } });
         expect(input).toHaveValue(replacement);
-        expect(saved.mock.calls.at(-1)?.[0].microsoft_calendar[String(key)]).toBe(replacement);
+        expect(saved.mock.calls[saved.mock.calls.length - 1]?.[0].microsoft_calendar[String(key)]).toBe(replacement);
         fireEvent.change(input, { target: { value: '' } });
         expect(input).toHaveValue(null);
         fireEvent.blur(input);
         expect(input).toHaveValue(fallback);
-        expect(saved.mock.calls.at(-1)?.[0].microsoft_calendar[String(key)]).toBeUndefined();
+        expect(saved.mock.calls[saved.mock.calls.length - 1]?.[0].microsoft_calendar[String(key)]).toBeUndefined();
     });
 
     it('persists zero for disabled limits', () => {
@@ -85,7 +85,7 @@ describe('Microsoft numeric field editing', () => {
         fireEvent.change(input, { target: { value: '0' } });
         fireEvent.blur(input);
         expect(input).toHaveValue(0);
-        expect(saved.mock.calls.at(-1)?.[0].microsoft_calendar.booking_horizon_days).toBe(0);
+        expect(saved.mock.calls[saved.mock.calls.length - 1]?.[0].microsoft_calendar.booking_horizon_days).toBe(0);
     });
 });
 
@@ -96,7 +96,7 @@ it('keeps upgrade settings unchanged until the operator explicitly adopts bookin
     expect(screen.getByLabelText('Allow caller invitations')).not.toBeChecked();
     expect(saved).not.toHaveBeenCalled();
     fireEvent.click(screen.getByLabelText('Enforce working hours and booking horizon'));
-    expect(saved.mock.calls.at(-1)?.[0].microsoft_calendar.enforce_booking_limits).toBe(true);
-    expect(saved.mock.calls.at(-1)?.[0].microsoft_calendar.accounts.default.calendar_id).toBe('named-calendar');
-    expect(saved.mock.calls.at(-1)?.[0].microsoft_calendar.invitations_enabled).toBeUndefined();
+    expect(saved.mock.calls[saved.mock.calls.length - 1]?.[0].microsoft_calendar.enforce_booking_limits).toBe(true);
+    expect(saved.mock.calls[saved.mock.calls.length - 1]?.[0].microsoft_calendar.accounts.default.calendar_id).toBe('named-calendar');
+    expect(saved.mock.calls[saved.mock.calls.length - 1]?.[0].microsoft_calendar.invitations_enabled).toBeUndefined();
 });

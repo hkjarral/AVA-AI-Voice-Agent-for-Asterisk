@@ -31,7 +31,6 @@ vi.mock('../../utils/configCache', () => ({
 }));
 
 const delay = () => screen.getByLabelText('Greeting Media-Ready Delay (ms)');
-const timeout = () => screen.getByLabelText('Greeting Media-Ready Timeout (ms)');
 const save = () => screen.getByRole('button', { name: 'Save Changes' });
 async function open() {
     const result = render(<StreamingPage />);

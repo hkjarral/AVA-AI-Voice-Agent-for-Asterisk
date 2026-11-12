@@ -17,7 +17,8 @@
         "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\"",
         "audit": "npm audit --audit-level=moderate",
         "test": "vitest run",
-        "test:watch": "vitest"
+        "test:watch": "vitest",
+        "typecheck": "tsc --noEmit"
     },
     "dependencies": {
         "@monaco-editor/react": "^4.6.0",

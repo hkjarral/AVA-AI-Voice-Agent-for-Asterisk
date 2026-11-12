@@ -72,7 +72,7 @@ for (const [kind, Page] of [['pipeline', PipelinesPage], ['profile', ProfilesPag
             expect(save.querySelector('.animate-spin')).not.toBeNull();
             expect(input).toBeDisabled();
             expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
-            expect(within(dialog).getByRole('button', { name: 'Close', exact: true })).toBeDisabled();
+            expect(within(dialog).getByRole('button', { name: 'Close' })).toBeDisabled();
             fireEvent.keyDown(document, { key: 'Escape' });
             expect(dialog).toBeInTheDocument();
             expect(screen.getByRole('button', { name: `Delete ${kind} spare` })).toBeDisabled();
@@ -127,7 +127,7 @@ for (const [kind, Page] of [['pipeline', PipelinesPage], ['profile', ProfilesPag
             expect(remove.querySelector('.animate-spin')).not.toBeNull();
             fireEvent.click(remove);
             expect(axios.post).toHaveBeenCalledTimes(1);
-            const sent = yaml.load(vi.mocked(axios.post).mock.calls[0][1].content) as TestConfig;
+            const sent = yaml.load((vi.mocked(axios.post).mock.calls[0][1] as { content: string }).content) as TestConfig;
             expect(sent[`${kind}s`].spare).toBeUndefined();
             if (kind === 'profile') expect(sent.contexts.demo.profile).toBeUndefined();
             await act(async () => request.resolve({ data: {} }));
@@ -162,7 +162,7 @@ it('keeps the profile modal open after failed deletion, then closes it after a s
     await act(async () => undefined);
     fireEvent.click(screen.getByRole('button', { name: 'Edit profile spare' }));
     const dialog = screen.getByRole('dialog');
-    const remove = within(dialog).getByRole('button', { name: 'Delete', exact: true });
+    const remove = within(dialog).getByRole('button', { name: 'Delete' });
     fireEvent.click(remove);
     await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(1));
     expect(remove).toBeDisabled();

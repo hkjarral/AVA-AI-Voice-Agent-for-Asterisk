@@ -9,7 +9,7 @@ describe('FullscreenPanel accessible controls', () => {
     it('keeps the button name and tooltip in sync through entry, exit, and Escape', () => {
         render(<FullscreenPanel title="Calls">Call list</FullscreenPanel>);
 
-        const enter = screen.getByRole('button', { name: 'Fullscreen', exact: true });
+        const enter = screen.getByRole('button', { name: 'Fullscreen' });
         expect(enter).toHaveAttribute('title', 'Fullscreen');
         fireEvent.click(enter);
 
@@ -19,9 +19,9 @@ describe('FullscreenPanel accessible controls', () => {
         fireEvent.click(exit);
 
         expect(document.body.style.overflow).not.toBe('hidden');
-        fireEvent.click(screen.getByRole('button', { name: 'Fullscreen', exact: true }));
+        fireEvent.click(screen.getByRole('button', { name: 'Fullscreen' }));
         fireEvent.keyDown(document, { key: 'Escape' });
-        expect(screen.getByRole('button', { name: 'Fullscreen', exact: true })).toHaveAttribute('title', 'Fullscreen');
+        expect(screen.getByRole('button', { name: 'Fullscreen' })).toHaveAttribute('title', 'Fullscreen');
         expect(screen.queryByRole('button', { name: 'Exit fullscreen' })).not.toBeInTheDocument();
     });
 });

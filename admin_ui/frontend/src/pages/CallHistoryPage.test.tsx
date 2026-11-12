@@ -441,13 +441,13 @@ describe('CallHistoryPage deep links', () => {
             </MemoryRouter>,
         );
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Delete', exact: true }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
 
         await waitFor(() => expect(mocks.confirm).toHaveBeenCalledTimes(1));
         expect(axios.delete).not.toHaveBeenCalled();
         expect(screen.queryByRole('dialog', { name: 'Call Details' })).not.toBeInTheDocument();
         expect(vi.mocked(axios.get).mock.calls.some(([url]) => url === '/api/calls/record-1')).toBe(false);
-        expect(screen.getByRole('button', { name: 'Delete', exact: true })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
     });
 
     it.each(['table', 'detail'])('locks %s deletion, recovers on error and retries once', async (view) => {
@@ -459,7 +459,7 @@ describe('CallHistoryPage deep links', () => {
             .mockReturnValueOnce(new Promise(yes => { resolve = yes; }));
         const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
         render(<MemoryRouter initialEntries={[view === 'detail' ? '/history?id=record-1' : '/history']}><CallHistoryPage /></MemoryRouter>);
-        const remove = await screen.findByRole('button', { name: view === 'detail' ? 'Delete this call' : 'Delete', exact: true });
+        const remove = await screen.findByRole('button', { name: view === 'detail' ? 'Delete this call' : 'Delete' });
         act(() => { fireEvent.click(remove); fireEvent.click(remove); });
         await waitFor(() => expect(axios.delete).toHaveBeenCalledTimes(1));
         expect(mocks.confirm).toHaveBeenCalledTimes(1);
@@ -482,7 +482,7 @@ describe('CallHistoryPage deep links', () => {
             ? { data: { calls: [], total: 0, total_pages: 0 } }
             : previousGet(url, ...args));
         await act(async () => resolve({ data: { status: 'deleted' } }));
-        await waitFor(() => expect(screen.queryByRole('button', { name: 'Delete', exact: true })).not.toBeInTheDocument());
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument());
         expect(screen.queryByRole('dialog', { name: 'Call Details' })).not.toBeInTheDocument();
         consoleError.mockRestore();
     });
@@ -513,12 +513,12 @@ describe('CallHistoryPage deep links', () => {
         );
         try {
             fireEvent.click(await screen.findByRole('button', { name: 'Play recording' }));
-            const pauseButton = await screen.findByRole('button', { name: 'Pause', exact: true });
+            const pauseButton = await screen.findByRole('button', { name: 'Pause' });
             expect(pauseButton).toHaveAttribute('title', 'Pause');
             fireEvent.click(pauseButton);
             expect(pause).toHaveBeenCalledTimes(1);
             fireEvent.click(screen.getByRole('button', { name: 'Play recording' }));
-            await screen.findByRole('button', { name: 'Pause', exact: true });
+            await screen.findByRole('button', { name: 'Pause' });
             expect(play).toHaveBeenCalledTimes(2);
             fireEvent.ended(audio);
             expect(await screen.findByRole('button', { name: 'Play recording' })).toHaveAttribute('title', 'Play recording');

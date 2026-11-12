@@ -54,3 +54,11 @@ describe('FormComponents — label association & error semantics', () => {
         );
     });
 });
+
+it('renders select guidance as an accessible description alongside validation errors', () => {
+    render(<FormSelect label="Transport" description="Restart required after changing transport."
+        error="Choose a supported transport" options={[{ value: 'rtp', label: 'RTP' }]} />);
+    const select = screen.getByLabelText('Transport');
+    expect(select).toHaveAccessibleDescription('Choose a supported transport Restart required after changing transport.');
+    expect(select).not.toHaveAttribute('description');
+});
