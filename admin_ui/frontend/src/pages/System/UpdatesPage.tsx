@@ -466,6 +466,7 @@ const UpdatesPage = () => {
     const localChangeText = plan.dirty ? localChangesPolicy === 'retain'
       ? 'retain local tracked changes (stash and reapply; may conflict)'
       : 'overwrite local tracked code changes and restore operator config from backup' : 'none detected';
+    let submitted = false;
     try {
       setRunError(null);
       const accepted = await confirm({
@@ -474,10 +475,13 @@ const UpdatesPage = () => {
         confirmText: 'Start Update', variant: 'default',
       });
       if (!accepted || !stillOwned()) return;
+      submitted = true;
       const response = await axios.post('/api/system/updates/run', payload);
       followJob(response.data.job_id);
     } catch (error) {
-      if (stillOwned()) setRunError(apiErrorMessage(error, 'Failed to start update'));
+      if (mounted.current && (submitted || stillOwned())) {
+        setRunError(`Update to ${payload.ref} failed: ${apiErrorMessage(error, 'Failed to start update')}`);
+      }
     } finally {
       actionLock.current = false;
       if (mounted.current) setActionPending(false);

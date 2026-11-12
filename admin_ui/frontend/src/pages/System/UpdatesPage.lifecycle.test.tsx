@@ -370,7 +370,7 @@ describe('updater action and job lifecycle', () => {
     await check();
     vi.mocked(axios.post).mockRejectedValueOnce(readFailure(503));
     fireEvent.click(proceed());
-    await screen.findByText('Synthetic HTTP 503');
+    await screen.findByText(/Synthetic HTTP 503/);
     expect(proceed()).toBeEnabled();
     expect(axios.post).toHaveBeenCalledTimes(1);
     fireEvent.click(proceed());
@@ -387,6 +387,22 @@ describe('updater action and job lifecycle', () => {
     await waitFor(() => expect(proceed()).toBeEnabled());
     expect(mocks.confirm).toHaveBeenCalledTimes(1);
     expect(axios.post).not.toHaveBeenCalled();
+  });
+
+  it.each(['target', 'ui', 'cli path'] as const)('reports a submitted update failure after changing %s', async change => {
+    const submission = deferred<Reply>();
+    vi.mocked(axios.post).mockReturnValue(submission.promise);
+    render(<UpdatesPage />);
+    await check();
+    fireEvent.click(proceed());
+    await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(1));
+    if (change === 'target') main();
+    else if (change === 'ui') fireEvent.click(screen.getByRole('checkbox', { name: /Update UI too/ }));
+    else fireEvent.change(screen.getByLabelText('Agent CLI install path'), { target: { value: '/synthetic/changed-agent' } });
+    await flush(() => submission.reject(readFailure(503)));
+    await screen.findByText('Update to v-fixture failed: Synthetic HTTP 503');
+    expect(proceed()).toBeEnabled();
+    expect(axios.post).toHaveBeenCalledTimes(1);
   });
 
   it.each(['unmount', 'removed backup'] as const)('invalidates a rollback confirmation after %s', async change => {

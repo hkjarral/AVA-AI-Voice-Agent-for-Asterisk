@@ -303,6 +303,8 @@ keeps **Proceed** disabled until the new preview succeeds. A failed preview can
 be retried with **Refresh preview**. Changing options or refreshing a preview
 invalidates an earlier confirmation; review and confirm the current preview.
 Update and rollback actions stay locked while confirmation or submission is pending.
+A submitted update failure identifies its original target even if options changed
+while the request was pending.
 
 Returning to Updates resumes the saved job. Actions remain locked while its
 state is unknown or Admin UI is reconnecting. A temporarily missing job is retried;
