@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Updater UI lifecycle:** bind previews and confirmations to the current target
+  and options, prevent duplicate update/rollback submissions, and ignore obsolete
+  job/log responses. Keep restored jobs locked until their state is known, poll
+  sequentially through recovery, and retain accepted job IDs after navigation.
+  Lower the frontend lint warning ceiling from 868 to 843.
+
 - **Call Scheduling ownership:** discard obsolete campaign/filter/page responses,
   hide old lead rows during view changes, and recheck lead ownership before
   applying confirmed actions. Preserve the current view when old operations finish.

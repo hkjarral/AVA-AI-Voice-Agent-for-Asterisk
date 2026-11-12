@@ -294,3 +294,19 @@ lead/statistic reads for a campaign still present in the current list. Changing
 including when that list request fails. A lead confirmation that
 outlives a change of view does not apply to the old lead. Existing campaign and
 lead state rules continue to control which actions are allowed.
+
+
+## Update previews and recovery
+
+Changing the update target or preview options hides the previous preview and
+keeps **Proceed** disabled until the new preview succeeds. A failed preview can
+be retried with **Refresh preview**. Changing options or refreshing a preview
+invalidates an earlier confirmation; review and confirm the current preview.
+Update and rollback actions stay locked while confirmation or submission is pending.
+
+Returning to Updates resumes the saved job. Actions remain locked while its
+state is unknown or Admin UI is reconnecting. A temporarily missing job is retried;
+a repeatedly missing/pruned job is cleared with an explicit message. Job output
+belongs to the current job, including **Load full log**. Once the server accepts
+an action, its job ID is retained even if navigation happens before the reply.
+Rollback retains its separate active-call safety choice and backend safeguards.
