@@ -290,7 +290,7 @@ shown as unknown while their first request is loading. The readiness badge stays
 unknown after a failed detail read and shows **Needs attention** when known
 prerequisites are missing. A campaign-list refresh failure does not stop fresh
 lead/statistic reads for a campaign still present in the current list. Changing
-**Show archived** clears the selection and lead actions until the new list loads,
+**Show archived** resets pagination and clears the selection and lead actions until the new list loads,
 including when that list request fails. A lead confirmation that
 outlives a change of view does not apply to the old lead. Existing campaign and
 lead state rules continue to control which actions are allowed.

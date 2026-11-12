@@ -351,6 +351,25 @@ describe('campaign removal and recycle ownership', () => {
         expect(axios.delete).not.toHaveBeenCalled();
     });
 
+    it('starts auto-selected archive-view campaigns on page one', async () => {
+        loadLeads = async (id, config) => rows(id, `${id} page ${config?.params.page}`);
+        render(<CallSchedulingPage />);
+        await screen.findByText('Synthetic lead A page 1');
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        await screen.findByText('Synthetic lead A page 2');
+        loadCampaigns = async () => ({ data: [campaign('B')] });
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Show archived' }));
+        await screen.findByText('Synthetic lead B page 1');
+        expect(screen.getByRole('button', { name: 'Prev' })).toBeDisabled();
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        await screen.findByText('Synthetic lead B page 2');
+        loadCampaigns = async () => ({ data: [campaign('A')] });
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Show archived' }));
+        await screen.findByText('Synthetic lead A page 1');
+        expect(screen.getByRole('button', { name: 'Prev' })).toBeDisabled();
+        expect(axios.post).not.toHaveBeenCalled();
+    });
+
     it('rejects an old archive-filter list response', async () => {
         render(<CallSchedulingPage />);
         await screen.findByText('Synthetic lead A');

@@ -386,6 +386,7 @@ const CallSchedulingPage = () => {
         detailRequest.current?.abort();
         detailRequest.current = null;
         setSelectedCampaignId(null);
+        setLeadPage(1);
         setCampaigns(current => current.length ? [] : current);
         return () => {
             activeListView.current = null;
