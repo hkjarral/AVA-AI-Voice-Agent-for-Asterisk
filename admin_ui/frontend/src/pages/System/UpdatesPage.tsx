@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpCircle, RefreshCw, Play, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
 import axios from 'axios';
-import { apiErrorMessage } from '../../utils/apiErrors';
+import { apiErrorMessage, describeApiError } from '../../utils/apiErrors';
 import { useConfirmDialog } from '../../hooks/useConfirmDialog';
 import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
@@ -96,6 +96,10 @@ const activeJobId = (value: unknown): string | null => {
   return typeof job.job_id === 'string' && job.job_id.trim() && !job.stale &&
     (status === 'starting' || status === 'running') ? job.job_id : null;
 };
+const isUncertainSubmission = (error: unknown) => {
+  const { status } = describeApiError(error);
+  return status === undefined || status === 409 || status >= 500;
+};
 const ROLLBACK_ELIGIBLE_STATUSES = new Set(['failed', 'validation_failed', 'stale']);
 const canRollbackJob = (job: any, st?: string) =>
   ROLLBACK_ELIGIBLE_STATUSES.has((st || String(job?.status || '')).toLowerCase()) &&
@@ -134,6 +138,7 @@ const UpdatesPage = () => {
   const [running, setRunning] = useState(Boolean(jobId));
   const [actionPending, setActionPending] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
   const [localChangesPolicy, setLocalChangesPolicy] = useState<'retain' | 'overwrite' | 'abort' | ''>('');
   const [updaterImageStatus, setUpdaterImageStatus] = useState<UpdaterImageStatus | null>(null);
@@ -294,11 +299,15 @@ const UpdatesPage = () => {
       const localBranch = response.data.local?.branch || 'main';
       setSelectedBranch(localBranch === 'detached' ? 'main' : localBranch);
       setInitialized(true);
-      localStorage.setItem('aava_update_status', JSON.stringify({
-        checked_at: new Date().toISOString(), update_available: response.data.update_available ?? null,
-        local_version: response.data.local?.deployed_tag || response.data.local?.describe || null,
-        remote_version: response.data.remote?.latest_tag || null,
-      }));
+      try {
+        localStorage.setItem('aava_update_status', JSON.stringify({
+          checked_at: new Date().toISOString(), update_available: response.data.update_available ?? null,
+          local_version: response.data.local?.deployed_tag || response.data.local?.describe || null,
+          remote_version: response.data.remote?.latest_tag || null,
+        }));
+      } catch {
+        console.warn('Update status checked, but browser cache storage is unavailable.');
+      }
       void fetchHistory();
       if (targetModeRef.current === 'advanced') void loadBranches({ localBranch });
     } catch (error) {
@@ -436,12 +445,19 @@ const UpdatesPage = () => {
       if (!stillOwned()) return;
       setRunError(null);
       setRecoveryNotice(null);
+      setSubmissionError(null);
       submitted = true;
       const response = await axios.post('/api/system/updates/rollback', { from_job_id: fromJobId, force_active_calls: force });
       followJob(response.data.job_id);
     } catch (error) {
-      if (submitted && await reconcileSubmission()) return;
-      if (mounted.current && activeJobView.current === owner) setRunError(apiErrorMessage(error, 'Failed to start rollback'));
+      const recovered = submitted && isUncertainSubmission(error) && await reconcileSubmission();
+      if (submitted) {
+        if (mounted.current && (!recovered || describeApiError(error).status === 409)) {
+          setSubmissionError(`Rollback from ${fromJobId} failed: ${apiErrorMessage(error, 'Failed to start rollback')}`);
+        }
+      } else if (mounted.current && activeJobView.current === owner) {
+        setRunError(apiErrorMessage(error, 'Failed to confirm rollback'));
+      }
     } finally {
       actionLock.current = false;
       if (mounted.current) setActionPending(false);
@@ -513,13 +529,18 @@ const UpdatesPage = () => {
       });
       if (!accepted || !stillOwned()) return;
       setRecoveryNotice(null);
+      setSubmissionError(null);
       submitted = true;
       const response = await axios.post('/api/system/updates/run', payload);
       followJob(response.data.job_id);
     } catch (error) {
-      if (submitted && await reconcileSubmission()) return;
-      if (mounted.current && (submitted || stillOwned())) {
-        setRunError(`Update to ${payload.ref} failed: ${apiErrorMessage(error, 'Failed to start update')}`);
+      const recovered = submitted && isUncertainSubmission(error) && await reconcileSubmission();
+      if (submitted) {
+        if (mounted.current && (!recovered || describeApiError(error).status === 409)) {
+          setSubmissionError(`Update to ${payload.ref} failed: ${apiErrorMessage(error, 'Failed to start update')}`);
+        }
+      } else if (stillOwned()) {
+        setRunError(apiErrorMessage(error, 'Failed to confirm update'));
       }
     } finally {
       actionLock.current = false;
@@ -1017,6 +1038,7 @@ const UpdatesPage = () => {
         </div>
 
         <div className="space-y-3">
+          {submissionError && <div role="alert" className="text-sm text-destructive">{submissionError}</div>}
           {runError && <div className="text-sm text-destructive">{runError}</div>}
           {recoveryNotice && <div role="status" className="text-sm text-muted-foreground">{recoveryNotice}</div>}
           {renderUpdaterImageStatus('run')}

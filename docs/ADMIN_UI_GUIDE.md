@@ -313,9 +313,14 @@ with an explicit message. Job output, including **Load full log**, belongs to th
 current job.
 
 While the submitting page remains open, both updates and rollbacks check
-Recent Runs after a failed submission response. If the backend reports exactly one active job, the page follows it
+Recent Runs after an uncertain submission outcome (a lost response, server error
+or conflict). If the backend reports exactly one active job, the page follows it
 without repeating the action; this can also be a job started by another operator.
 If no active job can be confirmed, the submission error remains visible.
+Definitive rejections remain visible without reconciliation. Conflict rejections
+also stay visible while following the other active job; successful status polls
+do not erase the refusal. A failed browser status-cache write does not invalidate
+a successful **Check updates** result.
 
 A successful reply saves the accepted job ID when browser storage is available,
 including after navigating away from Updates within the app. A page reopened

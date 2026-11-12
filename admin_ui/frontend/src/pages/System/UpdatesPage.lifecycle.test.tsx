@@ -502,15 +502,55 @@ describe('uncertain submission recovery', () => {
     expect(axios.post).toHaveBeenCalledTimes(1);
   });
 
-  it('follows a confirmed active job after a conflict without claiming a new submission succeeded', async () => {
+  it.each(['update', 'rollback'] as const)('keeps the %s rejection visible while following the confirmed active job after a conflict', async action => {
     render(<UpdatesPage />);
     await check();
     loadHistory = async () => ({ data: { jobs: [{ job_id: 'other-operator-job', status: 'running' }] } });
     loadJob = async id => ({ data: { job: { job_id: id, status: 'running' }, log_tail: 'other operator progress' } });
-    vi.mocked(axios.post).mockRejectedValueOnce(readFailure(409));
-    fireEvent.click(proceed());
+    const rejection = readFailure(409);
+    rejection.response.data = { detail: 'Another update job is already running: other-operator-job' };
+    vi.mocked(axios.post).mockRejectedValueOnce(rejection);
+    fireEvent.click(action === 'update' ? proceed() : screen.getByRole('button', { name: 'Rollback' }));
     await screen.findByText('other operator progress');
     expect(screen.getByText(/Following job other-operator-job from Recent Runs. No action was repeated./)).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('Another update job is already running: other-operator-job');
+    await tick();
+    expect(screen.getByRole('alert')).toHaveTextContent('Another update job is already running: other-operator-job');
+    expect(axios.post).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([400, 401, 403, 404, 422])('does not mask a definitive HTTP %s rejection with another active job', async status => {
+    render(<UpdatesPage />);
+    await check();
+    loadHistory = async () => ({ data: { jobs: [{ job_id: 'unrelated-job', status: 'running' }] } });
+    vi.mocked(axios.post).mockRejectedValueOnce(readFailure(status));
+    fireEvent.click(proceed());
+    await screen.findByText(`Update to v-fixture failed: Synthetic HTTP ${status}`);
+    expect(axios.get).not.toHaveBeenCalledWith('/api/system/updates/history', expect.objectContaining({ params: { limit: 25 } }));
+    expect(localStorage.getItem('aava_update_job_id')).toBeNull();
+    expect(axios.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a deleted rollback source rejection visible instead of following an unrelated job', async () => {
+    render(<UpdatesPage />);
+    await check();
+    loadHistory = async () => ({ data: { jobs: [{ job_id: 'unrelated-job', status: 'running' }] } });
+    vi.mocked(axios.post).mockRejectedValueOnce(readFailure(404));
+    fireEvent.click(screen.getByRole('button', { name: 'Rollback' }));
+    await screen.findByText(/Synthetic HTTP 404/);
+    expect(axios.get).not.toHaveBeenCalledWith('/api/system/updates/history', expect.objectContaining({ params: { limit: 25 } }));
+    expect(localStorage.getItem('aava_update_job_id')).toBeNull();
+  });
+
+  it.each(['update', 'rollback'] as const)('reconciles a %s connection failure without an HTTP response', async action => {
+    render(<UpdatesPage />);
+    await check();
+    loadHistory = async () => ({ data: { jobs: [{ job_id: 'reserved-before-disconnect', status: 'starting' }] } });
+    loadJob = async id => ({ data: { job: { job_id: id, status: 'running' }, log_tail: 'reconnected after lost response' } });
+    vi.mocked(axios.post).mockRejectedValueOnce(Object.assign(new Error('Synthetic connection lost'), { isAxiosError: true }));
+    fireEvent.click(action === 'update' ? proceed() : screen.getByRole('button', { name: 'Rollback' }));
+    await screen.findByText('reconnected after lost response');
+    expect(localStorage.getItem('aava_update_job_id')).toBe('reserved-before-disconnect');
     expect(axios.post).toHaveBeenCalledTimes(1);
   });
 
@@ -595,5 +635,18 @@ describe('uncertain submission recovery', () => {
     await screen.findByText('following server-only job');
     expect(screen.getByText(/Following job stored-on-server, but browser recovery storage is unavailable/)).toBeInTheDocument();
     expect(axios.post).not.toHaveBeenCalled();
+  });
+
+  it('keeps a successful status check, history and branch loading usable when browser cache writes fail', async () => {
+    vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new DOMException('Synthetic full browser cache'); });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    render(<UpdatesPage />);
+    fireEvent.click(screen.getByRole('radio', { name: /Advanced/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check updates' }));
+    await screen.findByText('synthetic-main');
+    expect(screen.getByRole('combobox', { name: 'Target branch' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Rollback' })).toBeEnabled();
+    expect(screen.queryByText('Synthetic full browser cache')).not.toBeInTheDocument();
+    expect(proceed()).toBeEnabled();
   });
 });
