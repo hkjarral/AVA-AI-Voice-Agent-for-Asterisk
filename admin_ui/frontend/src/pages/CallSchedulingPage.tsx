@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import {
@@ -24,7 +24,7 @@ import {
 import { Modal } from '../components/ui/Modal';
 import { FormLabel } from '../components/ui/FormComponents';
 import { toast } from 'sonner';
-import { describeApiError } from '../utils/apiErrors';
+import { apiErrorMessage, describeApiError } from '../utils/apiErrors';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { buildCampaignEditPayload } from '../utils/outboundCampaign';
 import {
@@ -114,6 +114,21 @@ interface LeadRow {
     last_provider?: string | null;
     last_call_history_call_id?: string | null;
     last_error_message?: string | null;
+}
+
+interface CampaignLeadQuery {
+    readonly campaignId: string | null;
+    readonly page: number;
+    readonly state: string;
+    readonly search: string;
+    readonly includeArchived: boolean;
+}
+
+interface CampaignDetails {
+    query: CampaignLeadQuery;
+    stats: CampaignStats;
+    leads: LeadRow[];
+    totalPages: number;
 }
 
 const DEFAULT_AMD_OPTIONS = {
@@ -283,15 +298,34 @@ const CallSchedulingPage = () => {
 
     const [campaigns, setCampaigns] = useState<OutboundCampaign[]>([]);
     const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
-    const [stats, setStats] = useState<CampaignStats | null>(null);
-
-    const [leads, setLeads] = useState<LeadRow[]>([]);
     const [leadPage, setLeadPage] = useState(1);
-    const [leadTotalPages, setLeadTotalPages] = useState(1);
     const [leadStateFilter, setLeadStateFilter] = useState('');
     const [leadQuery, setLeadQuery] = useState('');
 
+    const selectedCampaign = useMemo(
+        () => campaigns.find(c => c.id === selectedCampaignId) || null,
+        [campaigns, selectedCampaignId]
+    );
+
     const [showArchived, setShowArchived] = useState(false);
+    const leadView = useMemo<CampaignLeadQuery>(() => ({
+        campaignId: selectedCampaign?.id ?? null, page: leadPage, state: leadStateFilter,
+        search: leadQuery, includeArchived: showArchived,
+    }), [selectedCampaign?.id, leadPage, leadStateFilter, leadQuery, showArchived]);
+    const listView = useMemo(() => ({ includeArchived: showArchived }), [showArchived]);
+    const activeLeadView = useRef<CampaignLeadQuery | null>(null);
+    const activeListView = useRef<typeof listView | null>(null);
+    const detailRequest = useRef<AbortController | null>(null);
+    const listRequest = useRef<AbortController | null>(null);
+    const [details, setDetails] = useState<CampaignDetails | null>(null);
+    const detailsRef = useRef<CampaignDetails | null>(null);
+    const [detailsFailure, setDetailsFailure] = useState<{ query: CampaignLeadQuery; message: string } | null>(null);
+    const visibleDetails = details?.query === leadView ? details : null;
+    const stats = visibleDetails?.stats ?? null;
+    const leads = visibleDetails?.leads ?? [];
+    const leadTotalPages = visibleDetails?.totalPages ?? 1;
+    const leadError = detailsFailure?.query === leadView ? detailsFailure.message : null;
+    const leadsLoading = Boolean(leadView.campaignId && !visibleDetails && !leadError);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const setNotice = (n: { type: 'success' | 'error' | 'info'; message: string } | null) => {
@@ -330,10 +364,41 @@ const CallSchedulingPage = () => {
     const [callHistoryError, setCallHistoryError] = useState<string | null>(null);
     const [callHistoryRecord, setCallHistoryRecord] = useState<any | null>(null);
 
-    const selectedCampaign = useMemo(
-        () => campaigns.find(c => c.id === selectedCampaignId) || null,
-        [campaigns, selectedCampaignId]
-    );
+    // Invalidate ownership before a new view can receive events or old promises settle.
+    useLayoutEffect(() => {
+        activeLeadView.current = leadView;
+        setRecycleLeadRow(null);
+        return () => {
+            activeLeadView.current = null;
+            detailRequest.current?.abort();
+            detailRequest.current = null;
+        };
+    }, [leadView]);
+
+    useLayoutEffect(() => {
+        detailsRef.current = details;
+    }, [details]);
+
+    useLayoutEffect(() => {
+        activeListView.current = listView;
+        // Revoke the previous list selection before passive detail reads can run.
+        activeLeadView.current = null;
+        detailRequest.current?.abort();
+        detailRequest.current = null;
+        setSelectedCampaignId(null);
+        setLeadPage(1);
+        setCampaigns(current => current.length ? [] : current);
+        return () => {
+            activeListView.current = null;
+            listRequest.current?.abort();
+            listRequest.current = null;
+        };
+    }, [listView]);
+
+    const ownsLead = useCallback((view: CampaignLeadQuery, leadId: string) => (
+        activeLeadView.current === view && detailsRef.current?.query === view &&
+        detailsRef.current.leads.some(lead => lead.id === leadId)
+    ), []);
 
     const ianaTimezones = useMemo(() => meta?.iana_timezones || [], [meta]);
     const defaultAmdOptions = useMemo(() => {
@@ -385,11 +450,13 @@ const CallSchedulingPage = () => {
         const missing: string[] = [];
         if (selectedVoicemailEnabled && !(selectedCampaign.voicemail_drop_media_uri || '').trim()) missing.push('Voicemail recording missing');
         if (selectedConsentEnabled && !(((selectedCampaign as any).consent_media_uri || '') as string).trim()) missing.push('Consent recording missing');
-        const pending = stats?.lead_states?.pending || 0;
-        const canceled = stats?.lead_states?.canceled || 0;
-        if (pending <= 0) missing.push(`No pending leads${canceled ? ` (canceled: ${canceled})` : ''}`);
+        if (stats) {
+            const pending = stats.lead_states?.pending || 0;
+            const canceled = stats.lead_states?.canceled || 0;
+            if (pending <= 0) missing.push(`No pending leads${canceled ? ` (canceled: ${canceled})` : ''}`);
+        }
         return { within, missing };
-    }, [selectedCampaign, windowInfo?.within, selectedVoicemailEnabled, selectedConsentEnabled]);
+    }, [selectedCampaign, windowInfo?.within, selectedVoicemailEnabled, selectedConsentEnabled, stats]);
 
     const [createForm, setCreateForm] = useState({
         name: '',
@@ -518,35 +585,52 @@ const CallSchedulingPage = () => {
         }
     };
 
-    const refreshCampaigns = async () => {
-        const res = await axios.get('/api/outbound/campaigns', { params: { include_archived: showArchived } });
-        const list = res.data || [];
-        setCampaigns(list);
-        if (!list.length) {
-            setSelectedCampaignId(null);
-            return;
+    const refreshCampaigns = useCallback(async (skipIfPending = false) => {
+        if (activeListView.current !== listView || (skipIfPending && listRequest.current)) return;
+        listRequest.current?.abort();
+        const controller = new AbortController();
+        listRequest.current = controller;
+        try {
+            const res = await axios.get<OutboundCampaign[]>('/api/outbound/campaigns', {
+                params: { include_archived: listView.includeArchived }, signal: controller.signal, timeout: 15000,
+            });
+            if (controller.signal.aborted || listRequest.current !== controller || activeListView.current !== listView) return;
+            const list = res.data || [];
+            setCampaigns(list);
+            setSelectedCampaignId(current => list.some(c => c.id === current) ? current : list[0]?.id ?? null);
+        } catch (error) {
+            if (!controller.signal.aborted && listRequest.current === controller && activeListView.current === listView) throw error;
+        } finally {
+            if (listRequest.current === controller) listRequest.current = null;
         }
-        if (!selectedCampaignId || !list.some((c: OutboundCampaign) => c.id === selectedCampaignId)) {
-            setSelectedCampaignId(list[0].id);
-        }
-    };
+    }, [listView]);
 
-    const refreshCampaignDetails = async (campaignId: string) => {
-        const [statsRes, leadsRes] = await Promise.all([
-            axios.get(`/api/outbound/campaigns/${campaignId}/stats`),
-            axios.get(`/api/outbound/campaigns/${campaignId}/leads`, {
-                params: {
-                    page: leadPage,
-                    page_size: 50,
-                    state: leadStateFilter || undefined,
-                    q: leadQuery || undefined
-                }
-            })
-        ]);
-        setStats(statsRes.data || {});
-        setLeads(leadsRes.data?.leads || []);
-        setLeadTotalPages(leadsRes.data?.total_pages || 1);
-    };
+    const refreshCampaignDetails = useCallback(async (campaignId: string, skipIfPending = false) => {
+        if (leadView.campaignId !== campaignId || activeLeadView.current !== leadView || (skipIfPending && detailRequest.current)) return;
+        detailRequest.current?.abort();
+        const controller = new AbortController();
+        detailRequest.current = controller;
+        const isCurrent = () => !controller.signal.aborted && detailRequest.current === controller && activeLeadView.current === leadView;
+        setDetailsFailure(null);
+        try {
+            const [statsRes, leadsRes] = await Promise.all([
+                axios.get<CampaignStats>(`/api/outbound/campaigns/${campaignId}/stats`, { signal: controller.signal, timeout: 15000 }),
+                axios.get<{ leads: LeadRow[]; total_pages: number }>(`/api/outbound/campaigns/${campaignId}/leads`, {
+                    params: { page: leadView.page, page_size: 50, state: leadView.state || undefined, q: leadView.search || undefined },
+                    signal: controller.signal, timeout: 15000,
+                }),
+            ]);
+            if (!isCurrent()) return;
+            setDetails({ query: leadView, stats: statsRes.data || {}, leads: leadsRes.data?.leads || [], totalPages: leadsRes.data?.total_pages || 1 });
+        } catch (error) {
+            if (!isCurrent()) return;
+            setDetails(null);
+            setDetailsFailure({ query: leadView, message: apiErrorMessage(error, 'Unable to load campaign leads and statistics.') });
+            controller.abort();
+        } finally {
+            if (detailRequest.current === controller) detailRequest.current = null;
+        }
+    }, [leadView]);
 
     useEffect(() => {
         let mounted = true;
@@ -570,30 +654,24 @@ const CallSchedulingPage = () => {
     }, [showArchived]);
 
     useEffect(() => {
-        if (!selectedCampaignId) return;
+        const campaignId = leadView.campaignId;
+        if (!campaignId) return;
         let stop = false;
-        (async () => {
-            try {
-                await refreshCampaignDetails(selectedCampaignId);
-            } catch {
-                // ignore
-            }
-        })();
+        void refreshCampaignDetails(campaignId);
         const interval = setInterval(async () => {
             if (stop) return;
             try {
-                await refreshCampaigns();
-                await refreshCampaignDetails(selectedCampaignId);
+                await refreshCampaigns(true);
             } catch {
-                // ignore
+                // The selected campaign's detail endpoints may still be available.
             }
+            if (!stop) await refreshCampaignDetails(campaignId, true);
         }, 5000);
         return () => {
             stop = true;
             clearInterval(interval);
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedCampaignId, leadPage, leadStateFilter, leadQuery]);
+    }, [leadView, refreshCampaignDetails, refreshCampaigns]);
 
     const openCreate = () => {
         setCampaignModalMode('create');
@@ -766,7 +844,7 @@ const CallSchedulingPage = () => {
         try {
             await axios.post(`/api/outbound/campaigns/${campaignId}/archive`);
             await refreshCampaigns();
-            if (selectedCampaignId === campaignId) setSelectedCampaignId(null);
+            setSelectedCampaignId(current => current === campaignId ? null : current);
             setNotice({ type: 'success', message: 'Campaign archived' });
         } catch (e: any) {
             setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to archive campaign' });
@@ -777,7 +855,7 @@ const CallSchedulingPage = () => {
         try {
             await axios.delete(`/api/outbound/campaigns/${campaignId}`);
             await refreshCampaigns();
-            if (selectedCampaignId === campaignId) setSelectedCampaignId(null);
+            setSelectedCampaignId(current => current === campaignId ? null : current);
             setNotice({ type: 'success', message: 'Campaign deleted' });
         } catch (e: any) {
             setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to delete campaign' });
@@ -997,38 +1075,53 @@ const CallSchedulingPage = () => {
     };
 
     const ignoreLead = async (leadId: string) => {
+        const owner = leadView;
+        if (!ownsLead(owner, leadId)) return;
         try {
             await axios.post(`/api/outbound/leads/${leadId}/ignore`);
-            if (selectedCampaignId) await refreshCampaignDetails(selectedCampaignId);
+            if (activeLeadView.current !== owner) return;
+            if (owner.campaignId) await refreshCampaignDetails(owner.campaignId);
+            if (activeLeadView.current !== owner) return;
             setNotice({ type: 'success', message: 'Lead ignored (canceled). Use Recycle to re-dial.' });
         } catch (e: any) {
+            if (activeLeadView.current !== owner) return;
             setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to ignore lead' });
         }
     };
 
     const recycleLead = async (leadId: string, mode: 'redial' | 'reset') => {
+        const owner = leadView;
+        if (!ownsLead(owner, leadId)) return;
         try {
             await axios.post(`/api/outbound/leads/${leadId}/recycle`, { mode });
-            if (selectedCampaignId) await refreshCampaignDetails(selectedCampaignId);
+            if (activeLeadView.current !== owner) return;
+            if (owner.campaignId) await refreshCampaignDetails(owner.campaignId);
+            if (activeLeadView.current !== owner) return;
             setNotice({ type: 'success', message: mode === 'reset' ? 'Lead reset and re-queued' : 'Lead re-queued for re-dial' });
         } catch (e: any) {
+            if (activeLeadView.current !== owner) return;
             setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to recycle lead' });
         }
     };
 
     const deleteLead = async (leadId: string) => {
+        const owner = leadView;
+        if (!ownsLead(owner, leadId)) return;
         const confirmed = await confirm({
             title: 'Delete Lead?',
             description: 'Delete this lead and all its attempts? This cannot be undone.',
             confirmText: 'Delete',
             variant: 'destructive'
         });
-        if (!confirmed) return;
+        if (!confirmed || !ownsLead(owner, leadId)) return;
         try {
             await axios.delete(`/api/outbound/leads/${leadId}`);
-            if (selectedCampaignId) await refreshCampaignDetails(selectedCampaignId);
+            if (activeLeadView.current !== owner) return;
+            if (owner.campaignId) await refreshCampaignDetails(owner.campaignId);
+            if (activeLeadView.current !== owner) return;
             setNotice({ type: 'success', message: 'Lead deleted' });
         } catch (e: any) {
+            if (activeLeadView.current !== owner) return;
             setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to delete lead' });
         }
     };
@@ -1369,9 +1462,9 @@ const CallSchedulingPage = () => {
                                     {selectedCampaign.status !== 'running' ? (
                                         <button
                                             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
-                                            disabled={(stats?.lead_states?.pending || 0) <= 0}
+                                            disabled={!stats || (stats.lead_states?.pending || 0) <= 0}
                                             title={
-                                                (stats?.lead_states?.pending || 0) <= 0
+                                                !stats ? 'Campaign statistics are not available yet.' : (stats.lead_states?.pending || 0) <= 0
                                                     ? 'No pending leads to dial. Recycle/uncancel leads first.'
                                                     : ''
                                             }
@@ -1407,31 +1500,39 @@ const CallSchedulingPage = () => {
                                 <div className="border rounded-lg p-3">
                                     <div className="text-xs text-muted-foreground">QUEUE</div>
                                     <div className="text-sm mt-1">
-                                        Pending: <span className="font-medium">{stats?.lead_states?.pending || 0}</span> · Leased:{' '}
-                                        <span className="font-medium">{stats?.lead_states?.leased || 0}</span>
+                                        Pending: <span className="font-medium">{stats ? stats.lead_states?.pending || 0 : '—'}</span> · Leased:{' '}
+                                        <span className="font-medium">{stats ? stats.lead_states?.leased || 0 : '—'}</span>
                                     </div>
                                 </div>
                                 <div className="border rounded-lg p-3">
                                     <div className="text-xs text-muted-foreground">IN PROGRESS</div>
                                     <div className="text-sm mt-1">
-                                        Dialing: <span className="font-medium">{stats?.lead_states?.dialing || 0}</span> · In call:{' '}
-                                        <span className="font-medium">{stats?.lead_states?.in_progress || 0}</span>
+                                        Dialing: <span className="font-medium">{stats ? stats.lead_states?.dialing || 0 : '—'}</span> · In call:{' '}
+                                        <span className="font-medium">{stats ? stats.lead_states?.in_progress || 0 : '—'}</span>
                                     </div>
                                 </div>
                                 <div className="border rounded-lg p-3">
                                     <div className="text-xs text-muted-foreground">OUTCOMES</div>
                                     <div className="text-sm mt-1">
-                                        VM: <span className="font-medium">{stats?.attempt_outcomes?.voicemail_dropped || 0}</span> · Human:{' '}
-                                        <span className="font-medium">{stats?.attempt_outcomes?.answered_human || 0}</span> · Errors:{' '}
-                                        <span className="font-medium">{stats?.attempt_outcomes?.error || 0}</span>
+                                        VM: <span className="font-medium">{stats ? stats.attempt_outcomes?.voicemail_dropped || 0 : '—'}</span> · Human:{' '}
+                                        <span className="font-medium">{stats ? stats.attempt_outcomes?.answered_human || 0 : '—'}</span> · Errors:{' '}
+                                        <span className="font-medium">{stats ? stats.attempt_outcomes?.error || 0 : '—'}</span>
                                     </div>
                                 </div>
                                 <div className="border rounded-lg p-3">
                                     <div className="text-xs text-muted-foreground">STATUS</div>
                                     <div className="text-sm mt-1">
-                                        {statusInfo?.within === false ? (
+                                        {!stats ? (
+                                            <span className="inline-flex items-center gap-1 text-muted-foreground">
+                                                <Clock className="w-4 h-4" /> Readiness unknown
+                                            </span>
+                                        ) : statusInfo?.within === false ? (
                                             <span className="inline-flex items-center gap-1 text-yellow-600">
                                                 <AlertTriangle className="w-4 h-4" /> Outside window
+                                            </span>
+                                        ) : statusInfo?.missing.length ? (
+                                            <span className="inline-flex items-center gap-1 text-yellow-600">
+                                                <AlertTriangle className="w-4 h-4" /> Needs attention
                                             </span>
                                         ) : (
                                             <span className="inline-flex items-center gap-1 text-green-700">
@@ -1475,6 +1576,7 @@ const CallSchedulingPage = () => {
                             <div className="relative">
                                 <Search className="w-4 h-4 absolute left-2 top-2.5 text-muted-foreground" />
                                 <input
+                                    aria-label="Search campaign leads"
                                     value={leadQuery}
                                     onChange={e => {
                                         setLeadQuery(e.target.value);
@@ -1485,6 +1587,7 @@ const CallSchedulingPage = () => {
                                 />
                             </div>
                             <select
+                                aria-label="Lead state filter"
                                 value={leadStateFilter}
                                 onChange={e => {
                                     setLeadStateFilter(e.target.value);
@@ -1504,6 +1607,15 @@ const CallSchedulingPage = () => {
                         </div>
                     </div>
 
+                    {leadError && (
+                        <div role="alert" className="m-3 rounded-lg border border-destructive/30 p-3 text-sm">
+                            Unable to load campaign leads and statistics: {leadError}
+                            <button className="ml-3 underline" onClick={() => {
+                                if (selectedCampaignId) void refreshCampaignDetails(selectedCampaignId);
+                            }}>Retry campaign details</button>
+                        </div>
+                    )}
+                    {leadsLoading && <p role="status" className="p-3 text-sm text-muted-foreground">Loading campaign leads and statistics…</p>}
                     <div className="overflow-x-auto">
                         <table className="min-w-[1500px] w-full text-sm">
                             <thead className="bg-muted/30 text-muted-foreground">
@@ -1599,7 +1711,7 @@ const CallSchedulingPage = () => {
                                 {leads.length === 0 && (
                                     <tr>
                                         <td colSpan={14} className="py-10 text-center text-sm text-muted-foreground">
-                                            No leads yet. Use the campaign modal to import a CSV/Excel file or add a lead manually.
+                                            {leadsLoading ? 'Loading leads…' : leadError ? 'Campaign leads are unavailable.' : 'No leads yet. Use the campaign modal to import a CSV/Excel file or add a lead manually.'}
                                         </td>
                                     </tr>
                                 )}
@@ -1609,7 +1721,7 @@ const CallSchedulingPage = () => {
 
                     <div className="flex items-center justify-between p-3">
                         <div className="text-xs text-muted-foreground">
-                            Page {leadPage} of {leadTotalPages}
+                            Page {leadPage} of {visibleDetails ? leadTotalPages : '—'}
                         </div>
                         <div className="flex items-center gap-2">
                             <button
