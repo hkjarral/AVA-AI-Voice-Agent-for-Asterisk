@@ -108,6 +108,7 @@ interface BackendCapabilities {
         whisper_cpp?: { available: boolean; reason?: string };
     };
     tts?: {
+        silero?: { available: boolean; reason?: string };
         melotts?: { available: boolean; reason?: string };
     };
 }

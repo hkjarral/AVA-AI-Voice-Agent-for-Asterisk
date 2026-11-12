@@ -81,7 +81,6 @@ export const ConfirmDialogProvider: React.FC<ConfirmDialogProviderProps> = ({ ch
             <AlertDialog open={isOpen} onOpenChange={(open) => !open && handleCancel()}>
                 <AlertDialogContent
                     onEscapeKeyDown={(event) => event.preventDefault()}
-                    onPointerDownOutside={(event) => event.preventDefault()}
                 >
                     <AlertDialogHeader>
                         <AlertDialogTitle>{options.title}</AlertDialogTitle>

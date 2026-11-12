@@ -39,7 +39,7 @@ describe('Microsoft Teams configuration and verification', () => {
         });
         render(<Harness saved={saved} />);
         await act(async () => { fireEvent.click(screen.getByTitle('Start device-code OAuth. The operator signs in at microsoft.com/devicelogin.')); });
-        expect(saved.mock.calls.at(-1)?.[0].microsoft_calendar.accounts.default.calendar_id).toBe('selected');
+        expect(saved.mock.calls[saved.mock.calls.length - 1]?.[0].microsoft_calendar.accounts.default.calendar_id).toBe('selected');
         expect(screen.getByText('Connected as scheduler@example.com.')).toBeInTheDocument();
     });
 
@@ -50,7 +50,7 @@ describe('Microsoft Teams configuration and verification', () => {
         expect(screen.getByLabelText('Create Microsoft Teams meetings')).not.toBeChecked();
         expect(saved).not.toHaveBeenCalled();
         fireEvent.click(screen.getByLabelText('Create Microsoft Teams meetings'));
-        const next = saved.mock.calls.at(-1)?.[0];
+        const next = saved.mock.calls[saved.mock.calls.length - 1]?.[0];
         expect(next.microsoft_calendar.teams_enabled).toBe(true);
         expect(next.microsoft_calendar.accounts).toEqual(initial.microsoft_calendar.accounts);
         expect(next.transfer).toEqual(initial.transfer);

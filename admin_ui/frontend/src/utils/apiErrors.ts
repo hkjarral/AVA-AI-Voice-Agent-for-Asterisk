@@ -46,6 +46,11 @@ export const describeApiError = (err: unknown, endpoint?: string): ApiErrorInfo 
     return { kind: 'unknown', endpoint, message };
 };
 
+export const apiErrorMessage = (err: unknown, fallback: string): string => {
+    const info = describeApiError(err);
+    return info.detail || info.message || fallback;
+};
+
 export const buildDockerAccessHints = (info: ApiErrorInfo): string[] => {
     const raw = `${info.detail || ''} ${info.message || ''}`.toLowerCase();
 

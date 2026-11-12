@@ -121,7 +121,7 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
     const isLLM = isFullAgent || name.includes('llm') || caps.includes('llm') || (!name.includes('stt') && !name.includes('tts'));
 
     // Helpers to find model details
-    const getModelPathPlaceholder = (backend: string, type: 'stt' | 'tts') => {
+    const getModelPathPlaceholder = (backend: string, _type: 'stt' | 'tts') => {
         if (loading) return "Loading...";
         if (backend === 'vosk') return '/app/models/stt/vosk-model-en-us-0.22';
         if (backend === 'sherpa') {

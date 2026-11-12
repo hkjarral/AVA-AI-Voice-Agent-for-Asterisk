@@ -20,7 +20,7 @@ const editedUrl = 'http://192.168.10.10:9090/custom/v3';
 
 async function openEditor() {
     render(<MemoryRouter><ProvidersPage /></MemoryRouter>);
-    fireEvent.click(await screen.findByRole('button', { name: 'Settings for custom_llm', exact: true }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Settings for custom_llm' }));
     return screen.findByRole('dialog', { name: 'Edit Provider: custom_llm' });
 }
 
@@ -75,7 +75,7 @@ describe('provider connection results', () => {
         vi.mocked(axios.post).mockReturnValueOnce(new Promise(r => { resolve = r; }));
         fireEvent.click(within(dialog).getByRole('button', { name: 'Test Connection' }));
         fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Settings for custom_llm', exact: true }));
+        fireEvent.click(screen.getByRole('button', { name: 'Settings for custom_llm' }));
         const reopened = await screen.findByRole('dialog', { name: 'Edit Provider: custom_llm' });
         await act(async () => resolve({ data: { success: true, message: 'Obsolete reopened success' } }));
         expect(within(reopened).queryByRole('status')).not.toBeInTheDocument();
@@ -91,8 +91,8 @@ describe('provider connection results', () => {
             .mockReturnValueOnce(new Promise(r => { resolveFirst = r; }))
             .mockReturnValueOnce(new Promise((_resolve, reject) => { rejectSecond = reject; }));
         render(<MemoryRouter><ProvidersPage /></MemoryRouter>);
-        const first = await screen.findByRole('button', { name: 'Test connection for custom_llm', exact: true });
-        const second = screen.getByRole('button', { name: 'Test connection for other_llm', exact: true });
+        const first = await screen.findByRole('button', { name: 'Test connection for custom_llm' });
+        const second = screen.getByRole('button', { name: 'Test connection for other_llm' });
         fireEvent.click(first);
         fireEvent.click(second);
         expect(first).toBeDisabled();
@@ -112,8 +112,8 @@ describe('provider connection results', () => {
         let resolve: (value: unknown) => void = () => undefined;
         vi.mocked(axios.post).mockReturnValueOnce(new Promise(r => { resolve = r; }));
         render(<MemoryRouter><ProvidersPage /></MemoryRouter>);
-        fireEvent.click(await screen.findByRole('button', { name: 'Test connection for custom_llm', exact: true }));
-        fireEvent.click(screen.getByRole('button', { name: 'Settings for other_llm', exact: true }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Test connection for custom_llm' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Settings for other_llm' }));
         const dialog = await screen.findByRole('dialog', { name: 'Edit Provider: other_llm' });
         expect(within(dialog).getByRole('button', { name: 'Test Connection' })).toBeEnabled();
         await act(async () => resolve({ data: { success: true, message: 'Card connected independently' } }));
@@ -139,7 +139,7 @@ describe('provider connection results', () => {
         fireEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }));
         await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
         expect(mocks.config.providers.custom_llm.chat_base_url).toBe(editedUrl);
-        fireEvent.click(screen.getByRole('button', { name: 'Settings for custom_llm', exact: true }));
+        fireEvent.click(screen.getByRole('button', { name: 'Settings for custom_llm' }));
         const reopened = await screen.findByRole('dialog', { name: 'Edit Provider: custom_llm' });
         expect(within(reopened).getByDisplayValue(editedUrl)).toBeInTheDocument();
     });

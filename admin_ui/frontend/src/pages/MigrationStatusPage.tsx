@@ -88,7 +88,7 @@ const MigrationStatusPage = () => {
 
     if (loading) return <div className="p-8 text-center text-muted-foreground">Loading migration status…</div>;
 
-    const hasDrift = status?.drift && status.drift !== false;
+    const hasDrift = Boolean(status?.drift);
 
     return (
         <div className="space-y-6">
@@ -153,7 +153,7 @@ const MigrationStatusPage = () => {
                             <div className="flex gap-3">
                                 <span className="font-medium text-muted-foreground w-32 flex-shrink-0">Stored hash</span>
                                 <span className="font-mono text-xs">
-                                    {typeof status?.drift === 'object' && status.drift !== null && status.drift !== false
+                                    {typeof status?.drift === 'object' && status.drift !== null
                                         ? (status.drift.stored_hash ?? '').slice(0, 12) || '—'
                                         : '—'}
                                 </span>
@@ -161,7 +161,7 @@ const MigrationStatusPage = () => {
                             <div className="flex gap-3">
                                 <span className="font-medium text-muted-foreground w-32 flex-shrink-0">Current hash</span>
                                 <span className="font-mono text-xs">
-                                    {typeof status?.drift === 'object' && status.drift !== null && status.drift !== false
+                                    {typeof status?.drift === 'object' && status.drift !== null
                                         ? (status.drift.current_hash ?? '').slice(0, 12) || '—'
                                         : '—'}
                                 </span>

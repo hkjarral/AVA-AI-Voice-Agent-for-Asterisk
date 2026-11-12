@@ -451,8 +451,8 @@ const LogsPage = () => {
         return viewFiltered.filter(e => (e.raw || '').toLowerCase().includes(qn) || (e.msg || '').toLowerCase().includes(qn));
     }, [events, mode, view, includeDebug, q]);
 
-    const displayEvents = useMemo(() => {
-        if (!hideRepeats) return (filteredEvents as any);
+    const displayEvents = useMemo<Array<LogEvent & { repeat?: number }>>(() => {
+        if (!hideRepeats) return filteredEvents;
         const out: Array<LogEvent & { repeat?: number }> = [];
         for (const e of filteredEvents) {
             const prev = out[out.length - 1];

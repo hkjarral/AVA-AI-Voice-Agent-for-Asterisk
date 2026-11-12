@@ -4,7 +4,7 @@ React-based administration interface for Asterisk AI Voice Agent.
 
 ## Tech Stack
 
-- **React 18** - UI framework
+- **React 19** - UI framework
 - **TypeScript** - Type safety
 - **Vite** - Build tool
 - **Tailwind CSS** - Styling
@@ -39,6 +39,12 @@ npm run dev
 
 The development server proxies API requests to the backend at `http://localhost:3003`.
 
+### Type checking
+
+Run `npm run typecheck` before submitting changes. CI requires this check through
+the Admin UI frontend job and `PR gate`. The Vite build alone does not typecheck.
+Keep strict checking and the ES2020 target enabled; include test files in the check.
+
 ### Build
 
 ```bash
@@ -52,6 +58,7 @@ npm run build
 |--------|-------------|
 | `npm run dev` | Start development server with HMR |
 | `npm run build` | Build for production |
+| `npm run typecheck` | Check application and test TypeScript without emitting files |
 | `npm run preview` | Preview production build locally |
 | `npm run lint` | Run ESLint on source files |
 | `npm run lint:fix` | Auto-fix ESLint issues |

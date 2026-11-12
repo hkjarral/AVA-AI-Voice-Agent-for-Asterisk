@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 
 type Handoff = { enabled?: boolean; mode?: string; message?: string; start_timeout_sec?: number; finish_timeout_sec?: number };
 type Props = { value?: Handoff; global?: Handoff; override?: boolean; disabled?: boolean; onChange: (value: Handoff) => void };

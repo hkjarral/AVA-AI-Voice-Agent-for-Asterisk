@@ -7,6 +7,7 @@ import axios from 'axios';
 
 interface HealthInfo {
     local_ai_server: {
+        warning?: string;
         status: string;
         details: any;
     };

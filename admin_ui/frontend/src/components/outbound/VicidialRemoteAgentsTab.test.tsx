@@ -472,4 +472,32 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
             })
         );
     });
+    it('renders an activity request failure as text and recovers after refresh', async () => {
+        const original = vi.mocked(axios.get).getMockImplementation()!;
+        let failed = true;
+        vi.mocked(axios.get).mockImplementation(async (url, config) => {
+            if (url === '/api/outbound/vicidial/activity' && failed) throw new Error('Activity unavailable');
+            return original(url, config);
+        });
+        render(<VicidialRemoteAgentsTab />);
+        expect((await screen.findAllByText('Activity unavailable')).length).toBeGreaterThan(0);
+        expect(screen.getByText('VICIdial Lab')).toBeInTheDocument();
+        failed = false;
+        fireEvent.change(screen.getByLabelText('Activity range'), { target: { value: '30d' } });
+        await waitFor(() => expect(screen.queryAllByText('Activity unavailable')).toHaveLength(0));
+        expect(screen.getByText('Handled by AAVA')).toBeInTheDocument();
+    });
+
+    it('normalizes an absent SIP host when editing a saved connection', async () => {
+        const original = vi.mocked(axios.get).getMockImplementation()!;
+        vi.mocked(axios.get).mockImplementation(async (url, config) => url === '/api/outbound/vicidial/connections'
+            ? { data: [{ ...connection, vicidial_host: null, timezone: undefined }] }
+            : original(url, config));
+        render(<VicidialRemoteAgentsTab />);
+        await screen.findByText('VICIdial Lab');
+        fireEvent.click(screen.getByRole('button', { name: 'Edit connection' }));
+        expect(screen.getByLabelText('VICIdial SIP host')).toHaveValue('');
+        expect(screen.getByLabelText('VICIdial timezone')).not.toHaveValue('');
+    });
+
 });

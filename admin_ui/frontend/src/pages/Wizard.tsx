@@ -1363,7 +1363,7 @@ const Wizard = () => {
                                                     </option>
                                                 </select>
                                                 {/* Rebuild / GPU warning for non-default STT backends */}
-                                                {['faster_whisper', 'whisper_cpp'].includes(config.local_stt_backend) && (
+                                                {['faster_whisper', 'whisper_cpp'].includes(config.local_stt_backend ?? '') && (
                                                     <div className="mt-1.5 text-xs space-y-1">
                                                         {!localAIStatus.gpuDetected && (
                                                             <p className="text-amber-600 dark:text-amber-400">

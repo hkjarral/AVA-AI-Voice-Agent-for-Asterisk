@@ -396,7 +396,7 @@ const AsteriskPage = () => {
                                         <p className="mt-1">This also applies system and configuration fixes. Review <code className="px-1.5 py-0.5 rounded bg-muted text-xs font-mono">./preflight.sh</code> output first; check-only mode does not write the manifest.</p>
                                     </div>
                                 </div>
-                            ) : manifest.asterisk_found ? (
+                            ) : manifest?.asterisk_found ? (
                                 <div className="space-y-2">
                                     <p className="text-sm font-medium">Ava-host local Asterisk audit results</p>
                                     {renderManifestChecks()}

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Admin frontend TypeScript:** clear application and test compiler debt and require
+  typechecking through the frontend CI gate. Correct Remote Agent error rendering,
+  nullable form values, status-card actions and transport-field descriptions while
+  retaining strict checking and the ES2020 target.
+
 - **Admin frontend React migration (#750, #220):** upgrade React and React DOM
   together to 19.3.1 with matching React 19 type packages and a compatible Lucide
   release. Preserve Node 22, existing security overrides, and operator settings.
