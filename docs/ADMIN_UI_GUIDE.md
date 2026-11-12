@@ -294,3 +294,40 @@ lead/statistic reads for a campaign still present in the current list. Changing
 including when that list request fails. A lead confirmation that
 outlives a change of view does not apply to the old lead. Existing campaign and
 lead state rules continue to control which actions are allowed.
+
+
+## Update previews and recovery
+
+Changing the update target or preview options hides the previous preview and
+keeps **Proceed** disabled until the new preview succeeds. A failed preview can
+be retried with **Refresh preview**. Changing options or refreshing a preview
+invalidates an earlier confirmation; review and confirm the current preview.
+Update and rollback actions stay locked while confirmation or submission is pending.
+A submitted update failure identifies its original target even if options changed
+while the request was pending.
+
+Returning to Updates resumes a saved job ID already present when the page opens.
+Actions remain locked while that job's state is unknown or Admin UI is reconnecting.
+A temporarily missing job is retried; a repeatedly missing/pruned job is cleared
+with an explicit message. Job output, including **Load full log**, belongs to the
+current job.
+
+While the submitting page remains open, both updates and rollbacks check
+Recent Runs after an uncertain submission outcome (a lost response, server error
+or conflict). If the backend reports exactly one active job, the page follows it
+without repeating the action; this can also be a job started by another operator.
+If no active job can be confirmed, the submission error remains visible.
+Definitive rejections remain visible without reconciliation. Conflict rejections
+also stay visible while following the other active job; successful status polls
+do not erase the refusal. A failed browser status-cache write does not invalidate
+a successful **Check updates** result.
+
+A successful reply saves the accepted job ID when browser storage is available,
+including after navigating away from Updates within the app. A page reopened
+before that late reply does not automatically adopt the storage change: reopen
+Updates after the reply, or refresh Recent Runs and use **Follow job**.
+If the submitting page is still open when storage fails, it follows the job and
+displays its ID and a storage warning. If that page has already closed, automatic
+recovery is not guaranteed. After returning or reloading, check Recent Runs and
+**Follow job** before retrying an update or rollback. Backend locking and active-call safeguards remain
+in effect; rollback retains its separate active-call safety choice.
