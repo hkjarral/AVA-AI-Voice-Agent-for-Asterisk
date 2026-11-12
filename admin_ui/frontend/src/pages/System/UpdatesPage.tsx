@@ -15,7 +15,7 @@ interface PlanQuery {
   localChanges: string;
   checkVersion: number;
 }
-type ReadKey = 'status' | 'branches' | 'history' | 'image' | 'plan' | 'job' | 'log';
+type ReadKey = 'status' | 'branches' | 'history' | 'image' | 'plan' | 'job' | 'log' | 'recovery';
 
 interface UpdatesStatus {
   local: { branch?: string; head_sha: string; describe: string; deployed_tag?: string | null };
@@ -88,6 +88,14 @@ interface UpdaterImageStatus {
 
 const TERMINAL_UPDATE_STATUSES = new Set(['success', 'failed', 'validation_failed', 'stale']);
 const isTerminalUpdateStatus = (st?: string) => TERMINAL_UPDATE_STATUSES.has((st || '').toLowerCase());
+// Matches the backend's reservation/runner states; unknown history is not proof of a running job.
+const activeJobId = (value: unknown): string | null => {
+  if (!value || typeof value !== 'object') return null;
+  const job = value as Record<string, unknown>;
+  const status = typeof job.status === 'string' ? job.status.toLowerCase() : '';
+  return typeof job.job_id === 'string' && job.job_id.trim() && !job.stale &&
+    (status === 'starting' || status === 'running') ? job.job_id : null;
+};
 const ROLLBACK_ELIGIBLE_STATUSES = new Set(['failed', 'validation_failed', 'stale']);
 const canRollbackJob = (job: any, st?: string) =>
   ROLLBACK_ELIGIBLE_STATUSES.has((st || String(job?.status || '')).toLowerCase()) &&
@@ -126,6 +134,7 @@ const UpdatesPage = () => {
   const [running, setRunning] = useState(Boolean(jobId));
   const [actionPending, setActionPending] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
   const [localChangesPolicy, setLocalChangesPolicy] = useState<'retain' | 'overwrite' | 'abort' | ''>('');
   const [updaterImageStatus, setUpdaterImageStatus] = useState<UpdaterImageStatus | null>(null);
 
@@ -365,17 +374,41 @@ const UpdatesPage = () => {
 
   // Once accepted by the server, keep the job ID even if the page unmounted
   // during the write, so returning to Updates resumes its status instead of resubmitting.
-  const followJob = (id: string) => {
+  const followJob = (id: string, recovered = false) => {
+    let persisted = true;
     try {
       localStorage.setItem('aava_update_job_id', id);
     } catch {
+      persisted = false;
       // Browser storage failure must not turn an accepted write into a retry.
       console.warn('Update job accepted, but browser recovery storage is unavailable.');
     }
     if (mounted.current) {
       setJobId(id);
       setRunning(true);
+      setRecoveryNotice(!persisted
+        ? `Following job ${id}, but browser recovery storage is unavailable. Keep this page open, or use Recent Runs → Follow job after returning.`
+        : recovered ? `Following job ${id} from Recent Runs. No action was repeated.` : null);
     }
+  };
+
+  const reconcileSubmission = async () => {
+    const request = startRead('recovery');
+    if (!request) return false;
+    try {
+      const response = await axios.get<UpdateHistoryResponse>('/api/system/updates/history', {
+        params: { limit: 25 }, signal: request.signal, timeout: 15000,
+      });
+      if (!request.isCurrent()) return false;
+      const ids = [...new Set(response.data.jobs.map(activeJobId).filter((id): id is string => id !== null))];
+      if (ids.length !== 1) return false;
+      // This might be another operator's job (409). Follow confirmed server state,
+      // without claiming that our request succeeded or repeating an uncertain write.
+      followJob(ids[0], true);
+      return true;
+    } catch {
+      return false;
+    } finally { request.finish(); }
   };
 
   const rollbackFromJob = async (sourceJob: any) => {
@@ -387,6 +420,7 @@ const UpdatesPage = () => {
     const stillOwned = () => mounted.current && activeJobView.current === owner &&
       historyRef.current.some(item => item.job_id === fromJobId && canRollbackJob(item) &&
         item.pre_update_branch === preBranch && item.backup_dir_rel === backupRel);
+    let submitted = false;
     try {
       const accepted = await confirm({
         title: 'Start Rollback?',
@@ -401,9 +435,12 @@ const UpdatesPage = () => {
       });
       if (!stillOwned()) return;
       setRunError(null);
+      setRecoveryNotice(null);
+      submitted = true;
       const response = await axios.post('/api/system/updates/rollback', { from_job_id: fromJobId, force_active_calls: force });
       followJob(response.data.job_id);
     } catch (error) {
+      if (submitted && await reconcileSubmission()) return;
       if (mounted.current && activeJobView.current === owner) setRunError(apiErrorMessage(error, 'Failed to start rollback'));
     } finally {
       actionLock.current = false;
@@ -475,10 +512,12 @@ const UpdatesPage = () => {
         confirmText: 'Start Update', variant: 'default',
       });
       if (!accepted || !stillOwned()) return;
+      setRecoveryNotice(null);
       submitted = true;
       const response = await axios.post('/api/system/updates/run', payload);
       followJob(response.data.job_id);
     } catch (error) {
+      if (submitted && await reconcileSubmission()) return;
       if (mounted.current && (submitted || stillOwned())) {
         setRunError(`Update to ${payload.ref} failed: ${apiErrorMessage(error, 'Failed to start update')}`);
       }
@@ -979,6 +1018,7 @@ const UpdatesPage = () => {
 
         <div className="space-y-3">
           {runError && <div className="text-sm text-destructive">{runError}</div>}
+          {recoveryNotice && <div role="status" className="text-sm text-muted-foreground">{recoveryNotice}</div>}
           {renderUpdaterImageStatus('run')}
           <div className="flex items-center gap-2">
             <button
@@ -1109,7 +1149,17 @@ const UpdatesPage = () => {
                       <td className="px-3 py-2 font-mono text-xs">{restart || '-'}</td>
                       <td className="px-3 py-2 font-mono text-xs">{files !== '' ? String(files) : '-'}</td>
                       <td className="px-3 py-2">
-                        {canRollbackJob(h, st) ? (
+                        {activeJobId(h) && h.job_id !== jobId ? (
+                          <button
+                            onClick={() => {
+                              if (actionLock.current || running) return;
+                              setRunError(null);
+                              followJob(h.job_id, true);
+                            }}
+                            disabled={actionPending || running}
+                            className="px-2 py-1 text-xs rounded-md border border-border hover:bg-accent disabled:opacity-50"
+                          >Follow job</button>
+                        ) : canRollbackJob(h, st) ? (
                           <div className="inline-flex items-center gap-2">
                             <button
                               onClick={() => rollbackFromJob(h)}

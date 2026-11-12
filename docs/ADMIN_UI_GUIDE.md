@@ -306,9 +306,23 @@ Update and rollback actions stay locked while confirmation or submission is pend
 A submitted update failure identifies its original target even if options changed
 while the request was pending.
 
-Returning to Updates resumes the saved job. Actions remain locked while its
-state is unknown or Admin UI is reconnecting. A temporarily missing job is retried;
-a repeatedly missing/pruned job is cleared with an explicit message. Job output
-belongs to the current job, including **Load full log**. Once the server accepts
-an action, its job ID is retained even if navigation happens before the reply.
-Rollback retains its separate active-call safety choice and backend safeguards.
+Returning to Updates resumes a saved job ID already present when the page opens.
+Actions remain locked while that job's state is unknown or Admin UI is reconnecting.
+A temporarily missing job is retried; a repeatedly missing/pruned job is cleared
+with an explicit message. Job output, including **Load full log**, belongs to the
+current job.
+
+While the submitting page remains open, both updates and rollbacks check
+Recent Runs after a failed submission response. If the backend reports exactly one active job, the page follows it
+without repeating the action; this can also be a job started by another operator.
+If no active job can be confirmed, the submission error remains visible.
+
+A successful reply saves the accepted job ID when browser storage is available,
+including after navigating away from Updates within the app. A page reopened
+before that late reply does not automatically adopt the storage change: reopen
+Updates after the reply, or refresh Recent Runs and use **Follow job**.
+If the submitting page is still open when storage fails, it follows the job and
+displays its ID and a storage warning. If that page has already closed, automatic
+recovery is not guaranteed. After returning or reloading, check Recent Runs and
+**Follow job** before retrying an update or rollback. Backend locking and active-call safeguards remain
+in effect; rollback retains its separate active-call safety choice.

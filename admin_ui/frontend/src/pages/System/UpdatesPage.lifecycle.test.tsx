@@ -330,8 +330,8 @@ describe('updater action and job lifecycle', () => {
   it('follows an accepted job even if browser recovery storage is full', async () => {
     render(<UpdatesPage />);
     await check();
-    const setItem = Storage.prototype.setItem;
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key, value) {
+    const setItem = localStorage.setItem;
+    vi.spyOn(localStorage, 'setItem').mockImplementation(function (this: Storage, key, value) {
       if (key === 'aava_update_job_id') throw new DOMException('Synthetic storage quota', 'QuotaExceededError');
       setItem.call(this, key, value);
     });
@@ -339,6 +339,8 @@ describe('updater action and job lifecycle', () => {
     loadJob = async id => ({ data: { job: { job_id: id, status: 'running' }, log_tail: 'accepted with storage unavailable' } });
     fireEvent.click(proceed());
     await screen.findByText('accepted with storage unavailable');
+    expect(localStorage.getItem('aava_update_job_id')).toBeNull();
+    expect(console.warn).toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Update running…' })).toBeDisabled();
     expect(axios.post).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('Synthetic storage quota')).not.toBeInTheDocument();
@@ -482,5 +484,116 @@ describe('updater metadata ownership', () => {
     await flush(() => pending.resolve({ data: { local: {}, remote: { latest_tag: 'obsolete' } } }));
     expect(localStorage.getItem('aava_update_status')).toBeNull();
     expect(axios.get).not.toHaveBeenCalledWith('/api/system/updates/plan', expect.anything());
+  });
+});
+
+describe('uncertain submission recovery', () => {
+  it.each(['update', 'rollback'] as const)('follows the unique active server job after a lost %s response', async action => {
+    render(<UpdatesPage />);
+    await check();
+    loadHistory = async () => ({ data: { jobs: [{ job_id: 'reserved-job', status: 'starting' }, failedJob] } });
+    loadJob = async id => ({ data: { job: { job_id: id, status: 'running' }, log_tail: 'reserved server job' } });
+    vi.mocked(axios.post).mockRejectedValueOnce(readFailure(503));
+    fireEvent.click(action === 'update' ? proceed() : screen.getByRole('button', { name: 'Rollback' }));
+    await screen.findByText('reserved server job');
+    expect(localStorage.getItem('aava_update_job_id')).toBe('reserved-job');
+    expect(screen.getByText(/Following job reserved-job from Recent Runs/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Update running…' })).toBeDisabled();
+    expect(axios.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('follows a confirmed active job after a conflict without claiming a new submission succeeded', async () => {
+    render(<UpdatesPage />);
+    await check();
+    loadHistory = async () => ({ data: { jobs: [{ job_id: 'other-operator-job', status: 'running' }] } });
+    loadJob = async id => ({ data: { job: { job_id: id, status: 'running' }, log_tail: 'other operator progress' } });
+    vi.mocked(axios.post).mockRejectedValueOnce(readFailure(409));
+    fireEvent.click(proceed());
+    await screen.findByText('other operator progress');
+    expect(screen.getByText(/Following job other-operator-job from Recent Runs. No action was repeated./)).toBeInTheDocument();
+    expect(axios.post).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['ambiguous', 'stale', 'unknown', 'unavailable'] as const)('retains the submission error when recovery history is %s', async history => {
+    render(<UpdatesPage />);
+    await check();
+    loadHistory = async () => {
+      if (history === 'unavailable') throw readFailure(503);
+      return { data: { jobs: history === 'ambiguous'
+        ? [{ job_id: 'one', status: 'running' }, { job_id: 'two', status: 'starting' }]
+        : [{ job_id: 'one', status: history === 'unknown' ? 'unrecognized' : 'running', stale: history === 'stale' }] } };
+    };
+    vi.mocked(axios.post).mockRejectedValueOnce(readFailure(503));
+    fireEvent.click(proceed());
+    await screen.findByText('Update to v-fixture failed: Synthetic HTTP 503');
+    expect(localStorage.getItem('aava_update_job_id')).toBeNull();
+    expect(axios.post).toHaveBeenCalledTimes(1);
+    expect(proceed()).toBeEnabled();
+  });
+
+  it('keeps the submission lock until read-only reconciliation finishes', async () => {
+    render(<UpdatesPage />);
+    await check();
+    const history = deferred<Reply>();
+    loadHistory = async () => history.promise;
+    vi.mocked(axios.post).mockRejectedValueOnce(readFailure(503));
+    fireEvent.click(proceed());
+    await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/system/updates/history', expect.objectContaining({ params: { limit: 25 } })));
+    expect(proceed()).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Rollback' })).toBeDisabled();
+    fireEvent.click(proceed());
+    expect(axios.post).toHaveBeenCalledTimes(1);
+    await flush(() => history.resolve({ data: { jobs: [] } }));
+    await screen.findByText(/Update to v-fixture failed/);
+  });
+
+  it('aborts reconciliation and ignores a late history reply after unmount', async () => {
+    const view = render(<UpdatesPage />);
+    await check();
+    const history = deferred<Reply>();
+    loadHistory = async () => history.promise;
+    vi.mocked(axios.post).mockRejectedValueOnce(readFailure(503));
+    fireEvent.click(proceed());
+    await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/system/updates/history', expect.objectContaining({ params: { limit: 25 } })));
+    const signal = vi.mocked(axios.get).mock.calls.filter(([url]) => url.endsWith('/history')).slice(-1)[0][1]?.signal;
+    view.unmount();
+    expect(signal?.aborted).toBe(true);
+    await flush(() => history.resolve({ data: { jobs: [{ job_id: 'late-reservation', status: 'starting' }] } }));
+    expect(localStorage.getItem('aava_update_job_id')).toBeNull();
+  });
+
+  it.each(['update', 'rollback'] as const)('can follow a late %s receipt from Recent Runs on a page reopened before the receipt', async action => {
+    const receipt = deferred<Reply>();
+    vi.mocked(axios.post).mockReturnValue(receipt.promise);
+    const firstPage = render(<UpdatesPage />);
+    await check();
+    fireEvent.click(action === 'update' ? proceed() : screen.getByRole('button', { name: 'Rollback' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(1));
+    firstPage.unmount();
+    render(<UpdatesPage />);
+    await flush(() => receipt.resolve({ data: { job_id: 'late-accepted-job' } }));
+    expect(jobReads('late-accepted-job')).toHaveLength(0);
+    loadHistory = async () => ({ data: { jobs: [{ job_id: 'late-accepted-job', status: 'running' }] } });
+    loadJob = async id => ({ data: { job: { job_id: id, status: 'running' }, log_tail: 'manually recovered job' } });
+    await check();
+    fireEvent.click(await screen.findByRole('button', { name: 'Follow job' }));
+    await screen.findByText('manually recovered job');
+    expect(axios.post).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: 'Update running…' })).toBeDisabled();
+  });
+
+  it('provides a manual read-only recovery path when browser job storage is full', async () => {
+    render(<UpdatesPage />);
+    await check();
+    loadHistory = async () => ({ data: { jobs: [{ job_id: 'stored-on-server', status: 'running' }] } });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh history' }));
+    const follow = await screen.findByRole('button', { name: 'Follow job' });
+    vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new DOMException('Synthetic full storage'); });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    loadJob = async id => ({ data: { job: { job_id: id, status: 'running' }, log_tail: 'following server-only job' } });
+    fireEvent.click(follow);
+    await screen.findByText('following server-only job');
+    expect(screen.getByText(/Following job stored-on-server, but browser recovery storage is unavailable/)).toBeInTheDocument();
+    expect(axios.post).not.toHaveBeenCalled();
   });
 });
