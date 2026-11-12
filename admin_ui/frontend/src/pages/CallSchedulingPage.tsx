@@ -656,10 +656,10 @@ const CallSchedulingPage = () => {
             if (stop) return;
             try {
                 await refreshCampaigns(true);
-                if (!stop) await refreshCampaignDetails(campaignId, true);
             } catch {
-                // A failed list refresh does not change the selected query's ownership.
+                // The selected campaign's detail endpoints may still be available.
             }
+            if (!stop) await refreshCampaignDetails(campaignId, true);
         }, 5000);
         return () => {
             stop = true;
@@ -1456,9 +1456,9 @@ const CallSchedulingPage = () => {
                                     {selectedCampaign.status !== 'running' ? (
                                         <button
                                             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
-                                            disabled={(stats?.lead_states?.pending || 0) <= 0}
+                                            disabled={!stats || (stats.lead_states?.pending || 0) <= 0}
                                             title={
-                                                (stats?.lead_states?.pending || 0) <= 0
+                                                !stats ? 'Campaign statistics are not available yet.' : (stats.lead_states?.pending || 0) <= 0
                                                     ? 'No pending leads to dial. Recycle/uncancel leads first.'
                                                     : ''
                                             }
@@ -1516,9 +1516,17 @@ const CallSchedulingPage = () => {
                                 <div className="border rounded-lg p-3">
                                     <div className="text-xs text-muted-foreground">STATUS</div>
                                     <div className="text-sm mt-1">
-                                        {statusInfo?.within === false ? (
+                                        {!stats ? (
+                                            <span className="inline-flex items-center gap-1 text-muted-foreground">
+                                                <Clock className="w-4 h-4" /> Readiness unknown
+                                            </span>
+                                        ) : statusInfo?.within === false ? (
                                             <span className="inline-flex items-center gap-1 text-yellow-600">
                                                 <AlertTriangle className="w-4 h-4" /> Outside window
+                                            </span>
+                                        ) : statusInfo?.missing.length ? (
+                                            <span className="inline-flex items-center gap-1 text-yellow-600">
+                                                <AlertTriangle className="w-4 h-4" /> Needs attention
                                             </span>
                                         ) : (
                                             <span className="inline-flex items-center gap-1 text-green-700">

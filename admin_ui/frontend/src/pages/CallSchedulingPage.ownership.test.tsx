@@ -190,6 +190,8 @@ describe('query refresh lifecycle', () => {
         await flush(() => failed.reject(new Error('Read timed out')));
         expect(await screen.findByRole('alert')).toHaveTextContent('Read timed out');
         expect(screen.queryByRole('button', { name: 'Ignore' })).not.toBeInTheDocument();
+        expect(screen.getByText('Readiness unknown')).toBeInTheDocument();
+        expect(screen.queryByText('Ready')).not.toBeInTheDocument();
         loadLeads = async id => rows(id);
         fireEvent.click(screen.getByRole('button', { name: 'Retry campaign details' }));
         await screen.findByText('Synthetic lead B');
@@ -258,9 +260,15 @@ describe('campaign statistics readiness', () => {
         render(<CallSchedulingPage />);
         await screen.findByRole('button', { name: /Fixture campaign A/ });
         expect(screen.queryByText('No pending leads')).not.toBeInTheDocument();
+        expect(screen.getByText('Readiness unknown')).toBeInTheDocument();
+        expect(screen.queryByText('Ready')).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Start' })).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Start' })).toHaveAttribute('title', 'Campaign statistics are not available yet.');
         await flush(() => fresh.resolve(stats(3)));
         await screen.findByText('Synthetic lead A');
         expect(screen.queryByText('No pending leads')).not.toBeInTheDocument();
+        expect(screen.getByText('Ready')).toBeInTheDocument();
+        expect(screen.queryByText('Readiness unknown')).not.toBeInTheDocument();
     });
 
     it('updates missing-lead guidance after a mutation refresh without replacing the campaign', async () => {
@@ -314,4 +322,25 @@ describe('campaign removal and recycle ownership', () => {
         expect(screen.queryByRole('button', { name: /Fixture campaign A/ })).not.toBeInTheDocument();
         expect(screen.getByText('Synthetic lead B')).toBeInTheDocument();
     });
+});
+
+it('refreshes selected details even when the campaign-list poll fails', async () => {
+    render(<CallSchedulingPage />);
+    await screen.findByText('Synthetic lead A');
+    loadCampaigns = async () => { throw new Error('Campaign list unavailable'); };
+    loadStats = async () => stats(0, 1);
+    await act(async () => { await poll?.(); });
+    expect(screen.getByText('No pending leads (canceled: 1)')).toBeInTheDocument();
+    expect(screen.getByText('Needs attention')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByText('Synthetic lead A')).toBeInTheDocument();
+});
+
+it('does not claim ready when a configured recording is missing', async () => {
+    loadCampaigns = async () => ({ data: [{ ...campaign('A'), voicemail_drop_enabled: true, voicemail_drop_media_uri: null }] });
+    render(<CallSchedulingPage />);
+    await screen.findByText('Synthetic lead A');
+    expect(screen.getByText('Voicemail recording missing')).toBeInTheDocument();
+    expect(screen.getByText('Needs attention')).toBeInTheDocument();
+    expect(screen.queryByText('Ready')).not.toBeInTheDocument();
 });
