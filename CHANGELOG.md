@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   applying confirmed actions. Preserve the current view when old operations finish.
   Refresh pending-lead guidance with statistics, keep readiness unknown without
   current statistics, and continue detail polling when the campaign list fails.
+  Clear selection and revoke lead actions when the archive view changes.
 
 - **Calendar setup regression coverage:** wait for asynchronous attempt inspection
   before asserting operator-check resets, with an explicitly delayed mock response.

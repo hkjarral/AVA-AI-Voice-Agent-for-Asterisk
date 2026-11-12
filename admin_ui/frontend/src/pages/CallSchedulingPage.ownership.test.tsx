@@ -27,6 +27,7 @@ let poll: (() => Promise<void>) | null;
 
 beforeEach(() => {
     vi.resetAllMocks();
+    vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 10, 12, 12));
     mocks.confirm.mockResolvedValue(true);
     poll = null;
     const interval = globalThis.setInterval;
@@ -304,6 +305,50 @@ describe('campaign removal and recycle ownership', () => {
         fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
         await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/outbound/leads/lead-A/recycle', { mode: 'redial' }));
         await waitFor(() => expect(mocks.success).toHaveBeenCalledWith('Lead re-queued for re-dial'));
+    });
+
+    it('revokes archived lead actions and a pending confirmation when the new list fails', async () => {
+        render(<CallSchedulingPage />);
+        await screen.findByText('Synthetic lead A');
+        loadCampaigns = async () => ({ data: [{ ...campaign('B'), archived_at: '2026-11-11T12:00:00Z' }] });
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Show archived' }));
+        await screen.findByText('Synthetic lead B');
+        const confirmation = deferred<boolean>();
+        mocks.confirm.mockReturnValue(confirmation.promise);
+        fireEvent.click(within(screen.getByText('Synthetic lead B').closest('tr')!).getByRole('button', { name: 'Delete' }));
+        await waitFor(() => expect(mocks.confirm).toHaveBeenCalledTimes(1));
+        fireEvent.click(screen.getByRole('button', { name: 'Recycle' }));
+        await screen.findByRole('dialog', { name: 'Recycle Lead' });
+        const detailReads = vi.mocked(axios.get).mock.calls.filter(([url]) => url.includes('/campaigns/B/')).length;
+        loadCampaigns = async () => { throw new Error('Current campaign list unavailable'); };
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Show archived' }));
+        expect(screen.queryByText('Synthetic lead B')).not.toBeInTheDocument();
+        expect(screen.queryByRole('dialog', { name: 'Recycle Lead' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Ignore' })).not.toBeInTheDocument();
+        await screen.findByText('Current campaign list unavailable');
+        await flush(() => confirmation.resolve(true));
+        expect(vi.mocked(axios.get).mock.calls.filter(([url]) => url.includes('/campaigns/B/'))).toHaveLength(detailReads);
+        expect(axios.post).not.toHaveBeenCalled();
+        expect(axios.delete).not.toHaveBeenCalled();
+    });
+
+    it.each(['success', 'failure'] as const)('ignores a pending detail %s after changing to an unavailable campaign list', async result => {
+        const pending = deferred<Reply>();
+        loadLeads = async () => pending.promise;
+        render(<CallSchedulingPage />);
+        await screen.findByRole('button', { name: /Fixture campaign A/ });
+        await waitFor(() => expect(latestSignal('A')).toBeDefined());
+        const signal = latestSignal('A');
+        loadCampaigns = async () => { throw new Error('Current campaign list unavailable'); };
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Show archived' }));
+        expect(signal?.aborted).toBe(true);
+        await screen.findByText('Current campaign list unavailable');
+        await flush(() => result === 'success' ? pending.resolve(rows('A', 'hidden campaign')) : pending.reject(new Error('obsolete detail failure')));
+        expect(screen.queryByText('Synthetic lead hidden campaign')).not.toBeInTheDocument();
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Ignore' })).not.toBeInTheDocument();
+        expect(axios.post).not.toHaveBeenCalled();
+        expect(axios.delete).not.toHaveBeenCalled();
     });
 
     it('rejects an old archive-filter list response', async () => {

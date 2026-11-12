@@ -302,11 +302,16 @@ const CallSchedulingPage = () => {
     const [leadStateFilter, setLeadStateFilter] = useState('');
     const [leadQuery, setLeadQuery] = useState('');
 
+    const selectedCampaign = useMemo(
+        () => campaigns.find(c => c.id === selectedCampaignId) || null,
+        [campaigns, selectedCampaignId]
+    );
+
     const [showArchived, setShowArchived] = useState(false);
     const leadView = useMemo<CampaignLeadQuery>(() => ({
-        campaignId: selectedCampaignId, page: leadPage, state: leadStateFilter,
+        campaignId: selectedCampaign?.id ?? null, page: leadPage, state: leadStateFilter,
         search: leadQuery, includeArchived: showArchived,
-    }), [selectedCampaignId, leadPage, leadStateFilter, leadQuery, showArchived]);
+    }), [selectedCampaign?.id, leadPage, leadStateFilter, leadQuery, showArchived]);
     const listView = useMemo(() => ({ includeArchived: showArchived }), [showArchived]);
     const activeLeadView = useRef<CampaignLeadQuery | null>(null);
     const activeListView = useRef<typeof listView | null>(null);
@@ -320,7 +325,7 @@ const CallSchedulingPage = () => {
     const leads = visibleDetails?.leads ?? [];
     const leadTotalPages = visibleDetails?.totalPages ?? 1;
     const leadError = detailsFailure?.query === leadView ? detailsFailure.message : null;
-    const leadsLoading = Boolean(selectedCampaignId && !visibleDetails && !leadError);
+    const leadsLoading = Boolean(leadView.campaignId && !visibleDetails && !leadError);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const setNotice = (n: { type: 'success' | 'error' | 'info'; message: string } | null) => {
@@ -376,6 +381,11 @@ const CallSchedulingPage = () => {
 
     useLayoutEffect(() => {
         activeListView.current = listView;
+        // Revoke the previous list selection before passive detail reads can run.
+        activeLeadView.current = null;
+        detailRequest.current?.abort();
+        detailRequest.current = null;
+        setSelectedCampaignId(null);
         setCampaigns(current => current.length ? [] : current);
         return () => {
             activeListView.current = null;
@@ -388,11 +398,6 @@ const CallSchedulingPage = () => {
         activeLeadView.current === view && detailsRef.current?.query === view &&
         detailsRef.current.leads.some(lead => lead.id === leadId)
     ), []);
-
-    const selectedCampaign = useMemo(
-        () => campaigns.find(c => c.id === selectedCampaignId) || null,
-        [campaigns, selectedCampaignId]
-    );
 
     const ianaTimezones = useMemo(() => meta?.iana_timezones || [], [meta]);
     const defaultAmdOptions = useMemo(() => {
