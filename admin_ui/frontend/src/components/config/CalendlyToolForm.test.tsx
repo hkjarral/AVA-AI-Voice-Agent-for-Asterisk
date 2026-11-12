@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom/vitest';
 import axios, { type AxiosRequestConfig } from 'axios';
@@ -137,13 +137,18 @@ describe('Calendly guided setup', () => {
 
 it('keeps setup operations separate across appointments and remount, and cleans only the selected operation', async () => {
     mock();
+    let finishInspection!: () => void;
+    const inspection = new Promise<void>(resolve => { finishInspection = resolve; });
     const original = vi.mocked(axios.request).getMockImplementation()! as (request: AxiosRequestConfig) => Promise<{ data: unknown }>;
     vi.mocked(axios.request).mockImplementation(async r => {
         const response = await original(r);
         if (r.url?.endsWith('/test-proposals')) response.data = { ...(response.data as Record<string, unknown>), operation: (r.data as { operation: string }).operation };
         if (r.url?.endsWith('/test-bookings')) response.data = { status: 'success', reservation_status: 'confirmed', message: 'Appointment booked', attempt_reference: 'attempt' };
         if (r.url?.endsWith('/attempts')) response.data = ['attempt', 'unrelated'].map(id => ({ id, state: 'confirmed', updated: 1 }));
-        if (r.url?.includes('/attempts/')) response.data = { status: 'success', reservation_status: 'confirmed', message: 'Appointment booked', attempt_reference: r.url.split('/').pop() };
+        if (r.url?.includes('/attempts/')) {
+            if (r.url.endsWith('/unrelated')) await inspection;
+            response.data = { status: 'success', reservation_status: 'confirmed', message: 'Appointment booked', attempt_reference: r.url.split('/').pop() };
+        }
         return response;
     });
     const a = `calendly.setup.${connection.id}.demo`;
@@ -174,11 +179,14 @@ it('keeps setup operations separate across appointments and remount, and cleans 
     await screen.findByText(/Appointment booked/);
     await userEvent.click(screen.getByLabelText(/I cleaned up the test appointment/));
     await userEvent.click(screen.getAllByRole('button', { name: 'Inspect result' })[1]);
-    expect(screen.getByLabelText(/I cleaned up the test appointment/)).not.toBeChecked();
+    expect(screen.getByLabelText(/I cleaned up the test appointment/)).toBeChecked();
+    await act(async () => finishInspection());
+    await waitFor(() => expect(screen.getByLabelText(/I cleaned up the test appointment/)).not.toBeChecked());
     await userEvent.click(screen.getByLabelText(/I cleaned up the test appointment/));
     expect(screen.queryByRole('button', { name: 'Start another setup test after cleanup' })).not.toBeInTheDocument();
     expect(sessionStorage.getItem(a)).toBe('setup:appointment-a');
     await userEvent.click(screen.getAllByRole('button', { name: 'Inspect result' })[0]);
+    await waitFor(() => expect(screen.getByLabelText(/I cleaned up the test appointment/)).not.toBeChecked());
     await userEvent.click(screen.getByLabelText(/I cleaned up the test appointment/));
     await userEvent.click(screen.getByRole('button', { name: 'Start another setup test after cleanup' }));
     expect(sessionStorage.getItem(a)).toBeNull();

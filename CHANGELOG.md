@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Calendar setup regression coverage:** wait for asynchronous attempt inspection
+  before asserting operator-check resets, with an explicitly delayed mock response.
+
 - **Admin frontend TypeScript:** clear application and test compiler debt and require
   typechecking through the frontend CI gate. Correct Remote Agent error rendering,
   nullable form values, status-card actions and transport-field descriptions while
