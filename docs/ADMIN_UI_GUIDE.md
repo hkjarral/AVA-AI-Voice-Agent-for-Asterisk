@@ -277,3 +277,15 @@ requests rediscover files. No database migration is required; rollback is code-o
 This is the smaller scope of issue #767. A durable catalog, checksums, background
 reconciliation and new recording-specific permission models remain deferred pending
 evidence and design agreement. There is no change to active calls or recording policy.
+
+## Call Scheduling lead lists
+
+Selecting a campaign, changing the lead search/state filter, or changing pages
+loads a new lead list. Previous rows are hidden until that view loads, and a
+failed request offers **Retry campaign details**. Background refreshes retain the
+current list while loading; obsolete responses cannot replace the selected view.
+
+Pending-lead guidance updates with the latest campaign statistics. Counts are
+shown as unknown while their first request is loading. A lead confirmation that
+outlives a change of view does not apply to the old lead. Existing campaign and
+lead state rules continue to control which actions are allowed.

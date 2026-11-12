@@ -117,11 +117,11 @@ interface LeadRow {
 }
 
 interface CampaignLeadQuery {
-    campaignId: string | null;
-    page: number;
-    state: string;
-    search: string;
-    includeArchived: boolean;
+    readonly campaignId: string | null;
+    readonly page: number;
+    readonly state: string;
+    readonly search: string;
+    readonly includeArchived: boolean;
 }
 
 interface CampaignDetails {
@@ -444,11 +444,13 @@ const CallSchedulingPage = () => {
         const missing: string[] = [];
         if (selectedVoicemailEnabled && !(selectedCampaign.voicemail_drop_media_uri || '').trim()) missing.push('Voicemail recording missing');
         if (selectedConsentEnabled && !(((selectedCampaign as any).consent_media_uri || '') as string).trim()) missing.push('Consent recording missing');
-        const pending = stats?.lead_states?.pending || 0;
-        const canceled = stats?.lead_states?.canceled || 0;
-        if (pending <= 0) missing.push(`No pending leads${canceled ? ` (canceled: ${canceled})` : ''}`);
+        if (stats) {
+            const pending = stats.lead_states?.pending || 0;
+            const canceled = stats.lead_states?.canceled || 0;
+            if (pending <= 0) missing.push(`No pending leads${canceled ? ` (canceled: ${canceled})` : ''}`);
+        }
         return { within, missing };
-    }, [selectedCampaign, windowInfo?.within, selectedVoicemailEnabled, selectedConsentEnabled]);
+    }, [selectedCampaign, windowInfo?.within, selectedVoicemailEnabled, selectedConsentEnabled, stats]);
 
     const [createForm, setCreateForm] = useState({
         name: '',
@@ -1492,23 +1494,23 @@ const CallSchedulingPage = () => {
                                 <div className="border rounded-lg p-3">
                                     <div className="text-xs text-muted-foreground">QUEUE</div>
                                     <div className="text-sm mt-1">
-                                        Pending: <span className="font-medium">{stats?.lead_states?.pending || 0}</span> · Leased:{' '}
-                                        <span className="font-medium">{stats?.lead_states?.leased || 0}</span>
+                                        Pending: <span className="font-medium">{stats ? stats.lead_states?.pending || 0 : '—'}</span> · Leased:{' '}
+                                        <span className="font-medium">{stats ? stats.lead_states?.leased || 0 : '—'}</span>
                                     </div>
                                 </div>
                                 <div className="border rounded-lg p-3">
                                     <div className="text-xs text-muted-foreground">IN PROGRESS</div>
                                     <div className="text-sm mt-1">
-                                        Dialing: <span className="font-medium">{stats?.lead_states?.dialing || 0}</span> · In call:{' '}
-                                        <span className="font-medium">{stats?.lead_states?.in_progress || 0}</span>
+                                        Dialing: <span className="font-medium">{stats ? stats.lead_states?.dialing || 0 : '—'}</span> · In call:{' '}
+                                        <span className="font-medium">{stats ? stats.lead_states?.in_progress || 0 : '—'}</span>
                                     </div>
                                 </div>
                                 <div className="border rounded-lg p-3">
                                     <div className="text-xs text-muted-foreground">OUTCOMES</div>
                                     <div className="text-sm mt-1">
-                                        VM: <span className="font-medium">{stats?.attempt_outcomes?.voicemail_dropped || 0}</span> · Human:{' '}
-                                        <span className="font-medium">{stats?.attempt_outcomes?.answered_human || 0}</span> · Errors:{' '}
-                                        <span className="font-medium">{stats?.attempt_outcomes?.error || 0}</span>
+                                        VM: <span className="font-medium">{stats ? stats.attempt_outcomes?.voicemail_dropped || 0 : '—'}</span> · Human:{' '}
+                                        <span className="font-medium">{stats ? stats.attempt_outcomes?.answered_human || 0 : '—'}</span> · Errors:{' '}
+                                        <span className="font-medium">{stats ? stats.attempt_outcomes?.error || 0 : '—'}</span>
                                     </div>
                                 </div>
                                 <div className="border rounded-lg p-3">
@@ -1705,7 +1707,7 @@ const CallSchedulingPage = () => {
 
                     <div className="flex items-center justify-between p-3">
                         <div className="text-xs text-muted-foreground">
-                            Page {leadPage} of {leadTotalPages}
+                            Page {leadPage} of {visibleDetails ? leadTotalPages : '—'}
                         </div>
                         <div className="flex items-center gap-2">
                             <button

@@ -124,3 +124,194 @@ describe('campaign lead query ownership', () => {
         expect(screen.getByText('Synthetic lead B')).toBeInTheDocument();
     });
 });
+
+describe('query refresh lifecycle', () => {
+    it.each(['search', 'state', 'page'] as const)('owns the complete %s query and ignores its late failure', async kind => {
+        render(<CallSchedulingPage />);
+        await screen.findByText('Synthetic lead A');
+        const old = deferred<Reply>();
+        let reads = 0;
+        loadLeads = async id => ++reads === 1 ? old.promise : rows(id, 'current query');
+        const change = (first: boolean) => {
+            if (kind === 'search') fireEvent.change(screen.getByLabelText('Search campaign leads'), { target: { value: first ? 'one' : 'two' } });
+            else if (kind === 'state') fireEvent.change(screen.getByLabelText('Lead state filter'), { target: { value: first ? 'pending' : 'failed' } });
+            else fireEvent.click(screen.getByRole('button', { name: first ? 'Next' : 'Prev' }));
+        };
+        change(true);
+        expect(screen.queryByText('Synthetic lead A')).not.toBeInTheDocument();
+        await waitFor(() => expect(reads).toBe(1));
+        const oldSignal = latestSignal('A');
+        change(false);
+        expect(oldSignal?.aborted).toBe(true);
+        await screen.findByText('Synthetic lead current query');
+        await flush(() => old.reject(new Error('obsolete query failure')));
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+        expect(screen.getByText('Synthetic lead current query')).toBeInTheDocument();
+    });
+
+    it('lets manual refresh supersede a pending refresh of the same campaign', async () => {
+        render(<CallSchedulingPage />);
+        await screen.findByText('Synthetic lead A');
+        const old = deferred<Reply>();
+        let reads = 0;
+        loadLeads = async id => ++reads === 1 ? old.promise : rows(id, 'new refresh');
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+        await waitFor(() => expect(reads).toBe(1));
+        const oldSignal = latestSignal('A');
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+        await screen.findByText('Synthetic lead new refresh');
+        expect(oldSignal?.aborted).toBe(true);
+        await flush(() => old.resolve(rows('A', 'old refresh')));
+        expect(screen.queryByText('Synthetic lead old refresh')).not.toBeInTheDocument();
+    });
+
+    it('skips overlapping polls while a slow request is pending', async () => {
+        const slow = deferred<Reply>();
+        loadLeads = async () => slow.promise;
+        render(<CallSchedulingPage />);
+        await screen.findByRole('button', { name: /Fixture campaign A/ });
+        await waitFor(() => expect(latestSignal('A')).toBeDefined());
+        const signal = latestSignal('A');
+        await act(async () => { await poll?.(); await poll?.(); });
+        expect(vi.mocked(axios.get).mock.calls.filter(([url]) => url === '/api/outbound/campaigns/A/leads')).toHaveLength(1);
+        expect(signal?.aborted).toBe(false);
+        await flush(() => slow.resolve(rows('A')));
+        await screen.findByText('Synthetic lead A');
+    });
+
+    it('shows failure without stale rows or zero-lead guidance, and retries only the read', async () => {
+        const failed = deferred<Reply>();
+        loadLeads = async id => id === 'B' ? failed.promise : rows(id);
+        render(<CallSchedulingPage />);
+        await screen.findByText('Synthetic lead A');
+        select('B');
+        expect(screen.queryByText('Synthetic lead A')).not.toBeInTheDocument();
+        expect(screen.queryByText('No pending leads')).not.toBeInTheDocument();
+        await flush(() => failed.reject(new Error('Read timed out')));
+        expect(await screen.findByRole('alert')).toHaveTextContent('Read timed out');
+        expect(screen.queryByRole('button', { name: 'Ignore' })).not.toBeInTheDocument();
+        loadLeads = async id => rows(id);
+        fireEvent.click(screen.getByRole('button', { name: 'Retry campaign details' }));
+        await screen.findByText('Synthetic lead B');
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+        expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    it('does not restore a stale selection after an old poll finishes its list request', async () => {
+        render(<CallSchedulingPage />);
+        await screen.findByText('Synthetic lead A');
+        const oldList = deferred<Reply>();
+        loadCampaigns = async () => oldList.promise;
+        await act(async () => { void poll?.(); });
+        await waitFor(() => expect(vi.mocked(axios.get).mock.calls.filter(([url]) => url === '/api/outbound/campaigns')).toHaveLength(2));
+        select('B');
+        await screen.findByText('Synthetic lead B');
+        const aReads = vi.mocked(axios.get).mock.calls.filter(([url]) => url === '/api/outbound/campaigns/A/leads').length;
+        await flush(() => oldList.resolve({ data: [campaign('A'), campaign('B')] }));
+        expect(screen.getByRole('button', { name: /Fixture campaign B/ })).toHaveClass('bg-primary/5');
+        expect(vi.mocked(axios.get).mock.calls.filter(([url]) => url === '/api/outbound/campaigns/A/leads')).toHaveLength(aReads);
+        expect(screen.getByText('Synthetic lead B')).toBeInTheDocument();
+    });
+
+    it('invalidates a delete confirmation even after returning to the original campaign', async () => {
+        const confirmation = deferred<boolean>();
+        mocks.confirm.mockReturnValue(confirmation.promise);
+        render(<CallSchedulingPage />);
+        await screen.findByText('Synthetic lead A');
+        fireEvent.click(within(screen.getByText('Synthetic lead A').closest('tr')!).getByRole('button', { name: 'Delete' }));
+        await waitFor(() => expect(mocks.confirm).toHaveBeenCalledTimes(1));
+        select('B'); await screen.findByText('Synthetic lead B');
+        select('A'); await screen.findByText('Synthetic lead A');
+        await flush(() => confirmation.resolve(true));
+        expect(axios.delete).not.toHaveBeenCalled();
+    });
+
+    it('permits confirmed deletion for the current owned row', async () => {
+        render(<CallSchedulingPage />);
+        await screen.findByText('Synthetic lead A');
+        loadLeads = async () => ({ data: { leads: [], total_pages: 1 } });
+        fireEvent.click(within(screen.getByText('Synthetic lead A').closest('tr')!).getByRole('button', { name: 'Delete' }));
+        await waitFor(() => expect(axios.delete).toHaveBeenCalledWith('/api/outbound/leads/lead-A'));
+        await screen.findByText(/No leads yet/);
+        expect(mocks.success).toHaveBeenCalledWith('Lead deleted');
+    });
+
+    it('aborts and invalidates pending reads on unmount', async () => {
+        const slow = deferred<Reply>();
+        loadLeads = async () => slow.promise;
+        const view = render(<CallSchedulingPage />);
+        await screen.findByRole('button', { name: /Fixture campaign A/ });
+        await waitFor(() => expect(latestSignal('A')).toBeDefined());
+        const signal = latestSignal('A');
+        const reads = vi.mocked(axios.get).mock.calls.length;
+        view.unmount();
+        expect(signal?.aborted).toBe(true);
+        await flush(() => slow.resolve(rows('A')));
+        expect(vi.mocked(axios.get).mock.calls).toHaveLength(reads);
+    });
+});
+
+describe('campaign statistics readiness', () => {
+    it('treats loading statistics as unknown and uses fresh positive statistics', async () => {
+        const fresh = deferred<Reply>();
+        loadStats = async () => fresh.promise;
+        render(<CallSchedulingPage />);
+        await screen.findByRole('button', { name: /Fixture campaign A/ });
+        expect(screen.queryByText('No pending leads')).not.toBeInTheDocument();
+        await flush(() => fresh.resolve(stats(3)));
+        await screen.findByText('Synthetic lead A');
+        expect(screen.queryByText('No pending leads')).not.toBeInTheDocument();
+    });
+
+    it('updates missing-lead guidance after a mutation refresh without replacing the campaign', async () => {
+        render(<CallSchedulingPage />);
+        await screen.findByText('Synthetic lead A');
+        expect(screen.queryByText(/No pending leads/)).not.toBeInTheDocument();
+        loadStats = async () => stats(0, 4);
+        loadLeads = async () => ({ data: { leads: [], total_pages: 1 } });
+        fireEvent.click(screen.getByRole('button', { name: 'Ignore' }));
+        await screen.findByText('No pending leads (canceled: 4)');
+        expect(vi.mocked(axios.get).mock.calls.filter(([url]) => url === '/api/outbound/campaigns')).toHaveLength(1);
+    });
+});
+
+describe('campaign removal and recycle ownership', () => {
+    it('closes recycle when its campaign disappears during a poll', async () => {
+        render(<CallSchedulingPage />);
+        await screen.findByText('Synthetic lead A');
+        fireEvent.click(screen.getByRole('button', { name: 'Recycle' }));
+        await screen.findByRole('dialog', { name: 'Recycle Lead' });
+        loadCampaigns = async () => ({ data: [campaign('B')] });
+        await act(async () => { await poll?.(); });
+        await screen.findByText('Synthetic lead B');
+        expect(screen.queryByRole('dialog', { name: 'Recycle Lead' })).not.toBeInTheDocument();
+        expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    it('allows recycling an owned current lead', async () => {
+        render(<CallSchedulingPage />);
+        await screen.findByText('Synthetic lead A');
+        fireEvent.click(screen.getByRole('button', { name: 'Recycle' }));
+        const dialog = await screen.findByRole('dialog', { name: 'Recycle Lead' });
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/outbound/leads/lead-A/recycle', { mode: 'redial' }));
+        await waitFor(() => expect(mocks.success).toHaveBeenCalledWith('Lead re-queued for re-dial'));
+    });
+
+    it('rejects an old archive-filter list response', async () => {
+        render(<CallSchedulingPage />);
+        await screen.findByText('Synthetic lead A');
+        const old = deferred<Reply>();
+        loadCampaigns = async () => old.promise;
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+        await waitFor(() => expect(vi.mocked(axios.get).mock.calls.filter(([url]) => url === '/api/outbound/campaigns')).toHaveLength(2));
+        const signal = vi.mocked(axios.get).mock.calls.filter(([url]) => url === '/api/outbound/campaigns').slice(-1)[0]?.[1]?.signal;
+        loadCampaigns = async () => ({ data: [campaign('B')] });
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Show archived' }));
+        await screen.findByText('Synthetic lead B');
+        expect(signal?.aborted).toBe(true);
+        await flush(() => old.resolve({ data: [campaign('A'), campaign('B')] }));
+        expect(screen.queryByRole('button', { name: /Fixture campaign A/ })).not.toBeInTheDocument();
+        expect(screen.getByText('Synthetic lead B')).toBeInTheDocument();
+    });
+});
