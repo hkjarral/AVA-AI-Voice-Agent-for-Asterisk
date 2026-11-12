@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Call Scheduling ownership:** discard obsolete campaign/filter/page responses,
+  hide old lead rows during view changes, and recheck lead ownership before
+  applying confirmed actions. Preserve the current view when old operations finish.
+
 - **Calendar setup regression coverage:** wait for asynchronous attempt inspection
   before asserting operator-check resets, with an explicitly delayed mock response.
 
