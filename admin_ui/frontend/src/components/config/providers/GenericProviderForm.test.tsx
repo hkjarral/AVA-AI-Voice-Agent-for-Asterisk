@@ -111,7 +111,7 @@ describe('GenericProviderForm initialization and transitions', () => {
     it('keeps explicit same-YAML-type choices through edits without duplicate managed fields', () => {
         render(<FormHarness initial={{ name: 'custom_llm', type: 'openai', capabilities: ['llm'], custom_flag: true }} />);
         fireEvent.change(screen.getByLabelText('LLM Provider Type'), { target: { value: 'deepseek' } });
-        fireEvent.change(screen.getByLabelText('Chat API Base URL *'), { target: { value: 'https://example.test/custom' } });
+        fireEvent.change(screen.getByLabelText('Chat API Base URL *'), { target: { value: 'https://example.com/custom' } });
         expect(screen.getByLabelText('LLM Provider Type')).toHaveValue('deepseek');
         expect(screen.queryByDisplayValue('chat_base_url')).not.toBeInTheDocument();
         expect(draft().custom_flag).toBe(true);
