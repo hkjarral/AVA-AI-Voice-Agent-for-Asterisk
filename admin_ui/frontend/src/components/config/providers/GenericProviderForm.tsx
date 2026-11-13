@@ -149,6 +149,9 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
         }
         if (initializedFull.current) return;
         initializedFull.current = true;
+        setCustomFields(fields => fields.some(field => field.key === 'continuous_input')
+            ? fields.map(field => field.key === 'continuous_input' ? { ...field, value: 'true' } : field)
+            : [...fields, { key: 'continuous_input', value: 'true' }]);
         if (config.continuous_input !== true) {
             // Preserve all existing settings; initialization is not a user edit.
             onChange({ ...config, continuous_input: true });
@@ -194,6 +197,8 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
 
         if (type === 'full') {
             updates.capabilities = ['stt', 'llm', 'tts'];
+            updates.continuous_input = true;
+            newFields = newFields.map(field => field.key === 'continuous_input' ? { ...field, value: 'true' } : field);
             if (!newFields.some(f => f.key === 'continuous_input')) {
                 newFields.unshift({ key: 'continuous_input', value: 'true' });
             }

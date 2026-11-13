@@ -133,6 +133,15 @@ describe('GenericProviderForm initialization and transitions', () => {
         expect(screen.getByLabelText('Model *')).toHaveValue('s2.1-pro-free');
         expect(screen.getByRole('checkbox', { name: 'Text-to-Speech (TTS)' })).toBeDisabled();
     });
+    it('synchronizes a stale continuous-input field when entering full-agent mode', () => {
+        render(<FormHarness initial={{ name: 'custom_llm', type: 'openai', capabilities: ['llm'], continuous_input: false, custom_option: 'keep' }} />);
+        fireEvent.change(screen.getByLabelText('Provider Type'), { target: { value: 'full' } });
+        expect(screen.queryByDisplayValue('false')).not.toBeInTheDocument();
+        expect(screen.getByDisplayValue('true')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Enabled' }));
+        expect(draft()).toMatchObject({ continuous_input: true, custom_option: 'keep', enabled: false });
+    });
+
     it('clears subtype ownership across full/modular switches and retains values', () => {
         render(<FormHarness initial={{ name: 'custom_llm', type: 'openai', capabilities: ['llm'], chat_model: 'keep-model' }} />);
         fireEvent.change(screen.getByLabelText('Provider Type'), { target: { value: 'full' } });

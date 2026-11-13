@@ -46,11 +46,8 @@ const ToolsPage = () => {
     const currentToken = useRef(token);
     useLayoutEffect(() => {
         currentToken.current = token;
-        setSaving(false);
-        setRestartingEngine(false);
+        // A changed token invalidates reads, not accepted server-side writes.
         setCheckingApplyStatus(false);
-        setApplyUncertain(false);
-        setApplyStatus(null);
         return () => cancelRead('tool-apply-status');
     }, [token, cancelRead]);
     const [config, setConfigState] = useState<any>(() => getCachedConfig()?.config ?? {});
@@ -97,7 +94,7 @@ const ToolsPage = () => {
     const [applyStatus, setApplyStatus] = useState<string | null>(null);
     const [applyUncertain, setApplyUncertain] = useState(false);
     const [checkingApplyStatus, setCheckingApplyStatus] = useState(false);
-    const { restartRequired, applyRequired, recommendedApplyMethod, stateStale, refetch } = useRestartRequired();
+    const { restartRequired, applyRequired, recommendedApplyMethod, stateStale, refetch, refreshAndRead } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
     const [activePhase, setActivePhase] = useState<ToolPhase>('in_call');
     const [toolCatalog, setToolCatalog] = useState<ToolDef[]>([]);
@@ -212,7 +209,7 @@ const ToolsPage = () => {
         const current = () => request.isCurrent() && currentToken.current === token;
         setCheckingApplyStatus(true);
         try {
-            const { data } = await axios.get('/api/system/config-state', {
+            const data = await refreshAndRead({
                 headers: { Authorization: `Bearer ${token}` }, signal: request.signal, timeout: 15000,
             });
             if (!current()) return;
@@ -230,7 +227,6 @@ const ToolsPage = () => {
             } else throw new Error('Configuration hashes have not converged');
             setApplyStatus(message);
             setApplyUncertain(false);
-            void refetch();
         } catch {
             // Preserve the unknown outcome and the operator's draft.
             if (current()) setApplyUncertain(true);
@@ -247,10 +243,13 @@ const ToolsPage = () => {
         setSaving(true);
         setApplyStatus(null);
         let configSaved = false;
+        let requestStarted = false;
         try {
             const snapshot = configRef.current;
             const sanitized = sanitizeConfigForSave(snapshot);
-            const saved = await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) }, {
+            const content = yaml.dump(sanitized);
+            requestStarted = true;
+            const saved = await axios.post('/api/config/yaml', { content }, {
                 headers: { Authorization: `Bearer ${token}` }, timeout: 30000,
             });
             configSaved = true;
@@ -280,25 +279,35 @@ const ToolsPage = () => {
         } catch (err: any) {
             if (!ownsView()) return;
             const detail = err.response?.data?.detail || err.message || 'Unknown error';
+            if (!requestStarted) {
+                setApplyStatus('Configuration was not saved. Correct validation errors and retry.');
+                toast.error('Configuration was not saved', { description: detail });
+                return;
+            }
             setApplyStatus(configSaved ? UNKNOWN_APPLY_STATUS : UNKNOWN_SAVE_STATUS);
             setApplyUncertain(true);
             toast.warning('Save & Apply outcome could not be confirmed', { description: detail });
-            if (configSaved) {
-                void refetch();
-                await refreshApplyStatus();
-            }
+            if (configSaved) await refreshApplyStatus();
         } finally {
-            if (ownsView()) setSaving(false);
+            if (isMounted()) {
+                setSaving(false);
+                if (!ownsView() && requestStarted) {
+                    setApplyStatus(configSaved ? UNKNOWN_APPLY_STATUS : UNKNOWN_SAVE_STATUS);
+                    setApplyUncertain(true);
+                }
+            }
         }
     };
 
     const handleRestartAIEngine = async (force: boolean = false) => {
+        const ownsView = () => isMounted() && currentToken.current === token;
         setRestartingEngine(true);
         try {
             const response = await axios.post(`/api/system/containers/ai_engine/restart?force=${force}`, {}, {
                 headers: { Authorization: `Bearer ${token}` }
             });
 
+            if (!ownsView()) return;
             if (response.data.status === 'warning') {
                 const confirmForce = await confirm({
                     title: 'Force Restart?',
@@ -306,7 +315,7 @@ const ToolsPage = () => {
                     confirmText: 'Force Restart',
                     variant: 'destructive'
                 });
-                if (confirmForce) {
+                if (confirmForce && ownsView()) {
                     setRestartingEngine(false);
                     return handleRestartAIEngine(true);
                 }
@@ -319,11 +328,17 @@ const ToolsPage = () => {
             }
 
             await refetch();
-            toast.success('AI Engine restarted! Changes are now active.');
+            if (ownsView()) toast.success('AI Engine restarted! Changes are now active.');
         } catch (error: any) {
-            toast.error('Failed to restart AI Engine', { description: error.response?.data?.detail || error.message });
+            if (ownsView()) toast.error('Failed to restart AI Engine', { description: error.response?.data?.detail || error.message });
         } finally {
-            setRestartingEngine(false);
+            if (isMounted()) {
+                setRestartingEngine(false);
+                if (!ownsView()) {
+                    setApplyStatus(UNKNOWN_APPLY_STATUS);
+                    setApplyUncertain(true);
+                }
+            }
         }
     };
 
@@ -359,7 +374,13 @@ const ToolsPage = () => {
                 await refreshApplyStatus();
             }
         } finally {
-            if (ownsView()) setRestartingEngine(false);
+            if (isMounted()) {
+                setRestartingEngine(false);
+                if (!ownsView()) {
+                    setApplyStatus(UNKNOWN_APPLY_STATUS);
+                    setApplyUncertain(true);
+                }
+            }
         }
     };
 

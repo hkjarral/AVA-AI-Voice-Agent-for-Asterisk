@@ -13,12 +13,12 @@ import ToolsPage from './ToolsPage';
 vi.setConfig({ testTimeout: 30000 });
 
 const mocks = vi.hoisted(() => ({
-    token: 'test-token', load: vi.fn(), confirm: vi.fn(), refetch: vi.fn(),
+    token: 'test-token', load: vi.fn(), confirm: vi.fn(), refetch: vi.fn(), read: vi.fn(),
     state: { restartRequired: false, applyRequired: false, recommendedApplyMethod: 'none', stateStale: false },
 }));
 vi.mock('../auth/AuthContext', () => ({ useAuth: () => ({ token: mocks.token }) }));
 vi.mock('../hooks/useConfirmDialog', () => ({ useConfirmDialog: () => ({ confirm: mocks.confirm }) }));
-vi.mock('../hooks/useRestartRequired', () => ({ useRestartRequired: () => ({ ...mocks.state, refetch: mocks.refetch }) }));
+vi.mock('../hooks/useRestartRequired', () => ({ useRestartRequired: () => ({ ...mocks.state, refetch: mocks.refetch, refreshAndRead: mocks.read }) }));
 vi.mock('../utils/configCache', () => ({ getCachedConfig: () => null, loadConfigYaml: mocks.load }));
 vi.mock('axios', () => ({ default: { get: vi.fn(), post: vi.fn(), isCancel: () => false } }));
 vi.mock('@monaco-editor/react', () => ({
@@ -58,6 +58,7 @@ beforeEach(() => {
     Object.assign(mocks.state, { restartRequired: false, applyRequired: false, recommendedApplyMethod: 'none', stateStale: false });
     mocks.load.mockResolvedValue({ config: fixture(), yamlError: null });
     mocks.refetch.mockResolvedValue(undefined);
+    mocks.read.mockImplementation(async options => (await axios.get('/api/system/config-state', options)).data);
     mocks.confirm.mockResolvedValue(false);
     vi.mocked(axios.get).mockResolvedValue({ data: { tools: [], providers: [] } });
     vi.mocked(axios.post).mockImplementation(async url => ({ data: String(url).includes('templates/validate') ? {valid:true,issues:[],references:[],variables:[],example_body:'{}',preview:{}} : url === '/api/config/yaml' ? { recommended_apply_method: 'hot_reload' } : { tool_generation: 9 } }));
@@ -391,7 +392,7 @@ describe('Tools persistence and apply outcomes', () => {
         await editFarewell();
         fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
         await screen.findByText('Saved. Apply status is unknown. Refresh status before retrying.');
-        expect(mocks.refetch).toHaveBeenCalled();
+        expect(mocks.read).toHaveBeenCalled();
         expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument();
     });
 
@@ -664,7 +665,61 @@ describe('Tools uncertain outcomes', () => {
         await act(async () => { pending.resolve({ data: knownConfigState }); });
         expect(screen.queryByText('Current saved configuration is active. Unsaved edits still need Save & Apply.')).not.toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Checking status…' })).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Save & Apply' })).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Refresh status' })).toBeEnabled();
+    });
+
+    it.each(['success', 'failure'])('keeps the save guard across token changes until an outstanding request settles (%s)', async outcome => {
+        const pending = deferred<{ data: unknown }>();
+        vi.mocked(axios.post).mockReturnValueOnce(pending.promise);
+        const view = render(<ToolsPage />);await editFarewell();
+        fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
+        mocks.token = 'new-authentication';view.rerender(<ToolsPage />);
+        expect(screen.getByRole('button', { name: 'Saving…' })).toBeDisabled();
+        fireEvent.click(screen.getByRole('button', { name: 'Saving…' }));
+        expect(axios.post).toHaveBeenCalledTimes(1);
+        await act(async () => {
+            if (outcome === 'success') pending.resolve({ data: { recommended_apply_method: 'hot_reload' } });
+            else pending.reject(new Error('Synthetic lost response'));
+        });
+        expect(axios.post).toHaveBeenCalledTimes(1);
+        expect(screen.getByRole('button', { name: 'Save & Apply' })).toBeDisabled();
+        readState(knownConfigState);
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
+        await screen.findByText('Current saved configuration is active. Unsaved edits still need Save & Apply.');
         expect(screen.getByRole('button', { name: 'Save & Apply' })).toBeEnabled();
+        expect(axios.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps local validation failures retryable without engine status or server requests', async () => {
+        const config = fixture();config.tools.transfer.deferred_audio_drain_timeout_sec = Number.NaN;
+        mocks.load.mockResolvedValue({ config, yamlError: null });
+        render(<ToolsPage />);await editFarewell();
+        fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
+        await screen.findByText('Configuration was not saved. Correct validation errors and retry.');
+        expect(axios.post).not.toHaveBeenCalled();
+        expect(vi.mocked(axios.get).mock.calls.some(([url]) => url === '/api/system/config-state')).toBe(false);
+        expect(screen.queryByRole('button', { name: 'Refresh status' })).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Save & Apply' })).toBeEnabled();
+        fireEvent.click(screen.getByRole('button', { name: 'Back to tools' }));
+        await open('Transfer & live agents');
+        fireEvent.change(screen.getByLabelText('Deferred Audio Drain Timeout (seconds)'), { target: { value: '10' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
+        await screen.findByText(/Applied as tool generation 9/);
+    });
+
+    it('does not force-restart after authentication changes during confirmation', async () => {
+        Object.assign(mocks.state, { restartRequired: true, recommendedApplyMethod: 'restart' });
+        const consent = deferred<boolean>();mocks.confirm.mockReturnValueOnce(consent.promise);
+        vi.mocked(axios.post).mockResolvedValue({ data: { status: 'warning', message: 'Synthetic active-call guard' } });
+        const view = render(<ToolsPage />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Restart AI Engine' }));
+        await waitFor(() => expect(mocks.confirm).toHaveBeenCalled());
+        mocks.token = 'new-authentication';view.rerender(<ToolsPage />);
+        expect(screen.getByRole('button', { name: 'Restarting...' })).toBeDisabled();
+        await act(async () => { consent.resolve(true); });
+        expect(axios.post).toHaveBeenCalledTimes(1);
+        expect(screen.getByRole('button', { name: 'Refresh status' })).toBeEnabled();
     });
 
     it('reconciles a lost standalone Apply response without re-saving or retrying Apply', async () => {

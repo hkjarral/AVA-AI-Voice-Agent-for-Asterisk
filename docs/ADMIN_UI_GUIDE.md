@@ -133,6 +133,12 @@ saving, reloading, or restarting anything. Unreachable, invalid, or inconsistent
 engine state stays unknown and blocks another Save/Apply. Verified status reports
 whether the current saved configuration is active, needs Apply, or needs a
 restart. It does not discard unsaved edits or identify a particular tool generation.
+Changing authentication keeps an accepted write locked until its request settles,
+then requires status verification before retry. Local validation failures send no
+request and remain editable and retryable without contacting the engine.
+The verified status drives both the message and the available Apply action. If a
+later poll cannot reach the engine, the last verified action remains visible with
+a stale-status notice.
 
 Email-template previews use synthetic data and do not send email. Closing or
 switching the template editor discards its preview requests; editing a draft or
