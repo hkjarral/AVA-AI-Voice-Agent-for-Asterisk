@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { Plus, Trash2, AlertTriangle } from 'lucide-react';
 import HelpTooltip from '../../ui/HelpTooltip';
@@ -101,60 +101,59 @@ const PROVIDER_OPTIONS: Record<string, Record<string, string[]>> = {
     },
 };
 
+const initialCustomFields = (config: GenericProviderFormProps['config'], isNew?: boolean) => {
+    const managed = getManagedSubtypeKeys(inferSubtype(config));
+    const fields = Object.entries(config)
+        .filter(([key, value]) => !CORE_CONFIG_KEYS.includes(key) && !managed.has(key) && typeof value !== 'object')
+        .map(([key, value]) => ({ key, value: String(value) }));
+    if (config.type === 'full') {
+        // Match the one-time full-agent normalization below before the first edit.
+        const continuous = fields.find(field => field.key === 'continuous_input');
+        if (continuous) continuous.value = 'true';
+        else fields.push({ key: 'continuous_input', value: 'true' });
+    } else if (isNew && !config.type && !fields.some(field => field.key === 'continuous_input')) {
+        fields.push({ key: 'continuous_input', value: 'true' });
+    }
+    return fields;
+};
+
 const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onChange, isNew }) => {
-    const [customFields, setCustomFields] = useState<{ key: string; value: string }[]>([]);
-    const [nameLocked, setNameLocked] = useState<boolean>(false);
-    const [selectedSubtype, setSelectedSubtype] = useState<ProviderSubtype | undefined>(undefined);
-
-    // On mount or when config changes, try to infer the subtype from existing config
-    useEffect(() => {
-        if (!selectedSubtype) {
-            const inferred = inferSubtype(config);
-            if (inferred) setSelectedSubtype(inferred);
-        }
-    }, [config.type, config.capabilities]);
-
-    // Initialize custom fields from config on mount
-    useEffect(() => {
-        const initialFields: { key: string; value: string }[] = [];
-        const managedSubtypeKeys = getManagedSubtypeKeys(inferSubtype(config));
-
-        Object.entries(config).forEach(([key, value]) => {
-            if (!CORE_CONFIG_KEYS.includes(key) && !managedSubtypeKeys.has(key) && typeof value !== 'object') {
-                initialFields.push({ key, value: String(value) });
-            }
-        });
-
-        if (isNew && (config.type === 'full' || !config.type) && !initialFields.some(f => f.key === 'continuous_input')) {
-            initialFields.push({ key: 'continuous_input', value: 'true' });
-        }
-
-        setCustomFields(initialFields);
-        // Lock name for existing modular providers
-        if (!isNew && config.capabilities && config.capabilities.length === 1 && (config.type || 'modular') !== 'full') {
-            setNameLocked(true);
-        }
-    }, []); // Run once on mount
+    const [customFields, setCustomFields] = useState(() => initialCustomFields(config, isNew));
+    const capability = config.type !== 'full' && config.capabilities?.length === 1
+        ? config.capabilities[0] as SubtypeCapability : undefined;
+    // An explicit choice matters for subtypes sharing a YAML type (e.g. DeepSeek
+    // and OpenAI). It belongs only to the current capability/type, not the form.
+    const [subtypeChoice, setSubtypeChoice] = useState<{
+        capability: SubtypeCapability | undefined; type: string; subtype?: ProviderSubtype;
+    } | null>(null);
+    const selectedSubtype = subtypeChoice && subtypeChoice.capability === capability && subtypeChoice.type === config.type
+        ? subtypeChoice.subtype : inferSubtype(config);
+    const [newNameLocked, setNewNameLocked] = useState(false);
+    const nameLocked = capability !== undefined && (!isNew || newNameLocked);
+    const setSelectedSubtype = (subtype?: ProviderSubtype) => {
+        setSubtypeChoice({ capability, type: subtype?.yamlType ?? config.type, subtype });
+    };
 
     // A provider-specific field has one owner: the structured subtype form.
-    // Remove any stale generic copy when an existing provider is inferred or
-    // the operator selects a subtype, so it cannot overwrite the value above.
     useEffect(() => {
         if (!selectedSubtype) return;
         const managedSubtypeKeys = getManagedSubtypeKeys(selectedSubtype);
         setCustomFields(fields => fields.filter(field => !managedSubtypeKeys.has(field.key)));
     }, [selectedSubtype]);
 
+    const initializedFull = useRef(false);
     useEffect(() => {
-        // Lock name when a modular capability is present (only after save/initial load)
-        if (!isNew && (config.type || 'modular') !== 'full' && Array.isArray(config.capabilities) && config.capabilities.length === 1) {
-            setNameLocked(true);
+        if (config.type !== 'full') {
+            initializedFull.current = false;
+            return;
         }
-        // Ensure full agents always carry continuous_input: true (as config hint, shown in fields section)
-        if ((config.type || '') === 'full' && config.continuous_input !== true) {
-            updateConfig({ continuous_input: true });
+        if (initializedFull.current) return;
+        initializedFull.current = true;
+        if (config.continuous_input !== true) {
+            // Preserve all existing settings; initialization is not a user edit.
+            onChange({ ...config, continuous_input: true });
         }
-    }, [config.type, config.capabilities]);
+    }, [config, onChange]);
 
     const getBaseConfig = () => {
         const activeSubtype = selectedSubtype ?? inferSubtype(config);
@@ -188,6 +187,8 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
     };
 
     const handleTypeChange = (type: string) => {
+        setSubtypeChoice(null);
+        setNewNameLocked(false);
         const updates: any = { type };
         let newFields = [...customFields];
 
@@ -196,12 +197,10 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
             if (!newFields.some(f => f.key === 'continuous_input')) {
                 newFields.unshift({ key: 'continuous_input', value: 'true' });
             }
-            setNameLocked(false);
         } else {
             updates.capabilities = [];
             // remove continuous_input from custom fields for modular
             newFields = newFields.filter(f => f.key !== 'continuous_input');
-            setNameLocked(false);
         }
 
         setCustomFields(newFields);
@@ -224,7 +223,8 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
         const normalized = ensureModularKey(base || config.name || '', cap);
         updates.name = normalized;
         // Lock name once a capability is chosen (still allow programmatic suffix swap)
-        setNameLocked(true);
+        setSubtypeChoice(null);
+        setNewNameLocked(true);
         updateConfig(updates);
     };
 

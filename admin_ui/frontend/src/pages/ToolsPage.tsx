@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
@@ -14,7 +14,11 @@ import HTTPToolForm from '../components/config/HTTPToolForm';
 import { useAuth } from '../auth/AuthContext';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
 import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
+import { useAsyncScope } from '../hooks/useAsyncScope';
 import { useRestartRequired } from '../hooks/useRestartRequired';
+
+const UNKNOWN_APPLY_STATUS = 'Saved. Apply status is unknown. Refresh status before retrying.';
+const UNKNOWN_SAVE_STATUS = 'Save outcome is unknown. Check saved configuration before retrying.';
 
 type ToolPhase = 'in_call' | 'pre_call' | 'post_call' | 'catalog';
 
@@ -38,6 +42,17 @@ type ToolDef = {
 const ToolsPage = () => {
     const { confirm } = useConfirmDialog();
     const { token } = useAuth();
+    const { isMounted, beginRead, cancelRead } = useAsyncScope();
+    const currentToken = useRef(token);
+    useLayoutEffect(() => {
+        currentToken.current = token;
+        setSaving(false);
+        setRestartingEngine(false);
+        setCheckingApplyStatus(false);
+        setApplyUncertain(false);
+        setApplyStatus(null);
+        return () => cancelRead('tool-apply-status');
+    }, [token, cancelRead]);
     const [config, setConfigState] = useState<any>(() => getCachedConfig()?.config ?? {});
     const [savedSignature, setSavedSignature] = useState(() => JSON.stringify(getCachedConfig()?.config ?? {}));
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -80,6 +95,8 @@ const ToolsPage = () => {
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [saving, setSaving] = useState(false);
     const [applyStatus, setApplyStatus] = useState<string | null>(null);
+    const [applyUncertain, setApplyUncertain] = useState(false);
+    const [checkingApplyStatus, setCheckingApplyStatus] = useState(false);
     const { restartRequired, applyRequired, recommendedApplyMethod, stateStale, refetch } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
     const [activePhase, setActivePhase] = useState<ToolPhase>('in_call');
@@ -187,7 +204,46 @@ const ToolsPage = () => {
         }
     };
 
+    // A successful HTTP fallback is not engine truth. Require reachable, valid,
+    // hashed state before allowing an uncertain operation to be retried.
+    const refreshApplyStatus = async () => {
+        const request = beginRead('tool-apply-status');
+        if (!request) return;
+        const current = () => request.isCurrent() && currentToken.current === token;
+        setCheckingApplyStatus(true);
+        try {
+            const { data } = await axios.get('/api/system/config-state', {
+                headers: { Authorization: `Bearer ${token}` }, signal: request.signal, timeout: 15000,
+            });
+            if (!current()) return;
+            if (data?.engine_reachable !== true || data.disk_config_valid !== true ||
+                typeof data.running_config_hash !== 'string' || !data.running_config_hash ||
+                typeof data.disk_config_hash !== 'string' || !data.disk_config_hash ||
+                typeof data.restart_required !== 'boolean' || typeof data.apply_required !== 'boolean') {
+                throw new Error('Current configuration status unavailable');
+            }
+            let message: string;
+            if (data.restart_required) message = 'Current saved configuration requires an AI Engine restart.';
+            else if (data.apply_required) message = 'Current saved configuration still needs Apply.';
+            else if (data.running_config_hash === data.disk_config_hash) {
+                message = 'Current saved configuration is active. Unsaved edits still need Save & Apply.';
+            } else throw new Error('Configuration hashes have not converged');
+            setApplyStatus(message);
+            setApplyUncertain(false);
+            void refetch();
+        } catch {
+            // Preserve the unknown outcome and the operator's draft.
+            if (current()) setApplyUncertain(true);
+        } finally {
+            if (current()) setCheckingApplyStatus(false);
+            request.finish();
+        }
+    };
+
     const handleSave = async () => {
+        if (saving || restartingEngine || applyUncertain || checkingApplyStatus) return;
+        cancelRead('tool-apply-status');
+        const ownsView = () => isMounted() && currentToken.current === token;
         setSaving(true);
         setApplyStatus(null);
         let configSaved = false;
@@ -198,11 +254,13 @@ const ToolsPage = () => {
                 headers: { Authorization: `Bearer ${token}` }, timeout: 30000,
             });
             configSaved = true;
+            if (!ownsView()) return;
             setSavedSignature(JSON.stringify(snapshot));
             if (saved.data?.recommended_apply_method === 'hot_reload') {
                 const applied = await axios.post('/api/system/containers/ai_engine/reload', {}, {
                     headers: { Authorization: `Bearer ${token}` }, timeout: 30000,
                 });
+                if (!ownsView()) return;
                 if (applied.data?.restart_required) {
                     setApplyStatus('Saved and partially applied. Restart the AI Engine to finish applying changes.');
                     toast.warning('Restart still required', { description: applied.data?.message });
@@ -220,14 +278,17 @@ const ToolsPage = () => {
             }
             await refetch();
         } catch (err: any) {
+            if (!ownsView()) return;
             const detail = err.response?.data?.detail || err.message || 'Unknown error';
-            setApplyStatus(configSaved
-                ? 'Saved changes could not be applied; the previous tool generation remains active.'
-                : 'Tools were not saved.');
-            toast.error('Failed to save or apply tools', { description: detail });
-            if (configSaved) await refetch();
+            setApplyStatus(configSaved ? UNKNOWN_APPLY_STATUS : UNKNOWN_SAVE_STATUS);
+            setApplyUncertain(true);
+            toast.warning('Save & Apply outcome could not be confirmed', { description: detail });
+            if (configSaved) {
+                void refetch();
+                await refreshApplyStatus();
+            }
         } finally {
-            setSaving(false);
+            if (ownsView()) setSaving(false);
         }
     };
 
@@ -267,6 +328,8 @@ const ToolsPage = () => {
     };
 
     const handleApplyAIEngine = async () => {
+        const ownsView = () => isMounted() && currentToken.current === token;
+        if (applyUncertain || checkingApplyStatus) return;
         if (recommendedApplyMethod !== 'hot_reload') {
             await handleRestartAIEngine(false);
             return;
@@ -277,6 +340,7 @@ const ToolsPage = () => {
                 headers: { Authorization: `Bearer ${token}` },
                 timeout: 30000,
             });
+            if (!ownsView()) return;
             if (response.data?.restart_required) {
                 setApplyStatus('Hot reload applied partially. Restart the AI Engine to finish applying changes.');
                 toast.warning('Restart still required', { description: response.data?.message });
@@ -288,9 +352,14 @@ const ToolsPage = () => {
             }
             await refetch();
         } catch (error: any) {
-            toast.error('Failed to apply changes', { description: error.response?.data?.detail || error.message });
+            if (ownsView()) {
+                setApplyStatus(UNKNOWN_APPLY_STATUS);
+                setApplyUncertain(true);
+                toast.warning('Apply outcome could not be confirmed', { description: error.response?.data?.detail || error.message });
+                await refreshApplyStatus();
+            }
         } finally {
-            setRestartingEngine(false);
+            if (ownsView()) setRestartingEngine(false);
         }
     };
 
@@ -357,6 +426,7 @@ const ToolsPage = () => {
     };
 
     const updateToolsConfigAndSaveNow = async (newToolsConfig: any) => {
+        if (applyUncertain || checkingApplyStatus) throw new Error('Refresh status before saving tool settings.');
         const nextConfig = mergeToolsConfig(configRef.current, newToolsConfig);
         setConfig(nextConfig);
         await persistConfigNow(nextConfig);
@@ -404,7 +474,7 @@ const ToolsPage = () => {
                     </div>
                     <button
                         onClick={handleApplyAIEngine}
-                        disabled={restartingEngine || saving}
+                        disabled={restartingEngine || saving || applyUncertain || checkingApplyStatus}
                         className="flex items-center text-xs px-3 py-1.5 rounded transition-colors bg-orange-500 text-white hover:bg-orange-600 font-medium disabled:opacity-50"
                     >
                         {restartingEngine ? (
@@ -426,7 +496,10 @@ const ToolsPage = () => {
             )}
             {applyStatus && (
                 <div className="rounded-md border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
-                    {applyStatus}
+                    <span role="status">{applyStatus}</span>
+                    {applyUncertain && <button type="button" disabled={checkingApplyStatus || saving || restartingEngine} onClick={() => void refreshApplyStatus()} className="ml-3 px-3 py-1 border rounded disabled:opacity-50">
+                        {checkingApplyStatus ? 'Checking status…' : 'Refresh status'}
+                    </button>}
                 </div>
             )}
             <div hidden={!!selectedSection || httpEditing || activePhase === 'catalog'} className="space-y-6">
@@ -660,7 +733,7 @@ const ToolsPage = () => {
                 <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background py-4" role="region" aria-label="Save tool changes">
                     <span className="text-sm text-muted-foreground" role="status">{saving ? 'Saving…' : dirty ? 'Unsaved changes' : 'Save checks whether a reload or restart is needed.'}</span>
                     {/* Keep Save available for fields that commit their local draft on blur. */}
-                    <button type="button" onClick={handleSave} disabled={saving || restartingEngine} className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">
+                    <button type="button" onClick={handleSave} disabled={saving || restartingEngine || applyUncertain || checkingApplyStatus} className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">
                         <Save className="h-4 w-4" /> {saving ? 'Saving…' : 'Save & Apply'}
                     </button>
                 </div>

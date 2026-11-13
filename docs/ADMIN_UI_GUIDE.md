@@ -59,6 +59,12 @@ separate Basic/Bearer speech credentials and the selected Local AI STT backend.
 Configure full-agent providers and modular STT/LLM/TTS components. Each provider
 card shows its current status.
 
+For a new modular provider, changing STT/LLM/TTS updates the subtype controls to
+match that capability. A compatible subtype is inferred; otherwise choose one
+before configuring its fields. Existing draft settings are preserved across
+switches, and subtype settings are not duplicated in Additional Configuration
+Fields. Saved modular providers keep their capability locked.
+
 For Google Gemini modular LLM providers, the new default is
 `models/gemini-3.8-flash`; existing saved selections are preserved. This does not
 change native Google Live's model default. Temperature is greyed out and disabled
@@ -120,6 +126,13 @@ Configure inventory here, then open an Agent to narrow which transfer destinatio
 Google calendar, Microsoft account/calendar, or voicemail mailbox it can use. A global
 disable always wins. If Save & Apply validation fails, the last good tool generation
 continues serving calls and the unsaved configuration is not published.
+
+If a Save or Apply response is lost, its outcome is unknown. A confirmed save
+triggers a read-only status check; **Refresh status** retries that check without
+saving, reloading, or restarting anything. Unreachable, invalid, or inconsistent
+engine state stays unknown and blocks another Save/Apply. Verified status reports
+whether the current saved configuration is active, needs Apply, or needs a
+restart. It does not discard unsaved edits or identify a particular tool generation.
 
 Email-template previews use synthetic data and do not send email. Closing or
 switching the template editor discards its preview requests; editing a draft or

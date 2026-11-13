@@ -13,10 +13,10 @@ import ToolsPage from './ToolsPage';
 vi.setConfig({ testTimeout: 30000 });
 
 const mocks = vi.hoisted(() => ({
-    load: vi.fn(), confirm: vi.fn(), refetch: vi.fn(),
+    token: 'test-token', load: vi.fn(), confirm: vi.fn(), refetch: vi.fn(),
     state: { restartRequired: false, applyRequired: false, recommendedApplyMethod: 'none', stateStale: false },
 }));
-vi.mock('../auth/AuthContext', () => ({ useAuth: () => ({ token: 'test-token' }) }));
+vi.mock('../auth/AuthContext', () => ({ useAuth: () => ({ token: mocks.token }) }));
 vi.mock('../hooks/useConfirmDialog', () => ({ useConfirmDialog: () => ({ confirm: mocks.confirm }) }));
 vi.mock('../hooks/useRestartRequired', () => ({ useRestartRequired: () => ({ ...mocks.state, refetch: mocks.refetch }) }));
 vi.mock('../utils/configCache', () => ({ getCachedConfig: () => null, loadConfigYaml: mocks.load }));
@@ -53,6 +53,7 @@ const fixture = () => ({
 
 beforeEach(() => {
     vi.clearAllMocks();
+    mocks.token = 'test-token';
     localStorage.clear();
     Object.assign(mocks.state, { restartRequired: false, applyRequired: false, recommendedApplyMethod: 'none', stateStale: false });
     mocks.load.mockResolvedValue({ config: fixture(), yamlError: null });
@@ -146,15 +147,19 @@ describe('ARI assisted destination setup', () => {
             return { data: {} };
         });
         fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
-        await screen.findByText('Tools were not saved.');
+        await screen.findByText('Save outcome is unknown. Check saved configuration before retrying.');
         expect(screen.getByText('ext_0012')).toBeInTheDocument();
         expect(screen.getByText('Unsaved changes')).toBeInTheDocument();
+        vi.mocked(axios.get).mockImplementation(async url => ({ data: url === '/api/system/config-state' ? knownConfigState : { tools: [], providers: [] } }));
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
+        await screen.findByText('Current saved configuration is active. Unsaved edits still need Save & Apply.');
+        vi.mocked(axios.get).mockResolvedValue({ data: { tools: [], providers: [] } });
         vi.mocked(axios.post).mockImplementation(async url => {
             if (url === '/api/system/containers/ai_engine/reload') throw new Error('apply failed');
             return { data: { recommended_apply_method: 'hot_reload' } };
         });
         fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
-        await screen.findByText('Saved changes could not be applied; the previous tool generation remains active.');
+        await screen.findByText('Saved. Apply status is unknown. Refresh status before retrying.');
         expect(screen.getByText('ext_0012')).toBeInTheDocument();
     });
 });
@@ -371,9 +376,9 @@ describe('Tools persistence and apply outcomes', () => {
         render(<ToolsPage />);
         await editFarewell();
         fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
-        await screen.findByText('Tools were not saved.');
+        await screen.findByText('Save outcome is unknown. Check saved configuration before retrying.');
         expect(screen.getByLabelText('Default Farewell Message')).toHaveValue('See you soon.');
-        expect(screen.getByRole('button', { name: 'Save & Apply' })).toBeEnabled();
+        expect(screen.getByRole('button', { name: 'Save & Apply' })).toBeDisabled();
         expect(axios.post).toHaveBeenCalledTimes(1);
     });
 
@@ -385,7 +390,7 @@ describe('Tools persistence and apply outcomes', () => {
         render(<ToolsPage />);
         await editFarewell();
         fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
-        await screen.findByText('Saved changes could not be applied; the previous tool generation remains active.');
+        await screen.findByText('Saved. Apply status is unknown. Refresh status before retrying.');
         expect(mocks.refetch).toHaveBeenCalled();
         expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument();
     });
@@ -535,4 +540,150 @@ it('does not stage a cancelled A2A edit when validation finishes late', async ()
     await act(async () => { finish?.({data: {valid: true}}); });
     expect(screen.queryByRole('button', {name: 'Configure delegate'})).not.toBeInTheDocument();
     expect(screen.queryByRole('button', {name: 'Save & Apply'})).not.toBeInTheDocument();
+});
+
+const knownConfigState = {
+    engine_reachable: true, disk_config_valid: true, running_config_hash: 'synthetic-a', disk_config_hash: 'synthetic-a',
+    restart_required: false, apply_required: false, recommended_apply_method: 'none',
+};
+const deferred = <T,>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+};
+
+describe('Tools uncertain outcomes', () => {
+    const loseReloadResponse = () => vi.mocked(axios.post).mockImplementation(async url => {
+        if (url === '/api/config/yaml') return { data: { recommended_apply_method: 'hot_reload' } };
+        if (url === '/api/system/containers/ai_engine/reload') throw new Error('Synthetic response lost after applying');
+        return { data: {} };
+    });
+    const readState = (data: unknown) => vi.mocked(axios.get).mockImplementation(async url => ({ data: url === '/api/system/config-state' ? data : { tools: [], providers: [] } }));
+    const submit = async () => {
+        render(<ToolsPage />);
+        await editFarewell();
+        fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
+    };
+
+    it('recovers a lost reload response from engine truth without replaying Save or Apply', async () => {
+        loseReloadResponse();
+        readState(knownConfigState);
+        await submit();
+        await screen.findByText('Current saved configuration is active. Unsaved edits still need Save & Apply.');
+        expect(axios.post).toHaveBeenCalledTimes(2);
+        expect(screen.queryByText(/previous tool generation remains active/)).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Refresh status' })).not.toBeInTheDocument();
+    });
+
+    it.each([
+        { name: 'pending apply', state: { ...knownConfigState, apply_required: true, disk_config_hash: 'synthetic-b' }, message: 'Current saved configuration still needs Apply.' },
+        { name: 'restart', state: { ...knownConfigState, restart_required: true }, message: 'Current saved configuration requires an AI Engine restart.' },
+    ])('reports authoritative $name without claiming full application', async ({ state, message }) => {
+        loseReloadResponse();readState(state);await submit();
+        await screen.findByText(message);
+        expect(axios.post).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+        { ...knownConfigState, engine_reachable: false, running_config_hash: null, disk_config_hash: null },
+        { ...knownConfigState, disk_config_valid: false },
+        { ...knownConfigState, disk_config_hash: 'different' },
+        { ...knownConfigState, apply_required: undefined },
+    ])('keeps unavailable, invalid or inconsistent state unknown', async state => {
+        loseReloadResponse();readState(state);await submit();
+        await screen.findByRole('button', { name: 'Refresh status' });
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh status' })).toBeEnabled());
+        expect(screen.getByRole('button', { name: 'Save & Apply' })).toBeDisabled();
+        expect(screen.getByText('Saved. Apply status is unknown. Refresh status before retrying.')).toBeVisible();
+        expect(axios.post).toHaveBeenCalledTimes(2);
+    });
+
+    it('recovers read-only after a failed status request and preserves edited drafts', async () => {
+        loseReloadResponse();
+        vi.mocked(axios.get).mockImplementation(async url => {
+            if (url === '/api/system/config-state') throw new Error('Synthetic offline');
+            return { data: { tools: [], providers: [] } };
+        });
+        await submit();
+        await screen.findByRole('button', { name: 'Refresh status' });
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh status' })).toBeEnabled());
+        fireEvent.change(screen.getByLabelText('Default Farewell Message'), { target: { value: 'Keep this draft.' } });
+        readState(knownConfigState);
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
+        await screen.findByText('Current saved configuration is active. Unsaved edits still need Save & Apply.');
+        expect(screen.getByLabelText('Default Farewell Message')).toHaveValue('Keep this draft.');
+        expect(screen.getByText('Unsaved changes')).toBeInTheDocument();
+        expect(axios.post).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not infer a failed save from a lost save response or start a reload', async () => {
+        vi.mocked(axios.post).mockRejectedValue(new Error('Synthetic lost save response'));
+        await submit();
+        await screen.findByText('Save outcome is unknown. Check saved configuration before retrying.');
+        expect(screen.getByText('Unsaved changes')).toBeVisible();
+        expect(axios.post).toHaveBeenCalledTimes(1);
+        readState(knownConfigState);
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
+        await screen.findByText('Current saved configuration is active. Unsaved edits still need Save & Apply.');
+        expect(screen.getByText('Unsaved changes')).toBeVisible();
+        expect(axios.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('cancels a late recovery read when leaving and does not update a new page', async () => {
+        const pending = deferred<{ data: unknown }>();
+        let signal: AbortSignal | undefined;
+        loseReloadResponse();
+        vi.mocked(axios.get).mockImplementation(async (url, options) => {
+            if (url === '/api/system/config-state') { signal = options?.signal as AbortSignal; return pending.promise; }
+            return { data: { tools: [], providers: [] } };
+        });
+        const first = render(<ToolsPage />);await editFarewell();
+        fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
+        await screen.findByRole('button', { name: 'Checking status…' });
+        first.unmount();expect(signal?.aborted).toBe(true);
+        readState(knownConfigState);render(<ToolsPage />);
+        await screen.findByRole('heading', { name: 'Tools' });
+        await act(async () => { pending.resolve({ data: knownConfigState }); });
+        expect(screen.queryByText('Current saved configuration is active. Unsaved edits still need Save & Apply.')).not.toBeInTheDocument();
+    });
+
+    it('cancels recovery on authentication changes and ignores the old result', async () => {
+        const pending = deferred<{ data: unknown }>();
+        let signal: AbortSignal | undefined;
+        loseReloadResponse();
+        vi.mocked(axios.get).mockImplementation(async (url, options) => {
+            if (url === '/api/system/config-state') { signal = options?.signal as AbortSignal; return pending.promise; }
+            return { data: { tools: [], providers: [] } };
+        });
+        const view = render(<ToolsPage />);await editFarewell();
+        fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
+        await screen.findByRole('button', { name: 'Checking status…' });
+        mocks.token = 'new-authentication';view.rerender(<ToolsPage />);
+        expect(signal?.aborted).toBe(true);
+        await act(async () => { pending.resolve({ data: knownConfigState }); });
+        expect(screen.queryByText('Current saved configuration is active. Unsaved edits still need Save & Apply.')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Checking status…' })).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Save & Apply' })).toBeEnabled();
+    });
+
+    it('reconciles a lost standalone Apply response without re-saving or retrying Apply', async () => {
+        Object.assign(mocks.state, { applyRequired: true, recommendedApplyMethod: 'hot_reload' });
+        loseReloadResponse();readState(knownConfigState);
+        render(<ToolsPage />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Apply Changes' }));
+        await screen.findByText('Current saved configuration is active. Unsaved edits still need Save & Apply.');
+        expect(axios.post).toHaveBeenCalledTimes(1);
+        expect(axios.post).toHaveBeenCalledWith('/api/system/containers/ai_engine/reload', {}, expect.anything());
+    });
+
+    it('lets an accepted save finish after navigation without starting a reload', async () => {
+        const pending = deferred<{ data: unknown }>();
+        vi.mocked(axios.post).mockReturnValueOnce(pending.promise);
+        const first = render(<ToolsPage />);await editFarewell();
+        fireEvent.click(screen.getByRole('button', { name: 'Save & Apply' }));
+        first.unmount();
+        await act(async () => { pending.resolve({ data: { recommended_apply_method: 'hot_reload' } }); });
+        expect(axios.post).toHaveBeenCalledTimes(1);
+    });
 });
