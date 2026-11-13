@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Provider forms and Tools apply status:** scope modular subtype selection to
+  the current capability/type and preserve custom drafts across switches. Initialize
+  full-agent defaults without dropping settings. Report lost Save/Apply responses
+  as unknown and recover from verified engine configuration state with a read-only
+  Refresh status action. Preserve drafts and avoid replaying writes during recovery.
+  Lower the frontend lint ceiling from 820 to the verified 817 warnings.
+
 - **Environment and email-template lifecycle:** serialize Environment saves,
   refreshes, tests and Apply confirmations; ignore obsolete authentication/read
   responses and recheck drift before clearing pending changes. Report scheduled
