@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Environment and email-template lifecycle:** serialize Environment saves,
+  refreshes, tests and Apply confirmations; ignore obsolete authentication/read
+  responses and recheck drift before clearing pending changes. Report scheduled
+  Admin restarts and unknown Apply status without claiming readiness. Scope email
+  drafts/previews to each opening and current inputs, lock pending template saves,
+  and preserve failed drafts for retry. Lower the frontend lint ceiling to 820.
+
 - **Models and setup lifecycle:** ignore obsolete model/status responses, pin
   resumed downloads to their job IDs, and stop page-owned reads and timers after
   navigation. A changed Wizard model selection no longer inherits completion
