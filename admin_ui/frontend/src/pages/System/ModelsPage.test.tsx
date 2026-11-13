@@ -184,7 +184,7 @@ describe('ModelsPage Local AI status', () => {
         );
 
         await waitFor(() => {
-            expect(vi.mocked(axios.get)).toHaveBeenCalledWith('/api/system/health');
+            expect(vi.mocked(axios.get)).toHaveBeenCalledWith('/api/system/health', expect.objectContaining({ signal: expect.any(AbortSignal) }));
         });
         await waitFor(() => expect(screen.getByText('Error')).toBeInTheDocument());
         expect(screen.getByText(/Local AI Server is not reachable/i)).toBeInTheDocument();

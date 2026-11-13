@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Models and setup lifecycle:** ignore obsolete model/status responses, pin
+  resumed downloads to their job IDs, and stop page-owned reads and timers after
+  navigation. A changed Wizard model selection no longer inherits completion
+  from an older download. Make one automatic Local AI start attempt per completion
+  view, with explicit retry after failure or readiness timeout. Preserve manual
+  model/backend choices when reconciling language changes.
+
 - **Updater UI lifecycle:** bind previews and confirmations to the current target
   and options, prevent duplicate update/rollback submissions, and ignore obsolete
   job/log responses. Keep restored jobs locked until their state is known, poll

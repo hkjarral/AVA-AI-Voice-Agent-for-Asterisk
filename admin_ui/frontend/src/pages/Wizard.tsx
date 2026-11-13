@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertCircle, ArrowRight, Loader2, Cloud, Server, Shield, Zap, SkipForward, CheckCircle, CheckCircle2, XCircle, HardDrive, Play, RefreshCw, Info, AlertTriangle } from 'lucide-react';
 import axios from 'axios';
 import { toast } from 'sonner';
+import { useAsyncScope } from '../hooks/useAsyncScope';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import HelpTooltip from '../components/ui/HelpTooltip';
 import SetupHandoff from '../components/SetupHandoff';
@@ -70,6 +71,7 @@ type BackendCapabilities = {
 
 const Wizard = () => {
     const navigate = useNavigate();
+    const { isMounted, beginRead, cancelRead, later, clearLater } = useAsyncScope();
     const { confirm } = useConfirmDialog();
     const [step, setStep] = useState(1);
     const [loaded, setLoaded] = useState(false);
@@ -137,11 +139,12 @@ const Wizard = () => {
 
     const [loadError, setLoadError] = useState(false);
 
-    const showToast = (message: string, type: 'success' | 'error' | 'warning') => {
+    const showToast = useCallback((message: string, type: 'success' | 'error' | 'warning') => {
+        if (!isMounted()) return;
         if (type === 'success') toast.success(message);
         else if (type === 'warning') toast.warning(message);
         else toast.error(message);
-    };
+    }, [isMounted]);
     const [engineStatus, setEngineStatus] = useState<{
         running: boolean;
         exists: boolean;
@@ -150,11 +153,13 @@ const Wizard = () => {
     const [startingEngine, setStartingEngine] = useState(false);
     const [reloadingEngine, setReloadingEngine] = useState(false);
     const [startingLocalServer, setStartingLocalServer] = useState(false);
-    const localServerPollRef = useRef<{ cancelled: boolean; timeouts: number[]; startedAt: number | null }>({
-        cancelled: false,
-        timeouts: [],
-        startedAt: null
-    });
+    const serverOwner = useRef<object | null>(null);
+    const serverSubmitting = useRef(false);
+    const serverTimer = useRef<number | undefined>(undefined);
+    const autoStartAttempted = useRef(false);
+    const downloadOwner = useRef<{ selection?: string } | null>(null);
+    const downloadSubmitting = useRef(false);
+    const downloadTimer = useRef<number | undefined>(undefined);
     const [engineProgress, setEngineProgress] = useState<{
         steps: Array<{ name: string; status: string; message: string }>;
         currentStep: string;
@@ -213,6 +218,36 @@ const Wizard = () => {
     const [modelsStatus, setModelsStatus] = useState<LocalModelsStatus | null>(null);
     const [backendCaps, setBackendCaps] = useState<BackendCapabilities | null>(null);
 
+    // Only a submitted download can establish readiness for this exact selection.
+    const selection = JSON.stringify([
+        config.provider, selectedLanguage, config.local_stt_backend, config.local_stt_model,
+        config.local_tts_backend, config.local_tts_model, config.local_llm_model,
+        config.kroko_embedded, config.kokoro_mode, config.kokoro_voice,
+        config.silero_speaker, config.silero_language, config.local_llm_custom_url,
+        config.local_llm_custom_filename, config.kokoro_api_base_url
+    ]);
+    useLayoutEffect(() => {
+        setLocalAIStatus(prev => ({ ...prev, downloadCompleted: false, modelsReady: false }));
+        if (downloadOwner.current?.selection !== undefined) {
+            downloadOwner.current = null;
+            clearLater(downloadTimer.current);
+            cancelRead('download');
+            setLocalAIStatus(prev => ({ ...prev, downloading: false, downloadProgress: null }));
+        }
+    }, [selection, clearLater, cancelRead]);
+
+    useLayoutEffect(() => {
+        autoStartAttempted.current = false;
+        return () => {
+            if (serverOwner.current) {
+                serverOwner.current = null;
+                setLocalAIStatus(prev => ({ ...prev, serverStarted: false, serverReady: false }));
+            }
+            clearLater(serverTimer.current);
+            cancelRead('server-logs');
+        };
+    }, [step, config.provider, clearLater, cancelRead]);
+
     // Load existing config from .env on mount
     useEffect(() => {
         let cancelled = false;
@@ -235,12 +270,15 @@ const Wizard = () => {
                         setStep(5);
                         try {
                             const engine = await axios.get('/api/wizard/engine-status');
+                            if (cancelled) return;
                             setEngineStatus({ ...engine.data, checked: true });
                             if (res.data.provider === 'local') {
                                 const local = await axios.get('/api/wizard/local/server-logs');
+                                if (cancelled) return;
                                 setLocalAIStatus(prev => ({ ...prev, serverReady: !!local.data.ready, serverStarted: !!local.data.ready }));
                             }
                         } catch {
+                            if (cancelled) return;
                             setEngineStatus({ running: false, exists: false, checked: true });
                         }
                     }
@@ -259,9 +297,13 @@ const Wizard = () => {
 
     // Load available languages and models when reaching local AI step
     useEffect(() => {
+        if (step !== 3) return;
+        const request = beginRead('catalog');
+        if (!request) return;
         const loadModelsAndLanguages = async () => {
             try {
-                const res = await axios.get('/api/wizard/local/available-models');
+                const res = await axios.get('/api/wizard/local/available-models', { signal: request.signal, timeout: 15000 });
+                if (!request.isCurrent()) return;
                 if (res.data) {
                     setModelCatalog(res.data.catalog);
                     setAvailableLanguages({
@@ -272,16 +314,20 @@ const Wizard = () => {
                 }
             } catch {
                 // Non-fatal - keep defaults
+            } finally {
+                request.finish();
             }
         };
-        if (step === 3) {
-            loadModelsAndLanguages();
-        }
-    }, [step]);
+        loadModelsAndLanguages();
+        return () => cancelRead('catalog');
+    }, [step, beginRead, cancelRead]);
 
     const refreshModelsStatus = useCallback(async () => {
+        const request = beginRead('models-status');
+        if (!request) return;
         try {
-            const res = await axios.get('/api/wizard/local/models-status');
+            const res = await axios.get('/api/wizard/local/models-status', { signal: request.signal, timeout: 15000 });
+            if (!request.isCurrent()) return;
             setModelsStatus(res.data);
             setLocalAIStatus(prev => ({
                 ...prev,
@@ -293,80 +339,87 @@ const Wizard = () => {
             }));
         } catch {
             // Non-fatal; models status is best-effort (host may not have models dir yet).
+        } finally {
+            request.finish();
         }
-    }, []);
+    }, [beginRead]);
 
-    // Resume download on mount if active
-    useEffect(() => {
-        let mounted = true;
-        const checkActiveDownload = async () => {
-            try {
-                const res = await axios.get('/api/wizard/local/download-progress');
-                if (res.data && res.data.running && mounted) {
-                    setLocalAIStatus(prev => ({
-                        ...prev,
-                        downloading: true,
-                        downloadOutput: res.data.output || []
-                    }));
-
-                    const pollProgress = async () => {
-                        if (!mounted) return;
-                        try {
-                            const pRes = await axios.get('/api/wizard/local/download-progress');
-                            setLocalAIStatus(prev => ({
-                                ...prev,
-                                downloadOutput: pRes.data.output || [],
-                                downloadProgress: pRes.data.running
-                                    ? {
-                                        bytes_downloaded: pRes.data.bytes_downloaded || 0,
-                                        total_bytes: pRes.data.total_bytes || 0,
-                                        percent: pRes.data.percent || 0,
-                                        speed_bps: pRes.data.speed_bps || 0,
-                                        eta_seconds: pRes.data.eta_seconds,
-                                        current_file: pRes.data.current_file || ''
-                                    }
-                                    : null
-                            }));
-
-                            if (pRes.data.completed) {
-                                setLocalAIStatus(prev => ({
-                                    ...prev,
-                                    downloading: false,
-                                    downloadProgress: null
-                                }));
-                                refreshModelsStatus();
-                                return;
-                            }
-                            if (pRes.data.error) {
-                                showToast('Download failed: ' + pRes.data.error, 'error');
-                                setLocalAIStatus(prev => ({ ...prev, downloading: false, downloadProgress: null }));
-                                return;
-                            }
-                            if (pRes.data.running) {
-                                window.setTimeout(pollProgress, 1000);
-                            }
-                        } catch {
-                            window.setTimeout(pollProgress, 2000);
-                        }
-                    };
-                    pollProgress();
-                }
-            } catch {
-                // Ignore errors on mount check
+    const followDownload = useCallback(async (
+        owner: { selection?: string }, jobId?: string, markDownloaded = false
+    ) => {
+        if (downloadOwner.current !== owner) return;
+        const request = beginRead('download');
+        if (!request) return;
+        const current = () => request.isCurrent() && downloadOwner.current === owner;
+        try {
+            const res = await axios.get('/api/wizard/local/download-progress', {
+                params: jobId ? { job_id: jobId } : undefined,
+                signal: request.signal, timeout: 15000
+            });
+            if (!current()) return;
+            setLocalAIStatus(prev => ({
+                ...prev,
+                downloadOutput: res.data.output || [],
+                downloadProgress: res.data.running ? {
+                    bytes_downloaded: res.data.bytes_downloaded || 0,
+                    total_bytes: res.data.total_bytes || 0, percent: res.data.percent || 0,
+                    speed_bps: res.data.speed_bps || 0, eta_seconds: res.data.eta_seconds,
+                    current_file: res.data.current_file || ''
+                } : null
+            }));
+            if (res.data.completed || res.data.error || !res.data.running) {
+                downloadOwner.current = null;
+                setLocalAIStatus(prev => ({
+                    ...prev, downloading: false, downloadProgress: null,
+                    downloadCompleted: res.data.completed && markDownloaded ? true : prev.downloadCompleted,
+                    modelsReady: res.data.completed && markDownloaded ? true : prev.modelsReady
+                }));
+                if (res.data.completed) void refreshModelsStatus();
+                if (res.data.error) showToast('Download failed: ' + res.data.error, 'error');
+                return;
             }
-        };
-        checkActiveDownload();
-        return () => { mounted = false; };
-    }, [refreshModelsStatus]);
+            downloadTimer.current = later(() => followDownload(owner, jobId, markDownloaded), 1000);
+        } catch {
+            if (current()) downloadTimer.current = later(() => followDownload(owner, jobId, markDownloaded), 2000);
+        } finally {
+            request.finish();
+        }
+    }, [beginRead, later, refreshModelsStatus, showToast]);
+
+    // Resumed jobs have unknown selection provenance; refresh installed files on completion.
+    useEffect(() => {
+        if (!loaded || downloadOwner.current) return;
+        const owner = {};
+        downloadOwner.current = owner;
+        const request = beginRead('download');
+        if (!request) return;
+        void (async () => {
+            try {
+                const res = await axios.get('/api/wizard/local/download-progress', { signal: request.signal, timeout: 15000 });
+                if (!request.isCurrent() || downloadOwner.current !== owner) return;
+                if (res.data?.running) {
+                    setLocalAIStatus(prev => ({ ...prev, downloading: true, downloadOutput: res.data.output || [] }));
+                    void followDownload(owner, res.data.job_id);
+                } else downloadOwner.current = null;
+            } catch {
+                if (downloadOwner.current === owner) downloadOwner.current = null;
+            } finally { request.finish(); }
+        })();
+    }, [loaded, beginRead, followDownload]);
 
     const refreshBackendCaps = useCallback(async () => {
+        const request = beginRead('capabilities');
+        if (!request) return;
         try {
-            const res = await axios.get('/api/local-ai/capabilities');
+            const res = await axios.get('/api/local-ai/capabilities', { signal: request.signal, timeout: 15000 });
+            if (!request.isCurrent()) return;
             setBackendCaps(res.data || null);
         } catch {
             // Non-fatal; capabilities are best-effort.
+        } finally {
+            request.finish();
         }
-    }, []);
+    }, [beginRead]);
 
     useEffect(() => {
         if (step !== 3) return;
@@ -375,74 +428,29 @@ const Wizard = () => {
         refreshBackendCaps();
     }, [step, config.provider, refreshModelsStatus, refreshBackendCaps]);
 
-    // Auto-select first available model when language changes
+    // Reconcile only on language/catalog changes, preserving manual backend choices.
     useEffect(() => {
-        if (modelCatalog?.stt?.length > 0) {
-            const sttModels = modelCatalog.stt.filter((m: any) =>
-                m.language === selectedLanguage || m.language === 'multi'
-            );
-            const ttsModels = modelCatalog.tts.filter((m: any) =>
-                m.language === selectedLanguage || m.language === 'multi'
-            );
-
-            // Auto-select first STT model for the language, but preserve the
-            // user's chosen backend.  Only reset backend if no models exist
-            // for the current backend + language combination.
-            if (sttModels.length > 0 && !sttModels.find((m: any) => m.id === config.local_stt_model)) {
-                const currentBackend = (config.local_stt_backend || 'vosk').toLowerCase();
-                const sameBackendModels = sttModels.filter(
-                    (m: any) => (m.backend || '').toLowerCase() === currentBackend
-                );
-                if (sameBackendModels.length > 0) {
-                    // Keep the user's backend, just pick the first model for it
-                    setConfig(prev => ({
-                        ...prev,
-                        local_stt_model: sameBackendModels[0].id,
-                    }));
-                } else {
-                    // No models for current backend in this language; fall back
-                    setConfig(prev => ({
-                        ...prev,
-                        local_stt_model: sttModels[0].id,
-                        local_stt_backend: sttModels[0].backend
-                    }));
+        setConfig(prev => {
+            const updates: Partial<SetupConfig> = {};
+            const stt = (modelCatalog?.stt || []).filter(m => m.language === selectedLanguage || m.language === 'multi');
+            const tts = (modelCatalog?.tts || []).filter(m => m.language === selectedLanguage || m.language === 'multi');
+            if (stt.length && !stt.some(m => m.id === prev.local_stt_model)) {
+                const model = stt.find(m => (m.backend || '').toLowerCase() === (prev.local_stt_backend || 'vosk').toLowerCase()) || stt[0];
+                updates.local_stt_model = model.id;
+                updates.local_stt_backend = model.backend;
+            }
+            if (tts.length && !tts.some(m => m.id === prev.local_tts_model)) {
+                const model = tts.find(m => (m.backend || '').toLowerCase() === (prev.local_tts_backend || 'piper').toLowerCase()) || tts[0];
+                updates.local_tts_model = model.id;
+                updates.local_tts_backend = model.backend;
+                if (model.backend === 'silero') {
+                    updates.silero_speaker = model.speaker;
+                    const lang = (model.language || '').split('-')[0];
+                    updates.silero_language = lang === 'uk' ? 'ua' : lang;
                 }
             }
-
-            // Auto-select first TTS model for the language (same logic)
-            if (ttsModels.length > 0 && !ttsModels.find((m: any) => m.id === config.local_tts_model)) {
-                const currentTtsBackend = (config.local_tts_backend || 'piper').toLowerCase();
-                const sameTtsBackendModels = ttsModels.filter(
-                    (m: any) => (m.backend || '').toLowerCase() === currentTtsBackend
-                );
-                if (sameTtsBackendModels.length > 0) {
-                    const autoModel = sameTtsBackendModels[0];
-                    setConfig(prev => {
-                        const updates: Partial<SetupConfig> = { local_tts_model: autoModel.id };
-                        if (autoModel.backend === 'silero') {
-                            updates.silero_speaker = autoModel.speaker;
-                            const lang = (autoModel.language || '').split('-')[0];
-                            updates.silero_language = lang === 'uk' ? 'ua' : lang;
-                        }
-                        return { ...prev, ...updates };
-                    });
-                } else {
-                    const autoModel = ttsModels[0];
-                    setConfig(prev => {
-                        const updates: Partial<SetupConfig> = {
-                            local_tts_model: autoModel.id,
-                            local_tts_backend: autoModel.backend,
-                        };
-                        if (autoModel.backend === 'silero') {
-                            updates.silero_speaker = autoModel.speaker;
-                            const lang = (autoModel.language || '').split('-')[0];
-                            updates.silero_language = lang === 'uk' ? 'ua' : lang;
-                        }
-                        return { ...prev, ...updates };
-                    });
-                }
-            }
-        }
+            return Object.keys(updates).length ? { ...prev, ...updates } : prev;
+        });
     }, [selectedLanguage, modelCatalog]);
 
     const pickRecommendedLlmId = () => {
@@ -578,123 +586,86 @@ const Wizard = () => {
     };
 
     const startLocalAIServer = useCallback(async () => {
-        if (startingLocalServer) return;
+        if (!isMounted() || serverSubmitting.current) return;
+        serverSubmitting.current = true;
+        const owner = {};
+        serverOwner.current = owner;
+        clearLater(serverTimer.current);
+        cancelRead('server-logs');
+        const current = () => isMounted() && serverOwner.current === owner;
         setStartingLocalServer(true);
-
-        localServerPollRef.current.cancelled = false;
-        localServerPollRef.current.timeouts.forEach((id) => clearTimeout(id));
-        localServerPollRef.current.timeouts = [];
-
-        setLocalAIStatus((prev) => ({ ...prev, serverStarted: true, serverReady: false, serverLogs: ['Starting container...'] }));
-
+        setLocalAIStatus(prev => ({ ...prev, serverStarted: true, serverReady: false, serverLogs: ['Starting container...'] }));
         let isBuilding = false;
         try {
+            // The accepted server operation continues even if this view is left.
             const res = await axios.post('/api/wizard/local/start-server');
-            if (!res.data.success) {
-                throw new Error(res.data.message || 'Failed to start local_ai_server');
-            }
-            // Record startedAt AFTER the blocking POST request completes
-            localServerPollRef.current.startedAt = Date.now();
-
-            // AAVA-177: Backend signals when a full image build was kicked off
+            if (!current()) return;
+            if (!res.data.success) throw new Error(res.data.message || 'Failed to start local_ai_server');
             isBuilding = !!res.data.building;
-            if (isBuilding) {
-                setLocalAIStatus((prev) => ({
-                    ...prev,
-                    serverLogs: ['Building Docker image (this can take 10-60 minutes for GPU builds)...'],
-                }));
-            }
+            if (isBuilding) setLocalAIStatus(prev => ({ ...prev, serverLogs: ['Building Docker image (this can take 10-60 minutes for GPU builds)...'] }));
         } catch (err: any) {
-            setLocalAIStatus((prev) => ({ ...prev, serverStarted: false, serverReady: false }));
-            showToast(err?.response?.data?.message || err?.message || 'Failed to start local_ai_server', 'error');
-            throw err;
+            if (current()) {
+                serverOwner.current = null;
+                setLocalAIStatus(prev => ({ ...prev, serverStarted: false, serverReady: false }));
+                showToast(err?.response?.data?.message || err?.message || 'Failed to start local_ai_server', 'error');
+            }
+            return;
         } finally {
-            setStartingLocalServer(false);
+            serverSubmitting.current = false;
+            if (isMounted()) setStartingLocalServer(false);
         }
-
-        // AAVA-177: Timeout tiers:
-        //   60 min  — Docker image build (isBuilding)
-        //   10 min  — First-run HuggingFace model download (bumped dynamically when detected)
-        //    2 min  — Normal container startup (pre-downloaded models)
-        const NORMAL_TIMEOUT_MS   = 120_000;
-        const DOWNLOAD_TIMEOUT_MS = 600_000;
-        const BUILD_TIMEOUT_MS    = 3_600_000;
-        // Use a ref so the active timeout ceiling can be raised mid-poll without
-        // restarting the loop (e.g. when a model download is detected on the first tick).
-        const effectiveTimeoutRef = { current: isBuilding ? BUILD_TIMEOUT_MS : NORMAL_TIMEOUT_MS };
-
+        // Timeout starts after the blocking POST: normal 2m, model download 10m, image build 60m.
+        const startedAt = Date.now();
+        let timeout = isBuilding ? 3_600_000 : 120_000;
         const pollLogs = async () => {
-            if (localServerPollRef.current.cancelled) return;
-            const startedAt = localServerPollRef.current.startedAt || Date.now();
-            const elapsed = Date.now() - startedAt;
-            if (elapsed >= effectiveTimeoutRef.current) {
-                setLocalAIStatus((prev) => ({
-                    ...prev,
-                    serverLogs: [...prev.serverLogs, "Polling timed out after maximum wait time."],
-                }));
+            if (!current()) return;
+            if (Date.now() - startedAt >= timeout) {
+                serverOwner.current = null;
+                setLocalAIStatus(prev => ({ ...prev, serverStarted: false, serverReady: false,
+                    serverLogs: [...prev.serverLogs, 'Polling timed out after maximum wait time.'] }));
+                showToast('Local AI readiness polling timed out. Check server status before retrying.', 'warning');
                 return;
             }
+            const request = beginRead('server-logs');
+            if (!request) return;
             try {
-                const logRes = await axios.get('/api/wizard/local/server-logs');
-                // If the server reports an active model download, bump the ceiling to
-                // 10 minutes so large HuggingFace downloads (distil-large-v3, turbo,
-                // large-v3, etc.) aren't cut off by the normal 2-minute window.
-                if (logRes.data.downloading && !isBuilding) {
-                    effectiveTimeoutRef.current = DOWNLOAD_TIMEOUT_MS;
-                }
-                if (!localServerPollRef.current.cancelled) {
-                    setLocalAIStatus((prev) => ({
-                        ...prev,
-                        serverLogs: logRes.data.downloading && !prev.serverLogs.includes("⬇️ Downloading model from HuggingFace, please wait…")
-                            ? [...(logRes.data.logs || []), "⬇️ Downloading model from HuggingFace, please wait…"]
-                            : logRes.data.logs || [],
-                        serverReady: logRes.data.ready,
-                        serverPhase: logRes.data.phase || (logRes.data.ready ? 'running' : 'starting')
-                    }));
-                }
-                if (!logRes.data.ready) {
-                    const id = window.setTimeout(pollLogs, 2000);
-                    localServerPollRef.current.timeouts.push(id);
-                }
+                const res = await axios.get('/api/wizard/local/server-logs', { signal: request.signal, timeout: 15000 });
+                if (!current() || !request.isCurrent()) return;
+                if (res.data.downloading && !isBuilding) timeout = 600_000;
+                setLocalAIStatus(prev => ({
+                    ...prev,
+                    serverLogs: res.data.downloading ? [...(res.data.logs || []), '⬇️ Downloading model from HuggingFace, please wait…'] : res.data.logs || [],
+                    serverReady: !!res.data.ready,
+                    serverPhase: res.data.phase || (res.data.ready ? 'running' : 'starting')
+                }));
+                if (!res.data.ready) serverTimer.current = later(pollLogs, 2000);
             } catch {
-                const id = window.setTimeout(pollLogs, 3000);
-                localServerPollRef.current.timeouts.push(id);
-            }
+                if (current() && request.isCurrent()) serverTimer.current = later(pollLogs, 3000);
+            } finally { request.finish(); }
         };
-        pollLogs();
-    }, [startingLocalServer]);
+        void pollLogs();
+    }, [isMounted, clearLater, cancelRead, beginRead, later, showToast]);
 
+    // One automatic attempt per completion view; a failure requires operator retry.
     useEffect(() => {
-        return () => {
-            localServerPollRef.current.cancelled = true;
-            localServerPollRef.current.timeouts.forEach((id) => clearTimeout(id));
-            localServerPollRef.current.timeouts = [];
-        };
-    }, []);
-
-    // Fully Local: auto-start local_ai_server on completion (after models are present).
-    useEffect(() => {
-        if (step !== 5) return;
-        if (config.provider !== 'local') return;
+        if (step !== 5 || config.provider !== 'local' || autoStartAttempted.current) return;
         if (localAIStatus.serverStarted || startingLocalServer) return;
         if (!localAIStatus.modelsReady && !localAIStatus.downloadCompleted) return;
-
-        startLocalAIServer().catch((err: any) => {
-            showToast(err?.response?.data?.message || err?.message || 'Failed to start local_ai_server', 'error');
-        });
-    }, [
-        step,
-        config.provider,
-        localAIStatus.serverStarted,
-        localAIStatus.modelsReady,
-        localAIStatus.downloadCompleted,
-        startingLocalServer,
-        startLocalAIServer
-    ]);
+        autoStartAttempted.current = true;
+        void startLocalAIServer();
+    }, [step, config.provider, localAIStatus.serverStarted, localAIStatus.modelsReady,
+        localAIStatus.downloadCompleted, startingLocalServer, startLocalAIServer]);
 
     const startSelectedModelsDownload = async (
         options: { skipLlmDownload?: boolean; markDownloaded?: boolean } = {}
     ) => {
+        if (!isMounted() || downloadSubmitting.current) return;
+        downloadSubmitting.current = true;
+        const owner = { selection };
+        downloadOwner.current = owner;
+        clearLater(downloadTimer.current);
+        cancelRead('download');
+        const current = () => isMounted() && downloadOwner.current === owner;
         const skipLlmDownload = !!options.skipLlmDownload;
         const markDownloaded = options.markDownloaded !== false;
 
@@ -730,58 +701,16 @@ const Wizard = () => {
                 skip_llm_download: skipLlmDownload
             });
 
-            const jobId = startRes.data?.job_id;
-            const diskWarning = startRes.data?.disk_warning;
-            if (diskWarning) showToast(diskWarning, 'warning');
-
-            const pollProgress = async () => {
-                try {
-                    const res = await axios.get('/api/wizard/local/download-progress', {
-                        params: jobId ? { job_id: jobId } : undefined
-                    });
-                    setLocalAIStatus(prev => ({
-                        ...prev,
-                        downloadOutput: res.data.output || [],
-                        downloadProgress: res.data.running
-                            ? {
-                                bytes_downloaded: res.data.bytes_downloaded || 0,
-                                total_bytes: res.data.total_bytes || 0,
-                                percent: res.data.percent || 0,
-                                speed_bps: res.data.speed_bps || 0,
-                                eta_seconds: res.data.eta_seconds,
-                                current_file: res.data.current_file || ''
-                            }
-                            : null
-                    }));
-
-                    if (res.data.completed) {
-                        setLocalAIStatus(prev => ({
-                            ...prev,
-                            downloading: false,
-                            downloadCompleted: markDownloaded ? true : prev.downloadCompleted,
-                            modelsReady: markDownloaded ? true : prev.modelsReady,
-                            downloadProgress: null
-                        }));
-                        refreshModelsStatus();
-                        return;
-                    }
-                    if (res.data.error) {
-                        showToast('Download failed: ' + res.data.error, 'error');
-                        setLocalAIStatus(prev => ({ ...prev, downloading: false, downloadProgress: null }));
-                        return;
-                    }
-                    if (res.data.running) {
-                        setTimeout(pollProgress, 1000);
-                    }
-                } catch {
-                    setTimeout(pollProgress, 2000);
-                }
-            };
-            pollProgress();
+            if (!current()) return;
+            if (startRes.data?.disk_warning) showToast(startRes.data.disk_warning, 'warning');
+            void followDownload(owner, startRes.data?.job_id, markDownloaded);
         } catch (err: any) {
-            showToast('Failed to start download: ' + (err.response?.data?.detail || err.message), 'error');
-            setLocalAIStatus(prev => ({ ...prev, downloading: false, downloadProgress: null }));
-        }
+            if (current()) {
+                downloadOwner.current = null;
+                showToast('Failed to start download: ' + (err.response?.data?.detail || err.message), 'error');
+                setLocalAIStatus(prev => ({ ...prev, downloading: false, downloadProgress: null }));
+            }
+        } finally { downloadSubmitting.current = false; }
     };
 
     const localHybridSelectedSttModel = (modelCatalog?.stt || []).find((m: any) => m.id === config.local_stt_model);
@@ -3166,13 +3095,7 @@ const Wizard = () => {
 
                                     {!localAIStatus.serverStarted ? (
                                         <button
-                                            onClick={async () => {
-                                                try {
-                                                    await startLocalAIServer();
-                                                } catch (err: any) {
-                                                    showToast(err?.response?.data?.message || err?.message || 'Failed to start local_ai_server', 'error');
-                                                }
-                                            }}
+                                            onClick={() => void startLocalAIServer()}
                                             disabled={startingLocalServer}
                                             className="w-full px-4 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center"
                                         >
