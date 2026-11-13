@@ -19,7 +19,7 @@ const deferred = <T,>() => {
     const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
     return { promise, resolve, reject };
 };
-const saved = { provider: 'local', asterisk_host: '127.0.0.1', asterisk_username: 'test', asterisk_password: 'synthetic-password' };
+const saved = { provider: 'local', asterisk_host: '127.0.0.1', asterisk_username: 'test', asterisk_password: 'synthetic-password', openai_key: 'synthetic-key' };
 let loadProgress: (config?: AxiosRequestConfig) => Promise<Reply>;
 let startServer: () => Promise<Reply>;
 let loadLogs: () => Promise<Reply>;
@@ -46,7 +46,7 @@ beforeEach(() => {
     vi.mocked(axios.post).mockImplementation(async url => {
         if (url.endsWith('/start-server')) return startServer();
         if (url.endsWith('/download-selected-models')) return { data: { job_id: 'submitted-A' } };
-        return { data: { success: true } };
+        return { data: { success: true, valid: true } };
     });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
@@ -67,15 +67,28 @@ describe('Wizard lifecycle ownership', () => {
 
     it('does not mark a different model selection downloaded when the previous job completes', async () => {
         const pending = deferred<Reply>();
-        loadProgress = async config => config?.params ? pending.promise : { data: { running: false } };
+        const next = deferred<Reply>();
+        let polls = 0;
+        loadProgress = async config => config?.params ? (++polls === 1 ? pending.promise : next.promise) : { data: { running: false } };
         render(page());
         await flush();
         fireEvent.click(screen.getByRole('button', { name: 'Download Models' }));
         await flush();
         fireEvent.change(screen.getByDisplayValue('English (US)'), { target: { value: 'es-ES' } });
+        expect(screen.getByRole('button', { name: 'Downloading...' })).toBeDisabled();
+        fireEvent.click(screen.getByRole('button', { name: 'Downloading...' }));
+        expect(vi.mocked(axios.post).mock.calls.filter(([url]) => url.endsWith('/download-selected-models'))).toHaveLength(1);
         await act(async () => { pending.resolve({ data: { completed: true } }); });
         expect(screen.getByRole('button', { name: 'Download Models' })).toBeEnabled();
         expect(screen.queryByRole('button', { name: 'Downloaded' })).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Download Models' }));
+        await flush();
+        const submissions = vi.mocked(axios.post).mock.calls.filter(([url]) => url.endsWith('/download-selected-models'));
+        expect(submissions).toHaveLength(2);
+        expect(submissions[0][1]).toMatchObject({ language: 'en-US' });
+        expect(submissions[1][1]).toMatchObject({ language: 'es-ES' });
+        await act(async () => { next.resolve({ data: { completed: true } }); });
+        expect(screen.getByRole('button', { name: 'Downloaded' })).toBeDisabled();
     });
 
     it('makes one automatic start attempt and waits for an explicit retry after failure', async () => {
@@ -114,6 +127,70 @@ const finishLocalSetup = async () => {
 };
 
 describe('Wizard recovery and cleanup', () => {
+    it('blocks another download until initial job discovery settles', async () => {
+        const pending = deferred<Reply>();
+        loadProgress = () => pending.promise;
+        render(page());
+        await flush();
+        expect(screen.getByRole('button', { name: 'Download Models' })).toBeDisabled();
+        fireEvent.click(screen.getByRole('button', { name: 'Download Models' }));
+        expect(axios.post).not.toHaveBeenCalled();
+        await act(async () => { pending.resolve({ data: { running: false } }); });
+        expect(screen.getByRole('button', { name: 'Download Models' })).toBeEnabled();
+    });
+
+    it('offers read-only recovery when download discovery fails', async () => {
+        loadProgress = async () => { throw new Error('Synthetic unavailable'); };
+        render(page());
+        await flush();
+        expect(screen.getByRole('button', { name: 'Download Models' })).toBeDisabled();
+        loadProgress = async () => ({ data: { running: false } });
+        fireEvent.click(screen.getByRole('button', { name: 'Check download status' }));
+        await flush();
+        expect(screen.getByRole('button', { name: 'Download Models' })).toBeEnabled();
+        expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    it('reconciles a failed submission response before permitting another write', async () => {
+        render(page());
+        await flush();
+        vi.mocked(axios.post).mockRejectedValueOnce(new Error('Synthetic lost response'));
+        fireEvent.click(screen.getByRole('button', { name: 'Download Models' }));
+        await flush();
+        expect(screen.getByRole('button', { name: 'Download Models' })).toBeDisabled();
+        const pending = deferred<Reply>();
+        loadProgress = async config => config?.params ? pending.promise : { data: { running: true, job_id: 'accepted-with-lost-response' } };
+        fireEvent.click(screen.getByRole('button', { name: 'Check download status' }));
+        await flush();
+        expect(screen.getByRole('button', { name: 'Downloading...' })).toBeDisabled();
+        expect(axios.post).toHaveBeenCalledTimes(1);
+        await act(async () => { pending.resolve({ data: { completed: true } }); });
+        expect(screen.getByRole('button', { name: 'Download Models' })).toBeEnabled();
+        expect(screen.queryByRole('button', { name: 'Downloaded' })).not.toBeInTheDocument();
+    });
+
+    it('keeps setup save blocked after leaving a selection with an accepted download', async () => {
+        const pending = deferred<Reply>();
+        loadProgress = async config => config?.params ? pending.promise : { data: { running: false } };
+        render(page());
+        await flush();
+        fireEvent.click(screen.getByRole('button', { name: 'Download Models' }));
+        await flush();
+        fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+        fireEvent.click(screen.getByText('OpenAI Realtime'));
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        await flush();
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        await flush();
+        expect(screen.getByRole('button', { name: 'Finish Setup' })).toBeDisabled();
+        fireEvent.click(screen.getByRole('button', { name: 'Finish Setup' }));
+        expect(vi.mocked(axios.post).mock.calls.some(([url]) => url.endsWith('/save'))).toBe(false);
+        await act(async () => { pending.resolve({ data: { completed: true } }); });
+        fireEvent.click(screen.getByRole('button', { name: 'Finish Setup' }));
+        await flush();
+        expect(axios.post).toHaveBeenCalledWith('/api/wizard/save', expect.objectContaining({ provider: 'openai_realtime' }));
+    });
+
     it('keeps Kroko embedded mode consistent when automatic language reconciliation selects a new model', async () => {
         const stt = [
             { id: 'kroko-cloud', name: 'Kroko Cloud', backend: 'kroko', language: 'en-US', embedded: false },

@@ -483,6 +483,12 @@ const ModelsPage = () => {
                 if (!request.isCurrent() || downloadOwner.current !== owner) return;
                 if (res.data.running) {
                     setDownloadingModel(res.data.job_id || 'active download');
+                    setDownloadProgress({
+                        bytes_downloaded: res.data.bytes_downloaded || 0,
+                        total_bytes: res.data.total_bytes || 0, percent: res.data.percent || 0,
+                        speed_bps: res.data.speed_bps || 0, eta_seconds: res.data.eta_seconds,
+                        current_file: res.data.current_file || '',
+                    });
                     followDownload(owner, res.data.job_id, 'Model');
                 } else downloadOwner.current = null;
             } catch { if (downloadOwner.current === owner) downloadOwner.current = null; }

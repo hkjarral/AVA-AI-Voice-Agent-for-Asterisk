@@ -14,7 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   navigation. A changed Wizard model selection no longer inherits completion
   from an older download. Make one automatic Local AI start attempt per completion
   view, with explicit retry after failure or readiness timeout. Preserve manual
-  model/backend choices when reconciling language changes.
+  model/backend choices when reconciling language changes. Keep accepted downloads
+  tracked across selection changes and serialize further downloads/setup saves
+  until completion, with read-only recovery when job status is unknown.
 
 - **Updater UI lifecycle:** bind previews and confirmations to the current target
   and options, prevent duplicate update/rollback submissions, and ignore obsolete

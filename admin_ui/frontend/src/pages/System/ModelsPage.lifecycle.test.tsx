@@ -51,6 +51,20 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
 const page = () => <MemoryRouter><ModelsPage /></MemoryRouter>;
 
 describe('Models lifecycle ownership', () => {
+    it('retains discovered download progress while pinned reads fail', async () => {
+        vi.useFakeTimers();
+        let reads = 0;
+        loadDownload = async () => {
+            if (++reads === 1) return { data: { running: true, job_id: 'recovering-job', percent: 37, total_bytes: 100, bytes_downloaded: 37 } };
+            throw new Error('Synthetic progress disconnect');
+        };
+        render(page());
+        await act(async () => {});
+        expect(screen.getByText('37%')).toBeInTheDocument();
+        await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+        expect(screen.getByText('37%')).toBeInTheDocument();
+    });
+
     it('does not replace a newer pushed status with an older HTTP result', async () => {
         const old = deferred<Reply>();
         loadLive = async () => old.promise;

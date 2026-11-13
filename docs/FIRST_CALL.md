@@ -77,6 +77,12 @@ combination. Changing the Wizard's language or model selection clears its previo
 download completion. The Models page reports live readiness separately from
 configuration submission.
 
+The Wizard keeps an accepted download tracked even after you change selections:
+that job can still write model settings before it finishes. Another download and
+**Finish Setup** stay locked until the job ends. If download status cannot be
+read, use **Check download status** to recover before submitting another download
+or saving setup; this check does not start a download.
+
 The final step refreshes these checks:
 
 - Engine responding.

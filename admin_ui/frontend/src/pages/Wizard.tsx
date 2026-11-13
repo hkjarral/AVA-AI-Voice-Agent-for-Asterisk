@@ -160,6 +160,8 @@ const Wizard = () => {
     const downloadOwner = useRef<{ selection?: string } | null>(null);
     const downloadSubmitting = useRef(false);
     const downloadTimer = useRef<number | undefined>(undefined);
+    const [downloadTracking, setDownloadTracking] = useState<'checking' | 'known' | 'unknown'>('checking');
+    const [downloadCheckVersion, setDownloadCheckVersion] = useState(0);
     const [engineProgress, setEngineProgress] = useState<{
         steps: Array<{ name: string; status: string; message: string }>;
         currentStep: string;
@@ -217,6 +219,7 @@ const Wizard = () => {
 
     const [modelsStatus, setModelsStatus] = useState<LocalModelsStatus | null>(null);
     const [backendCaps, setBackendCaps] = useState<BackendCapabilities | null>(null);
+    const localDownloadBusy = localAIStatus.downloading || downloadTracking !== 'known';
 
     // Only a submitted download can establish readiness for this exact selection.
     const selection = JSON.stringify([
@@ -229,12 +232,11 @@ const Wizard = () => {
     useLayoutEffect(() => {
         setLocalAIStatus(prev => ({ ...prev, downloadCompleted: false, modelsReady: false }));
         if (downloadOwner.current?.selection !== undefined) {
-            downloadOwner.current = null;
-            clearLater(downloadTimer.current);
-            cancelRead('download');
-            setLocalAIStatus(prev => ({ ...prev, downloading: false, downloadProgress: null }));
+            // The accepted job still writes .env before completing. Keep it
+            // tracked and locked; only revoke its claim on this selection.
+            downloadOwner.current.selection = undefined;
         }
-    }, [selection, clearLater, cancelRead]);
+    }, [selection]);
 
     useLayoutEffect(() => {
         autoStartAttempted.current = false;
@@ -371,8 +373,8 @@ const Wizard = () => {
                 downloadOwner.current = null;
                 setLocalAIStatus(prev => ({
                     ...prev, downloading: false, downloadProgress: null,
-                    downloadCompleted: res.data.completed && markDownloaded ? true : prev.downloadCompleted,
-                    modelsReady: res.data.completed && markDownloaded ? true : prev.modelsReady
+                    downloadCompleted: res.data.completed && markDownloaded && owner.selection !== undefined ? true : prev.downloadCompleted,
+                    modelsReady: res.data.completed && markDownloaded && owner.selection !== undefined ? true : prev.modelsReady
                 }));
                 if (res.data.completed) void refreshModelsStatus();
                 if (res.data.error) showToast('Download failed: ' + res.data.error, 'error');
@@ -393,19 +395,24 @@ const Wizard = () => {
         downloadOwner.current = owner;
         const request = beginRead('download');
         if (!request) return;
+        setDownloadTracking('checking');
         void (async () => {
             try {
                 const res = await axios.get('/api/wizard/local/download-progress', { signal: request.signal, timeout: 15000 });
                 if (!request.isCurrent() || downloadOwner.current !== owner) return;
+                setDownloadTracking('known');
                 if (res.data?.running) {
                     setLocalAIStatus(prev => ({ ...prev, downloading: true, downloadOutput: res.data.output || [] }));
                     void followDownload(owner, res.data.job_id);
                 } else downloadOwner.current = null;
             } catch {
-                if (downloadOwner.current === owner) downloadOwner.current = null;
+                if (request.isCurrent() && downloadOwner.current === owner) {
+                    downloadOwner.current = null;
+                    setDownloadTracking('unknown');
+                }
             } finally { request.finish(); }
         })();
-    }, [loaded, beginRead, followDownload]);
+    }, [loaded, downloadCheckVersion, beginRead, followDownload]);
 
     const refreshBackendCaps = useCallback(async () => {
         const request = beginRead('capabilities');
@@ -660,7 +667,7 @@ const Wizard = () => {
     const startSelectedModelsDownload = async (
         options: { skipLlmDownload?: boolean; markDownloaded?: boolean } = {}
     ) => {
-        if (!isMounted() || downloadSubmitting.current) return;
+        if (!isMounted() || downloadSubmitting.current || downloadOwner.current || localDownloadBusy) return;
         downloadSubmitting.current = true;
         const owner = { selection };
         downloadOwner.current = owner;
@@ -708,6 +715,7 @@ const Wizard = () => {
         } catch (err: any) {
             if (current()) {
                 downloadOwner.current = null;
+                setDownloadTracking('unknown');
                 showToast('Failed to start download: ' + (err.response?.data?.detail || err.message), 'error');
                 setLocalAIStatus(prev => ({ ...prev, downloading: false, downloadProgress: null }));
             }
@@ -757,6 +765,7 @@ const Wizard = () => {
 
     const handleNext = async () => {
         if (loadError) return;
+        if (step === 4 && (localDownloadBusy || downloadOwner.current || downloadSubmitting.current)) return;
 
         // Basic required-field validation for non-technical users
         if (step === 4) {
@@ -1411,7 +1420,7 @@ const Wizard = () => {
                                                             startSelectedModelsDownload({ skipLlmDownload: true, markDownloaded: false })
                                                         }
                                                         className="px-3 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700"
-                                                        disabled={localAIStatus.downloading}
+                                                        disabled={localDownloadBusy}
                                                     >
                                                         Download
                                                     </button>
@@ -1562,7 +1571,7 @@ const Wizard = () => {
                                                             startSelectedModelsDownload({ skipLlmDownload: true, markDownloaded: false })
                                                         }
                                                         className="px-3 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700"
-                                                        disabled={localAIStatus.downloading}
+                                                        disabled={localDownloadBusy}
                                                     >
                                                         Download
                                                     </button>
@@ -1671,7 +1680,7 @@ const Wizard = () => {
                                                         startSelectedModelsDownload({ skipLlmDownload: true, markDownloaded: false })
                                                     }
                                                     className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
-                                                    disabled={localAIStatus.downloading}
+                                                    disabled={localDownloadBusy}
                                                 >
                                                     {localAIStatus.downloading ? 'Downloading…' : 'Download Selected Models'}
                                                 </button>
@@ -2592,7 +2601,7 @@ const Wizard = () => {
                                             </div>
                                             <button
                                                 onClick={() => startSelectedModelsDownload()}
-                                                disabled={localAIStatus.downloading || localAIStatus.downloadCompleted}
+                                                disabled={localDownloadBusy || localAIStatus.downloadCompleted}
                                                 className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
                                             >
                                                 {localAIStatus.downloading ? (
@@ -3465,6 +3474,16 @@ const Wizard = () => {
                     </div>
                 )}
 
+                {downloadTracking !== 'known' ? (
+                    <div role="status" className="mt-4 rounded-md border p-3 text-sm">
+                        {downloadTracking === 'checking' ? 'Checking for an active model download…' : 'Model download status is unknown. Check it before downloading or saving setup.'}
+                        {downloadTracking === 'unknown' && (
+                            <button type="button" className="ml-2 underline" onClick={() => setDownloadCheckVersion(prev => prev + 1)}>Check download status</button>
+                        )}
+                    </div>
+                ) : localAIStatus.downloading && (step !== 3 || !['local', 'local_hybrid'].includes(config.provider)) ? (
+                    <div role="status" className="mt-4 rounded-md border p-3 text-sm">A model download is still applying settings. Wait for it to finish before saving setup.</div>
+                ) : null}
                 <div className="mt-8 flex justify-between">
                     {step > 1 && step < 5 ? (
                         <button
@@ -3481,12 +3500,13 @@ const Wizard = () => {
                             onClick={handleNext}
                             disabled={
                                 !loaded || loadError || loading ||
+                                (step === 4 && localDownloadBusy) ||
                                 (step === 3 &&
                                     ((config.provider === 'local' &&
-                                        (localAIStatus.downloading ||
+                                        (localDownloadBusy ||
                                             (!localAIStatus.downloadCompleted && !!localAIStatus.tier))) ||
                                         (config.provider === 'local_hybrid' &&
-                                            (localAIStatus.downloading || localHybridMissingRequired))))
+                                            (localDownloadBusy || localHybridMissingRequired))))
                             }
                             className="px-4 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 flex items-center disabled:opacity-50 disabled:cursor-not-allowed"
                         >
