@@ -350,7 +350,6 @@ const ModelsPage = () => {
     const fetchActiveModels = useCallback(async (skipIfPending = false) => {
         const request = beginRead('active-models', skipIfPending);
         if (!request) return;
-        const streamAtStart = latestLive.current.snapshot;
         const [liveStatusRes, healthRes, modelsRes, capabilitiesRes, envRes] = await Promise.allSettled([
             axios.get('/api/system/live-status', { signal: request.signal, timeout: 15000 }),
             axios.get('/api/system/health', { signal: request.signal, timeout: 15000 }),
@@ -365,7 +364,7 @@ const ModelsPage = () => {
         const httpSnapshot = liveStatusRes.status === 'fulfilled' ? liveStatusRes.value.data : null;
         // A newer stream event owns readiness, including a newly reported failure.
         let hydratedFromStatus = current.usable &&
-            (current.snapshot !== streamAtStart || (current.snapshot?.event_id ?? -1) >= (httpSnapshot?.event_id ?? -1))
+            (current.snapshot?.event_id ?? -1) >= (httpSnapshot?.event_id ?? -1)
             ? applyLocalAILiveStatus(currentComponent) : false;
         if (!hydratedFromStatus && liveStatusRes.status === 'fulfilled') {
             const localAI = liveStatusRes.value.data?.components?.local_ai_server || liveStatusRes.value.data?.local_ai_server;

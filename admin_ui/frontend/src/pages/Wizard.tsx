@@ -438,6 +438,7 @@ const Wizard = () => {
                 const model = stt.find(m => (m.backend || '').toLowerCase() === (prev.local_stt_backend || 'vosk').toLowerCase()) || stt[0];
                 updates.local_stt_model = model.id;
                 updates.local_stt_backend = model.backend;
+                updates.kroko_embedded = model.backend === 'kroko' && model.embedded === true;
             }
             if (tts.length && !tts.some(m => m.id === prev.local_tts_model)) {
                 const model = tts.find(m => (m.backend || '').toLowerCase() === (prev.local_tts_backend || 'piper').toLowerCase()) || tts[0];

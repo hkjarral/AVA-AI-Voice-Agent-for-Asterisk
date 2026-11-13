@@ -87,6 +87,18 @@ describe('Models lifecycle ownership', () => {
         expect(screen.getByText('Error')).toBeInTheDocument();
     });
 
+    it('uses a newer HTTP failure even when a ready stream event arrived during the request', async () => {
+        const pending = deferred<Reply>();
+        loadLive = () => pending.promise;
+        const view = render(page());
+        await act(async () => {});
+        live.snapshot = snapshot('ready', 2);
+        view.rerender(page());
+        await act(async () => { pending.resolve({ data: snapshot('unreachable', 3) }); });
+        expect(screen.getByText('Error')).toBeInTheDocument();
+        expect(screen.queryByText('Connected')).not.toBeInTheDocument();
+    });
+
     it('aborts outstanding status reads on unmount and ignores a late failure', async () => {
         const pending = deferred<Reply>();
         loadLive = async () => pending.promise;
@@ -139,7 +151,7 @@ describe('Models lifecycle ownership', () => {
 
     it('does not start polling a download accepted after the page closed', async () => {
         vi.useFakeTimers();
-        loadCatalog = async () => ({ data: { catalog: { stt: [{ id: 'fixture-model', name: 'Fixture Model', size_mb: 1, size_display: '1 MB', download_url: 'https://example.invalid/model' }], tts: [], llm: [] } } });
+        loadCatalog = async () => ({ data: { catalog: { stt: [{ id: 'fixture-model', name: 'Fixture Model', size_mb: 1, size_display: '1 MB', download_url: 'https://example.com/model' }], tts: [], llm: [] } } });
         const submission = deferred<Reply>();
         vi.mocked(axios.post).mockReturnValue(submission.promise);
         let view!: ReturnType<typeof render>;

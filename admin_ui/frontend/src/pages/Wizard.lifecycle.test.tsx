@@ -114,6 +114,25 @@ const finishLocalSetup = async () => {
 };
 
 describe('Wizard recovery and cleanup', () => {
+    it('keeps Kroko embedded mode consistent when automatic language reconciliation selects a new model', async () => {
+        const stt = [
+            { id: 'kroko-cloud', name: 'Kroko Cloud', backend: 'kroko', language: 'en-US', embedded: false },
+            { id: 'kroko-uk', name: 'Kroko Ukrainian', backend: 'kroko', language: 'uk-UA', embedded: true }
+        ];
+        loadCatalog = async () => ({ data: { catalog: { stt, tts: [], llm: [] }, languages: {}, language_names: {}, region_names: {} } });
+        render(page());
+        await flush();
+        fireEvent.change(screen.getByDisplayValue('English (US)'), { target: { value: 'uk-UA' } });
+        await flush();
+        fireEvent.click(screen.getByRole('button', { name: 'Download Models' }));
+        expect(axios.post).toHaveBeenLastCalledWith('/api/wizard/local/download-selected-models', expect.objectContaining({ stt_model_id: 'kroko-uk', kroko_embedded: true }));
+        await flush();
+        fireEvent.change(screen.getByDisplayValue('Ukrainian'), { target: { value: 'en-US' } });
+        await flush();
+        fireEvent.click(screen.getByRole('button', { name: 'Download Models' }));
+        expect(axios.post).toHaveBeenLastCalledWith('/api/wizard/local/download-selected-models', expect.objectContaining({ stt_model_id: 'kroko-cloud', kroko_embedded: false }));
+    });
+
     it.each([
         { name: 'normal', building: false, downloading: false, timeout: 120000 },
         { name: 'model download', building: false, downloading: true, timeout: 600000 },
