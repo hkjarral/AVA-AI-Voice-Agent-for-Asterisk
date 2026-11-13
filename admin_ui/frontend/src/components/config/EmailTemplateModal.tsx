@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Editor from '@monaco-editor/react';
 import { toast } from 'sonner';
 import axios from 'axios';
 import { Modal } from '../ui/Modal';
+import { useAsyncScope } from '../../hooks/useAsyncScope';
 
 type ToolName = 'send_email_summary' | 'request_transcript';
 
@@ -22,7 +23,13 @@ interface EmailTemplateModalProps {
     onSave: (nextTemplate: string | null) => Promise<void> | void;
 }
 
-export const EmailTemplateModal = ({
+// Each opening/tool owns its draft and pending previews. Closing unmounts the
+// session; a late response cannot affect a later opening with identical props.
+export const EmailTemplateModal = (props: EmailTemplateModalProps) => (
+    props.isOpen ? <EmailTemplateSession key={props.tool} {...props} /> : null
+);
+
+const EmailTemplateSession = ({
     isOpen,
     onClose,
     tool,
@@ -36,9 +43,11 @@ export const EmailTemplateModal = ({
 }: EmailTemplateModalProps) => {
     const title = tool === 'send_email_summary' ? 'Send Email Summary – Email Template' : 'Request Transcript – Email Template';
 
+    const { isMounted, beginRead, cancelRead } = useAsyncScope();
+    const savePending = useRef(false);
     const initialCustomize = !!(currentTemplate && currentTemplate.trim());
     const [customize, setCustomize] = useState(initialCustomize);
-    const [draft, setDraft] = useState<string>(currentTemplate?.toString() || '');
+    const [draft, setDraft] = useState<string>(() => initialCustomize ? currentTemplate || '' : (defaultTemplate || '').trim());
 
     const [previewing, setPreviewing] = useState(false);
     const [previewHtml, setPreviewHtml] = useState('');
@@ -52,18 +61,13 @@ export const EmailTemplateModal = ({
 
     const effectiveDefault = (defaultTemplate || '').trim();
 
-    // Reset draft when opening (but don't clobber user edits mid-session).
-    useEffect(() => {
-        if (!isOpen) return;
-        const c = (currentTemplate || '').trim();
-        const enabled = !!c;
-        setCustomize(enabled);
-        setDraft(enabled ? currentTemplate || '' : (effectiveDefault ? effectiveDefault : ''));
+    const previewInput = JSON.stringify([tool, customize ? draft : null, includeTranscript, customize ? null : effectiveDefault]);
+    useLayoutEffect(() => {
+        cancelRead('preview');
         setPreviewHtml('');
         setPreviewError(null);
         setPreviewing(false);
-        setActiveTab('template');
-    }, [isOpen]); // intentionally omit deps to keep "open = snapshot" behavior
+    }, [previewInput, cancelRead]);
 
     const variableChips = useMemo(() => {
         return (variableNames || []).filter(Boolean).slice().sort();
@@ -86,6 +90,9 @@ export const EmailTemplateModal = ({
     };
 
     const handlePreview = async () => {
+        if (savePending.current) return;
+        const request = beginRead('preview');
+        if (!request) return;
         try {
             setPreviewError(null);
             setPreviewHtml('');
@@ -95,7 +102,8 @@ export const EmailTemplateModal = ({
                 tool,
                 html_template: htmlTemplate,
                 include_transcript: includeTranscript,
-            });
+            }, { signal: request.signal, timeout: 15000 });
+            if (!request.isCurrent()) return;
             if (res.data?.success) {
                 setPreviewHtml(res.data.html || '');
                 setActiveTab('preview');
@@ -104,48 +112,46 @@ export const EmailTemplateModal = ({
             setPreviewError(res.data?.error || 'Preview failed.');
             setActiveTab('preview');
         } catch (e: any) {
+            if (!request.isCurrent()) return;
             setPreviewError(e?.response?.data?.detail || e?.message || 'Preview failed.');
             setActiveTab('preview');
         } finally {
-            setPreviewing(false);
+            if (request.isCurrent()) setPreviewing(false);
+            request.finish();
         }
     };
 
     const handleSave = async () => {
+        if (!isMounted() || savePending.current) return;
+        savePending.current = true;
         setSaving(true);
+        cancelRead('preview');
+        setPreviewing(false);
         try {
-            if (!customize) {
-                await onSave(null);
-                toast.success('Using default template');
-                onClose();
-                return;
-            }
-            const next = (draft || '').trim();
-            if (!next) {
-                await onSave(null);
-                toast.success('Using default template');
-                onClose();
-                return;
-            }
-            await onSave(draft);
-            toast.success('Template saved. Restart AI Engine to apply.');
+            const next = customize && draft.trim() ? draft : null;
+            // Submitted persistence is allowed to finish after navigation.
+            await onSave(next);
+            if (!isMounted()) return;
+            toast.success(next ? 'Template updated. Save & Apply tool settings to publish it.' : 'Default template selected. Save & Apply tool settings to publish it.');
             onClose();
         } catch (e: any) {
-            toast.error('Failed to save template', {
+            if (isMounted()) toast.error('Failed to save template', {
                 description: e?.response?.data?.detail || e?.message || 'Unknown error',
             });
         } finally {
-            setSaving(false);
+            savePending.current = false;
+            if (isMounted()) setSaving(false);
         }
     };
 
     const editorValue = customize ? draft : effectiveDefault;
-    const editorReadOnly = !customize;
+    const editorReadOnly = !customize || saving;
 
     return (
         <Modal
             isOpen={isOpen}
-            onClose={onClose}
+            onClose={() => { if (!savePending.current) onClose(); }}
+            busy={saving}
             title={title}
             size="full"
             footer={
@@ -154,7 +160,9 @@ export const EmailTemplateModal = ({
                     <div className="flex items-center gap-2">
                         <button
                             type="button"
+                            disabled={saving}
                             onClick={async () => {
+                                if (savePending.current) return;
                                 await onReloadDefaults();
                             }}
                             className="px-3 py-1 text-xs border rounded hover:bg-accent"
@@ -163,7 +171,8 @@ export const EmailTemplateModal = ({
                         </button>
                         <button
                             type="button"
-                            onClick={onClose}
+                            onClick={() => { if (!savePending.current) onClose(); }}
+                            disabled={saving}
                             className="px-4 py-2 border rounded hover:bg-accent"
                         >
                             Cancel
@@ -180,7 +189,7 @@ export const EmailTemplateModal = ({
                 </div>
             }
         >
-            <div className="space-y-4">
+            <fieldset disabled={saving} className="min-w-0 space-y-4" aria-busy={saving}>
                 <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
                     <div className="flex items-center gap-4">
                         <label className="flex items-center gap-2 text-sm">
@@ -277,7 +286,7 @@ export const EmailTemplateModal = ({
                                     monacoRef.current = monaco;
                                 }}
                                 onChange={(value) => {
-                                    if (!customize) return;
+                                    if (!customize || savePending.current) return;
                                     setDraft(value || '');
                                 }}
                                 options={{
@@ -319,7 +328,7 @@ export const EmailTemplateModal = ({
                         </div>
                     </div>
                 </div>
-            </div>
+            </fieldset>
         </Modal>
     );
 };

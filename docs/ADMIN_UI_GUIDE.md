@@ -121,6 +121,13 @@ Google calendar, Microsoft account/calendar, or voicemail mailbox it can use. A 
 disable always wins. If Save & Apply validation fails, the last good tool generation
 continues serving calls and the unsaved configuration is not published.
 
+Email-template previews use synthetic data and do not send email. Closing or
+switching the template editor discards its preview requests; editing a draft or
+changing transcript options clears stale output. Each opening starts from the
+current template, while background default refreshes preserve customized edits.
+Saving locks editing and dismissal until persistence finishes; a failed save keeps
+the draft available for retry. Use **Save & Apply** to publish tool settings.
+
 Under **In-Call → Transfer & live agents → Destinations**, **Discover endpoints**
 lists candidates using the existing ARI connection. Select candidates, confirm
 their dialable number, description and dialplan context, then add them to your
@@ -158,6 +165,14 @@ Monaco-based editor with syntax highlighting and validation for direct editing o
 ### Environment Variables
 
 Visual editor for `.env` variables. Changes require a container restart to take effect.
+
+Save, Refresh, connection-test actions and Apply confirmations are serialized on
+this page. An accepted request can finish after navigation, but obsolete responses
+cannot change another view, and later restart steps are not started after leaving.
+Apply rechecks backend drift before clearing pending changes. If that check fails,
+or an Admin UI restart is only scheduled, use **Refresh** after the service returns
+to verify what is still pending before requesting another Apply. Existing active-call
+guards and confirmation requirements still apply.
 
 ### System
 

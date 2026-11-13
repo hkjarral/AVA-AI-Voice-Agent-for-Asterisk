@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { toast } from 'sonner';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
+import { useAsyncScope } from '../../hooks/useAsyncScope';
 import { useConfirmDialog } from '../../hooks/useConfirmDialog';
 import { Save, Eye, EyeOff, RefreshCw, AlertTriangle, AlertCircle, CheckCircle, XCircle, Loader2, Cpu, Server, Settings } from 'lucide-react';
 import { ConfigSection } from '../../components/ui/ConfigSection';
@@ -33,6 +34,8 @@ interface PerInstanceCredentialRow {
     inlineValue?: string;
     uploadedAt?: number;
 }
+
+type ApplyStep = { service: string; method: string; endpoint: string };
 
 type EnvTab = 'ai-engine' | 'local-ai' | 'system';
 
@@ -74,6 +77,12 @@ const SecretInput = ({
 const EnvPage = () => {
     const { confirm } = useConfirmDialog();
     const { token, loading: authLoading } = useAuth();
+    const { isMounted, beginRead, cancelRead } = useAsyncScope();
+    const authScope = useMemo(() => ({ token, authLoading }), [token, authLoading]);
+    const currentAuth = useRef(authScope);
+    const operation = useRef<object | null>(null);
+    const [operationBusy, setOperationBusy] = useState(false);
+    const [statusKnown, setStatusKnown] = useState(false);
     const [env, setEnv] = useState<Record<string, string>>({});
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
@@ -82,7 +91,7 @@ const EnvPage = () => {
     const [ariTesting, setAriTesting] = useState(false);
     const [pendingRestart, setPendingRestart] = useState(false);
     const [restartingEngine, setRestartingEngine] = useState(false);
-    const [applyPlan, setApplyPlan] = useState<Array<{ service: string; method: string; endpoint: string }>>([]);
+    const [applyPlan, setApplyPlan] = useState<ApplyStep[]>([]);
     const [changedKeys, setChangedKeys] = useState<string[]>([]);
     const [showAdvancedKokoro, setShowAdvancedKokoro] = useState(false);
     const [showAdvancedSttSegment, setShowAdvancedSttSegment] = useState(false);
@@ -95,6 +104,43 @@ const EnvPage = () => {
     const [savedCallHistoryRedactionMode, setSavedCallHistoryRedactionMode] = useState('strict');
 
     const [error, setError] = useState<string | null>(null);
+
+    useLayoutEffect(() => {
+        currentAuth.current = authScope;
+        setLoading(true);
+        setEnv({});
+        setShowSecrets({});
+        setPerInstanceRows([]);
+        setApplyPlan([]);
+        setPendingRestart(false);
+        setStatusKnown(false);
+        setOperationBusy(false);
+        setSaving(false);
+        setRestartingEngine(false);
+        setAriTesting(false);
+        setSmtpTesting(false);
+        setAriTestResult(null);
+        setSmtpTestResult(null);
+        return () => {
+            operation.current = null;
+            for (const key of ['env', 'env-status', 'credentials', 'capabilities']) cancelRead(key);
+        };
+    }, [authScope, cancelRead]);
+
+    const startOperation = () => {
+        if (!isMounted() || authLoading || !token || loading || operation.current) return null;
+        const owner = {};
+        operation.current = owner;
+        setOperationBusy(true);
+        return {
+            isCurrent: () => isMounted() && currentAuth.current === authScope && operation.current === owner,
+            finish: () => {
+                if (operation.current !== owner) return;
+                operation.current = null;
+                if (isMounted()) setOperationBusy(false);
+            },
+        };
+    };
 
     // Tab state with URL hash support
     const getInitialTab = (): EnvTab => {
@@ -126,26 +172,30 @@ const EnvPage = () => {
         if (activeTab !== 'system' || loading) return;
         const section = new URLSearchParams(window.location.search).get('section');
         if (section !== 'call-history') return;
-        window.requestAnimationFrame(() => {
+        const frame = window.requestAnimationFrame(() => {
             document.getElementById('call-history-privacy')?.scrollIntoView({ block: 'start' });
         });
+        return () => window.cancelAnimationFrame(frame);
     }, [activeTab, loading]);
 
     // Load local AI server capabilities when on local-ai tab
     useEffect(() => {
-        if (activeTab !== 'local-ai') return;
+        if (activeTab !== 'local-ai' || authLoading || !token) return;
+        const request = beginRead('capabilities');
+        if (!request) return;
         const loadCaps = async () => {
             try {
                 const res = await axios.get('/api/local-ai/capabilities', {
-                    headers: token ? { Authorization: `Bearer ${token}` } : undefined
+                    headers: { Authorization: `Bearer ${token}` }, signal: request.signal, timeout: 15000
                 });
-                setLocalCaps(res.data || null);
+                if (request.isCurrent()) setLocalCaps(res.data || null);
             } catch {
                 // Best-effort; capabilities unavailable if local_ai_server is not running.
-            }
+            } finally { request.finish(); }
         };
-        loadCaps();
-    }, [activeTab, token]);
+        void loadCaps();
+        return () => cancelRead('capabilities');
+    }, [activeTab, authLoading, token, beginRead, cancelRead]);
 
     const kokoroMode = (env['KOKORO_MODE'] || 'local').toLowerCase();
     const showHfKokoroMode = showAdvancedKokoro || kokoroMode === 'hf';
@@ -156,39 +206,27 @@ const EnvPage = () => {
         return ['1', 'true', 'yes', 'on'].includes(raw);
     })();
 
-    useEffect(() => {
-        if (!authLoading && token) {
-            fetchEnv();
-            fetchPerInstanceCredentials();
-        }
-    }, [authLoading, token]);
-
-    /**
-     * Manual refresh hook used by the toolbar "Refresh" button and the
-     * error-state Retry button. Re-fetches BOTH the env-var values and the
-     * per-instance provider credential status so the audit section reflects
-     * provider/credential edits without remounting the page.
-     */
-    const refreshAll = () => {
-        fetchEnv();
-        fetchPerInstanceCredentials();
-    };
-
     /**
      * Enumerate all full-agent provider instances and probe each for credential status.
      * Read-only audit — actual uploads happen on the Providers page.
      */
-    const fetchPerInstanceCredentials = async () => {
+    const fetchPerInstanceCredentials = useCallback(async () => {
+        const request = beginRead('credentials');
+        if (!request) return;
+        const options = { signal: request.signal, timeout: 15000, headers: { Authorization: `Bearer ${token}` } };
+        const current = () => request.isCurrent() && currentAuth.current === authScope;
         setPerInstanceLoading(true);
         try {
-            const yamlRes = await axios.get('/api/config/yaml');
+            const yamlRes = await axios.get('/api/config/yaml', options);
+            if (!current()) return;
             // The /yaml endpoint returns {content: "<yaml string>"} or the parsed object.
             let providers: Record<string, any> = {};
             const raw = yamlRes.data?.content || yamlRes.data;
             if (typeof raw === 'string') {
                 // Avoid pulling in js-yaml just for this — let the backend's /api/config
                 // endpoint give us a structured view if /yaml returned a string.
-                const cfgRes = await axios.get('/api/config');
+                const cfgRes = await axios.get('/api/config', options);
+                if (!current()) return;
                 providers = cfgRes.data?.providers || {};
             } else {
                 providers = raw?.providers || {};
@@ -207,7 +245,8 @@ const EnvPage = () => {
                 let credStatus: any = {};
                 let kind: string | null = null;
                 try {
-                    const res = await axios.get(`/api/config/providers/${encodeURIComponent(key)}/credentials`);
+                    const res = await axios.get(`/api/config/providers/${encodeURIComponent(key)}/credentials`, options);
+                    if (!current()) return [];
                     credStatus = res.data?.credentials || {};
                     kind = (res.data?.type || null) as string | null;
                 } catch {
@@ -262,51 +301,85 @@ const EnvPage = () => {
             });
 
             const all = (await Promise.all(tasks)).flat();
-            setPerInstanceRows(all);
+            if (current()) setPerInstanceRows(all);
         } catch {
             // Best-effort; leave the section empty.
-            setPerInstanceRows([]);
+            if (current()) setPerInstanceRows([]);
         } finally {
-            setPerInstanceLoading(false);
+            if (current()) setPerInstanceLoading(false);
+            request.finish();
         }
-    };
+    }, [beginRead, token, authScope]);
 
-    const fetchEnv = async () => {
+    // Drift is authoritative. A successful save response is the compatibility
+    // fallback; a completed restart alone cannot prove there is no newer drift.
+    const refreshApplyStatus = useCallback(async (
+        ownsView: () => boolean, fallback?: ApplyStep[]
+    ) => {
+        const request = beginRead('env-status');
+        if (!request) return null;
+        const current = () => request.isCurrent() && currentAuth.current === authScope && ownsView();
+        try {
+            const res = await axios.get('/api/config/env/status', {
+                headers: { Authorization: `Bearer ${token}` }, signal: request.signal, timeout: 15000,
+            });
+            if (!current()) return null;
+            if (!Array.isArray(res.data?.apply_plan)) throw new Error('Apply status unavailable');
+            const plan = res.data.apply_plan as ApplyStep[];
+            setApplyPlan(plan);
+            setPendingRestart(Boolean(res.data.pending_restart) || plan.length > 0);
+            setStatusKnown(true);
+            return plan;
+        } catch {
+            if (!current()) return null;
+            if (fallback) {
+                setApplyPlan(fallback);
+                setPendingRestart(fallback.length > 0);
+                setStatusKnown(true);
+                return fallback;
+            }
+            setStatusKnown(false);
+            return null;
+        } finally { request.finish(); }
+    }, [beginRead, authScope, token]);
+
+    const fetchEnv = useCallback(async () => {
+        if (operation.current || !token || authLoading) return;
+        const request = beginRead('env');
+        if (!request) return;
+        const current = () => request.isCurrent() && currentAuth.current === authScope;
         setLoading(true);
         setError(null);
+        setStatusKnown(false);
         try {
             const res = await axios.get('/api/config/env', {
-                headers: { Authorization: `Bearer ${token}` }
+                headers: { Authorization: `Bearer ${token}` }, signal: request.signal, timeout: 15000,
             });
+            if (!current()) return;
             const loadedEnv = res.data || {};
             setEnv(loadedEnv);
             setSavedCallHistoryRedactionMode(
                 (loadedEnv['CALL_HISTORY_TOOL_REDACTION_MODE'] || 'strict').trim().toLowerCase()
             );
-            if ((loadedEnv['KOKORO_MODE'] || '').toLowerCase() === 'hf') {
-                setShowAdvancedKokoro(true);
-            }
-            // After loading `.env`, check whether any running containers are out-of-sync.
-            try {
-                const statusRes = await axios.get('/api/config/env/status', {
-                    headers: { Authorization: `Bearer ${token}` }
-                });
-                const plan = (statusRes.data?.apply_plan || []) as Array<{ service: string; method: string; endpoint: string }>;
-                setApplyPlan(plan);
-                setPendingRestart(Boolean(statusRes.data?.pending_restart));
-            } catch {
-                // Best-effort: status endpoint may be unavailable on older builds.
-            }
+            setShowAdvancedKokoro((loadedEnv['KOKORO_MODE'] || '').toLowerCase() === 'hf');
+            await refreshApplyStatus(current);
         } catch (err: any) {
-            console.error('Failed to load env', err);
+            if (!current()) return;
+            console.error('Failed to load env');
             setError(err.response?.data?.detail || 'Failed to load environment variables');
-            if (err.response && err.response.status === 401) {
-                // AuthContext handles logout
-            }
         } finally {
-            setLoading(false);
+            if (current()) setLoading(false);
+            request.finish();
         }
-    };
+    }, [beginRead, token, authLoading, authScope, refreshApplyStatus]);
+
+    const refreshAll = useCallback(() => {
+        if (operation.current || authLoading || !token || !isMounted()) return;
+        void fetchEnv();
+        void fetchPerInstanceCredentials();
+    }, [authLoading, token, isMounted, fetchEnv, fetchPerInstanceCredentials]);
+
+    useEffect(() => { refreshAll(); }, [refreshAll]);
 
     const handleSave = async () => {
         // Validate ARI Port
@@ -316,19 +389,22 @@ const EnvPage = () => {
             return;
         }
 
-        const requestedRedactionMode = (env['CALL_HISTORY_TOOL_REDACTION_MODE'] || 'strict').trim().toLowerCase();
-        if (requestedRedactionMode === 'off' && savedCallHistoryRedactionMode !== 'off') {
-            const confirmed = await confirm({
-                title: 'Disable Call History redaction?',
-                description: 'Future in-call tool diagnostics may store credentials, caller information, free text, and routing data verbatim. These values can also appear in Call History exports and backups.',
-                confirmText: 'Disable redaction',
-                variant: 'destructive',
-            });
-            if (!confirmed) return;
-        }
-
-        setSaving(true);
+        const action = startOperation();
+        if (!action) return;
         try {
+            const requestedRedactionMode = (env['CALL_HISTORY_TOOL_REDACTION_MODE'] || 'strict').trim().toLowerCase();
+            if (requestedRedactionMode === 'off' && savedCallHistoryRedactionMode !== 'off') {
+                const confirmed = await confirm({
+                    title: 'Disable Call History redaction?',
+                    description: 'Future in-call tool diagnostics may store credentials, caller information, free text, and routing data verbatim. These values can also appear in Call History exports and backups.',
+                    confirmText: 'Disable redaction',
+                    variant: 'destructive',
+                });
+                if (!confirmed || !action.isCurrent()) return;
+            }
+
+            if (!action.isCurrent()) return;
+            setSaving(true);
             const envToSave = { ...env };
             envToSave['AAVA_OUTBOUND_PBX_TYPE'] = normalizeOutboundPbxType(
                 envToSave['AAVA_OUTBOUND_PBX_TYPE']
@@ -343,23 +419,18 @@ const EnvPage = () => {
             const response = await axios.post('/api/config/env', envToSave, {
                 headers: { Authorization: `Bearer ${token}` }
             });
+            if (!action.isCurrent()) return;
             const keys = (response.data?.changed_keys || []) as string[];
             setChangedKeys(keys);
             setSavedCallHistoryRedactionMode(requestedRedactionMode);
 
-            // Prefer drift-based status (source of truth for whether containers need recreate),
-            // but fall back to the immediate apply_plan from the save response.
-            let plan = (response.data?.apply_plan || []) as Array<{ service: string; method: string; endpoint: string }>;
-            try {
-                const statusRes = await axios.get('/api/config/env/status', {
-                    headers: { Authorization: `Bearer ${token}` }
-                });
-                plan = (statusRes.data?.apply_plan || plan) as Array<{ service: string; method: string; endpoint: string }>;
-                setPendingRestart(Boolean(statusRes.data?.pending_restart));
-            } catch {
-                setPendingRestart(plan.length > 0);
+            const fallback = Array.isArray(response.data?.apply_plan) ? response.data.apply_plan as ApplyStep[] : undefined;
+            const plan = await refreshApplyStatus(action.isCurrent, fallback);
+            if (!action.isCurrent()) return;
+            if (!plan) {
+                toast.warning('Environment saved; apply status is unknown. Refresh before applying changes.');
+                return;
             }
-            setApplyPlan(plan);
 
             const services = Array.from(new Set(plan.map((p) => p.service))).sort();
             if (plan.length > 0) {
@@ -368,18 +439,21 @@ const EnvPage = () => {
                 toast.success('Environment saved (no restart needed)');
             }
         } catch (err: any) {
-            console.error('Failed to save env', err);
+            if (!action.isCurrent()) return;
+            console.error('Failed to save env');
             if (err.response && err.response.status === 401) {
                 toast.error('Session expired. Please login again.');
             } else {
                 toast.error('Failed to save environment variables');
             }
         } finally {
-            setSaving(false);
+            if (action.isCurrent()) setSaving(false);
+            action.finish();
         }
     };
 
     const updateEnv = (key: string, value: string) => {
+        if (operation.current) return;
         setEnv(prev => ({ ...prev, [key]: value }));
     };
 
@@ -388,6 +462,9 @@ const EnvPage = () => {
     };
 
     const handleApplyChanges = async (force: boolean = false) => {
+        if (!statusKnown) return;
+        const action = startOperation();
+        if (!action) return;
         setRestartingEngine(true);
         try {
             if (!applyPlan || applyPlan.length === 0) {
@@ -411,44 +488,46 @@ const EnvPage = () => {
                     confirmText: 'Continue',
                     variant: 'destructive'
                 });
-                if (!confirmed) return;
+                if (!confirmed || !action.isCurrent()) return;
             }
 
             for (const service of ordered) {
+                if (!action.isCurrent()) return;
                 const step = planByService.get(service);
                 if (!step) continue;
 
-                if (service === 'ai_engine') {
-                    // AAVA-161: Use recreate=true for env changes to ensure .env is re-read
-                    const response = await axios.post(`${step.endpoint}?force=${force}&recreate=true`, {}, {
-                        headers: { Authorization: `Bearer ${token}` }
-                    });
-
-                    if (response.data.status === 'warning') {
-                        toast.warning(response.data.message, { description: 'Use force restart if needed.' });
-                        return;
-                    }
-
-                    if (response.data.status === 'degraded') {
-                        toast.warning('AI Engine restarted but may not be fully healthy', { description: response.data.output || 'Please verify manually' });
-                        return;
-                    }
-                } else if (service === 'local_ai_server') {
-                    // AAVA-161: Use recreate=true for env changes to ensure .env is re-read
-                    await axios.post(`${step.endpoint}?recreate=true`, {}, {
-                        headers: { Authorization: `Bearer ${token}` }
-                    });
-                } else {
-                    await axios.post(step.endpoint, {}, {
-                        headers: { Authorization: `Bearer ${token}` }
-                    });
+                const endpoint = service === 'ai_engine'
+                    ? `${step.endpoint}?force=${force}&recreate=true`
+                    : service === 'local_ai_server' ? `${step.endpoint}?recreate=true` : step.endpoint;
+                const response = await axios.post(endpoint, {}, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (!action.isCurrent()) return;
+                if (response.data.status === 'warning') {
+                    toast.warning(response.data.message || `${service} restart was skipped.`);
+                    return;
+                }
+                if (response.data.status === 'degraded') {
+                    setStatusKnown(false);
+                    toast.warning(`${service} may not be fully healthy`, { description: response.data.output || 'Check service health, then Refresh before retrying.' });
+                    return;
                 }
             }
 
-            setPendingRestart(false);
-            setApplyPlan([]);
-            toast.success('Changes applied');
+            if (!action.isCurrent()) return;
+            if (touchesAdminUI) {
+                setStatusKnown(false);
+                toast.info('Admin UI restart requested. Refresh after it returns to verify pending changes.');
+                return;
+            }
+            const remaining = await refreshApplyStatus(action.isCurrent);
+            if (!action.isCurrent()) return;
+            if (remaining === null) toast.warning('Apply request finished; apply status is unknown. Refresh before retrying.');
+            else if (remaining.length) toast.warning('Apply finished; saved changes are still pending.');
+            else toast.success('Changes applied');
         } catch (error: any) {
+            if (!action.isCurrent()) return;
+            setStatusKnown(false);
             const detail = error.response?.data?.detail;
             if (detail && typeof detail === 'object') {
                 const recovered = detail.recovery_status === 'recovered' || (
@@ -466,11 +545,14 @@ const EnvPage = () => {
                 toast.error('Failed to apply changes', { description: detail || error.message });
             }
         } finally {
-            setRestartingEngine(false);
+            if (action.isCurrent()) setRestartingEngine(false);
+            action.finish();
         }
     };
 
     const testAriConnection = async () => {
+        const action = startOperation();
+        if (!action) return;
         setAriTesting(true);
         setAriTestResult(null);
         
@@ -486,14 +568,16 @@ const EnvPage = () => {
                 headers: { Authorization: `Bearer ${token}` }
             });
             
-            setAriTestResult(response.data);
+            if (action.isCurrent()) setAriTestResult(response.data);
         } catch (err: any) {
+            if (!action.isCurrent()) return;
             setAriTestResult({
                 success: false,
                 error: err.response?.data?.detail || 'Failed to test connection'
             });
         } finally {
-            setAriTesting(false);
+            if (action.isCurrent()) setAriTesting(false);
+            action.finish();
         }
     };
 
@@ -503,6 +587,8 @@ const EnvPage = () => {
             toast.error('Enter a recipient email for the SMTP test.');
             return;
         }
+        const action = startOperation();
+        if (!action) return;
         setSmtpTesting(true);
         setSmtpTestResult(null);
         try {
@@ -519,15 +605,30 @@ const EnvPage = () => {
             }, {
                 headers: { Authorization: `Bearer ${token}` }
             });
-            setSmtpTestResult({ success: true, message: res.data?.message || 'Test email accepted by SMTP server.' });
+            if (action.isCurrent()) setSmtpTestResult({ success: true, message: res.data?.message || 'Test email accepted by SMTP server.' });
         } catch (err: any) {
+            if (!action.isCurrent()) return;
             setSmtpTestResult({
                 success: false,
                 error: err.response?.data?.detail || err.message || 'SMTP test failed'
             });
         } finally {
-            setSmtpTesting(false);
+            if (action.isCurrent()) setSmtpTesting(false);
+            action.finish();
         }
+    };
+
+    const runSetupWizard = async () => {
+        const action = startOperation();
+        if (!action) return;
+        try {
+            const confirmed = await confirm({
+                title: 'Run Setup Wizard?',
+                description: 'Warning: Running the Setup Wizard will overwrite your current configuration.',
+                confirmText: 'Continue', variant: 'destructive',
+            });
+            if (confirmed && action.isCurrent()) window.location.href = '/wizard';
+        } finally { action.finish(); }
     };
 
     // Helper to render SecretInput with current state
@@ -654,7 +755,7 @@ const EnvPage = () => {
         : 'This is a path inside the ai_engine container. To find the host file location, confirm the ai_engine mounts in Admin → Docker Services.';
 
     return (
-        <div className="space-y-6">
+        <fieldset disabled={operationBusy} className="min-w-0 space-y-6" aria-busy={operationBusy}>
             {/* Global Restart Banner */}
             <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
                 <div className="flex items-center">
@@ -665,7 +766,7 @@ const EnvPage = () => {
                 </div>
                 <button
                     onClick={() => handleApplyChanges(false)}
-                    disabled={restartingEngine || applyPlan.length === 0}
+                    disabled={operationBusy || !statusKnown || applyPlan.length === 0}
                     className={`flex items-center text-xs px-3 py-1.5 rounded transition-colors ${
                         pendingRestart 
                             ? 'bg-orange-500 text-white hover:bg-orange-600 font-medium' 
@@ -681,6 +782,8 @@ const EnvPage = () => {
                 </button>
             </div>
 
+            {!statusKnown && <p role="status" className="text-sm text-muted-foreground">Apply status is unknown. Refresh to check which saved changes still need applying.</p>}
+
             {/* Header */}
             <div className="flex justify-between items-center">
                 <div>
@@ -691,17 +794,7 @@ const EnvPage = () => {
                 </div>
                 <div className="flex gap-2">
                     <button
-                        onClick={async () => {
-                            const confirmed = await confirm({
-                                title: 'Run Setup Wizard?',
-                                description: 'Warning: Running the Setup Wizard will overwrite your current configuration.',
-                                confirmText: 'Continue',
-                                variant: 'destructive'
-                            });
-                            if (confirmed) {
-                                window.location.href = '/wizard';
-                            }
-                        }}
+                        onClick={runSetupWizard}
                         className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"
                     >
                         <RefreshCw className="w-4 h-4 mr-2" />
@@ -2399,7 +2492,7 @@ const EnvPage = () => {
                     )}
                 </>
             )}
-        </div>
+        </fieldset>
     );
 };
 
