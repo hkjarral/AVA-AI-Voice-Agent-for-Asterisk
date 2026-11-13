@@ -71,7 +71,8 @@ describe('Environment action ownership', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Apply Changes' }));
         await flush();
         expect(axios.post).toHaveBeenCalledTimes(1);
-        expect(screen.getByRole('button', { name: 'Apply Changes' })).toBeEnabled();
+        expect(screen.getByRole('button', { name: 'Apply Changes' })).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled();
         expect(toast.success).not.toHaveBeenCalledWith('Changes applied');
     });
 
@@ -83,6 +84,28 @@ describe('Environment action ownership', () => {
         await flush();
         expect(screen.getByRole('button', { name: 'Apply Changes' })).toBeDisabled();
         expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled();
+    });
+
+    it.each([{ label: 'empty', pending: [] }, { label: 'existing', pending: plan }])('rechecks drift after a lost Save response with an $label plan', async ({ pending: initialPlan }) => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        const save = deferred<Reply>();
+        readStatus = async () => ({ data: { apply_plan: initialPlan, pending_restart: initialPlan.length > 0 } });
+        vi.mocked(axios.post).mockReturnValueOnce(save.promise);
+        render(page());
+        await flush();
+        fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+        await flush();
+        expect(screen.getByRole('button', { name: 'Refresh' })).toBeDisabled();
+        await act(async () => { save.reject(new Error('Synthetic lost save response')); });
+        expect(screen.getByRole('button', { name: 'Apply Changes' })).toBeDisabled();
+        expect(screen.getByText(/Apply status is unknown/)).toBeInTheDocument();
+        if (initialPlan.length) expect(screen.getByText('Pending changes require restart of: ai_engine')).toBeInTheDocument();
+        readStatus = async () => ({ data: { apply_plan: [{ service: 'admin_ui', method: 'restart', endpoint: '/api/system/containers/admin_ui/restart' }], pending_restart: true } });
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+        await flush();
+        expect(screen.getByRole('button', { name: 'Apply Changes' })).toBeEnabled();
+        expect(screen.getByText('Pending changes require restart of: admin_ui')).toBeInTheDocument();
+        expect(axios.post).toHaveBeenCalledTimes(1);
     });
 
     it('serializes Save/Refresh behind Apply and preserves current backend drift afterward', async () => {
@@ -208,14 +231,46 @@ describe('Environment action ownership', () => {
         expect(axios.post).toHaveBeenCalledTimes(1);
     });
 
-    it('uses the save response as a fallback when drift status is unavailable', async () => {
+    it('keeps cumulative drift unknown when status fails after a save', async () => {
         render(page());
         await flush();
         readStatus = async () => { throw new Error('Synthetic unavailable'); };
         fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
         await flush();
-        expect(screen.getByRole('button', { name: 'Apply Changes' })).toBeEnabled();
-        expect(screen.queryByText(/Apply status is unknown/)).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Apply Changes' })).toBeDisabled();
+        expect(screen.getByText(/Apply status is unknown/)).toBeInTheDocument();
+        expect(screen.getByText('Pending changes require restart of: ai_engine')).toBeInTheDocument();
+    });
+
+    it('does not erase earlier pending services with an empty no-op save response', async () => {
+        render(page());
+        await flush();
+        readStatus = async () => { throw new Error('Synthetic unavailable'); };
+        vi.mocked(axios.post).mockResolvedValue({ data: { apply_plan: [], changed_keys: [] } });
+        fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+        await flush();
+        expect(screen.getByText('Pending changes require restart of: ai_engine')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Apply Changes' })).toBeDisabled();
+        expect(toast.success).not.toHaveBeenCalled();
+    });
+
+    it('rechecks drift before retrying a partial Apply so Local AI is not recreated twice', async () => {
+        const local = { service: 'local_ai_server', method: 'recreate', endpoint: '/api/system/containers/local_ai_server/restart' };
+        readStatus = async () => ({ data: { apply_plan: [local, ...plan], pending_restart: true } });
+        vi.mocked(axios.post).mockResolvedValueOnce({ data: { status: 'success' } }).mockResolvedValueOnce({ data: { status: 'warning', message: 'Synthetic active calls' } });
+        render(page());
+        await flush();
+        fireEvent.click(screen.getByRole('button', { name: 'Apply Changes' }));
+        await flush();
+        expect(screen.getByRole('button', { name: 'Apply Changes' })).toBeDisabled();
+        readStatus = async () => ({ data: { apply_plan: plan, pending_restart: true } });
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+        await flush();
+        readStatus = async () => ({ data: { apply_plan: [], pending_restart: false } });
+        fireEvent.click(screen.getByRole('button', { name: 'Apply Changes' }));
+        await flush();
+        expect(vi.mocked(axios.post).mock.calls.filter(([url]) => url.includes('/local_ai_server/'))).toHaveLength(1);
+        expect(vi.mocked(axios.post).mock.calls.filter(([url]) => url.includes('/ai_engine/'))).toHaveLength(2);
     });
 });
 

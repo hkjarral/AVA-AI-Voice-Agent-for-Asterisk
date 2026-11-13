@@ -311,11 +311,9 @@ const EnvPage = () => {
         }
     }, [beginRead, token, authScope]);
 
-    // Drift is authoritative. A successful save response is the compatibility
-    // fallback; a completed restart alone cannot prove there is no newer drift.
-    const refreshApplyStatus = useCallback(async (
-        ownsView: () => boolean, fallback?: ApplyStep[]
-    ) => {
+    // Only drift status describes the cumulative plan; a save response contains
+    // just that write's affected services, and cannot replace this snapshot.
+    const refreshApplyStatus = useCallback(async (ownsView: () => boolean) => {
         const request = beginRead('env-status');
         if (!request) return null;
         const current = () => request.isCurrent() && currentAuth.current === authScope && ownsView();
@@ -332,12 +330,6 @@ const EnvPage = () => {
             return plan;
         } catch {
             if (!current()) return null;
-            if (fallback) {
-                setApplyPlan(fallback);
-                setPendingRestart(fallback.length > 0);
-                setStatusKnown(true);
-                return fallback;
-            }
             setStatusKnown(false);
             return null;
         } finally { request.finish(); }
@@ -424,8 +416,7 @@ const EnvPage = () => {
             setChangedKeys(keys);
             setSavedCallHistoryRedactionMode(requestedRedactionMode);
 
-            const fallback = Array.isArray(response.data?.apply_plan) ? response.data.apply_plan as ApplyStep[] : undefined;
-            const plan = await refreshApplyStatus(action.isCurrent, fallback);
+            const plan = await refreshApplyStatus(action.isCurrent);
             if (!action.isCurrent()) return;
             if (!plan) {
                 toast.warning('Environment saved; apply status is unknown. Refresh before applying changes.');
@@ -440,6 +431,8 @@ const EnvPage = () => {
             }
         } catch (err: any) {
             if (!action.isCurrent()) return;
+            // A lost response does not prove the write was rejected.
+            setStatusKnown(false);
             console.error('Failed to save env');
             if (err.response && err.response.status === 401) {
                 toast.error('Session expired. Please login again.');
@@ -504,6 +497,7 @@ const EnvPage = () => {
                 });
                 if (!action.isCurrent()) return;
                 if (response.data.status === 'warning') {
+                    setStatusKnown(false);
                     toast.warning(response.data.message || `${service} restart was skipped.`);
                     return;
                 }

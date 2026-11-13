@@ -169,8 +169,9 @@ Visual editor for `.env` variables. Changes require a container restart to take 
 Save, Refresh, connection-test actions and Apply confirmations are serialized on
 this page. An accepted request can finish after navigation, but obsolete responses
 cannot change another view, and later restart steps are not started after leaving.
-Apply rechecks backend drift before clearing pending changes. If that check fails,
-or an Admin UI restart is only scheduled, use **Refresh** after the service returns
+Save and Apply recheck cumulative backend drift before reporting pending changes.
+If verification fails, a Save response is lost, Apply stops with a warning, or an
+Admin UI restart is only scheduled, use **Refresh** after the service returns
 to verify what is still pending before requesting another Apply. Existing active-call
 guards and confirmation requirements still apply.
 
