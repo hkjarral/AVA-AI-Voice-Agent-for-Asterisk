@@ -63,8 +63,25 @@ are preserved; change their provider, prompt and greeting in **Agents**.
 “Configuration saved” is not a readiness claim. Use **Start AI Engine** to build/start
 the container. If it is already running, use **Apply & Restart Engine** to load
 changed environment settings, respecting the active-call warning. Fully Local also
-needs its Local AI server ready. A readiness timeout remains pending instead of
-being reported as successful setup.
+needs its Local AI server ready. The Wizard makes one automatic Local AI start
+attempt per completion view. After a start failure or readiness polling timeout,
+check server status before using **Start Local AI Server** to retry. Polling allows
+2 minutes for normal startup, 10 minutes for model downloads, or 60 minutes for an
+image build, measured after the start request returns. A readiness timeout remains
+pending instead of being reported as successful setup.
+
+Downloads already submitted continue on the server after navigation. Reopening
+the Wizard or **Models** page follows the active download by job ID. A resumed
+download refreshes installed files; it does not certify a newly selected model
+combination. Changing the Wizard's language or model selection clears its previous
+download completion. The Models page reports live readiness separately from
+configuration submission.
+
+The Wizard keeps an accepted download tracked even after you change selections:
+that job can still write model settings before it finishes. Another download and
+**Finish Setup** stay locked until the job ends. If download status cannot be
+read, use **Check download status** to recover before submitting another download
+or saving setup; this check does not start a download.
 
 The final step refreshes these checks:
 
