@@ -2,7 +2,7 @@
 
 ## User Documentation
 
-- **[v7.7.2 Migration](MIGRATION.md#v771-to-v772)** - First-call onboarding, A2A, media and update compatibility
+- **[v7.7.3 Migration](MIGRATION.md#v772-to-v773)** - Transfer behavior, recording access, Admin recovery and image compatibility
 - **[First Successful Call](FIRST_CALL.md)** - Wizard, PBX routing and operator confirmation
 - **[A2A Agent Tool](A2A-Agent-Tool.md)** - Optional per-Agent delegation and credential handling
 - **[Docker Build Checks](BUILD_TROUBLESHOOTING.md)** - Builder selection, scoped fallback and recovery
@@ -17,7 +17,7 @@
 - **[ARI Discovery](ARI-Endpoint-Discovery.md)** - Review/stage transfer destinations without changing calls
 
 - **[Quick Start Guide](../README.md#quick-start)** - Prerequisites and the primary setup path
-- **[Installation and Upgrade Guide](INSTALLATION.md)** - Fresh setup, v7.7.2 upgrade steps, and older-installation updater recovery
+- **[Installation and Upgrade Guide](INSTALLATION.md)** - Fresh setup, v7.7.3 upgrade steps, and older-installation updater recovery
 - **[Admin UI Guide](ADMIN_UI_GUIDE.md)** - Web interface for configuration and monitoring
 - **[FreePBX Integration Guide](FreePBX-Integration-Guide.md)** - Dialplan and queue configuration
 - **[Outbound Calling (Alpha)](OUTBOUND_CALLING.md)** - Scheduled outbound campaigns, voicemail drop, consent gate
@@ -26,7 +26,7 @@
 - **[WebSocket Transport](WebSocket-Transport.md)** - Opt-in Asterisk Media WebSocket setup, authenticated loopback/WSS topology, qualification, and rollback
 - **[Caller Inactivity Watchdog](Configuration-Reference.md#caller-inactivity-no_input)** - 30-second inbound silence protection, per-agent overrides, and safe terminal playback (v7.3.1+)
 - **[Agents](AGENTS.md)** - v7.4 Agent routing, dialplan selection, and per-Agent tool access
-- **[v7.7.2 Validation Matrix](baselines/golden/v7.7.2-validation-matrix.md)** - Existing release evidence and publication gates
+- **[v7.7.3 Validation Matrix](baselines/golden/v7.7.3-validation-matrix.md)** - Existing release evidence and publication gates
 - **[v7.7.1 Validation Matrix](baselines/golden/v7.7.1-validation-matrix.md)** - Recovery, transcription, template/pipeline fixes and fresh scoped waiver
 - **[v7.7.0 Validation Matrix](baselines/golden/v7.7.0-validation-matrix.md)** - Historical integration and operator-workflow evidence
 - **[v7.6.4 Validation Matrix](baselines/golden/v7.6.4-validation-matrix.md)** - HTTP-template safety, farewell/transfer recovery and compatible Admin updates

@@ -101,7 +101,7 @@ For Local/Hybrid profiles, run `make model-setup` when prompted to download mode
 ## Code Style & Quality
 
 - Use Python 3.11 for the Core Engine requirements and local tests.
-  Keep Local AI code compatible with Python 3.10 in the CUDA image.
+  The CPU and CUDA Local AI images also package Python 3.11.
 - Prefer small, composable functions and clear error handling.
 - Add or update documentation where behavior changes.
 - See [code-style.md](docs/contributing/code-style.md) for details.

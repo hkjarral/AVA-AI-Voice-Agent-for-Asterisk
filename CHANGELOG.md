@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.7.3] - 2026-11-13
+
+Release preparation from main `00c32c49` after v7.7.2. Includes 23 merged PRs
+covering transfer/audio recovery, recording downloads, Admin lifecycle safety,
+and compatible dependency and tooling migrations. See the [migration guide](docs/MIGRATION.md#v772-to-v773)
+and [validation matrix](docs/baselines/golden/v7.7.3-validation-matrix.md).
+Thanks to Chris Wilson (`cswilsnetex`), proposal author `lucivan212`, `hkjarral`,
+and Dependabot. See [contributors](CONTRIBUTORS.md) for their verified roles.
+
+### Added
+
+- Call History authenticated WAV downloads and recording refresh/error states, with request cancellation and audio/URL cleanup when leaving call details (Refs #767).
+
+- **Attended transfer caller briefing:** `attended_transfer` accepts optional
+  `caller_name` and `call_reason` and uses them to fill the existing
+  `{screened_*}` announcement placeholders. The model is told to pass only what
+  the caller actually said. Values are normalised and capped (80 and 200
+  characters; control and format characters are dropped, but the joiners U+200C
+  and U+200D are kept) and kept out of tool results and out of the tool's and
+  engine's own logs. Placeholder values such as `unknown` or
+  `N/A` are treated as missing. The speech backend receives the rendered
+  announcement text and may log it. Call history now redacts
+  a `call_reason` parameter on any tool, as it already did `caller_name`. In
+  `caller_recording` mode, `attended_transfer` ignores `caller_name` and
+  `call_reason`. The default announcement is unchanged. Local-provider parser
+  debug logs omit tool argument values across all supported wrapper formats.
+
+- **Attended transfer announcement voice:** new optional
+  `tools.attended_transfer.tts_provider` (a pipeline TTS component key such as
+  `google_tts`) and `tts_options` (`voice`, `language`) let a configured
+  provider speak every attended-transfer prompt. Unset keeps Local AI Server
+  TTS. A set provider fails closed, with no fallback to Local AI Server or
+  another provider, and is synthesized before dialling while the caller hears
+  hold music; if that fails, no call is placed and the agent continues with
+  the caller. `ai_briefing` still needs Local AI Server LLM capability to write
+  the briefing. The Admin UI adds an Announcement voice selector backed by
+  `GET /api/config/providers/tts-options`.
+
 ### Changed
 
 - **Provider forms and Tools apply status:** scope modular subtype selection to
@@ -71,40 +109,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Admin frontend tooling (#220, #722):** use Node 22 (minimum 22.12) for
   frontend CI, Docker builds, and local development; upgrade Jest DOM to 7.0.1.
   Preserve the existing ESLint versions, configuration, and warning threshold.
-### Security
 
-- Update the Admin frontend lockfile to follow-redirects 1.16.3, preserving
-  custom sensitive-header handling across JavaScript realms when Node clients
-  follow redirects (GHSA-mrwp-f3q8-3g9p).
-
-### Added
-
-- Call History authenticated WAV downloads and recording refresh/error states, with request cancellation and audio/URL cleanup when leaving call details (Refs #767).
-
-- **Attended transfer caller briefing:** `attended_transfer` accepts optional
-  `caller_name` and `call_reason` and uses them to fill the existing
-  `{screened_*}` announcement placeholders. The model is told to pass only what
-  the caller actually said. Values are normalised and capped (80 and 200
-  characters; control and format characters are dropped, but the joiners U+200C
-  and U+200D are kept) and kept out of tool results and out of the tool's and
-  engine's own logs. Placeholder values such as `unknown` or
-  `N/A` are treated as missing. The speech backend receives the rendered
-  announcement text and may log it. Call history now redacts
-  a `call_reason` parameter on any tool, as it already did `caller_name`. In
-  `caller_recording` mode, `attended_transfer` ignores `caller_name` and
-  `call_reason`. The default announcement is unchanged. Local-provider parser
-  debug logs omit tool argument values across all supported wrapper formats.
-
-- **Attended transfer announcement voice:** new optional
-  `tools.attended_transfer.tts_provider` (a pipeline TTS component key such as
-  `google_tts`) and `tts_options` (`voice`, `language`) let a configured
-  provider speak every attended-transfer prompt. Unset keeps Local AI Server
-  TTS. A set provider fails closed, with no fallback to Local AI Server or
-  another provider, and is synthesized before dialling while the caller hears
-  hold music; if that fails, no call is placed and the agent continues with
-  the caller. `ai_briefing` still needs Local AI Server LLM capability to write
-  the briefing. The Admin UI adds an Announcement voice selector backed by
-  `GET /api/config/providers/tts-options`.
+- **Admin backend dependencies (#816):** update FastAPI to 0.162.0, Pydantic to
+  2.14.3, python-multipart to 0.0.33, WebSockets to 17.4, and the bundled
+  FFmpeg decoder package to 0.8.1.
 
 ### Fixed
 
@@ -158,11 +166,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stays disabled, as it has been since v5.1.7, because subtracting each frame's
   mean adds a frame-edge artifact measured at -15 to -30 dB relative to speech.
 
-### Changed
+### Security
 
-- **Admin backend dependencies (#816):** update FastAPI to 0.162.0, Pydantic to
-  2.14.3, python-multipart to 0.0.33, WebSockets to 17.4, and the bundled
-  FFmpeg decoder package to 0.8.1.
+- Update the Admin frontend lockfile to follow-redirects 1.16.3, preserving
+  custom sensitive-header handling across JavaScript realms when Node clients
+  follow redirects (GHSA-mrwp-f3q8-3g9p).
+- The maintainer accepted the remaining dependency/image findings and Bookworm
+  zlib exposure for v7.7.3 only. The [security exception](docs/baselines/golden/v7.7.3-validation-matrix.md#v773-only-security-exception)
+  records the covered baseline, controls and review deadline.
 
 ## [7.7.2] - 2026-11-08
 

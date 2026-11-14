@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
     "docs/baselines/golden/v7.7.0-validation-matrix.md",
     "docs/baselines/golden/v7.7.1-validation-matrix.md",
     "docs/baselines/golden/v7.7.2-validation-matrix.md",
+    "docs/baselines/golden/v7.7.3-validation-matrix.md",
     "docs/OpenAI-Compatible-Transcription.md",
     "docs/HTTP-Tool-Templates.md",
     "docs/Appointment-booking-providers.md",
@@ -34,7 +35,7 @@ def test_new_release_guides_have_resolvable_local_links(relative):
 def test_new_contributors_have_matching_profile_badges_and_credit():
     readme = (ROOT / "README.md").read_text()
     credits = (ROOT / "CONTRIBUTORS.md").read_text()
-    for login in ("pcbeingused333", "lucamancusodev", "abaichuan1017", "Andrew-Engelbrecht", "jjaroztegi", "ibewackofreak"):
+    for login in ("pcbeingused333", "lucamancusodev", "abaichuan1017", "Andrew-Engelbrecht", "jjaroztegi", "ibewackofreak", "lucivan212"):
         assert f'href="https://github.com/{login}"' in readme
         assert f'src="https://github.com/{login}.png"' in readme
         assert f"(https://github.com/{login})" in credits
@@ -48,12 +49,13 @@ def test_new_contributors_have_matching_profile_badges_and_credit():
 
 def test_upgrade_and_migration_keep_legacy_links_and_explicit_waiver():
     installation = (ROOT / "docs/INSTALLATION.md").read_text()
-    for version in ("762", "763", "764", "770", "771", "772"):
+    for version in ("762", "763", "764", "770", "771", "772", "773"):
         assert f"upgrade-to-v{version}-existing-checkout" in anchors(installation)
     migration = (ROOT / "docs/MIGRATION.md").read_text()
     assert "v764-to-v770" in anchors(migration)
     assert "v770-to-v771" in anchors(migration)
     assert "v771-to-v772" in anchors(migration)
+    assert "v772-to-v773" in anchors(migration)
     matrix = (ROOT / "docs/baselines/golden/v7.7.0-validation-matrix.md").read_text()
     assert "WAIVED explicitly for v7.7.0" in matrix
     assert "Merge approval | APPROVED" in matrix

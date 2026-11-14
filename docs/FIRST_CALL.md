@@ -1,6 +1,6 @@
 # First successful call
 
-This walkthrough applies to the v7.7.2 onboarding flow. Older releases may skip
+This walkthrough applies to v7.7.3 and the onboarding flow introduced in v7.7.2. Older releases may skip
 the wizard after preflight or emit `AI_AGENT=default`. Open `/wizard` explicitly and use the actual active Agent
 slug shown in **Agents**. Do not assume an Agent named `default` exists.
 

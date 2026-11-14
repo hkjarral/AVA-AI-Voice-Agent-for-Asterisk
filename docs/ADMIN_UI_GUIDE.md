@@ -4,7 +4,7 @@ The Admin UI is a web-based interface for configuring, monitoring, and managing 
 
 ## Quick Start
 
-For v7.7.2, read [migration](MIGRATION.md#v771-to-v772),
+For v7.7.3, read [migration](MIGRATION.md#v772-to-v773),
 [Agents workspace](AGENTS_EXPERIENCE_ROLLOUT.md), and [integration backups](INTEGRATION_BACKUPS.md).
 Hard-refresh after rebuilding Admin UI. Agents now use searchable cards/list,
 a routed four-section editor and changed-field saves. Visual avatars do not
@@ -18,7 +18,7 @@ steps for [Calendly](Calendly-calendar-tool.md), [Pushover](Pushover.md),
 Preview/verification is not a booking/send; explicitly approved setup tests can
 create real external effects.
 
-For a fresh install, follow the [v7.7.2 installer](INSTALLATION.md#path-a-admin-ui-setup-wizard-recommended)
+For a fresh install, follow the [v7.7.3 installer](INSTALLATION.md#path-a-admin-ui-setup-wizard-recommended)
 and [first-call walkthrough](FIRST_CALL.md). The installer prepares and starts
 Admin UI at port 3003. Engine startup and PBX routing follow in the wizard.
 

@@ -37,10 +37,23 @@ Thanks to all the people who have contributed to the Asterisk AI Voice Agent!
 | <img src="https://github.com/Andrew-Engelbrecht.png" width="50" alt="Andrew-Engelbrecht"> | **[Andrew-Engelbrecht](https://github.com/Andrew-Engelbrecht)** | Report — Compose/Bake Upgrade Failure ([#790](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/790)); implementation and recovery audit in #791 by the maintainer |
 | <img src="https://github.com/jjaroztegi.png" width="50" alt="jjaroztegi"> | **[jjaroztegi](https://github.com/jjaroztegi)** | Report — AudioSocket squelch and WebSocket pacing reports ([#799](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/799), [#808](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/808)) |
 | <img src="https://github.com/ibewackofreak.png" width="50" alt="ibewackofreak"> | **[ibewackofreak](https://github.com/ibewackofreak)** | Report — Docker entitlement failure during Quick Start ([#802](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/802)) |
+| <img src="https://github.com/lucivan212.png" width="50" alt="lucivan212"> | **[lucivan212](https://github.com/lucivan212)** | Proposal and Requirements — Call History recording access and authenticated downloads ([#767](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/767)); the broader reconciliation proposal remains follow-up |
 
 <!-- markdownlint-restore -->
 <!-- prettier-ignore-end -->
 <!-- ALL-CONTRIBUTORS-LIST:END -->
+
+### v7.7.3 contribution updates
+
+- **Chris Wilson (`cswilsnetex`):** AudioSocket correction and attended-transfer
+  settings, early-hangup recovery, silent-transfer watchdog, caller briefings and
+  announcement TTS ([#829–#834](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/834)).
+- **lucivan212:** recording-access proposal and requirements ([#767](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/767));
+  the scoped downloads and error handling shipped through #840.
+- **hkjarral:** Admin lifecycle, recording safety, React/Node integration,
+  TypeScript validation, dependency integration and release preparation.
+- **Dependabot:** the six dependency proposals already merged into this release
+  (#728, #750, #783, #801, #816 and #823).
 
 ### v7.7.2 contribution updates
 

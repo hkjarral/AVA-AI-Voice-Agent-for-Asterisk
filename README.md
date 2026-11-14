@@ -6,7 +6,7 @@
   <img alt="AVA Core — AI Voice Agent for Asterisk" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-[![Version](https://img.shields.io/badge/version-7.7.2-blue.svg)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases)
+[![Version](https://img.shields.io/badge/version-7.7.3-blue.svg)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases)
 [![CI](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Discord](https://dcbadge.limes.pink/api/server/ysg8fphxUe?style=plastic)](https://discord.gg/ysg8fphxUe)
@@ -37,17 +37,17 @@ Asterisk 18+ / FreePBX system with ARI enabled. Cloud configurations start with
 transports require newer Asterisk versions or additional modules.
 
 **Already running AVA?** Follow the
-[v7.7.2 upgrade guide](docs/INSTALLATION.md#upgrade-to-v772-existing-checkout)
+[v7.7.3 upgrade guide](docs/INSTALLATION.md#upgrade-to-v773-existing-checkout)
 instead of cloning another installation.
 
 On the AVA host:
 
-Use the commands below once v7.7.2 appears in GitHub Releases. Until then, use
+Use the commands below once v7.7.3 appears in GitHub Releases. Until then, use
 the guide from the latest published release. v7.7.1 and earlier checkouts use
 the [older-checkout recovery](docs/CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
 
 ```bash
-git clone --branch v7.7.2 https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+git clone --branch v7.7.3 https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
 cd AVA-AI-Voice-Agent-for-Asterisk
 sudo ./preflight.sh --apply-fixes
 ./install.sh --ui
@@ -114,7 +114,7 @@ supported backends, limits and live-call priority.
 
 Model availability, tools, latency, and transport support vary by configuration.
 Use the [compatibility matrix](docs/Transport-Mode-Compatibility.md) and
-[release validation evidence](docs/baselines/golden/v7.7.2-validation-matrix.md)
+[release validation evidence](docs/baselines/golden/v7.7.3-validation-matrix.md)
 rather than assuming every provider/transport combination is qualified.
 
 AudioSocket and ExternalMedia RTP are configuration-dependent; Media WebSocket
@@ -169,16 +169,15 @@ The core services are `ai_engine` and `admin_ui`; `local_ai_server` and
 
 <a id="-whats-new"></a>
 
-### v7.7.2 highlights
+### v7.7.3 highlights
 
-- Admin-first installation and resumable setup through an operator-verified first call.
-- Optional A2A delegation configured in Tools and assigned per Agent.
-- AudioSocket first-frame recovery, opt-in WebSocket pacing, OpenAI audio tail
-  handling, and safer Microsoft Calendar retries.
+- Safer attended-transfer recovery, configurable announcement voices, and caller briefings.
+- Authenticated recording downloads with clearer playback and lookup errors.
+- Reliable Admin saves, setup and update recovery, plus React 19 and WebSockets 17.4.
 
 See the [changelog](CHANGELOG.md) for detailed changes and contributor credit,
 [GitHub Releases](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases)
-for artifacts, and [migration notes](docs/MIGRATION.md#v771-to-v772) before upgrading.
+for artifacts, and [migration notes](docs/MIGRATION.md#v772-to-v773) before upgrading.
 Earlier release notes remain in the changelog and versioned repository history.
 
 <a id="-contributing"></a>
@@ -215,7 +214,7 @@ context. All contributions still require appropriate testing and review.
 <tr>
 <td align="center"><a href="https://github.com/exaland"><img src="https://github.com/exaland.png" width="60" alt="exaland"><br><sub><b>exaland</b></sub></a><br>Outbound .ULAW Compatibility</td>
 <td align="center"><a href="https://github.com/YosefAdPro"><img src="https://github.com/YosefAdPro.png" width="60" alt="YosefAdPro"><br><sub><b>YosefAdPro</b></sub></a><br>Agents API/OpenAPI</td>
-<td align="center"><a href="https://github.com/cswilsnetex"><img src="https://github.com/cswilsnetex.png" width="60" alt="cswilsnetex"><br><sub><b>Chris Wilson</b></sub></a><br>Google Live, Calendar Retry, Admin UI</td>
+<td align="center"><a href="https://github.com/cswilsnetex"><img src="https://github.com/cswilsnetex.png" width="60" alt="cswilsnetex"><br><sub><b>Chris Wilson</b></sub></a><br>Transfers, AudioSocket, Calendar, Admin UI</td>
 <td align="center"><a href="https://github.com/Rea-PC08"><img src="https://github.com/Rea-PC08.png" width="60" alt="Rea-PC08"><br><sub><b>Rea-PC08</b></sub></a><br>Fish Audio TTS, Call History Filters</td>
 <td align="center"><a href="https://github.com/arnavp27"><img src="https://github.com/arnavp27.png" width="60" alt="arnavp27"><br><sub><b>Arnav Patil</b></sub></a><br>Admin UI Accessibility, Numeric Alignment, Empty States</td>
 </tr>
@@ -238,6 +237,7 @@ context. All contributions still require appropriate testing and review.
 <td align="center"><a href="https://github.com/Andrew-Engelbrecht"><img src="https://github.com/Andrew-Engelbrecht.png" width="60" alt="Andrew-Engelbrecht"><br><sub><b>Andrew-Engelbrecht</b></sub></a><br>Upgrade Failure Report</td>
 <td align="center"><a href="https://github.com/jjaroztegi"><img src="https://github.com/jjaroztegi.png" width="60" alt="jjaroztegi"><br><sub><b>jjaroztegi</b></sub></a><br>Media Reports and Reproduction</td>
 <td align="center"><a href="https://github.com/ibewackofreak"><img src="https://github.com/ibewackofreak.png" width="60" alt="ibewackofreak"><br><sub><b>ibewackofreak</b></sub></a><br>Docker Bootstrap Report</td>
+<td align="center"><a href="https://github.com/lucivan212"><img src="https://github.com/lucivan212.png" width="60" alt="lucivan212"><br><sub><b>lucivan212</b></sub></a><br>Recording Access Proposal</td>
 </tr>
 </table>
 

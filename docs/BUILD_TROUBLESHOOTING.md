@@ -1,6 +1,6 @@
 # Docker build checks and recovery
 
-This guide covers the v7.7.2 builder and preflight flow. Older checkouts, including v7.7.1, need
+This guide covers the v7.7.3 builder and preflight flow. Older checkouts, including v7.7.1, need
 the [legacy recovery commands](CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
 
 ## Check before building
