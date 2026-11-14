@@ -56,8 +56,9 @@ optional services. Hard-refresh the browser after the Admin UI rebuild.
 
 The 7.7.x and 7.6.x support trains continue. Existing validation is recorded by
 revision in the [v7.7.3 matrix](baselines/golden/v7.7.3-validation-matrix.md).
-The prior Bookworm exception applied to v7.7.2; a new security disposition is
-required before this release is tagged.
+The [v7.7.3-only security exception](baselines/golden/v7.7.3-validation-matrix.md#v773-only-security-exception)
+records the remaining dependency and Bookworm findings, exposure limits and
+follow-up deadline.
 
 ## v7.7.1 to v7.7.2
 

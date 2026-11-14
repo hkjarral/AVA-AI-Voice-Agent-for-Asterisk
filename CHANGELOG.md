@@ -171,6 +171,9 @@ and Dependabot. See [contributors](CONTRIBUTORS.md) for their verified roles.
 - Update the Admin frontend lockfile to follow-redirects 1.16.3, preserving
   custom sensitive-header handling across JavaScript realms when Node clients
   follow redirects (GHSA-mrwp-f3q8-3g9p).
+- The maintainer accepted the remaining dependency/image findings and Bookworm
+  zlib exposure for v7.7.3 only. The [security exception](docs/baselines/golden/v7.7.3-validation-matrix.md#v773-only-security-exception)
+  records the covered baseline, controls and review deadline.
 
 ## [7.7.2] - 2026-11-08
 

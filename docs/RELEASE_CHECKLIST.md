@@ -19,8 +19,10 @@ The maintainer approved reuse of existing testing evidence for this release.
 Additional runtime, deployment, live-call and upgrade testing, including an
 exact-candidate successful-call baseline, is waived for v7.7.3. Keep original
 revisions, fixtures, operator reports and unverified lanes visible. Required CI,
-image/security checks and review remain required. Merge and tag remain on hold.
-The v7.7.2 Bookworm exception is historical; v7.7.3 requires its own disposition.
+image/security checks and review remain required. The maintainer authorized
+merge and tag after successful main checks. The
+[v7.7.3-only security exception](baselines/golden/v7.7.3-validation-matrix.md#v773-only-security-exception)
+covers the recorded residual findings and expires before a later stable tag.
 
 ### Historical v7.7.2 evidence acceptance
 
