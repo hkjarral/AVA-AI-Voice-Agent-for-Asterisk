@@ -223,12 +223,15 @@ pipelines:
 
 If using service account authentication, grant these roles:
 
-- **Cloud Speech-to-Text User** (`roles/speech.user`)
+- For Cloud Speech-to-Text, use the [Cloud Speech Client role](https://docs.cloud.google.com/iam/docs/roles-permissions/speech)
+  (`roles/speech.client`).
 - For Text-to-Speech, enable the Cloud Text-to-Speech API and use the credential
   path described in [Google pipeline authentication](Configuration-Reference.md#google-pipelines).
   See [Google authentication guidance](https://docs.cloud.google.com/text-to-speech/docs/authentication)
   for the applicable service-account and quota permissions.
-- **Generative AI User** (`roles/aiplatform.user`)
+- The pipeline adapters use Generative Language authentication and need no
+  Vertex AI role. Configure Vertex access separately only for a deployment
+  using the Google Live Vertex mode.
 
 Google Live / Generative Language access is authenticated with API key or OAuth credentials. There is no separate `roles/generativelanguage.liveapi.user` IAM role.
 
