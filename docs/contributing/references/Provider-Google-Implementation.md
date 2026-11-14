@@ -219,8 +219,10 @@ Enable APIs:
      --role="roles/speech.client"
    ```
 
-   The pipeline adapters use the Generative Language endpoint; they do not need
-   a Vertex AI project role. For Cloud TTS authentication and quota permissions, follow
+   Default pipeline endpoints are `generativelanguage.googleapis.com` for LLM,
+   `speech.googleapis.com` for STT, and `texttospeech.googleapis.com` for TTS.
+   These adapters need no Vertex AI project role. For Cloud TTS authentication
+   and quota permissions, follow
    [Google's authentication guide](https://docs.cloud.google.com/text-to-speech/docs/authentication).
    The AVA adapter credential precedence is documented in the
    [configuration reference](../../Configuration-Reference.md#google-pipelines).
