@@ -2,7 +2,7 @@
 
 **Version**: 1.1.0
 **Last Updated**: October 2026
-**Applies to**: v7.7.2
+**Applies to**: v7.7.3
 
 ---
 

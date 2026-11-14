@@ -120,7 +120,7 @@ For end-user and operator documentation, see the parent [/docs](../) directory:
 
 ## 📅 Project Status
 
-- **Latest Stable Version:** 7.7.2 after publication
+- **Latest Stable Version:** 7.7.3 after publication
 - **Current published version during preparation:** 7.7.1 (see the [roadmap](../ROADMAP.md))
 - **Active Branch:** `main` (feature branches → PR to `main`)
 - **Roadmap:** See [/docs/ROADMAP.md](../ROADMAP.md)

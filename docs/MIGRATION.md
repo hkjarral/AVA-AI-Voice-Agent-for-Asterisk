@@ -2,10 +2,66 @@
 
 This guide covers upgrading between releases of Asterisk AI Voice Agent.
 
+## v7.7.2 to v7.7.3
+
+Use the [pinned upgrade](INSTALLATION.md#upgrade-to-v773-existing-checkout) after
+publication. Stop new PBX admissions and drain calls before replacing services.
+Update the Engine and Admin UI together, the host CLI/updater with the release,
+and installed CPU or CUDA Local AI images using their original profiles. Retain
+model volumes, managed credentials, Agents, configuration overlays, and stopped
+optional services. Hard-refresh the browser after the Admin UI rebuild.
+
+- **Transfer behavior.** An answered destination that hangs up before acceptance
+  now returns the caller to the AI. Deferred full-agent transfers without a
+  configured handoff announcement commit after four seconds without reply audio.
+  This timer also arms after failed tool-result delivery. Caller speech and
+  barge-in affect the timer. For slow first-audio providers, raise
+  `tools.transfer.deferred_silent_commit_timeout_sec`; `0` disables it. Once
+  reply audio starts, an unfinished reply without barge-in can still remain
+  armed. See the [watchdog rules](Configuration-Reference.md#deferred-transfer-silent-reply-timeout-toolstransfer).
+- **Announcement voices.** `tools.attended_transfer.tts_provider` optionally selects
+  a configured pipeline TTS component, with `tts_options` for voice/language.
+  Restart the Engine after adding or changing provider configuration. A selected
+  provider fails closed when unavailable; preparation failure before dialing
+  leaves the caller with the AI. `ai_briefing` still needs Local AI LLM capability
+  and can fail after the destination answers. Language options are provider-specific.
+  Caller-name/reason placeholders use only the caller-stated values supplied by
+  the model; the default announcement is unchanged. Retain transfer templates
+  and review their privacy implications. See [attended transfers](Configuration-Reference.md#attended-transfer-toolsattended_transfer).
+- **Recording access.** Authenticated downloads and playback use the same WAV
+  representation. Discovery rejects symlinks and ambiguous exact-ID matches.
+  Operators using symlinked paths inside the recording tree need a direct
+  read-only mount of the real files. Resolve duplicate ID associations, retry changing
+  files after recording finishes, and note the 256 MiB source limit. History
+  deletion does not erase the Asterisk files. There is no recording-catalog or
+  database migration. See [recording access](ADMIN_UI_GUIDE.md#call-recording-playback-and-download).
+- **Admin recovery.** Lost Save/Apply or update responses can mean an accepted
+  operation. Use Refresh status or Recent Runs to reconcile it before another
+  write. Drafts and accepted job IDs are preserved where supported. Navigation
+  discards obsolete responses rather than letting them overwrite the current view.
+- **Image and development dependencies.** WebSockets 17.4 requires the updated
+  Engine and Local AI packages. The CUDA image now bundles Python 3.11.15 while
+  retaining CUDA 12.4.1/cuDNN. Rebuild it with the original backend/architecture
+  flags and preserve models. Physical-GPU inference is not established by the
+  hosted build. Frontend source development uses Node 22, minimum 22.12 and below
+  23, React 19 and clean typechecking. Docker supplies Node; operators need no
+  host Node upgrade for the container deployment. See [Local AI](LOCAL_ONLY_SETUP.md)
+  and [React migration](contributing/reviews/REACT_19_MIGRATION.md).
+- **Rollback.** Keep the pre-upgrade image set and coherent state backups. Restore
+  Engine, Admin and any changed Local AI images together, and preserve the saved
+  configuration. Remove newly introduced optional transfer keys before running
+  an older runtime when required. Rollback does not reverse an external transfer
+  or delete recordings already downloaded. The recording/UI changes add no data
+  migration; earlier-release privacy and Agent schema requirements still apply.
+
+The 7.7.x and 7.6.x support trains continue. Existing validation is recorded by
+revision in the [v7.7.3 matrix](baselines/golden/v7.7.3-validation-matrix.md).
+The prior Bookworm exception applied to v7.7.2; a new security disposition is
+required before this release is tagged.
+
 ## v7.7.1 to v7.7.2
 
-Use the [pinned upgrade](INSTALLATION.md#upgrade-to-v772-existing-checkout) once
-the tag and artifacts are published. Drain calls and update Engine and Admin UI
+Use the [published v7.7.2 upgrade](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/v7.7.2/docs/INSTALLATION.md#upgrade-to-v772-existing-checkout). Drain calls and update Engine and Admin UI
 together. Use the target CLI and updater for updated build and recovery behavior.
 Keep saved provider selections, transport and Audio Profile settings, models,
 configuration overlays and intentionally stopped services.

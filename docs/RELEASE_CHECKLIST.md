@@ -14,7 +14,17 @@ CI is the hard gate for code quality (unit tests + lint/compile checks). Real-ca
 
 ## Manual Golden Baselines (Must Pass Before Tagging)
 
-For v7.7.2, use the [current validation matrix](baselines/golden/v7.7.2-validation-matrix.md).
+For v7.7.3, use the [current validation matrix](baselines/golden/v7.7.3-validation-matrix.md).
+The maintainer approved reuse of existing testing evidence for this release.
+Additional runtime, deployment, live-call and upgrade testing, including an
+exact-candidate successful-call baseline, is waived for v7.7.3. Keep original
+revisions, fixtures, operator reports and unverified lanes visible. Required CI,
+image/security checks and review remain required. Merge and tag remain on hold.
+The v7.7.2 Bookworm exception is historical; v7.7.3 requires its own disposition.
+
+### Historical v7.7.2 evidence acceptance
+
+For v7.7.2, use the [historical validation matrix](baselines/golden/v7.7.2-validation-matrix.md).
 For v7.7.2, the maintainer accepted existing runtime and upgrade evidence in place
 of additional exact-candidate calls and deployment tests. Record the source
 revision, configuration and limits for each evidence item.

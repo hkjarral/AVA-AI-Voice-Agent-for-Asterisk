@@ -1,14 +1,14 @@
 # Asterisk AI Voice Agent - Installation and Upgrade Guide (v7.7)
 
-This guide covers fresh installations and the supported upgrade path to v7.7.2.
-Release-pinned commands require the v7.7.2 tag and artifacts to be published.
+This guide covers fresh installations and the supported upgrade path to v7.7.3.
+Release-pinned commands require the v7.7.3 tag and artifacts to be published.
 Until then, stable operators should use the latest published release's guide.
 For an explicitly authorized pre-release upgrade, maintainers can substitute
 `--ref main` or `AAVA_RECOVERY_REF=main` only after that exact
 main revision has passed the required checks. This is development code, not a
 published release; never silently fall back from a missing release tag.
 For release-specific behavior changes, also read the
-[v7.7.2 migration notes](MIGRATION.md#v771-to-v772). Operators upgrading from
+[v7.7.3 migration notes](MIGRATION.md#v772-to-v773). Operators upgrading from
 v7.3.x or earlier must also follow the [v7.4 Agent migration](MIGRATION.md#v73x-to-v740).
 
 ## Select Compose for build/start commands
@@ -49,18 +49,25 @@ Choose the path that best fits your experience level:
 For a historical upgrade to v7.7.1, use the
 [v7.7.1 installation guide](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/v7.7.1/docs/INSTALLATION.md#upgrade-to-v771-existing-checkout).
 
-## Upgrade to v7.7.2 (Existing Checkout)
+<a id="upgrade-to-v772-existing-checkout"></a>
 
-When upgrading from v7.7.1, drain calls and rebuild/recreate the engine and Admin UI.
-Use the target CLI and updater image for the revised builder and rollback policy.
+For a historical upgrade to v7.7.2, use the
+[v7.7.2 installation guide](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/v7.7.2/docs/INSTALLATION.md#upgrade-to-v772-existing-checkout).
+
+## Upgrade to v7.7.3 (Existing Checkout)
+
+When upgrading from v7.7.2, drain calls and rebuild/recreate the Engine and Admin UI.
+Update installed CPU or CUDA Local AI images for the WebSockets/Python change,
+preserving their original build flags, model volumes and running state. Update
+the host CLI and updater image with the release. See the migration guide for
+transfer behavior and recording compatibility changes.
 Preserve Local AI profiles, model volumes, and intentionally stopped services.
 Hard-refresh the browser. Follow intervening migration notes for earlier installs.
-Read the [v7.7.2 migration notes](MIGRATION.md#v771-to-v772) before rollout.
+Read the [v7.7.3 migration notes](MIGRATION.md#v772-to-v773) before rollout.
 
 Existing Agents and configuration are retained. Include
 `data/operator/onboarding.json` and any managed A2A credentials in private backups.
-Retain the Call History erasure flag and Calendly privacy marker introduced in
-the prior release. Back up the actual Agent/Call History
+Retain the existing Call History erasure flag and Calendly privacy marker. Back up the actual Agent/Call History
 paths, journal/marker when present, all managed `secrets/`, configuration and local
 overlays. Use coherent SQLite snapshots, not live main-file copies. Follow [integration backup and
 rollback safety](INTEGRATION_BACKUPS.md) and [Agents appearance recovery](AGENTS_EXPERIENCE_ROLLOUT.md).
@@ -99,13 +106,13 @@ Run these commands from your actual checkout path. Do not assume it is `/root/..
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 git status --short
-git diff --binary > ../aava-pre-v772-working-tree.patch
-git diff --binary --cached > ../aava-pre-v772-staged.patch
+git diff --binary > ../aava-pre-v773-working-tree.patch
+git diff --binary --cached > ../aava-pre-v773-staged.patch
 docker compose config --quiet
 if ! docker compose -p asterisk-ai-voice-agent ps --services --status running \
-  > ../aava-pre-v772-running-services.txt; then
+  > ../aava-pre-v773-running-services.txt; then
   docker compose -p asterisk-ai-voice-agent ps --services \
-    > ../aava-pre-v772-running-services.txt || exit 1
+    > ../aava-pre-v773-running-services.txt || exit 1
 fi
 ```
 
@@ -149,7 +156,7 @@ Preferred CLI path:
 
 ```bash
 git fetch origin --prune --tags
-agent update --ref v7.7.2 --include-ui --local-changes=retain
+agent update --ref v7.7.3 --include-ui --local-changes=retain
 ```
 
 Replace `retain` with your explicit `overwrite` or `abort` decision. In an interactive
@@ -180,7 +187,7 @@ Run the host recovery script from an SSH shell on the AAVA server. This path doe
 depend on the failing Admin UI planner container:
 
 ```bash
-AAVA_RECOVERY_REF=v7.7.2
+AAVA_RECOVERY_REF=v7.7.3
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -216,7 +223,7 @@ terminal:
 For non-interactive recovery, pass the decision explicitly:
 
 ```bash
-AAVA_RECOVERY_REF=v7.7.2
+AAVA_RECOVERY_REF=v7.7.3
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -231,7 +238,7 @@ Use `overwrite` only when the operator accepts that tracked local code changes w
 discarded:
 
 ```bash
-AAVA_RECOVERY_REF=v7.7.2
+AAVA_RECOVERY_REF=v7.7.3
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
@@ -325,12 +332,12 @@ explicit policy. Never use `git reset --hard` as generic upgrade advice.
 
 Do not treat a second update run as proof that the containers were updated. If the first
 job reached **Fast-forwarding code** and then failed during Docker Compose, the checkout may
-already be at v7.7.2 while the old containers are still running. Save the failed
+already be at v7.7.3 while the old containers are still running. Save the failed
 job log and original pre-update backup. After fixing the reported Compose/build
 error, retry the same ref with the target CLI or fixed updater first:
 
 ```bash
-agent update --ref v7.7.2 --rebuild=auto --include-ui=true --local-changes=retain
+agent update --ref v7.7.3 --rebuild=auto --include-ui=true --local-changes=retain
 ```
 
 The updater replays saved actions from `.agent/updates/pending-docker.json`, even
@@ -352,7 +359,7 @@ only the services that were running before the update:
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 docker compose config --quiet
-AAVA_RUNNING_SERVICES_FILE=../aava-pre-v772-running-services.txt
+AAVA_RUNNING_SERVICES_FILE=../aava-pre-v773-running-services.txt
 test -f "${AAVA_RUNNING_SERVICES_FILE}" || exit 1
 AAVA_RECOVERY_SERVICES=()
 for AAVA_SERVICE in ai_engine admin_ui local_ai_server; do
@@ -533,11 +540,11 @@ For the complete wizard → PBX routing → verified conversation journey, use
 FreePBX destination targets, plain-Asterisk reload steps, and interrupted-setup recovery.
 
 
-Use this v7.7.2 bootstrap after the tag is published. On v7.7.1 or an older
+Use this v7.7.3 bootstrap after the tag is published. On v7.7.1 or an older
 checkout, use the [legacy recovery procedure](CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
 
 ```bash
-git clone --branch v7.7.2 https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+git clone --branch v7.7.3 https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
 cd AVA-AI-Voice-Agent-for-Asterisk
 sudo ./preflight.sh --apply-fixes
 ./install.sh --ui
@@ -610,7 +617,7 @@ agent setup
 
 **Best for:** Headless servers, scripted deployments, CLI preference
 
-> Note: `agent quickstart` and `agent init` are still available for backward compatibility, but `agent setup` is the recommended CLI wizard for v7.7.2.
+> Note: `agent quickstart` and `agent init` are still available for backward compatibility, but `agent setup` is the recommended CLI wizard for v7.7.3.
 
 ---
 

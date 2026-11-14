@@ -224,7 +224,10 @@ pipelines:
 If using service account authentication, grant these roles:
 
 - **Cloud Speech-to-Text User** (`roles/speech.user`)
-- **Cloud Text-to-Speech User** (`roles/texttospeech.user`)
+- For Text-to-Speech, enable the Cloud Text-to-Speech API and use the credential
+  path described in [Google pipeline authentication](Configuration-Reference.md#google-pipelines).
+  See [Google authentication guidance](https://docs.cloud.google.com/text-to-speech/docs/authentication)
+  for the applicable service-account and quota permissions.
 - **Generative AI User** (`roles/aiplatform.user`)
 
 Google Live / Generative Language access is authenticated with API key or OAuth credentials. There is no separate `roles/generativelanguage.liveapi.user` IAM role.
