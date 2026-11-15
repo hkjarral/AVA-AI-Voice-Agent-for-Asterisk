@@ -975,6 +975,75 @@ def busy_event(
     }
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["freebusy", "title_prefix"])
+@pytest.mark.parametrize("fraction", ["30", "00.000005"])
+@pytest.mark.parametrize(
+    ("end", "expected"),
+    [("10:30:00", []), ("11:00:00", ["2026-04-29T10:30:00+00:00"])],
+)
+async def test_get_free_slots_never_overlaps_subminute_busy_end(
+    ms_context, ms_config, mode, fraction, end, expected
+):
+    tool = MicrosoftCalendarTool()
+    ms_config["accounts"]["default"]["timezone"] = "UTC"
+    ms_config.update(free_prefix="Open" if mode == "title_prefix" else "", busy_prefix="Busy")
+    busy_end = f"2026-04-29T10:00:{fraction}+00:00"
+    range_end = f"2026-04-29T{end}+00:00"
+    fake = FakeMicrosoftClient()
+    fake.events = [
+        busy_event("2026-04-29T09:00:00+00:00", busy_end, subject="Busy meeting")
+    ]
+    if mode == "title_prefix":
+        fake.events.append(busy_event(
+            "2026-04-29T09:00:00+00:00", range_end,
+            id="open-window", subject="Open hours", showAs="free",
+        ))
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        result = await tool.execute(
+            {
+                "action": "get_free_slots",
+                "time_min": "2026-04-29T09:00:00+00:00",
+                "time_max": range_end,
+                "duration": 30,
+            },
+            ms_context,
+        )
+
+    assert result["status"] == "success"
+    assert result["availability_mode"] == mode
+    assert result["slots"] == expected
+    assert result["total_slots_available"] == len(expected)
+    for slot in result["slots_with_end"]:
+        assert datetime.fromisoformat(slot["start"]) >= datetime.fromisoformat(busy_end)
+        assert datetime.fromisoformat(slot["end"]) <= datetime.fromisoformat(range_end)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fraction", ["30", "00.000005"])
+async def test_get_free_slots_rounds_current_time_up(
+    ms_context, ms_config, monkeypatch, fraction
+):
+    tool = MicrosoftCalendarTool()
+    ms_config["accounts"]["default"]["timezone"] = "UTC"
+    now = datetime.fromisoformat(f"2026-04-29T10:00:{fraction}+00:00")
+    monkeypatch.setattr("src.tools.business.microsoft_calendar.utc_now", lambda: now)
+    fake = FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        result = await tool.execute(
+            {
+                "action": "get_free_slots",
+                "time_min": "2026-04-29T09:00:00+00:00",
+                "time_max": "2026-04-29T11:00:00+00:00",
+                "duration": 30,
+            },
+            ms_context,
+        )
+
+    assert result["status"] == "success"
+    assert result["slots"] == ["2026-04-29T10:30:00+00:00"]
+
+
 @pytest.fixture
 def phoenix(ms_context, ms_config):
     ms_config.update(

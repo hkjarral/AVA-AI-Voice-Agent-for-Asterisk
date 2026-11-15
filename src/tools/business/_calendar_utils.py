@@ -157,8 +157,12 @@ def intersect_intervals(
 
 
 def round_up_to_next_slot(dt: datetime, step_minutes: int) -> datetime:
+    """Align to a duration multiple from midnight without moving before dt."""
     total_minutes = dt.hour * 60 + dt.minute
     if dt.second or dt.microsecond or total_minutes % step_minutes != 0:
+        # The integer ceiling below must include any fractional minute.
+        if dt.second or dt.microsecond:
+            total_minutes += 1
         quotient = (total_minutes + step_minutes - 1) // step_minutes
         new_total = quotient * step_minutes
         if new_total >= 24 * 60:
