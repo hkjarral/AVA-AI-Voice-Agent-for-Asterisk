@@ -1721,7 +1721,10 @@ async def _query_backend_registry(message: Dict[str, Any]) -> Dict[str, Any]:
                 if auth.get("type") != "auth_response" or auth.get("status") != "ok":
                     raise RuntimeError("Local AI authentication failed")
             await ws.send(json.dumps(message))
-            return json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+            response = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+            if response.get("type") == "auth_response":
+                raise RuntimeError("Local AI authentication required")
+            return response
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Failed to connect to local-ai-server: {e}")
 

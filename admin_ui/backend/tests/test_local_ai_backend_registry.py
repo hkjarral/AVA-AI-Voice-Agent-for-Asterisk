@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 import pytest
 from fastapi import FastAPI
+from websockets.asyncio.server import serve
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import settings
@@ -83,6 +84,32 @@ async def test_registry_rejects_failed_auth_without_sending_command(registry, pa
     assert "authentication failed" in response.json()["detail"]
     assert ws.send.await_count == 1
     connection.__aexit__.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path,command", ENDPOINTS)
+async def test_registry_without_ui_token_rejects_protected_server(monkeypatch, path, command):
+    commands = []
+
+    async def protected_server(ws):
+        # The Local AI protocol rejects commands before authentication this way.
+        commands.append(json.loads(await ws.recv()))
+        await ws.send(json.dumps({
+            "type": "auth_response", "status": "error", "message": "authentication_required",
+        }))
+        await ws.wait_closed()
+
+    async with serve(protected_server, "127.0.0.1", 0) as server:
+        values = {
+            "HEALTH_CHECK_LOCAL_AI_URL": f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}",
+            "LOCAL_WS_AUTH_TOKEN": "",
+        }
+        monkeypatch.setattr(settings, "get_setting", lambda key, default="": values.get(key, default))
+        async with asyncio.timeout(2):
+            response = await get(path)
+    assert commands == [command]
+    assert response.status_code == 503, response.text
+    assert "authentication required" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
