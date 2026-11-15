@@ -364,14 +364,13 @@ const ModelsPage = () => {
         const current = latestLive.current;
         const currentComponent = current.snapshot?.components?.local_ai_server || current.snapshot?.local_ai_server;
         const httpSnapshot = liveStatusRes.status === 'fulfilled' ? liveStatusRes.value.data : null;
-        // A newer stream event owns readiness, including a newly reported failure.
-        let hydratedFromStatus = current.usable &&
-            (current.snapshot?.event_id ?? -1) >= (httpSnapshot?.event_id ?? -1)
-            ? applyLocalAILiveStatus(currentComponent) : false;
-        if (!hydratedFromStatus && liveStatusRes.status === 'fulfilled') {
-            const localAI = liveStatusRes.value.data?.components?.local_ai_server || liveStatusRes.value.data?.local_ai_server;
-            hydratedFromStatus = applyLocalAILiveStatus(localAI);
-        }
+        // Select the newest usable component before checking freshness. If that
+        // observation is stale, use health rather than resurrecting an older snapshot.
+        const useStream = current.usable && !!currentComponent &&
+            (current.snapshot?.event_id ?? -1) >= (httpSnapshot?.event_id ?? -1);
+        const component = useStream ? currentComponent :
+            httpSnapshot?.components?.local_ai_server || httpSnapshot?.local_ai_server;
+        const hydratedFromStatus = applyLocalAILiveStatus(component);
 
         if (!hydratedFromStatus && healthRes.status === 'fulfilled') {
             const localAI = healthRes.value.data?.local_ai_server;
