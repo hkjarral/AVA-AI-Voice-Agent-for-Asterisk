@@ -139,6 +139,19 @@ describe('Models lifecycle ownership', () => {
         expect(screen.queryByText(expected === 'Connected' ? 'Error' : 'Connected')).not.toBeInTheDocument();
     });
 
+    it.each(['unknown', 'unsupported'])('keeps HTTP fallback when a newer stream state is %s', async (state) => {
+        const auxiliary = deferred<Reply>();
+        loadCapabilities = () => auxiliary.promise;
+        loadLive = async () => ({ data: snapshot('ready', 1) });
+        const view = render(page());
+        await act(async () => {});
+        live.snapshot = snapshot(state, 2);
+        view.rerender(page());
+        await act(async () => { auxiliary.resolve({ data: {} }); });
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+        expect(screen.queryByText('Error')).not.toBeInTheDocument();
+    });
+
     it('keeps HTTP fallback when a newer stream snapshot has no Local AI component', async () => {
         const auxiliary = deferred<Reply>();
         loadCapabilities = () => auxiliary.promise;

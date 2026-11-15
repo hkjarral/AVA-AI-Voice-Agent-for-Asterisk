@@ -366,7 +366,9 @@ const ModelsPage = () => {
         const httpSnapshot = liveStatusRes.status === 'fulfilled' ? liveStatusRes.value.data : null;
         // Select the newest usable component before checking freshness. If that
         // observation is stale, use health rather than resurrecting an older snapshot.
-        const useStream = current.usable && !!currentComponent &&
+        const streamHasStatus = !!currentComponent &&
+            ['ready', 'degraded', 'error', 'unreachable'].includes(currentComponent.state);
+        const useStream = current.usable && streamHasStatus &&
             (current.snapshot?.event_id ?? -1) >= (httpSnapshot?.event_id ?? -1);
         const component = useStream ? currentComponent :
             httpSnapshot?.components?.local_ai_server || httpSnapshot?.local_ai_server;
