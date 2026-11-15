@@ -4,6 +4,7 @@ import pytest
 
 from src.config import LocalProviderConfig
 from src.providers.local import LocalProvider
+from src.tools.telephony.hangup_policy import resolve_effective_hangup_policy
 
 
 def test_transfer_intent_detector():
@@ -160,3 +161,40 @@ async def test_policy_off_hangup_heuristic_requires_caller_command(user_text, ex
     ]
     assert [call["name"] for call in tool_calls] == (["hangup_call"] if expected_hangup else [])
     assert any(event.get("type") == "agent_transcript" for event in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_text, expected_hangup",
+    [
+        ("Please and the call now.", True),
+        ("Please end the call now.", True),
+        ("Please leave a message and call me back.", False),
+        ("I was on hold and the call dropped.", False),
+    ],
+)
+async def test_policy_off_heuristic_preserves_agent_marker_modifiers(user_text, expected_hangup):
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = LocalProvider(LocalProviderConfig(), on_event)
+    provider._allowed_tools = {"hangup_call"}
+    provider._effective_tool_policy = "off"
+    provider._hangup_policy = resolve_effective_hangup_policy(
+        {}, {"strategy": "replace", "end_call": ["end call now"]}
+    )["policy"]
+    provider._last_user_transcript_by_call["call-modifiers"] = user_text
+
+    await provider._process_llm_text_fallback(
+        call_id="call-modifiers", llm_text="Thanks for calling!"
+    )
+
+    calls = [
+        call
+        for event in events
+        if event.get("type") == "ToolCall"
+        for call in event["tool_calls"]
+    ]
+    assert [call["name"] for call in calls] == (["hangup_call"] if expected_hangup else [])

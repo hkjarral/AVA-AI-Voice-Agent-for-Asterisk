@@ -156,6 +156,23 @@ def test_end_call_normalization_respects_agent_replacement_markers():
     assert not text_contains_end_call_intent("Hang up.", markers)
 
 
+@pytest.mark.parametrize(
+    "marker, text",
+    [
+        ("end call now", "Please and the call now."),
+        ("end call now", "And call now!"),
+        ("please end call now", "Please and the call now."),
+        ("end call now please", "And the call now please!"),
+    ],
+)
+def test_whole_command_correction_preserves_custom_marker_modifiers(marker, text):
+    markers = resolve_effective_hangup_policy(
+        {}, {"strategy": "replace", "end_call": [marker]}
+    )["policy"]["markers"]["end_call"]
+
+    assert text_contains_end_call_intent(text, markers)
+
+
 def test_short_polite_closing_detection_accepts_terminal_thanks():
     assert text_is_short_polite_closing("Okay, thank you")
     assert text_is_short_polite_closing("thanks goodbye")

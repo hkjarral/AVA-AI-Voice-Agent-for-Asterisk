@@ -86,7 +86,11 @@ _END_CALL_FUZZY_PATTERNS: List[tuple[str, str]] = [
     (r"\bend\s+the\s+call\b", "end call"),
     # "and" is ordinary speech in transfer requests, call reports and callbacks.
     # Correct this STT artifact only when the entire utterance is a command.
-    (r"^(?:please\s+)?and\s+(?:the\s+)?call(?:\s+now)?(?:\s+please)?[.!?]*$", "end call"),
+    # Keep modifiers so narrower custom markers such as "end call now" work.
+    (
+        r"^(?P<prefix>please\s+)?and\s+(?:the\s+)?call(?P<suffix>(?:\s+now)?(?:\s+please)?[.!?]*)$",
+        r"\g<prefix>end call\g<suffix>",
+    ),
     (r"\bhang\s+up\s+the\s+(?:cob|cab|cop|cause)\b", "hang up the call"),
     (r"\bhand\s+up\s+the\s+(?:call|cob|cab|cop|cause)\b", "hang up the call"),
 ]
@@ -326,7 +330,7 @@ def text_contains_end_call_intent(text: str, markers: Iterable[str]) -> bool:
 
     Examples:
     - "hand up the call" -> "hang up the call"
-    - "please and the call now" -> "end call" (whole utterance only)
+    - "please and the call now" -> "please end call now" (whole utterance only)
 
     "hand off" is not an end-call artifact: it can request a human transfer.
     """
