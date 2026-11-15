@@ -1394,6 +1394,17 @@ are recognized. It plays the response, drains audio, and hangs up. This fallback
 does not depend on `farewell_hangup_delay_sec` and is not a guarantee that every
 model response will be recognized as a closing.
 
+**End-call STT correction:** Local AI, Deepgram's farewell fallback, and modular
+pipeline hangup checks share light transcription normalization. "Hand off" is
+not rewritten to "hang up." The ambiguous "and call" / "and the call" correction
+is limited to a whole utterance with optional leading "please," trailing "now"
+and/or "please," and terminal punctuation (for example, "Please and the call
+now."). "I was on hold and the call dropped" and "and call me back" are not
+corrected into end-call commands. Genuine "end the call" and supported "hand up"
+STT artifacts still match the configured markers. Existing global and per-Agent
+marker lists keep their normal matching behavior; an explicitly configured
+phrase can still match ordinary speech, so choose custom markers carefully.
+
 
 ### Optional transfer announcement waiting (#743)
 
