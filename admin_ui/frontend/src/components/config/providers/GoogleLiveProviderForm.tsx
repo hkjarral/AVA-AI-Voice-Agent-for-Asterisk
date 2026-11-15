@@ -1202,7 +1202,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                         <>
                                             <strong>Target RMS level</strong> for inbound caller audio (linear PCM amplitude, 0–32767 scale).
                                             <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                                <li>0 disables AGC — audio is forwarded unchanged</li>
+                                                <li>0 disables AGC — gain is bypassed</li>
                                                 <li>Use only if you see chronically quiet callers (e.g. soft-talkers, distant mic)</li>
                                                 <li>Typical values around 3000–5000; pair with Input Gain Max dB to bound boost</li>
                                             </ul>
@@ -1216,7 +1216,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                 value={config.input_gain_target_rms ?? 0}
                                 onChange={(e) => handleChange('input_gain_target_rms', e.target.value ? parseInt(e.target.value) : 0)}
                             />
-                            <p className="text-xs text-muted-foreground">Optional normalization target for inbound audio.</p>
+                            <p className="text-xs text-muted-foreground">Smoothed target for inbound PCM audio; quiet gaps do not drive gain upward.</p>
                         </div>
                         <div className="space-y-2">
                             <div className="flex items-center gap-1.5">
@@ -1241,6 +1241,20 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                 onChange={(e) => handleChange('input_gain_max_db', e.target.value ? parseFloat(e.target.value) : 0)}
                             />
                             <p className="text-xs text-muted-foreground">Optional max gain applied during normalization.</p>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium" htmlFor="input-gain-noise-floor">Input Gain Noise Floor RMS</label>
+                            <input
+                                id="input-gain-noise-floor"
+                                type="number"
+                                min={0}
+                                max={32767}
+                                step={1}
+                                className="w-full p-2 rounded border border-input bg-background"
+                                value={config.input_gain_noise_floor_rms ?? 200}
+                                onChange={(e) => handleChange('input_gain_noise_floor_rms', e.target.value ? parseInt(e.target.value, 10) : 200)}
+                            />
+                            <p className="text-xs text-muted-foreground">At or below this level, gain returns to unity. Default: 200. Applies only when input gain is enabled. Restart the AI Engine after saving.</p>
                         </div>
                     </div>
                 </div>

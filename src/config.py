@@ -370,6 +370,7 @@ class DeepgramProviderConfig(CloudConnectionConfig):
     input_sample_rate_hz: int = Field(default=8000)
     input_gain_target_rms: int = Field(default=0)
     input_gain_max_db: float = Field(default=0.0)
+    input_gain_noise_floor_rms: int = Field(default=200, ge=0, le=32767)
     continuous_input: bool = Field(default=True)
     output_encoding: str = Field(default="mulaw")
     output_sample_rate_hz: int = Field(default=8000)
@@ -573,6 +574,7 @@ class GoogleProviderConfig(CloudConnectionConfig):
     provider_input_sample_rate_hz: int = Field(default=16000)  # Gemini Live input rate
     input_gain_target_rms: int = Field(default=0)
     input_gain_max_db: float = Field(default=0.0)
+    input_gain_noise_floor_rms: int = Field(default=200, ge=0, le=32767)
     output_encoding: str = Field(default="linear16")  # Gemini Live outputs PCM16
     output_sample_rate_hz: int = Field(default=24000)  # Gemini Live native output rate
     output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
@@ -979,6 +981,7 @@ class OpenAIRealtimeProviderConfig(CloudConnectionConfig):
     provider_input_sample_rate_hz: int = Field(default=24000)  # OpenAI Realtime input sample rate
     input_gain_target_rms: int = Field(default=0)
     input_gain_max_db: float = Field(default=0.0)
+    input_gain_noise_floor_rms: int = Field(default=200, ge=0, le=32767)
     output_encoding: str = Field(default="linear16")  # Provider emits PCM16 frames
     output_sample_rate_hz: int = Field(default=24000)
     output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
@@ -1039,6 +1042,7 @@ class GrokProviderConfig(CloudConnectionConfig):
     target_sample_rate_hz: int = Field(default=8000)
     input_gain_target_rms: int = Field(default=0)
     input_gain_max_db: float = Field(default=0.0)
+    input_gain_noise_floor_rms: int = Field(default=200, ge=0, le=32767)
     # Response shape
     response_modalities: List[str] = Field(default_factory=lambda: ["text", "audio"])
     egress_pacer_enabled: bool = Field(default=False)
