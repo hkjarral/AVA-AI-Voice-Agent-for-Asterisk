@@ -174,6 +174,9 @@ prefixes; legacy tool arguments cannot override them.
 `get_free_slots` returns grid-based suggestions, normally the first three. It
 includes `slots_returned`, `total_slots_available` and `slots_truncated`. Even a
 complete suggestion list does not represent every possible off-grid start.
+Slot starts round up to duration multiples from midnight, including nonzero
+seconds or microseconds at the start of a free interval. For 30-minute slots,
+an interval starting at 10:00:30 first permits 10:30, provided the full slot fits.
 **Absence from suggestions is never proof that a requested interval is busy.**
 For example, 08:00/08:30/09:00 plus `slots_truncated: true` says nothing about
 13:00; check 13:00–13:30 explicitly. Queries are bounded to 93 days; split a wider

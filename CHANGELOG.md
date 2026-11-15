@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Static defects (#856):** restore Local AI backend registry/schema endpoints using the configured server URL; emit streaming warm-up logs with calculated buffer values; preserve Google Live input resampling history across frames and reset it at connection/rate boundaries. Remove unused broken ARI streaming cleanup and legacy Kroko implementations.
 
+- **Calendar slot rounding** ([#855](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/855)): Google and Microsoft Calendar suggestions round interval starts with nonzero seconds or microseconds up to the next slot boundary, preventing suggestions before the free interval or overlapping the end of a busy event. Both tools now share the same slot builder.
 - Google Live engine-gated greetings now retain input protection until caller-facing transport drain (#849). The configured post-TTS guard also silences continuous Google input on AudioSocket and shared RTP/WebSocket ingress (#850), with transport quiet time credited and accepted interruption preserved. Gemini 3.8 native full-duplex input remains unchanged; Admin help documents applicability.
 - **Local AI status:** the Models page now falls back to a current health check when live status is stale or expired, preventing cached failures from showing a healthy server as disconnected and cached readiness from hiding an outage.
 
