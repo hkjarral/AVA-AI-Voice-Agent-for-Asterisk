@@ -667,6 +667,8 @@ async def test_other_continuous_provider_audio_and_fallback_input_are_unchanged(
     e.config.vad.upstream_squelch_enabled = squelch
     if squelch:
         s.vad_state['upstream_squelch'] = {'noise_ema': 100}
+        # Pin classifier availability; optional WebRTC installations fail open.
+        s.upstream_speech_evidence = SimpleNamespace(available=True, observe=lambda *_: False, pause=lambda: None)
     e._maybe_provider_barge_in_fallback = AsyncMock()
     await e.session_store.upsert_call(s)
     if not squelch:

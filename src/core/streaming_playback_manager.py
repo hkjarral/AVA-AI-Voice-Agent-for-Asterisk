@@ -1800,6 +1800,7 @@ class StreamingPlaybackManager:
                 info['last_emit_was_filler'] = bool(filler)
                 if not filler:
                     info['last_real_emit_ts'] = now
+                    info['last_real_emit_monotonic'] = time.monotonic()
                     info['idle_ticks'] = 0
                     info['real_tx_bytes'] = int(info.get('real_tx_bytes', 0) or 0) + speech_bytes
             except Exception:

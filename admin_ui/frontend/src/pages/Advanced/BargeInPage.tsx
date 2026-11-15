@@ -235,7 +235,7 @@ const BargeInPage = () => {
                                 type="number"
                                 value={bargeInConfig.post_tts_end_protection_ms ?? 250}
                                 onChange={(e) => updateBargeInConfig('post_tts_end_protection_ms', parseInt(e.target.value))}
-                                tooltip="Guard window after agent audio ends. Helps avoid self-echo or tail audio being mistaken as caller speech."
+                                tooltip="Suppress caller input briefly after agent playback to reject echo tails. Zero disables the guard; longer values can clip an early reply. Google with engine-managed gating sends silence and credits the transport quiet tail. Gemini 3.8 full-duplex and other native continuous-input providers keep real caller audio."
                             />
                             <FormInput
                                 label="Provider Output Suppress (ms)"

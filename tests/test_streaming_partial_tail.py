@@ -20,7 +20,8 @@ async def test_partial_tail_is_paced_and_terminal_drain_finishes(monkeypatch, tr
     manager.audio_transport = transport
     manager._send_audio_chunk = AsyncMock(return_value=True)
     clock = [100.0]
-    monkeypatch.setattr('src.core.streaming_playback_manager.time.time', lambda: clock[0])
+    monkeypatch.setattr('src.core.streaming_playback_manager.time',
+                        SimpleNamespace(time=lambda: clock[0], monotonic=lambda: 50.0))
     info = {'stream_id': 'stream', 'startup_ready': True, 'target_format': 'slin16',
             'target_sample_rate': 16000, 'buffered_bytes': len(tail), 'last_real_emit_ts': 99.0}
     manager.active_streams['tail'] = info
@@ -36,6 +37,7 @@ async def test_partial_tail_is_paced_and_terminal_drain_finishes(monkeypatch, tr
     assert len(frame) == 640 and frame == tail + b'\x00' * (640-len(tail))
     assert not manager.frame_remainders['tail'] and info['buffered_bytes'] == 0
     assert not info['last_emit_was_filler']
+    assert info['last_real_emit_monotonic'] == 50.0
     engine = Engine.__new__(Engine)
     engine.session_store = sessions
     engine.config = SimpleNamespace(audio_transport=transport)
@@ -57,3 +59,12 @@ async def test_failed_tail_send_retains_audio_for_retry():
     assert await manager._drain_next_frame('tail', 'stream', asyncio.Queue()) == 'error'
     assert manager.frame_remainders['tail'].startswith(b'\x01\x00')
     assert manager.active_streams['tail']['buffered_bytes'] == 2
+    assert 'last_real_emit_monotonic' not in manager.active_streams['tail']
+
+
+async def test_filler_does_not_advance_real_emission_clock():
+    manager = StreamingPlaybackManager(SessionStore(), SimpleNamespace(), streaming_config={})
+    manager._send_audio_chunk = AsyncMock(return_value=True)
+    manager.active_streams['call'] = {'last_real_emit_monotonic': 50.0}
+    assert await manager._emit_frame('call', 'stream', bytes(640), 'slin16', 16000, filler=True) == 'sent'
+    assert manager.active_streams['call']['last_real_emit_monotonic'] == 50.0
