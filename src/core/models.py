@@ -151,6 +151,10 @@ class CallSession:
     # TTS timing for barge-in/protection windows
     tts_started_ts: float = 0.0
     tts_ended_ts: float = 0.0
+    # Process-local clocks; never restore monotonic values across engine restarts.
+    tts_ended_monotonic: float = 0.0
+    google_playback_drained_monotonic: float = 0.0
+    google_output_interrupted: bool = False
     # Barge-in detection accumulators
     barge_in_candidate_ms: int = 0
     last_barge_in_ts: float = 0.0

@@ -1649,7 +1649,35 @@ class Engine:
                 drain_timeout_sec=150.0,
             )
 
-    async def _note_provider_output_start(self, call_id: str) -> None:
+    def _google_owns_input_gating(self, session: CallSession) -> bool:
+        provider_name = getattr(session, "provider_name", None)
+        provider = getattr(self, "_call_providers", {}).get(session.call_id)
+        return self._get_provider_kind(provider_name) == "google_live" and not self._google_live_full_duplex_barge_in(provider_name, provider)
+
+    def _google_post_tts_protection_active(self, session: CallSession) -> bool:
+        """One decision for provider input and local activity observers.
+
+        Native full-duplex providers retain caller audio. For engine-gated Google,
+        a confirmed playback completion supersedes the earlier token timestamp.
+        New output and accepted interruption must never mute the caller's turn.
+        """
+        if (not self._google_owns_input_gating(session)
+                or session.cleanup_in_progress or session.google_output_interrupted
+                or not session.audio_capture_enabled or session.tts_playing
+                or session.call_id in getattr(self, "_agent_output_active_calls", set())):
+            return False
+        cfg = getattr(getattr(self, "config", None), "barge_in", None)
+        guard_ms = max(0, int(getattr(cfg, "post_tts_end_protection_ms", 0) or 0))
+        ended = session.google_playback_drained_monotonic or session.tts_ended_monotonic
+        return bool(guard_ms and ended > 0 and time.monotonic() < ended + guard_ms / 1000.0)
+
+    def _note_google_protected_frame(self, session: CallSession, pcm: bytes, rate: int) -> None:
+        # Bounded per-call diagnostics, with no audio/text or per-frame log output.
+        diag = session.audio_diagnostics.setdefault("google_post_tts_protection", {})
+        diag["frames"] = int(diag.get("frames", 0)) + 1
+        diag["duration_ms"] = float(diag.get("duration_ms", 0)) + len(pcm) * 1000.0 / (2 * max(1, rate))
+
+    async def _note_provider_output_start(self, call_id: str, session: Optional[CallSession] = None) -> None:
         """Observe real caller-facing provider audio without changing AEC gating."""
         operations = getattr(self, "_provider_output_operations", {})
         operation = operations.get(call_id)
@@ -1663,6 +1691,10 @@ class Engine:
         pending_drain = drain_tasks.pop(call_id, None)
         if pending_drain and not pending_drain.done():
             pending_drain.cancel()
+
+        if session is not None and self._get_provider_kind(session.provider_name) == "google_live":
+            session.google_playback_drained_monotonic = 0.0
+            session.google_output_interrupted = False
 
         active = getattr(self, "_agent_output_active_calls", None)
         if active is None:
@@ -1782,26 +1814,28 @@ class Engine:
         drain_tasks = getattr(self, "_provider_output_drain_tasks", {})
         if drain_tasks.get(call_id) is not current_task:
             return
-        if not google_provider:
+        session = await self.session_store.get_by_call_id(call_id)
+        if drain_tasks.get(call_id) is not current_task:
+            return
+        if not session or session.cleanup_in_progress:
             drain_tasks.pop(call_id, None)
-        if google_provider:
-            session = await self.session_store.get_by_call_id(call_id)
-            if drain_tasks.get(call_id) is not current_task:
-                return
-            if not session or bool(getattr(session, "cleanup_in_progress", False)):
-                drain_tasks.pop(call_id, None)
-                return  # Teardown is cancellation, not a playback timeout.
-        if google_provider and not drained:
+            return  # Teardown is cancellation, not a playback timeout.
+        protected_google = self._google_owns_input_gating(session)
+        if not drained and (google_provider or (protected_google and clear_tts_gating_after_drain)):
             drain_tasks.pop(call_id, None)
-            google_provider._long_audio_failed = True
+            if google_provider:
+                google_provider._long_audio_failed = True
             logger.error("Google audio playback failed to drain", call_id=call_id)
             await self._fail_google_audio_playback(call_id, "google_audio_drain_timeout")
             return
         getattr(self, "_agent_output_active_calls", set()).discard(call_id)
 
-        session = await self.session_store.get_by_call_id(call_id)
-        if not session or bool(getattr(session, "cleanup_in_progress", False)):
-            return
+        if drained and protected_google and not session.google_output_interrupted:
+            # The drain observer already waited this quiet tail. Credit it rather
+            # than adding another full guard after the existing transport safety tail.
+            session.google_playback_drained_monotonic = time.monotonic() - self._terminal_transport_quiet_sec()
+            logger.info("Google playback input protection armed", call_id=call_id,
+                        quiet_credit_ms=int(self._terminal_transport_quiet_sec() * 1000))
         # Google Live keeps a persistent playback stream across response segments.
         # End the first-greeting state at the first drained segment, otherwise the
         # long greeting barge-in guard is incorrectly applied to every later turn.
@@ -1811,11 +1845,15 @@ class Engine:
                 coordinator = getattr(self, "conversation_coordinator", None)
                 if coordinator is not None:
                     await coordinator.update_conversation_state(call_id, "listening")
+        if drain_tasks.get(call_id) is not current_task:
+            return
         if clear_tts_gating_after_drain:
             await self._clear_tts_gating_after_provider_drain(
                 call_id,
                 deferred_tts_tokens,
             )
+        if drain_tasks.get(call_id) is not current_task:
+            return
         watchdog = getattr(self, "no_input_watchdog", None)
         if watchdog is not None:
             await watchdog.note_agent_output_end(
@@ -1830,7 +1868,7 @@ class Engine:
             reset_timer=reset_timer,
             preserve_policy_state=preserve_policy_state,
         )
-        if google_provider and drain_tasks.get(call_id) is current_task:
+        if drain_tasks.get(call_id) is current_task:
             drain_tasks.pop(call_id, None)
 
     async def _clear_tts_gating_after_provider_drain(
@@ -1906,6 +1944,8 @@ class Engine:
         """Conservatively detect sustained caller speech without treating noise as activity."""
         watchdog = getattr(self, "no_input_watchdog", None)
         if not pcm16 or watchdog is None or not watchdog.has_call(session.call_id):
+            return
+        if self._google_post_tts_protection_active(session):
             return
         # Raw detection is disabled during agent output to avoid echo resets. Barge-in,
         # provider VAD, and TALK_DETECT remain authoritative during that window.
@@ -10656,6 +10696,10 @@ class Engine:
                 post_guard_ms = int(getattr(cfg, "post_tts_end_protection_ms", 0)) if cfg else 0
             except (TypeError, ValueError):
                 post_guard_ms = 0
+            if self._google_owns_input_gating(session):
+                if self._google_post_tts_protection_active(session):
+                    return
+                post_guard_ms = 0
             tts_ended_ts = float(getattr(session, "tts_ended_ts", 0.0) or 0.0)
             if (
                 post_guard_ms > 0
@@ -11579,6 +11623,7 @@ class Engine:
                     media_rx_confirmed=bool(getattr(session, "media_rx_confirmed", False)),
                     upstream_squelch_frames=int(((getattr(session, "vad_state", {}) or {}).get("upstream_squelch", {}) or {}).get("frames", 0)),
                     upstream_squelch_suppressed_frames=int(((getattr(session, "vad_state", {}) or {}).get("upstream_squelch", {}) or {}).get("suppressed_frames", 0)),
+                    google_post_tts_protection=dict(session.audio_diagnostics.get("google_post_tts_protection", {})),
                     websocket_input_rejections=dict(getattr(session, "websocket_input_rejections", {})),
                 )
             except Exception:
@@ -12261,13 +12306,17 @@ class Engine:
                     except (caller_audioop.error, ValueError):
                         logger.debug("Google fallback PCM conditioning failed", call_id=caller_channel_id)
 
-                if needs_gating and not session.audio_capture_enabled:
+                post_tts_protected = self._google_post_tts_protection_active(session)
+                if post_tts_protected:
+                    self._note_google_protected_frame(session, pcm_bytes, pcm_rate)
+                if needs_gating and (not session.audio_capture_enabled or post_tts_protected):
                     # Send silence instead of blocking so Google Live's continuous
                     # input timing and VAD state remain stable.
                     logger.debug(
                         "🔇 GATING ACTIVE - Sending silence frame for Google Live (TTS playing)",
                         call_id=caller_channel_id,
                         audio_capture_enabled=session.audio_capture_enabled,
+                        protection_reason="post_tts" if post_tts_protected else "tts_playback",
                     )
                     pcm_bytes = b'\x00' * len(pcm_bytes)
 
@@ -12400,8 +12449,8 @@ class Engine:
                         frame_num=frame_num,
                         frame_bytes=len(audio_bytes),
                         pcm_bytes=len(pcm_bytes),
-                        gating_active=needs_gating and not session.audio_capture_enabled,
-                        is_silence=needs_gating and not session.audio_capture_enabled,
+                        gating_active=needs_gating and (not session.audio_capture_enabled or post_tts_protected),
+                        is_silence=needs_gating and (not session.audio_capture_enabled or post_tts_protected),
                         squelch_applicable=squelch_applicable,
                         squelch_suppressed=squelch_suppressed,
                         squelch_speech_evidence=squelch_speech_evidence,
@@ -13276,6 +13325,11 @@ class Engine:
                     )
                 return
 
+            if self._google_post_tts_protection_active(session):
+                session.barge_in_candidate_ms = 0
+                session.barge_start_ts = 0.0
+                return
+
             # Only relevant while streaming playback is active (agent is speaking).
             try:
                 if not self.streaming_playback_manager.is_stream_active(call_id):
@@ -13648,6 +13702,12 @@ class Engine:
                         call_id=call_id,
                         exc_info=True,
                     )
+
+            # Accepted caller speech must survive the token release caused by a
+            # flush, and a pending natural-completion observer must not re-arm it.
+            if self._google_owns_input_gating(session):
+                session.google_output_interrupted = True
+                session.google_playback_drained_monotonic = 0.0
 
             # Stop/flush streaming playback first (prevents tail audio).
             self._close_google_audio_backlog(call_id)
@@ -14301,12 +14361,18 @@ class Engine:
                     provider=provider,
                 )
 
+                post_tts_protected = self._google_post_tts_protection_active(session)
+                if post_tts_protected:
+                    gating_mode = "silence"
+                    self._note_google_protected_frame(session, pcm_16k, pcm_sample_rate)
+
                 if gating_mode == "silence":
                     # Send SILENCE instead of dropping to maintain Google Live's stream
                     logger.debug(
                         "🔇 GATING ACTIVE - Sending silence frame for Google Live (TTS playing)",
                         call_id=caller_channel_id,
                         provider=provider_name,
+                        protection_reason="post_tts" if post_tts_protected else "tts_playback",
                     )
                     # Replace audio with silence (zero-filled PCM16)
                     pcm_16k = b'\x00' * len(pcm_16k)
@@ -15335,7 +15401,7 @@ class Engine:
                     if response_id < google_audio_provider._playback_response_id:
                         return
                     google_audio_provider._playback_response_id = response_id
-                await self._note_provider_output_start(call_id)
+                await self._note_provider_output_start(call_id, session)
                 encoding = event.get("encoding")
                 if isinstance(encoding, bytes):
                     try:
@@ -15791,6 +15857,9 @@ class Engine:
                 defer_gating_until_drain = bool(
                     generation_only or event.get("defer_tts_gating_until_drain", False)
                     or getattr(self.config, "audio_transport", None) == "websocket"
+                    or (self._google_owns_input_gating(session)
+                        and session.conversation_state == "greeting"
+                        and not session.google_output_interrupted)
                 )
                 # If we were suppressing output due to barge-in, end suppression at a segment boundary.
                 # This prevents cutting into the next (new) response once the provider finishes the interrupted one.

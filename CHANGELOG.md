@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Google Live engine-gated greetings now retain input protection until caller-facing transport drain (#849). The configured post-TTS guard also silences continuous Google input on AudioSocket and shared RTP/WebSocket ingress (#850), with transport quiet time credited and accepted interruption preserved. Gemini 3.8 native full-duplex input remains unchanged; Admin help documents applicability.
+
 ## [7.7.3] - 2026-11-13
 
 Release preparation from main `00c32c49` after v7.7.2. Includes 23 merged PRs

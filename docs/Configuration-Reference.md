@@ -449,7 +449,7 @@ Controls interruption of TTS playback when the caller speaks.
 - barge_in.min_ms: 250–600 ms. Minimum sustained speech before a barge‑in is acknowledged (de‑bounce).
 - barge_in.energy_threshold: 1000–3000. RMS energy threshold; raise on noisy lines.
 - barge_in.cooldown_ms: 500–1500 ms. Ignore new barge‑ins after one triggers.
-- barge_in.post_tts_end_protection_ms: 250–500 ms. Short guard to avoid clipping the start of the next caller utterance.
+- barge_in.post_tts_end_protection_ms: default 250 ms; 0 disables the guard. Suppresses caller input briefly after playback to reject echo tails; larger values can clip an early caller reply. Engine-gated Google sessions send silence instead of dropping frames on AudioSocket, ExternalMedia and WebSocket. Confirmed playback drain supersedes generation/token completion, and time already spent in the transport quiet tail counts toward the guard. Gemini 3.8 native full-duplex and other native continuous-input providers retain real input; ordinary local/pipeline media paths retain their existing guard behavior.
 - barge_in.pipeline_min_ms: 80–250 ms. Pipeline-only (local file playback) minimum talk duration before triggering barge-in.
 - barge_in.pipeline_energy_threshold: 200–1200. Pipeline-only RMS threshold (more sensitive than full-agent mode).
 - barge_in.pipeline_talk_detect_enabled: true/false. Pipeline-only; uses Asterisk `TALK_DETECT` (ARI `ChannelTalkingStarted`) to trigger barge-in during channel playback.

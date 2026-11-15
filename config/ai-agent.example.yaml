@@ -169,7 +169,7 @@ barge_in:
   min_ms: 400                   # Sustained speech required to trigger; 250–600 ms. Lower = more sensitive.
   energy_threshold: 1800        # RMS threshold for speech detection; 1000–3000. Raise on noisy lines.
   cooldown_ms: 1000             # Ignore retriggers for this period after one fires; 500–1500 ms.
-  post_tts_end_protection_ms: 250  # Guard after TTS ends to avoid clipping callers; 250–500 ms.
+  post_tts_end_protection_ms: 250  # Echo-tail guard; 0 disables. Larger values can clip early caller speech.
 
 streaming:
   sample_rate: 8000

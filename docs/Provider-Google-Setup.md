@@ -404,6 +404,29 @@ End-to-end testing on 2026-05-09 with `llm_model: gemini-3.1-flash-live-preview`
 
 Investigation logs and timeline are captured in the [#350 / #356 verification discussion on PR #384](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/384).
 
+### Greeting and post-playback echo protection
+
+For Google sessions using engine-managed input gating (including Gemini 2.5 and
+Gemini 3.8 with native full-duplex disabled), greeting input remains silence-gated
+until caller-facing playback drains. Generation completion alone does not prove
+that buffered audio has finished playing (#849). This applies to Vertex and
+Developer API without enabling long-response playback.
+
+`barge_in.post_tts_end_protection_ms` also applies to these sessions on AudioSocket
+and the shared ExternalMedia/WebSocket input path (#850). The engine substitutes
+silence at the normal frame rate, then resumes real caller audio. Confirmed drain
+supersedes the earlier gating-token timestamp; the existing transport quiet tail
+counts toward the configured interval rather than adding a second full delay.
+Zero disables this additional guard. Increasing it can discard the beginning of
+an early reply. Accepted mid-call barge-in resumes caller input without a new
+post-playback mute. Later turns retain the existing interruption ownership.
+
+Gemini 3.8 native full-duplex deliberately keeps real caller audio flowing during
+and after output. The engine input guard does not apply in that mode. Other native
+continuous-input providers are unchanged. Configure the existing global field in
+**Advanced → Barge-in → Post-TTS Protection (ms)**; Save Changes and restart the
+AI Engine after active calls finish. No new setting or default change is required.
+
 ### Hangup Fallback Tuning
 
 Google Live may occasionally miss or delay `turnComplete` near the end of a farewell.  
@@ -477,7 +500,7 @@ providers:
 
 `long_audio_backlog_sec` defaults to **120 seconds** and accepts **10–120**. It controls queued audio capacity, not total response duration or how long Google is asked to speak. The checkbox is the UI control; the advanced budget is configured in YAML. See the [configuration reference](Configuration-Reference.md#google-live-monolithic-agent).
 
-The backlog is bounded by audio bytes and item count. Overflow or failed drain ends the call with an explicit error instead of silently dropping speech chunks. Playback drain, rather than generation completion, releases input gating. Barge-in discards the queued response and clears playback-owned gating so subsequent caller input can resume. Terminal tool actions retain their protocol completion boundary. On opted-in, silence-gated Developer calls, local fallback caps the required qualifying speech at 120 ms (or a shorter configured duration) within a 200-ms window, tolerating quiet gaps up to 40 ms; the existing energy threshold, enhanced-VAD votes, greeting protection, cooldown and media isolation still apply. Vertex and opt-out timing are unchanged; Gemini 3.8 native full-duplex interruption continues to use the provider signal.
+The backlog is bounded by audio bytes and item count. Overflow or failed drain ends the call with an explicit error instead of silently dropping speech chunks. Playback drain, rather than generation completion, releases input gating. Barge-in discards the queued response and clears playback-owned gating so subsequent caller input can resume. Terminal tool actions retain their protocol completion boundary. On opted-in, silence-gated Developer calls, local fallback caps the required qualifying speech at 120 ms (or a shorter configured duration) within a 200-ms window, tolerating quiet gaps up to 40 ms; the existing energy threshold, enhanced-VAD votes, greeting protection, cooldown and media isolation still apply. Vertex and opt-out sessions share the greeting/post-playback protection described above; Gemini 3.8 native full-duplex interruption continues to use the provider signal.
 
 An interrupted terminal response cannot reuse its old audio or completion boundary to hang up. If the Developer connection closes abnormally, already-accepted audio receives at most eight seconds to drain before cleanup, with transfer/caller teardown taking priority. This may preserve a short buffered farewell; it does not fix an upstream API error or recover audio that Google never generated. Overflows and stalled playback remain explicit failures. Disabling the checkbox restores the original queue/completion path after saving and restarting. Stopping old playback locally and receiving Google's next response are separate events; the option cannot guarantee the model's response latency.
 

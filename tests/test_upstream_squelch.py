@@ -180,6 +180,8 @@ async def test_provider_capability_and_gating_boundaries(name, cls, mode):
 @pytest.mark.asyncio
 async def test_greeting_release_does_not_require_quiet_preroll_or_reset_floor():
     engine, session, provider = setup("google_live", GoogleLiveProvider)
+    # Isolate squelch onset/floor behavior from the independently tested echo-tail guard.
+    engine.config.barge_in.post_tts_end_protection_ms = 0
     await engine.session_store.upsert_call(session)
     await engine.session_store.set_gating_token(session.call_id, "greeting")
     await send(engine, SPEECH[:4])
