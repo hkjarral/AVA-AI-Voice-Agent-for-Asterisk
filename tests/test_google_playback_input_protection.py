@@ -83,6 +83,85 @@ async def test_guard_uses_monotonic_clock_and_duplicate_token_clear_is_idempoten
 
 
 @pytest.mark.asyncio
+async def test_new_local_playback_replaces_old_google_drain_clock():
+    e, s, _ = await ingress_fixture("audiosocket")
+    s.google_playback_drained_monotonic = 1.0
+    s.google_output_emission_end_monotonic = 1.0
+    s.google_output_interrupted = True
+    await e.session_store.set_gating_token(s.call_id, "local-file")
+    assert s.google_playback_drained_monotonic == 0
+    assert s.google_output_emission_end_monotonic == 0
+    assert not s.google_output_interrupted
+    # Duplicate starts must not erase state established by the current output.
+    s.google_playback_drained_monotonic = 2.0
+    await e.session_store.set_gating_token(s.call_id, "local-file")
+    assert s.google_playback_drained_monotonic == 2.0
+    s.google_playback_drained_monotonic = 0
+    await e.session_store.clear_gating_token(s.call_id, "local-file")
+    assert e._google_post_tts_protection_active(s)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["audiosocket", "externalmedia", "websocket"])
+@pytest.mark.parametrize("full_duplex", [False, True])
+async def test_default_guard_covers_quiet_tail_before_drain_observer_finishes(monkeypatch, transport, full_duplex):
+    e, s, p = await ingress_fixture(transport, full_duplex=full_duplex, guard_ms=250)
+    clock = [100.0]
+    monkeypatch.setattr(engine_module, "time", SimpleNamespace(monotonic=lambda: clock[0], time=lambda: 1000))
+    s.tts_ended_monotonic = 99.0  # Generation finished well before the final paced frame.
+    e._agent_output_active_calls.add(s.call_id)
+    e._provider_output_drain_tasks = {s.call_id: object()}
+    info = {"buffered_bytes": len(PCM), "last_real_emit_monotonic": 99.98}
+    e.streaming_playback_manager = SimpleNamespace(active_streams={s.call_id: info})
+    remote = {"output_state": "playing", "queue": {"frames": 1}}
+    e.websocket_server = SimpleNamespace(snapshot=lambda _: remote)
+    # Queued output remains interruptible after generation ends.
+    await receive(e, transport)
+    assert p.send_audio.await_args.args[0] == PCM
+    info.update(buffered_bytes=0, last_real_emit_monotonic=100.0)
+    remote.update(output_state="idle", queue={"frames": 0})
+    clock[0] = 100.02
+    await receive(e, transport)
+    assert p.send_audio.await_args.args[0] == (PCM if full_duplex else bytes(len(PCM)))
+    # The quiet observer is still active, but repeated frames cannot extend the guard.
+    clock[0] = 100.28
+    await receive(e, transport)
+    assert p.send_audio.await_args.args[0] == PCM
+
+
+@pytest.mark.asyncio
+async def test_drain_observer_preserves_real_emission_clock_after_quiet_tail(monkeypatch):
+    e, s, _ = await ingress_fixture("audiosocket", guard_ms=250)
+    e._call_bg_tasks = {}
+    s.tts_ended_monotonic = 99.0
+    e.streaming_playback_manager = SimpleNamespace(active_streams={s.call_id: {
+        "buffered_bytes": 0, "last_real_emit_ts": 999.9, "last_real_emit_monotonic": 99.9,
+    }})
+    clock = [100.0]
+    monkeypatch.setattr(engine_module, "time", SimpleNamespace(monotonic=lambda: clock[0], time=lambda: 1000))
+    e._terminal_transport_quiet_sec = lambda: 0.0
+    await e._note_provider_output_start(s.call_id, s)
+    await e._note_provider_output_end(s.call_id, s)
+    await asyncio.wait_for(e._provider_output_drain_tasks[s.call_id], 1)
+    assert s.google_playback_drained_monotonic == 99.9
+    assert e._google_post_tts_protection_active(s)
+    clock[0] = 100.2
+    assert not e._google_post_tts_protection_active(s)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending", ["pending_provider_chunks", "pending_coalesce_bytes", "pending_stream_bytes",
+                                    "pending_jitter_frames", "pending_remainder_bytes", "pending_transport_setup",
+                                    "pending_transport_output", "pending_transport_frames"])
+async def test_any_pending_output_clears_emission_guard(pending):
+    e, s, _ = await ingress_fixture("audiosocket")
+    s.google_output_emission_end_monotonic = 100.0
+    e._call_audio_buffer_snapshot = lambda _: {pending: 1, "last_real_emit_monotonic": 100.0}
+    assert e._google_output_emission_end(s) == 0
+    assert s.google_output_emission_end_monotonic == 0
+
+
+@pytest.mark.asyncio
 async def test_protected_echo_does_not_count_as_raw_activity_or_local_barge_in():
     e, s, _ = await ingress_fixture("audiosocket")
     e.no_input_watchdog = SimpleNamespace(has_call=lambda _: True, note_input_state=AsyncMock())

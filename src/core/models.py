@@ -154,6 +154,7 @@ class CallSession:
     # Process-local clocks; never restore monotonic values across engine restarts.
     tts_ended_monotonic: float = 0.0
     google_playback_drained_monotonic: float = 0.0
+    google_output_emission_end_monotonic: float = 0.0
     google_output_interrupted: bool = False
     # Barge-in detection accumulators
     barge_in_candidate_ms: int = 0

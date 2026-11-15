@@ -415,7 +415,9 @@ Developer API without enabling long-response playback.
 `barge_in.post_tts_end_protection_ms` also applies to these sessions on AudioSocket
 and the shared ExternalMedia/WebSocket input path (#850). The engine substitutes
 silence at the normal frame rate, then resumes real caller audio. Confirmed drain
-supersedes the earlier gating-token timestamp; the existing transport quiet tail
+supersedes the earlier gating-token timestamp; protection starts at the last
+emitted audio frame, including input received during the transport quiet wait.
+The existing transport quiet tail
 counts toward the configured interval rather than adding a second full delay.
 Zero disables this additional guard. Increasing it can discard the beginning of
 an early reply. Accepted mid-call barge-in resumes caller input without a new
