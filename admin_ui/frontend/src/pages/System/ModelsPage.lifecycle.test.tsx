@@ -27,19 +27,23 @@ const available = { stt: {}, tts: {}, llm: [] };
 let loadLive: () => Promise<Reply>;
 let loadDownload: (config?: AxiosRequestConfig) => Promise<Reply>;
 let loadCatalog: () => Promise<Reply>;
+let loadHealth: () => Promise<Reply>;
+let loadCapabilities: () => Promise<Reply>;
 
 beforeEach(() => {
     vi.resetAllMocks();
     live.snapshot = null;
     live.error = null;
     loadLive = async () => ({ data: snapshot('error') });
+    loadHealth = async () => ({ data: { local_ai_server: { status: 'error' } } });
+    loadCapabilities = async () => ({ data: {} });
     loadDownload = async () => ({ data: { running: false } });
     loadCatalog = async () => ({ data: { catalog: { stt: [], tts: [], llm: [] }, language_names: {}, region_names: {} } });
     vi.mocked(axios.get).mockImplementation(async (url, config) => {
         if (url === '/api/system/live-status') return loadLive();
-        if (url === '/api/system/health') return { data: { local_ai_server: { status: 'error' } } };
+        if (url === '/api/system/health') return loadHealth();
         if (url === '/api/local-ai/models') return { data: available };
-        if (url === '/api/local-ai/capabilities') return { data: {} };
+        if (url === '/api/local-ai/capabilities') return loadCapabilities();
         if (url === '/api/config/env') return { data: {} };
         if (url === '/api/custom-models') return { data: { enabled: false, models: [] } };
         if (url === '/api/wizard/local/available-models') return loadCatalog();
@@ -111,6 +115,53 @@ describe('Models lifecycle ownership', () => {
         await act(async () => { pending.resolve({ data: snapshot('unreachable', 3) }); });
         expect(screen.getByText('Error')).toBeInTheDocument();
         expect(screen.queryByText('Connected')).not.toBeInTheDocument();
+    });
+
+    it.each([
+        ['stale', 'unreachable', 'connected', 'Connected'],
+        ['expired', 'unreachable', 'connected', 'Connected'],
+        ['stale', 'ready', 'error', 'Error'],
+        ['expired', 'ready', 'error', 'Error'],
+    ])('uses health when the newest stream event is %s instead of resurrecting HTTP %s', async (freshness, state, healthStatus, expected) => {
+        const auxiliary = deferred<Reply>();
+        loadCapabilities = () => auxiliary.promise;
+        loadLive = async () => ({ data: snapshot(state, 1) });
+        loadHealth = async () => ({ data: { local_ai_server: { status: healthStatus } } });
+        const view = render(page());
+        // HTTP status/health finish first, but the aggregate still awaits capabilities.
+        await act(async () => {});
+        const newer = snapshot(state, 2);
+        newer.components.local_ai_server.freshness = freshness;
+        live.snapshot = newer;
+        view.rerender(page());
+        await act(async () => { auxiliary.resolve({ data: {} }); });
+        expect(screen.getByText(expected)).toBeInTheDocument();
+        expect(screen.queryByText(expected === 'Connected' ? 'Error' : 'Connected')).not.toBeInTheDocument();
+    });
+
+    it.each(['unknown', 'unsupported'])('keeps HTTP fallback when a newer stream state is %s', async (state) => {
+        const auxiliary = deferred<Reply>();
+        loadCapabilities = () => auxiliary.promise;
+        loadLive = async () => ({ data: snapshot('ready', 1) });
+        const view = render(page());
+        await act(async () => {});
+        live.snapshot = snapshot(state, 2);
+        view.rerender(page());
+        await act(async () => { auxiliary.resolve({ data: {} }); });
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+        expect(screen.queryByText('Error')).not.toBeInTheDocument();
+    });
+
+    it('keeps HTTP fallback when a newer stream snapshot has no Local AI component', async () => {
+        const auxiliary = deferred<Reply>();
+        loadCapabilities = () => auxiliary.promise;
+        loadLive = async () => ({ data: snapshot('ready', 1) });
+        const view = render(page());
+        await act(async () => {});
+        live.snapshot = { ...snapshot('unknown', 2), components: {} };
+        view.rerender(page());
+        await act(async () => { auxiliary.resolve({ data: {} }); });
+        expect(screen.getByText('Connected')).toBeInTheDocument();
     });
 
     it('aborts outstanding status reads on unmount and ignores a late failure', async () => {
