@@ -5,12 +5,102 @@ Covers definition, config handling, and execution for list_events, get_event,
 create_event, delete_event, and get_free_slots actions.
 """
 
+from datetime import datetime
+
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 
 from src.tools.business.gcal_tool import GCalendarTool
 from src.tools.base import ToolCategory
 from src.tools.runtime_config import resolve_agent_tool_config
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["freebusy", "title_prefix"])
+@pytest.mark.parametrize("fraction", ["30", "00.000005"])
+@pytest.mark.parametrize(
+    ("end", "expected"),
+    [("10:30:00", []), ("11:00:00", ["2026-04-29T10:30:00+00:00"])],
+)
+async def test_get_free_slots_never_overlaps_subminute_busy_end(
+    tool_context, mode, fraction, end, expected
+):
+    tool = GCalendarTool()
+    tool_context.get_config_value = Mock(return_value={
+        "enabled": True,
+        "credentials_path": "/fake/creds.json",
+        "calendar_id": "primary",
+        "timezone": "UTC",
+        "free_prefix": "Open" if mode == "title_prefix" else "",
+        "busy_prefix": "Busy",
+    })
+    busy_end = f"2026-04-29T10:00:{fraction}+00:00"
+    range_end = f"2026-04-29T{end}+00:00"
+    calendar = MagicMock()
+    calendar.freebusy_query.return_value = [("2026-04-29T09:00:00+00:00", busy_end)]
+    calendar.list_events.return_value = [
+        {
+            "summary": "Open hours",
+            "start": {"dateTime": "2026-04-29T09:00:00+00:00"},
+            "end": {"dateTime": range_end},
+        },
+        {
+            "summary": "Busy meeting",
+            "start": {"dateTime": "2026-04-29T09:00:00+00:00"},
+            "end": {"dateTime": busy_end},
+        },
+    ]
+    with (
+        patch.object(tool, "_get_cal", return_value=calendar),
+        patch.object(tool, "_get_or_create_cal", return_value=calendar),
+    ):
+        result = await tool.execute(
+            {
+                "action": "get_free_slots",
+                "time_min": "2026-04-29T09:00:00+00:00",
+                "time_max": range_end,
+                "duration": 30,
+            },
+            tool_context,
+        )
+
+    assert result["status"] == "success"
+    assert result["availability_mode"] == mode
+    assert result["slots"] == expected
+    assert result["total_slots_available"] == len(expected)
+    for slot in result["slots_with_end"]:
+        assert datetime.fromisoformat(slot["start"]) >= datetime.fromisoformat(busy_end)
+        assert datetime.fromisoformat(slot["end"]) <= datetime.fromisoformat(range_end)
+
+
+@pytest.mark.asyncio
+async def test_get_free_slots_rounds_subminute_search_start_up(tool_context):
+    tool = GCalendarTool()
+    tool_context.get_config_value = Mock(return_value={
+        "enabled": True,
+        "credentials_path": "/fake/creds.json",
+        "calendar_id": "primary",
+        "timezone": "UTC",
+        "free_prefix": "",
+    })
+    calendar = MagicMock()
+    calendar.freebusy_query.return_value = []
+    with (
+        patch.object(tool, "_get_cal", return_value=calendar),
+        patch.object(tool, "_get_or_create_cal", return_value=calendar),
+    ):
+        result = await tool.execute(
+            {
+                "action": "get_free_slots",
+                "time_min": "2026-04-29T10:00:30+00:00",
+                "time_max": "2026-04-29T11:00:00+00:00",
+                "duration": 30,
+            },
+            tool_context,
+        )
+
+    assert result["status"] == "success"
+    assert result["slots"] == ["2026-04-29T10:30:00+00:00"]
 
 
 class TestGCalendarToolDefinition:

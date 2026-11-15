@@ -212,6 +212,11 @@ All times use ISO 8601. The tool is registered as `google_calendar` and is in th
 
 ### `get_free_slots` response shape
 
+Slot starts round up to a multiple of the requested duration from midnight.
+Seconds and microseconds count: with 30-minute slots, an interval starting at
+10:00:30 first permits a 10:30 start. Each suggested slot must fit entirely
+inside the computed free interval; exact slot boundaries remain unchanged.
+
 `get_free_slots` returns a structured response so the LLM (and any downstream
 prompt logic) can react appropriately to the two distinct empty-result cases:
 

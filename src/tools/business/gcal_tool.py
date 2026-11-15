@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 from src.tools.base import Tool, ToolDefinition, ToolCategory
 from src.tools.context import ToolExecutionContext, resolve_scoped_tool_config
 
+from src.tools.business._calendar_utils import build_slot_starts
 from src.tools.business.gcalendar import GCalendar, GoogleCalendarApiError, _get_timezone
 
 logger = structlog.get_logger(__name__)
@@ -875,31 +876,7 @@ class GCalendarTool(Tool):
                 except (TypeError, ValueError):
                     duration_minutes = 30
 
-                duration_td = timedelta(minutes=duration_minutes)
-
-                def round_up_to_next_slot(dt: datetime, step_minutes: int) -> datetime:
-                    """Round dt up to next time that is a multiple of step_minutes from midnight (same tz)."""
-                    total_minutes = dt.hour * 60 + dt.minute
-                    if dt.second or dt.microsecond or total_minutes % step_minutes != 0:
-                        q = (total_minutes + step_minutes - 1) // step_minutes
-                        new_total = q * step_minutes
-                        if new_total >= 24 * 60:
-                            days_add = new_total // (24 * 60)
-                            new_total = new_total % (24 * 60)
-                            base = dt.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=days_add)
-                            return base.replace(hour=new_total // 60, minute=new_total % 60)
-                        return dt.replace(hour=new_total // 60, minute=new_total % 60, second=0, microsecond=0)
-                    return dt
-
-                slot_starts: list[datetime] = []
-                for s, end_t in available_intervals:
-                    if end_t <= s:
-                        continue
-                    # Always align to duration multiples from midnight
-                    start = round_up_to_next_slot(s, duration_minutes)
-                    while start + duration_td <= end_t:
-                        slot_starts.append(start)
-                        start += timedelta(minutes=duration_minutes)
+                slot_starts = build_slot_starts(available_intervals, duration_minutes)
 
                 # Pick the output timezone for the slot list. Priority:
                 # 1. Root tool config `timezone` (operator-pinned override)
