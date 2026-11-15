@@ -38,6 +38,28 @@ The model receives public PR changes as data through the OpenAI Responses API,
 with tools disabled and response storage disabled. It cannot execute PR code,
 load PR-controlled agent instructions, or access runner credentials.
 
+### Review token budgets and incomplete responses
+
+Responses API output budgets include both hidden reasoning and the written
+review. The helper starts with 12,000 tokens (previously 6,000). Only a response
+with `status: incomplete` and `incomplete_details.reason: max_output_tokens`
+gets one fresh attempt with a 25,000-token budget. The same pinned diff is used;
+public visibility and exact head/base are checked again before resubmission.
+Each request has a four-minute timeout; the review job has a ten-minute ceiling.
+Total requested output capacity is bounded to 37,000 tokens over two attempts.
+Refusals, content filters, API errors, timeouts and other failed states do not
+trigger the budget retry. Partial text is never published as a successful review.
+
+Logs contain only allowlisted response status/reason and integer output/reasoning
+token counts, plus attempt and budget. They exclude response text, hidden
+reasoning, response IDs, raw error messages and API error bodies. The previous
+failure logs discarded the API's reason and usage, so the historical failures
+cannot be conclusively attributed to token exhaustion; the new diagnostics
+separate that failure from filtering or other API states on future runs.
+
+See [reasoning token allocation](https://developers.openai.com/api/docs/guides/reasoning#allocating-space-for-reasoning)
+for why a short written review can still exhaust its output budget.
+
 ### Fork reviews and trust boundaries
 
 - A maintainer with write permission applies `codex-review` on the frozen head.
