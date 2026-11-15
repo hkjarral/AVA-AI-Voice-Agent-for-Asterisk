@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Local AI status:** the Models page now falls back to a current health check when live status is stale or expired, preventing cached failures from showing a healthy server as disconnected and cached readiness from hiding an outage.
+
 ## [7.7.3] - 2026-11-13
 
 Release preparation from main `00c32c49` after v7.7.2. Includes 23 merged PRs

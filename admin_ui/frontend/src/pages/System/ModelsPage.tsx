@@ -248,7 +248,9 @@ const ModelsPage = () => {
 
     const applyLocalAILiveStatus = useCallback((component?: LiveStatusComponent | null): boolean => {
         if (!component) return false;
-        if (component.freshness === 'expired') return false;
+        // Cached observations must not override a current direct health check.
+        // This applies to both the HTTP snapshot and subsequent stream events.
+        if (component.freshness !== 'fresh') return false;
         if (component.state === 'ready' || component.state === 'degraded') {
             hydrateLocalAIStatus(component.details || {}, component.state === 'ready' ? 'connected' : 'degraded');
             return true;

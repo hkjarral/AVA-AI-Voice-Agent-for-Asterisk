@@ -98,7 +98,7 @@ const installedModelsPayload = {
     ],
 };
 
-const mockModelsPageApis = () => {
+const mockModelsPageApis = (healthStatus = 'error') => {
     vi.mocked(axios.get).mockImplementation((url) => {
         if (url === '/api/wizard/local/available-models') {
             return Promise.resolve({
@@ -116,8 +116,8 @@ const mockModelsPageApis = () => {
             return Promise.resolve({
                 data: {
                     local_ai_server: {
-                        status: 'error',
-                        details: { error: 'old health path timed out' },
+                        status: healthStatus,
+                        details: healthStatus === 'connected' ? localAIComponent.details : { error: 'old health path timed out' },
                     },
                 },
             });
@@ -162,6 +162,43 @@ describe('ModelsPage Local AI status', () => {
         expect(screen.queryByRole('button', { name: /Start Local AI Server/i })).not.toBeInTheDocument();
         expect(screen.getAllByText('vosk-model-en-us-0.22').length).toBeGreaterThan(0);
         expect(screen.getAllByText('en_US-lessac-medium.onnx').length).toBeGreaterThan(0);
+    });
+
+    it.each(['stale', 'expired'])('uses current health instead of a %s failure, including stream updates', async (freshness) => {
+        const failed = { ...localAIComponent, state: 'unreachable', freshness };
+        liveStatusState.current.snapshot = {
+            ...liveStatusSnapshot(),
+            components: { local_ai_server: failed },
+        };
+        mockModelsPageApis('connected');
+        const view = render(<MemoryRouter><ModelsPage /></MemoryRouter>);
+        await waitFor(() => expect(screen.getByText('Connected')).toBeInTheDocument());
+
+        liveStatusState.current.snapshot = {
+            ...liveStatusSnapshot(), event_id: 8,
+            components: { local_ai_server: { ...failed, updated_at: '2026-06-27T05:31:23Z' } },
+        };
+        view.rerender(<MemoryRouter><ModelsPage /></MemoryRouter>);
+        await waitFor(() => expect(screen.getByText('Connected')).toBeInTheDocument());
+        expect(screen.queryByText(/Local AI Server is not reachable/i)).not.toBeInTheDocument();
+
+        // A new, fresh failure must still be shown; recovery is not sticky.
+        liveStatusState.current.snapshot = {
+            ...liveStatusSnapshot(), event_id: 9,
+            components: { local_ai_server: { ...failed, freshness: 'fresh', updated_at: '2026-06-27T05:31:24Z' } },
+        };
+        view.rerender(<MemoryRouter><ModelsPage /></MemoryRouter>);
+        await waitFor(() => expect(screen.getByText('Error')).toBeInTheDocument());
+    });
+
+    it('does not hide a current outage behind stale ready status', async () => {
+        liveStatusState.current.snapshot = {
+            ...liveStatusSnapshot(),
+            components: { local_ai_server: { ...localAIComponent, state: 'ready', freshness: 'stale' } },
+        };
+        mockModelsPageApis('error');
+        render(<MemoryRouter><ModelsPage /></MemoryRouter>);
+        await waitFor(() => expect(screen.getByText('Error')).toBeInTheDocument());
     });
 
     it('falls back to legacy health status when pushed Local AI state is unknown', async () => {

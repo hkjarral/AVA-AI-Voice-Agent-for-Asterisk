@@ -207,6 +207,8 @@ Browse, download, and manage local STT, TTS, and LLM models. Tabs split the cata
 
 The top of the page exposes the **Local AI Server** card with three pickers — STT, LLM, TTS — that show the currently-loaded model and let you switch the engine to any installed file. Switching applies the change to `.env` and reloads the engine in place; the running engine recovers from the swap without dropping calls already in progress.
 
+The card uses fresh live-status observations. When an observation is stale or expired, it falls back to a current health check so an old failure or old ready state does not determine the displayed connection status.
+
 Downloaded models live under `models/<type>/` on the host (mounted into the container at `/app/models/<type>/`). The Installed tab counts files matching the catalog; deleting via the trash icon removes the file plus any sidecars (`.json` config for Piper, `.sha256` integrity sidecar).
 
 ##### Community Models (best-effort)
