@@ -54,7 +54,7 @@ async def test_post_playback_guard_controls_actual_payload(monkeypatch, transpor
     if silenced:
         assert s.audio_diagnostics["google_post_tts_protection"] == {"frames": 1, "duration_ms": 20.0}
         # The same protected audio cannot accumulate a local barge-in candidate.
-        e._maybe_provider_barge_in_fallback.assert_awaited_once()
+        e._maybe_provider_barge_in_fallback.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -212,3 +212,97 @@ async def test_transport_quiet_tail_is_credited_and_duplicate_completion_does_no
     assert engine_module.time.monotonic() - ended >= 0.35
     await e._note_provider_output_end(s.call_id, s, clear_tts_gating_after_drain=True)
     assert s.google_playback_drained_monotonic == ended
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("age_ms,guard_ms,protected", [(100, 600, True), (800, 600, False), (100, 0, False)])
+async def test_talk_detect_rechecks_google_guard_after_playback_drains(monkeypatch, age_ms, guard_ms, protected):
+    e, s, _ = await ingress_fixture("audiosocket", guard_ms=guard_ms)
+    e.config.barge_in.talk_detect_initial_protection_ms = 0
+    e.config.barge_in.cooldown_ms = 0
+    e._no_input_note_input_state = AsyncMock()
+    e._apply_barge_in_action = AsyncMock()
+    s.audio_capture_enabled = False
+    s.tts_playing = True
+    s.tts_started_ts = 998
+    s.conversation_state = "listening"
+    e._agent_output_active_calls.add(s.call_id)
+    monkeypatch.setattr(engine_module, "time", SimpleNamespace(monotonic=lambda: 100, time=lambda: 1000))
+    paused, resume = asyncio.Event(), asyncio.Event()
+
+    async def pending_activity(*args):
+        paused.set()
+        await resume.wait()
+
+    e._no_input_note_activity = AsyncMock(side_effect=pending_activity)
+    task = asyncio.create_task(e._handle_channel_talking_started({"channel": {"id": s.caller_channel_id}}))
+    try:
+        await asyncio.wait_for(paused.wait(), 1)
+        # Drain completes while the event is waiting, opening a new monotonic
+        # protection interval after its initial guard check already passed.
+        e._agent_output_active_calls.discard(s.call_id)
+        s.audio_capture_enabled = True
+        s.tts_playing = False
+        s.google_playback_drained_monotonic = 100 - age_ms / 1000
+        s.tts_ended_ts = 1000 - age_ms / 1000
+        resume.set()
+        await asyncio.wait_for(task, 1)
+    finally:
+        resume.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    e._apply_barge_in_action.assert_not_awaited()
+    if protected:
+        e._no_input_note_input_state.assert_not_awaited()
+    else:
+        e._no_input_note_input_state.assert_awaited_once_with(s.call_id, True, "asterisk:talk_detect")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["audiosocket", "externalmedia", "websocket"])
+@pytest.mark.parametrize("protected", [False, True])
+async def test_send_await_does_not_reclassify_protected_frame(monkeypatch, transport, protected):
+    e, s, p = await ingress_fixture(transport)
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(engine_module, "time", SimpleNamespace(monotonic=lambda: clock.now, time=lambda: 1000))
+    s.google_playback_drained_monotonic = 99.9 if protected else 99.0
+    s.barge_in_candidate_ms = 250
+    s.barge_start_ts = 990
+    paused, resume = asyncio.Event(), asyncio.Event()
+
+    async def blocked_send(*args, **kwargs):
+        paused.set()
+        await resume.wait()
+
+    async def count_candidate(*args, **kwargs):
+        s.barge_in_candidate_ms += 20
+
+    p.send_audio.side_effect = blocked_send
+    e._maybe_provider_barge_in_fallback.side_effect = count_candidate
+    task = asyncio.create_task(receive(e, transport))
+    try:
+        await asyncio.wait_for(paused.wait(), 1)
+        assert p.send_audio.await_args.args[0] == (bytes(len(PCM)) if protected else PCM)
+        if protected:
+            assert s.barge_in_candidate_ms == 0
+            assert s.barge_start_ts == 0.0
+        # The original frame stays protected even though its send finishes
+        # after expiry. Do not erase a newer frame's candidate on completion.
+        clock.now = 101.0
+        s.barge_in_candidate_ms = 80
+        s.barge_start_ts = 1001
+        resume.set()
+        await asyncio.wait_for(task, 1)
+    finally:
+        resume.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    if protected:
+        e._maybe_provider_barge_in_fallback.assert_not_awaited()
+        assert s.barge_in_candidate_ms == 80
+        assert s.barge_start_ts == 1001
+    else:
+        e._maybe_provider_barge_in_fallback.assert_awaited_once()
+        assert s.barge_in_candidate_ms == 100

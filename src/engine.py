@@ -10767,6 +10767,8 @@ class Engine:
             latest_session = await self.session_store.get_by_call_id(call_id)
             if latest_session is not None:
                 session = latest_session
+            if self._google_post_tts_protection_active(session):
+                return
             if bool(getattr(session, "audio_capture_enabled", True)) and not bool(
                 getattr(session, "tts_playing", False)
             ):
@@ -12308,6 +12310,8 @@ class Engine:
 
                 post_tts_protected = self._google_post_tts_protection_active(session)
                 if post_tts_protected:
+                    session.barge_in_candidate_ms = 0
+                    session.barge_start_ts = 0.0
                     self._note_google_protected_frame(session, pcm_bytes, pcm_rate)
                 if needs_gating and (not session.audio_capture_enabled or post_tts_protected):
                     # Send silence instead of blocking so Google Live's continuous
@@ -12522,7 +12526,9 @@ class Engine:
                         exc_info=True,
                     )
                 # Provider-owned mode: local VAD fallback may flush local output (never cancels provider).
-                if not full_duplex_barge_in:
+                # Keep the frame's classification across send_audio's await;
+                # expiry must not admit protected echo to the local detector.
+                if not post_tts_protected and not full_duplex_barge_in:
                     try:
                         await self._maybe_provider_barge_in_fallback(
                             session,
@@ -14363,6 +14369,8 @@ class Engine:
 
                 post_tts_protected = self._google_post_tts_protection_active(session)
                 if post_tts_protected:
+                    session.barge_in_candidate_ms = 0
+                    session.barge_start_ts = 0.0
                     gating_mode = "silence"
                     self._note_google_protected_frame(session, pcm_16k, pcm_sample_rate)
 
@@ -14436,7 +14444,7 @@ class Engine:
                     logger.debug("Continuous-input transport forward error", call_id=caller_channel_id, source=source, error=str(exc))
 
                 # Provider-owned mode: local VAD fallback may flush local output (never cancels provider).
-                if not self._google_live_full_duplex_barge_in(provider_name, provider):
+                if not post_tts_protected and not self._google_live_full_duplex_barge_in(provider_name, provider):
                     try:
                         await self._maybe_provider_barge_in_fallback(
                             session,
