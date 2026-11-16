@@ -1158,7 +1158,7 @@ class Engine:
                     result = await self.outbound_store.cleanup_stale_attempts_and_leads(
                         stale_seconds=int(_outbound_attempt_stale_seconds())
                     )
-                    if result.get("attempts_closed") or result.get("leads_failed"):
+                    if result.get("attempts_closed") or result.get("leads_failed") or result.get("leads_repaired"):
                         logger.info("Outbound cleanup applied", **result)
                 except Exception:
                     logger.debug("Outbound cleanup failed", exc_info=True)
@@ -2262,137 +2262,133 @@ class Engine:
             )
             return False
 
-    async def _reject_outbound_answered_attempt(
-        self,
-        channel_id: str,
-        attempt_id: str,
-        meta: Optional[Dict[str, Any]],
-        error_message: str,
-        *,
-        gate_result: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """Retain fail-closed ownership when outbound metadata/config is unsafe."""
-        campaign_id = str((meta or {}).get("campaign_id") or "")
-        lead_id = str((meta or {}).get("lead_id") or "")
-        logger.error(
-            "Outbound call rejected",
-            channel_id=channel_id,
-            attempt_id=attempt_id,
-            campaign_id=campaign_id,
-            lead_id=lead_id,
-            error=error_message,
-        )
-        try:
-            if attempt_id:
-                try:
-                    await self.outbound_store.finish_attempt(
-                        attempt_id,
-                        outcome="error",
-                        error_message=error_message,
-                        **(gate_result or {}),
-                    )
-                except Exception:
-                    logger.error(
-                        "Failed to persist outbound answered-call rejection",
-                        channel_id=channel_id,
-                        attempt_id=attempt_id,
-                        exc_info=True,
-                    )
-            if lead_id:
-                try:
-                    await self.outbound_store.set_lead_state(
-                        lead_id,
-                        state="failed",
-                        last_outcome="error",
-                    )
-                except Exception:
-                    logger.error(
-                        "Failed to persist lead state for rejected outbound call",
-                        channel_id=channel_id,
-                        attempt_id=attempt_id,
-                        lead_id=lead_id,
-                        exc_info=True,
-                    )
-        finally:
-            seen_outbound = getattr(self, "_seen_outbound_channels", None)
-            if seen_outbound is not None:
-                seen_outbound.add(channel_id)
+    def _remember_outbound_completion(
+        self, channel_id: str, attempt_id: str, meta: Optional[Dict[str, Any]],
+        *, result: Dict[str, Any], lead_state: str,
+    ) -> Dict[str, Any]:
+        """Keep terminal persistence intent in the existing attempt owner."""
+        existing = self._outbound_attempt_meta_by_attempt_id.get(attempt_id) if attempt_id else None
+        if existing is not None and "completion_result" in existing:
+            return existing
+        owner = dict(meta or {})
+        owner.update({
+            "attempt_id": attempt_id, "channel_id": channel_id,
+            "completion_result": dict(result), "completion_lead_state": lead_state,
+            "completion_attempt_saved": not bool(attempt_id),
+            "completion_lead_saved": not bool(owner.get("lead_id")),
+            "completion_busy": False, "completion_hangup_pending": True,
+        })
+        if attempt_id:
+            self._outbound_attempt_meta_by_attempt_id[attempt_id] = owner
+        previous = str((meta or {}).get("channel_id") or "")
+        if previous and previous != channel_id and self._outbound_attempt_meta_by_channel_id.get(previous) is meta:
+            self._outbound_attempt_meta_by_channel_id.pop(previous, None)
+        self._outbound_attempt_meta_by_channel_id[channel_id] = owner
+        return owner
 
-            # Keep a minimal owner until Asterisk accepts the hangup or confirms
-            # that the channel is already gone. ChannelDestroyed recognizes this
-            # terminal marker and must not overwrite the persisted error outcome.
-            owner_meta = dict(meta or {})
-            previous_channel_id = str(owner_meta.get("channel_id") or "")
-            owner_meta.update(
-                {
-                    "attempt_id": attempt_id,
-                    "campaign_id": campaign_id,
-                    "lead_id": lead_id,
-                    "channel_id": channel_id,
-                    "fail_closed_rejected": True,
-                }
-            )
-            if attempt_id:
-                self._outbound_attempt_meta_by_attempt_id[attempt_id] = owner_meta
-            if previous_channel_id and previous_channel_id != channel_id:
-                self._outbound_attempt_meta_by_channel_id.pop(
-                    previous_channel_id, None
-                )
-            self._outbound_attempt_meta_by_channel_id[channel_id] = owner_meta
-            try:
-                hangup_ok = await self.ari_client.hangup_channel(channel_id)
-            except Exception:
-                hangup_ok = False
-                logger.error(
-                    "Failed to hang up rejected outbound call",
-                    channel_id=channel_id,
-                    attempt_id=attempt_id,
-                    exc_info=True,
-                )
-            if not hangup_ok:
-                logger.error(
-                    "Rejected outbound hangup was not accepted; retaining retry owner",
-                    channel_id=channel_id,
-                    attempt_id=attempt_id,
-                )
-                self._schedule_outbound_forced_hangup_retry(
-                    attempt_id=attempt_id,
-                    channel_id=channel_id,
-                )
-            else:
-                self._release_outbound_rejection_ownership(
-                    attempt_id=attempt_id,
-                    channel_id=channel_id,
-                )
-
-    def _release_outbound_rejection_ownership(
-        self,
-        *,
-        attempt_id: str,
-        channel_id: str,
-    ) -> None:
-        """Release only tracking created for a terminal fail-closed rejection."""
-        channel_meta = self._outbound_attempt_meta_by_channel_id.get(channel_id)
-        if not channel_meta or channel_meta.get("fail_closed_rejected"):
+    def _release_outbound_completion(self, owner: Dict[str, Any]) -> None:
+        if not (owner.get("completion_attempt_saved") and owner.get("completion_lead_saved")) or owner.get("completion_hangup_pending"):
+            return
+        attempt_id = str(owner.get("attempt_id") or "")
+        channel_id = str(owner.get("channel_id") or "")
+        if self._outbound_attempt_meta_by_attempt_id.get(attempt_id) is owner:
+            self._outbound_attempt_meta_by_attempt_id.pop(attempt_id, None)
+            self._outbound_attempt_amd.pop(attempt_id, None)
+        if self._outbound_attempt_meta_by_channel_id.get(channel_id) is owner:
             self._outbound_attempt_meta_by_channel_id.pop(channel_id, None)
 
-        if attempt_id:
+    async def _persist_outbound_completion(self, owner: Dict[str, Any]) -> None:
+        """Retry only terminal writes, never AMD, origination, or playback."""
+        attempt_id = str(owner.get("attempt_id") or "")
+        channel_id = str(owner.get("channel_id") or "")
+        def still_owned():
+            return (self._outbound_attempt_meta_by_attempt_id.get(attempt_id) is owner if attempt_id else self._outbound_attempt_meta_by_channel_id.get(channel_id) is owner)
+        if owner.get("completion_busy") or not still_owned():
+            return
+        if time.monotonic() < float(owner.get("completion_retry_at") or 0):
+            return
+        owner["completion_busy"] = True
+        try:
+            if not owner["completion_attempt_saved"]:
+                await self.outbound_store.finish_attempt(
+                    attempt_id, **owner["completion_result"], only_if_unfinished=True,
+                )
+                owner["completion_attempt_saved"] = True
+            if not still_owned():
+                return
+            if not owner["completion_lead_saved"]:
+                await self.outbound_store.set_lead_state(
+                    str(owner["lead_id"]), state=owner["completion_lead_state"],
+                    last_outcome=owner["completion_result"]["outcome"], only_if_active=True,
+                    expected_attempt_id=attempt_id,
+                )
+                owner["completion_lead_saved"] = True
+        except Exception:
+            delay = min(float(owner.get("completion_retry_delay") or 0) * 2.0 or 1.0, 30.0)
+            owner["completion_retry_delay"] = delay
+            owner["completion_retry_at"] = time.monotonic() + delay
+            logger.warning("Outbound terminal persistence pending recovery", attempt_id=attempt_id, retry_seconds=delay, exc_info=True)
+        finally:
+            owner["completion_busy"] = False
+            self._release_outbound_completion(owner)
+
+    async def _complete_outbound_attempt(
+        self, channel_id: str, attempt_id: str, meta: Optional[Dict[str, Any]],
+        *, result: Dict[str, Any], lead_state: str,
+    ) -> None:
+        owner = self._remember_outbound_completion(channel_id, attempt_id, meta, result=result, lead_state=lead_state)
+        seen_outbound = getattr(self, "_seen_outbound_channels", None)
+        if seen_outbound is not None:
+            seen_outbound.add(channel_id)
+        try:
+            await self._persist_outbound_completion(owner)
+        finally:
+            try:
+                accepted = bool(await self.ari_client.hangup_channel(channel_id))
+            except asyncio.CancelledError:
+                if self._outbound_attempt_meta_by_channel_id.get(channel_id) is owner:
+                    self._schedule_outbound_forced_hangup_retry(attempt_id=attempt_id, channel_id=channel_id)
+                raise
+            except Exception:
+                accepted = False
+            if accepted:
+                self._release_outbound_rejection_ownership(attempt_id=attempt_id, channel_id=channel_id, expected_meta=owner)
+            elif self._outbound_attempt_meta_by_channel_id.get(channel_id) is owner:
+                self._schedule_outbound_forced_hangup_retry(attempt_id=attempt_id, channel_id=channel_id)
+
+    async def _reject_outbound_answered_attempt(
+        self, channel_id: str, attempt_id: str, meta: Optional[Dict[str, Any]],
+        error_message: str, *, gate_result: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Reject safely, retaining independent hangup and completion ownership."""
+        logger.error("Outbound call rejected", channel_id=channel_id, attempt_id=attempt_id, error=error_message)
+        await self._complete_outbound_attempt(
+            channel_id, attempt_id, meta,
+            result={"outcome": "error", "error_message": error_message, **(gate_result or {})},
+            lead_state="failed",
+        )
+
+    def _release_outbound_rejection_ownership(
+        self, *, attempt_id: str, channel_id: str,
+        expected_meta: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Release accepted hangup independently of pending terminal writes."""
+        owner = self._outbound_attempt_meta_by_channel_id.get(channel_id)
+        if expected_meta is not None and owner is not expected_meta:
+            return
+        if owner is not None and "completion_result" in owner:
+            owner["completion_hangup_pending"] = False
+            self._release_outbound_completion(owner)
+        else:
+            if not owner or owner.get("fail_closed_rejected"):
+                self._outbound_attempt_meta_by_channel_id.pop(channel_id, None)
             attempt_meta = self._outbound_attempt_meta_by_attempt_id.get(attempt_id)
-            if not attempt_meta or (
-                attempt_meta.get("fail_closed_rejected")
-                and str(attempt_meta.get("channel_id") or "") == channel_id
-            ):
+            if not attempt_meta or (attempt_meta.get("fail_closed_rejected") and str(attempt_meta.get("channel_id") or "") == channel_id):
                 self._outbound_attempt_meta_by_attempt_id.pop(attempt_id, None)
                 self._outbound_attempt_amd.pop(attempt_id, None)
-
         tasks = getattr(self, "_outbound_forced_hangup_tasks", None) or {}
         retry_task = tasks.pop(channel_id, None)
-        current_task = asyncio.current_task()
-        if (
-            retry_task
-            and retry_task is not current_task
-            and not retry_task.done()
-        ):
+        if retry_task and retry_task is not asyncio.current_task() and not retry_task.done():
             retry_task.cancel()
 
     def _schedule_forced_hangup_retry_owner(
@@ -2473,6 +2469,7 @@ class Engine:
         channel_id: str,
     ) -> None:
         """Retry a rejected outbound hangup while retaining attempt ownership."""
+        owner = self._outbound_attempt_meta_by_channel_id.get(channel_id)
         self._schedule_forced_hangup_retry_owner(
             task_store_attribute="_outbound_forced_hangup_tasks",
             task_name_prefix="outbound-forced-hangup",
@@ -2483,6 +2480,7 @@ class Engine:
             on_accepted=lambda: self._release_outbound_rejection_ownership(
                 attempt_id=attempt_id,
                 channel_id=channel_id,
+                expected_meta=owner,
             ),
         )
 
@@ -3293,7 +3291,7 @@ class Engine:
                                 "created_at_ts": time.time(),
                             }
 
-                            marked = await self.outbound_store.mark_lead_dialing(lead_id)
+                            marked = await self.outbound_store.mark_lead_dialing(lead_id, attempt_id=attempt_id)
                             if not marked:
                                 await self.outbound_store.finish_attempt(
                                     attempt_id,
@@ -3626,11 +3624,16 @@ class Engine:
             # Copy values to avoid mutation during iteration.
             metas = list(self._outbound_attempt_meta_by_attempt_id.values())
             for meta in metas:
+                if "completion_result" in meta:
+                    await self._persist_outbound_completion(meta)
+                    continue
                 if meta.get("fail_closed_rejected"):
                     # The forced-hangup retry owns this terminal answered call.
                     # Do not let the no-answer watchdog overwrite its outcome.
                     continue
                 attempt_id = str(meta.get("attempt_id") or "").strip()
+                if self._outbound_attempt_meta_by_attempt_id.get(attempt_id) is not meta:
+                    continue
                 channel_id = str(meta.get("channel_id") or "").strip()
                 lead_id = str(meta.get("lead_id") or "").strip()
                 created_at_ts = float(meta.get("originated_at_ts") or meta.get("created_at_ts") or 0.0)
@@ -3645,6 +3648,8 @@ class Engine:
                 if channel_id:
                     try:
                         session = await self.session_store.get_by_channel_id(channel_id)
+                        if self._outbound_attempt_meta_by_attempt_id.get(attempt_id) is not meta:
+                            continue
                         if session and getattr(session, "is_outbound", False):
                             continue
                     except Exception:
@@ -3667,29 +3672,28 @@ class Engine:
                         # Avoid aggressive cleanup if ARI is flaky.
                         continue
 
+                if self._outbound_attempt_meta_by_attempt_id.get(attempt_id) is not meta:
+                    continue
+                result = {"outcome": "no_answer", "error_message": "stale originate (no StasisStart)"}
                 if exists and channel_id:
-                    try:
-                        await self.ari_client.hangup_channel(channel_id)
-                    except Exception:
-                        pass
-
-                try:
-                    await self.outbound_store.finish_attempt(
-                        attempt_id,
-                        outcome="no_answer",
-                        error_message="stale originate (no StasisStart)",
+                    await self._complete_outbound_attempt(
+                        channel_id, attempt_id, meta, result=result, lead_state="failed",
                     )
-                except Exception:
-                    pass
-                try:
-                    await self.outbound_store.set_lead_state(lead_id, state="failed", last_outcome="no_answer")
-                except Exception:
-                    pass
-
-                self._outbound_attempt_meta_by_attempt_id.pop(attempt_id, None)
-                self._outbound_attempt_amd.pop(attempt_id, None)
-                if channel_id:
-                    self._outbound_attempt_meta_by_channel_id.pop(channel_id, None)
+                else:
+                    owner = self._remember_outbound_completion(
+                        channel_id, attempt_id, meta, result=result, lead_state="failed",
+                    )
+                    owner["completion_hangup_pending"] = False
+                    await self._persist_outbound_completion(owner)
+            # Restart can lose a recent unfinished attempt before it becomes
+            # stale. Revisit durable recovery periodically, excluding live owners.
+            durable_cleanup = getattr(self.outbound_store, "cleanup_stale_attempts_and_leads", None)
+            if callable(durable_cleanup) and now >= float(getattr(self, "_outbound_next_durable_cleanup_ts", 0)):
+                self._outbound_next_durable_cleanup_ts = now + 30.0
+                await durable_cleanup(
+                    stale_seconds=int(stale_after),
+                    exclude_attempt_ids=list(self._outbound_attempt_meta_by_attempt_id),
+                )
         except Exception:
             logger.debug("Outbound stale-attempt cleanup failed", exc_info=True)
 
@@ -3930,6 +3934,11 @@ class Engine:
         meta = self._outbound_attempt_meta_by_attempt_id.get(attempt_id) if attempt_id else None
         if not meta:
             meta = self._outbound_attempt_meta_by_channel_id.get(channel_id)
+        if meta is None and channel_id in getattr(self, "_seen_outbound_channels", set()):
+            return
+        if meta is not None and "completion_result" in meta:
+            await self._persist_outbound_completion(meta)
+            return
         if (not attempt_id) and meta and meta.get("attempt_id"):
             attempt_id = str(meta.get("attempt_id") or "").strip()
         if not attempt_id:
@@ -4034,35 +4043,17 @@ class Engine:
                     )
                     return
 
-            try:
-                if attempt_id:
-                    await self.outbound_store.finish_attempt(
-                        attempt_id,
-                        outcome="voicemail_dropped" if vm_enabled else "machine_detected",
-                        amd_status=amd_status or None,
-                        amd_cause=amd_cause or None,
-                        consent_dtmf=consent_dtmf or None,
-                        consent_result=consent_result or None,
-                        context=str((meta or {}).get("context") or "") or None,
-                        provider=str((meta or {}).get("provider") or "") or None,
-                    )
-                if lead_id:
-                    try:
-                        await self.outbound_store.set_lead_state(
-                            lead_id,
-                            state="completed",
-                            last_outcome="voicemail_dropped" if vm_enabled else "machine_detected",
-                        )
-                    except Exception:
-                        pass
-
-            finally:
-                # Cleanup mappings and hang up.
-                if attempt_id:
-                    self._outbound_attempt_meta_by_attempt_id.pop(attempt_id, None)
-                    self._outbound_attempt_amd.pop(attempt_id, None)
-                self._outbound_attempt_meta_by_channel_id.pop(channel_id, None)
-                await self.ari_client.hangup_channel(channel_id)
+            await self._complete_outbound_attempt(
+                channel_id, attempt_id, meta,
+                result={
+                    "outcome": "voicemail_dropped" if vm_enabled else "machine_detected",
+                    "amd_status": amd_status or None, "amd_cause": amd_cause or None,
+                    "consent_dtmf": consent_dtmf or None, "consent_result": consent_result or None,
+                    "context": str((meta or {}).get("context") or "") or None,
+                    "provider": str((meta or {}).get("provider") or "") or None,
+                },
+                lead_state="completed",
+            )
             return
 
         # HUMAN but consent denied/timeout (no AI attach).
@@ -4142,6 +4133,13 @@ class Engine:
 
             attempt_id = str(meta.get("attempt_id") or "")
             lead_id = str(meta.get("lead_id") or "")
+            if "completion_result" in meta:
+                self._seen_outbound_channels.add(channel_id)
+                self._release_outbound_rejection_ownership(
+                    attempt_id=attempt_id, channel_id=channel_id, expected_meta=meta,
+                )
+                await self._persist_outbound_completion(meta)
+                return
             if meta.get("fail_closed_rejected"):
                 self._seen_outbound_channels.add(channel_id)
                 self._release_outbound_rejection_ownership(
@@ -4153,6 +4151,9 @@ class Engine:
 
             # If a session exists, let _persist_call_history finish the attempt.
             session = await self.session_store.get_by_channel_id(channel_id)
+            # The await can overlap AMD completion or a replacement owner.
+            if self._outbound_attempt_meta_by_channel_id.get(channel_id) is not meta:
+                return
             if session and getattr(session, "is_outbound", False):
                 return
 
@@ -4181,28 +4182,22 @@ class Engine:
                 # If we never reached AMD (so we never got an answer/StasisStart), treat as no_answer.
                 outcome = "no_answer"
 
-            if attempt_id:
-                await self.outbound_store.finish_attempt(
-                    attempt_id,
-                    outcome=outcome,
-                    amd_status=(amd or {}).get("amd_status"),
-                    amd_cause=(amd or {}).get("amd_cause"),
-                    consent_dtmf=(amd or {}).get("consent_dtmf"),
-                    consent_result=(amd or {}).get("consent_result"),
-                    context=str((meta or {}).get("context") or "") or None,
-                    provider=str((meta or {}).get("provider") or "") or None,
-                    error_message=str(event.get("cause_txt") or cause_txt or cause or "") or None,
-                )
-            if lead_id:
-                try:
-                    await self.outbound_store.set_lead_state(lead_id, state="failed", last_outcome=outcome)
-                except Exception:
-                    pass
-
-            if attempt_id:
-                self._outbound_attempt_meta_by_attempt_id.pop(attempt_id, None)
-                self._outbound_attempt_amd.pop(attempt_id, None)
-            self._outbound_attempt_meta_by_channel_id.pop(channel_id, None)
+            owner = self._remember_outbound_completion(
+                channel_id, attempt_id, meta,
+                result={
+                    "outcome": outcome,
+                    "amd_status": (amd or {}).get("amd_status"),
+                    "amd_cause": (amd or {}).get("amd_cause"),
+                    "consent_dtmf": (amd or {}).get("consent_dtmf"),
+                    "consent_result": (amd or {}).get("consent_result"),
+                    "context": str((meta or {}).get("context") or "") or None,
+                    "provider": str((meta or {}).get("provider") or "") or None,
+                    "error_message": str(event.get("cause_txt") or cause_txt or cause or "") or None,
+                },
+                lead_state="failed",
+            )
+            owner["completion_hangup_pending"] = False
+            await self._persist_outbound_completion(owner)
         except Exception:
             logger.debug("Outbound ChannelDestroyed handler failed", exc_info=True)
 

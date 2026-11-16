@@ -440,6 +440,10 @@ describe('voicemail campaign checkbox persistence', () => {
         await screen.findByText('Synthetic lead A');
         expect(screen.getByText('Ready')).toBeInTheDocument();
         expect(screen.queryByText('Voicemail recording missing')).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/outbound/campaigns/A/status', { status: 'running', cancel_pending: false }));
+        expect(saved.voicemail_drop_media_uri).toBe('');
+        vi.mocked(axios.post).mockClear();
         fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
         expect(voicemailCheckbox()).not.toBeChecked();
         // Toggle twice to exercise the UI's false-value mutation, then save/reopen.

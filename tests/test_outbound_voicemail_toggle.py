@@ -202,7 +202,7 @@ async def test_amd_configuration_failure_never_beeps_or_reports_a_drop(case):
     engine._wait_for_ari_playback.assert_not_awaited()
     assert engine.outbound_store.finish_attempt.await_args.kwargs["outcome"] == "error"
     assert engine.outbound_store.finish_attempt.await_args.kwargs["amd_status"] == "MACHINE"
-    engine.outbound_store.set_lead_state.assert_awaited_once_with("lead", state="failed", last_outcome="error")
+    engine.outbound_store.set_lead_state.assert_awaited_once_with("lead", state="failed", last_outcome="error", only_if_active=True, expected_attempt_id="attempt")
     engine.ari_client.hangup_channel.assert_awaited_once_with("answered")
     assert not engine._outbound_attempt_meta_by_attempt_id
     assert not engine._outbound_attempt_meta_by_channel_id
@@ -223,10 +223,17 @@ async def test_amd_configuration_failure_hangs_up_and_cleans_up_when_persistence
     await engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", "attempt", "NOTSURE"])
     engine.ari_client.play_media_on_channel_with_id.assert_not_awaited()
     engine.ari_client.hangup_channel.assert_awaited_once_with("answered")
+    owner = engine._outbound_attempt_meta_by_attempt_id["attempt"]
+    assert engine._outbound_attempt_meta_by_channel_id["answered"] is owner
+    assert not owner["completion_hangup_pending"]
+    assert not engine._outbound_awaiting_amd_channel_ids
+    engine.outbound_store.finish_attempt.side_effect = None
+    engine.outbound_store.set_lead_state.side_effect = None
+    owner["completion_retry_at"] = 0
+    await engine._outbound_cleanup_stale_attempts()
     assert not engine._outbound_attempt_meta_by_attempt_id
     assert not engine._outbound_attempt_meta_by_channel_id
     assert not engine._outbound_attempt_amd
-    assert not engine._outbound_awaiting_amd_channel_ids
 
 
 @pytest.mark.asyncio
@@ -263,6 +270,7 @@ async def test_missing_recording_amd_error_is_persisted_with_classification_and_
     lead = (await store.list_leads(campaign["id"]))["leads"][0]
     attempt = await store.create_attempt(campaign["id"], lead["id"])
     meta = await store.get_active_attempt_runtime_context(attempt)
+    await store.set_lead_state(lead["id"], state="amd_pending")
     engine = _make_engine(store, meta)
     await engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", attempt, "MACHINE", "fixture"])
     saved = (await store.list_attempts(campaign["id"]))["attempts"][0]
@@ -289,6 +297,10 @@ async def test_amd_rejection_still_hangs_up_when_persistence_is_cancelled():
         await engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", "attempt", "MACHINE"])
     engine.ari_client.play_media_on_channel_with_id.assert_not_awaited()
     engine.ari_client.hangup_channel.assert_awaited_once_with("answered")
+    owner = engine._outbound_attempt_meta_by_attempt_id["attempt"]
+    assert not owner["completion_hangup_pending"]
+    engine.outbound_store.finish_attempt.side_effect = None
+    await engine._outbound_cleanup_stale_attempts()
     assert not engine._outbound_attempt_meta_by_attempt_id
     assert not engine._outbound_attempt_meta_by_channel_id
     assert not engine._outbound_attempt_amd
@@ -298,10 +310,14 @@ async def test_amd_rejection_still_hangs_up_when_persistence_is_cancelled():
 async def test_disabled_machine_hangs_up_when_final_outcome_write_fails():
     engine = _amd_failure_engine({"id": "campaign", "voicemail_drop_enabled": 0})
     engine.outbound_store.finish_attempt.side_effect = RuntimeError("synthetic DB failure")
-    with pytest.raises(RuntimeError, match="synthetic DB failure"):
-        await engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", "attempt", "MACHINE"])
+    await engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", "attempt", "MACHINE"])
     engine.ari_client.play_media_on_channel_with_id.assert_not_awaited()
     engine.ari_client.hangup_channel.assert_awaited_once_with("answered")
+    owner = engine._outbound_attempt_meta_by_attempt_id["attempt"]
+    assert owner["completion_result"]["outcome"] == "machine_detected"
+    engine.outbound_store.finish_attempt.side_effect = None
+    owner["completion_retry_at"] = 0
+    await engine._outbound_cleanup_stale_attempts()
     assert not engine._outbound_attempt_meta_by_attempt_id
     assert not engine._outbound_attempt_meta_by_channel_id
     assert not engine._outbound_attempt_amd
@@ -371,3 +387,347 @@ async def test_owned_voicemail_waiter_is_released_on_all_failure_paths(case):
     assert not engine._outbound_attempt_meta_by_channel_id
     assert not engine._outbound_attempt_amd
     engine.ari_client.hangup_channel.assert_awaited_once_with("answered")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("failed_write", ["attempt", "lead"])
+async def test_terminal_write_recovers_after_db_returns_without_replaying(enabled, failed_write):
+    import asyncio
+
+    engine = _amd_failure_engine({"id": "campaign", "voicemail_drop_enabled": int(enabled), "voicemail_drop_media_uri": "sound:fixture"})
+    store = engine.outbound_store
+    target = store.finish_attempt if failed_write == "attempt" else store.set_lead_state
+    target.side_effect = RuntimeError("synthetic unavailable DB")
+    await engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", "attempt", "MACHINE", "fixture"])
+    owner = engine._outbound_attempt_meta_by_attempt_id["attempt"]
+    outcome = "voicemail_dropped" if enabled else "machine_detected"
+    assert owner["completion_result"]["outcome"] == outcome
+    assert owner["completion_attempt_saved"] is (failed_write == "lead")
+    assert not owner["completion_lead_saved"]
+    assert not owner["completion_hangup_pending"]
+    engine.ari_client.hangup_channel.assert_awaited_once_with("answered")
+    target.side_effect = None
+    owner["completion_retry_at"] = 0
+    await asyncio.gather(
+        engine._outbound_cleanup_stale_attempts(),
+        engine._handle_outbound_channel_destroyed({"channel": {"id": "answered"}, "cause_txt": "Unknown"}),
+        engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", "attempt", "MACHINE"]),
+    )
+    assert store.finish_attempt.await_count == (2 if failed_write == "attempt" else 1)
+    assert store.set_lead_state.await_count == (2 if failed_write == "lead" else 1)
+    assert store.finish_attempt.await_args.kwargs["outcome"] == outcome
+    assert store.finish_attempt.await_args.kwargs["only_if_unfinished"] is True
+    assert engine.ari_client.play_media_on_channel_with_id.await_count == int(enabled)
+    assert engine.ari_client.hangup_channel.await_count == 1
+    assert not engine._outbound_attempt_meta_by_attempt_id
+    assert not engine._outbound_attempt_meta_by_channel_id
+
+
+@pytest.mark.asyncio
+async def test_persistent_completion_failure_keeps_owner_with_capped_backoff(monkeypatch):
+    engine = _amd_failure_engine(None)
+    clock = [100.0]
+    monkeypatch.setattr("src.engine.time.monotonic", lambda: clock[0])
+    engine.outbound_store.finish_attempt.side_effect = RuntimeError("synthetic persistent DB failure")
+    await engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", "attempt", "MACHINE"])
+    owner = engine._outbound_attempt_meta_by_attempt_id["attempt"]
+    for delay in [1, 2, 4, 8, 16, 30, 30]:
+        assert owner["completion_retry_delay"] == delay
+        before = engine.outbound_store.finish_attempt.await_count
+        await engine._outbound_cleanup_stale_attempts()
+        assert engine.outbound_store.finish_attempt.await_count == before
+        clock[0] = owner["completion_retry_at"]
+        await engine._outbound_cleanup_stale_attempts()
+        assert engine._outbound_attempt_meta_by_attempt_id["attempt"] is owner
+    engine.outbound_store.finish_attempt.side_effect = None
+    clock[0] = owner["completion_retry_at"]
+    await engine._outbound_cleanup_stale_attempts()
+    assert not engine._outbound_attempt_meta_by_attempt_id
+    engine.ari_client.play_media_on_channel_with_id.assert_not_awaited()
+    engine.ari_client.hangup_channel.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_completion_owner_serializes_duplicate_destroyed_and_scheduler_events():
+    import asyncio
+
+    engine = _amd_failure_engine(None)
+    engine.outbound_store.finish_attempt.side_effect = RuntimeError("synthetic initial failure")
+    await engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", "attempt", "MACHINE"])
+    owner = engine._outbound_attempt_meta_by_attempt_id["attempt"]
+    owner["completion_retry_at"] = 0
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def finish(*_args, **_kwargs):
+        entered.set()
+        await release.wait()
+    engine.outbound_store.finish_attempt.side_effect = finish
+    retry = asyncio.create_task(engine._outbound_cleanup_stale_attempts())
+    await entered.wait()
+    await asyncio.gather(
+        engine._handle_outbound_channel_destroyed({"channel": {"id": "answered"}}),
+        engine._outbound_cleanup_stale_attempts(),
+        engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", "attempt", "MACHINE"]),
+    )
+    assert engine.outbound_store.finish_attempt.await_count == 2
+    release.set()
+    await retry
+    assert engine.outbound_store.set_lead_state.await_count == 1
+    assert not engine._outbound_attempt_meta_by_attempt_id
+
+
+@pytest.mark.asyncio
+async def test_old_completion_cannot_release_or_write_lead_for_replacement_owner():
+    engine = _amd_failure_engine(None)
+    engine.outbound_store.finish_attempt.side_effect = RuntimeError("synthetic initial failure")
+    await engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", "attempt", "MACHINE"])
+    old = engine._outbound_attempt_meta_by_attempt_id["attempt"]
+    old["completion_retry_at"] = 0
+    replacement = {"attempt_id": "attempt", "channel_id": "answered", "lead_id": "replacement"}
+    async def replace(*_args, **_kwargs):
+        engine._outbound_attempt_meta_by_attempt_id["attempt"] = replacement
+        engine._outbound_attempt_meta_by_channel_id["answered"] = replacement
+    engine.outbound_store.finish_attempt.side_effect = replace
+    await engine._outbound_cleanup_stale_attempts()
+    engine._release_outbound_rejection_ownership(attempt_id="attempt", channel_id="answered", expected_meta=old)
+    assert engine._outbound_attempt_meta_by_attempt_id["attempt"] is replacement
+    assert engine._outbound_attempt_meta_by_channel_id["answered"] is replacement
+    engine.outbound_store.set_lead_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_restart_recent_unfinished_attempt_is_revisited_without_redial(tmp_path, monkeypatch):
+    import sqlite3
+
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    path = str(tmp_path / "history.db")
+    store = OutboundStore(db_path=path)
+    campaign = await store.create_campaign({"name": "Synthetic restart", "voicemail_drop_enabled": False})
+    await store.import_leads_csv(campaign["id"], b"phone_number\n1001\n")
+    lead = (await store.lease_pending_leads(campaign["id"], limit=1))[0]
+    attempt = await store.create_attempt(campaign["id"], lead["id"])
+    assert await store.mark_lead_dialing(lead["id"], attempt_id=attempt)
+    await store.set_lead_state(lead["id"], state="amd_pending")
+    # Fresh Engine has no terminal RAM intent; first cleanup preserves recent rows.
+    engine = _make_engine(OutboundStore(db_path=path), {"attempt_id": attempt})
+    engine._outbound_attempt_meta_by_attempt_id.clear()
+    await engine._outbound_cleanup_stale_attempts()
+    assert (await store.list_attempts(campaign["id"]))["attempts"][0]["ended_at_utc"] is None
+    with sqlite3.connect(path) as conn:
+        conn.execute("UPDATE outbound_attempts SET started_at_utc='2000-01-01T00:00:00+00:00' WHERE id=?", (attempt,))
+        conn.execute("UPDATE outbound_leads SET last_attempt_at_utc='2000-01-01T00:00:00+00:00' WHERE id=?", (lead["id"],))
+    engine._outbound_next_durable_cleanup_ts = 0
+    await engine._outbound_cleanup_stale_attempts()
+    assert (await store.list_attempts(campaign["id"]))["attempts"][0]["outcome"] == "error"
+    assert (await store.list_leads(campaign["id"]))["leads"][0]["state"] == "failed"
+    engine.ari_client.originate_channel.assert_not_awaited()
+    engine.ari_client.play_media_on_channel_with_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("failure", ["attempt_before", "attempt_after", "lead_before", "lead_after"])
+async def test_sqlite_completion_recovery_is_idempotent_after_lost_write_ack(tmp_path, monkeypatch, enabled, failure):
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    store = OutboundStore(db_path=str(tmp_path / "history.db"))
+    campaign = await store.create_campaign({"name": "Synthetic completion", "voicemail_drop_enabled": enabled, "voicemail_drop_media_uri": "sound:fixture"})
+    await store.import_leads_csv(campaign["id"], b"phone_number\n1001\n")
+    lead = (await store.lease_pending_leads(campaign["id"], limit=1))[0]
+    attempt = await store.create_attempt(campaign["id"], lead["id"])
+    assert await store.mark_lead_dialing(lead["id"], attempt_id=attempt)
+    await store.set_lead_state(lead["id"], state="amd_pending")
+    meta = await store.get_active_attempt_runtime_context(attempt)
+    engine = _make_engine(store, meta)
+    target = "finish_attempt" if failure.startswith("attempt") else "set_lead_state"
+    real_write = getattr(store, target)
+    writes = [0]
+    async def lose_ack(*args, **kwargs):
+        writes[0] += 1
+        if writes[0] == 1:
+            if failure.endswith("after"):
+                await real_write(*args, **kwargs)
+            raise RuntimeError("synthetic lost DB write acknowledgment")
+        return await real_write(*args, **kwargs)
+    monkeypatch.setattr(store, target, lose_ack)
+    await engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", attempt, "MACHINE", "fixture"])
+    owner = engine._outbound_attempt_meta_by_attempt_id[attempt]
+    before = (await store.list_attempts(campaign["id"]))["attempts"][0]
+    assert owner["completion_result"]["outcome"] == ("voicemail_dropped" if enabled else "machine_detected")
+    assert not owner["completion_hangup_pending"]
+    owner["completion_retry_at"] = 0
+    await engine._outbound_cleanup_stale_attempts()
+    after = (await store.list_attempts(campaign["id"]))["attempts"][0]
+    assert after["outcome"] == owner["completion_result"]["outcome"]
+    assert after["amd_status"] == "MACHINE"
+    assert after["ended_at_utc"]
+    if before["ended_at_utc"]:
+        assert after == before
+    saved_lead = (await store.list_leads(campaign["id"]))["leads"][0]
+    assert saved_lead["state"] == "completed"
+    assert saved_lead["last_outcome"] == after["outcome"]
+    assert not engine._outbound_attempt_meta_by_attempt_id
+    assert not engine._outbound_attempt_meta_by_channel_id
+    await engine._handle_outbound_channel_destroyed({"channel": {"id": "answered"}, "cause_txt": "Unknown"})
+    await engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", attempt, "MACHINE"])
+    assert (await store.list_attempts(campaign["id"]))["attempts"][0] == after
+    assert engine.ari_client.play_media_on_channel_with_id.await_count == int(enabled)
+    engine.ari_client.hangup_channel.assert_awaited_once_with("answered")
+
+
+@pytest.mark.asyncio
+async def test_destroyed_channel_releases_hangup_retry_but_keeps_failed_completion():
+    import asyncio
+
+    engine = _amd_failure_engine(None)
+    engine.outbound_store.finish_attempt.side_effect = RuntimeError("synthetic DB unavailable")
+    engine.ari_client.hangup_channel.return_value = False
+    await engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", "attempt", "MACHINE"])
+    owner = engine._outbound_attempt_meta_by_attempt_id["attempt"]
+    task = engine._outbound_forced_hangup_tasks["answered"]
+    await asyncio.sleep(0)
+    await engine._handle_outbound_channel_destroyed({"channel": {"id": "answered"}})
+    await task
+    assert engine._outbound_attempt_meta_by_attempt_id["attempt"] is owner
+    assert not owner["completion_hangup_pending"]
+    assert not engine._outbound_forced_hangup_tasks
+    engine.outbound_store.finish_attempt.side_effect = None
+    owner["completion_retry_at"] = 0
+    await engine._outbound_cleanup_stale_attempts()
+    assert not engine._outbound_attempt_meta_by_attempt_id
+    engine.ari_client.play_media_on_channel_with_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deleted_campaign_during_pending_completion_is_not_recreated(tmp_path, monkeypatch):
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    store = OutboundStore(db_path=str(tmp_path / "history.db"))
+    campaign = await store.create_campaign({"name": "Synthetic deleted", "voicemail_drop_enabled": False})
+    await store.import_leads_csv(campaign["id"], b"phone_number\n1001\n")
+    lead = (await store.lease_pending_leads(campaign["id"], limit=1))[0]
+    attempt = await store.create_attempt(campaign["id"], lead["id"])
+    assert await store.mark_lead_dialing(lead["id"], attempt_id=attempt)
+    meta = await store.get_active_attempt_runtime_context(attempt)
+    engine = _make_engine(store, meta)
+    finish = store.finish_attempt
+    monkeypatch.setattr(store, "finish_attempt", AsyncMock(side_effect=RuntimeError("synthetic DB unavailable")))
+    await engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", attempt, "MACHINE"])
+    owner = engine._outbound_attempt_meta_by_attempt_id[attempt]
+    await store.delete_campaign(campaign["id"])
+    monkeypatch.setattr(store, "finish_attempt", finish)
+    owner["completion_retry_at"] = 0
+    await engine._outbound_cleanup_stale_attempts()
+    assert not engine._outbound_attempt_meta_by_attempt_id
+    assert not engine._outbound_attempt_meta_by_channel_id
+    with pytest.raises(KeyError):
+        await store.get_campaign(campaign["id"])
+    assert (await store.list_attempts(campaign["id"]))["total"] == 0
+    engine.ari_client.play_media_on_channel_with_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_hangup_keeps_its_retry_owner_after_terminal_writes():
+    import asyncio
+
+    engine = _amd_failure_engine(None)
+    engine.ari_client.hangup_channel.side_effect = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", "attempt", "MACHINE"])
+    owner = engine._outbound_attempt_meta_by_attempt_id["attempt"]
+    assert owner["completion_attempt_saved"] and owner["completion_lead_saved"]
+    assert owner["completion_hangup_pending"]
+    task = engine._outbound_forced_hangup_tasks["answered"]
+    await asyncio.sleep(0)
+    await engine._handle_outbound_channel_destroyed({"channel": {"id": "answered"}})
+    await task
+    assert not engine._outbound_attempt_meta_by_attempt_id
+    assert not engine._outbound_forced_hangup_tasks
+    engine.ari_client.play_media_on_channel_with_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_destroyed_continuation_cannot_overwrite_completed_sqlite_result(tmp_path, monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    store = OutboundStore(db_path=str(tmp_path / "history.db"))
+    campaign = await store.create_campaign({"name": "Destroyed continuation", "voicemail_drop_enabled": False})
+    await store.import_leads_csv(campaign["id"], b"phone_number\n1001\n")
+    lead = (await store.lease_pending_leads(campaign["id"], limit=1))[0]
+    attempt = await store.create_attempt(campaign["id"], lead["id"])
+    assert await store.mark_lead_dialing(lead["id"], attempt_id=attempt)
+    await store.set_lead_state(lead["id"], state="amd_pending")
+    meta = await store.get_active_attempt_runtime_context(attempt)
+    engine = _make_engine(store, meta)
+    engine._outbound_attempt_meta_by_channel_id["answered"] = meta
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def session_lookup(_channel):
+        entered.set()
+        await release.wait()
+        return None
+    engine.session_store = SimpleNamespace(get_by_channel_id=session_lookup)
+    destroyed = asyncio.create_task(engine._handle_outbound_channel_destroyed({"channel": {"id": "answered"}, "cause_txt": "Unknown"}))
+    await entered.wait()
+    await engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", attempt, "MACHINE"])
+    terminal = (await store.list_attempts(campaign["id"]))["attempts"][0]
+    assert terminal["outcome"] == "machine_detected"
+    replacement = {"attempt_id": "replacement", "channel_id": "answered"}
+    engine._outbound_attempt_meta_by_channel_id["answered"] = replacement
+    release.set()
+    await destroyed
+    assert (await store.list_attempts(campaign["id"]))["attempts"][0] == terminal
+    assert (await store.list_leads(campaign["id"]))["leads"][0]["state"] == "completed"
+    assert engine._outbound_attempt_meta_by_channel_id["answered"] is replacement
+
+
+@pytest.mark.asyncio
+async def test_generic_destroyed_write_await_keeps_exact_replacement_owner():
+    import asyncio
+
+    engine = _amd_failure_engine({"voicemail_drop_enabled": 0})
+    engine.session_store = SimpleNamespace(get_by_channel_id=AsyncMock(return_value=None))
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def finish(*_args, **_kwargs):
+        entered.set()
+        await release.wait()
+    engine.outbound_store.finish_attempt.side_effect = finish
+    task = asyncio.create_task(engine._handle_outbound_channel_destroyed({"channel": {"id": "answered"}, "cause_txt": "Unknown"}))
+    await entered.wait()
+    replacement = {"attempt_id": "attempt", "channel_id": "answered", "lead_id": "replacement"}
+    engine._outbound_attempt_meta_by_attempt_id["attempt"] = replacement
+    engine._outbound_attempt_meta_by_channel_id["answered"] = replacement
+    release.set()
+    await task
+    assert engine._outbound_attempt_meta_by_attempt_id["attempt"] is replacement
+    assert engine._outbound_attempt_meta_by_channel_id["answered"] is replacement
+    engine.outbound_store.set_lead_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_watchdog_snapshot_cannot_replace_terminal_or_new_owner():
+    import asyncio
+
+    engine = _amd_failure_engine({"id": "campaign", "voicemail_drop_enabled": 0})
+    meta = engine._outbound_attempt_meta_by_attempt_id["attempt"]
+    meta["created_at_ts"] = 1.0
+    meta["channel_id"] = "answered"
+    engine._outbound_awaiting_amd_channel_ids.clear()
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def lookup(_channel):
+        entered.set()
+        await release.wait()
+        return None
+    engine.session_store = SimpleNamespace(get_by_channel_id=lookup)
+    engine.ari_client.send_command = AsyncMock(return_value={"status": 404})
+    watchdog = asyncio.create_task(engine._outbound_cleanup_stale_attempts())
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
+    await engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", "attempt", "MACHINE"])
+    replacement = {"attempt_id": "attempt", "channel_id": "answered", "lead_id": "replacement"}
+    engine._outbound_attempt_meta_by_attempt_id["attempt"] = replacement
+    engine._outbound_attempt_meta_by_channel_id["answered"] = replacement
+    release.set()
+    await watchdog
+    assert engine._outbound_attempt_meta_by_attempt_id["attempt"] is replacement
+    assert engine._outbound_attempt_meta_by_channel_id["answered"] is replacement
+    assert engine.outbound_store.finish_attempt.await_count == 1
+    assert engine.outbound_store.finish_attempt.await_args.kwargs["outcome"] == "machine_detected"
+    engine.ari_client.send_command.assert_not_awaited()

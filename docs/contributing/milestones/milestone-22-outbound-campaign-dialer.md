@@ -260,6 +260,18 @@ retry owner, never a voicemail replay. A successfully loaded legacy campaign wit
 an omitted flag still defaults to enabled and requires a recording. Consent and
 DNC behavior are unchanged.
 
+Hangup and terminal persistence have separate recovery lifetimes. The existing
+attempt metadata retains the captured outcome until both attempt and lead writes
+are acknowledged; scheduler and ChannelDestroyed recovery retry only missing
+writes with capped backoff, never voicemail playback. Conditional writes protect
+an already-finished attempt and an operator-changed, recycled, leased or newer
+lead generation. This in-memory intent does not survive process restart. Durable
+recovery conservatively closes stale unfinished attempts as errors and repairs
+an active lead only from its latest matching terminal attempt. It periodically
+revisits rows that were too recent at startup and excludes live owned attempts;
+it does not redial or replay audio. New dialing generations reuse the existing
+attempt-start/lead-last-attempt timestamp, without a schema migration.
+
 Both recordings are uploaded as `.wav` (recommended) or `.ulaw`; WAV is converted to 8kHz μ-law for Asterisk.
 
 Outcomes:
