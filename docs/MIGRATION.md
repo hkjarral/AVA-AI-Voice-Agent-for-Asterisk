@@ -2,6 +2,13 @@
 
 This guide covers upgrading between releases of Asterisk AI Voice Agent.
 
+**Pending Google Calendar datetime correction (#865).**
+
+After installing the correction, `Z` and explicit offsets preserve their instant;
+naive datetimes remain calendar-local. Review custom prompts that appended `Z`
+to local times or discarded returned offsets. No configuration/database migration
+moves existing events. See [datetime compatibility and restart/rollback guidance](Google-calendar-tool.md#datetime-contract-and-upgrade-compatibility).
+
 ## v7.7.2 to v7.7.3
 
 Use the [pinned upgrade](INSTALLATION.md#upgrade-to-v773-existing-checkout) after

@@ -447,3 +447,26 @@ describe('ToolForm attended transfer announcement placeholders', () => {
         );
     });
 });
+
+describe('ToolForm Google Calendar future slot defaults', () => {
+    it('explains the automatic cutoff and retains the existing cap setting across reopen', async () => {
+        const onChange = vi.fn();
+        const initial = { google_calendar: { enabled: true, max_slots_returned: 3 } };
+        const view = render(<ToolForm config={initial} section="google_calendar" onChange={onChange} />);
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Help for Max slots returned' }));
+        expect(await screen.findByRole('tooltip')).toHaveTextContent(
+            'Starts at or before the current time are excluded before this cap in both availability modes.'
+        );
+        expect(screen.getByRole('tooltip')).toHaveTextContent('Bookings must also start in the future.');
+        const cap = screen.getByLabelText('Max slots returned');
+        expect(cap).toHaveValue(3);
+        fireEvent.change(cap, { target: { value: '0' } });
+        const saved = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+        expect(saved.google_calendar.max_slots_returned).toBe(0);
+        view.unmount();
+        render(<ToolForm config={saved} section="google_calendar" onChange={onChange} />);
+        expect(screen.getByLabelText('Max slots returned')).toHaveValue(0);
+    });
+});
