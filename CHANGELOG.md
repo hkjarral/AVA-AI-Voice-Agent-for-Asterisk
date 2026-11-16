@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Outbound voicemail drop** (#862): campaigns saved with voicemail drop disabled can start without a voicemail recording and retain that setting through origination and AMD; MACHINE/NOTSURE hangs up without playback and records `machine_detected`. Enabled campaigns retain recording requirements and legacy enabled defaults.
+- **Outbound voicemail drop** (#862): campaigns saved with voicemail drop disabled can start without a voicemail recording and retain that setting through origination and AMD; MACHINE/NOTSURE hangs up without playback and records `machine_detected`. Enabled campaigns retain recording requirements and legacy enabled defaults. Running edits and Start now validate the merged recording state atomically; missing campaign/recording or unconfirmed playback fails closed as `error` without a beep or replay, with hangup cleanup even on persistence failure.
 
 - **Google Calendar title-prefix availability** ([#867](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/867)): new AVA bookings remain busy across calls and restarts without changing their titles. Timed and all-day Busy events respect cancellation, transparency and exclusive calendar-local dates, including DST changes. Older unmarked bookings retain existing filtering and need the documented one-time busy-prefix title repair.
 - **Google Calendar future appointments** ([#866](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/866)): availability excludes elapsed starts before applying result limits in both availability modes and across selected calendars. Booking rejects starts at or before the current time with guidance to confirm a new future slot.

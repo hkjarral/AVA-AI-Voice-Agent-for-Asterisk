@@ -239,6 +239,27 @@ still requires its own recording when enabled. No additional control or database
 migration is required. Deploying this code correction requires restarting the
 engine and Admin UI; pause campaigns and let active calls finish before updating.
 
+Draft and paused campaigns may be saved with voicemail enabled before a recording
+is chosen. Start revalidates the current stored setting atomically. While a
+campaign is running, enabling voicemail or clearing its recording is rejected
+unless the merged settings retain a non-empty recording URI; omitting the URI
+preserves the saved one. Start and edits use the same SQLite write transaction
+boundary, including across separate Admin/Engine processes.
+
+At AMD completion, an unreadable/deleted/missing campaign or enabled voicemail
+without a usable configured URI fails closed: no beep or drop is played, the
+attempt is `error`, the lead is `failed`, and the channel is hung up. Invalid or
+unconfirmed playback (rejection, exception, or completion timeout) also records
+`error`, never `voicemail_dropped`, and is not replayed. Successful confirmation
+uses the reserved playback ID, registers before the request, and requires its
+`PlaybackFinished` state to be `done`; this is Asterisk's terminal boundary, not
+proof of uninterrupted handset delivery. The lead table exposes the
+error detail and the existing **Errors** count includes it. Persistence failure
+still runs hangup/ownership cleanup; a rejected hangup retains the existing hangup
+retry owner, never a voicemail replay. A successfully loaded legacy campaign with
+an omitted flag still defaults to enabled and requires a recording. Consent and
+DNC behavior are unchanged.
+
 Both recordings are uploaded as `.wav` (recommended) or `.ulaw`; WAV is converted to 8kHz μ-law for Asterisk.
 
 Outcomes:

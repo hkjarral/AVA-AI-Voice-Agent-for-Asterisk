@@ -32,6 +32,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import structlog
 
+from .outbound_config import validate_voicemail_recording
+
 logger = structlog.get_logger(__name__)
 
 try:
@@ -547,16 +549,21 @@ class OutboundStore:
             with self._lock:
                 conn = self._get_connection()
                 try:
+                    # Serialize read/validate/write across separate Admin/Engine
+                    # store instances as well as threads. Start takes the same lock.
+                    conn.execute("BEGIN IMMEDIATE")
+                    current = conn.execute(
+                        "SELECT * FROM outbound_campaigns WHERE id=?", (campaign_id,)
+                    ).fetchone()
+                    if current is None:
+                        raise KeyError("campaign not found")
+                    merged = {**dict(current), **updates}
+                    if str(current["status"]).lower() == "running":
+                        validate_voicemail_recording(merged)
                     if (
                         "default_context" in updates
                         and "agent_routing_method" not in updates
                     ):
-                        current = conn.execute(
-                            "SELECT default_context FROM outbound_campaigns WHERE id=?",
-                            (campaign_id,),
-                        ).fetchone()
-                        if current is None:
-                            raise KeyError("campaign not found")
                         if _as_str(updates["default_context"]).strip() != _as_str(
                             current["default_context"]
                         ).strip():
@@ -592,6 +599,14 @@ class OutboundStore:
             with self._lock:
                 conn = self._get_connection()
                 try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    current = conn.execute(
+                        "SELECT * FROM outbound_campaigns WHERE id=?", (campaign_id,)
+                    ).fetchone()
+                    if current is None:
+                        raise KeyError("campaign not found")
+                    if status == "running":
+                        validate_voicemail_recording(dict(current))
                     cur = conn.execute(
                         "UPDATE outbound_campaigns SET status = ?, updated_at_utc = ? WHERE id = ?",
                         (status, now, campaign_id),

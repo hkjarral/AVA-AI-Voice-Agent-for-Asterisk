@@ -201,3 +201,61 @@ async def test_start_rejects_enabled_feature_without_recording_after_api_persist
         assert response.status_code == 400
         assert detail in response.json()["detail"]
         assert (await store.get_campaign(campaign_id))["status"] == "draft"
+
+
+@pytest.mark.asyncio
+async def test_running_campaign_patch_checks_merged_recording_and_preserves_setup_workflow(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from src.core.outbound_store import OutboundStore
+
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    store = OutboundStore(db_path=str(tmp_path / "history.db"))
+    monkeypatch.setattr(outbound, "_get_outbound_store", lambda: store)
+    app = FastAPI()
+    app.include_router(outbound.router)
+    campaign = await store.create_campaign({"name": "Synthetic", "voicemail_drop_enabled": False})
+    cid = campaign["id"]
+    await store.set_campaign_status(cid, "running")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture") as api:
+        response = await api.patch(f"/outbound/campaigns/{cid}", json={"voicemail_drop_enabled": True})
+        assert response.status_code == 400
+        assert response.json()["detail"] == outbound.VOICEMAIL_RECORDING_REQUIRED
+        response = await api.patch(f"/outbound/campaigns/{cid}", json={"voicemail_drop_enabled": True, "voicemail_drop_media_uri": "sound:fixture"})
+        assert response.status_code == 200
+        response = await api.patch(f"/outbound/campaigns/{cid}", json={"voicemail_drop_enabled": True, "name": "Renamed"})
+        assert response.status_code == 200
+        assert response.json()["voicemail_drop_media_uri"] == "sound:fixture"
+        response = await api.patch(f"/outbound/campaigns/{cid}", json={"voicemail_drop_media_uri": None})
+        assert response.status_code == 400
+        assert (await store.get_campaign(cid))["voicemail_drop_media_uri"] == "sound:fixture"
+        await store.set_campaign_status(cid, "paused")
+        response = await api.patch(f"/outbound/campaigns/{cid}", json={"voicemail_drop_enabled": True, "voicemail_drop_media_uri": ""})
+        assert response.status_code == 200
+        response = await api.patch(f"/outbound/campaigns/{cid}", json={"name": "Finish recording later"})
+        assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_start_revalidates_after_concurrent_patch_changes_api_snapshot(tmp_path, monkeypatch):
+    from src.core.outbound_store import OutboundStore
+
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    path = str(tmp_path / "history.db")
+    store, editor = OutboundStore(db_path=path), OutboundStore(db_path=path)
+    campaign = await store.create_campaign({"name": "Synthetic stale API snapshot", "voicemail_drop_enabled": False})
+    cid = campaign["id"]
+    await store.import_leads_csv(cid, b"phone_number\n1001\n")
+    original_stats = store.campaign_stats
+    async def stats_after_concurrent_edit(campaign_id):
+        # The API has already loaded the disabled campaign. A separate writer
+        # enables voicemail during setup before the status transaction begins.
+        await editor.update_campaign(campaign_id, {"voicemail_drop_enabled": True, "voicemail_drop_media_uri": ""})
+        return await original_stats(campaign_id)
+    monkeypatch.setattr(store, "campaign_stats", stats_after_concurrent_edit)
+    monkeypatch.setattr(outbound, "_get_outbound_store", lambda: store)
+    with pytest.raises(HTTPException) as exc:
+        await outbound.set_campaign_status(cid, outbound.CampaignStatusRequest(status="running"))
+    assert exc.value.status_code == 400
+    assert exc.value.detail == outbound.VOICEMAIL_RECORDING_REQUIRED
+    assert (await store.get_campaign(cid))["status"] == "draft"

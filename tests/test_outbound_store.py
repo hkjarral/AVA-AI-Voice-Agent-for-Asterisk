@@ -279,3 +279,98 @@ def test_outbound_schema_migration_marks_existing_selectors_as_ai_context(
 
     assert campaign_method == "ai_context"
     assert lead_method == "ai_context"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleared", ["", "  ", None])
+async def test_running_voicemail_edits_preserve_valid_merged_recording(tmp_path, monkeypatch, cleared):
+    from src.core.outbound_store import OutboundStore
+
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    store = OutboundStore(db_path=str(tmp_path / "history.db"))
+    campaign = await store.create_campaign({"name": "Synthetic", "voicemail_drop_enabled": False})
+    cid = campaign["id"]
+    await store.set_campaign_status(cid, "running")
+    with pytest.raises(ValueError, match="Voicemail drop is enabled"):
+        await store.update_campaign(cid, {"voicemail_drop_enabled": True})
+    assert (await store.get_campaign(cid))["voicemail_drop_enabled"] == 0
+    await store.update_campaign(cid, {"voicemail_drop_enabled": True, "voicemail_drop_media_uri": "sound:fixture"})
+    # An omitted URI inherits the saved recording; unrelated edits remain possible.
+    saved = await store.update_campaign(cid, {"voicemail_drop_enabled": True, "name": "Renamed"})
+    assert saved["voicemail_drop_media_uri"] == "sound:fixture"
+    with pytest.raises(ValueError, match="Voicemail drop is enabled"):
+        await store.update_campaign(cid, {"voicemail_drop_media_uri": cleared})
+    assert (await store.get_campaign(cid))["voicemail_drop_media_uri"] == "sound:fixture"
+    saved = await store.update_campaign(cid, {"voicemail_drop_enabled": False, "voicemail_drop_media_uri": cleared})
+    assert saved["voicemail_drop_enabled"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["draft", "paused"])
+async def test_incomplete_voicemail_setup_remains_editable_but_cannot_start(tmp_path, monkeypatch, status):
+    from src.core.outbound_store import OutboundStore
+
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    store = OutboundStore(db_path=str(tmp_path / "history.db"))
+    campaign = await store.create_campaign({"name": "Setup", "voicemail_drop_enabled": False})
+    cid = campaign["id"]
+    await store.set_campaign_status(cid, status)
+    await store.update_campaign(cid, {"voicemail_drop_enabled": True, "voicemail_drop_media_uri": ""})
+    await store.update_campaign(cid, {"name": "Finish recording later"})
+    with pytest.raises(ValueError, match="Voicemail drop is enabled"):
+        await store.set_campaign_status(cid, "running")
+    assert (await store.get_campaign(cid))["status"] == status
+    await store.update_campaign(cid, {"voicemail_drop_media_uri": "sound:fixture"})
+    assert (await store.set_campaign_status(cid, "running"))["status"] == "running"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edit", ["enable", "clear"])
+async def test_start_and_patch_serialize_voicemail_invariant_across_store_instances(tmp_path, monkeypatch, edit):
+    import asyncio
+    import threading
+    from src.core.outbound_store import OutboundStore
+
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    path = str(tmp_path / "history.db")
+    starter, editor = OutboundStore(db_path=path), OutboundStore(db_path=path)
+    campaign = await starter.create_campaign({
+        "name": "Race", "voicemail_drop_enabled": edit == "clear",
+        "voicemail_drop_media_uri": "sound:fixture" if edit == "clear" else "",
+    })
+    start_at_write, edit_at_transaction, release_start, timed_out = (threading.Event() for _ in range(4))
+    original_start_connection, original_edit_connection = starter._get_connection, editor._get_connection
+
+    def start_connection():
+        conn = original_start_connection()
+        def trace(sql):
+            if sql.startswith("UPDATE outbound_campaigns SET status"):
+                start_at_write.set()
+                if not release_start.wait(5):
+                    timed_out.set()
+        conn.set_trace_callback(trace)
+        return conn
+
+    def edit_connection():
+        conn = original_edit_connection()
+        conn.set_trace_callback(lambda sql: edit_at_transaction.set() if sql.startswith("BEGIN") else None)
+        return conn
+
+    monkeypatch.setattr(starter, "_get_connection", start_connection)
+    monkeypatch.setattr(editor, "_get_connection", edit_connection)
+    start = asyncio.create_task(starter.set_campaign_status(campaign["id"], "running"))
+    change = None
+    try:
+        assert await asyncio.to_thread(start_at_write.wait, 5)
+        payload = {"voicemail_drop_enabled": True} if edit == "enable" else {"voicemail_drop_media_uri": ""}
+        change = asyncio.create_task(editor.update_campaign(campaign["id"], payload))
+        assert await asyncio.to_thread(edit_at_transaction.wait, 5)
+    finally:
+        release_start.set()
+        results = await asyncio.gather(start, *([change] if change else []), return_exceptions=True)
+    assert not timed_out.is_set()
+    assert results[0]["status"] == "running"
+    assert isinstance(results[1], ValueError)
+    saved = await starter.get_campaign(campaign["id"])
+    assert saved["voicemail_drop_enabled"] == int(edit == "clear")
+    assert saved["voicemail_drop_media_uri"] == ("sound:fixture" if edit == "clear" else None)

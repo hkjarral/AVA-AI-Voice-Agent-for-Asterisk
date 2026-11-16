@@ -36,7 +36,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from src.audio.resampler import resample_audio
-from src.core.outbound_config import voicemail_drop_enabled
+from src.core.outbound_config import VOICEMAIL_RECORDING_REQUIRED, voicemail_drop_enabled
 from src.core.outbound_schedule import normalize_outbound_daily_window
 
 try:
@@ -733,7 +733,7 @@ async def set_campaign_status(campaign_id: str, req: CampaignStatusRequest):
                 if not media_uri:
                     raise HTTPException(
                         status_code=400,
-                        detail="Voicemail drop is enabled but no voicemail recording is set. Upload/generate voicemail before starting.",
+                        detail=VOICEMAIL_RECORDING_REQUIRED,
                     )
             if bool(int(campaign.get("consent_enabled") or 0)):
                 consent_uri = (campaign.get("consent_media_uri") or "").strip()
