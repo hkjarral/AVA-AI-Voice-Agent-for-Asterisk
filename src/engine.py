@@ -400,6 +400,8 @@ def _sanitize_for_llm(history: list) -> list:
 class Engine:
     """The main application engine."""
 
+    _OUTBOUND_ENDPOINT_CACHE_MAX_ENTRIES = 1024
+
     def __init__(self, config: AppConfig):
         self.config = config
         self._legacy_context_warning_emitted = False
@@ -636,7 +638,6 @@ class Engine:
         # Per-call downstream audio preferences (format/sample-rate)
         self.call_audio_preferences: Dict[str, Dict[str, Any]] = {}
         self.conn_to_channel: Dict[str, str] = {}
-        self.channel_to_conn: Dict[str, str] = {}
         self.conn_to_caller: Dict[str, str] = {}  # conn_id -> caller_channel_id
         self.audio_socket_server: Optional[AudioSocketServer] = None
         self.websocket_server: Optional[WebSocketMediaServer] = None
@@ -656,6 +657,7 @@ class Engine:
         self.pending_channel_for_bind: Optional[str] = None
         # Support duplicate Local ;1/;2 AudioSocket connections per call
         self.channel_to_conns: Dict[str, set] = {}
+        self._audiosocket_frame_count: Dict[str, int] = {}
         self.audiosocket_primary_conn: Dict[str, str] = {}
         # Audio buffering for better playback quality
         self.audio_buffers: Dict[str, bytes] = {}
@@ -3542,6 +3544,27 @@ class Engine:
         self._outbound_attempt_meta_by_attempt_id[attempt_id] = meta
         self._outbound_attempt_meta_by_channel_id[str(channel_id)] = meta
 
+    def _prune_outbound_endpoint_cache(self, now: float) -> None:
+        """Expire positive and negative probe results, including unqueried numbers."""
+        cache = self._outbound_pjsip_endpoint_cache
+        ttl = self._outbound_pjsip_endpoint_cache_ttl_seconds
+        for phone, entry in list(cache.items()):
+            if not (now - float(entry["ts"])) < ttl:
+                cache.pop(phone, None)
+
+    def _cache_outbound_endpoint(self, phone: str, tech: Optional[str]) -> None:
+        # Probe requests yield; prune/cap again at insertion so concurrent misses
+        # cannot overflow the bound. Zero/negative TTL continues to disable reuse.
+        now = time.monotonic()
+        self._prune_outbound_endpoint_cache(now)
+        if not self._outbound_pjsip_endpoint_cache_ttl_seconds > 0:
+            return
+        cache = self._outbound_pjsip_endpoint_cache
+        cache.pop(phone, None)
+        while len(cache) >= self._OUTBOUND_ENDPOINT_CACHE_MAX_ENTRIES:
+            cache.pop(next(iter(cache)))  # Oldest inserted result, not an active call.
+        cache[phone] = {"exists": tech is not None, "tech": tech, "ts": now}
+
     async def _outbound_choose_endpoint(self, dial_phone: str) -> str:
         """
         Choose best endpoint for outbound dialing.
@@ -3575,10 +3598,9 @@ class Engine:
         else:  # "auto" — try PJSIP first, then SIP
             techs_to_probe = ["PJSIP", "SIP"]
 
-        ttl = self._outbound_pjsip_endpoint_cache_ttl_seconds
-        now = time.monotonic()
+        self._prune_outbound_endpoint_cache(time.monotonic())
         cached = self._outbound_pjsip_endpoint_cache.get(phone)
-        if cached and (now - float(cached.get("ts") or 0.0)) < ttl:
+        if cached:
             cached_tech = cached.get("tech")
             if bool(cached.get("exists")) and cached_tech:
                 return f"{cached_tech}/{phone}"
@@ -3595,7 +3617,7 @@ class Engine:
                 if isinstance(resp, dict) and int(resp.get("status") or 0) == 404:
                     continue
                 if isinstance(resp, dict) and ("resource" in resp or "technology" in resp or "state" in resp):
-                    self._outbound_pjsip_endpoint_cache[phone] = {"exists": True, "tech": tech, "ts": now}
+                    self._cache_outbound_endpoint(phone, tech)
                     return f"{tech}/{phone}"
             except Exception as exc:
                 logger.debug(
@@ -3607,7 +3629,7 @@ class Engine:
                 )
                 continue
 
-        self._outbound_pjsip_endpoint_cache[phone] = {"exists": False, "tech": None, "ts": now}
+        self._cache_outbound_endpoint(phone, None)
         return f"Local/{dial_prefix}{phone}@{dial_context}"
 
     async def _outbound_cleanup_stale_attempts(self) -> None:
@@ -11784,6 +11806,15 @@ class Engine:
             # step fails. Only the invocation that acquired cleanup ownership
             # may close handles or release the in-memory guard.
             if resolved_call_id and cleanup_owned:
+                self._last_transcript_ts.pop(resolved_call_id, None)
+                caller_id = session.caller_channel_id
+                getattr(self, "_audiosocket_frame_count", {}).pop(caller_id, None)
+                self.channel_to_conns.pop(caller_id, None)
+                self.audiosocket_primary_conn.pop(caller_id, None)
+                for conn_id, channel_id in list(self.conn_to_channel.items()):
+                    if channel_id == caller_id:
+                        self.conn_to_channel.pop(conn_id, None)
+                self.streaming_playback_manager.cleanup_call(resolved_call_id)
                 try:
                     self.audio_capture.close_call(resolved_call_id)
                 except Exception:
@@ -12010,7 +12041,6 @@ class Engine:
 
             # Track mappings
             self.conn_to_channel[conn_id] = caller_channel_id
-            self.channel_to_conn[caller_channel_id] = conn_id
             self.channel_to_conns.setdefault(caller_channel_id, set()).add(conn_id)
             if caller_channel_id not in self.audiosocket_primary_conn:
                 self.audiosocket_primary_conn[caller_channel_id] = conn_id
@@ -12063,11 +12093,20 @@ class Engine:
                         caller_channel_id = self.uuidext_to_channel.get(uuid_str)
                         if caller_channel_id:
                             self.conn_to_channel[conn_id] = caller_channel_id
+                            self.channel_to_conns.setdefault(caller_channel_id, set()).add(conn_id)
                 except Exception:
                     pass
 
             if not caller_channel_id:
                 logger.debug("AudioSocket audio received for unknown connection", conn_id=conn_id, bytes=len(audio_bytes))
+                return
+
+            session = await self.session_store.get_by_call_id(caller_channel_id)
+            if (
+                not session or session.cleanup_in_progress or session.cleanup_completed
+                or self.conn_to_channel.get(conn_id) != caller_channel_id
+            ):
+                logger.debug("No active session for caller; dropping AudioSocket audio", conn_id=conn_id, caller_channel_id=caller_channel_id)
                 return
 
             # Track frame count per call
@@ -12086,11 +12125,6 @@ class Engine:
                     sample_rate=frame_rate,
                     conn_id=conn_id,
                 )
-
-            session = await self.session_store.get_by_call_id(caller_channel_id)
-            if not session:
-                logger.debug("No session for caller; dropping AudioSocket audio", conn_id=conn_id, caller_channel_id=caller_channel_id)
-                return
 
             # Media-path confirmation: first inbound audio frame observed.
             # Used to gate barge-in actions so we don't trigger during setup races.
@@ -14175,6 +14209,7 @@ class Engine:
                 conns.discard(conn_id)
                 if not conns:
                     self.channel_to_conns.pop(caller_channel_id, None)
+                    getattr(self, "_audiosocket_frame_count", {}).pop(caller_channel_id, None)
                 # Reset primary if needed
                 if self.audiosocket_primary_conn.get(caller_channel_id) == conn_id:
                     self.audiosocket_primary_conn.pop(caller_channel_id, None)
@@ -17941,6 +17976,8 @@ class Engine:
                     except Exception:
                         logger.debug("STT transcribe failed", call_id=call_id, exc_info=True)
                         return
+                    if session.cleanup_in_progress or session.cleanup_completed:
+                        return
                     transcript = (transcript or "").strip()
                     if not transcript:
                         return
@@ -18027,6 +18064,8 @@ class Engine:
                 async def stt_receiver() -> None:
                     try:
                         async for final in pipeline.stt_adapter.iter_results(call_id):
+                            if session.cleanup_in_progress or session.cleanup_completed:
+                                return
                             try:
                                 # Record time when a final transcript arrives
                                 self._last_transcript_ts[call_id] = time.time()
