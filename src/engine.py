@@ -3737,6 +3737,12 @@ class Engine:
                     campaign_id=str(meta.get("campaign_id") or ""),
                     lead_id=str(meta.get("lead_id") or ""),
                 )
+            # Recovery awaited storage; a terminal owner may have won meanwhile.
+            current = self._outbound_attempt_meta_by_attempt_id.get(attempt_id)
+            if current is not None:
+                meta = current
+            elif channel_id in getattr(self, "_seen_outbound_channels", set()):
+                return
         if not meta:
             await self._reject_outbound_answered_attempt(
                 channel_id,
@@ -3744,6 +3750,10 @@ class Engine:
                 None,
                 "outbound attempt metadata unavailable after answer",
             )
+            return
+        if "completion_result" in meta:
+            # A late answer must not copy terminal ownership or its busy flag.
+            await self._persist_outbound_completion(meta)
             return
         if meta.get("custom_vars_valid") is False:
             await self._reject_outbound_answered_attempt(
@@ -3764,6 +3774,15 @@ class Engine:
                 previous_channel_id, None
             )
         self._outbound_attempt_meta_by_channel_id[channel_id] = meta
+
+        async def answer_owner_retired() -> bool:
+            current = self._outbound_attempt_meta_by_attempt_id.get(attempt_id)
+            if current is meta:
+                return False
+            if current is not None and "completion_result" in current:
+                await self._persist_outbound_completion(current)
+            return True
+
         try:
             await self.outbound_store.set_attempt_channel(attempt_id, channel_id)
         except Exception:
@@ -3773,10 +3792,13 @@ class Engine:
                 attempt_id=attempt_id,
                 exc_info=True,
             )
+        if await answer_owner_retired():
+            return
         try:
             await self.outbound_store.set_lead_state(
                 str(meta.get("lead_id") or ""),
                 state="amd_pending",
+                only_if_active=True,
             )
         except Exception:
             logger.warning(
@@ -3786,6 +3808,8 @@ class Engine:
                 lead_id=str(meta.get("lead_id") or ""),
                 exc_info=True,
             )
+        if await answer_owner_retired():
+            return
 
         # Lead context is mandatory when supplied. Keep this confirmation
         # independent from the other best-effort safety-net writes below: a
@@ -3806,6 +3830,8 @@ class Engine:
                     expected_custom_vars_json,
                 )
             )
+            if await answer_owner_retired():
+                return
             if not confirmed:
                 error_message = (
                     "outbound custom_vars could not be confirmed after answer"
@@ -3877,6 +3903,8 @@ class Engine:
         except Exception:
             logger.debug("Failed to refresh outbound correlation vars before AMD hop", channel_id=channel_id, exc_info=True)
 
+        if await answer_owner_retired():
+            return
         # Exiting Stasis triggers StasisEnd; guard cleanup until AMD returns.
         self._outbound_awaiting_amd_channel_ids.add(channel_id)
         try:
@@ -3895,6 +3923,8 @@ class Engine:
                 exc_info=True,
             )
 
+        if await answer_owner_retired():
+            return
         if ok is True:
             return
         if ok is None:

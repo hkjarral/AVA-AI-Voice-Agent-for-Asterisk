@@ -272,6 +272,11 @@ revisits rows that were too recent at startup and excludes live owned attempts;
 it does not redial or replay audio. New dialing generations reuse the existing
 attempt-start/lead-last-attempt timestamp, without a schema migration.
 
+Voicemail playback retains the existing 30-second completion budget. A recording
+that does not confirm completion within that budget is hung up and reported as
+an error, rather than reported as successfully dropped. Recording-duration
+validation and longer playback budgets are separate follow-up work.
+
 Both recordings are uploaded as `.wav` (recommended) or `.ulaw`; WAV is converted to 8kHz μ-law for Asterisk.
 
 Outcomes:

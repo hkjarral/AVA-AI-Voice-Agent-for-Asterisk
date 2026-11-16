@@ -731,3 +731,133 @@ async def test_stale_watchdog_snapshot_cannot_replace_terminal_or_new_owner():
     assert engine.outbound_store.finish_attempt.await_count == 1
     assert engine.outbound_store.finish_attempt.await_args.kwargs["outcome"] == "machine_detected"
     engine.ari_client.send_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [0, 1])
+async def test_late_answer_preserves_busy_completion_owner_without_reentering_amd(enabled):
+    import asyncio
+
+    engine = _amd_failure_engine({"id": "campaign", "voicemail_drop_enabled": enabled, "voicemail_drop_media_uri": "sound:fixture"})
+    engine.outbound_store.set_attempt_channel = AsyncMock()
+    engine._set_outbound_agent_channel_vars = AsyncMock()
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def finish(*_args, **_kwargs):
+        entered.set()
+        await release.wait()
+    engine.outbound_store.finish_attempt.side_effect = finish
+    terminal = asyncio.create_task(engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", "attempt", "MACHINE"]))
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
+    owner = engine._outbound_attempt_meta_by_attempt_id["attempt"]
+    assert owner["completion_busy"] is True
+    try:
+        await asyncio.wait_for(engine._handle_outbound_answered("answered", {}, ["outbound", "attempt"]), timeout=1.0)
+        assert engine._outbound_attempt_meta_by_attempt_id["attempt"] is owner
+        assert engine._outbound_attempt_meta_by_channel_id["answered"] is owner
+        engine.outbound_store.set_attempt_channel.assert_not_awaited()
+        engine.ari_client.continue_in_dialplan.assert_not_awaited()
+    finally:
+        release.set()
+        await asyncio.wait_for(terminal, timeout=1.0)
+    assert not engine._outbound_attempt_meta_by_attempt_id
+    assert not engine._outbound_attempt_meta_by_channel_id
+    assert engine.ari_client.play_media_on_channel_with_id.await_count == enabled
+    engine.outbound_store.set_lead_state.assert_awaited_once_with("lead", state="completed", last_outcome="voicemail_dropped" if enabled else "machine_detected", only_if_active=True, expected_attempt_id="attempt")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [0, 1])
+@pytest.mark.parametrize("failed_write", ["finish_attempt", "set_lead_state"])
+async def test_late_answer_recovers_pending_completion_without_playback_or_amd(enabled, failed_write):
+    engine = _amd_failure_engine({"id": "campaign", "voicemail_drop_enabled": enabled, "voicemail_drop_media_uri": "sound:fixture"})
+    engine.outbound_store.set_attempt_channel = AsyncMock()
+    getattr(engine.outbound_store, failed_write).side_effect = RuntimeError("synthetic unavailable")
+    await engine._handle_outbound_amd_result("answered", {}, ["outbound_amd", "attempt", "MACHINE"])
+    owner = engine._outbound_attempt_meta_by_attempt_id["attempt"]
+    assert not owner["completion_busy"]
+    getattr(engine.outbound_store, failed_write).side_effect = None
+    owner["completion_retry_at"] = 0
+    await engine._handle_outbound_answered("answered", {}, ["outbound", "attempt"])
+    assert not engine._outbound_attempt_meta_by_attempt_id
+    assert not engine._outbound_attempt_meta_by_channel_id
+    assert engine.ari_client.play_media_on_channel_with_id.await_count == enabled
+    engine.ari_client.hangup_channel.assert_awaited_once_with("answered")
+    engine.outbound_store.set_attempt_channel.assert_not_awaited()
+    engine.ari_client.continue_in_dialplan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["recovery", "correlation", "lead_state", "custom_vars", "channel_vars", "handoff"])
+async def test_answer_continuation_retires_when_terminal_owner_wins_during_await(boundary):
+    import asyncio
+
+    engine = _amd_failure_engine({"id": "campaign", "voicemail_drop_enabled": 0})
+    engine.outbound_store.set_attempt_channel = AsyncMock()
+    engine._set_outbound_agent_channel_vars = AsyncMock()
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_meta = engine._outbound_attempt_meta_by_attempt_id["attempt"]
+    async def paused(*_args, **_kwargs):
+        entered.set()
+        await release.wait()
+        return dict(original_meta) if boundary == "recovery" else boundary != "handoff"
+    if boundary == "recovery":
+        engine._outbound_attempt_meta_by_attempt_id.clear()
+        engine._outbound_attempt_meta_by_channel_id.clear()
+        engine.outbound_store.get_active_attempt_runtime_context = AsyncMock(side_effect=paused)
+    elif boundary == "correlation":
+        engine.outbound_store.set_attempt_channel.side_effect = paused
+    elif boundary == "lead_state":
+        async def lead_write(*args, **kwargs):
+            if kwargs.get("state") == "amd_pending":
+                await paused()
+        engine.outbound_store.set_lead_state.side_effect = lead_write
+    elif boundary == "custom_vars":
+        original_meta["custom_vars"] = {"synthetic": "value"}
+        engine._set_and_confirm_outbound_custom_vars = AsyncMock(side_effect=paused)
+    elif boundary == "channel_vars":
+        engine.ari_client.set_channel_var.side_effect = paused
+    else:
+        engine.ari_client.continue_in_dialplan.side_effect = paused
+    answered = asyncio.create_task(engine._handle_outbound_answered("answered", {}, ["outbound", "attempt"]))
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
+    await engine._complete_outbound_attempt("answered", "attempt", original_meta, result={"outcome": "machine_detected"}, lead_state="completed")
+    completed_writes = engine.outbound_store.set_lead_state.await_count
+    release.set()
+    await asyncio.wait_for(answered, timeout=1.0)
+    assert engine.outbound_store.set_lead_state.await_count == completed_writes
+    assert not engine._outbound_attempt_meta_by_attempt_id
+    assert not engine._outbound_attempt_meta_by_channel_id
+    assert engine.ari_client.continue_in_dialplan.await_count == int(boundary == "handoff")
+    engine.ari_client.play_media_on_channel_with_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inflight_answer_lead_write_cannot_reset_completed_sqlite_lead(tmp_path, monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    store = OutboundStore(db_path=str(tmp_path / "history.db"))
+    campaign = await store.create_campaign({"name": "Late answer", "voicemail_drop_enabled": False})
+    await store.import_leads_csv(campaign["id"], b"phone_number\n1001\n")
+    lead = (await store.lease_pending_leads(campaign["id"], limit=1))[0]
+    attempt = await store.create_attempt(campaign["id"], lead["id"])
+    assert await store.mark_lead_dialing(lead["id"], attempt_id=attempt)
+    meta = await store.get_active_attempt_runtime_context(attempt)
+    engine = _make_engine(store, meta)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_write = store.set_lead_state
+    async def delayed_write(*args, **kwargs):
+        if kwargs.get("state") == "amd_pending":
+            entered.set()
+            await release.wait()
+        await original_write(*args, **kwargs)
+    store.set_lead_state = delayed_write
+    answered = asyncio.create_task(engine._handle_outbound_answered("answered", {}, ["outbound", attempt]))
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
+    await engine._complete_outbound_attempt("answered", attempt, meta, result={"outcome": "machine_detected"}, lead_state="completed")
+    release.set()
+    await asyncio.wait_for(answered, timeout=1.0)
+    row = (await store.list_leads(campaign["id"]))["leads"][0]
+    assert (row["state"], row["last_outcome"]) == ("completed", "machine_detected")
+    assert not engine._outbound_attempt_meta_by_attempt_id
+    engine.ari_client.continue_in_dialplan.assert_not_awaited()
