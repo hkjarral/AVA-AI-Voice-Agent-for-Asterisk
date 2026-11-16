@@ -15,7 +15,7 @@ from api import config, local_ai  # noqa: E402
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["status", "capabilities", "provider_test"])
+@pytest.mark.parametrize("operation", ["status", "capabilities", "provider_test", "backends", "backend_schema"])
 async def test_local_ai_connects_directly_despite_environment_proxy(monkeypatch, operation):
     proxy_requests = []
     messages = []
@@ -40,6 +40,11 @@ async def test_local_ai_connects_directly_despite_environment_proxy(monkeypatch,
         messages.append(command)
         if command["type"] == "capabilities":
             payload = {"type": "capabilities_response", "capabilities": {"vosk": True, "piper": True}}
+        elif command["type"] == "backends":
+            payload = {"type": "backends_response", "stt": {"vosk": {}}, "tts": {}, "llm": {}}
+        elif command["type"] == "backend_schema":
+            assert command == {"type": "backend_schema", "backend_type": "stt", "backend_name": "vosk"}
+            payload = {"type": "backend_schema_response", "schema": {"type": "object"}}
         else:
             payload = {
                 "type": "status_response", "status": "ok", "stt_backend": "vosk",
@@ -65,6 +70,13 @@ async def test_local_ai_connects_directly_despite_environment_proxy(monkeypatch,
                 result = await asyncio.wait_for(local_ai.get_backend_capabilities(), timeout=3)
                 assert "error" not in result, result
                 assert result["stt"]["vosk"]["available"] is True
+            elif operation == "backends":
+                result = await asyncio.wait_for(local_ai.list_backends(), timeout=3)
+                assert result["type"] == "backends_response"
+                assert "vosk" in result["stt"]
+            elif operation == "backend_schema":
+                result = await asyncio.wait_for(local_ai.get_backend_schema("stt", "vosk"), timeout=3)
+                assert result == {"type": "backend_schema_response", "schema": {"type": "object"}}
             else:
                 request = config.ProviderTestRequest(name="local", config={
                     "type": "local", "capabilities": ["stt", "tts"],
@@ -74,4 +86,5 @@ async def test_local_ai_connects_directly_despite_environment_proxy(monkeypatch,
                 assert result["success"] is True, result
     assert proxy_requests == [], "Local AI connections must not reach the ambient proxy"
     assert messages[0] == {"type": "auth", "auth_token": token}
-    assert messages[1]["type"] == ("capabilities" if operation == "capabilities" else "status")
+    expected_command = operation if operation in {"capabilities", "backends", "backend_schema"} else "status"
+    assert messages[1]["type"] == expected_command

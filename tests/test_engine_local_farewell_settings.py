@@ -18,6 +18,46 @@ def _engine_with_local_farewell(mode: str) -> Engine:
     return engine
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["normal", "strict"])
+@pytest.mark.parametrize(
+    "user_text",
+    [
+        "Can you hand off to a real person?",
+        "I was on hold and the call dropped",
+        "Please leave a message and call me back",
+    ],
+)
+async def test_local_hangup_guardrail_rejects_ordinary_phrases(mode, user_text):
+    engine = _build_engine()
+    engine.config.tools["hangup_call"] = {"policy": {"mode": mode}}
+    session = CallSession(
+        call_id="call-intent", caller_channel_id="caller", provider_name="local"
+    )
+    session.last_transcript = user_text
+    await engine.session_store.upsert_call(session)
+    engine._execute_provider_tool = AsyncMock(return_value={"status": "success"})
+    engine._terminate_call_after_audio = AsyncMock()
+    engine._play_local_asterisk_farewell = AsyncMock()
+
+    await engine.on_provider_event({
+        "type": "ToolCall",
+        "call_id": session.call_id,
+        "tool_calls": [
+            {"id": "hangup", "name": "hangup_call", "parameters": {}},
+            {"id": "transcript", "name": "request_transcript", "parameters": {}},
+        ],
+    })
+
+    # Reject the erroneous terminal tool without discarding the unrelated tool.
+    engine._execute_provider_tool.assert_awaited_once()
+    assert engine._execute_provider_tool.call_args.kwargs["function_name"] == "request_transcript"
+    engine._terminate_call_after_audio.assert_not_awaited()
+    engine._play_local_asterisk_farewell.assert_not_awaited()
+    assert not session.cleanup_after_tts
+    assert not engine._local_asterisk_farewell_pending
+
+
 def test_resolve_local_farewell_settings_supports_dict_config():
     mode, timeout_sec = Engine._resolve_local_farewell_settings(
         {

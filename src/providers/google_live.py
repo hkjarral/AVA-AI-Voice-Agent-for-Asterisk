@@ -288,6 +288,8 @@ class GoogleLiveProvider(AIProviderInterface):
         
         # Golden Baseline: Simple input buffer for 20ms chunking
         self._input_buffer = bytearray()
+        self._input_resample_state: Optional[tuple] = None
+        self._input_resample_rates: Optional[tuple[int, int]] = None
         self._output_resample_state: Optional[tuple] = None
         self._output_prefill = []
         self._output_prefill_ms = 0.0
@@ -413,7 +415,14 @@ class GoogleLiveProvider(AIProviderInterface):
             "last_ping_error": self._last_ws_ping_error,
         }
 
+    def _reset_input_audio(self) -> None:
+        """Discard input audio/history when the provider connection changes."""
+        self._input_buffer.clear()
+        self._input_resample_state = None
+        self._input_resample_rates = None
+
     def _mark_ws_disconnected(self) -> None:
+        self._reset_input_audio()
         self._setup_complete = False
         self.websocket = None
         if self._session_gauge_incremented:
@@ -841,6 +850,7 @@ class GoogleLiveProvider(AIProviderInterface):
             call_id: Unique identifier for the call
             context: Optional context including system prompt, tools, etc.
         """
+        self._reset_input_audio()
         self._release_transfer_tool_responses()
         self._handoff_evidence.reset(call_id)
         self._call_id = call_id
@@ -1511,7 +1521,7 @@ class GoogleLiveProvider(AIProviderInterface):
             sample_rate: Sample rate of input audio (default from config)
             encoding: Audio encoding (ulaw/linear16/pcm16)
         """
-        if not self.websocket or not self._setup_complete or self._closing:
+        if not self.websocket or not self._setup_complete or self._closing or not audio_chunk:
             return
 
         try:
@@ -1527,11 +1537,20 @@ class GoogleLiveProvider(AIProviderInterface):
 
             # Resample to provider's input rate (16kHz for Gemini Live)
             provider_rate = self.config.provider_input_sample_rate_hz
+            rates = (src_rate, provider_rate)
+            if rates != self._input_resample_rates:
+                # History belongs to one input/output rate pair. Already-converted
+                # buffered audio is reusable only while the provider rate matches.
+                if self._input_resample_rates and self._input_resample_rates[1] != provider_rate:
+                    self._input_buffer.clear()
+                self._input_resample_state = None
+                self._input_resample_rates = rates
             if src_rate != provider_rate:
-                pcm16_provider, _ = resample_audio(
+                pcm16_provider, self._input_resample_state = resample_audio(
                     pcm16_src,
                     source_rate=src_rate,
                     target_rate=provider_rate,
+                    state=self._input_resample_state,
                 )
             else:
                 pcm16_provider = pcm16_src
@@ -3173,7 +3192,7 @@ class GoogleLiveProvider(AIProviderInterface):
             # Clear state
             self._call_id = None
             self._session_id = None
-            self._input_buffer.clear()
+            self._reset_input_audio()
             self._output_resample_state = None
             self._output_resampler_logged = False
             self._hangup_after_response = False

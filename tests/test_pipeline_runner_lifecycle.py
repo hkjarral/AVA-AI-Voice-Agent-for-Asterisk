@@ -423,6 +423,23 @@ def test_pipeline_terminal_fallback_requires_assistant_farewell():
     )
 
 
+@pytest.mark.parametrize(
+    "user_text, expected_hangup",
+    [
+        ("Can you hand off to a real person?", False),
+        ("I was on hold and the call dropped", False),
+        ("Please leave a message and call me back", False),
+        ("Please end the call now.", True),
+        ("Please and the call now.", True),
+        ("Okay, hand up the call.", True),
+    ],
+)
+def test_pipeline_terminal_fallback_requires_caller_command(user_text, expected_hangup):
+    assert Engine._is_pipeline_farewell_without_tool(
+        user_text, "Thanks for calling!", normalize_hangup_policy({})
+    ) is expected_hangup
+
+
 class _StubResolution:
     def __init__(self, stt_adapter=None, stt_options=None, llm_adapter=None, tts_adapter=None):
         self.pipeline_name = "stub"
