@@ -198,6 +198,14 @@ def build_in_call_tool_runtime_guidance(config: Dict[str, Any], allowed_tools: I
     ]
     sections.append("\n".join(header))
 
+    if "google_calendar" in allowed:
+        sections.append("\n".join([
+            "Google Calendar datetime rules:",
+            "- For time_min/time_max and start_datetime/end_datetime, Z or an explicit offset represents an instant; without an offset, the time is local to the target calendar. Never append Z to a local clock time without converting it to UTC.",
+            "- Use the chosen get_free_slots slots_with_end start/end strings unchanged, preserving offsets. calendar_timezone describes slot display; different selected timezones use UTC. Set the appropriate allowed calendar_key when booking.",
+            "- Confirm the date, time, timezone and duration with the caller before creating an event.",
+        ]))
+
     if "calendly_calendar" in allowed:
         calendar = ((config or {}).get("tools") or {}).get("calendly_calendar") or {}
         inventory = calendar.get("appointments") or {}

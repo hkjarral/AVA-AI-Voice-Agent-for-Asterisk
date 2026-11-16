@@ -272,14 +272,14 @@ async def test_final_availability_cutoff_is_after_slot_generation(calendar_facto
     from src.tools.business import gcal_tool as module
 
     tool, apis, clock, _ = calendar_factory(mode, now="2027-04-26T13:59:59+00:00")
-    generate = module.build_slot_starts
+    generate = module.build_zoned_slot_starts
 
     def delayed_generation(*args):
         result = generate(*args)
         clock.return_value = datetime(2027, 4, 26, 14, 0, 1, tzinfo=UTC)
         return result
 
-    monkeypatch.setattr(module, "build_slot_starts", delayed_generation)
+    monkeypatch.setattr(module, "build_zoned_slot_starts", delayed_generation)
     result = await availability(tool, apis, "2027-04-26T09:00:00", "2027-04-26T17:00:00", mode)
     assert result["slots"][0] == "2027-04-26T14:30:00+00:00"
     assert result["total_slots_available"] == 5

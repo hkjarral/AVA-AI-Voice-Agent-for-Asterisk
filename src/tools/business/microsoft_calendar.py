@@ -20,7 +20,7 @@ import structlog
 from src.tools.base import Tool, ToolCategory, ToolDefinition
 from src.tools.business._calendar_utils import (
     graph_datetime,
-    build_slot_starts,
+    build_zoned_slot_starts,
     intersect_intervals,
     parse_iso_datetime,
     subtract_busy,
@@ -564,7 +564,7 @@ class MicrosoftCalendarTool(Tool):
                     tz_name,
                 )
             else:
-                range_start = max(range_start, utc_now().astimezone(ZoneInfo(tz_name)))
+                range_start = max(range_start, utc_now().astimezone(ZoneInfo(tz_name)), key=to_utc)
                 try:
                     horizon = (
                         int(config.get("booking_horizon_days", 365))
@@ -581,9 +581,10 @@ class MicrosoftCalendarTool(Tool):
                         (utc_now() + timedelta(days=horizon)).astimezone(
                             ZoneInfo(tz_name)
                         ),
+                        key=to_utc,
                     )
             try:
-                if range_end <= range_start:
+                if to_utc(range_end) <= to_utc(range_start):
                     per_account_intervals.append([])
                     per_account_free_counts[key] = 0
                     continue
@@ -600,7 +601,7 @@ class MicrosoftCalendarTool(Tool):
                 )
                 if exact:
                     exact_results.append(
-                        any(a <= range_start and range_end <= b for a, b in intervals)
+                        any(to_utc(a) <= to_utc(range_start) and to_utc(range_end) <= to_utc(b) for a, b in intervals)
                     )
             except MicrosoftGraphApiError as exc:
                 failed_keys.append(key)
@@ -679,7 +680,6 @@ class MicrosoftCalendarTool(Tool):
                 "agent_hint": "This checks the exact interval. Confirm it with the caller before creation; creation rechecks availability.",
             }
 
-        slot_starts = build_slot_starts(available_intervals, duration_minutes)
         tz_set = {
             self._account_config(accounts[k]).timezone or "UTC"
             for k in keys_to_use
@@ -688,7 +688,8 @@ class MicrosoftCalendarTool(Tool):
         output_tz_name = next(iter(tz_set)) if len(tz_set) == 1 else "UTC"
         output_tz = ZoneInfo(output_tz_name)
         tz_disagreement = len(tz_set) > 1
-        slot_starts = sorted([slot.astimezone(output_tz) for slot in slot_starts])
+        slot_starts = build_zoned_slot_starts(available_intervals, duration_minutes, output_tz)
+        slot_starts.sort(key=to_utc)
 
         try:
             max_slots = int(config.get("max_slots_returned", 3))
@@ -698,7 +699,8 @@ class MicrosoftCalendarTool(Tool):
         if max_slots and max_slots > 0 and total_slots > max_slots:
             slot_starts = slot_starts[:max_slots]
         slot_pairs = [
-            (slot, slot + timedelta(minutes=duration_minutes)) for slot in slot_starts
+            (slot, (to_utc(slot) + timedelta(minutes=duration_minutes)).astimezone(output_tz))
+            for slot in slot_starts
         ]
         slots_with_end = [
             {"start": start.isoformat(), "end": end.isoformat()}
@@ -1356,7 +1358,7 @@ class MicrosoftCalendarTool(Tool):
                 intervals, _, _ = self._available_intervals(
                     client, start, end, account.timezone, config, for_booking=True
                 )
-                if not any(a <= start and end <= b for a, b in intervals):
+                if not any(to_utc(a) <= to_utc(start) and to_utc(end) <= to_utc(b) for a, b in intervals):
                     if resend:
                         # The earlier POST may have become visible since the
                         # lookup above and be what makes the slot busy.
@@ -1809,7 +1811,7 @@ class MicrosoftCalendarTool(Tool):
                     exclude_id=event_id,
                     for_booking=True,
                 )
-                if not any(a <= start and end <= b for a, b in intervals):
+                if not any(to_utc(a) <= to_utc(start) and to_utc(end) <= to_utc(b) for a, b in intervals):
                     raise BookingValidationError(
                         "slot_busy",
                         "The new interval is busy; the original booking is retained.",
