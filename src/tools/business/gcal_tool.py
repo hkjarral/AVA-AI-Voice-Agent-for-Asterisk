@@ -16,7 +16,7 @@ GOOGLE_CALENDAR_TZ for timezone (fallback: TZ).
 import asyncio
 import threading
 import structlog
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, Any
 from zoneinfo import ZoneInfo
 
@@ -32,7 +32,9 @@ from src.tools.business._calendar_utils import (
     union_intervals,
     working_hours_mask,
 )
-from src.tools.business.gcalendar import GCalendar, GoogleCalendarApiError, _get_timezone
+from src.tools.business.gcalendar import (
+    AVA_BOOKING_PROPERTY, AVA_BOOKING_VERSION, GCalendar, GoogleCalendarApiError, _get_timezone,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -93,7 +95,8 @@ _GOOGLE_CALENDAR_INPUT_SCHEMA = {
             "description": (
                 "OPTIONAL — DO NOT PASS unless the operator explicitly told you to use a "
                 "title-based busy scheme. Default behavior uses Google's native free/busy. "
-                "Only pass a value when the operator's prompt explicitly says so."
+                "Only pass a value when the operator's prompt explicitly says so. "
+                "AVA-created bookings block open windows independently of their titles."
             )
         },
         "duration": {
@@ -245,6 +248,38 @@ class GCalendarTool(Tool):
     def _get_calendar_tz_name(self, config: Dict[str, Any]) -> str:
         """Resolve calendar timezone: config timezone, then GOOGLE_CALENDAR_TZ, TZ, UTC."""
         return _get_timezone(config.get("timezone", ""))
+
+    def _event_interval(self, event: dict, tz_name: str) -> tuple[datetime, datetime]:
+        """Read Google bounds; all-day dates are calendar-local, end exclusive.
+
+        This parses API data, not LLM input. Respect actual offsets and the
+        event's explicit timeZone for offset-less timed bounds. Invalid relevant
+        events must fail the calendar query, never silently expose their time.
+        """
+        calendar_tz = ZoneInfo(tz_name)
+        bounds = []
+        kinds = []
+        for field in ("start", "end"):
+            bound = event.get(field)
+            if not isinstance(bound, dict):
+                raise ValueError("Missing event bound")
+            if bool(bound.get("date")) == bool(bound.get("dateTime")):
+                raise ValueError("Event bound requires exactly one date or dateTime")
+            if bound.get("date"):
+                raw_date = bound["date"]
+                parsed_date = date.fromisoformat(raw_date)
+                if parsed_date.isoformat() != raw_date:
+                    raise ValueError("Invalid all-day date")
+                dt = datetime.combine(parsed_date, datetime.min.time(), calendar_tz)
+                kinds.append("date")
+            else:
+                dt = self._parse_event_datetime(bound, tz_name)
+                kinds.append("dateTime")
+            bounds.append(dt)
+        start, end = bounds
+        if kinds[0] != kinds[1] or end.astimezone(timezone.utc) <= start.astimezone(timezone.utc):
+            raise ValueError("Invalid event interval")
+        return start, end
 
     def _get_or_create_cal(
         self,
@@ -632,24 +667,43 @@ class GCalendarTool(Tool):
                     """
                     free_blocks = []
                     busy_blocks = []
+                    range_start = self._normalize_datetime_to_calendar_tz(time_min, tz_name).astimezone(timezone.utc)
+                    range_end = self._normalize_datetime_to_calendar_tz(time_max, tz_name).astimezone(timezone.utc)
                     for e in evts:
-                        summary = e.get("summary", "").strip()
-                        if not summary.startswith(free_prefix) and not summary.startswith(busy_prefix):
+                        if e.get("status") == "cancelled":
                             continue
-                        start_bound, end_bound = e.get("start"), e.get("end")
-                        # Date-only events have no timed bounds in this path.
-                        # Malformed timed bounds must not expose availability.
-                        if (isinstance(start_bound, dict) and isinstance(end_bound, dict)
-                                and start_bound.get("date") and end_bound.get("date")
-                                and "dateTime" not in start_bound and "dateTime" not in end_bound):
+                        summary = (e.get("summary") or "").strip()
+                        private_properties = (e.get("extendedProperties") or {}).get("private") or {}
+                        is_booking = (
+                            private_properties.get(AVA_BOOKING_PROPERTY) == AVA_BOOKING_VERSION
+                        )
+                        # Booking identity wins even if its title starts with
+                        # the Open prefix. Unmarked events keep legacy prefix
+                        # semantics; unrelated titles are deliberately ignored.
+                        is_free = not is_booking and summary.startswith(free_prefix)
+                        is_busy = is_booking or (not is_free and summary.startswith(busy_prefix))
+                        if not is_free and not is_busy:
                             continue
-                        start_dt = self._parse_event_datetime(start_bound, tz_name)
-                        end_dt = self._parse_event_datetime(end_bound, tz_name)
+                        # Open windows may be transparent (recommended). Busy
+                        # events explicitly marked Available do not block time.
+                        if is_busy and e.get("transparency") == "transparent":
+                            continue
+                        try:
+                            start_dt, end_dt = self._event_interval(e, tz_name)
+                        except (ValueError, TypeError, KeyError, AttributeError) as err:
+                            raise GoogleCalendarApiError(
+                                "Calendar contains an invalid availability event interval; "
+                                "repair its start/end bounds before retrying."
+                            ) from err
+                        # Compare instants, including repeated wall-clock times
+                        # at DST fallback, before clipping/subtracting intervals.
+                        start_dt = max(start_dt.astimezone(timezone.utc), range_start)
+                        end_dt = min(end_dt.astimezone(timezone.utc), range_end)
                         if end_dt <= start_dt:
-                            raise GoogleCalendarApiError("Calendar contains an invalid timed availability event interval.")
-                        if summary.startswith(free_prefix):
+                            continue
+                        if is_free:
                             free_blocks.append((start_dt, end_dt))
-                        elif summary.startswith(busy_prefix):
+                        elif is_busy:
                             busy_blocks.append((start_dt, end_dt))
                     return subtract_busy(free_blocks, busy_blocks), len(free_blocks), len(busy_blocks)
 
