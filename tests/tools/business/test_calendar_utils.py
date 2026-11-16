@@ -65,3 +65,76 @@ def test_build_slot_starts_handles_midnight_and_skips_empty_intervals():
     end = midnight + timedelta(minutes=30)
 
     assert build_slot_starts([(end, start), (start, start), (start, end)], 30) == [midnight]
+
+
+@pytest.mark.parametrize(("start", "end", "expected"), [
+    ("2030-11-03T06:00:00+00:00", "2030-11-03T07:00:00+00:00",
+     ["2030-11-03T01:00:00-05:00", "2030-11-03T01:30:00-05:00"]),
+    ("2030-03-10T06:30:00+00:00", "2030-03-10T07:30:00+00:00",
+     ["2030-03-10T01:30:00-05:00", "2030-03-10T03:00:00-04:00"]),
+])
+def test_slot_grid_steps_elapsed_instants_through_dst(start, end, expected):
+    zone = ZoneInfo("America/New_York")
+    start_dt, end_dt = [datetime.fromisoformat(value).astimezone(zone) for value in (start, end)]
+    slots = build_slot_starts([(start_dt, end_dt)], 30)
+    assert [slot.isoformat() for slot in slots] == expected
+
+
+def test_slot_grid_keeps_local_alignment_in_fractional_offset_zone():
+    start = datetime(2030, 4, 26, 9, tzinfo=ZoneInfo("Asia/Kathmandu"))
+    assert build_slot_starts([(start, start + timedelta(hours=1))], 30) == [start, start + timedelta(minutes=30)]
+
+
+@pytest.mark.parametrize('aware', [True, False])
+def test_first_slot_after_unaligned_start_before_fallback_is_chronological(aware):
+    zone = ZoneInfo('America/New_York') if aware else None
+    start = datetime(2027, 11, 7, 1, 50, tzinfo=zone)
+    end = datetime(2027, 11, 7, 2, 30, tzinfo=zone)
+    slots = build_slot_starts([(start, end)], 30)
+    assert [slot.isoformat() for slot in slots] == (
+        ['2027-11-07T01:00:00-05:00', '2027-11-07T01:30:00-05:00', '2027-11-07T02:00:00-05:00']
+        if aware else ['2027-11-07T02:00:00']
+    )
+
+
+@pytest.mark.parametrize('zone,duration,start,end,expected', [
+    ('America/New_York', 45, '2027-03-14T06:30:00+00:00', '2027-03-14T08:00:00+00:00',
+     ['2027-03-14T01:30:00-05:00', '2027-03-14T03:00:00-04:00']),
+    ('Australia/Lord_Howe', 15, '2027-04-03T14:50:00+00:00', '2027-04-03T16:00:00+00:00',
+     ['2027-04-04T01:30:00+10:30', '2027-04-04T01:45:00+10:30',
+      '2027-04-04T02:00:00+10:30', '2027-04-04T02:15:00+10:30']),
+])
+def test_zoned_grid_preserves_local_alignment_across_gaps_and_half_hour_folds(zone, duration, start, end, expected):
+    from src.tools.business._calendar_utils import build_zoned_slot_starts
+
+    slots = build_zoned_slot_starts([(datetime.fromisoformat(start), datetime.fromisoformat(end))],
+                                    duration, ZoneInfo(zone))
+    assert [slot.isoformat() for slot in slots] == expected
+
+
+@pytest.mark.parametrize('operation', ['working_hours', 'union', 'intersection', 'subtract_busy'])
+def test_interval_operations_keep_fold_crossing_ranges_as_instants(operation):
+    from datetime import timezone
+    from src.tools.business._calendar_utils import (
+        working_hours_mask, union_intervals, intersect_intervals, subtract_busy,
+    )
+
+    zone = ZoneInfo('America/New_York')
+    def local(clock):
+        return datetime.fromisoformat(f'2027-11-07T{clock}+00:00').astimezone(zone)
+    start, end = local('05:20:00'), local('06:10:00')
+    if operation == 'working_hours':
+        result = working_hours_mask(start, end, 'America/New_York', 0, 24, set(range(7)))
+        expected = [('05:20:00', '06:10:00')]
+    elif operation == 'union':
+        result = union_intervals([[(start, end)], [(local('06:00:00'), local('06:30:00'))]])
+        expected = [('05:20:00', '06:30:00')]
+    elif operation == 'intersection':
+        result = intersect_intervals([(start, end)], [(local('05:30:00'), local('06:30:00'))])
+        expected = [('05:30:00', '06:10:00')]
+    else:
+        result = subtract_busy([(start, end)], [(local('05:40:00'), local('06:05:00'))])
+        expected = [('05:20:00', '05:40:00'), ('06:05:00', '06:10:00')]
+    assert [(a.astimezone(timezone.utc), b.astimezone(timezone.utc)) for a, b in result] == [
+        (local(a).astimezone(timezone.utc), local(b).astimezone(timezone.utc)) for a, b in expected
+    ]

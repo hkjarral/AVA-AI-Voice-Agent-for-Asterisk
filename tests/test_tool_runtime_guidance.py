@@ -223,3 +223,14 @@ def test_calendar_guidance_clock_selection_matches_tool_scope(selected, expected
         assert (f"Calendar account `{key}`" in guidance) is (key in expected)
         assert (f"timezone `{account['timezone']}`" in guidance) is (key in expected)
     assert "`stale`" not in guidance
+
+
+@pytest.mark.unit
+def test_google_calendar_runtime_guidance_preserves_slot_offsets():
+    from src.tools.runtime_guidance import build_in_call_tool_runtime_guidance
+
+    guidance = build_in_call_tool_runtime_guidance({}, ["google_calendar"])
+    assert "Z or an explicit offset represents an instant" in guidance
+    assert "slots_with_end start/end strings unchanged, preserving offsets" in guidance
+    assert "Never append Z to a local clock time" in guidance
+    assert "Google Calendar datetime rules" not in build_in_call_tool_runtime_guidance({}, ["hangup_call"])
