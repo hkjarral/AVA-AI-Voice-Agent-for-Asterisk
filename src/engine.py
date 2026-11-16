@@ -11855,7 +11855,9 @@ class Engine:
             outcome = "completed"
             explicit_outcome = str(getattr(session, "call_outcome", "") or "").strip()
             voicemail_unconfirmed = getattr(session, "voicemail_handoff_outcome", None) in {"pending", "indeterminate"}
-            if voicemail_unconfirmed:
+            # Cleanup's frozen error also feeds post-call tools. A late ARI
+            # result may update routing ownership, not rewrite that report.
+            if voicemail_unconfirmed or explicit_outcome == "error":
                 outcome = "error"
             elif explicit_outcome == "no_input_timeout":
                 outcome = "no_input_timeout"

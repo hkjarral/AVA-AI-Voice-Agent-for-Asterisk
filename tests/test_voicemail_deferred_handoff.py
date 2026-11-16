@@ -508,3 +508,63 @@ async def test_cancelled_submitted_continue_records_uncertainty_after_routing_ta
     assert session.tool_calls[-1]['handoff_indeterminate'] is True
     assert await commit(engine, session, action) is None
     engine.ari_client.continue_in_dialplan.assert_awaited_once()
+
+
+@pytest.mark.parametrize('settlement', ['accepted_before_cleanup', 'accepted_during_cleanup', 'rejected', 'cancelled', 'uncertain'])
+async def test_cleanup_history_and_post_call_share_terminal_outcome(monkeypatch, settlement):
+    engine, session, registry, ctx = await setup_call(monkeypatch)
+    await engine.session_store.remove_call(session.call_id)
+    session.call_id = session.caller_channel_id = 'cleanup-vm-' + settlement
+    ctx.call_id = ctx.caller_channel_id = session.call_id
+    session.conversation_history = [{'role': 'user', 'content': 'Synthetic voicemail request'}]
+    await engine.session_store.upsert_call(session)
+    await arm(engine, ctx)
+    action = session.pending_deferred_transfer
+    completed_state(engine, session, action)
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def submitted(*a, **kw):
+        entered.set()
+        await release.wait()
+        if settlement == 'cancelled':
+            raise asyncio.CancelledError()
+        return False if settlement == 'rejected' else None if settlement == 'uncertain' else True
+    engine.ari_client.continue_in_dialplan.side_effect = submitted
+    engine.ari_client.hangup_channel = AsyncMock(return_value=True)
+    engine.ari_client.destroy_bridge = AsyncMock(return_value=True)
+    monkeypatch.setattr(engine, '_wait_for_deferred_transfer_audio_drain', AsyncMock(return_value=True))
+    monkeypatch.setattr(engine, '_play_deferred_transfer_local_handoff', AsyncMock(return_value=False))
+    task = asyncio.create_task(commit(engine, session, action))
+    engine._call_bg_tasks.setdefault(session.call_id, set()).add(task)
+    await asyncio.wait_for(entered.wait(), 1)
+    if settlement == 'accepted_before_cleanup':
+        release.set()
+        await task
+    snapshots = []
+    async def settle_during_stop(*a, **kw):
+        snapshots.append(session.call_outcome)
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        return True
+    monkeypatch.setattr(engine.streaming_playback_manager, 'stop_streaming_playback', settle_during_stop)
+    saved = []
+    class Store:
+        _enabled = True
+        async def save(self, record):
+            saved.append(record)
+            return True
+    monkeypatch.setattr('src.core.call_history.get_call_history_store', lambda: Store())
+    post_call = AsyncMock()
+    monkeypatch.setattr(engine, '_execute_post_call_tools', post_call)
+    await asyncio.wait_for(engine._cleanup_call(session.call_id), 2)
+    expected = 'transferred' if settlement == 'accepted_before_cleanup' else 'error'
+    assert snapshots == [expected]
+    post_call.assert_awaited_once()
+    assert post_call.call_args.kwargs['call_outcome'] == expected
+    assert session.call_outcome == expected
+    assert len(saved) == 1 and saved[0].outcome == expected
+    assert engine.ari_client.hangup_channel.await_count == int(settlement == 'rejected')
+    assert session.voicemail_handoff_outcome == (
+        'confirmed' if settlement.startswith('accepted') else None if settlement == 'rejected' else 'indeterminate')
+    assert await engine.session_store.get_by_call_id(session.call_id) is None
+    assert await commit(engine, session, action) is None
+    engine.ari_client.continue_in_dialplan.assert_awaited_once()

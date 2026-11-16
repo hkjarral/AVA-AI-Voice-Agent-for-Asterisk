@@ -176,7 +176,11 @@ append-only reduction contract:
   Cancellation after continue is submitted retains indeterminate evidence under
   that invocation even if a newer routing action has taken ownership. Only the
   matching old deferred action is retired; the newer routing fields and action
-  remain untouched.
+  remain untouched. History and post-call tools share cleanup's terminal reporting
+  outcome: if the request is still unconfirmed at that boundary, its conservative
+  `error` result is retained even if ARI acceptance arrives during teardown. That
+  reporting snapshot does not freeze live routing ownership or the terminal tool
+  evidence; an accepted caller is still spared from engine hangup.
 - The event records the tool execution fact only. A successful voicemail route
   does not claim that a message was recorded, and a successful transfer does
   not claim that a human answered.
