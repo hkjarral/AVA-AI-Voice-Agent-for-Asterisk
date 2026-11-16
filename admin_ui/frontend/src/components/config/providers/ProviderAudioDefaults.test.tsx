@@ -128,3 +128,23 @@ describe('legacy farewell delay controls (issue #677)', () => {
         expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ farewell_hangup_delay_sec: 4 }));
     });
 });
+
+
+describe('input gain noise floor (issue #853)', () => {
+    it.each([
+        ['Google Live', GoogleLiveProviderForm],
+        ['OpenAI Realtime', OpenAIRealtimeProviderForm],
+    ])('shows the default and preserves explicit zero and other settings in %s', (_name, Form) => {
+        const onChange = vi.fn();
+        const config = { input_gain_target_rms: 2500, input_gain_max_db: 12 };
+        const { rerender } = render(<Form config={config} onChange={onChange} />);
+        const control = screen.getByLabelText('Input Gain Noise Floor RMS');
+        expect(control).toHaveValue(200);
+        fireEvent.change(control, { target: { value: '350' } });
+        expect(onChange).toHaveBeenLastCalledWith({ ...config, input_gain_noise_floor_rms: 350 });
+        rerender(<Form config={{ ...config, input_gain_noise_floor_rms: 0 }} onChange={onChange} />);
+        expect(screen.getByLabelText('Input Gain Noise Floor RMS')).toHaveValue(0);
+        fireEvent.change(screen.getByLabelText('Input Gain Noise Floor RMS'), { target: { value: '' } });
+        expect(onChange).toHaveBeenLastCalledWith({ ...config, input_gain_noise_floor_rms: 200 });
+    });
+});

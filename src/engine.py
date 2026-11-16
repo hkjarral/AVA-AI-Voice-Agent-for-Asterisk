@@ -36,6 +36,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest, Histogram, C
 
 from .ari_client import ARIClient
 from .core.audio_backlog import AudioBacklogQueue
+from .core.input_gain import InputGainState
 from aiohttp import web
 from pydantic import ValidationError
 
@@ -644,8 +645,8 @@ class Engine:
         self.audiosocket_conn_to_ssrc: Dict[str, int] = {}
         self.audiosocket_resample_state: Dict[str, Optional[tuple]] = {}
         # Stateful resampling: maintain per-call/per-provider ratecv states to avoid drift
-        # Provider input (caller -> provider) resample state
-        self._resample_state_provider_in: Dict[str, Dict[str, Optional[tuple]]] = {}
+        # Provider input resampler and gain state share the existing call lifecycle.
+        self._resample_state_provider_in: Dict[str, Dict[str, Any]] = {}
         # Provider output (provider -> wire) resample state
         self._resample_state_provider_out: Dict[str, Optional[tuple]] = {}
         # Forced pipeline PCM16@16k path (per-call)
@@ -4409,12 +4410,15 @@ class Engine:
         provider_name: Optional[str] = None,
     ) -> None:
         """Stop a per-call provider and release call-owned persistent resources."""
-        if provider is None:
-            return
-        if isinstance(provider, LocalProvider):
-            await provider.close()
-        elif hasattr(provider, "stop_session"):
-            await provider.stop_session()
+        try:
+            if provider is None:
+                return
+            if isinstance(provider, LocalProvider):
+                await provider.close()
+            elif hasattr(provider, "stop_session"):
+                await provider.stop_session()
+        finally:
+            self._finish_provider_input_gain(call_id, provider_name)
         evidence = getattr(provider, "_handoff_evidence", None)
         if evidence:
             evidence.reset(call_id)
@@ -11525,6 +11529,7 @@ class Engine:
                 self.websocket_media_channels.pop(session.media_channel_id, None)
 
             # Clear per-call resample states to prevent unbounded memory growth
+            self._finish_provider_input_gain(call_id)
             self._resample_state_provider_in.pop(call_id, None)
             self._resample_state_provider_out.pop(call_id, None)
             self._resample_state_pipeline16k.pop(call_id, None)
@@ -20946,55 +20951,31 @@ class Engine:
                     expected_rate=expected_rate,
                 )
             
-            # Re-enabled: Gain normalization required for low-volume audio
-            # Root cause identified: Incoming audio had RMS=23 (needs ~1400)
-            # Without normalization, Google Live cannot understand quiet audio
-            # Silence frames during gating prevent echo while maintaining stream continuity
-            #
-            # NOTE: This is now gated by per-provider config:
-            # - input_gain_target_rms <= 0 or input_gain_max_db <= 0.0  => gain disabled (default)
-            # - both > 0 => enable normalization with configured target/max gain.
+            # Gain remains opt-in and PCM-only. Keep its envelope and counters
+            # with the call-owned input state, never on a shared provider config.
             if pcm_bytes and gain_target_rms > 0 and gain_max_db > 0.0:
                 try:
-                    # audioop already imported at module level - don't re-import here!
-                    current_rms = audioop.rms(pcm_bytes, 2)
-                    target_rms = gain_target_rms
-                    max_gain_db = gain_max_db
-                    
-                    if current_rms > 10:  # Only apply if audio has some energy
-                        gain_needed = target_rms / current_rms
-                        max_gain = 10 ** (max_gain_db / 20.0)
-                        gain = min(gain_needed, max_gain)
-                        
-                        if gain > 1.05:  # Apply if gain needed is >5%
-                            pcm_bytes = audioop.mul(pcm_bytes, 2, gain)
-                            actual_rms = audioop.rms(pcm_bytes, 2)
-                            
-                            # CRITICAL: Warn about excessive gain (indicates audio quality issues)
-                            # High gain on low-quality audio causes distortion and speech recognition failures
-                            if gain > 10.0:
-                                logger.warning(
-                                    "⚠️ AUDIO QUALITY ISSUE: Excessive gain required!",
-                                    call_id=call_id,
-                                    provider=provider_name,
-                                    gain_multiplier=f"{gain:.1f}x",
-                                    rms_before=current_rms,
-                                    rms_target=target_rms,
-                                    recommendation="Check SIP trunk rxgain configuration - incoming audio too quiet",
-                                )
-                            
-                            logger.info(
-                                "🔊 Provider input: Gain applied",
-                                call_id=call_id,
-                                provider=provider_name,
-                                rms_before=current_rms,
-                                rms_after=actual_rms,
-                                rms_target=target_rms,
-                                gain=f"{gain:.2f}",
-                            )
+                    floor = int(getattr(provider_cfg, "input_gain_noise_floor_rms", 200))
+                    key = f"gain:{provider_name}"
+                    gain_state = prov_states.get(key)
+                    if not isinstance(gain_state, InputGainState):
+                        gain_state = InputGainState(
+                            provider_name, gain_target_rms, gain_max_db, floor
+                        )
+                        prov_states[key] = gain_state
+                    pcm_bytes = gain_state.process(pcm_bytes, pcm_rate)
+                    if gain_state.excessive_frames and not gain_state.warned:
+                        gain_state.warned = True
+                        logger.warning(
+                            "Provider input gain exceeded 10x",
+                            call_id=call_id,
+                            provider=provider_name,
+                            noise_floor_rms=floor,
+                            message_detail="Review call-level input gain summary; quiet frames alone do not diagnose trunk gain",
+                        )
                 except Exception as e:
-                    logger.error(f"Provider input normalization failed: {e}", call_id=call_id, exc_info=True)
-            
+                    logger.error("Provider input normalization failed", error=str(e), call_id=call_id, exc_info=True)
+
             return pcm_bytes, "slin16", pcm_rate
 
         if expected_enc in ("ulaw", "mulaw", "g711_ulaw", "mu-law"):
@@ -21016,6 +20997,21 @@ class Engine:
 
         # Fallback: return PCM as-is
         return pcm_bytes, "slin16", pcm_rate
+
+    def _finish_provider_input_gain(self, call_id: str, provider_name: Optional[str] = None) -> None:
+        """Summarize and release gain state exactly once on stop or cleanup."""
+        states = getattr(self, "_resample_state_provider_in", {}).get(call_id, {})
+        for key, state in list(states.items()):
+            if isinstance(state, InputGainState) and (
+                provider_name is None or state.provider_name == provider_name
+            ):
+                states.pop(key, None)
+                logger.info(
+                    "Provider input gain summary",
+                    call_id=call_id,
+                    provider=state.provider_name,
+                    **state.summary(),
+                )
 
     async def _update_transport_profile(self, session: CallSession, *, fmt: Optional[str], sample_rate: Optional[int], source: str) -> None:
         """Persist transport profile updates and sync preferences."""
@@ -21121,16 +21117,29 @@ class Engine:
                 )
             rms_threshold = 50 if canonical == "ulaw" else 200
             alert_key = f"{stage}_low_rms_alerted"
-            if rms < rms_threshold and not session.audio_diagnostics.get(alert_key):
-                session.audio_diagnostics[alert_key] = True
-                logger.warning(
-                    "Low audio energy detected; degraded audio quality likely",
-                    call_id=session.call_id,
-                    stage=stage,
-                    format=canonical,
-                    rms=rms,
-                    threshold=rms_threshold,
+            # Ignore empty/digital silence (including intentional TTS gating).
+            # Require one second of nonzero audio before diagnosing low energy.
+            if rms > 0 and sample_rate > 0 and not session.audio_diagnostics.get(alert_key):
+                window = session.audio_diagnostics.setdefault(
+                    f"{stage}_energy_window", {"seconds": 0.0, "energy": 0.0}
                 )
+                duration = len(pcm) / (2.0 * sample_rate)
+                window["seconds"] += duration
+                window["energy"] += rms * rms * duration
+                if window["seconds"] >= 1.0 - 1e-9:
+                    window_rms = math.sqrt(window["energy"] / window["seconds"])
+                    if window_rms < rms_threshold:
+                        session.audio_diagnostics[alert_key] = True
+                        logger.warning(
+                            "Sustained low audio energy detected",
+                            call_id=session.call_id,
+                            stage=stage,
+                            format=canonical,
+                            rms=round(window_rms),
+                            threshold=rms_threshold,
+                            active_audio_seconds=round(window["seconds"], 3),
+                        )
+                    window.update(seconds=0.0, energy=0.0)
             dc_threshold = 600
             dc_alert_key = f"{stage}_dc_alerted"
             if abs(dc_offset) > dc_threshold and not session.audio_diagnostics.get(dc_alert_key):
