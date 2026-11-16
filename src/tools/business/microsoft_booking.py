@@ -152,7 +152,7 @@ def within_working_hours(
         return True
     work_start, work_end, days = working_policy(config, for_booking=True)
     return any(
-        a <= start and end <= b
+        to_utc(a) <= to_utc(start) and to_utc(end) <= to_utc(b)
         for a, b in working_hours_mask(
             start, end, timezone_name, work_start, work_end, days
         )
