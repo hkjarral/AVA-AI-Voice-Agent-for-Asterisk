@@ -219,8 +219,6 @@ class StreamingPlaybackManager:
         # RTP codec cache for performance (avoid repeated codec checks on every packet)
         # Startup gating to allow jitter buffers to fill before playback begins
         self._startup_ready: Dict[str, bool] = {}
-        # Track last segment end time per call for adaptive warm-up
-        self._last_segment_end_ts: Dict[str, float] = {}
         # Call-level diagnostic accumulators
         self.call_tap_pre_pcm16: Dict[str, bytearray] = {}
         self.call_tap_post_pcm16: Dict[str, bytearray] = {}
@@ -3195,7 +3193,10 @@ class StreamingPlaybackManager:
                         if hasattr(self.rtp_server, "has_remote_endpoint"):
                             has_endpoint = bool(self.rtp_server.has_remote_endpoint(call_id))
                         if not has_endpoint:
-                            if stream_id not in self._rtp_remote_wait_logged:
+                            if (
+                                self.active_streams.get(call_id) is stream_info
+                                and stream_id not in self._rtp_remote_wait_logged
+                            ):
                                 logger.info(
                                     "RTP send deferred; waiting for remote endpoint",
                                     call_id=call_id,
@@ -4186,6 +4187,7 @@ class StreamingPlaybackManager:
         # after that task has already removed the exact stream. Likewise, an old
         # producer must never clean up a replacement stream for the same call.
         if not current or current.get("stream_id") != stream_id:
+            self._rtp_remote_wait_logged.discard(stream_id)
             return
         if call_id in self._cleanup_in_progress:
             return
@@ -4563,11 +4565,6 @@ class StreamingPlaybackManager:
             if call_id in self.active_streams:
                 del self.active_streams[call_id]
             self._refresh_streaming_summary_metrics()
-            # Record last segment end timestamp for adaptive gating of next segment
-            try:
-                self._last_segment_end_ts[call_id] = time.time()
-            except Exception:
-                pass
             
             # Clean up jitter buffer
             if call_id in self.jitter_buffers:
@@ -4601,8 +4598,16 @@ class StreamingPlaybackManager:
                         stream_id=stream_id,
                         error=str(e))
         finally:
+            self._rtp_remote_wait_logged.discard(stream_id)
             self._cleanup_in_progress.discard(call_id)
-    
+
+    def cleanup_call(self, call_id: str) -> None:
+        """Release once-per-call diagnostics during engine-owned final teardown.
+
+        Segment cleanup must preserve these across responses and reconnects.
+        """
+        self._first_send_logged.discard(call_id)
+
     def _generate_stream_id(self, call_id: str, playback_type: str) -> str:
         """Generate deterministic stream ID."""
         timestamp = int(time.time() * 1000)
