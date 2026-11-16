@@ -174,7 +174,7 @@ async def test_all_day_open_is_clipped_to_search_and_allows_transparency(calenda
     dict(summary='Busy mixed', start={'date': '2027-04-26'}, end={'dateTime': '2027-04-27T00:00:00Z'}),
     dict(summary='Busy ambiguous', start={'date': '2027-04-26', 'dateTime': '2027-04-26T10:00:00Z'}, end={'date': '2027-04-27'}),
     timed('Busy invalid', start='invalid'),
-    timed('Busy missing timezone', start='2027-04-26T10:00:00'),
+    dict(summary='Busy invalid timezone', start={'dateTime': '2027-04-26T10:00:00', 'timeZone': 'Invalid/Fixture'}, end={'dateTime': '2027-04-26T10:30:00Z'}),
     timed('Busy reversed', end='2027-04-26T09:00:00Z'),
     {'summary': 'Open missing'},
 ])
