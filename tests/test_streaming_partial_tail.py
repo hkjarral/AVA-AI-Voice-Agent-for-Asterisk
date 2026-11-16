@@ -49,7 +49,9 @@ async def test_partial_tail_is_paced_and_terminal_drain_finishes(monkeypatch, tr
 
 
 async def test_failed_tail_send_retains_audio_for_retry():
-    manager = StreamingPlaybackManager(SessionStore(), SimpleNamespace(), streaming_config={})
+    store = SessionStore()
+    await store.upsert_call(CallSession(call_id='tail', caller_channel_id='tail'))
+    manager = StreamingPlaybackManager(store, SimpleNamespace(), streaming_config={})
     manager._send_audio_chunk = AsyncMock(return_value=False)
     manager.active_streams['tail'] = {'stream_id': 'stream', 'startup_ready': True,
         'target_format': 'slin16', 'target_sample_rate': 16000, 'buffered_bytes': 2,
@@ -63,8 +65,10 @@ async def test_failed_tail_send_retains_audio_for_retry():
 
 
 async def test_filler_does_not_advance_real_emission_clock():
-    manager = StreamingPlaybackManager(SessionStore(), SimpleNamespace(), streaming_config={})
+    store = SessionStore()
+    await store.upsert_call(CallSession(call_id='call', caller_channel_id='call'))
+    manager = StreamingPlaybackManager(store, SimpleNamespace(), streaming_config={})
     manager._send_audio_chunk = AsyncMock(return_value=True)
-    manager.active_streams['call'] = {'last_real_emit_monotonic': 50.0}
+    manager.active_streams['call'] = {'stream_id': 'stream', 'last_real_emit_monotonic': 50.0}
     assert await manager._emit_frame('call', 'stream', bytes(640), 'slin16', 16000, filler=True) == 'sent'
     assert manager.active_streams['call']['last_real_emit_monotonic'] == 50.0

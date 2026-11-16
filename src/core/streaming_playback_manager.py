@@ -1099,7 +1099,11 @@ class StreamingPlaybackManager:
 
                 except asyncio.TimeoutError:
                     # No audio chunk received within timeout
-                    guard = (self.active_streams.get(call_id) or {}).get('greeting_media_guard')
+                    info = self.active_streams.get(call_id, {})
+                    session = await self.session_store.get_by_call_id(call_id)
+                    if not self._stream_send_owner_current(call_id, stream_id, session, info):
+                        break
+                    guard = info.get('greeting_media_guard')
                     if guard and guard.phase in {'waiting', 'silence'}:
                         # The consumer owns this bounded wait. A producer timeout
                         # must not race it into file fallback with the same audio.
@@ -1110,12 +1114,18 @@ class StreamingPlaybackManager:
                                 # Finish already queued media through its own
                                 # acknowledged boundary. Replaying it as an ARI
                                 # file could overlap audio still in Asterisk.
-                                if call_id in self.active_streams:
-                                    self.active_streams[call_id]['end_reason'] = 'provider-timeout'
+                                info['end_reason'] = 'provider-timeout'
                                 break
                             logger.warning("🎵 STREAMING PLAYBACK - Timeout, falling back to file playback", call_id=call_id, stream_id=stream_id, timeout=fallback_timeout)
-                            await self._record_fallback(call_id, f"timeout>{fallback_timeout}s")
-                            await self._fallback_to_file_playback(call_id, stream_id)
+                            info['end_reason'] = 'provider-timeout'
+                            if not await self._record_fallback(
+                                call_id, f"timeout>{fallback_timeout}s", stream_id=stream_id, stream_info=info,
+                            ):
+                                break
+                            await self._fallback_to_file_playback(call_id, stream_id, stream_info=info)
+                            session = await self.session_store.get_by_call_id(call_id)
+                            if not self._stream_owner_current(call_id, stream_id, session, info):
+                                break
                             if not sentinel_sent:
                                 try:
                                     await jitter_buffer.put(_JITTER_SENTINEL)
@@ -1272,13 +1282,19 @@ class StreamingPlaybackManager:
                 status = await self._drain_next_frame(
                     call_id, stream_id, jitter_buffer
                 )
+                session = await self.session_store.get_by_call_id(call_id)
+                if not self._stream_owner_current(call_id, stream_id, session, current):
+                    break
+                if status == "cancelled":
+                    break
                 if status == "greeting-cancelled":
-                    current = self.active_streams.get(call_id)
-                    if current and current.get('stream_id') == stream_id:
+                    if self.active_streams.get(call_id) is current:
                         current['end_reason'] = 'interrupted'
                         await self.stop_streaming_playback(call_id)
                     break
                 if status == "error":
+                    if not self._stream_send_owner_current(call_id, stream_id, session, current):
+                        break
                     if self.audio_transport == "websocket":
                         info = self.active_streams.get(call_id)
                         if not info or info.get("stop_requested"):
@@ -1291,19 +1307,22 @@ class StreamingPlaybackManager:
                         if self.websocket_server:
                             await self._selected_output_transport().abort_output(call_id)
                         break
-                    failed_info = self.active_streams.get(call_id)
-                    guarded = bool(failed_info and failed_info.get('greeting_media_guard'))
+                    failed_info = current
+                    guarded = bool(failed_info.get('greeting_media_guard'))
                     if guarded:
                         failed_info['greeting_fallback_owner'] = True
                     try:
-                        await self._record_fallback(call_id, "transport-failure")
-                        await self._fallback_to_file_playback(call_id, stream_id)
-                        if failed_info is not None and self.active_streams.get(call_id) is failed_info:
+                        if not await self._record_fallback(
+                            call_id, "transport-failure", stream_id=stream_id, stream_info=failed_info,
+                        ):
+                            break
+                        await self._fallback_to_file_playback(call_id, stream_id, stream_info=failed_info)
+                        session = await self.session_store.get_by_call_id(call_id)
+                        if self._stream_send_owner_current(call_id, stream_id, session, failed_info):
                             failed_info['end_reason'] = 'transport-failure'
                     finally:
                         if (
-                            guarded and self.active_streams.get(call_id) is failed_info
-                            and not failed_info.get('stop_requested')
+                            guarded and self._stream_owner_current(call_id, stream_id, session, failed_info)
                         ):
                             # File playback owns its own gating token. Release
                             # the failed stream's producer and token even when
@@ -1342,6 +1361,9 @@ class StreamingPlaybackManager:
         stream_info = self.active_streams.get(call_id)
         if not stream_info:
             return "finished"
+        session = await self.session_store.get_by_call_id(call_id)
+        if not self._stream_owner_current(call_id, stream_id, session, stream_info):
+            return 'greeting-cancelled' if stream_info.get('greeting_media_guard') else 'cancelled'
 
         try:
             stream_info["jitter_depth"] = jitter_buffer.qsize()
@@ -1396,8 +1418,9 @@ class StreamingPlaybackManager:
                 break
             stream_info["transport_pending_item_key"] = getattr(chunk, "audio_item_key", None)
             processed_chunk = await self._process_audio_chunk(call_id, chunk)
-            if stream_info.get('greeting_media_guard') and self.active_streams.get(call_id) is not stream_info:
-                return 'greeting-cancelled'
+            session = await self.session_store.get_by_call_id(call_id)
+            if not self._stream_owner_current(call_id, stream_id, session, stream_info):
+                return 'greeting-cancelled' if stream_info.get('greeting_media_guard') else 'cancelled'
             if not processed_chunk:
                 try:
                     self._decrement_buffered_bytes(call_id, len(chunk))
@@ -1705,14 +1728,12 @@ class StreamingPlaybackManager:
             target_rate=target_rate,
         )
         guard = emitting_info.get('greeting_media_guard')
-        if guard:
-            session = await self.session_store.get_by_call_id(call_id)
-            if (
-                self.active_streams.get(call_id) is not emitting_info
-                or not self._greeting_media_owner_current(session, emitting_info)
-            ):
+        session = await self.session_store.get_by_call_id(call_id)
+        if not self._stream_send_owner_current(call_id, stream_id, session, emitting_info):
+            if guard:
                 guard.phase = 'cancelled'
                 return 'greeting-cancelled'
+            return 'cancelled'
         if not success:
             if greeting_silence:
                 # Generated pre-roll is not provider audio and must not enter
@@ -3080,11 +3101,11 @@ class StreamingPlaybackManager:
         except Exception:
             return pcm_bytes
 
-    def _stream_send_owner_current(
+    def _stream_owner_current(
         self, call_id: str, stream_id: str, session: Optional[CallSession],
         info: Dict[str, Any],
     ) -> bool:
-        """Check both call lifetime and exact stream ownership at send boundaries."""
+        """Check the captured call/stream before touching call-keyed resources."""
         return bool(
             session is not None
             and session.call_id == call_id
@@ -3093,8 +3114,13 @@ class StreamingPlaybackManager:
             and self.active_streams.get(call_id) is info
             and info.get("stream_id") == stream_id
             and not info.get("stop_requested")
-            and self._greeting_media_owner_current(session, info)
         )
+
+    def _stream_send_owner_current(
+        self, call_id: str, stream_id: str, session: Optional[CallSession],
+        info: Dict[str, Any],
+    ) -> bool:
+        return self._stream_owner_current(call_id, stream_id, session, info) and self._greeting_media_owner_current(session, info)
 
     async def _send_audio_chunk(
         self,
@@ -3668,34 +3694,41 @@ class StreamingPlaybackManager:
         except Exception:
             pass
 
-    async def _record_fallback(self, call_id: str, reason: str) -> None:
-        """Increment fallback counters and persist the last error."""
+    async def _record_fallback(
+        self, call_id: str, reason: str, *, stream_id: str, stream_info: Dict[str, Any],
+    ) -> bool:
+        """Record a recoverable failure only while its exact stream still owns output."""
+        sess = None
         try:
-            _STREAMING_FALLBACKS_TOTAL.inc()
             sess = await self.session_store.get_by_call_id(call_id)
-            if sess:
-                sess.streaming_fallback_count += 1
-                sess.last_streaming_error = reason
-                await self.session_store.upsert_call(sess)
+            if not self._stream_send_owner_current(call_id, stream_id, sess, stream_info):
+                return False
+            _STREAMING_FALLBACKS_TOTAL.inc()
+            sess.streaming_fallback_count += 1
+            sess.last_streaming_error = reason
+            await self.session_store.upsert_call(sess)
+            return self._stream_send_owner_current(call_id, stream_id, sess, stream_info)
         except Exception:
             logger.debug("Failed to record streaming fallback", call_id=call_id, reason=reason, exc_info=True)
-    
+            # Diagnostic persistence is best effort; only ownership loss should
+            # suppress an otherwise healthy transport-recovery path.
+            return self._stream_send_owner_current(call_id, stream_id, sess, stream_info)
+
     async def _fallback_to_file_playback(
         self, 
         call_id: str, 
-        stream_id: str
+        stream_id: str,
+        *, stream_info: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Fallback to file-based playback when streaming fails."""
+        """Fallback only for a recoverable failure owned by this exact stream."""
         try:
-            info = self.active_streams.get(call_id) or {}
+            info = stream_info if stream_info is not None else self.active_streams.get(call_id, {})
+            session = await self.session_store.get_by_call_id(call_id)
+            if not self._stream_send_owner_current(call_id, stream_id, session, info):
+                return
             guard = info.get('greeting_media_guard')
             if guard:
-                session = await self.session_store.get_by_call_id(call_id)
-                if (
-                    self.active_streams.get(call_id) is not info
-                    or info.get('stream_id') != stream_id or guard.fallback_started
-                    or not self._greeting_media_owner_current(session, info)
-                ):
+                if guard.fallback_started:
                     return
                 guard.fallback_started = True
             if not self.fallback_playback_manager:
@@ -3704,20 +3737,12 @@ class StreamingPlaybackManager:
                            stream_id=stream_id)
                 return
             
-            # Get session
+            # Revalidate the reservation immediately before consuming call-keyed
+            # buffers; session lookup itself can race teardown/replacement.
             session = await self.session_store.get_by_call_id(call_id)
-            if not session:
-                logger.error("Cannot fallback - session not found",
-                           call_id=call_id)
+            if not self._stream_send_owner_current(call_id, stream_id, session, info):
                 return
-            if guard and (
-                self.active_streams.get(call_id) is not info
-                or info.get('stream_id') != stream_id
-                or not self._greeting_media_owner_current(session, info)
-            ):
-                guard.phase = 'cancelled'
-                return
-            
+
             # Collect any remaining audio chunks
             remaining_audio = bytearray()
             # Include any remainder frames already drained from the jitter buffer.
@@ -3737,6 +3762,11 @@ class StreamingPlaybackManager:
                 collect_live = bool(guard and info.get('greeting_fallback_owner'))
                 deadline = time.monotonic() + max(0.5, min(10.0, self.fallback_timeout_ms / 1000.0))
                 while True:
+                    if (
+                        not self._stream_send_owner_current(call_id, stream_id, session, info)
+                        or self.jitter_buffers.get(call_id) is not jitter_buffer
+                    ):
+                        return
                     if collect_live and time.monotonic() >= deadline:
                         break
                     try:
@@ -3754,8 +3784,8 @@ class StreamingPlaybackManager:
                     if collect_live:
                         session = await self.session_store.get_by_call_id(call_id)
                         if (
-                            self.active_streams.get(call_id) is not info
-                            or not self._greeting_media_owner_current(session, info)
+                            not self._stream_send_owner_current(call_id, stream_id, session, info)
+                            or self.jitter_buffers.get(call_id) is not jitter_buffer
                         ):
                             return
                     if chunk is _JITTER_SENTINEL:
@@ -3780,7 +3810,6 @@ class StreamingPlaybackManager:
 
                 # Convert provider-encoded buffer to μ-law @ 8 kHz for Asterisk file playback
                 try:
-                    info = self.active_streams.get(call_id, {})
                     src_encoding = (
                         self._canonicalize_encoding(info.get('source_encoding'))
                         or 'slin16'
@@ -3813,13 +3842,17 @@ class StreamingPlaybackManager:
                                    exc_info=True)
                     mulaw_audio = raw_buf
 
-                # Use fallback playback manager
+                session = await self.session_store.get_by_call_id(call_id)
+                if not self._stream_send_owner_current(call_id, stream_id, session, info):
+                    return
+                # Playback preparation awaits file creation, gating and ref
+                # registration. Carry the same admission fence to its ARI boundary.
                 fallback_playback_id = await self.fallback_playback_manager.play_audio(
-                    call_id,
-                    mulaw_audio,
-                    "streaming-fallback"
+                    call_id, mulaw_audio, "streaming-fallback",
+                    owner_check=lambda: self._stream_send_owner_current(call_id, stream_id, session, info),
                 )
-                
+                if not self._stream_send_owner_current(call_id, stream_id, session, info):
+                    return
                 if fallback_playback_id:
                     logger.info("🎵 STREAMING FALLBACK - Switched to file playback",
                                call_id=call_id,
@@ -3853,15 +3886,18 @@ class StreamingPlaybackManager:
                 stream_info["last_chunk_age_s"] = max(0.0, float(time_since_last_chunk))
                 self._refresh_streaming_summary_metrics()
                 _STREAMING_KEEPALIVES_SENT_TOTAL.inc()
+                sess = None
                 try:
                     sess = await self.session_store.get_by_call_id(call_id)
+                    if not self._stream_owner_current(call_id, stream_id, sess, stream_info):
+                        break
                     if sess:
                         sess.streaming_keepalive_sent += 1
                         await self.session_store.upsert_call(sess)
                 except Exception:
                     pass
 
-                if self.active_streams.get(call_id) is not stream_info:
+                if not self._stream_owner_current(call_id, stream_id, sess, stream_info):
                     break
                 if self.audio_transport == "websocket":
                     # Provider silence isn't a media-socket failure: the
@@ -3889,13 +3925,15 @@ class StreamingPlaybackManager:
                             pass
                         try:
                             sess = await self.session_store.get_by_call_id(call_id)
+                            if not self._stream_send_owner_current(call_id, stream_id, sess, stream_info):
+                                break
                             if sess:
                                 sess.streaming_keepalive_timeouts += 1
                                 sess.last_streaming_error = f"keepalive-timeout>{time_since_last_chunk:.2f}s"
                                 await self.session_store.upsert_call(sess)
                         except Exception:
                             pass
-                        await self._fallback_to_file_playback(call_id, stream_id)
+                        await self._fallback_to_file_playback(call_id, stream_id, stream_info=stream_info)
                         break
                     else:
                         # Continuous: just keep the pacer alive; no action required

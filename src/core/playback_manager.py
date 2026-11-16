@@ -10,7 +10,7 @@ import asyncio
 import time
 import os
 import inspect
-from typing import Optional, Dict, TYPE_CHECKING
+from typing import Optional, Dict, TYPE_CHECKING, Callable
 import structlog
 
 from src.core.session_store import SessionStore
@@ -104,8 +104,9 @@ class PlaybackManager:
         logger.info("PlaybackManager initialized",
                    media_dir=self.media_dir)
     
-    async def play_audio(self, call_id: str, audio_bytes: bytes, 
-                        playback_type: str = "response") -> Optional[str]:
+    async def play_audio(self, call_id: str, audio_bytes: bytes,
+                        playback_type: str = "response", *,
+                        owner_check: Optional[Callable[[], bool]] = None) -> Optional[str]:
         """
         Play audio with deterministic playback ID and gating.
         
@@ -113,6 +114,7 @@ class PlaybackManager:
             call_id: Canonical call ID
             audio_bytes: Audio data to play
             playback_type: Type of playback (greeting, response, etc.)
+            owner_check: Optional admission fence for stream-owned fallback.
         
         Returns:
             playback_id if successful, None if failed
@@ -129,6 +131,9 @@ class PlaybackManager:
                            call_id=call_id)
                 return None
             
+            if owner_check is not None and not owner_check():
+                return None
+
             # Generate deterministic playback ID
             playback_id = self._generate_playback_id(call_id, playback_type)
             
@@ -136,7 +141,10 @@ class PlaybackManager:
             audio_file = await self._create_audio_file(audio_bytes, playback_id)
             if not audio_file:
                 return None
-            
+            if owner_check is not None and not owner_check():
+                await self._cleanup_audio_file(audio_file)
+                return None
+
             # Set TTS gating before playing (via coordinator if available)
             gating_success = True
             if self.conversation_coordinator:
@@ -144,6 +152,9 @@ class PlaybackManager:
             else:
                 gating_success = await self.session_store.set_gating_token(call_id, playback_id)
 
+            if owner_check is not None and not owner_check():
+                await self._cancel_playback_start(call_id, playback_id, audio_file, False, notify_no_input=False)
+                return None
             if not gating_success:
                 logger.error(
                     "Failed to start playback gating",
@@ -168,9 +179,18 @@ class PlaybackManager:
             # (PlaybackFinished might arrive before add_playback completes if order is reversed)
             await self.session_store.add_playback(playback_ref)
             
+            if owner_check is not None and not owner_check():
+                await self._cancel_playback_start(call_id, playback_id, audio_file, False, notify_no_input=False)
+                return None
+
             # Play audio via ARI
             ari_attempted = True
             success = await self._play_via_ari(session, audio_file, playback_id)
+            if owner_check is not None and not owner_check():
+                # A submitted request cannot be unsent. Reuse the exact-ID stop
+                # and retained retry owner from cancelled playback startup.
+                await self._cancel_playback_start(call_id, playback_id, audio_file, True, notify_no_input=False)
+                return None
             if not success:
                 # Cleanup if playback failed to start
                 await self.session_store.pop_playback(playback_id)
@@ -184,7 +204,10 @@ class PlaybackManager:
             
             # Schedule token-aware fallback to ensure gating is cleared even if PlaybackFinished is missed
             await self._schedule_gating_fallback(call_id, playback_id, len(audio_bytes))
-            
+            if owner_check is not None and not owner_check():
+                await self._cancel_playback_start(call_id, playback_id, audio_file, True, notify_no_input=False)
+                return None
+
             logger.info("🔊 AUDIO PLAYBACK - Started",
                        call_id=call_id,
                        playback_id=playback_id,
@@ -194,29 +217,7 @@ class PlaybackManager:
             return playback_id
             
         except asyncio.CancelledError:
-            # A timed-out POST may already have started playback remotely.
-            # Only release its ref/token after a confirmed stop; otherwise the
-            # engine's existing drain/recovery retains ownership of that output.
-            stopped = not ari_attempted
-            if ari_attempted and playback_id:
-                await self.retain_cancelled_playback(call_id, playback_id)
-                try:
-                    stopped = bool(await asyncio.wait_for(self.ari_client.stop_playback(playback_id), 1.0))
-                except Exception:
-                    stopped = False
-            if stopped and playback_id:
-                await self.session_store.pop_playback(playback_id)
-                if self.conversation_coordinator:
-                    await self.conversation_coordinator.cancel_tts(call_id, playback_id)
-                    latest = await self.session_store.get_by_call_id(call_id)
-                    if latest and not latest.tts_tokens:
-                        await self.conversation_coordinator.update_conversation_state(call_id, "listening")
-                else:
-                    await self.session_store.clear_gating_token(call_id, playback_id)
-                if audio_file:
-                    await self._cleanup_audio_file(audio_file)
-            elif playback_id:
-                logger.warning("Cancelled playback startup stop unconfirmed; retaining output ownership", call_id=call_id, playback_id=playback_id)
+            await self._cancel_playback_start(call_id, playback_id, audio_file, ari_attempted)
             raise
         except Exception as e:
             logger.error("Error playing audio",
@@ -226,6 +227,40 @@ class PlaybackManager:
                         exc_info=True)
             return None
     
+    async def _cancel_playback_start(
+        self, call_id: str, playback_id: Optional[str], audio_file: Optional[str],
+        ari_attempted: bool, *, notify_no_input: bool = True,
+    ) -> None:
+        """Retire only this playback, retaining its retry owner if remote stop is unknown."""
+        stopped = not ari_attempted
+        if ari_attempted and playback_id:
+            await self.retain_cancelled_playback(call_id, playback_id)
+            try:
+                stopped = bool(await asyncio.wait_for(self.ari_client.stop_playback(playback_id), 1.0))
+            except Exception:
+                stopped = False
+        if stopped and playback_id:
+            await self.session_store.pop_playback(playback_id)
+            if self.conversation_coordinator:
+                if notify_no_input:
+                    await self.conversation_coordinator.cancel_tts(call_id, playback_id)
+                else:
+                    await self.conversation_coordinator.on_tts_end(
+                        call_id, playback_id, "ownership-lost", notify_no_input=False,
+                    )
+                latest = await self.session_store.get_by_call_id(call_id)
+                if (
+                    latest and not latest.tts_tokens
+                    and not latest.cleanup_in_progress and not latest.cleanup_completed
+                ):
+                    await self.conversation_coordinator.update_conversation_state(call_id, "listening")
+            else:
+                await self.session_store.clear_gating_token(call_id, playback_id)
+            if audio_file:
+                await self._cleanup_audio_file(audio_file)
+        elif playback_id:
+            logger.warning("Cancelled playback startup stop unconfirmed; retaining output ownership", call_id=call_id, playback_id=playback_id)
+
     async def retain_cancelled_playback(self, call_id: str, playback_id: str) -> None:
         """Keep an exact-playback retry owner across transfer cancellation/replacement."""
         ref = await self.session_store.get_playback(playback_id)

@@ -19,6 +19,17 @@ and ID. A late producer cannot start new sends or repopulate diagnostic markers
 after teardown begins. A transport write already submitted before teardown may
 complete, but its late result does not update retired state or start another send.
 
+Ownership loss is cancellation, not a recoverable transport failure. The drain,
+frame emitter and pacer retain their captured stream across awaits; they must
+not retain rejected speech, consume a replacement's remainder/queue, record its
+failure or change its end reason. File fallback rechecks that owner before
+buffer consumption and playback. Its admission predicate follows file creation,
+gating and playback registration through `PlaybackManager` to ARI submission.
+If ownership changes while an ARI request is already in flight, only that
+playback ID is stopped. An unconfirmed stop retains the existing cancellation
+retry owner and token; it must not release a replacement's output ownership.
+Healthy transport failures still retain speech and use the existing file fallback.
+
 The unused `_last_segment_end_ts` and `channel_to_conn` containers were removed.
 Use the active stream or the connection set rather than reintroducing parallel
 state. Cleanup is idempotent and must leave other calls and replacement streams
@@ -34,7 +45,7 @@ state; rollback requires no data conversion.
 
 ## Offline verification
 
-Run `PYTHONPATH=. python -m pytest tests/test_runtime_state_cleanup.py -q` with
+Run `PYTHONPATH=. python -m pytest tests/test_runtime_state_cleanup.py tests/test_streaming_fallback_ownership.py -q` with
 the repository's Python dependencies. The tests use synthetic frames, mocked ARI
 and transport writers, isolated call sessions and private temporary data paths.
 They cover repeated calls, multiple segments, reconnects, stale callbacks,
