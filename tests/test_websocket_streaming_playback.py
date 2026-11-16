@@ -163,7 +163,8 @@ async def test_boundary_waits_for_all_wire_frames_and_correlated_ack(pacing):
 
 @pytest.mark.asyncio
 async def test_idle_websocket_does_not_send_filler_or_reopen_segment():
-    mgr, server, _ = manager()
+    mgr, server, store = manager()
+    await store.upsert_call(CallSession(call_id="call", caller_channel_id="call", provider_name="local"))
     mgr.active_streams["call"]["empty_backoff_ticks"] = 100
     queue = asyncio.Queue()
     assert await mgr._drain_next_frame("call", "stream", queue) == "wait"
