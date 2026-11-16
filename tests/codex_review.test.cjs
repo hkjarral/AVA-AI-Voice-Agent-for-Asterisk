@@ -1,6 +1,6 @@
 const {test, afterEach} = require('node:test');
 const assert = require('node:assert/strict');
-const {validatePR, resolvePR, responseRequest, responseText, review, publish} = require('../scripts/codex_review.cjs');
+const {validatePR, resolvePR, responseRequest, responseDiagnostic, responseText, review, publish} = require('../scripts/codex_review.cjs');
 const repo = {owner: 'hkjarral', repo: 'AVA-AI-Voice-Agent-for-Asterisk'};
 const repository = {full_name: repo.owner + '/' + repo.repo, private: false, visibility: 'public', default_branch: 'main'};
 const head = 'a'.repeat(40), base = 'b'.repeat(40);
@@ -139,4 +139,119 @@ test('reruns do not duplicate a bot review and permission failures remain failur
   state.comments = [];
   github.rest.issues.createComment = async () => {throw new Error('403');};
   await assert.rejects(publish(github, context, identity, 'result'), /403/);
+});
+
+
+test('reasoning and written output share a bounded budget', () => {
+  assert.equal(responseRequest('gpt-5', 'diff', identity).max_output_tokens, 12000);
+  assert.equal(responseRequest('gpt-5', 'diff', identity, 25000).max_output_tokens, 25000);
+  assert.throws(() => responseRequest('gpt-5', 'diff', identity, 1000000), /budget/);
+});
+
+const exhausted = (budget = 12000) => ({status: 'incomplete', incomplete_details: {reason: 'max_output_tokens'},
+  usage: {output_tokens: budget, output_tokens_details: {reasoning_tokens: budget}},
+  output: [{type: 'message', content: [{type: 'output_text', text: 'PARTIAL: no findings'}]}]});
+const completed = () => ({status: 'completed', usage: {output_tokens: 14000,
+  output_tokens_details: {reasoning_tokens: 13000}},
+  output: [{type: 'message', content: [{type: 'output_text', text: 'Completed review'}]}]});
+function reviewEnv() {
+  process.env.OPENAI_API_KEY = 'synthetic-test-only';
+  process.env.CODEX_REVIEW_MODEL = 'gpt-5';
+}
+
+test('token exhaustion retries once with a larger budget and publishes only completed text', async () => {
+  const {github, state} = fixture(); reviewEnv();
+  const requests = [], logs = [];
+  const fetch = async (_url, options) => {
+    requests.push(JSON.parse(options.body));
+    return {ok: true, json: async () => requests.length === 1 ? exhausted() : completed()};
+  };
+  const result = await review(github, context, identity, fetch, line => logs.push(line));
+  assert.equal(result, 'Completed review');
+  assert.deepEqual(requests.map(request => request.max_output_tokens), [12000, 25000]);
+  assert.equal(requests[0].input, requests[1].input);
+  for (const request of requests) {
+    assert.deepEqual(request.tools, []); assert.equal(request.tool_choice, 'none'); assert.equal(request.store, false);
+  }
+  assert.deepEqual(JSON.parse(logs[0]), {event: 'codex_review_response', attempt: 1,
+    max_output_tokens: 12000, status: 'incomplete', incomplete_reason: 'max_output_tokens',
+    output_tokens: 12000, reasoning_tokens: 12000});
+  await publish(github, context, identity, result);
+  assert.equal(state.published.length, 1);
+  assert.match(state.published[0].body, /Completed review/);
+  assert.doesNotMatch(state.published[0].body, /PARTIAL/);
+});
+
+test('a second exhausted attempt fails closed with useful safe metadata', async () => {
+  const {github, state} = fixture(); reviewEnv(); let calls = 0;
+  await assert.rejects(review(github, context, identity, async () => {
+    calls++; return {ok: true, json: async () => exhausted(calls === 1 ? 12000 : 25000)};
+  }, () => {}), error => {
+    assert.match(error.message, /no successful review is claimed/);
+    assert.match(error.message, /max_output_tokens/);
+    assert.match(error.message, /reasoning_tokens/);
+    assert.doesNotMatch(error.message, /PARTIAL/);
+    return true;
+  });
+  assert.equal(calls, 2); assert.equal(state.published.length, 0);
+});
+
+test('content filters, failed states, refusals and empty output never trigger a budget retry', async () => {
+  for (const response of [
+    {status: 'incomplete', incomplete_details: {reason: 'content_filter'}},
+    {status: 'failed', error: {message: 'PRIVATE ERROR'}},
+    {status: 'incomplete'}, {status: 'completed', output: []},
+    {status: 'completed', output: [{type: 'message', content: [
+      {type: 'refusal', refusal: 'PRIVATE REFUSAL'}, {type: 'output_text', text: 'partial answer'}]}]},
+  ]) {
+    const {github, state} = fixture(); reviewEnv(); let calls = 0;
+    await assert.rejects(review(github, context, identity, async () => {
+      calls++; return {ok: true, json: async () => response};
+    }, () => {}));
+    assert.equal(calls, 1); assert.equal(state.published.length, 0);
+  }
+});
+
+test('HTTP failures and request timeouts are not automatically retried', async () => {
+  for (const timeout of [false, true]) {
+    const {github} = fixture(); reviewEnv(); let calls = 0;
+    await assert.rejects(review(github, context, identity, async () => {
+      calls++;
+      if (timeout) throw new DOMException('request timed out', 'TimeoutError');
+      return {ok: false, status: 429, json: async () => assert.fail('never read API error bodies')};
+    }, () => {}));
+    assert.equal(calls, 1);
+  }
+});
+
+test('changed heads/bases and revoked public visibility prevent retry submission', async () => {
+  for (const change of ['head', 'base', 'repository', 'fork', 'closed']) {
+    const {github, state} = fixture(); reviewEnv(); let calls = 0;
+    await assert.rejects(review(github, context, identity, async () => {
+      calls++;
+      if (change === 'head') state.pr.head.sha = 'c'.repeat(40);
+      if (change === 'base') state.pr.base.sha = 'c'.repeat(40);
+      if (change === 'repository') state.repository.private = true;
+      if (change === 'fork') state.pr.head.repo.private = true;
+      if (change === 'closed') state.pr.state = 'closed';
+      return {ok: true, json: async () => exhausted()};
+    }, () => {}));
+    assert.equal(calls, 1); assert.equal(state.published.length, 0);
+  }
+});
+
+test('diagnostics cannot echo arbitrary model/account/error content into logs', async () => {
+  const secret = 'PRIVATE-SENTINEL';
+  const result = {status: secret, incomplete_details: {reason: secret},
+    usage: {output_tokens: secret, output_tokens_details: {reasoning_tokens: -1}},
+    error: {message: secret}, output: [{type: 'reasoning', text: secret}]};
+  assert.deepEqual(responseDiagnostic(result), {status: 'unknown', incomplete_reason: 'unknown',
+    output_tokens: null, reasoning_tokens: null});
+  assert.throws(() => responseText(result), error => !error.message.includes(secret));
+  const {github} = fixture(); reviewEnv(); const logs = [];
+  await assert.rejects(review(github, context, identity, async () => ({ok: true, json: async () => result}),
+    line => logs.push(line)));
+  assert.equal(logs.length, 1); assert.ok(!logs[0].includes(secret));
+  assert.deepEqual(responseDiagnostic(null), {status: 'unknown', incomplete_reason: 'unknown',
+    output_tokens: null, reasoning_tokens: null});
 });
