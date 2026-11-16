@@ -260,6 +260,8 @@ Both availability modes use the same timezone grid: nonexistent DST clock times
 are skipped, both occurrences of repeated times retain their offsets, and starts
 are ordered by instant before the result cap is applied. A range starting at
 01:50 before a fall-back can therefore first offer 01:00 after the fall-back.
+Range clipping, busy subtraction, union and intersection also compare instants:
+a fall-back range can be valid even when its end clock time precedes its start.
 
 `get_free_slots` returns a structured response so the LLM (and any downstream
 prompt logic) can react appropriately to the two distinct empty-result cases:

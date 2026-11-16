@@ -110,3 +110,31 @@ def test_zoned_grid_preserves_local_alignment_across_gaps_and_half_hour_folds(zo
     slots = build_zoned_slot_starts([(datetime.fromisoformat(start), datetime.fromisoformat(end))],
                                     duration, ZoneInfo(zone))
     assert [slot.isoformat() for slot in slots] == expected
+
+
+@pytest.mark.parametrize('operation', ['working_hours', 'union', 'intersection', 'subtract_busy'])
+def test_interval_operations_keep_fold_crossing_ranges_as_instants(operation):
+    from datetime import timezone
+    from src.tools.business._calendar_utils import (
+        working_hours_mask, union_intervals, intersect_intervals, subtract_busy,
+    )
+
+    zone = ZoneInfo('America/New_York')
+    def local(clock):
+        return datetime.fromisoformat(f'2027-11-07T{clock}+00:00').astimezone(zone)
+    start, end = local('05:20:00'), local('06:10:00')
+    if operation == 'working_hours':
+        result = working_hours_mask(start, end, 'America/New_York', 0, 24, set(range(7)))
+        expected = [('05:20:00', '06:10:00')]
+    elif operation == 'union':
+        result = union_intervals([[(start, end)], [(local('06:00:00'), local('06:30:00'))]])
+        expected = [('05:20:00', '06:30:00')]
+    elif operation == 'intersection':
+        result = intersect_intervals([(start, end)], [(local('05:30:00'), local('06:30:00'))])
+        expected = [('05:30:00', '06:10:00')]
+    else:
+        result = subtract_busy([(start, end)], [(local('05:40:00'), local('06:05:00'))])
+        expected = [('05:20:00', '05:40:00'), ('06:05:00', '06:10:00')]
+    assert [(a.astimezone(timezone.utc), b.astimezone(timezone.utc)) for a, b in result] == [
+        (local(a).astimezone(timezone.utc), local(b).astimezone(timezone.utc)) for a, b in expected
+    ]

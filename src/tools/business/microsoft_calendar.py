@@ -564,7 +564,7 @@ class MicrosoftCalendarTool(Tool):
                     tz_name,
                 )
             else:
-                range_start = max(range_start, utc_now().astimezone(ZoneInfo(tz_name)))
+                range_start = max(range_start, utc_now().astimezone(ZoneInfo(tz_name)), key=to_utc)
                 try:
                     horizon = (
                         int(config.get("booking_horizon_days", 365))
@@ -581,9 +581,10 @@ class MicrosoftCalendarTool(Tool):
                         (utc_now() + timedelta(days=horizon)).astimezone(
                             ZoneInfo(tz_name)
                         ),
+                        key=to_utc,
                     )
             try:
-                if range_end <= range_start:
+                if to_utc(range_end) <= to_utc(range_start):
                     per_account_intervals.append([])
                     per_account_free_counts[key] = 0
                     continue
@@ -600,7 +601,7 @@ class MicrosoftCalendarTool(Tool):
                 )
                 if exact:
                     exact_results.append(
-                        any(a <= range_start and range_end <= b for a, b in intervals)
+                        any(to_utc(a) <= to_utc(range_start) and to_utc(range_end) <= to_utc(b) for a, b in intervals)
                     )
             except MicrosoftGraphApiError as exc:
                 failed_keys.append(key)
@@ -1357,7 +1358,7 @@ class MicrosoftCalendarTool(Tool):
                 intervals, _, _ = self._available_intervals(
                     client, start, end, account.timezone, config, for_booking=True
                 )
-                if not any(a <= start and end <= b for a, b in intervals):
+                if not any(to_utc(a) <= to_utc(start) and to_utc(end) <= to_utc(b) for a, b in intervals):
                     if resend:
                         # The earlier POST may have become visible since the
                         # lookup above and be what makes the slot busy.
@@ -1810,7 +1811,7 @@ class MicrosoftCalendarTool(Tool):
                     exclude_id=event_id,
                     for_booking=True,
                 )
-                if not any(a <= start and end <= b for a, b in intervals):
+                if not any(to_utc(a) <= to_utc(start) and to_utc(end) <= to_utc(b) for a, b in intervals):
                     raise BookingValidationError(
                         "slot_busy",
                         "The new interval is busy; the original booking is retained.",

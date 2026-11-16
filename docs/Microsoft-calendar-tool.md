@@ -182,6 +182,8 @@ are skipped, repeated times retain distinct offsets, and results are sorted by
 instant before truncation. The first slot can have an earlier clock time after a
 fall-back while still being a later instant. Returned slot ends use the requested
 elapsed duration across clock changes; pass the offset-bearing start/end pair unchanged.
+Range clipping, busy subtraction, aggregation and exact booking containment use
+instants as well, including ranges whose end clock time precedes their start.
 **Absence from suggestions is never proof that a requested interval is busy.**
 For example, 08:00/08:30/09:00 plus `slots_truncated: true` says nothing about
 13:00; check 13:00–13:30 explicitly. Queries are bounded to 93 days; split a wider

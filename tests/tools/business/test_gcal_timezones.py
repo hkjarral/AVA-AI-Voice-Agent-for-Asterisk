@@ -293,3 +293,25 @@ async def test_fallback_slots_include_both_folds_in_instant_order(monkeypatch, m
     assert [instant(slot) for slot in offered['slots']] == expected
     for pair in offered['slots_with_end']:
         assert instant(pair['end']) - instant(pair['start']) == timedelta(minutes=30)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('aggregation', ['single', 'all', 'any'])
+@pytest.mark.parametrize('busy,expected_count', [([], 1), ([('2027-11-07T05:40:00Z', '2027-11-07T06:05:00Z')], 0),
+                                                 ([('2027-11-07T06:05:00Z', '2027-11-07T06:10:00Z')], 1)])
+async def test_freebusy_range_with_reversed_fold_clocks_is_clipped_by_instant(monkeypatch, aggregation, busy, expected_count):
+    zones = {'A': 'America/New_York'}
+    if aggregation != 'single':
+        zones['B'] = 'America/New_York'
+    tool, clients = make_tool(monkeypatch, zones)
+    tool._get_config.return_value.update(working_hours_start=0, working_hours_end=24, max_slots_returned=0)
+    for key, client in clients.items():
+        client.service.freebusy.return_value.query.return_value.execute.return_value = {
+            'calendars': {key: {'busy': [{'start': start, 'end': end} for start, end in busy]}}
+        }
+    offered = await tool.execute({'action': 'get_free_slots', 'time_min': '2027-11-07T01:20:00-04:00',
+                                  'time_max': '2027-11-07T01:10:00-05:00', 'duration': 30,
+                                  'aggregate_mode': aggregation if aggregation != 'single' else 'all'}, CTX)
+    assert offered['status'] == 'success'
+    assert offered['slots_with_end'] == ([{'start': '2027-11-07T01:30:00-04:00',
+                                          'end': '2027-11-07T01:00:00-05:00'}] if expected_count else [])

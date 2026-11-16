@@ -3118,3 +3118,89 @@ async def test_fallback_slots_keep_chronological_first_start_and_elapsed_ends(
     for pair in offered['slots_with_end']:
         start_dt, end_dt = [datetime.fromisoformat(pair[key]).astimezone(timezone.utc) for key in ('start', 'end')]
         assert end_dt - start_dt == timedelta(minutes=30)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['freebusy', 'title_prefix'])
+@pytest.mark.parametrize('action', ['get_free_slots', 'check_availability'])
+@pytest.mark.parametrize('busy,slot_available', [(None, True), (('05:40:00', '06:05:00'), False),
+                                               (('06:05:00', '06:10:00'), True)])
+async def test_fold_crossing_range_clipping_and_busy_subtraction_use_instants(
+    ms_context, ms_config, monkeypatch, mode, action, busy, slot_available
+):
+    monkeypatch.setattr('src.tools.business.microsoft_calendar.utc_now',
+                        lambda: datetime(2027, 11, 6, tzinfo=timezone.utc))
+    tool = MicrosoftCalendarTool()
+    ms_config['accounts']['default']['timezone'] = 'America/New_York'
+    ms_config.update(working_hours_start=0, working_hours_end=24, working_days=list(range(7)),
+                     max_slots_returned=0, free_prefix='Open' if mode == 'title_prefix' else '')
+    fake = FakeMicrosoftClient()
+    if mode == 'title_prefix':
+        fake.events.append(busy_event('2027-11-07T05:20:00+00:00', '2027-11-07T06:10:00+00:00',
+                                      subject='Open hours', showAs='free'))
+    if busy:
+        fake.events.append(busy_event(f'2027-11-07T{busy[0]}+00:00', f'2027-11-07T{busy[1]}+00:00'))
+    params = ({'time_min': '2027-11-07T01:20:00-04:00', 'time_max': '2027-11-07T01:10:00-05:00', 'duration': 30}
+              if action == 'get_free_slots' else {'start_datetime': '2027-11-07T01:30:00-04:00',
+                                                  'end_datetime': '2027-11-07T01:00:00-05:00'})
+    with patch.object(tool, '_client_for_config', return_value=fake):
+        offered = await tool.execute({'action': action, **params}, ms_context)
+    assert offered['status'] == 'success'
+    if action == 'check_availability':
+        assert offered['available'] is slot_available
+    else:
+        assert offered['slots_with_end'] == ([{'start': '2027-11-07T01:30:00-04:00',
+                                               'end': '2027-11-07T01:00:00-05:00'}] if slot_available else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('busy,available', [(None, True), (('05:40:00', '06:05:00'), False),
+                                           (('06:05:00', '06:10:00'), True)])
+async def test_create_fold_crossing_booking_respects_exact_busy_instants(ms_context, ms_config, monkeypatch, busy, available):
+    for module in ('microsoft_calendar', 'microsoft_booking'):
+        monkeypatch.setattr(f'src.tools.business.{module}.utc_now',
+                            lambda: datetime(2027, 11, 6, tzinfo=timezone.utc))
+    tool = MicrosoftCalendarTool()
+    ms_config['accounts']['default']['timezone'] = 'America/New_York'
+    ms_config.update(enforce_booking_limits=True, working_hours_start=0, working_hours_end=24,
+                     working_days=list(range(7)))
+    fake = FakeMicrosoftClient()
+    if busy:
+        fake.events.append(busy_event(f'2027-11-07T{busy[0]}+00:00', f'2027-11-07T{busy[1]}+00:00'))
+    with patch.object(tool, '_client_for_config', return_value=fake):
+        booked = await tool.execute({'action': 'create_event', 'summary': 'Synthetic DST appointment',
+                                     'start_datetime': '2027-11-07T01:30:00-04:00',
+                                     'end_datetime': '2027-11-07T01:00:00-05:00'}, ms_context)
+    if available:
+        assert booked['status'] == 'success'
+        assert fake.created[0][2:4] == (datetime(2027, 11, 7, 5, 30, tzinfo=timezone.utc),
+                                       datetime(2027, 11, 7, 6, tzinfo=timezone.utc))
+    else:
+        assert booked['error_code'] == 'slot_busy'
+        assert not fake.created
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['freebusy', 'title_prefix'])
+@pytest.mark.parametrize('boundary', ['now', 'horizon'])
+async def test_fold_range_now_and_horizon_clamps_do_not_widen_requested_instants(
+    ms_context, ms_config, monkeypatch, mode, boundary
+):
+    now = (datetime(2027, 11, 7, 6, 5, tzinfo=timezone.utc) if boundary == 'now'
+           else datetime(2027, 11, 6, 6, 30, tzinfo=timezone.utc))
+    monkeypatch.setattr('src.tools.business.microsoft_calendar.utc_now', lambda: now)
+    tool = MicrosoftCalendarTool()
+    ms_config['accounts']['default']['timezone'] = 'America/New_York'
+    ms_config.update(enforce_booking_limits=True, booking_horizon_days=1, working_hours_start=0,
+                     working_hours_end=24, working_days=list(range(7)), max_slots_returned=0,
+                     free_prefix='Open' if mode == 'title_prefix' else '')
+    fake = FakeMicrosoftClient()
+    if mode == 'title_prefix':
+        fake.events.append(busy_event('2027-11-07T05:00:00+00:00', '2027-11-07T07:00:00+00:00',
+                                      subject='Open hours', showAs='free'))
+    upper = '2027-11-07T01:10:00-05:00' if boundary == 'now' else '2027-11-07T01:50:00-04:00'
+    with patch.object(tool, '_client_for_config', return_value=fake):
+        offered = await tool.execute({'action': 'get_free_slots', 'time_min': '2027-11-07T01:20:00-04:00',
+                                      'time_max': upper, 'duration': 30}, ms_context)
+    assert offered['status'] == 'success'
+    assert offered['slots_with_end'] == []

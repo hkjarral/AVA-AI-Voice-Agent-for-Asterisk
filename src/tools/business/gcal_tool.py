@@ -23,7 +23,15 @@ from zoneinfo import ZoneInfo
 from src.tools.base import Tool, ToolDefinition, ToolCategory
 from src.tools.context import ToolExecutionContext, resolve_scoped_tool_config
 
-from src.tools.business._calendar_utils import build_zoned_slot_starts, normalize_to_tz, to_utc
+from src.tools.business._calendar_utils import (
+    build_zoned_slot_starts,
+    intersect_intervals,
+    normalize_to_tz,
+    subtract_busy,
+    to_utc,
+    union_intervals,
+    working_hours_mask,
+)
 from src.tools.business.gcalendar import GCalendar, GoogleCalendarApiError, _get_timezone
 
 logger = structlog.get_logger(__name__)
@@ -525,35 +533,6 @@ class GCalendarTool(Tool):
                         return [], tz_name
                     return cal_i.freebusy_query(time_min_dt.isoformat(), time_max_dt.isoformat()), tz_name
 
-                def _working_hours_mask(
-                    range_start: datetime, range_end: datetime, tz_name: str,
-                    work_start_hour: int, work_end_hour: int, work_days: set,
-                ) -> list[tuple[datetime, datetime]]:
-                    """Generate working-hour intervals within [range_start, range_end].
-
-                    work_days uses Python's weekday() convention (Mon=0..Sun=6). Both
-                    bounds are inclusive on the day, exclusive on the hour. Crossing
-                    DST is handled by ZoneInfo via .astimezone().
-                    """
-                    try:
-                        tz = ZoneInfo(tz_name)
-                    except (KeyError, TypeError):
-                        tz = ZoneInfo("UTC")
-                    rs = range_start.astimezone(tz)
-                    re_ = range_end.astimezone(tz)
-                    out: list[tuple[datetime, datetime]] = []
-                    cur_day = rs.replace(hour=0, minute=0, second=0, microsecond=0)
-                    while cur_day <= re_:
-                        if cur_day.weekday() in work_days:
-                            day_open = cur_day.replace(hour=work_start_hour)
-                            day_close = cur_day.replace(hour=work_end_hour) if work_end_hour < 24 else (cur_day + timedelta(days=1))
-                            seg_s = max(day_open, rs)
-                            seg_e = min(day_close, re_)
-                            if seg_s < seg_e:
-                                out.append((seg_s, seg_e))
-                        cur_day = cur_day + timedelta(days=1)
-                    return out
-
                 # Working hours config (only used in freebusy mode). Conservative
                 # business-hours default. Operators can override via tool config.
                 # Future PR: surface in UI; for now accept YAML overrides.
@@ -635,55 +614,7 @@ class GCalendarTool(Tool):
                             free_blocks.append((start_dt, end_dt))
                         elif summary.startswith(busy_prefix):
                             busy_blocks.append((start_dt, end_dt))
-                    free_blocks.sort(key=lambda x: x[0])
-                    busy_blocks.sort(key=lambda x: x[0])
-                    available: list[tuple[datetime, datetime]] = []
-                    for f_start, f_end in free_blocks:
-                        current_start = f_start
-                        for b_start, b_end in busy_blocks:
-                            if b_end <= current_start or b_start >= f_end:
-                                continue
-                            if current_start < b_start:
-                                available.append((current_start, b_start))
-                            current_start = max(current_start, b_end)
-                        if current_start < f_end:
-                            available.append((current_start, f_end))
-                    return available, len(free_blocks), len(busy_blocks)
-
-                def _union(intervals: list[list[tuple[datetime, datetime]]]) -> list[tuple[datetime, datetime]]:
-                    merged: list[tuple[datetime, datetime]] = []
-                    for lst in intervals:
-                        for s, e in lst:
-                            merged.append((s, e))
-                    if not merged:
-                        return []
-                    merged.sort(key=lambda x: x[0])
-                    out_iv: list[tuple[datetime, datetime]] = []
-                    cur_s, cur_e = merged[0]
-                    for s, e in merged[1:]:
-                        if s <= cur_e:
-                            cur_e = max(cur_e, e)
-                        else:
-                            out_iv.append((cur_s, cur_e))
-                            cur_s, cur_e = s, e
-                    out_iv.append((cur_s, cur_e))
-                    return out_iv
-
-                def _intersect(a: list[tuple[datetime, datetime]], b: list[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
-                    i, j = 0, 0
-                    res: list[tuple[datetime, datetime]] = []
-                    a_sorted = sorted(a, key=lambda x: x[0])
-                    b_sorted = sorted(b, key=lambda x: x[0])
-                    while i < len(a_sorted) and j < len(b_sorted):
-                        s = max(a_sorted[i][0], b_sorted[j][0])
-                        e = min(a_sorted[i][1], b_sorted[j][1])
-                        if s < e:
-                            res.append((s, e))
-                        if a_sorted[i][1] < b_sorted[j][1]:
-                            i += 1
-                        else:
-                            j += 1
-                    return res
+                    return subtract_busy(free_blocks, busy_blocks), len(free_blocks), len(busy_blocks)
 
                 # Gather intervals per selected calendar (or single target)
                 keys_to_use: list[str]
@@ -734,7 +665,7 @@ class GCalendarTool(Tool):
                             busy_isos, tz_name_k = await asyncio.to_thread(_freebusy_for_key, k)
                             tn_min = self._normalize_datetime_to_calendar_tz(time_min, tz_name_k)
                             tn_max = self._normalize_datetime_to_calendar_tz(time_max, tz_name_k)
-                            free_blocks_dt = _working_hours_mask(
+                            free_blocks_dt = working_hours_mask(
                                 tn_min, tn_max, tz_name_k,
                                 work_start_hour, work_end_hour, work_days_set,
                             )
@@ -766,19 +697,7 @@ class GCalendarTool(Tool):
                                 continue
                             # Subtract busy from each working-hours block (mirrors the
                             # title-prefix free-vs-busy intersection logic).
-                            free_blocks_dt.sort(key=lambda x: x[0])
-                            busy_blocks_dt.sort(key=lambda x: x[0])
-                            intervals: list[tuple[datetime, datetime]] = []
-                            for f_start, f_end in free_blocks_dt:
-                                current_start = f_start
-                                for b_start, b_end in busy_blocks_dt:
-                                    if b_end <= current_start or b_start >= f_end:
-                                        continue
-                                    if current_start < b_start:
-                                        intervals.append((current_start, b_start))
-                                    current_start = max(current_start, b_end)
-                                if current_start < f_end:
-                                    intervals.append((current_start, f_end))
+                            intervals = subtract_busy(free_blocks_dt, busy_blocks_dt)
                             fb_count = len(free_blocks_dt)
                             bb_count = len(busy_blocks_dt)
                         else:
@@ -837,12 +756,12 @@ class GCalendarTool(Tool):
                     return out
 
                 if len(per_cal_intervals) == 1 or aggregate_mode == "any":
-                    available_intervals = _union(per_cal_intervals)
+                    available_intervals = union_intervals(per_cal_intervals)
                 else:
                     # intersect across all calendars (default)
                     cur = per_cal_intervals[0]
                     for nxt in per_cal_intervals[1:]:
-                        cur = _intersect(cur, nxt)
+                        cur = intersect_intervals(cur, nxt)
                     available_intervals = cur
 
                 # Duration: from parameter "duration" (minutes), fallback to config,
