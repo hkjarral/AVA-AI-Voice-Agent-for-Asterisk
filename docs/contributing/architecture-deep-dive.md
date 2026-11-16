@@ -86,6 +86,15 @@ candidate; consult [`docs/baselines/golden/`](../baselines/golden/).
 
 For deployment guidance, see [docs/PRODUCTION_DEPLOYMENT.md](../PRODUCTION_DEPLOYMENT.md).
 
+ARI terminal ownership distinguishes accepted, rejected, and indeterminate
+commands. Voicemail retains the caller transfer guard on uncertain continue
+responses, while history reports an error rather than confirmed transfer.
+Native hangup retries are bounded and check the same session/channel and transfer
+precedence on every attempt; VICIdial owns its separate finalization contract.
+Pre-call hold resources live on `CallSession`, each with a reserved playback ID,
+a delayed start and bounded late-response cleanup. Only their owner stops them.
+See [tool lifecycle and validation](../TOOL_CALLING_GUIDE.md#ari-lifecycle-validation-boundary).
+
 ## Architecture Overview
 
 ### Hybrid ARI + SessionStore + Conversation Coordinator

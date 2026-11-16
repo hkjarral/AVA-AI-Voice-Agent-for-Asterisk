@@ -436,6 +436,7 @@ def build_in_call_tool_record(
         "tool_call_id": stable_tool_call_id(tool_call_id),
         "name": name,
         "action": action,
+        **({"handoff_indeterminate": True} if result_dict.get("handoff_indeterminate") is True else {}),
         "status": terminal_status,
         "target_id": target_id,
         "params": params,

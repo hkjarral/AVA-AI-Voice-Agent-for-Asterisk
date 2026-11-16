@@ -187,6 +187,10 @@ class CallSession:
     connection_audio_playback_id: Optional[str] = None
     connection_audio_media_uri: Optional[str] = None
     connection_audio_started_ts: float = 0.0
+    # Runtime-only resource owners. Each pre-call tool owns only its hold playback.
+    pre_call_hold_audio: Set[Any] = field(default_factory=set, repr=False)
+    voicemail_handoff_id: Optional[str] = None
+    voicemail_handoff_outcome: Optional[str] = None  # pending | confirmed | indeterminate
     created_at: float = field(default_factory=time.time)
     agent_audio_buffer: bytearray = field(default_factory=bytearray)
     last_agent_audio_ts: float = 0.0

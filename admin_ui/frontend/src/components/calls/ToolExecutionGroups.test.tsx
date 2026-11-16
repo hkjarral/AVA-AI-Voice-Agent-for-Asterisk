@@ -77,6 +77,15 @@ describe('PhaseToolGroup', () => {
 });
 
 describe('InCallToolGroup', () => {
+    it('shows a failed voicemail handoff as uncertain without claiming success', () => {
+        render(<InCallToolGroup entries={[{
+            name: 'leave_voicemail', status: 'failure', params: {}, result: 'failed',
+            handoff_indeterminate: true, timestamp: '2030-01-01T00:00:00Z', duration_ms: 20,
+        }]} />);
+        expect(screen.getByText('error')).toBeInTheDocument();
+        expect(screen.getByRole('status')).toHaveTextContent('Transfer outcome uncertain');
+        expect(screen.getByRole('status')).toHaveTextContent('Do not automatically repeat this transfer');
+    });
     it('shows the Calendly attempt reference next to the recorded outcome', () => {
         render(<InCallToolGroup entries={[{
             name: 'calendly_calendar', action: 'create_booking', status: 'failure',

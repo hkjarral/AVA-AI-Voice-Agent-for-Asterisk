@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **ARI lifecycle recovery:** voicemail reports rejected or uncertain dialplan handoffs accurately without taking ownership back from a potentially transferred caller. Native hangup checks acceptance and retries safely; pre-call hold playback is stopped on completion, failure, cancellation, and caller cleanup, including late starts (#863).
+
 - **Hangup intent:** requests to "hand off" to a person, reports that "the call dropped," and "and call me back" no longer become end-call markers during fuzzy normalization (#854). The "and the call" STT correction now requires a whole command and preserves optional "please"/"now" modifiers for custom markers; genuine end-call requests and configured marker policies remain supported.
 - Targeted Codex reviews now reserve more room for reasoning, retry confirmed token exhaustion once with a larger bounded budget, and report safe response metadata while continuing to reject incomplete or refused reviews.
 - **Static defects (#856):** restore Local AI backend registry/schema endpoints using the configured server URL; emit streaming warm-up logs with calculated buffer values; preserve Google Live input resampling history across frames and reset it at connection/rate boundaries. Remove unused broken ARI streaming cleanup and legacy Kroko implementations.

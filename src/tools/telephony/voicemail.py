@@ -27,10 +27,13 @@ Timeline Evidence (Call 1763009524.4793):
 - Total delay: ~8 seconds until caller spoke
 """
 
+import asyncio
+import re
+from uuid import uuid4
 from typing import Dict, Any
 import structlog
 
-from ..base import Tool, ToolDefinition, ToolParameter, ToolCategory
+from ..base import Tool, ToolDefinition, ToolCategory
 from ..context import ToolExecutionContext
 
 logger = structlog.get_logger(__name__)
@@ -65,6 +68,8 @@ class VoicemailTool(Tool):
                 if extension:
                     return selected_key, extension
 
+            return "", ""  # A deleted selected resource must never widen scope.
+
         legacy_extension = str(config.get("extension") or "").strip()
         if legacy_extension:
             return "default", legacy_extension
@@ -76,6 +81,8 @@ class VoicemailTool(Tool):
                 extension = str(default_mailbox.get("extension") or "").strip()
                 if extension:
                     return default_key, extension
+
+            return "", ""  # An explicitly configured default was deleted.
 
         valid = [
             (str(key), str(value.get("extension") or "").strip())
@@ -126,8 +133,8 @@ class VoicemailTool(Tool):
                 "message": "Voicemail is not available",
             }
         
-        mailbox_key, extension = self.resolve_mailbox(config)
-        if not extension:
+        _mailbox_key, extension = self.resolve_mailbox(config)
+        if not extension or not re.fullmatch(r"[A-Za-z0-9_*#.-]+", extension):
             logger.error(
                 "Voicemail mailbox not configured or is ambiguous",
                 call_id=context.call_id,
@@ -137,78 +144,104 @@ class VoicemailTool(Tool):
                 "message": "Voicemail is not configured properly"
             }
         
-        logger.info(
-            "Voicemail transfer requested",
-            call_id=context.call_id,
-            mailbox_key=mailbox_key,
-            extension=extension
-        )
-        
-        # Set transfer_active flag BEFORE calling continue
-        # This prevents cleanup from hanging up the caller channel
-        await context.update_session(
-            transfer_active=True,
-            transfer_target=f"Voicemail {extension}"
-        )
-        
-        # CRITICAL: Wait briefly to allow AI audio to clear the RTP channel
-        # Without this delay, the channel leaves Stasis while AI is still streaming,
-        # causing the voicemail greeting to be blocked until caller speaks
-        import asyncio
-        await asyncio.sleep(0.8)  # Wait 800ms for Deepgram to finish speaking
-        
+        session = await context.get_session()
+        if (session.cleanup_in_progress or session.cleanup_completed
+                or getattr(session, "transfer_active", False)
+                or getattr(session, "transfer_state", None)
+                or getattr(session, "transfer_destination", None)
+                or context.is_pending_attended_transfer(session)
+                or isinstance(getattr(session, "pending_deferred_transfer", None), dict)):
+            return {"status": "failed", "message": "The call is no longer available for voicemail."}
+
+        validator = getattr(context.ari_client, "dialplan_target_exists", None)
+        if callable(validator):
+            try:
+                exists = await validator(context.caller_channel_id, context="ext-local",
+                                         extension=f"vmu{extension}", priority=1)
+            except Exception:
+                exists = None
+            if exists is False:
+                return {"status": "failed", "message": "Voicemail destination is not available."}
+
+        # Recheck after discovery, then claim before the first side-effect await.
+        if (await context.get_session() is not session or session.cleanup_in_progress
+                or getattr(session, "transfer_active", False)
+                or getattr(session, "transfer_state", None)
+                or context.is_pending_attended_transfer(session)
+                or isinstance(getattr(session, "pending_deferred_transfer", None), dict)):
+            return {"status": "failed", "message": "The call is no longer available for voicemail."}
+        previous = {key: getattr(session, key, None) for key in
+                    ("transfer_active", "transfer_state", "transfer_target")}
+        claim = uuid4().hex
+        session.voicemail_handoff_id = claim
+        session.voicemail_handoff_outcome = "pending"
+        session.transfer_active = True
+        session.transfer_target = f"Voicemail {extension}"
+        session.transfer_state = "voicemail_pending"
+        request_started = False
+
+        def still_owned():
+            return (session.voicemail_handoff_id == claim
+                    and getattr(session, "transfer_target", None) == f"Voicemail {extension}"
+                    and getattr(session, "transfer_state", None) in
+                    {"voicemail_pending", "voicemail", "voicemail_indeterminate"})
+
+        def restore():
+            if still_owned():
+                for key, value in previous.items():
+                    setattr(session, key, value)
+                session.voicemail_handoff_outcome = None
+                session.voicemail_handoff_id = None
+
         try:
-            # Transfer to FreePBX voicemail context using continue
-            # Pattern: ext-local,vmu{extension},1
-            asterisk_context = "ext-local"
-            asterisk_extension = f"vmu{extension}"
-            
-            logger.info(
-                "Voicemail transfer initiated",
-                call_id=context.call_id,
-                context=asterisk_context,
-                extension=asterisk_extension
+            # Allow the existing caller-facing announcement to finish before
+            # leaving Stasis. Cancellation here has made no external request.
+            await asyncio.sleep(0.8)
+            latest = await context.get_session()
+            if (latest is not session or not still_owned() or session.cleanup_in_progress
+                    or session.cleanup_completed):
+                restore()
+                return {"status": "failed", "message": "The call ended before voicemail started."}
+            request_started = True
+            handed_off = await context.ari_client.continue_in_dialplan(
+                context.caller_channel_id, context="ext-local",
+                extension=f"vmu{extension}", priority=1,
             )
-            
-            # Use continue to leave Stasis and enter dialplan
-            await context.ari_client.send_command(
-                method="POST",
-                resource=f"channels/{context.caller_channel_id}/continue",
-                params={
-                    "context": asterisk_context,
-                    "extension": asterisk_extension,
-                    "priority": 1
-                }
-            )
-            
-            logger.info(
-                "Voicemail transfer executed",
-                call_id=context.call_id,
-                extension=extension
-            )
-            
-            # Return a question to prompt caller response
-            # This triggers voice activity needed for VoiceMail app to play greeting
-            return {
-                "status": "success",
-                "message": "Are you ready to leave a message now?"
-            }
-            
-        except Exception as e:
-            logger.error(
-                "Voicemail transfer failed",
-                call_id=context.call_id,
-                error=str(e),
-                exc_info=True
-            )
-            
-            # Clear transfer flag on failure
-            await context.update_session(
-                transfer_active=False,
-                transfer_target=None
-            )
-            
-            return {
-                "status": "failed",
-                "message": "Unable to transfer to voicemail at this time"
-            }
+        except asyncio.CancelledError:
+            if request_started and still_owned():
+                session.voicemail_handoff_outcome = "indeterminate"
+                session.transfer_state = "voicemail_indeterminate"
+            elif not request_started:
+                restore()
+            raise
+        except Exception:
+            if not request_started:
+                restore()
+                return {"status": "failed", "message": "The call ended before voicemail started."}
+            # The request may have reached Asterisk. Never replay or reclaim a
+            # potentially handed-off caller after a timeout/transport failure.
+            handed_off = None
+            logger.warning("Voicemail handoff outcome unavailable", call_id=context.call_id)
+        finally:
+            if session.voicemail_handoff_id == claim and not still_owned():
+                # Another routing action superseded this invocation. Retire only
+                # our diagnostic marker, never its ownership flags.
+                session.voicemail_handoff_id = None
+                session.voicemail_handoff_outcome = None
+
+        if handed_off is False:
+            restore()
+            return {"status": "failed", "message": "Unable to transfer to voicemail at this time."}
+        if handed_off is True:
+            if still_owned():
+                session.voicemail_handoff_outcome = "confirmed"
+                session.transfer_state = "voicemail"
+            return {"status": "success", "message": "Are you ready to leave a message now?"}
+        if still_owned():
+            session.voicemail_handoff_outcome = "indeterminate"
+            session.transfer_state = "voicemail_indeterminate"
+        return {
+            "status": "failed",
+            "handoff_indeterminate": True,
+            "message": "Voicemail handoff could not be confirmed. Do not retry the transfer; it may already have started.",
+        }
