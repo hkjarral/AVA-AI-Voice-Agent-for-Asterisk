@@ -2,6 +2,7 @@
 
 import asyncio
 import audioop
+import base64
 import struct
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -15,6 +16,7 @@ from src.config import (DeepgramProviderConfig, GoogleProviderConfig,
 from src.core.input_gain import InputGainState
 from src.engine import Engine
 from src.providers.elevenlabs_config import ElevenLabsAgentConfig
+from src.providers.google_live import GoogleLiveProvider
 
 
 def frame(rms, rate=8000, ms=20):
@@ -277,3 +279,50 @@ def test_floor_zero_can_admit_very_quiet_audio():
         output = state.process(frame(100), 8000)
     assert audioop.rms(output, 2) > 350
     assert state.below_floor_frames == 0
+
+
+@pytest.mark.parametrize('maximum', [0, 24])
+async def test_engine_gain_and_google_input_resampler_preserve_the_wire_contract(engine, maximum):
+    """Exercise #853 conditioning through #858's real Google input buffering."""
+    config = GoogleProviderConfig(
+        api_key='synthetic-test-key', provider_input_sample_rate_hz=16000,
+        input_gain_target_rms=2500, input_gain_max_db=maximum,
+        input_gain_noise_floor_rms=200,
+    )
+    google = GoogleLiveProvider(config=config, on_event=AsyncMock())
+    google.websocket = AsyncMock()
+    google._setup_complete = True
+    google._call_id = 'call-1'
+    google._send_message = AsyncMock(return_value=True)
+    sent_levels = []
+
+    async def forward(pcm):
+        payload, encoding, rate = encode(engine, pcm, google)
+        assert (encoding, rate, len(payload)) == ('slin16', 16000, 640)
+        previous_count = google._send_message.await_count
+        await google.send_audio(payload, sample_rate=rate, encoding=encoding)
+        assert google._send_message.await_count == previous_count + 1
+        wire = google._send_message.await_args.args[0]['realtimeInput']['audio']
+        assert wire['mimeType'] == 'audio/pcm;rate=16000'
+        # Already-conditioned PCM must not be resampled a second time or decoded as mu-law.
+        assert base64.b64decode(wire['data']) == payload
+        assert google._input_resample_state is None
+        return payload
+
+    for index in range(160):
+        sample_numbers = index * 160 + np.arange(160)
+        quiet_speech = (500 * np.sin(2 * np.pi * 400 * sample_numbers / 8000)).astype('<i2').tobytes()
+        sent_levels.append(audioop.rms(await forward(quiet_speech), 2))
+    if maximum:
+        assert sent_levels[-1] > sent_levels[0] * 3
+    else:
+        assert sent_levels[-1] == pytest.approx(sent_levels[0], abs=2)
+
+    # Quiet gaps settle at unity after the short release ramp. A second silent
+    # frame excludes the engine resampler's one boundary-interpolation sample.
+    for _ in range(12):
+        gap = await forward(frame(40))
+    assert audioop.rms(gap, 2) < 50
+    await forward(frame(0))
+    assert await forward(frame(0)) == bytes(640)
+    assert not google._input_buffer
