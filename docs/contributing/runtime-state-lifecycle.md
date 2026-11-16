@@ -13,6 +13,12 @@ and call completion are separate events.
 | `Engine.channel_to_conns`, `conn_to_channel`, `audiosocket_primary_conn` | Active AudioSocket bindings. Retire the disconnected connection synchronously before awaiting session lookup; clear session media fields only if they still refer to that connection. Final call cleanup also releases residual bindings if transport disconnect failed. |
 | `Engine._outbound_pjsip_endpoint_cache` | Engine instance. Positive and negative probe results expire using the existing `AAVA_OUTBOUND_PJSIP_ENDPOINT_CACHE_TTL_SECONDS` (default 300 seconds). Access and insertion prune expired numbers; insertion caps the cache at 1,024 results, evicting the oldest inserted result. Probe completion sets the timestamp. A nonpositive TTL disables retention. |
 
+Before any transport send and after awaited diagnostics, output setup or write results,
+`_send_audio_chunk` checks the session terminal flags and the exact stream object
+and ID. A late producer cannot start new sends or repopulate diagnostic markers
+after teardown begins. A transport write already submitted before teardown may
+complete, but its late result does not update retired state or start another send.
+
 The unused `_last_segment_end_ts` and `channel_to_conn` containers were removed.
 Use the active stream or the connection set rather than reintroducing parallel
 state. Cleanup is idempotent and must leave other calls and replacement streams

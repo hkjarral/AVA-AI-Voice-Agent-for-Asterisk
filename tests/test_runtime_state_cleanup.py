@@ -185,8 +185,10 @@ async def playback_manager(transport="audiosocket"):
     manager = StreamingPlaybackManager(store, SimpleNamespace(), audio_transport=transport,
                                        streaming_config={"provider_grace_ms": 0})
     manager.audiosocket_server = SimpleNamespace()
+    manager.websocket_server = SimpleNamespace()
     manager.rtp_server = SimpleNamespace(has_remote_endpoint=Mock(return_value=False))
-    writer = SimpleNamespace(write=AsyncMock(return_value=transport == "audiosocket"))
+    writer = SimpleNamespace(write=AsyncMock(return_value=transport == "audiosocket"),
+                             begin_output=AsyncMock(return_value=7))
     manager._selected_output_transport = Mock(return_value=writer)
     return manager, session, writer
 
@@ -477,3 +479,139 @@ async def test_stt_finishing_after_cancelled_cleanup_cannot_restore_transcript_t
     finally:
         runner.cancel()
         await asyncio.wait_for(runner, timeout=1)
+
+
+@pytest.mark.parametrize("transport", ["audiosocket", "externalmedia", "websocket"])
+@pytest.mark.parametrize("terminal_flag", ["cleanup_in_progress", "cleanup_completed"])
+async def test_terminal_send_cannot_emit_media_or_restore_call_diagnostics(transport, terminal_flag):
+    manager, session, writer = await playback_manager(transport)
+    segment(manager, session.call_id, "late-stream")
+    setattr(session, terminal_flag, True)
+    manager.cleanup_call(session.call_id)
+    assert not await manager._send_audio_chunk(session.call_id, "late-stream", bytes(160))
+    writer.write.assert_not_awaited()
+    assert not manager._first_send_logged
+    assert not manager._rtp_remote_wait_logged
+
+
+@pytest.mark.parametrize("transport", ["audiosocket", "externalmedia", "websocket"])
+async def test_stale_stream_argument_is_rejected_even_when_entering_after_replacement(transport):
+    manager, session, writer = await playback_manager(transport)
+    segment(manager, session.call_id, "replacement")
+    replacement = dict(manager.active_streams[session.call_id])
+    assert not await manager._send_audio_chunk(session.call_id, "old-stream", bytes(160))
+    writer.write.assert_not_awaited()
+    assert manager.active_streams[session.call_id] == replacement
+    assert not manager._first_send_logged
+    assert not manager._rtp_remote_wait_logged
+
+
+@pytest.mark.parametrize("transport", ["audiosocket", "externalmedia", "websocket"])
+@pytest.mark.parametrize("callback_fails", [False, True])
+async def test_terminal_during_diagnostic_callback_prevents_media_and_state_resurrection(transport, callback_fails):
+    manager, session, writer = await playback_manager(transport)
+    segment(manager, session.call_id, "late-stream")
+
+    async def diagnostic(*_args):
+        session.cleanup_in_progress = True
+        manager.cleanup_call(session.call_id)
+        if callback_fails:
+            raise RuntimeError("synthetic late diagnostic failure")
+
+    manager.audio_diag_callback = diagnostic
+    assert not await manager._send_audio_chunk(session.call_id, "late-stream", bytes(160))
+    writer.write.assert_not_awaited()
+    assert not manager._first_send_logged
+    assert not manager._rtp_remote_wait_logged
+    assert "diag_callback_failed" not in manager.active_streams[session.call_id]
+
+
+@pytest.mark.parametrize("terminal_flag", ["cleanup_in_progress", "cleanup_completed"])
+async def test_terminal_during_websocket_begin_prevents_late_write(terminal_flag):
+    manager, session, writer = await playback_manager("websocket")
+    manager.websocket_server = SimpleNamespace()
+    segment(manager, session.call_id, "late-stream")
+
+    async def begin(_call_id):
+        setattr(session, terminal_flag, True)
+        manager.cleanup_call(session.call_id)
+        return 7
+
+    writer.begin_output = AsyncMock(side_effect=begin)
+    assert not await manager._send_audio_chunk(session.call_id, "late-stream", bytes(160))
+    writer.write.assert_not_awaited()
+    assert "websocket_output_generation" not in manager.active_streams[session.call_id]
+
+
+@pytest.mark.parametrize("transport", ["audiosocket", "externalmedia", "websocket"])
+@pytest.mark.parametrize("write_succeeded", [False, True])
+async def test_late_transport_result_cannot_restore_diagnostics_or_update_retired_state(transport, write_succeeded):
+    manager, session, writer = await playback_manager(transport)
+    manager.websocket_server = SimpleNamespace()
+    writer.begin_output = AsyncMock(return_value=7)
+    segment(manager, session.call_id, "late-stream")
+    info = manager.active_streams[session.call_id]
+
+    async def write(_frame):
+        # The write was submitted while healthy; its result arrives only after
+        # terminal teardown. It cannot be unsent, but must cause no new effects.
+        session.cleanup_in_progress = True
+        manager.cleanup_call(session.call_id)
+        return write_succeeded
+
+    writer.write.side_effect = write
+    assert not await manager._send_audio_chunk(session.call_id, "late-stream", bytes(160))
+    writer.write.assert_awaited_once()
+    assert not manager._first_send_logged
+    assert not manager._rtp_remote_wait_logged
+    assert "tx_bytes" not in info
+    assert "first_frame_observed" not in info
+
+
+async def test_rtp_result_rechecks_stream_argument_after_in_place_owner_change():
+    manager, session, writer = await playback_manager("externalmedia")
+    segment(manager, session.call_id, "old-stream")
+    info = manager.active_streams[session.call_id]
+
+    async def write(_frame):
+        info["stream_id"] = "replacement"
+        return False
+
+    writer.write.side_effect = write
+    assert not await manager._send_audio_chunk(session.call_id, "old-stream", bytes(160))
+    assert manager.active_streams[session.call_id] is info
+    assert info["stream_id"] == "replacement"
+    assert not manager._rtp_remote_wait_logged
+
+
+async def test_failed_stale_diagnostic_callback_does_not_mutate_replacement():
+    manager, session, writer = await playback_manager("externalmedia")
+    segment(manager, session.call_id, "old-stream")
+    replacement = {"stream_id": "new-stream"}
+
+    async def diagnostic(*_args):
+        manager.active_streams[session.call_id] = replacement
+        raise RuntimeError("synthetic diagnostic failure after replacement")
+
+    manager.audio_diag_callback = diagnostic
+    assert not await manager._send_audio_chunk(session.call_id, "old-stream", bytes(160))
+    writer.write.assert_not_awaited()
+    assert replacement == {"stream_id": "new-stream"}
+    assert not manager._rtp_remote_wait_logged
+
+
+async def test_debug_broadcast_stops_remaining_recipients_after_terminal_write_result():
+    manager, session, writer = await playback_manager()
+    manager.audiosocket_broadcast_debug = True
+    session.audiosocket_conns = ["conn", "other-conn"]
+    segment(manager, session.call_id, "late-stream")
+
+    async def write(_frame):
+        session.cleanup_in_progress = True
+        manager.cleanup_call(session.call_id)
+        return True
+
+    writer.write.side_effect = write
+    assert not await manager._send_audio_chunk(session.call_id, "late-stream", bytes(160))
+    writer.write.assert_awaited_once()
+    assert not manager._first_send_logged

@@ -3080,6 +3080,22 @@ class StreamingPlaybackManager:
         except Exception:
             return pcm_bytes
 
+    def _stream_send_owner_current(
+        self, call_id: str, stream_id: str, session: Optional[CallSession],
+        info: Dict[str, Any],
+    ) -> bool:
+        """Check both call lifetime and exact stream ownership at send boundaries."""
+        return bool(
+            session is not None
+            and session.call_id == call_id
+            and not session.cleanup_in_progress
+            and not session.cleanup_completed
+            and self.active_streams.get(call_id) is info
+            and info.get("stream_id") == stream_id
+            and not info.get("stop_requested")
+            and self._greeting_media_owner_current(session, info)
+        )
+
     async def _send_audio_chunk(
         self,
         call_id: str,
@@ -3096,9 +3112,7 @@ class StreamingPlaybackManager:
                 logger.warning("Cannot stream audio - session not found", call_id=call_id)
                 return False
             stream_info = self.active_streams.get(call_id, {})
-            if not self._greeting_media_owner_current(session, stream_info):
-                return False
-            if stream_info.get("stream_id") != stream_id or stream_info.get("stop_requested"):
+            if not self._stream_send_owner_current(call_id, stream_id, session, stream_info):
                 return False
             if self.audio_diag_callback:
                 try:
@@ -3122,25 +3136,21 @@ class StreamingPlaybackManager:
                     await self.audio_diag_callback(call_id, stage, chunk, effective_fmt, effective_rate)
                 except Exception:
                     try:
-                        info = self.active_streams.get(call_id) or {}
-                        info['diag_callback_failed'] = True
-                        self.active_streams[call_id] = info
+                        if self._stream_send_owner_current(call_id, stream_id, session, stream_info):
+                            stream_info['diag_callback_failed'] = True
                     except Exception:
                         pass
                     logger.debug("Streaming diagnostics callback failed", call_id=call_id, exc_info=True)
 
             # Diagnostic callbacks can yield across stop/replacement. Never
             # send an old frame into any transport after ownership changed.
-            if self.active_streams.get(call_id) is not stream_info or stream_info.get("stop_requested"):
+            if not self._stream_send_owner_current(call_id, stream_id, session, stream_info):
                 return False
             if stream_info.get('greeting_media_guard'):
                 current_session = await self.session_store.get_by_call_id(call_id)
-                if (
-                    self.active_streams.get(call_id) is not stream_info
-                    or stream_info.get('stream_id') != stream_id
-                    or not self._greeting_media_owner_current(current_session, stream_info)
-                ):
+                if not self._stream_send_owner_current(call_id, stream_id, current_session, stream_info):
                     return False
+                session = current_session
 
             if self.audio_transport == "websocket":
                 if not self.websocket_server or stream_info.get("stop_requested") or stream_info.get("websocket_output_failed"):
@@ -3150,7 +3160,7 @@ class StreamingPlaybackManager:
                 generation = stream_info.get("websocket_output_generation")
                 if generation is None:
                     generation = await self._selected_output_transport().begin_output(call_id)
-                    if stream_info.get("stop_requested") or self.active_streams.get(call_id) is not stream_info:
+                    if not self._stream_send_owner_current(call_id, stream_id, session, stream_info):
                         return False
                     stream_info["websocket_output_generation"] = generation
                     stream_info["websocket_output_item_key"] = stream_info.get("transport_pending_item_key")
@@ -3159,6 +3169,8 @@ class StreamingPlaybackManager:
                     int(stream_info.get("target_sample_rate") or self.sample_rate),
                     generation=generation,
                 ))
+                if not self._stream_send_owner_current(call_id, stream_id, session, stream_info):
+                    return False
                 if success:
                     _STREAM_TX_BYTES.inc(len(chunk))
                     stream_info["tx_bytes"] = int(stream_info.get("tx_bytes", 0)) + len(chunk)
@@ -3185,6 +3197,8 @@ class StreamingPlaybackManager:
                     call_id, chunk, str(getattr(session, "external_media_codec", "ulaw")),
                     int(stream_info.get("target_sample_rate") or self.sample_rate), ssrc=ssrc,
                 ))
+                if not self._stream_send_owner_current(call_id, stream_id, session, stream_info):
+                    return False
                 if not success:
                     # If the remote RTP endpoint isn't known yet, early sends are expected to be deferred.
                     # Avoid warning spam; higher-level logic will wait briefly and then fall back for greetings.
@@ -3193,10 +3207,7 @@ class StreamingPlaybackManager:
                         if hasattr(self.rtp_server, "has_remote_endpoint"):
                             has_endpoint = bool(self.rtp_server.has_remote_endpoint(call_id))
                         if not has_endpoint:
-                            if (
-                                self.active_streams.get(call_id) is stream_info
-                                and stream_id not in self._rtp_remote_wait_logged
-                            ):
+                            if stream_id not in self._rtp_remote_wait_logged:
                                 logger.info(
                                     "RTP send deferred; waiting for remote endpoint",
                                     call_id=call_id,
@@ -3320,10 +3331,14 @@ class StreamingPlaybackManager:
                     conns = list(set(getattr(session, 'audiosocket_conns', []) or []))
                     sent = 0
                     for cid in conns or [conn_id]:
+                        if not self._stream_send_owner_current(call_id, stream_id, session, stream_info):
+                            return False
                         if await self._selected_output_transport().write(OutputFrame(
                             call_id, chunk, fmt, sample_rate, connection_id=cid,
                         )):
                             sent += 1
+                        if not self._stream_send_owner_current(call_id, stream_id, session, stream_info):
+                            return False
                     if sent == 0:
                         logger.warning("AudioSocket broadcast send failed (no recipients)", call_id=call_id, stream_id=stream_id)
                         return False
@@ -3334,6 +3349,8 @@ class StreamingPlaybackManager:
                 success = await self._selected_output_transport().write(OutputFrame(
                     call_id, chunk, fmt, sample_rate, connection_id=conn_id,
                 ))
+                if not self._stream_send_owner_current(call_id, stream_id, session, stream_info):
+                    return False
                 if not success:
                     logger.warning("AudioSocket streaming send failed", call_id=call_id, stream_id=stream_id)
                 else:
