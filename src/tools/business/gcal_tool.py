@@ -16,7 +16,7 @@ GOOGLE_CALENDAR_TZ for timezone (fallback: TZ).
 import asyncio
 import threading
 import structlog
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
 from zoneinfo import ZoneInfo
 
@@ -27,6 +27,11 @@ from src.tools.business._calendar_utils import build_slot_starts
 from src.tools.business.gcalendar import GCalendar, GoogleCalendarApiError, _get_timezone
 
 logger = structlog.get_logger(__name__)
+
+
+def utc_now() -> datetime:
+    """Clock seam for deterministic tests; each scheduling request reads it once."""
+    return datetime.now(timezone.utc)
 
 # Schema for Google Live / Vertex and OpenAI (input_schema is provider-agnostic)
 _GOOGLE_CALENDAR_INPUT_SCHEMA = {
@@ -50,6 +55,7 @@ _GOOGLE_CALENDAR_INPUT_SCHEMA = {
             "type": "string",
             "description": (
                 "ISO 8601 start time. Required for list_events and get_free_slots. "
+                "get_free_slots returns only starts strictly after the current time. "
                 "Tip: any TZ tail (Z or ±HH:MM) is stripped and the wall-clock is "
                 "interpreted as the calendar's local timezone. Pass a naive string "
                 "like '2026-04-25T09:00:00' to be unambiguous."
@@ -102,6 +108,8 @@ _GOOGLE_CALENDAR_INPUT_SCHEMA = {
             "type": "string",
             "description": (
                 "ISO 8601 start time for the new event. Required for create_event. "
+                "Must be strictly in the future. On past_booking, call get_free_slots "
+                "again and confirm a future time with the caller before retrying. "
                 "Use the calendar's local time (the slot strings returned by "
                 "get_free_slots are already in calendar-local time; pass them as-is)."
             )
@@ -362,6 +370,10 @@ class GCalendarTool(Tool):
             out = {"status": "error", "message": error_msg}
             logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
             return out
+
+        # Use one instant across calendars and aggregation, even if API calls
+        # span a slot boundary. Re-evaluate on each invocation (including retry).
+        request_now = utc_now() if action in ("get_free_slots", "create_event") else None
 
         # Resolve configured calendars (multi or legacy single)
         calendars = self._resolve_calendars(config)
@@ -877,6 +889,15 @@ class GCalendarTool(Tool):
                     duration_minutes = 30
 
                 slot_starts = build_slot_starts(available_intervals, duration_minutes)
+                # Filter before sorting/counting/capping so elapsed morning
+                # slots cannot consume today's default three suggestions. Use
+                # UTC instants, including during a repeated DST wall-clock hour.
+                generated_slot_count = len(slot_starts)
+                slot_starts = [
+                    start for start in slot_starts
+                    if start.astimezone(timezone.utc) > request_now
+                ]
+                elapsed_slots_removed = generated_slot_count - len(slot_starts)
 
                 # Pick the output timezone for the slot list. Priority:
                 # 1. Root tool config `timezone` (operator-pinned override)
@@ -1036,6 +1057,12 @@ class GCalendarTool(Tool):
                             f" (showing {len(results)} of {total_slot_starts} available; "
                             f"propose 2-3 of these to the caller — do not read the full list)."
                         )
+                elif elapsed_slots_removed:
+                    reason = "no_future_slots"
+                    message = (
+                        "No future slot starts remain in this range. Try get_free_slots "
+                        "with a later time or date and confirm a future option with the caller."
+                    )
                 elif aggregate_mode == "all" and len(keys_to_use) > 1 and cals_with_no_open:
                     # Intersection mode + at least one selected calendar has no Open
                     # blocks → intersection is empty BECAUSE that calendar lacks
@@ -1418,6 +1445,22 @@ class GCalendarTool(Tool):
                         max_dur=max_dur,
                     )
                     logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
+                    return out
+
+                # Compare normalized instants, rather than calendar-local
+                # wall-clock values (which repeat during a DST fall-back).
+                if start_dt_local.astimezone(timezone.utc) <= request_now:
+                    out = {
+                        "status": "error",
+                        "error_code": "past_booking",
+                        "message": (
+                            "The appointment must start in the future. Call get_free_slots "
+                            "again and confirm a future date and time with the caller before "
+                            "retrying create_event. No event was created."
+                        ),
+                    }
+                    logger.info("Tool response to AI", call_id=call_id, action=action,
+                                status=out["status"], error_code=out["error_code"])
                     return out
 
                 # Surface Google API errors with their original detail so the
