@@ -3753,7 +3753,18 @@ class Engine:
             return
         if "completion_result" in meta:
             # A late answer must not copy terminal ownership or its busy flag.
-            await self._persist_outbound_completion(meta)
+            if not str(meta.get("channel_id") or "").strip():
+                if self._outbound_attempt_meta_by_channel_id.get("") is meta:
+                    self._outbound_attempt_meta_by_channel_id.pop("", None)
+                meta["channel_id"] = channel_id
+                meta["completion_hangup_pending"] = True
+                self._outbound_attempt_meta_by_channel_id[channel_id] = meta
+                await self._complete_outbound_attempt(
+                    channel_id, attempt_id, meta, result=meta["completion_result"],
+                    lead_state=meta["completion_lead_state"],
+                )
+            else:
+                await self._persist_outbound_completion(meta)
             return
         if meta.get("custom_vars_valid") is False:
             await self._reject_outbound_answered_attempt(

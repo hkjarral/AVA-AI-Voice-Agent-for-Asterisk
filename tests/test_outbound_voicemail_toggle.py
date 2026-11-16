@@ -861,3 +861,103 @@ async def test_inflight_answer_lead_write_cannot_reset_completed_sqlite_lead(tmp
     assert (row["state"], row["last_outcome"]) == ("completed", "machine_detected")
     assert not engine._outbound_attempt_meta_by_attempt_id
     engine.ari_client.continue_in_dialplan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("writes_recover", [False, True])
+@pytest.mark.parametrize("hangup_accepted", [False, True])
+async def test_late_answer_adopts_unknown_channel_for_independent_hangup(writes_recover, hangup_accepted):
+    import asyncio
+
+    engine = _amd_failure_engine({"id": "campaign", "voicemail_drop_enabled": 0})
+    engine._outbound_attempt_meta_by_channel_id.clear()
+    engine._outbound_awaiting_amd_channel_ids.clear()
+    meta = engine._outbound_attempt_meta_by_attempt_id["attempt"]
+    meta["created_at_ts"] = 1.0
+    engine.outbound_store.finish_attempt.side_effect = RuntimeError("synthetic unavailable")
+    await engine._outbound_cleanup_stale_attempts()
+    owner = engine._outbound_attempt_meta_by_attempt_id["attempt"]
+    assert owner["channel_id"] == ""
+    assert not owner["completion_hangup_pending"]
+    if writes_recover:
+        engine.outbound_store.finish_attempt.side_effect = None
+    owner["completion_retry_at"] = 0
+    engine.ari_client.hangup_channel.return_value = hangup_accepted
+    try:
+        await engine._handle_outbound_answered("late-answered", {}, ["outbound", "attempt"])
+        engine.ari_client.hangup_channel.assert_awaited_once_with("late-answered")
+        if hangup_accepted and writes_recover:
+            assert not engine._outbound_attempt_meta_by_attempt_id
+            assert not engine._outbound_attempt_meta_by_channel_id
+        else:
+            assert engine._outbound_attempt_meta_by_attempt_id["attempt"] is owner
+            assert engine._outbound_attempt_meta_by_channel_id["late-answered"] is owner
+            assert owner["completion_hangup_pending"] is not hangup_accepted
+            assert bool(engine._outbound_forced_hangup_tasks) is not hangup_accepted
+            await engine._handle_outbound_answered("late-answered", {}, ["outbound", "attempt"])
+            engine.ari_client.hangup_channel.assert_awaited_once_with("late-answered")
+        assert owner["completion_result"]["outcome"] == "no_answer"
+        engine.ari_client.continue_in_dialplan.assert_not_awaited()
+        engine.ari_client.play_media_on_channel_with_id.assert_not_awaited()
+    finally:
+        tasks = list(engine._outbound_forced_hangup_tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_late_unknown_channel_preserves_completion_busy_and_write_acknowledgments():
+    import asyncio
+
+    engine = _amd_failure_engine({"id": "campaign", "voicemail_drop_enabled": 0})
+    engine._outbound_attempt_meta_by_channel_id.clear()
+    engine._outbound_awaiting_amd_channel_ids.clear()
+    engine._outbound_attempt_meta_by_attempt_id["attempt"]["created_at_ts"] = 1.0
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def finish(*_args, **_kwargs):
+        entered.set()
+        await release.wait()
+    engine.outbound_store.finish_attempt.side_effect = finish
+    watchdog = asyncio.create_task(engine._outbound_cleanup_stale_attempts())
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
+    owner = engine._outbound_attempt_meta_by_attempt_id["attempt"]
+    await engine._handle_outbound_answered("late-answered", {}, ["outbound", "attempt"])
+    assert engine._outbound_attempt_meta_by_attempt_id["attempt"] is owner
+    assert owner["completion_busy"] and not owner["completion_attempt_saved"]
+    assert not owner["completion_hangup_pending"]
+    release.set()
+    await asyncio.wait_for(watchdog, timeout=1.0)
+    assert not engine._outbound_attempt_meta_by_attempt_id
+    assert not engine._outbound_attempt_meta_by_channel_id
+    engine.outbound_store.finish_attempt.assert_awaited_once()
+    engine.ari_client.hangup_channel.assert_awaited_once_with("late-answered")
+    engine.ari_client.play_media_on_channel_with_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hangup_failure", ["rejected", "exception", "cancelled"])
+async def test_late_unknown_channel_retains_real_hangup_retry_until_accepted(hangup_failure):
+    import asyncio
+
+    engine = _amd_failure_engine({"id": "campaign", "voicemail_drop_enabled": 0})
+    meta = engine._outbound_attempt_meta_by_attempt_id["attempt"]
+    engine._outbound_attempt_meta_by_channel_id.clear()
+    owner = engine._remember_outbound_completion("", "attempt", meta, result={"outcome": "no_answer"}, lead_state="failed")
+    owner["completion_hangup_pending"] = False
+    first = {"rejected": False, "exception": RuntimeError("synthetic unavailable"), "cancelled": asyncio.CancelledError()}[hangup_failure]
+    engine.ari_client.hangup_channel.side_effect = [first, True]
+    if hangup_failure == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            await engine._handle_outbound_answered("late-answered", {}, ["outbound", "attempt"])
+    else:
+        await engine._handle_outbound_answered("late-answered", {}, ["outbound", "attempt"])
+    assert owner["completion_attempt_saved"] and owner["completion_lead_saved"]
+    assert owner["completion_hangup_pending"]
+    retry = engine._outbound_forced_hangup_tasks["late-answered"]
+    await asyncio.wait_for(retry, timeout=2.0)
+    assert engine.ari_client.hangup_channel.await_count == 2
+    assert not engine._outbound_forced_hangup_tasks
+    assert not engine._outbound_attempt_meta_by_attempt_id
+    assert not engine._outbound_attempt_meta_by_channel_id
+    engine.ari_client.play_media_on_channel_with_id.assert_not_awaited()
