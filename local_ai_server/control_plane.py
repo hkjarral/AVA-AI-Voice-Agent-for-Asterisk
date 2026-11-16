@@ -5,6 +5,7 @@ from dataclasses import replace
 from typing import Any, Dict, List, Tuple
 
 from config import LocalAIConfig
+from constants import SENSE_VOICE_LANGUAGES
 
 
 _STT_CONFIG_MAP = {
@@ -27,6 +28,8 @@ _STT_CONFIG_MAP = {
     "whisper_cpp_language": "whisper_cpp_language",
     "sherpa_model_type": "sherpa_model_type",
     "sherpa_vad_model_path": "sherpa_vad_model_path",
+    "sherpa_sense_voice_language": "sherpa_sense_voice_language",
+    "sherpa_sense_voice_use_itn": "sherpa_sense_voice_use_itn",
     "tone_model_path": "tone_model_path",
     "tone_decoder_type": "tone_decoder_type",
     "tone_kenlm_path": "tone_kenlm_path",
@@ -200,6 +203,18 @@ def apply_switch_model_request(
         value = str(data["sherpa_vad_model_path"])
         new_config = replace(new_config, sherpa_vad_model_path=value)
         changed.append(f"sherpa_vad_model_path={os.path.basename(value)}")
+
+    if "sherpa_sense_voice_language" in data:
+        value = str(data["sherpa_sense_voice_language"]).strip().lower()
+        if value in SENSE_VOICE_LANGUAGES:
+            new_config = replace(new_config, sherpa_sense_voice_language=value)
+            changed.append(f"sherpa_sense_voice_language={value}")
+
+    if "sherpa_sense_voice_use_itn" in data:
+        value = data["sherpa_sense_voice_use_itn"]
+        if isinstance(value, bool):
+            new_config = replace(new_config, sherpa_sense_voice_use_itn=value)
+            changed.append(f"sherpa_sense_voice_use_itn={value}")
 
     if "tone_decoder_type" in data:
         value = str(data["tone_decoder_type"]).strip().lower()

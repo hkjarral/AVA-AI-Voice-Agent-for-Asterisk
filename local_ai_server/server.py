@@ -1200,6 +1200,8 @@ class LocalAIServer:
                     vad_threshold=getattr(self.config, "sherpa_vad_threshold", 0.5),
                     vad_min_silence_ms=getattr(self.config, "sherpa_vad_min_silence_ms", 500),
                     vad_min_speech_ms=getattr(self.config, "sherpa_vad_min_speech_ms", 250),
+                    sense_voice_language=getattr(self.config, "sherpa_sense_voice_language", "auto"),
+                    sense_voice_use_itn=getattr(self.config, "sherpa_sense_voice_use_itn", True),
                 )
             else:
                 logging.info("🎤 STT backend: Sherpa-onnx (local streaming ASR)")

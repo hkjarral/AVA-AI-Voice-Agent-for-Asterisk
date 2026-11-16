@@ -714,6 +714,11 @@ Notes:
 - `sherpa_model_type=online` expects a streaming Sherpa model directory such as `sherpa-onnx-streaming-zipformer-en-2023-06-26`
 - `sherpa_model_type=offline` expects a non-streaming Sherpa transducer model directory such as `sherpa-onnx-zipformer-en-2023-06-26`
 - Offline mode will reject streaming Sherpa model directories
+- Offline mode auto-detects SenseVoice model directories (`model*.onnx` + `tokens.txt`); `sherpa_sense_voice_language` (`auto|zh|en|ja|ko|yue`) and `sherpa_sense_voice_use_itn` (boolean) apply only to those models
+
+```json
+{ "type": "switch_model", "stt_backend": "sherpa", "sherpa_model_type": "offline", "sherpa_model_path": "/app/models/stt/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09", "sherpa_sense_voice_language": "auto", "sherpa_sense_voice_use_itn": true }
+```
 
 Response:
 

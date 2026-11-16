@@ -493,6 +493,20 @@
             "sherpa_vad_model_path": {
               "type": "string"
             },
+            "sherpa_sense_voice_language": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "zh",
+                "en",
+                "ja",
+                "ko",
+                "yue"
+              ]
+            },
+            "sherpa_sense_voice_use_itn": {
+              "type": "boolean"
+            },
             "tone_model_path": {
               "type": "string"
             },
@@ -547,6 +561,20 @@
         },
         "sherpa_vad_model_path": {
           "type": "string"
+        },
+        "sherpa_sense_voice_language": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "zh",
+            "en",
+            "ja",
+            "ko",
+            "yue"
+          ]
+        },
+        "sherpa_sense_voice_use_itn": {
+          "type": "boolean"
         },
         "tone_model_path": {
           "type": "string"

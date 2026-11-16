@@ -4,13 +4,30 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 from websockets.exceptions import ConnectionClosed
 import websockets.client as ws_client
 
-from constants import DEBUG_AUDIO_FLOW, PCM16_TARGET_RATE
+from constants import DEBUG_AUDIO_FLOW, PCM16_TARGET_RATE, SENSE_VOICE_LANGUAGES
+
+# Rich-transcription markers such as <|en|><|NEUTRAL|><|Speech|><|withitn|>.
+_SENSE_VOICE_TAG_RE = re.compile(r"<\|[^|<>]*\|>")
+
+
+def normalize_sense_voice_language(value: Optional[str]) -> str:
+    """Return a supported SenseVoice language hint, falling back to ``auto``."""
+    lang = str(value or "").strip().lower()
+    return lang if lang in SENSE_VOICE_LANGUAGES else "auto"
+
+
+def strip_sense_voice_tags(text: str) -> str:
+    """Remove SenseVoice language/emotion/event markers from a transcript."""
+    if not text:
+        return ""
+    return " ".join(_SENSE_VOICE_TAG_RE.sub(" ", text).split())
 
 
 class KrokoSTTBackend:
@@ -340,14 +357,16 @@ class SherpaOfflineSTTBackend:
 
     Used for models that only support offline/batch inference (e.g., GigaAM for Russian).
     Silero VAD detects speech segments, and each complete segment is transcribed via
-    OfflineRecognizer.from_transducer().
+    OfflineRecognizer.from_transducer() or, for SenseVoice model directories,
+    OfflineRecognizer.from_sense_voice().
 
     The OfflineRecognizer is shared across sessions (thread-safe for decode_stream).
     VAD instances are per-session to prevent cross-session contamination — create one
     via ``create_session_vad()`` and pass it into ``process_audio()`` / ``finalize()``.
 
     Requires:
-      - Transducer model files (tokens.txt, encoder*.onnx, decoder*.onnx, joiner*.onnx)
+      - Transducer model files (tokens.txt, encoder*.onnx, decoder*.onnx, joiner*.onnx), or
+        SenseVoice model files (tokens.txt, model*.onnx) — detected automatically
       - Silero VAD model (silero_vad.onnx)
     """
 
@@ -360,9 +379,15 @@ class SherpaOfflineSTTBackend:
         vad_threshold: float = 0.5,
         vad_min_silence_ms: int = 500,
         vad_min_speech_ms: int = 250,
+        sense_voice_language: str = "auto",
+        sense_voice_use_itn: bool = True,
     ):
         self.model_path = model_path
         self.vad_model_path = vad_model_path
+        self.sense_voice_language = normalize_sense_voice_language(sense_voice_language)
+        self.sense_voice_use_itn = bool(sense_voice_use_itn)
+        # "transducer" or "sense_voice"; set by initialize() from the model directory layout.
+        self.model_family = "transducer"
         self.sample_rate = sample_rate
         self.preroll_ms = max(0, int(preroll_ms))
         self._preroll_samples = int(self.sample_rate * (self.preroll_ms / 1000.0))
@@ -397,56 +422,13 @@ class SherpaOfflineSTTBackend:
                 )
                 return False
 
-            tokens_file = self._find_file("tokens.txt", ".txt")
-            encoder_file = self._find_onnx("encoder")
-            decoder_file = self._find_onnx("decoder")
-            joiner_file = self._find_onnx("joiner")
-
-            if not all([tokens_file, encoder_file, decoder_file, joiner_file]):
-                missing = []
-                if not tokens_file:
-                    missing.append("tokens.txt")
-                if not encoder_file:
-                    missing.append("encoder*.onnx")
-                if not decoder_file:
-                    missing.append("decoder*.onnx")
-                if not joiner_file:
-                    missing.append("joiner*.onnx")
-                logging.error("❌ SHERPA-OFFLINE - Missing model files: %s", ", ".join(missing))
+            sense_voice_file = self._find_sense_voice_model()
+            if sense_voice_file:
+                self.recognizer = self._create_sense_voice_recognizer(sherpa_onnx, sense_voice_file)
+            else:
+                self.recognizer = self._create_transducer_recognizer(sherpa_onnx)
+            if self.recognizer is None:
                 return False
-
-            # Offline mode only supports non-streaming transducer models. Streaming
-            # zipformer models belong in SherpaONNXSTTBackend.
-            encoder_name = os.path.basename(encoder_file).lower()
-            model_name = os.path.basename(os.path.normpath(self.model_path)).lower()
-            is_streaming = "chunk" in encoder_name or "streaming" in model_name
-
-            logging.info("📁 SHERPA-OFFLINE - Model files found:")
-            logging.info("   tokens: %s", tokens_file)
-            logging.info("   encoder: %s", encoder_file)
-            logging.info("   decoder: %s", decoder_file)
-            logging.info("   joiner: %s", joiner_file)
-            logging.info("   vad: %s", self.vad_model_path)
-            logging.info("   model type: %s", "streaming" if is_streaming else "offline")
-
-            if is_streaming:
-                logging.error(
-                    "❌ SHERPA-OFFLINE - Offline mode requires a non-streaming Sherpa transducer model. "
-                    "Got streaming model at %s. Use SHERPA_MODEL_TYPE=online for streaming models "
-                    "or switch SHERPA_MODEL_PATH to an offline model such as sherpa-onnx-zipformer-en-2023-06-26.",
-                    self.model_path,
-                )
-                return False
-
-            self.recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
-                tokens=tokens_file,
-                encoder=encoder_file,
-                decoder=decoder_file,
-                joiner=joiner_file,
-                num_threads=2,
-                sample_rate=self.sample_rate,
-                decoding_method="greedy_search",
-            )
 
             # Store VAD config for per-session creation (no shared VAD instance).
             self._vad_config = sherpa_onnx.VadModelConfig()
@@ -463,8 +445,9 @@ class SherpaOfflineSTTBackend:
 
             self._initialized = True
             logging.info(
-                "✅ SHERPA-OFFLINE - OfflineRecognizer + Silero VAD initialized with model %s "
+                "✅ SHERPA-OFFLINE - OfflineRecognizer (%s) + Silero VAD initialized with model %s "
                 "(preroll_ms=%d threshold=%.2f min_silence_ms=%d min_speech_ms=%d)",
+                self.model_family,
                 self.model_path,
                 self.preroll_ms,
                 self.vad_threshold,
@@ -478,6 +461,94 @@ class SherpaOfflineSTTBackend:
         except Exception as exc:
             logging.error("❌ SHERPA-OFFLINE - Failed to initialize: %s", exc)
             return False
+
+    def _find_sense_voice_model(self) -> str:
+        """Return the SenseVoice ONNX file if the model dir uses the SenseVoice layout.
+
+        SenseVoice exports ship a single ``model.onnx`` / ``model.int8.onnx`` plus
+        ``tokens.txt``; transducer exports ship ``encoder*/decoder*/joiner*``.
+        """
+        if self._find_onnx("encoder"):
+            return ""
+        return self._find_onnx("model")
+
+    def _create_sense_voice_recognizer(self, sherpa_onnx: Any, model_file: str) -> Optional[Any]:
+        tokens_file = self._find_file("tokens.txt", ".txt")
+        if not tokens_file:
+            logging.error("❌ SHERPA-OFFLINE - Missing model files: tokens.txt (SenseVoice)")
+            return None
+
+        logging.info("📁 SHERPA-OFFLINE - SenseVoice model files found:")
+        logging.info("   tokens: %s", tokens_file)
+        logging.info("   model: %s", model_file)
+        logging.info("   vad: %s", self.vad_model_path)
+        logging.info("   language: %s use_itn: %s", self.sense_voice_language, self.sense_voice_use_itn)
+
+        recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+            model=model_file,
+            tokens=tokens_file,
+            num_threads=2,
+            sample_rate=self.sample_rate,
+            language=self.sense_voice_language,
+            use_itn=self.sense_voice_use_itn,
+            decoding_method="greedy_search",
+        )
+        self.model_family = "sense_voice"
+        return recognizer
+
+    def _create_transducer_recognizer(self, sherpa_onnx: Any) -> Optional[Any]:
+        tokens_file = self._find_file("tokens.txt", ".txt")
+        encoder_file = self._find_onnx("encoder")
+        decoder_file = self._find_onnx("decoder")
+        joiner_file = self._find_onnx("joiner")
+
+        if not all([tokens_file, encoder_file, decoder_file, joiner_file]):
+            missing = []
+            if not tokens_file:
+                missing.append("tokens.txt")
+            if not encoder_file:
+                missing.append("encoder*.onnx")
+            if not decoder_file:
+                missing.append("decoder*.onnx")
+            if not joiner_file:
+                missing.append("joiner*.onnx")
+            logging.error("❌ SHERPA-OFFLINE - Missing model files: %s", ", ".join(missing))
+            return None
+
+        # Offline mode only supports non-streaming transducer models. Streaming
+        # zipformer models belong in SherpaONNXSTTBackend.
+        encoder_name = os.path.basename(encoder_file).lower()
+        model_name = os.path.basename(os.path.normpath(self.model_path)).lower()
+        is_streaming = "chunk" in encoder_name or "streaming" in model_name
+
+        logging.info("📁 SHERPA-OFFLINE - Model files found:")
+        logging.info("   tokens: %s", tokens_file)
+        logging.info("   encoder: %s", encoder_file)
+        logging.info("   decoder: %s", decoder_file)
+        logging.info("   joiner: %s", joiner_file)
+        logging.info("   vad: %s", self.vad_model_path)
+        logging.info("   model type: %s", "streaming" if is_streaming else "offline")
+
+        if is_streaming:
+            logging.error(
+                "❌ SHERPA-OFFLINE - Offline mode requires a non-streaming Sherpa transducer model. "
+                "Got streaming model at %s. Use SHERPA_MODEL_TYPE=online for streaming models "
+                "or switch SHERPA_MODEL_PATH to an offline model such as sherpa-onnx-zipformer-en-2023-06-26.",
+                self.model_path,
+            )
+            return None
+
+        recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+            tokens=tokens_file,
+            encoder=encoder_file,
+            decoder=decoder_file,
+            joiner=joiner_file,
+            num_threads=2,
+            sample_rate=self.sample_rate,
+            decoding_method="greedy_search",
+        )
+        self.model_family = "transducer"
+        return recognizer
 
     # ------------------------------------------------------------------
     # Per-session VAD lifecycle
@@ -529,7 +600,17 @@ class SherpaOfflineSTTBackend:
         stream = self.recognizer.create_stream()
         stream.accept_waveform(self.sample_rate, speech_samples)
         self.recognizer.decode_stream(stream)
-        return stream.result.text.strip() if hasattr(stream.result, "text") else str(stream.result).strip()
+        result = stream.result
+        text = result.text.strip() if hasattr(result, "text") else str(result).strip()
+        if self.model_family == "sense_voice":
+            logging.debug(
+                "🔍 SHERPA-OFFLINE SenseVoice tags - lang=%s emotion=%s event=%s",
+                getattr(result, "lang", ""),
+                getattr(result, "emotion", ""),
+                getattr(result, "event", ""),
+            )
+            text = strip_sense_voice_tags(text)
+        return text
 
     def _copy_segment_samples(self, speech_segment: Any) -> np.ndarray:
         """Materialize VAD output into Python-owned float32 memory before pop/decode."""
