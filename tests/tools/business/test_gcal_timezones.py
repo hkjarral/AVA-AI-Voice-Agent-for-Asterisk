@@ -315,3 +315,110 @@ async def test_freebusy_range_with_reversed_fold_clocks_is_clipped_by_instant(mo
     assert offered['status'] == 'success'
     assert offered['slots_with_end'] == ([{'start': '2027-11-07T01:30:00-04:00',
                                           'end': '2027-11-07T01:00:00-05:00'}] if expected_count else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('legacy', [True, False])
+@pytest.mark.parametrize('start,end', [
+    ({'dateTime': '2030-04-26T15:00:00', 'timeZone': 'Europe/London'},
+     {'dateTime': '2030-04-26T15:30:00', 'timeZone': 'Europe/London'}),
+    ({'dateTime': '2030-04-26T10:00:00'}, {'dateTime': '2030-04-26T10:30:00'}),
+    ({'dateTime': '2030-04-26T15:00:00', 'timeZone': 'Europe/London'},
+     {'dateTime': '2030-04-26T09:30:00', 'timeZone': 'America/Chicago'}),
+    ({'dateTime': '2030-04-26T16:00:00+02:00', 'timeZone': 'Pacific/Auckland'},
+     {'dateTime': '2030-04-26T16:30:00+02:00', 'timeZone': 'Pacific/Auckland'}),
+])
+async def test_api_busy_event_uses_endpoint_zone_or_calendar_fallback(monkeypatch, legacy, start, end):
+    key = 'default' if legacy else 'A'
+    tool, clients = make_tool(monkeypatch, {key: 'America/New_York'}, mode='title_prefix', legacy=legacy)
+    events = clients[key].service.events.return_value
+    original = events.list.return_value.execute.side_effect
+    events.list.return_value.execute.side_effect = lambda: {
+        'items': original()['items'] + [{'summary': 'Busy synthetic appointment', 'start': start, 'end': end}]
+    }
+    result = await tool.execute({'action': 'get_free_slots', 'time_min': '2030-04-26T14:00:00Z',
+                                'time_max': '2030-04-26T16:00:00Z', 'duration': 30}, CTX)
+    assert result['status'] == 'success'
+    assert [instant(slot) for slot in result['slots']] == [instant('2030-04-26T14:30:00Z'),
+                                                          instant('2030-04-26T15:00:00Z'),
+                                                          instant('2030-04-26T15:30:00Z')]
+    assert instant('2030-04-26T14:00:00Z') not in [instant(slot) for slot in result['slots']]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('aggregate,expected_status', [('all', 'error'), ('any', 'success')])
+@pytest.mark.parametrize('bad_zone', ['Invalid/Zone', 123])
+async def test_invalid_api_endpoint_zone_fails_closed_per_calendar(monkeypatch, aggregate, expected_status, bad_zone):
+    tool, clients = make_tool(monkeypatch, {'A': 'America/New_York', 'B': 'America/New_York'}, mode='title_prefix')
+    events = clients['B'].service.events.return_value
+    original = events.list.return_value.execute.side_effect
+    events.list.return_value.execute.side_effect = lambda: {'items': original()['items'] + [
+        {'summary': 'Busy invalid zone', 'start': {'dateTime': '2030-04-26T10:00:00', 'timeZone': bad_zone},
+         'end': {'dateTime': '2030-04-26T10:30:00', 'timeZone': bad_zone}}
+    ]}
+    result = await tool.execute({'action': 'get_free_slots', 'aggregate_mode': aggregate,
+                                'time_min': '2030-04-26T14:00:00Z', 'time_max': '2030-04-26T16:00:00Z'}, CTX)
+    assert result['status'] == expected_status
+    if aggregate == 'all':
+        assert not result.get('slots')
+    else:
+        assert result['slots'] and result['busy_blocks_found'] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('bad_start,bad_end', [
+    ({}, {'dateTime': '2030-04-26T10:30:00'}),
+    (None, {'dateTime': '2030-04-26T10:30:00'}),
+    ({'dateTime': ''}, {'dateTime': '2030-04-26T10:30:00'}),
+    ({'dateTime': 'not-a-date'}, {'dateTime': '2030-04-26T10:30:00'}),
+    ({'dateTime': '2030-04-26'}, {'dateTime': '2030-04-26T10:30:00'}),
+    ({'dateTime': '2030-04-26T10:00:00', 'date': '2030-04-26'}, {'dateTime': '2030-04-26T10:30:00'}),
+    ({'dateTime': '2030-04-26T10:30:00'}, {'dateTime': '2030-04-26T10:00:00'}),
+])
+async def test_malformed_timed_api_bounds_fail_closed_and_repaired_retry_recovers(monkeypatch, bad_start, bad_end):
+    tool, clients = make_tool(monkeypatch, {'A': 'America/New_York'}, mode='title_prefix')
+    events = clients['A'].service.events.return_value
+    original = events.list.return_value.execute.side_effect
+    busy = {'summary': 'Busy malformed appointment', 'start': bad_start, 'end': bad_end}
+    events.list.return_value.execute.side_effect = lambda: {'items': original()['items'] + [busy]}
+    params = {'action': 'get_free_slots', 'time_min': '2030-04-26T14:00:00Z', 'time_max': '2030-04-26T16:00:00Z'}
+    failed = await tool.execute(params, CTX)
+    assert failed['status'] == 'error' and not failed.get('slots')
+    busy.update(start={'dateTime': '2030-04-26T10:00:00'}, end={'dateTime': '2030-04-26T10:30:00'})
+    repaired = await tool.execute(params, CTX)
+    assert repaired['status'] == 'success'
+    assert instant(repaired['slots'][0]) == instant('2030-04-26T14:30:00Z')
+    clients['A'].service.events.return_value.insert.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('zone', ['Europe/London', None])
+async def test_offsetless_open_event_uses_same_api_datetime_contract(monkeypatch, zone):
+    tool, clients = make_tool(monkeypatch, {'A': 'America/New_York'}, mode='title_prefix')
+    start_clock, end_clock = ('15:00:00', '16:00:00') if zone else ('10:00:00', '11:00:00')
+    start, end = {'dateTime': f'2030-04-26T{start_clock}'}, {'dateTime': f'2030-04-26T{end_clock}'}
+    if zone:
+        start['timeZone'] = end['timeZone'] = zone
+    clients['A'].service.events.return_value.list.return_value.execute.side_effect = lambda: {'items': [
+        {'summary': 'Open offsetless window', 'start': start, 'end': end},
+        {'summary': 'Busy first half', 'start': {'dateTime': '2030-04-26T14:00:00Z'},
+         'end': {'dateTime': '2030-04-26T14:30:00Z'}}
+    ]}
+    result = await tool.execute({'action': 'get_free_slots', 'time_min': '2030-04-26T14:00:00Z',
+                                'time_max': '2030-04-26T15:00:00Z'}, CTX)
+    assert result['status'] == 'success'
+    assert [instant(slot) for slot in result['slots']] == [instant('2030-04-26T14:30:00Z')]
+
+
+@pytest.mark.asyncio
+async def test_naive_api_event_without_usable_event_or_calendar_zone_is_not_utc(monkeypatch):
+    tool, clients = make_tool(monkeypatch, {'A': 'Invalid/Calendar'}, mode='title_prefix')
+    events = clients['A'].service.events.return_value
+    original = events.list.return_value.execute.side_effect
+    events.list.return_value.execute.side_effect = lambda: {'items': original()['items'] + [
+        {'summary': 'Busy missing usable zone', 'start': {'dateTime': '2030-04-26T10:00:00'},
+         'end': {'dateTime': '2030-04-26T10:30:00'}}
+    ]}
+    result = await tool.execute({'action': 'get_free_slots', 'time_min': '2030-04-26T14:00:00Z',
+                                'time_max': '2030-04-26T16:00:00Z'}, CTX)
+    assert result['status'] == 'error' and not result.get('slots')

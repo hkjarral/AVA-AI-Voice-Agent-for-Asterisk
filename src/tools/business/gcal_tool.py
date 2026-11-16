@@ -16,7 +16,7 @@ GOOGLE_CALENDAR_TZ for timezone (fallback: TZ).
 import asyncio
 import threading
 import structlog
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
 from zoneinfo import ZoneInfo
 
@@ -212,6 +212,27 @@ class GCalendarTool(Tool):
         if iso_str.endswith('Z'):
             iso_str = iso_str[:-1] + '+00:00'
         return datetime.fromisoformat(iso_str)
+
+    def _parse_event_datetime(self, bound: dict, calendar_tz_name: str) -> datetime:
+        """Resolve a timed API bound as an instant, never as implicit UTC.
+
+        Explicit offsets are authoritative. Offsetless event times use their
+        endpoint timeZone, falling back to the target calendar zone. Bad API
+        data makes that calendar unavailable instead of exposing a busy slot.
+        """
+        try:
+            raw = bound["dateTime"]
+            if not isinstance(raw, str) or not any(sep in raw for sep in ("T", "t", " ")) or bound.get("date"):
+                raise ValueError("Invalid timed event bound")
+            parsed = self._parse_iso(raw)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=ZoneInfo(bound.get("timeZone") or calendar_tz_name))
+            return parsed.astimezone(timezone.utc)
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise GoogleCalendarApiError(
+                "Calendar contains an invalid timed availability event bound or timezone; "
+                "repair it before retrying."
+            ) from exc
 
     def _get_calendar_tz_name(self, config: Dict[str, Any]) -> str:
         """Resolve calendar timezone: config timezone, then GOOGLE_CALENDAR_TZ, TZ, UTC."""
@@ -592,6 +613,7 @@ class GCalendarTool(Tool):
 
                 def _available_intervals_from_events(
                     evts: list[dict],
+                    tz_name: str,
                 ) -> tuple[list[tuple[datetime, datetime]], int, int]:
                     """Compute available intervals from events.
 
@@ -604,12 +626,19 @@ class GCalendarTool(Tool):
                     busy_blocks = []
                     for e in evts:
                         summary = e.get("summary", "").strip()
-                        start_str = e.get("start", {}).get("dateTime")
-                        end_str = e.get("end", {}).get("dateTime")
-                        if not start_str or not end_str:
+                        if not summary.startswith(free_prefix) and not summary.startswith(busy_prefix):
                             continue
-                        start_dt = self._parse_iso(start_str)
-                        end_dt = self._parse_iso(end_str)
+                        start_bound, end_bound = e.get("start"), e.get("end")
+                        # Date-only events have no timed bounds in this path.
+                        # Malformed timed bounds must not expose availability.
+                        if (isinstance(start_bound, dict) and isinstance(end_bound, dict)
+                                and start_bound.get("date") and end_bound.get("date")
+                                and "dateTime" not in start_bound and "dateTime" not in end_bound):
+                            continue
+                        start_dt = self._parse_event_datetime(start_bound, tz_name)
+                        end_dt = self._parse_event_datetime(end_bound, tz_name)
+                        if end_dt <= start_dt:
+                            raise GoogleCalendarApiError("Calendar contains an invalid timed availability event interval.")
                         if summary.startswith(free_prefix):
                             free_blocks.append((start_dt, end_dt))
                         elif summary.startswith(busy_prefix):
@@ -702,7 +731,7 @@ class GCalendarTool(Tool):
                             bb_count = len(busy_blocks_dt)
                         else:
                             evts = await asyncio.to_thread(_list_events_for_key, k)
-                            intervals, fb_count, bb_count = _available_intervals_from_events(evts)
+                            intervals, fb_count, bb_count = _available_intervals_from_events(evts, _tz_for_key(k))
                     except GoogleCalendarApiError as api_err:
                         # Runtime failure (revoked share, expired DWD, network
                         # error, etc.) — fail per-calendar and let the existing

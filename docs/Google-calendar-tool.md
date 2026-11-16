@@ -212,6 +212,13 @@ All times use ISO 8601. The tool is registered as `google_calendar` and is in th
 
 ### Datetime contract and upgrade compatibility
 
+Timed **API event bounds** follow the event endpoint's own `timeZone` when its
+`dateTime` has no offset, falling back to the target calendar timezone when the
+endpoint omits it. Start and end may specify different zones. Explicit offsets
+keep their instant. An unusable zone, malformed timed bound or reversed event
+interval makes that calendar unavailable; it is never silently assumed to be UTC.
+This applies to both Open windows and Busy events before subtraction.
+
 For `time_min`, `time_max`, `start_datetime`, and `end_datetime`:
 
 - **With `Z` or an explicit offset:** the value is an instant. AVA converts it to
