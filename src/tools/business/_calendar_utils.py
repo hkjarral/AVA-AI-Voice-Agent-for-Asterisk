@@ -181,10 +181,19 @@ def build_slot_starts(
     duration = timedelta(minutes=duration_minutes)
     starts: list[datetime] = []
     for start, end in intervals:
-        if end <= start:
+        if to_utc(end) <= to_utc(start):
             continue
         cursor = round_up_to_next_slot(start, duration_minutes)
-        while cursor + duration <= end:
+        if cursor.tzinfo is not None:
+            cursor = to_utc(cursor).astimezone(cursor.tzinfo)
+        # ZoneInfo arithmetic uses wall-clock time even through DST folds/gaps.
+        # Keep local grid alignment, then step and bound actual elapsed instants.
+        while to_utc(cursor) + duration <= to_utc(end):
             starts.append(cursor)
-            cursor += duration
+            next_instant = to_utc(cursor) + duration
+            cursor = (
+                next_instant.astimezone(cursor.tzinfo)
+                if cursor.tzinfo is not None
+                else next_instant.replace(tzinfo=None)
+            )
     return starts

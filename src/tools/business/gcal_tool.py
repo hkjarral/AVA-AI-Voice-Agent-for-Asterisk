@@ -4,10 +4,10 @@ Google Calendar tool for Asterisk AI Voice Agent.
 Supports listing events, getting a single event, creating events, deleting events, and finding
 free appointment slots (with configurable duration and duration-aligned slot starts).
 
-Datetime handling is DST-aware: when a datetime string has a TZ tail (e.g. Z or +00:00),
-the tail is removed and the date/time is interpreted as local time in the calendar timezone
-(GOOGLE_CALENDAR_TZ, or TZ env, or UTC)—same as when there is no tail. List/time-range APIs
-receive RFC3339 with the correct offset for that zone.
+Datetime handling is DST-aware: strings with Z or an explicit offset represent instants
+and are converted to the target calendar timezone. Naive strings remain calendar-local
+(GOOGLE_CALENDAR_TZ, or TZ env, or UTC). Google receives RFC3339 timestamps with offsets,
+including event creation so repeated DST hours retain their intended instant.
 
 Environment: GOOGLE_CALENDAR_CREDENTIALS (path to service account JSON);
 GOOGLE_CALENDAR_TZ for timezone (fallback: TZ).
@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 from src.tools.base import Tool, ToolDefinition, ToolCategory
 from src.tools.context import ToolExecutionContext, resolve_scoped_tool_config
 
-from src.tools.business._calendar_utils import build_slot_starts
+from src.tools.business._calendar_utils import build_slot_starts, normalize_to_tz, to_utc
 from src.tools.business.gcalendar import GCalendar, GoogleCalendarApiError, _get_timezone
 
 logger = structlog.get_logger(__name__)
@@ -50,18 +50,18 @@ _GOOGLE_CALENDAR_INPUT_SCHEMA = {
             "type": "string",
             "description": (
                 "ISO 8601 start time. Required for list_events and get_free_slots. "
-                "Tip: any TZ tail (Z or ±HH:MM) is stripped and the wall-clock is "
-                "interpreted as the calendar's local timezone. Pass a naive string "
-                "like '2026-04-25T09:00:00' to be unambiguous."
+                "Z or an explicit offset (±HH:MM) represents an instant, converted to each "
+                "target calendar timezone. Without an offset, the time is calendar-local "
+                "(e.g. '2026-04-25T09:00:00'). For a shared absolute range across "
+                "different calendar timezones, include Z or an offset."
             )
         },
         "time_max": {
             "type": "string",
             "description": (
                 "ISO 8601 end time. Required for list_events and get_free_slots. "
-                "Same timezone behavior as time_min: TZ tail is stripped, wall-clock "
-                "treated as calendar-local. Pass naive '2026-04-28T17:00:00' to be "
-                "unambiguous."
+                "Same timezone behavior as time_min: Z/offset inputs are instants; "
+                "naive inputs are local to each target calendar."
             )
         },
         "free_prefix": {
@@ -102,14 +102,17 @@ _GOOGLE_CALENDAR_INPUT_SCHEMA = {
             "type": "string",
             "description": (
                 "ISO 8601 start time for the new event. Required for create_event. "
-                "Use the calendar's local time (the slot strings returned by "
-                "get_free_slots are already in calendar-local time; pass them as-is)."
+                "Pass the chosen slots_with_end.start from get_free_slots as-is, including "
+                "its offset. Z/offset inputs are instants converted to the target calendar "
+                "timezone; naive inputs are calendar-local."
             )
         },
         "end_datetime": {
             "type": "string",
             "description": (
                 "ISO 8601 end time for the new event. Required for create_event. "
+                "Pass the chosen slots_with_end.end as-is, including its offset; "
+                "timezone semantics match start_datetime. "
                 "MUST equal start_datetime PLUS the meeting duration (typically 30 "
                 "minutes — same as the slot grid returned by get_free_slots). DO NOT "
                 "extend end_datetime to end-of-day, end-of-availability, or the start "
@@ -281,36 +284,14 @@ class GCalendarTool(Tool):
     def _normalize_datetime_to_calendar_tz(
         self, dt_str: str, calendar_tz_name: str
     ) -> datetime:
+        """Convert aware inputs as instants; interpret naive inputs as calendar-local.
+
+        The caller resolves GOOGLE_CALENDAR_TZ / TZ; invalid zones fall back to UTC.
         """
-        Parse datetime string as local time in the calendar timezone (DST-aware).
-
-        If dt_str has a TZ tail (Z or ±HH:MM): the tail is removed and the date/time
-        is interpreted as local time in the calendar zone (same as when there is no tail).
-        So "2025-03-15T19:00:00Z" is treated as 19:00 in the calendar zone, not as 19:00 UTC.
-
-        Uses GOOGLE_CALENDAR_TZ / TZ for the calendar zone; falls back to UTC if invalid.
-        """
-        dt_str = (dt_str or "").strip()
-        if not dt_str:
-            raise ValueError("Empty datetime string")
-        # Normalize Z for parsing, then parse
-        if dt_str.upper().endswith("Z"):
-            dt_str = dt_str[:-1] + "+00:00"
         try:
-            parsed = datetime.fromisoformat(dt_str)
-        except ValueError as e:
-            raise ValueError(f"Invalid datetime string: {dt_str}") from e
-
-        try:
-            cal_tz = ZoneInfo(calendar_tz_name)
-        except Exception:
-            cal_tz = ZoneInfo("UTC")
-
-        # If there was a TZ tail, remove it: use only the wall-clock time (naive)
-        # and interpret that as local time in the calendar zone (same as no tail).
-        if parsed.tzinfo is not None:
-            parsed = parsed.replace(tzinfo=None)
-        return parsed.replace(tzinfo=cal_tz)
+            return normalize_to_tz(dt_str, calendar_tz_name)
+        except ValueError as exc:
+            raise ValueError(f"Invalid datetime string: {dt_str}") from exc
 
     def _get_config(self, context: ToolExecutionContext) -> Dict[str, Any]:
         """
@@ -878,19 +859,9 @@ class GCalendarTool(Tool):
 
                 slot_starts = build_slot_starts(available_intervals, duration_minutes)
 
-                # Pick the output timezone for the slot list. Priority:
-                # 1. Root tool config `timezone` (operator-pinned override)
-                # 2. The TARGET calendar's timezone (single-cal mode)
-                # 3. UTC fallback
-                # CodeRabbit critical finding: in multi-calendar configs where
-                # selected calendars have DIFFERENT timezones, formatting slots
-                # in `keys_to_use[0]`'s TZ misleads the LLM — it picks a slot,
-                # then create_event lands on a different calendar with a
-                # different TZ, and the same naive timestamp resolves to a
-                # different wall-clock time. We avoid that footgun by emitting
-                # slots in UTC when calendars disagree on TZ. Single-cal and
-                # all-same-TZ multi-cal cases (the 99% case) keep their
-                # original behavior.
+                # Keep familiar local display when selected calendars agree; mixed
+                # zones use UTC. All structured slot strings carry offsets and can
+                # be passed unchanged to create_event for any selected target.
                 tz_set: set[str] = set()
                 for k in keys_to_use:
                     if k in failed_keys:
@@ -898,20 +869,7 @@ class GCalendarTool(Tool):
                     tz_name = _tz_for_key(k) if not legacy_single else calendar_tz_name
                     if tz_name:
                         tz_set.add(tz_name)
-                # Selection rules — corrected per CodeRabbit critical follow-up:
-                # the previous version had `config["timezone"]` (root override)
-                # winning over per-calendar timezones, which is a footgun in
-                # multi-calendar mode. create_event ALWAYS uses the target
-                # calendar's TZ to reparse naive datetime strings, so if the
-                # slot list was formatted in a different TZ the model will
-                # book at the wrong wall-clock time.
-                #
-                # Legacy single-cal mode: root config["timezone"] IS the
-                #   calendar's TZ (no per-calendar overrides exist) — use it.
-                # Multi-calendar mode: per-calendar TZ is authoritative.
-                #   Root config["timezone"] is ignored to avoid the create_event
-                #   reparse mismatch. If the selected calendars agree on a TZ,
-                #   use it. If they disagree, fall back to UTC + warning.
+                # Per-calendar zones are authoritative in multi-calendar mode.
                 if legacy_single:
                     output_tz_name = (
                         (config.get("timezone") or "").strip()
@@ -966,7 +924,10 @@ class GCalendarTool(Tool):
                 # bug seen on ElevenLabs/Claude where the agent picked 11 AM correctly
                 # but booked end_datetime at 18:00 (end of working hours) instead of
                 # 11:30. Showing "09:00–09:30" makes the duration unambiguous.
-                slot_pairs = [(t, t + timedelta(minutes=duration_minutes)) for t in slot_starts]
+                slot_pairs = [
+                    (t, (to_utc(t) + timedelta(minutes=duration_minutes)).astimezone(output_tz))
+                    for t in slot_starts
+                ]
                 results = [
                     f"{s.strftime('%Y-%m-%d %H:%M')}–{e.strftime('%H:%M')}"
                     for (s, e) in slot_pairs
@@ -1013,7 +974,8 @@ class GCalendarTool(Tool):
                         # interpretation of "local" would differ.
                         booking_hint = (
                             "When booking via create_event, pass start_datetime "
-                            "and end_datetime in UTC with the 'Z' suffix (e.g. "
+                            "and end_datetime as the returned offset-bearing slot strings, "
+                            "or in UTC with the 'Z' suffix (e.g. "
                             "'2026-04-27T17:00:00Z') and set the appropriate "
                             "calendar_key so the booking lands on the calendar "
                             "you intended. The selected calendars use different "
@@ -1022,8 +984,8 @@ class GCalendarTool(Tool):
                     else:
                         booking_hint = (
                             "When booking via create_event, pass start_datetime "
-                            "and end_datetime as the SAME local-time strings "
-                            "(no Z, no offset — calendar timezone is implicit)"
+                            "and end_datetime as the returned slots_with_end start/end "
+                            "strings, preserving their offsets"
                         )
                     message = (
                         "Free slot starts: " + ", ".join(starts_only) + ". "
@@ -1094,11 +1056,8 @@ class GCalendarTool(Tool):
                     # start_datetime + N minutes" hint.
                     "slots_with_end": slots_iso_pairs if results else [],
                     "slot_duration_minutes": duration_minutes,
-                    # Calendar timezone — surfaced so the model knows what TZ to use
-                    # for create_event without guessing. The lenient parser in
-                    # _normalize_datetime_to_calendar_tz strips any TZ tail and
-                    # treats wall-clock as local; this field tells the model what
-                    # "local" means.
+                    # Display timezone for the returned offset-bearing slots.
+                    # Naive booking inputs instead use the target calendar zone.
                     "calendar_timezone": output_tz_name,
                     # True when the selected calendars don't agree on a single
                     # timezone and we fell back to UTC for the slot list.
@@ -1359,12 +1318,12 @@ class GCalendarTool(Tool):
                         return out
                     tz_name = _tz_for_key(target_key)
                     cal_i = _cal_for_key(target_key)
-                # DST-aware: if input has TZ tail, convert to calendar TZ and send local time (no tail)
+                # Preserve offsets through the Google payload, including DST folds.
                 try:
                     start_dt_local = self._normalize_datetime_to_calendar_tz(start_dt, tz_name)
                     end_dt_local = self._normalize_datetime_to_calendar_tz(end_dt, tz_name)
-                    start_dt_str = start_dt_local.strftime("%Y-%m-%dT%H:%M:%S")
-                    end_dt_str = end_dt_local.strftime("%Y-%m-%dT%H:%M:%S")
+                    start_dt_str = start_dt_local.isoformat()
+                    end_dt_str = end_dt_local.isoformat()
                 except ValueError as e:
                     out = {"status": "error", "message": str(e)}
                     logger.warning("Invalid datetime for create_event", call_id=call_id, error=str(e))
@@ -1384,7 +1343,7 @@ class GCalendarTool(Tool):
                     max_dur = int(_max_dur_raw) if _max_dur_raw is not None else 240
                 except (TypeError, ValueError):
                     max_dur = 240
-                actual_minutes = (end_dt_local - start_dt_local).total_seconds() / 60.0
+                actual_minutes = (to_utc(end_dt_local) - to_utc(start_dt_local)).total_seconds() / 60.0
                 if actual_minutes <= 0:
                     out = {
                         "status": "error",

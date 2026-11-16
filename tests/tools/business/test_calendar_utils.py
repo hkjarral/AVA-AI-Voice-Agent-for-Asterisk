@@ -65,3 +65,21 @@ def test_build_slot_starts_handles_midnight_and_skips_empty_intervals():
     end = midnight + timedelta(minutes=30)
 
     assert build_slot_starts([(end, start), (start, start), (start, end)], 30) == [midnight]
+
+
+@pytest.mark.parametrize(("start", "end", "expected"), [
+    ("2030-11-03T06:00:00+00:00", "2030-11-03T07:00:00+00:00",
+     ["2030-11-03T01:00:00-05:00", "2030-11-03T01:30:00-05:00"]),
+    ("2030-03-10T06:30:00+00:00", "2030-03-10T07:30:00+00:00",
+     ["2030-03-10T01:30:00-05:00", "2030-03-10T03:00:00-04:00"]),
+])
+def test_slot_grid_steps_elapsed_instants_through_dst(start, end, expected):
+    zone = ZoneInfo("America/New_York")
+    start_dt, end_dt = [datetime.fromisoformat(value).astimezone(zone) for value in (start, end)]
+    slots = build_slot_starts([(start_dt, end_dt)], 30)
+    assert [slot.isoformat() for slot in slots] == expected
+
+
+def test_slot_grid_keeps_local_alignment_in_fractional_offset_zone():
+    start = datetime(2030, 4, 26, 9, tzinfo=ZoneInfo("Asia/Kathmandu"))
+    assert build_slot_starts([(start, start + timedelta(hours=1))], 30) == [start, start + timedelta(minutes=30)]

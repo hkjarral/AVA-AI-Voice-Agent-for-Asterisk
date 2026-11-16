@@ -3493,7 +3493,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                                         onChange({ ...config, google_calendar: { ...(config.google_calendar || {}), calendars: cals } });
                                                     }}
                                                     placeholder="America/New_York"
-                                                    tooltip="IANA timezone for this calendar (e.g. America/New_York)."
+                                                    tooltip="IANA timezone for working hours and local times (e.g. America/New_York). Tool timestamps with Z or an offset keep their instant and are converted to this zone; timestamps without an offset are local to this calendar."
                                                 />
                                             </div>
                                             <div className="md:col-span-1 flex justify-end">
