@@ -216,9 +216,11 @@ Slot starts round up to a multiple of the requested duration from midnight.
 Only starts strictly after the current time are returned. Both native free/busy
 and title-prefix mode filter elapsed starts **before** sorting, counting and
 applying `max_slots_returned`, including single-calendar selection and multi-calendar
-`all`/`any` aggregation. Each request captures one UTC instant, so calendars in
-different timezones use the same cutoff. The appointment duration and slot grid
-remain unchanged; a partly elapsed slot is not shortened or offered again.
+`all`/`any` aggregation. Availability captures one shared UTC cutoff after all
+calendar reads and slot generation, so slow queries cannot leave elapsed starts
+in the result and calendars in different timezones use the same cutoff. The
+appointment duration and slot grid remain unchanged; a partly elapsed slot is
+not shortened or offered again.
 Seconds and microseconds count: with 30-minute slots, an interval starting at
 10:00:30 first permits a 10:30 start. Each suggested slot must fit entirely
 inside the computed free interval; exact slot boundaries remain unchanged.
@@ -292,7 +294,8 @@ empty because of one calendar specifically.
 ### Future booking validation and recovery
 
 `create_event` independently checks the normalized start against a fresh current
-time for that invocation. Starts at or before that instant return `status: "error"`
+time immediately before dispatching the Google write, after client resolution and
+validation. Starts at or before that instant return `status: "error"`
 and `error_code: "past_booking"` without sending a Google create request or changing
 the call's tracked booking. This rule always applies, including when the duration
 cap is disabled.

@@ -232,12 +232,91 @@ async def test_expired_offer_recovers_by_querying_and_confirming_new_time(calend
 
 
 @pytest.mark.asyncio
-async def test_multi_calendar_request_uses_one_snapshot_when_query_crosses_boundary(calendar_factory):
-    tool, apis, clock, _ = calendar_factory(topology="all", now="2027-04-26T13:59:59+00:00")
-    clock.side_effect = [clock.return_value, AssertionError("Clock must be read only once per request")]
-    result = await availability(tool, apis, "2027-04-26T09:00:00", "2027-04-26T17:00:00", topology="all")
-    assert result["slots"][0] == "2027-04-26T14:00:00+00:00"
+@pytest.mark.parametrize("mode", ["freebusy", "title_prefix"])
+@pytest.mark.parametrize("topology", ["legacy", "targeted", "all", "any"])
+async def test_slow_calendar_reads_use_one_final_cutoff_before_cap(calendar_factory, mode, topology):
+    tool, apis, clock, _ = calendar_factory(mode, topology, now="2027-04-26T13:59:59+00:00")
+    queried = []
+
+    def delayed_read(key, api):
+        method = api.freebusy_query if mode == "freebusy" else api.list_events
+
+        def read(*args):
+            # Model blocking client/API work without sleeping or network. A
+            # second calendar crosses another boundary; all results must use
+            # the later cutoff, not a per-calendar or execute-entry snapshot.
+            queried.append(key)
+            hour = "14:00:01" if len(queried) == 1 else "14:30:01"
+            clock.return_value = datetime.fromisoformat(f"2027-04-26T{hour}+00:00")
+            return method.return_value
+
+        return read
+
+    for key, api in apis.items():
+        method = api.freebusy_query if mode == "freebusy" else api.list_events
+        method.side_effect = delayed_read(key, api)
+
+    result = await availability(tool, apis, "2027-04-26T09:00:00", "2027-04-26T17:00:00", mode, topology)
+    expected_first = "15:00:00" if topology in ("all", "any") else "14:30:00"
+    expected_count = 4 if topology in ("all", "any") else 5
+    assert result["slots"][0] == f"2027-04-26T{expected_first}+00:00"
+    assert result["total_slots_available"] == expected_count
+    assert len(result["slots"]) == 3
+    assert all(datetime.fromisoformat(s) > clock.return_value for s in result["slots"])
     clock.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["freebusy", "title_prefix"])
+async def test_final_availability_cutoff_is_after_slot_generation(calendar_factory, monkeypatch, mode):
+    from src.tools.business import gcal_tool as module
+
+    tool, apis, clock, _ = calendar_factory(mode, now="2027-04-26T13:59:59+00:00")
+    generate = module.build_slot_starts
+
+    def delayed_generation(*args):
+        result = generate(*args)
+        clock.return_value = datetime(2027, 4, 26, 14, 0, 1, tzinfo=UTC)
+        return result
+
+    monkeypatch.setattr(module, "build_slot_starts", delayed_generation)
+    result = await availability(tool, apis, "2027-04-26T09:00:00", "2027-04-26T17:00:00", mode)
+    assert result["slots"][0] == "2027-04-26T14:30:00+00:00"
+    assert result["total_slots_available"] == 5
+    clock.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("topology", ["legacy", "targeted"])
+async def test_slow_client_resolution_rejects_expired_booking_then_fresh_retry_succeeds(calendar_factory, topology):
+    tool, apis, clock, _ = calendar_factory(topology=topology)
+    lookup = tool._get_cal if topology == "legacy" else tool._get_or_create_cal
+    original = lookup.side_effect
+    delayed = True
+
+    def resolve(*args):
+        if delayed:
+            clock.return_value = datetime(2027, 4, 26, 14, 0, 2, tzinfo=UTC)
+        return original(*args) if original else lookup.return_value
+
+    lookup.side_effect = resolve
+    parameters = booking("2027-04-26T14:00:01", "2027-04-26T14:30:01",
+                         **({"calendar_key": "B"} if topology == "targeted" else {}))
+    rejected = await tool.execute(parameters, CONTEXT)
+    assert rejected["status"] == "error"
+    assert rejected["error_code"] == "past_booking"
+    assert not tool._last_event_per_call
+    for api in apis.values():
+        api.create_event.assert_not_called()
+    clock.assert_called_once()
+
+    delayed = False
+    clock.return_value = datetime(2027, 4, 26, 14, 30, tzinfo=UTC)
+    parameters.update(start_datetime="2027-04-26T14:30:01", end_datetime="2027-04-26T15:00:01")
+    retried = await tool.execute(parameters, CONTEXT)
+    assert retried["status"] == "success"
+    apis["B" if topology == "targeted" else "default"].create_event.assert_called_once()
+    assert clock.call_count == 2
 
 
 @pytest.mark.asyncio

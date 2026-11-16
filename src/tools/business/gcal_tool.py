@@ -30,7 +30,7 @@ logger = structlog.get_logger(__name__)
 
 
 def utc_now() -> datetime:
-    """Clock seam for deterministic tests; each scheduling request reads it once."""
+    """Clock seam for deterministic tests of the final scheduling decision."""
     return datetime.now(timezone.utc)
 
 # Schema for Google Live / Vertex and OpenAI (input_schema is provider-agnostic)
@@ -370,10 +370,6 @@ class GCalendarTool(Tool):
             out = {"status": "error", "message": error_msg}
             logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
             return out
-
-        # Use one instant across calendars and aggregation, even if API calls
-        # span a slot boundary. Re-evaluate on each invocation (including retry).
-        request_now = utc_now() if action in ("get_free_slots", "create_event") else None
 
         # Resolve configured calendars (multi or legacy single)
         calendars = self._resolve_calendars(config)
@@ -889,15 +885,6 @@ class GCalendarTool(Tool):
                     duration_minutes = 30
 
                 slot_starts = build_slot_starts(available_intervals, duration_minutes)
-                # Filter before sorting/counting/capping so elapsed morning
-                # slots cannot consume today's default three suggestions. Use
-                # UTC instants, including during a repeated DST wall-clock hour.
-                generated_slot_count = len(slot_starts)
-                slot_starts = [
-                    start for start in slot_starts
-                    if start.astimezone(timezone.utc) > request_now
-                ]
-                elapsed_slots_removed = generated_slot_count - len(slot_starts)
 
                 # Pick the output timezone for the slot list. Priority:
                 # 1. Root tool config `timezone` (operator-pinned override)
@@ -965,6 +952,19 @@ class GCalendarTool(Tool):
                 # apply in legacy_single mode (only one calendar exists).
                 multi_cal_tz_disagreement = len(tz_set) > 1 and not legacy_single
                 slot_starts = [t.astimezone(output_tz) for t in slot_starts]
+                # Read the clock after all calendar reads and slot generation.
+                # One final cutoff applies to every selected calendar, including
+                # when slow client/API work crossed a slot boundary. Filter
+                # before sorting/counting/capping so elapsed slots cannot consume
+                # today's default three suggestions. Compare UTC instants through
+                # repeated DST wall-clock hours too.
+                availability_now = utc_now()
+                generated_slot_count = len(slot_starts)
+                slot_starts = [
+                    start for start in slot_starts
+                    if start.astimezone(timezone.utc) > availability_now
+                ]
+                elapsed_slots_removed = generated_slot_count - len(slot_starts)
                 slot_starts.sort()
 
                 # Cap how many slots are surfaced to the LLM. Without a cap, get_free_slots
@@ -1447,9 +1447,10 @@ class GCalendarTool(Tool):
                     logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                     return out
 
-                # Compare normalized instants, rather than calendar-local
-                # wall-clock values (which repeat during a DST fall-back).
-                if start_dt_local.astimezone(timezone.utc) <= request_now:
+                # Recheck immediately before dispatch, after client resolution
+                # and validation: a start that was future at entry may now have
+                # elapsed. Compare instants through repeated DST wall-clock hours.
+                if start_dt_local.astimezone(timezone.utc) <= utc_now():
                     out = {
                         "status": "error",
                         "error_code": "past_booking",
