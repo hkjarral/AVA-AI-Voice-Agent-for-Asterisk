@@ -30,6 +30,13 @@ playback ID is stopped. An unconfirmed stop retains the existing cancellation
 retry owner and token; it must not release a replacement's output ownership.
 Healthy transport failures still retain speech and use the existing file fallback.
 
+Cancelled file playback retains its inactivity-notification policy on the
+existing `PlaybackRef` until that exact playback retires. Ownership-loss cleanup
+must not reset the caller's inactivity deadline, whether an ARI finish event or
+the stop retry completes first. Duplicate retention can suppress notification
+but cannot restore it; ordinary playback and cancellation retain their existing
+notification defaults.
+
 The unused `_last_segment_end_ts` and `channel_to_conn` containers were removed.
 Use the active stream or the connection set rather than reintroducing parallel
 state. Cleanup is idempotent and must leave other calls and replacement streams

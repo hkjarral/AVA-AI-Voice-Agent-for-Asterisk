@@ -47,6 +47,7 @@ class PlaybackRef:
     audio_file: str
     timestamp: float = field(default_factory=time.time)
     cancel_cleanup_pending: bool = False
+    cancel_notify_no_input: bool = True
 
 
 @dataclass

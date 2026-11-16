@@ -233,14 +233,20 @@ class PlaybackManager:
     ) -> None:
         """Retire only this playback, retaining its retry owner if remote stop is unknown."""
         stopped = not ari_attempted
+        retained_ref = None
         if ari_attempted and playback_id:
-            await self.retain_cancelled_playback(call_id, playback_id)
+            retained_ref = await self.retain_cancelled_playback(
+                call_id, playback_id, notify_no_input=notify_no_input,
+            )
             try:
                 stopped = bool(await asyncio.wait_for(self.ari_client.stop_playback(playback_id), 1.0))
             except Exception:
                 stopped = False
         if stopped and playback_id:
-            await self.session_store.pop_playback(playback_id)
+            retired_ref = await self.session_store.pop_playback(playback_id)
+            policy_ref = retired_ref if retired_ref is not None else retained_ref
+            if policy_ref is not None:
+                notify_no_input = notify_no_input and policy_ref.cancel_notify_no_input
             if self.conversation_coordinator:
                 if notify_no_input:
                     await self.conversation_coordinator.cancel_tts(call_id, playback_id)
@@ -261,11 +267,18 @@ class PlaybackManager:
         elif playback_id:
             logger.warning("Cancelled playback startup stop unconfirmed; retaining output ownership", call_id=call_id, playback_id=playback_id)
 
-    async def retain_cancelled_playback(self, call_id: str, playback_id: str) -> None:
+    async def retain_cancelled_playback(
+        self, call_id: str, playback_id: str, *, notify_no_input: bool = True,
+    ) -> Optional[PlaybackRef]:
         """Keep an exact-playback retry owner across transfer cancellation/replacement."""
         ref = await self.session_store.get_playback(playback_id)
-        if not ref or ref.call_id != call_id or ref.cancel_cleanup_pending:
+        if not ref or ref.call_id != call_id:
             return
+        # The ref owns this policy through both retry-stop and ARI-finish races.
+        # A duplicate default retain must not weaken an ownership-loss fence.
+        ref.cancel_notify_no_input = ref.cancel_notify_no_input and notify_no_input
+        if ref.cancel_cleanup_pending:
+            return ref
         ref.cancel_cleanup_pending = True
 
         async def retry_stop():
@@ -318,6 +331,7 @@ class PlaybackManager:
             schedule(call_id, retry_stop(), name=f"cancelled-playback-{playback_id}")
         else:
             asyncio.create_task(retry_stop(), name=f"cancelled-playback-{playback_id}")
+        return ref
 
     async def discard_terminal_playbacks(self, call_id: str) -> None:
         """Release local resources as a call closes, without claiming remote completion."""
@@ -358,6 +372,7 @@ class PlaybackManager:
                     playback_ref.call_id,
                     playback_id,
                     reason="playback-finished",
+                    notify_no_input=playback_ref.cancel_notify_no_input,
                 )
                 await self.conversation_coordinator.update_conversation_state(
                     playback_ref.call_id,

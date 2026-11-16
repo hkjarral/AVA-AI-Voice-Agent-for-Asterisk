@@ -9,6 +9,7 @@ import pytest
 
 from src.core.conversation_coordinator import ConversationCoordinator
 from src.core.models import CallSession
+from src.core.no_input_watchdog import NoInputPolicy, NoInputWatchdog
 from src.core.playback_manager import PlaybackManager
 from src.core.session_store import SessionStore
 from src.core.streaming_playback_manager import StreamingPlaybackManager
@@ -53,7 +54,8 @@ async def rig():
     queue = asyncio.Queue()
     manager.jitter_buffers[session.call_id] = queue
     value = SimpleNamespace(store=store, session=session, ari=ari, files=files, manager=manager,
-        writer=writer, old=old, new=new, queued=queued, info=info, queue=queue, replacement=None)
+        writer=writer, old=old, new=new, queued=queued, info=info, queue=queue, replacement=None,
+        tasks=tasks)
 
     def replace():
         value.replacement = dict(info, stream_id="replacement", buffered_bytes=len(new)+len(queued),
@@ -266,3 +268,107 @@ async def test_fallback_bookkeeping_failure_does_not_disable_owned_transport_rec
     rig.ari.play_media_on_bridge_with_id.assert_awaited_once()
     assert rig.files._create_audio_file.await_args.args[0] == audioop.lin2ulaw(rig.old, 2)
     assert rig.info["end_reason"] == "transport-failure"
+
+
+@pytest.mark.parametrize("finish", ["retry", "ari_event", "repeated_retry"])
+@pytest.mark.parametrize("notify", ["default", True, False])
+async def test_cancelled_playback_finish_preserves_caller_idle_deadline(rig, monkeypatch, finish, notify):
+    """A stale playback must not buy the ready caller a fresh inactivity window."""
+    import src.core.playback_manager as playback_module
+
+    clock = [100.0]
+    watchdog = NoInputWatchdog(AsyncMock(), AsyncMock(), clock=lambda: clock[0])
+    await watchdog.register(rig.session.call_id, NoInputPolicy(), is_outbound=False)
+    await watchdog.mark_ready(rig.session.call_id)
+    rig.files.conversation_coordinator._no_input_watchdog = watchdog
+    retry_allowed = asyncio.Event()
+    monkeypatch.setattr(playback_module, "_CANCEL_RETRY_DELAY", 0.001)
+    try:
+        playback_id = await rig.files.play_audio(rig.session.call_id, b"synthetic")
+        assert playback_id
+        stops = 0
+
+        async def stop_exact(actual_id):
+            nonlocal stops
+            assert actual_id == playback_id
+            stops += 1
+            if stops == 1:
+                return False
+            await retry_allowed.wait()
+            return True
+
+        rig.ari.stop_playback.side_effect = stop_exact
+        options = {} if notify == "default" else {"notify_no_input": notify}
+        await rig.files._cancel_playback_start(
+            rig.session.call_id, playback_id, "/tmp/synthetic-fallback-not-written.ulaw",
+            True, **options,
+        )
+        assert (await rig.store.get_playback(playback_id)).cancel_cleanup_pending
+        if finish == "repeated_retry":
+            # A later default caller must not weaken an already suppressed owner.
+            await rig.files.retain_cancelled_playback(rig.session.call_id, playback_id)
+
+        # The current provider output lifecycle has already ended. The old
+        # playback's eventual stop/finish cannot reset that established deadline.
+        await watchdog.note_agent_output_end(rig.session.call_id)
+        before = watchdog.snapshot(rig.session.call_id)["deadline"]
+        assert before == 130.0
+        clock[0] = 105.0
+        if finish == "ari_event":
+            from src.engine import Engine
+            engine = Engine.__new__(Engine)
+            engine._ari_playback_waiters = {}
+            engine.playback_manager = rig.files
+            await engine._on_playback_finished({"playback": {"id": playback_id}})
+        retry_allowed.set()
+        await asyncio.wait_for(asyncio.gather(*list(rig.tasks)), timeout=1)
+        assert watchdog.snapshot(rig.session.call_id)["deadline"] == (before if notify is False else 135.0)
+        assert await rig.store.get_playback(playback_id) is None
+        assert not rig.session.tts_tokens
+        rig.files._cleanup_audio_file.assert_awaited_once()
+    finally:
+        retry_allowed.set()
+        await watchdog.stop(rig.session.call_id)
+
+
+async def test_duplicate_cancel_keeps_suppression_when_ari_finish_pops_ref_during_stop(rig, monkeypatch):
+    """A default outer cancellation must retain the old owner's false policy."""
+    import src.core.playback_manager as playback_module
+    from src.engine import Engine
+
+    clock = [100.0]
+    watchdog = NoInputWatchdog(AsyncMock(), AsyncMock(), clock=lambda: clock[0])
+    await watchdog.register(rig.session.call_id, NoInputPolicy(), is_outbound=False)
+    await watchdog.mark_ready(rig.session.call_id)
+    rig.files.conversation_coordinator._no_input_watchdog = watchdog
+    monkeypatch.setattr(playback_module, "_CANCEL_RETRY_DELAY", 60.0)
+    try:
+        playback_id = await rig.files.play_audio(rig.session.call_id, b"synthetic")
+        rig.ari.stop_playback.return_value = False
+        await rig.files._cancel_playback_start(
+            rig.session.call_id, playback_id, "/tmp/synthetic-fallback-not-written.ulaw",
+            True, notify_no_input=False,
+        )
+        await watchdog.note_agent_output_end(rig.session.call_id)
+        assert watchdog.snapshot(rig.session.call_id)["deadline"] == 130.0
+        clock[0] = 105.0
+        engine = Engine.__new__(Engine)
+        engine._ari_playback_waiters = {}
+        engine.playback_manager = rig.files
+
+        async def stop_after_finish(actual_id):
+            assert actual_id == playback_id
+            await engine._on_playback_finished({"playback": {"id": playback_id}})
+            assert await rig.store.get_playback(playback_id) is None
+            assert watchdog.snapshot(rig.session.call_id)["deadline"] == 130.0
+            return True
+
+        rig.ari.stop_playback.side_effect = stop_after_finish
+        await rig.files._cancel_playback_start(
+            rig.session.call_id, playback_id, "/tmp/synthetic-fallback-not-written.ulaw", True,
+        )
+        assert watchdog.snapshot(rig.session.call_id)["deadline"] == 130.0
+        assert not rig.session.tts_tokens
+        assert await rig.store.get_playback(playback_id) is None
+    finally:
+        await watchdog.stop(rig.session.call_id)
