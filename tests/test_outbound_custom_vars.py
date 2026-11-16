@@ -190,6 +190,7 @@ async def test_answered_call_fails_closed_when_attempt_metadata_is_unrecoverable
     engine.outbound_store.finish_attempt.assert_awaited_once_with(
         "attempt-1",
         outcome="error",
+        only_if_unfinished=True,
         error_message="outbound attempt metadata unavailable after answer",
     )
     engine.ari_client.hangup_channel.assert_awaited_once_with("channel-1")
@@ -215,12 +216,15 @@ async def test_answered_call_fails_closed_on_corrupt_durable_custom_vars():
     engine.outbound_store.finish_attempt.assert_awaited_once_with(
         "attempt-1",
         outcome="error",
+        only_if_unfinished=True,
         error_message="outbound custom_vars metadata is invalid after answer",
     )
     engine.outbound_store.set_lead_state.assert_awaited_once_with(
         "lead-1",
         state="failed",
         last_outcome="error",
+        only_if_active=True,
+        expected_attempt_id="attempt-1",
     )
     engine.ari_client.hangup_channel.assert_awaited_once_with("channel-1")
 
@@ -242,12 +246,15 @@ async def test_outbound_answered_fails_closed_when_custom_vars_cannot_be_confirm
     engine.outbound_store.finish_attempt.assert_awaited_once_with(
         "attempt-1",
         outcome="error",
+        only_if_unfinished=True,
         error_message="outbound custom_vars could not be confirmed after answer",
     )
     engine.outbound_store.set_lead_state.assert_any_await(
         "lead-1",
         state="failed",
         last_outcome="error",
+        only_if_active=True,
+        expected_attempt_id="attempt-1",
     )
     engine.ari_client.hangup_channel.assert_awaited_once_with("channel-1")
     assert "channel-1" in engine._seen_outbound_channels
@@ -391,6 +398,7 @@ async def test_destroyed_rejected_channel_cancels_retry_without_overwriting_erro
     engine.outbound_store.finish_attempt.assert_awaited_once_with(
         "attempt-1",
         outcome="error",
+        only_if_unfinished=True,
         error_message="outbound custom_vars could not be confirmed after answer",
     )
     assert engine._outbound_attempt_meta_by_attempt_id == {}
