@@ -97,7 +97,7 @@ AI models are generally weak at handling large datasets and at carrying out prec
 
 The Google Calendar API only returns a list of events. For appointment booking over the phone, the agent needs to answer "When are you free?" with concrete, bookable start times. **`get_free_slots`** does that by:
 
-1. **Interpreting the calendar** -- Events whose titles start with `free_prefix` (e.g. "Open") are treated as available windows; events with `busy_prefix` (e.g. "Busy" for a booked slot) are treated as blocked. The tool subtracts busy blocks from free blocks to get truly available intervals.
+1. **Interpreting the calendar** -- Events whose titles start with `free_prefix` (e.g. "Open") are treated as available windows; events with `busy_prefix` (e.g. "Busy" for a booked slot) and bookings created by AVA are treated as blocked. The tool subtracts busy blocks from free blocks to get truly available intervals. See the compatibility and all-day rules below.
 2. **Duration and alignment** -- It returns only start times where a slot of the requested length (e.g. 30 minutes) fits, and aligns those starts to round times (e.g. :00 and :30 for 30-minute slots). That avoids half-off times and gives the AI a short list of times it can read out naturally (e.g. "I have 2pm, 2:30pm, and 3pm").
 
 So instead of the LLM having to fetch raw events and infer availability and alignment, this tool provides ready-to-say slot starts and supports creating the booking with `create_event` in the same flow.
@@ -110,7 +110,7 @@ Under `tools.google_calendar`:
 |-----|-------------|---------|
 | `enabled` | Turn the tool on or off. | `false` |
 | `free_prefix` | Prefix for events that define available windows (e.g. `"Open"`). When non-empty, the tool uses **title-prefix mode** and only events titled with this prefix count as available time. When blank (`''`) or absent, the tool uses **free/busy mode** (Google's native `freebusy.query()` API) intersected with a working-hours mask. The LLM may override the prefix string within title-prefix mode but cannot switch modes — the operator's setting wins. Now exposed in the Tools UI. | *(blank → free/busy mode)* |
-| `busy_prefix` | Prefix for events that define booked slots (e.g. `"Busy"`). Only used in title-prefix mode. The LLM can override this per-call. Now exposed in the Tools UI. | `"Busy"` (backend fallback, title-prefix mode only) |
+| `busy_prefix` | Prefix for events that define booked slots (e.g. `"Busy"`). Only used in title-prefix mode. The LLM can override this per-call. New AVA bookings remain busy regardless of this prefix or their title. Older unmarked bookings need the one-time repair below. Exposed in the Tools UI. | `"Busy"` (backend fallback, title-prefix mode only) |
 | `min_slot_duration_minutes` | Default appointment duration in minutes for `get_free_slots`. | `30` (backend default and Admin UI default for new entries) |
 | `max_slots_returned` | Cap on number of slot start-times surfaced to the LLM by `get_free_slots`. Set to `0` to disable the cap. | `3` |
 | `max_event_duration_minutes` | Refuse `create_event` calls that book a longer event. Set to `0` to disable the cap. | `240` |
@@ -134,6 +134,56 @@ determines mode and always wins over any LLM-supplied value:
 `min_slot_duration_minutes`, the backend falls back to `"Busy"` and `30`
 minutes respectively. `free_prefix` does NOT have a backend default — its
 absence is the explicit signal for free/busy mode.
+
+### Booking identity, all-day events, and older appointments
+
+New `create_event` bookings preserve the requested title and description and store
+`extendedProperties.private.ava_booking: "1"` on the target calendar event, with
+`transparency: "opaque"` (Busy). In title-prefix mode this marker makes the event
+busy even after another call, a tool reload, a restart, a title edit, or a prefix
+change. A booking titled `Open consultation` is still a booking, not a new Open
+window. This marker is internal; no new setting or credential is required.
+
+**One-time upgrade repair:** older bookings have no origin marker, so AVA cannot
+distinguish them from unrelated events intentionally ignored by title-prefix mode.
+In Google Calendar, review those appointments and prepend the configured busy
+prefix to each title (for example, `Consultation` → `Busy Consultation` when
+`busy_prefix: "Busy"`). Keep their dates, times and other event data intact.
+Use the effective prefix if your Agent instructions explicitly override it.
+AVA does not automatically rename, rewrite or backfill existing calendar events.
+Unrelated unprefixed events continue to be ignored. As a deliberate alternative,
+clear **Free prefix** to use native free/busy with working hours; review the whole
+calendar first because that mode uses Google's busy rules for all events, and
+Open-window titles no longer define availability.
+
+Both Open and Busy events may be timed or all-day. All-day `start.date` is local
+midnight in the configured calendar timezone; `end.date` is **exclusive** local
+midnight. Multi-day spans include intervening days and respect timezone changes
+across DST. Set each configured calendar timezone to match Google Calendar's
+timezone. Whole events returned by Google are clipped to the requested search
+range, including all-day Open windows. Invalid or missing bounds on relevant
+Open/Busy/marked events make that calendar unavailable for the search; repair the
+event and retry. Unrelated ignored events do not require valid availability bounds.
+
+Cancelled events do not create Open windows or busy blocks. Busy-prefix and marked
+events explicitly set to **Available** (`transparency: "transparent"`) do not
+block time. An Open window may itself be marked Available and still defines
+availability in title-prefix mode. These rules follow Google's
+[event bounds, status and transparency contract](https://developers.google.com/workspace/calendar/api/v3/reference/events).
+Native free/busy behavior and Agent calendar access restrictions are unchanged.
+
+Deleting or cancelling a booking releases its busy interval on the next search;
+another overlapping busy event may still block it. Correct slot classification
+does **not** reserve a suggested slot or prevent concurrent callers from booking
+the same time. On uncertain write errors, inspect the calendar before creating
+another event; availability searches do not retry writes.
+
+For rollback to a version without marker support, keep or add busy prefixes to
+appointments before relying on title-prefix availability. The marker does not
+alter titles, grant event ownership, or authorize deletion. Retain calendar
+credentials and Agent assignments through upgrade/rollback. Apply tool settings
+with the existing Tools **Save & Apply** flow; active calls keep their captured
+configuration and new calls use the applied settings.
 
 > **Behavior change in this release:** the backend default for
 > `min_slot_duration_minutes` was previously `15`; it is now `30`, matching
@@ -825,6 +875,7 @@ Finding available times:
 Booking:
 - Once the caller confirms a time, call create_event.
   - summary: "{caller_name} — {reason}" (e.g. "Jane Smith — Cleaning")
+    AVA marks new bookings as busy automatically; no title prefix is needed.
   - start_datetime / end_datetime: the agreed slot, aligned to the
     slot grid get_free_slots returned.
   - description: include the caller's phone number and any notes.

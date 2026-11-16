@@ -16,15 +16,17 @@ GOOGLE_CALENDAR_TZ for timezone (fallback: TZ).
 import asyncio
 import threading
 import structlog
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, Any
 from zoneinfo import ZoneInfo
 
 from src.tools.base import Tool, ToolDefinition, ToolCategory
 from src.tools.context import ToolExecutionContext, resolve_scoped_tool_config
 
-from src.tools.business._calendar_utils import build_slot_starts
-from src.tools.business.gcalendar import GCalendar, GoogleCalendarApiError, _get_timezone
+from src.tools.business._calendar_utils import build_slot_starts, build_zoned_slot_starts
+from src.tools.business.gcalendar import (
+    AVA_BOOKING_PROPERTY, AVA_BOOKING_VERSION, GCalendar, GoogleCalendarApiError, _get_timezone,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -79,7 +81,8 @@ _GOOGLE_CALENDAR_INPUT_SCHEMA = {
             "description": (
                 "OPTIONAL — DO NOT PASS unless the operator explicitly told you to use a "
                 "title-based busy scheme. Default behavior uses Google's native free/busy. "
-                "Only pass a value when the operator's prompt explicitly says so."
+                "Only pass a value when the operator's prompt explicitly says so. "
+                "AVA-created bookings block open windows independently of their titles."
             )
         },
         "duration": {
@@ -205,6 +208,41 @@ class GCalendarTool(Tool):
     def _get_calendar_tz_name(self, config: Dict[str, Any]) -> str:
         """Resolve calendar timezone: config timezone, then GOOGLE_CALENDAR_TZ, TZ, UTC."""
         return _get_timezone(config.get("timezone", ""))
+
+    def _event_interval(self, event: dict, tz_name: str) -> tuple[datetime, datetime]:
+        """Read Google bounds; all-day dates are calendar-local, end exclusive.
+
+        This parses API data, not LLM input. Respect actual offsets and the
+        event's explicit timeZone for offset-less timed bounds. Invalid relevant
+        events must fail the calendar query, never silently expose their time.
+        """
+        calendar_tz = ZoneInfo(tz_name)
+        bounds = []
+        kinds = []
+        for field in ("start", "end"):
+            bound = event.get(field)
+            if not isinstance(bound, dict):
+                raise ValueError("Missing event bound")
+            if bool(bound.get("date")) == bool(bound.get("dateTime")):
+                raise ValueError("Event bound requires exactly one date or dateTime")
+            if bound.get("date"):
+                raw_date = bound["date"]
+                parsed_date = date.fromisoformat(raw_date)
+                if parsed_date.isoformat() != raw_date:
+                    raise ValueError("Invalid all-day date")
+                dt = datetime.combine(parsed_date, datetime.min.time(), calendar_tz)
+                kinds.append("date")
+            else:
+                dt = self._parse_iso(bound["dateTime"])
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=ZoneInfo(bound["timeZone"]))
+                dt = dt.astimezone(calendar_tz)
+                kinds.append("dateTime")
+            bounds.append(dt)
+        start, end = bounds
+        if kinds[0] != kinds[1] or end.astimezone(timezone.utc) <= start.astimezone(timezone.utc):
+            raise ValueError("Invalid event interval")
+        return start, end
 
     def _get_or_create_cal(
         self,
@@ -632,6 +670,7 @@ class GCalendarTool(Tool):
 
                 def _available_intervals_from_events(
                     evts: list[dict],
+                    tz_name: str,
                 ) -> tuple[list[tuple[datetime, datetime]], int, int]:
                     """Compute available intervals from events.
 
@@ -642,17 +681,43 @@ class GCalendarTool(Tool):
                     """
                     free_blocks = []
                     busy_blocks = []
+                    range_start = self._normalize_datetime_to_calendar_tz(time_min, tz_name).astimezone(timezone.utc)
+                    range_end = self._normalize_datetime_to_calendar_tz(time_max, tz_name).astimezone(timezone.utc)
                     for e in evts:
-                        summary = e.get("summary", "").strip()
-                        start_str = e.get("start", {}).get("dateTime")
-                        end_str = e.get("end", {}).get("dateTime")
-                        if not start_str or not end_str:
+                        if e.get("status") == "cancelled":
                             continue
-                        start_dt = self._parse_iso(start_str)
-                        end_dt = self._parse_iso(end_str)
-                        if summary.startswith(free_prefix):
+                        summary = (e.get("summary") or "").strip()
+                        private_properties = (e.get("extendedProperties") or {}).get("private") or {}
+                        is_booking = (
+                            private_properties.get(AVA_BOOKING_PROPERTY) == AVA_BOOKING_VERSION
+                        )
+                        # Booking identity wins even if its title starts with
+                        # the Open prefix. Unmarked events keep legacy prefix
+                        # semantics; unrelated titles are deliberately ignored.
+                        is_free = not is_booking and summary.startswith(free_prefix)
+                        is_busy = is_booking or (not is_free and summary.startswith(busy_prefix))
+                        if not is_free and not is_busy:
+                            continue
+                        # Open windows may be transparent (recommended). Busy
+                        # events explicitly marked Available do not block time.
+                        if is_busy and e.get("transparency") == "transparent":
+                            continue
+                        try:
+                            start_dt, end_dt = self._event_interval(e, tz_name)
+                        except (ValueError, TypeError, KeyError, AttributeError) as err:
+                            raise GoogleCalendarApiError(
+                                "Calendar contains an invalid availability event interval; "
+                                "repair its start/end bounds before retrying."
+                            ) from err
+                        # Compare instants, including repeated wall-clock times
+                        # at DST fallback, before clipping/subtracting intervals.
+                        start_dt = max(start_dt.astimezone(timezone.utc), range_start)
+                        end_dt = min(end_dt.astimezone(timezone.utc), range_end)
+                        if end_dt <= start_dt:
+                            continue
+                        if is_free:
                             free_blocks.append((start_dt, end_dt))
-                        elif summary.startswith(busy_prefix):
+                        elif is_busy:
                             busy_blocks.append((start_dt, end_dt))
                     free_blocks.sort(key=lambda x: x[0])
                     busy_blocks.sort(key=lambda x: x[0])
@@ -802,7 +867,7 @@ class GCalendarTool(Tool):
                             bb_count = len(busy_blocks_dt)
                         else:
                             evts = await asyncio.to_thread(_list_events_for_key, k)
-                            intervals, fb_count, bb_count = _available_intervals_from_events(evts)
+                            intervals, fb_count, bb_count = _available_intervals_from_events(evts, _tz_for_key(k))
                     except GoogleCalendarApiError as api_err:
                         # Runtime failure (revoked share, expired DWD, network
                         # error, etc.) — fail per-calendar and let the existing
@@ -876,8 +941,6 @@ class GCalendarTool(Tool):
                 except (TypeError, ValueError):
                     duration_minutes = 30
 
-                slot_starts = build_slot_starts(available_intervals, duration_minutes)
-
                 # Pick the output timezone for the slot list. Priority:
                 # 1. Root tool config `timezone` (operator-pinned override)
                 # 2. The TARGET calendar's timezone (single-cal mode)
@@ -936,6 +999,10 @@ class GCalendarTool(Tool):
                 except (KeyError, TypeError):
                     output_tz = ZoneInfo("UTC")
                     output_tz_name = "UTC"
+                if availability_mode == "title_prefix":
+                    slot_starts = build_zoned_slot_starts(available_intervals, duration_minutes, output_tz)
+                else:
+                    slot_starts = build_slot_starts(available_intervals, duration_minutes)
                 # Surface to caller whether we had to fall back due to multi-cal
                 # TZ disagreement, so consumers (and tests) can distinguish.
                 # Multi-cal mode + selected calendars don't agree on a TZ.
@@ -944,7 +1011,7 @@ class GCalendarTool(Tool):
                 # apply in legacy_single mode (only one calendar exists).
                 multi_cal_tz_disagreement = len(tz_set) > 1 and not legacy_single
                 slot_starts = [t.astimezone(output_tz) for t in slot_starts]
-                slot_starts.sort()
+                slot_starts.sort(key=lambda t: t.astimezone(timezone.utc))
 
                 # Cap how many slots are surfaced to the LLM. Without a cap, get_free_slots
                 # over a multi-day range can return 20-50+ slots; the LLM then dutifully
@@ -966,7 +1033,10 @@ class GCalendarTool(Tool):
                 # bug seen on ElevenLabs/Claude where the agent picked 11 AM correctly
                 # but booked end_datetime at 18:00 (end of working hours) instead of
                 # 11:30. Showing "09:00–09:30" makes the duration unambiguous.
-                slot_pairs = [(t, t + timedelta(minutes=duration_minutes)) for t in slot_starts]
+                slot_pairs = [
+                    (t, (t.astimezone(timezone.utc) + timedelta(minutes=duration_minutes)).astimezone(output_tz))
+                    for t in slot_starts
+                ]
                 results = [
                     f"{s.strftime('%Y-%m-%d %H:%M')}–{e.strftime('%H:%M')}"
                     for (s, e) in slot_pairs

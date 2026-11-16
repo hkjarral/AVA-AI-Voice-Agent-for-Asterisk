@@ -188,3 +188,37 @@ def build_slot_starts(
             starts.append(cursor)
             cursor += duration
     return starts
+
+
+def build_zoned_slot_starts(
+    intervals: Iterable[tuple[datetime, datetime]],
+    duration_minutes: int,
+    tz: ZoneInfo,
+) -> list[datetime]:
+    """Align local starts while checking elapsed duration across DST changes.
+
+    All-day windows can span a clock change: nonexistent local times are not
+    slots, and repeated times are distinct instants. Generate the local grid
+    with both folds, round-trip through UTC, then check complete slot inclusion.
+    """
+    duration = timedelta(minutes=duration_minutes)
+    starts: set[datetime] = set()
+    for start, end in intervals:
+        start_utc, end_utc = to_utc(start), to_utc(end)
+        if end_utc <= start_utc:
+            continue
+        day = start_utc.astimezone(tz).replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
+        last_day = end_utc.astimezone(tz).replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
+        while day <= last_day:
+            next_day = day + timedelta(days=1)
+            wall = day
+            while wall < next_day:
+                for fold in (0, 1):
+                    candidate = wall.replace(tzinfo=tz, fold=fold).astimezone(timezone.utc)
+                    if candidate.astimezone(tz).replace(tzinfo=None) != wall:
+                        continue
+                    if start_utc <= candidate and candidate + duration <= end_utc:
+                        starts.add(candidate)
+                wall += duration
+            day = next_day
+    return [start.astimezone(tz) for start in sorted(starts)]

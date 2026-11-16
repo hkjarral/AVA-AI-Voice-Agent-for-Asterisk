@@ -3339,7 +3339,12 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                     Configures how <code className="px-1 bg-muted rounded">get_free_slots</code> determines availability.
                                     <strong className="block mt-1"> Free prefix non-empty</strong> →
                                     <em> title-prefix mode</em>: the tool scans your calendar for events titled with this prefix
-                                    (e.g. "Open 9-5") and treats those windows as available, minus events titled with the busy prefix.
+                                    (e.g. "Open 9-5") and treats those windows as available, minus busy-prefix events and
+                                    bookings created by AVA. Timed and all-day events are supported; cancelled events and
+                                    busy events marked Available do not block time.
+                                    <span className="block mt-1">Older AVA bookings have no booking marker. In Google Calendar,
+                                        add your busy prefix to each older appointment title once (e.g. &quot;Busy Consultation&quot;).
+                                        Unrelated titles remain ignored in title-prefix mode.</span>
                                     <strong className="block mt-1"> Free prefix blank or unset</strong> →
                                     <em> free/busy mode</em>: the tool uses Google's native free/busy API intersected with a
                                     working-hours mask (Mon–Fri 09:00–17:00 by default; tunable via YAML).
@@ -3364,7 +3369,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                         value={config.google_calendar?.busy_prefix ?? ''}
                                         onChange={(e) => updateNestedConfig('google_calendar', 'busy_prefix', e.target.value)}
                                         placeholder="Busy"
-                                        tooltip="Only used in title-prefix mode. Events titled with this prefix block availability inside the open windows. Default: 'Busy'. Ignored when Free prefix is blank (free/busy mode uses any non-prefix-matching event as a busy block via Google's native API)."
+                                        tooltip="Only used in title-prefix mode. Events titled with this prefix and new AVA bookings block availability inside open windows, unless cancelled or marked Available. Default: 'Busy'. Add this prefix to older unmarked AVA appointments once. Unrelated titles stay ignored. With Free prefix blank, Google's native free/busy rules apply instead."
                                     />
                                     <FormInput
                                         label="Default slot duration (minutes)"
