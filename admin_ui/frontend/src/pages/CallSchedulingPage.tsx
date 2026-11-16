@@ -1977,7 +1977,7 @@ const CallSchedulingPage = () => {
                                     <div className="border rounded-lg p-3 space-y-2">
                                         <div className="font-medium text-sm">Features</div>
                                         <FormLabel
-                                            tooltip="When enabled, MACHINE/NOTSURE results play the campaign voicemail recording (if set)."
+                                            tooltip="When enabled, a voicemail recording is required before Start. When disabled, MACHINE/NOTSURE results hang up without playback and are recorded as machine_detected."
                                             className="mb-0"
                                         >
                                             <span className="flex items-center gap-2 text-sm">

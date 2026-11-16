@@ -32,6 +32,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import structlog
 
+from .outbound_config import validate_voicemail_recording
+
 logger = structlog.get_logger(__name__)
 
 try:
@@ -547,16 +549,21 @@ class OutboundStore:
             with self._lock:
                 conn = self._get_connection()
                 try:
+                    # Serialize read/validate/write across separate Admin/Engine
+                    # store instances as well as threads. Start takes the same lock.
+                    conn.execute("BEGIN IMMEDIATE")
+                    current = conn.execute(
+                        "SELECT * FROM outbound_campaigns WHERE id=?", (campaign_id,)
+                    ).fetchone()
+                    if current is None:
+                        raise KeyError("campaign not found")
+                    merged = {**dict(current), **updates}
+                    if str(current["status"]).lower() == "running":
+                        validate_voicemail_recording(merged)
                     if (
                         "default_context" in updates
                         and "agent_routing_method" not in updates
                     ):
-                        current = conn.execute(
-                            "SELECT default_context FROM outbound_campaigns WHERE id=?",
-                            (campaign_id,),
-                        ).fetchone()
-                        if current is None:
-                            raise KeyError("campaign not found")
                         if _as_str(updates["default_context"]).strip() != _as_str(
                             current["default_context"]
                         ).strip():
@@ -592,6 +599,14 @@ class OutboundStore:
             with self._lock:
                 conn = self._get_connection()
                 try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    current = conn.execute(
+                        "SELECT * FROM outbound_campaigns WHERE id=?", (campaign_id,)
+                    ).fetchone()
+                    if current is None:
+                        raise KeyError("campaign not found")
+                    if status == "running":
+                        validate_voicemail_recording(dict(current))
                     cur = conn.execute(
                         "UPDATE outbound_campaigns SET status = ?, updated_at_utc = ? WHERE id = ?",
                         (status, now, campaign_id),
@@ -660,7 +675,9 @@ class OutboundStore:
         payload["name"] = f"{original.get('name') or 'Campaign'} (Copy)"
         return await self.create_campaign(payload)
 
-    async def cleanup_stale_attempts_and_leads(self, *, stale_seconds: int = 120) -> Dict[str, int]:
+    async def cleanup_stale_attempts_and_leads(
+        self, *, stale_seconds: int = 120, exclude_attempt_ids: Optional[List[str]] = None,
+    ) -> Dict[str, int]:
         """
         Best-effort cleanup for attempts/leads stuck due to restarts or pre-answer failures.
 
@@ -670,15 +687,48 @@ class OutboundStore:
         if not self._enabled:
             return {"attempts_closed": 0, "leads_failed": 0}
 
+        excluded = set(exclude_attempt_ids or [])
+
         def _sync():
             now = _utcnow_iso()
             cutoff_dt = datetime.now(timezone.utc) - timedelta(seconds=max(10, int(stale_seconds or 120)))
             attempts_closed = 0
             leads_failed = 0
+            leads_repaired = 0
 
             with self._lock:
                 conn = self._get_connection()
                 try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    terminal_leads = conn.execute(
+                        """
+                        SELECT l.id AS lead_id, a.id AS attempt_id, a.outcome
+                        FROM outbound_leads l JOIN outbound_attempts a ON a.lead_id=l.id
+                        WHERE l.state IN ('dialing','amd_pending','in_progress')
+                          AND l.leased_until_utc IS NULL
+                          AND a.ended_at_utc IS NOT NULL
+                          AND (l.last_attempt_at_utc=a.started_at_utc
+                               OR (l.state IN ('amd_pending','in_progress')
+                                   AND l.updated_at_utc<=a.ended_at_utc
+                                   AND (l.last_attempt_at_utc IS NULL OR l.last_attempt_at_utc<=a.ended_at_utc)))
+                          AND a.outcome IN ('voicemail_dropped','machine_detected','error','no_answer','busy','congestion','chanunavail','canceled')
+                          AND a.rowid = (
+                              SELECT latest.rowid FROM outbound_attempts latest
+                              WHERE latest.lead_id=l.id
+                              ORDER BY latest.started_at_utc DESC, latest.rowid DESC LIMIT 1
+                          )
+                        """
+                    ).fetchall()
+                    for terminal in terminal_leads:
+                        if terminal["attempt_id"] in excluded:
+                            continue
+                        state = "completed" if terminal["outcome"] in ("voicemail_dropped", "machine_detected") else "failed"
+                        cur = conn.execute(
+                            "UPDATE outbound_leads SET state=?, last_outcome=?, leased_until_utc=NULL, updated_at_utc=? WHERE id=?",
+                            (state, terminal["outcome"], now, terminal["lead_id"]),
+                        )
+                        leads_failed += int(cur.rowcount or 0) if state == "failed" else 0
+                        leads_repaired += int(cur.rowcount or 0)
                     rows = conn.execute(
                         """
                         SELECT id, lead_id, started_at_utc
@@ -687,6 +737,8 @@ class OutboundStore:
                         """
                     ).fetchall()
                     for r in rows:
+                        if str(r["id"]) in excluded:
+                            continue
                         started_raw = str(r["started_at_utc"] or "")
                         try:
                             started_dt = datetime.fromisoformat(started_raw.replace("Z", "+00:00"))
@@ -720,8 +772,21 @@ class OutboundStore:
                                 updated_at_utc=?
                             WHERE id = ?
                               AND state IN ('dialing','leased','amd_pending','in_progress')
+                              AND EXISTS (
+                                SELECT 1 FROM outbound_attempts a
+                                WHERE a.id=? AND a.lead_id=outbound_leads.id
+                                  AND a.rowid=(SELECT rowid FROM outbound_attempts WHERE lead_id=outbound_leads.id ORDER BY started_at_utc DESC,rowid DESC LIMIT 1)
+                                  AND (
+                                    (outbound_leads.state='leased' AND outbound_leads.updated_at_utc<=a.started_at_utc)
+                                    OR (outbound_leads.leased_until_utc IS NULL AND
+                                        (outbound_leads.last_attempt_at_utc=a.started_at_utc
+                                         OR (outbound_leads.state IN ('amd_pending','in_progress')
+                                             AND outbound_leads.updated_at_utc<=a.ended_at_utc
+                                             AND (outbound_leads.last_attempt_at_utc IS NULL OR outbound_leads.last_attempt_at_utc<=a.ended_at_utc))))
+                                  )
+                              )
                             """,
-                            (now, lead_id),
+                            (now, lead_id, attempt_id),
                         )
                         leads_failed += int(cur.rowcount or 0)
 
@@ -729,7 +794,7 @@ class OutboundStore:
                 finally:
                     conn.close()
 
-            return {"attempts_closed": attempts_closed, "leads_failed": leads_failed}
+            return {"attempts_closed": attempts_closed, "leads_failed": leads_failed, "leads_repaired": leads_repaired}
 
         return await self._run(_sync)
 
@@ -824,7 +889,7 @@ class OutboundStore:
 
         return await self._run(_sync)
 
-    async def mark_lead_dialing(self, lead_id: str) -> bool:
+    async def mark_lead_dialing(self, lead_id: str, *, attempt_id: Optional[str] = None) -> bool:
         """Transition a lead from leased -> dialing and increment attempt_count."""
         if not self._enabled:
             return False
@@ -834,6 +899,17 @@ class OutboundStore:
             with self._lock:
                 conn = self._get_connection()
                 try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    generation = now
+                    if attempt_id:
+                        attempt = conn.execute(
+                            "SELECT started_at_utc FROM outbound_attempts WHERE id=? AND lead_id=? AND ended_at_utc IS NULL "
+                            "AND rowid=(SELECT rowid FROM outbound_attempts WHERE lead_id=? ORDER BY started_at_utc DESC,rowid DESC LIMIT 1)",
+                            (attempt_id, lead_id, lead_id),
+                        ).fetchone()
+                        if attempt is None:
+                            return False
+                        generation = attempt["started_at_utc"]
                     cur = conn.execute(
                         """
                         UPDATE outbound_leads
@@ -844,7 +920,7 @@ class OutboundStore:
                             updated_at_utc=?
                         WHERE id=? AND state='leased'
                         """,
-                        (now, now, lead_id),
+                        (generation, now, lead_id),
                     )
                     conn.commit()
                     return cur.rowcount > 0
@@ -859,6 +935,8 @@ class OutboundStore:
         *,
         state: str,
         last_outcome: Optional[str] = None,
+        only_if_active: bool = False,
+        expected_attempt_id: Optional[str] = None,
     ) -> None:
         if not self._enabled:
             return
@@ -890,8 +968,22 @@ class OutboundStore:
                             leased_until_utc=NULL,
                             updated_at_utc=?
                         WHERE id=?
-                        """,
-                        (state, last_outcome, now, lead_id),
+                        """ + (" AND state IN ('dialing','amd_pending','in_progress') AND leased_until_utc IS NULL" if only_if_active else "") + (
+                            """
+                            AND EXISTS (
+                                SELECT 1 FROM outbound_attempts a
+                                WHERE a.id=? AND a.lead_id=outbound_leads.id AND a.outcome=? AND a.ended_at_utc IS NOT NULL
+                                  AND a.rowid=(SELECT rowid FROM outbound_attempts WHERE lead_id=outbound_leads.id ORDER BY started_at_utc DESC,rowid DESC LIMIT 1)
+                                  AND (
+                                    outbound_leads.last_attempt_at_utc=a.started_at_utc
+                                    OR (outbound_leads.state IN ('amd_pending','in_progress')
+                                        AND outbound_leads.updated_at_utc<=a.ended_at_utc
+                                        AND (outbound_leads.last_attempt_at_utc IS NULL OR outbound_leads.last_attempt_at_utc<=a.ended_at_utc))
+                                  )
+                            )
+                            """ if expected_attempt_id is not None else ""
+                        ),
+                        (state, last_outcome, now, lead_id, *([expected_attempt_id, last_outcome] if expected_attempt_id is not None else [])),
                     )
                     conn.commit()
                 finally:
@@ -1688,6 +1780,7 @@ class OutboundStore:
         provider: Optional[str] = None,
         call_history_call_id: Optional[str] = None,
         error_message: Optional[str] = None,
+        only_if_unfinished: bool = False,
     ) -> None:
         if not self._enabled:
             return
@@ -1727,7 +1820,7 @@ class OutboundStore:
                             call_history_call_id=?,
                             error_message=?
                         WHERE id=?
-                        """,
+                        """ + (" AND ended_at_utc IS NULL" if only_if_unfinished else ""),
                         (
                             now,
                             duration_seconds,

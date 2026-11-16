@@ -4,10 +4,10 @@ Google Calendar tool for Asterisk AI Voice Agent.
 Supports listing events, getting a single event, creating events, deleting events, and finding
 free appointment slots (with configurable duration and duration-aligned slot starts).
 
-Datetime handling is DST-aware: when a datetime string has a TZ tail (e.g. Z or +00:00),
-the tail is removed and the date/time is interpreted as local time in the calendar timezone
-(GOOGLE_CALENDAR_TZ, or TZ env, or UTC)—same as when there is no tail. List/time-range APIs
-receive RFC3339 with the correct offset for that zone.
+Datetime handling is DST-aware: strings with Z or an explicit offset represent instants
+and are converted to the target calendar timezone. Naive strings remain calendar-local
+(GOOGLE_CALENDAR_TZ, or TZ env, or UTC). Google receives RFC3339 timestamps with offsets,
+including event creation so repeated DST hours retain their intended instant.
 
 Environment: GOOGLE_CALENDAR_CREDENTIALS (path to service account JSON);
 GOOGLE_CALENDAR_TZ for timezone (fallback: TZ).
@@ -16,17 +16,32 @@ GOOGLE_CALENDAR_TZ for timezone (fallback: TZ).
 import asyncio
 import threading
 import structlog
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, Any
 from zoneinfo import ZoneInfo
 
 from src.tools.base import Tool, ToolDefinition, ToolCategory
 from src.tools.context import ToolExecutionContext, resolve_scoped_tool_config
 
-from src.tools.business._calendar_utils import build_slot_starts
-from src.tools.business.gcalendar import GCalendar, GoogleCalendarApiError, _get_timezone
+from src.tools.business._calendar_utils import (
+    build_zoned_slot_starts,
+    intersect_intervals,
+    normalize_to_tz,
+    subtract_busy,
+    to_utc,
+    union_intervals,
+    working_hours_mask,
+)
+from src.tools.business.gcalendar import (
+    AVA_BOOKING_PROPERTY, AVA_BOOKING_VERSION, GCalendar, GoogleCalendarApiError, _get_timezone,
+)
 
 logger = structlog.get_logger(__name__)
+
+
+def utc_now() -> datetime:
+    """Clock seam for deterministic tests of the final scheduling decision."""
+    return datetime.now(timezone.utc)
 
 # Schema for Google Live / Vertex and OpenAI (input_schema is provider-agnostic)
 _GOOGLE_CALENDAR_INPUT_SCHEMA = {
@@ -50,18 +65,19 @@ _GOOGLE_CALENDAR_INPUT_SCHEMA = {
             "type": "string",
             "description": (
                 "ISO 8601 start time. Required for list_events and get_free_slots. "
-                "Tip: any TZ tail (Z or ±HH:MM) is stripped and the wall-clock is "
-                "interpreted as the calendar's local timezone. Pass a naive string "
-                "like '2026-04-25T09:00:00' to be unambiguous."
+                "get_free_slots returns only starts strictly after the current time. "
+                "Z or an explicit offset (±HH:MM) represents an instant, converted to each "
+                "target calendar timezone. Without an offset, the time is calendar-local "
+                "(e.g. '2026-04-25T09:00:00'). For a shared absolute range across "
+                "different calendar timezones, include Z or an offset."
             )
         },
         "time_max": {
             "type": "string",
             "description": (
                 "ISO 8601 end time. Required for list_events and get_free_slots. "
-                "Same timezone behavior as time_min: TZ tail is stripped, wall-clock "
-                "treated as calendar-local. Pass naive '2026-04-28T17:00:00' to be "
-                "unambiguous."
+                "Same timezone behavior as time_min: Z/offset inputs are instants; "
+                "naive inputs are local to each target calendar."
             )
         },
         "free_prefix": {
@@ -79,7 +95,8 @@ _GOOGLE_CALENDAR_INPUT_SCHEMA = {
             "description": (
                 "OPTIONAL — DO NOT PASS unless the operator explicitly told you to use a "
                 "title-based busy scheme. Default behavior uses Google's native free/busy. "
-                "Only pass a value when the operator's prompt explicitly says so."
+                "Only pass a value when the operator's prompt explicitly says so. "
+                "AVA-created bookings block open windows independently of their titles."
             )
         },
         "duration": {
@@ -102,14 +119,19 @@ _GOOGLE_CALENDAR_INPUT_SCHEMA = {
             "type": "string",
             "description": (
                 "ISO 8601 start time for the new event. Required for create_event. "
-                "Use the calendar's local time (the slot strings returned by "
-                "get_free_slots are already in calendar-local time; pass them as-is)."
+                "Must be strictly in the future. On past_booking, call get_free_slots "
+                "again and confirm a future time with the caller before retrying. "
+                "Pass the chosen slots_with_end.start from get_free_slots as-is, including "
+                "its offset. Z/offset inputs are instants converted to the target calendar "
+                "timezone; naive inputs are calendar-local."
             )
         },
         "end_datetime": {
             "type": "string",
             "description": (
                 "ISO 8601 end time for the new event. Required for create_event. "
+                "Pass the chosen slots_with_end.end as-is, including its offset; "
+                "timezone semantics match start_datetime. "
                 "MUST equal start_datetime PLUS the meeting duration (typically 30 "
                 "minutes — same as the slot grid returned by get_free_slots). DO NOT "
                 "extend end_datetime to end-of-day, end-of-availability, or the start "
@@ -202,9 +224,62 @@ class GCalendarTool(Tool):
             iso_str = iso_str[:-1] + '+00:00'
         return datetime.fromisoformat(iso_str)
 
+    def _parse_event_datetime(self, bound: dict, calendar_tz_name: str) -> datetime:
+        """Resolve a timed API bound as an instant, never as implicit UTC.
+
+        Explicit offsets are authoritative. Offsetless event times use their
+        endpoint timeZone, falling back to the target calendar zone. Bad API
+        data makes that calendar unavailable instead of exposing a busy slot.
+        """
+        try:
+            raw = bound["dateTime"]
+            if not isinstance(raw, str) or not any(sep in raw for sep in ("T", "t", " ")) or bound.get("date"):
+                raise ValueError("Invalid timed event bound")
+            parsed = self._parse_iso(raw)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=ZoneInfo(bound.get("timeZone") or calendar_tz_name))
+            return parsed.astimezone(timezone.utc)
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise GoogleCalendarApiError(
+                "Calendar contains an invalid timed availability event bound or timezone; "
+                "repair it before retrying."
+            ) from exc
+
     def _get_calendar_tz_name(self, config: Dict[str, Any]) -> str:
         """Resolve calendar timezone: config timezone, then GOOGLE_CALENDAR_TZ, TZ, UTC."""
         return _get_timezone(config.get("timezone", ""))
+
+    def _event_interval(self, event: dict, tz_name: str) -> tuple[datetime, datetime]:
+        """Read Google bounds; all-day dates are calendar-local, end exclusive.
+
+        This parses API data, not LLM input. Respect actual offsets and the
+        event's explicit timeZone for offset-less timed bounds. Invalid relevant
+        events must fail the calendar query, never silently expose their time.
+        """
+        calendar_tz = ZoneInfo(tz_name)
+        bounds = []
+        kinds = []
+        for field in ("start", "end"):
+            bound = event.get(field)
+            if not isinstance(bound, dict):
+                raise ValueError("Missing event bound")
+            if bool(bound.get("date")) == bool(bound.get("dateTime")):
+                raise ValueError("Event bound requires exactly one date or dateTime")
+            if bound.get("date"):
+                raw_date = bound["date"]
+                parsed_date = date.fromisoformat(raw_date)
+                if parsed_date.isoformat() != raw_date:
+                    raise ValueError("Invalid all-day date")
+                dt = datetime.combine(parsed_date, datetime.min.time(), calendar_tz)
+                kinds.append("date")
+            else:
+                dt = self._parse_event_datetime(bound, tz_name)
+                kinds.append("dateTime")
+            bounds.append(dt)
+        start, end = bounds
+        if kinds[0] != kinds[1] or end.astimezone(timezone.utc) <= start.astimezone(timezone.utc):
+            raise ValueError("Invalid event interval")
+        return start, end
 
     def _get_or_create_cal(
         self,
@@ -281,36 +356,14 @@ class GCalendarTool(Tool):
     def _normalize_datetime_to_calendar_tz(
         self, dt_str: str, calendar_tz_name: str
     ) -> datetime:
+        """Convert aware inputs as instants; interpret naive inputs as calendar-local.
+
+        The caller resolves GOOGLE_CALENDAR_TZ / TZ; invalid zones fall back to UTC.
         """
-        Parse datetime string as local time in the calendar timezone (DST-aware).
-
-        If dt_str has a TZ tail (Z or ±HH:MM): the tail is removed and the date/time
-        is interpreted as local time in the calendar zone (same as when there is no tail).
-        So "2025-03-15T19:00:00Z" is treated as 19:00 in the calendar zone, not as 19:00 UTC.
-
-        Uses GOOGLE_CALENDAR_TZ / TZ for the calendar zone; falls back to UTC if invalid.
-        """
-        dt_str = (dt_str or "").strip()
-        if not dt_str:
-            raise ValueError("Empty datetime string")
-        # Normalize Z for parsing, then parse
-        if dt_str.upper().endswith("Z"):
-            dt_str = dt_str[:-1] + "+00:00"
         try:
-            parsed = datetime.fromisoformat(dt_str)
-        except ValueError as e:
-            raise ValueError(f"Invalid datetime string: {dt_str}") from e
-
-        try:
-            cal_tz = ZoneInfo(calendar_tz_name)
-        except Exception:
-            cal_tz = ZoneInfo("UTC")
-
-        # If there was a TZ tail, remove it: use only the wall-clock time (naive)
-        # and interpret that as local time in the calendar zone (same as no tail).
-        if parsed.tzinfo is not None:
-            parsed = parsed.replace(tzinfo=None)
-        return parsed.replace(tzinfo=cal_tz)
+            return normalize_to_tz(dt_str, calendar_tz_name)
+        except ValueError as exc:
+            raise ValueError(f"Invalid datetime string: {dt_str}") from exc
 
     def _get_config(self, context: ToolExecutionContext) -> Dict[str, Any]:
         """
@@ -544,35 +597,6 @@ class GCalendarTool(Tool):
                         return [], tz_name
                     return cal_i.freebusy_query(time_min_dt.isoformat(), time_max_dt.isoformat()), tz_name
 
-                def _working_hours_mask(
-                    range_start: datetime, range_end: datetime, tz_name: str,
-                    work_start_hour: int, work_end_hour: int, work_days: set,
-                ) -> list[tuple[datetime, datetime]]:
-                    """Generate working-hour intervals within [range_start, range_end].
-
-                    work_days uses Python's weekday() convention (Mon=0..Sun=6). Both
-                    bounds are inclusive on the day, exclusive on the hour. Crossing
-                    DST is handled by ZoneInfo via .astimezone().
-                    """
-                    try:
-                        tz = ZoneInfo(tz_name)
-                    except (KeyError, TypeError):
-                        tz = ZoneInfo("UTC")
-                    rs = range_start.astimezone(tz)
-                    re_ = range_end.astimezone(tz)
-                    out: list[tuple[datetime, datetime]] = []
-                    cur_day = rs.replace(hour=0, minute=0, second=0, microsecond=0)
-                    while cur_day <= re_:
-                        if cur_day.weekday() in work_days:
-                            day_open = cur_day.replace(hour=work_start_hour)
-                            day_close = cur_day.replace(hour=work_end_hour) if work_end_hour < 24 else (cur_day + timedelta(days=1))
-                            seg_s = max(day_open, rs)
-                            seg_e = min(day_close, re_)
-                            if seg_s < seg_e:
-                                out.append((seg_s, seg_e))
-                        cur_day = cur_day + timedelta(days=1)
-                    return out
-
                 # Working hours config (only used in freebusy mode). Conservative
                 # business-hours default. Operators can override via tool config.
                 # Future PR: surface in UI; for now accept YAML overrides.
@@ -632,6 +656,7 @@ class GCalendarTool(Tool):
 
                 def _available_intervals_from_events(
                     evts: list[dict],
+                    tz_name: str,
                 ) -> tuple[list[tuple[datetime, datetime]], int, int]:
                     """Compute available intervals from events.
 
@@ -642,67 +667,45 @@ class GCalendarTool(Tool):
                     """
                     free_blocks = []
                     busy_blocks = []
+                    range_start = self._normalize_datetime_to_calendar_tz(time_min, tz_name).astimezone(timezone.utc)
+                    range_end = self._normalize_datetime_to_calendar_tz(time_max, tz_name).astimezone(timezone.utc)
                     for e in evts:
-                        summary = e.get("summary", "").strip()
-                        start_str = e.get("start", {}).get("dateTime")
-                        end_str = e.get("end", {}).get("dateTime")
-                        if not start_str or not end_str:
+                        if e.get("status") == "cancelled":
                             continue
-                        start_dt = self._parse_iso(start_str)
-                        end_dt = self._parse_iso(end_str)
-                        if summary.startswith(free_prefix):
+                        summary = (e.get("summary") or "").strip()
+                        private_properties = (e.get("extendedProperties") or {}).get("private") or {}
+                        is_booking = (
+                            private_properties.get(AVA_BOOKING_PROPERTY) == AVA_BOOKING_VERSION
+                        )
+                        # Booking identity wins even if its title starts with
+                        # the Open prefix. Unmarked events keep legacy prefix
+                        # semantics; unrelated titles are deliberately ignored.
+                        is_free = not is_booking and summary.startswith(free_prefix)
+                        is_busy = is_booking or (not is_free and summary.startswith(busy_prefix))
+                        if not is_free and not is_busy:
+                            continue
+                        # Open windows may be transparent (recommended). Busy
+                        # events explicitly marked Available do not block time.
+                        if is_busy and e.get("transparency") == "transparent":
+                            continue
+                        try:
+                            start_dt, end_dt = self._event_interval(e, tz_name)
+                        except (ValueError, TypeError, KeyError, AttributeError) as err:
+                            raise GoogleCalendarApiError(
+                                "Calendar contains an invalid availability event interval; "
+                                "repair its start/end bounds before retrying."
+                            ) from err
+                        # Compare instants, including repeated wall-clock times
+                        # at DST fallback, before clipping/subtracting intervals.
+                        start_dt = max(start_dt.astimezone(timezone.utc), range_start)
+                        end_dt = min(end_dt.astimezone(timezone.utc), range_end)
+                        if end_dt <= start_dt:
+                            continue
+                        if is_free:
                             free_blocks.append((start_dt, end_dt))
-                        elif summary.startswith(busy_prefix):
+                        elif is_busy:
                             busy_blocks.append((start_dt, end_dt))
-                    free_blocks.sort(key=lambda x: x[0])
-                    busy_blocks.sort(key=lambda x: x[0])
-                    available: list[tuple[datetime, datetime]] = []
-                    for f_start, f_end in free_blocks:
-                        current_start = f_start
-                        for b_start, b_end in busy_blocks:
-                            if b_end <= current_start or b_start >= f_end:
-                                continue
-                            if current_start < b_start:
-                                available.append((current_start, b_start))
-                            current_start = max(current_start, b_end)
-                        if current_start < f_end:
-                            available.append((current_start, f_end))
-                    return available, len(free_blocks), len(busy_blocks)
-
-                def _union(intervals: list[list[tuple[datetime, datetime]]]) -> list[tuple[datetime, datetime]]:
-                    merged: list[tuple[datetime, datetime]] = []
-                    for lst in intervals:
-                        for s, e in lst:
-                            merged.append((s, e))
-                    if not merged:
-                        return []
-                    merged.sort(key=lambda x: x[0])
-                    out_iv: list[tuple[datetime, datetime]] = []
-                    cur_s, cur_e = merged[0]
-                    for s, e in merged[1:]:
-                        if s <= cur_e:
-                            cur_e = max(cur_e, e)
-                        else:
-                            out_iv.append((cur_s, cur_e))
-                            cur_s, cur_e = s, e
-                    out_iv.append((cur_s, cur_e))
-                    return out_iv
-
-                def _intersect(a: list[tuple[datetime, datetime]], b: list[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
-                    i, j = 0, 0
-                    res: list[tuple[datetime, datetime]] = []
-                    a_sorted = sorted(a, key=lambda x: x[0])
-                    b_sorted = sorted(b, key=lambda x: x[0])
-                    while i < len(a_sorted) and j < len(b_sorted):
-                        s = max(a_sorted[i][0], b_sorted[j][0])
-                        e = min(a_sorted[i][1], b_sorted[j][1])
-                        if s < e:
-                            res.append((s, e))
-                        if a_sorted[i][1] < b_sorted[j][1]:
-                            i += 1
-                        else:
-                            j += 1
-                    return res
+                    return subtract_busy(free_blocks, busy_blocks), len(free_blocks), len(busy_blocks)
 
                 # Gather intervals per selected calendar (or single target)
                 keys_to_use: list[str]
@@ -753,7 +756,7 @@ class GCalendarTool(Tool):
                             busy_isos, tz_name_k = await asyncio.to_thread(_freebusy_for_key, k)
                             tn_min = self._normalize_datetime_to_calendar_tz(time_min, tz_name_k)
                             tn_max = self._normalize_datetime_to_calendar_tz(time_max, tz_name_k)
-                            free_blocks_dt = _working_hours_mask(
+                            free_blocks_dt = working_hours_mask(
                                 tn_min, tn_max, tz_name_k,
                                 work_start_hour, work_end_hour, work_days_set,
                             )
@@ -785,24 +788,12 @@ class GCalendarTool(Tool):
                                 continue
                             # Subtract busy from each working-hours block (mirrors the
                             # title-prefix free-vs-busy intersection logic).
-                            free_blocks_dt.sort(key=lambda x: x[0])
-                            busy_blocks_dt.sort(key=lambda x: x[0])
-                            intervals: list[tuple[datetime, datetime]] = []
-                            for f_start, f_end in free_blocks_dt:
-                                current_start = f_start
-                                for b_start, b_end in busy_blocks_dt:
-                                    if b_end <= current_start or b_start >= f_end:
-                                        continue
-                                    if current_start < b_start:
-                                        intervals.append((current_start, b_start))
-                                    current_start = max(current_start, b_end)
-                                if current_start < f_end:
-                                    intervals.append((current_start, f_end))
+                            intervals = subtract_busy(free_blocks_dt, busy_blocks_dt)
                             fb_count = len(free_blocks_dt)
                             bb_count = len(busy_blocks_dt)
                         else:
                             evts = await asyncio.to_thread(_list_events_for_key, k)
-                            intervals, fb_count, bb_count = _available_intervals_from_events(evts)
+                            intervals, fb_count, bb_count = _available_intervals_from_events(evts, _tz_for_key(k))
                     except GoogleCalendarApiError as api_err:
                         # Runtime failure (revoked share, expired DWD, network
                         # error, etc.) — fail per-calendar and let the existing
@@ -856,12 +847,12 @@ class GCalendarTool(Tool):
                     return out
 
                 if len(per_cal_intervals) == 1 or aggregate_mode == "any":
-                    available_intervals = _union(per_cal_intervals)
+                    available_intervals = union_intervals(per_cal_intervals)
                 else:
                     # intersect across all calendars (default)
                     cur = per_cal_intervals[0]
                     for nxt in per_cal_intervals[1:]:
-                        cur = _intersect(cur, nxt)
+                        cur = intersect_intervals(cur, nxt)
                     available_intervals = cur
 
                 # Duration: from parameter "duration" (minutes), fallback to config,
@@ -876,21 +867,9 @@ class GCalendarTool(Tool):
                 except (TypeError, ValueError):
                     duration_minutes = 30
 
-                slot_starts = build_slot_starts(available_intervals, duration_minutes)
-
-                # Pick the output timezone for the slot list. Priority:
-                # 1. Root tool config `timezone` (operator-pinned override)
-                # 2. The TARGET calendar's timezone (single-cal mode)
-                # 3. UTC fallback
-                # CodeRabbit critical finding: in multi-calendar configs where
-                # selected calendars have DIFFERENT timezones, formatting slots
-                # in `keys_to_use[0]`'s TZ misleads the LLM — it picks a slot,
-                # then create_event lands on a different calendar with a
-                # different TZ, and the same naive timestamp resolves to a
-                # different wall-clock time. We avoid that footgun by emitting
-                # slots in UTC when calendars disagree on TZ. Single-cal and
-                # all-same-TZ multi-cal cases (the 99% case) keep their
-                # original behavior.
+                # Keep familiar local display when selected calendars agree; mixed
+                # zones use UTC. All structured slot strings carry offsets and can
+                # be passed unchanged to create_event for any selected target.
                 tz_set: set[str] = set()
                 for k in keys_to_use:
                     if k in failed_keys:
@@ -898,20 +877,7 @@ class GCalendarTool(Tool):
                     tz_name = _tz_for_key(k) if not legacy_single else calendar_tz_name
                     if tz_name:
                         tz_set.add(tz_name)
-                # Selection rules — corrected per CodeRabbit critical follow-up:
-                # the previous version had `config["timezone"]` (root override)
-                # winning over per-calendar timezones, which is a footgun in
-                # multi-calendar mode. create_event ALWAYS uses the target
-                # calendar's TZ to reparse naive datetime strings, so if the
-                # slot list was formatted in a different TZ the model will
-                # book at the wrong wall-clock time.
-                #
-                # Legacy single-cal mode: root config["timezone"] IS the
-                #   calendar's TZ (no per-calendar overrides exist) — use it.
-                # Multi-calendar mode: per-calendar TZ is authoritative.
-                #   Root config["timezone"] is ignored to avoid the create_event
-                #   reparse mismatch. If the selected calendars agree on a TZ,
-                #   use it. If they disagree, fall back to UTC + warning.
+                # Per-calendar zones are authoritative in multi-calendar mode.
                 if legacy_single:
                     output_tz_name = (
                         (config.get("timezone") or "").strip()
@@ -943,8 +909,21 @@ class GCalendarTool(Tool):
                 # to pass UTC datetimes (with 'Z') to create_event. Doesn't
                 # apply in legacy_single mode (only one calendar exists).
                 multi_cal_tz_disagreement = len(tz_set) > 1 and not legacy_single
-                slot_starts = [t.astimezone(output_tz) for t in slot_starts]
-                slot_starts.sort()
+                slot_starts = build_zoned_slot_starts(available_intervals, duration_minutes, output_tz)
+                # Read the clock after all calendar reads and slot generation.
+                # One final cutoff applies to every selected calendar, including
+                # when slow client/API work crossed a slot boundary. Filter
+                # before sorting/counting/capping so elapsed slots cannot consume
+                # today's default three suggestions. Compare UTC instants through
+                # repeated DST wall-clock hours too.
+                availability_now = utc_now()
+                generated_slot_count = len(slot_starts)
+                slot_starts = [
+                    start for start in slot_starts
+                    if start.astimezone(timezone.utc) > availability_now
+                ]
+                elapsed_slots_removed = generated_slot_count - len(slot_starts)
+                slot_starts.sort(key=to_utc)
 
                 # Cap how many slots are surfaced to the LLM. Without a cap, get_free_slots
                 # over a multi-day range can return 20-50+ slots; the LLM then dutifully
@@ -966,7 +945,10 @@ class GCalendarTool(Tool):
                 # bug seen on ElevenLabs/Claude where the agent picked 11 AM correctly
                 # but booked end_datetime at 18:00 (end of working hours) instead of
                 # 11:30. Showing "09:00–09:30" makes the duration unambiguous.
-                slot_pairs = [(t, t + timedelta(minutes=duration_minutes)) for t in slot_starts]
+                slot_pairs = [
+                    (t, (to_utc(t) + timedelta(minutes=duration_minutes)).astimezone(output_tz))
+                    for t in slot_starts
+                ]
                 results = [
                     f"{s.strftime('%Y-%m-%d %H:%M')}–{e.strftime('%H:%M')}"
                     for (s, e) in slot_pairs
@@ -1013,7 +995,8 @@ class GCalendarTool(Tool):
                         # interpretation of "local" would differ.
                         booking_hint = (
                             "When booking via create_event, pass start_datetime "
-                            "and end_datetime in UTC with the 'Z' suffix (e.g. "
+                            "and end_datetime as the returned offset-bearing slot strings, "
+                            "or in UTC with the 'Z' suffix (e.g. "
                             "'2026-04-27T17:00:00Z') and set the appropriate "
                             "calendar_key so the booking lands on the calendar "
                             "you intended. The selected calendars use different "
@@ -1022,8 +1005,8 @@ class GCalendarTool(Tool):
                     else:
                         booking_hint = (
                             "When booking via create_event, pass start_datetime "
-                            "and end_datetime as the SAME local-time strings "
-                            "(no Z, no offset — calendar timezone is implicit)"
+                            "and end_datetime as the returned slots_with_end start/end "
+                            "strings, preserving their offsets"
                         )
                     message = (
                         "Free slot starts: " + ", ".join(starts_only) + ". "
@@ -1036,6 +1019,12 @@ class GCalendarTool(Tool):
                             f" (showing {len(results)} of {total_slot_starts} available; "
                             f"propose 2-3 of these to the caller — do not read the full list)."
                         )
+                elif elapsed_slots_removed:
+                    reason = "no_future_slots"
+                    message = (
+                        "No future slot starts remain in this range. Try get_free_slots "
+                        "with a later time or date and confirm a future option with the caller."
+                    )
                 elif aggregate_mode == "all" and len(keys_to_use) > 1 and cals_with_no_open:
                     # Intersection mode + at least one selected calendar has no Open
                     # blocks → intersection is empty BECAUSE that calendar lacks
@@ -1094,11 +1083,8 @@ class GCalendarTool(Tool):
                     # start_datetime + N minutes" hint.
                     "slots_with_end": slots_iso_pairs if results else [],
                     "slot_duration_minutes": duration_minutes,
-                    # Calendar timezone — surfaced so the model knows what TZ to use
-                    # for create_event without guessing. The lenient parser in
-                    # _normalize_datetime_to_calendar_tz strips any TZ tail and
-                    # treats wall-clock as local; this field tells the model what
-                    # "local" means.
+                    # Display timezone for the returned offset-bearing slots.
+                    # Naive booking inputs instead use the target calendar zone.
                     "calendar_timezone": output_tz_name,
                     # True when the selected calendars don't agree on a single
                     # timezone and we fell back to UTC for the slot list.
@@ -1359,12 +1345,12 @@ class GCalendarTool(Tool):
                         return out
                     tz_name = _tz_for_key(target_key)
                     cal_i = _cal_for_key(target_key)
-                # DST-aware: if input has TZ tail, convert to calendar TZ and send local time (no tail)
+                # Preserve offsets through the Google payload, including DST folds.
                 try:
                     start_dt_local = self._normalize_datetime_to_calendar_tz(start_dt, tz_name)
                     end_dt_local = self._normalize_datetime_to_calendar_tz(end_dt, tz_name)
-                    start_dt_str = start_dt_local.strftime("%Y-%m-%dT%H:%M:%S")
-                    end_dt_str = end_dt_local.strftime("%Y-%m-%dT%H:%M:%S")
+                    start_dt_str = start_dt_local.isoformat()
+                    end_dt_str = end_dt_local.isoformat()
                 except ValueError as e:
                     out = {"status": "error", "message": str(e)}
                     logger.warning("Invalid datetime for create_event", call_id=call_id, error=str(e))
@@ -1384,7 +1370,7 @@ class GCalendarTool(Tool):
                     max_dur = int(_max_dur_raw) if _max_dur_raw is not None else 240
                 except (TypeError, ValueError):
                     max_dur = 240
-                actual_minutes = (end_dt_local - start_dt_local).total_seconds() / 60.0
+                actual_minutes = (to_utc(end_dt_local) - to_utc(start_dt_local)).total_seconds() / 60.0
                 if actual_minutes <= 0:
                     out = {
                         "status": "error",
@@ -1418,6 +1404,23 @@ class GCalendarTool(Tool):
                         max_dur=max_dur,
                     )
                     logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
+                    return out
+
+                # Recheck immediately before dispatch, after client resolution
+                # and validation: a start that was future at entry may now have
+                # elapsed. Compare instants through repeated DST wall-clock hours.
+                if start_dt_local.astimezone(timezone.utc) <= utc_now():
+                    out = {
+                        "status": "error",
+                        "error_code": "past_booking",
+                        "message": (
+                            "The appointment must start in the future. Call get_free_slots "
+                            "again and confirm a future date and time with the caller before "
+                            "retrying create_event. No event was created."
+                        ),
+                    }
+                    logger.info("Tool response to AI", call_id=call_id, action=action,
+                                status=out["status"], error_code=out["error_code"])
                     return out
 
                 # Surface Google API errors with their original detail so the

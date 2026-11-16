@@ -161,7 +161,7 @@ async def test_outbound_amd_machine_path_does_not_mark_caller(monkeypatch):
             return None
 
         async def get_campaign(self, campaign_id):
-            return {"voicemail_drop_enabled": 1}
+            return {"voicemail_drop_enabled": 1, "voicemail_drop_media_uri": "sound:fixture"}
 
         async def finish_attempt(self, attempt_id, **kwargs):
             finished.append((attempt_id, kwargs))
@@ -171,13 +171,18 @@ async def test_outbound_amd_machine_path_does_not_mark_caller(monkeypatch):
 
     class _FakeAriClient:
         async def play_media(self, *args, **kwargs):
-            return {}
+            return {"id": "fixture-playback"}
 
         async def hangup_channel(self, channel_id):
             hung_up.append(channel_id)
 
     engine.outbound_store = _FakeOutboundStore()
     engine.ari_client = _FakeAriClient()
+    engine._ari_playback_waiters = {}
+    async def complete_owned_playback(_channel, _uri, playback_id):
+        await engine._on_playback_finished({"playback": {"id": playback_id, "state": "done"}})
+        return True
+    engine.ari_client.play_media_on_channel_with_id = complete_owned_playback
 
     await engine._handle_outbound_amd_result(
         channel_id,

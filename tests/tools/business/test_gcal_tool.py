@@ -5,7 +5,7 @@ Covers definition, config handling, and execution for list_events, get_event,
 create_event, delete_event, and get_free_slots actions.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 from unittest.mock import Mock, patch, MagicMock
@@ -13,6 +13,19 @@ from unittest.mock import Mock, patch, MagicMock
 from src.tools.business.gcal_tool import GCalendarTool
 from src.tools.base import ToolCategory
 from src.tools.runtime_config import resolve_agent_tool_config
+
+
+@pytest.fixture(autouse=True)
+def historical_calendar_clock(monkeypatch):
+    """Keep this module's existing April 2026 examples independent of real time.
+
+    Future-time behavior has its own explicit clocks in test_gcal_future_times.
+    This fixture is local to these historical Google Calendar examples.
+    """
+    monkeypatch.setattr(
+        "src.tools.business.gcal_tool.utc_now",
+        lambda: datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
 
 
 @pytest.mark.asyncio
