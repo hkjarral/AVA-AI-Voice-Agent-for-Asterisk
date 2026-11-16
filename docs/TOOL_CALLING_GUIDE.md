@@ -140,6 +140,47 @@ append-only reduction contract:
   remain available. Messages that echo a redacted parameter are sanitized too.
   Policy changes affect future entries only, and historical `***REDACTED***` values
   cannot be recovered.
+- Voicemail first records `voicemail_initiated`: its announcement is armed, not
+  a completed transfer. Native providers finish a correlated spoken reply;
+  modular pipelines finish their TTS playback. The engine then waits for caller
+  transport buffers to drain before requesting ARI continue. This is mandatory
+  even when optional blind-transfer deferral/announcement settings are disabled;
+  native voicemail does not require Local AI Server TTS. Its native announcement
+  uses the shared 4-second start and 20-second finish bounds. ElevenLabs requires
+  authoritative `agent_response_complete` events; idle estimates cannot release
+  voicemail. Missing/failed speech,
+  interrupted completion, or announcement/drain timeout cancels the handoff and
+  uses the existing transfer recovery path. No fixed announcement delay or
+  post-handoff question is used. No new operator setting is required.
+- For ElevenLabs, enable `agent_response_complete` in the agent's `client_events`
+  before qualifying voicemail. This is an ElevenLabs agent setting, not an AVA
+  provider override; see the official [client-event documentation](https://elevenlabs.io/docs/eleven-agents/customization/events/client-events#agent_response_complete).
+  An `audio_idle_fallback`, duration estimate, or partial/interrupted response is
+  not completion. If the event is missing, voicemail cancels before ARI continue
+  and Call History records a cancelled handoff. Verify the account event setting
+  and repeat the audible acceptance test after configuring it; AVA does not
+  change the provider account automatically. Recovery can resume the AI only
+  while it still owns the caller. A superseding routing owner suppresses recovery
+  speech as well as voicemail. Never automatically retry an uncertain ARI request.
+- A voicemail handoff rejected by ARI is a failure and restores engine ownership.
+  A timeout, 5xx, or lost response is also a failed invocation, with
+  `handoff_indeterminate: true`: the caller may already have left Stasis. Call
+  History and scheduled-call details show an uncertainty notice; never replay
+  that transfer automatically. Pending/unconfirmed voicemail ownership is an
+  `error` call outcome, not a confirmed `transferred` outcome. The engine retains
+  its transfer guard until caller lifecycle cleanup so it cannot hang up a
+  potentially handed-off leg. A canceled in-flight request has the same guard.
+  `voicemail_completed` records accepted continue, `voicemail_failed` records a
+  cancellation/rejection, and `voicemail_indeterminate` records an uncertain
+  request. These append terminal evidence under the original invocation ID.
+  Cancellation after continue is submitted retains indeterminate evidence under
+  that invocation even if a newer routing action has taken ownership. Only the
+  matching old deferred action is retired; the newer routing fields and action
+  remain untouched. History and post-call tools share cleanup's terminal reporting
+  outcome: if the request is still unconfirmed at that boundary, its conservative
+  `error` result is retained even if ARI acceptance arrives during teardown. That
+  reporting snapshot does not freeze live routing ownership or the terminal tool
+  evidence; an accepted caller is still spared from engine hangup.
 - The event records the tool execution fact only. A successful voicemail route
   does not claim that a message was recorded, and a successful transfer does
   not claim that a human answered.
@@ -573,6 +614,15 @@ configured tools against these engine rules before enabling them.
 ### Pre-Call Overview
 
 Pre-call tools fetch external data (e.g., CRM contact info, account status) and inject it into AI prompts via output variables. This allows the AI to greet callers by name, reference their account, or provide personalized service.
+
+Hold audio belongs to the individual pre-call invocation. On success, error,
+timeout, cancellation, or caller cleanup, AVA stops only that invocation's ARI
+playback ID before continuing where possible. A start still in flight retains a
+bounded finalizer that stops the same ID after the response arrives. Parallel
+tools never stop each other's playback, greeting speech, or unrelated ringback;
+connection audio is handed off before starting hold audio. Failed stop requests
+receive three bounded attempts. No new setting is needed: existing
+`hold_audio_file`, threshold, and tool timeout controls keep their meanings.
 
 ### Generic HTTP Lookup Tool
 
@@ -1368,6 +1418,17 @@ extra pause. They are no longer editable in the Admin UI. For Local AI,
 `farewell_mode` and `farewell_timeout_sec` remain supported and have separate
 purposes.
 
+For native calls, terminal ARI hangup checks acceptance and makes at most three
+idempotent DELETE attempts, with a three-second request budget and 250/750ms
+retry pauses. A missing channel (404) counts as complete. Every attempt rechecks
+the same call/channel/lock owner, cleanup state, and pending/active transfers,
+including inside the bounded request task immediately before DELETE admission. Failed
+or canceled attempts release terminal ownership so a later request can recover;
+a confirmed hangup keeps its duplicate guard until cleanup. The inline retry
+has no detached retry timer. Call cleanup cancels the existing terminal fallback
+and prevents another retry. VICIdial keeps its separate finalization/recovery
+contract; these native DELETE retries do not bypass it.
+
 With Local AI `farewell_mode: asterisk`, the engine reserves the terminal
 farewell before executing `hangup_call`. An older response's `AgentAudioDone`
 cannot preempt it. The engine starts `sound:goodbye` with a unique ARI playback
@@ -2097,3 +2158,21 @@ not retry notification or dialing automatically. Real-call validation must cover
 failure announcement playback and a subsequent caller turn as well as successful
 handoff. Bridge failures after provider/media teardown still require the existing
 provider/media recovery mechanisms; this patch does not restart a stopped provider.
+
+### ARI lifecycle validation boundary
+
+The voicemail/hangup/pre-call hold recovery regressions in
+`tests/test_ari_lifecycle_recovery.py` use synthetic ARI responses and temporary
+Call History SQLite databases. They cover explicit rejection, indeterminate
+handoff, deleted mailbox scope, retries, transfer precedence, cancellation,
+cleanup and late playback start. `tests/test_voicemail_deferred_handoff.py`
+adds adapter/Engine announcement correlation, audio queued beyond 800 ms, native
+provider callbacks, pipeline TTS completion, and pre/post-request cancellation.
+These offline checks do not establish audible PBX acceptance.
+For deployed acceptance, use a disposable inbound Agent and mailbox, verify hold
+stops before greeting, farewell audio completes, and accepted voicemail leaves
+Stasis without an engine caller DELETE. Keep ARI failure injections synthetic;
+do not break a shared PBX or create real voicemail/campaign traffic to simulate
+409/503 responses. See the official [channel API](https://docs.asterisk.org/Latest_API/API_Documentation/Asterisk_REST_Interface/Channels_REST_API/)
+and [playback API](https://docs.asterisk.org/Latest_API/API_Documentation/Asterisk_REST_Interface/Playbacks_REST_API/)
+for the continue, DELETE and playback-ID contracts.

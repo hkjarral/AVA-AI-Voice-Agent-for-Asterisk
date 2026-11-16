@@ -941,7 +941,7 @@ class ARIClient:
         logger.info("Playing media on channel", channel_id=channel_id, media_uri=media_uri)
         return await self.send_command("POST", f"channels/{channel_id}/play", data={"media": media_uri})
 
-    async def play_sound(self, channel_id: str, sound_file: str) -> Optional[Dict[str, Any]]:
+    async def play_sound(self, channel_id: str, sound_file: str, *, playback_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Convenience wrapper to play an Asterisk sound file (e.g. "custom/please-wait").
         """
@@ -950,6 +950,9 @@ class ARIClient:
             return None
         if not any(media_uri.startswith(prefix) for prefix in ("sound:", "file:", "recording:")):
             media_uri = f"sound:{media_uri}"
+        if playback_id:
+            accepted = await self.play_media_on_channel_with_id(channel_id, media_uri, playback_id)
+            return {"id": playback_id} if accepted else None
         return await self.play_media(channel_id, media_uri)
 
     async def play_media_on_channel_with_id(self, channel_id: str, media_uri: str, playback_id: str) -> bool:

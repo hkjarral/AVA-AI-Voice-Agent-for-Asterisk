@@ -59,6 +59,7 @@ export interface PhaseToolCall extends ToolDiagnostics {
 }
 
 export interface InCallToolCall extends ToolDiagnostics {
+    handoff_indeterminate?: boolean;
     reservation_status?: string;
     attempt_reference?: string;
     appointment_name?: string;
@@ -156,6 +157,10 @@ export const PhaseToolGroup = ({ phase, entries }: { phase: Exclude<ToolPhase, '
 );
 
 const transferActionLabels: Record<string, string> = {
+    voicemail_initiated: 'Voicemail announcement started',
+    voicemail_completed: 'Voicemail handoff accepted',
+    voicemail_failed: 'Voicemail handoff cancelled',
+    voicemail_indeterminate: 'Voicemail handoff uncertain',
     attended_transfer_initiated: 'Transfer initiated',
     attended_transfer_failed: 'Transfer failed',
     attended_transfer_completed: 'Transfer completed',
@@ -214,6 +219,9 @@ export const InCallToolGroup = ({ entries }: { entries: InCallToolCall[] }) => {
                             </div>
                         )}
                         <ToolDiagnosticsView entry={tool} />
+                        {tool.handoff_indeterminate && <div className="mt-2 rounded bg-yellow-500/10 p-2 text-xs" role="status">
+                            Transfer outcome uncertain. The caller may have left the AI agent. Do not automatically repeat this transfer.
+                        </div>}
                         {tool.name === 'calendly_calendar' && tool.reservation_status && <div className="mt-2 text-xs space-y-1">
                             {tool.attempt_reference && <p className="break-all">Request reference: <span className="font-mono">{tool.attempt_reference}</span></p>}
                             <p>{tool.appointment_name} · {tool.start_datetime} · {tool.timezone}</p>

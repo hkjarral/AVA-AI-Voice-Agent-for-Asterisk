@@ -11216,6 +11216,8 @@ class Engine:
                 import time as _time
                 _cleanup_completed_at[call_id] = _time.time()
             
+            from src.core.pre_call_hold import stop_pre_call_holds
+            await stop_pre_call_holds(session)
             logger.info("Cleaning up call", call_id=call_id)
             
             # Calculate call duration early (keep _call_start_times entry until after post-call tools)
@@ -11243,7 +11245,9 @@ class Engine:
             # Determine call outcome based on session state
             call_outcome = str(getattr(session, "call_outcome", "") or "").strip() or "caller_hangup"
             try:
-                if call_outcome == "caller_hangup" and self._session_was_transferred(session):
+                if getattr(session, "voicemail_handoff_outcome", None) in {"pending", "indeterminate"}:
+                    call_outcome = "error"
+                elif call_outcome == "caller_hangup" and self._session_was_transferred(session):
                     call_outcome = "transferred"
                 elif call_outcome == "caller_hangup" and getattr(session, 'cleanup_after_tts', False):
                     call_outcome = "agent_hangup"  # AI agent initiated hangup via hangup_call tool
@@ -11787,7 +11791,9 @@ class Engine:
                     provider_name=getattr(session, "provider_name", None) or "",
                     pipeline_name=getattr(session, "pipeline_name", None) or "",
                     audio_transport=getattr(self.config, "audio_transport", "") or "",
-                    transferred=self._session_was_transferred(session),
+                    transferred=(self._session_was_transferred(session) and getattr(
+                        session, "voicemail_handoff_outcome", None) not in {"pending", "indeterminate"}),
+                    voicemail_handoff_outcome=getattr(session, "voicemail_handoff_outcome", None),
                     transfer_destination=getattr(session, "transfer_destination", None) or getattr(session, "transfer_target", None) or "",
                     media_rx_confirmed=bool(getattr(session, "media_rx_confirmed", False)),
                     upstream_squelch_frames=int(((getattr(session, "vad_state", {}) or {}).get("upstream_squelch", {}) or {}).get("frames", 0)),
@@ -11879,7 +11885,12 @@ class Engine:
             # Determine outcome
             outcome = "completed"
             explicit_outcome = str(getattr(session, "call_outcome", "") or "").strip()
-            if explicit_outcome == "no_input_timeout":
+            voicemail_unconfirmed = getattr(session, "voicemail_handoff_outcome", None) in {"pending", "indeterminate"}
+            # Cleanup's frozen error also feeds post-call tools. A late ARI
+            # result may update routing ownership, not rewrite that report.
+            if voicemail_unconfirmed or explicit_outcome == "error":
+                outcome = "error"
+            elif explicit_outcome == "no_input_timeout":
                 outcome = "no_input_timeout"
             elif session.error_message:
                 outcome = "error"
@@ -11915,7 +11926,10 @@ class Engine:
                 conversation_history=session.conversation_history or [],
                 outcome=outcome,
                 transfer_destination=session.transfer_destination,
-                error_message=session.error_message,
+                error_message=(session.error_message or (
+                    "Voicemail handoff could not be confirmed; the caller may have left the AI agent."
+                    if voicemail_unconfirmed else None
+                )),
                 tool_calls=getattr(session, 'tool_calls', []) or [],
                 pre_call_tool_calls=getattr(session, 'pre_call_tool_calls', []) or [],
                 call_metadata=dict(getattr(session, 'call_metadata', {}) or {}),
@@ -11969,7 +11983,8 @@ class Engine:
                             amd = self._outbound_attempt_amd.get(attempt_id) if hasattr(self, "_outbound_attempt_amd") else None
                             # Normalize final outcome (MVP: answered vs error)
                             final_outcome = "answered_human"
-                            if session.error_message:
+                            if (session.error_message or getattr(session, "voicemail_handoff_outcome", None)
+                                    in {"pending", "indeterminate"}):
                                 final_outcome = "error"
                             elif self._session_was_transferred(session):
                                 final_outcome = "transferred"
@@ -17039,7 +17054,7 @@ class Engine:
                 return False
 
             session = await self.session_store.get_by_call_id(call_id)
-            if not session or bool(getattr(session, "cleanup_in_progress", False)):
+            if not session or session.cleanup_in_progress or session.cleanup_completed:
                 return False
             if (self._session_was_transferred(session)
                     or self._session_has_pending_attended_transfer(session)
@@ -17048,96 +17063,139 @@ class Engine:
                 return False
 
             started.add(call_id)
-            fallback_tasks = getattr(self, "_terminal_fallback_tasks", {})
-            fallback = fallback_tasks.pop(call_id, None)
-            current_task = asyncio.current_task()
-            if fallback and fallback is not current_task and not fallback.done():
-                fallback.cancel()
-
-            drained = True
-            if not audio_already_drained:
-                google_provider = self._google_long_audio_provider(session)
-                if google_provider:
-                    drain_timeout_sec = max(drain_timeout_sec, google_provider.config.long_audio_backlog_sec + 30.0)
-                if drain_timeout_cap_sec is not None:
-                    drain_timeout_sec = min(drain_timeout_sec, max(0.0, drain_timeout_cap_sec))
-                drained = await self._wait_for_call_audio_drain(
-                    call_id,
-                    timeout_sec=drain_timeout_sec,
-                    quiet_sec=self._terminal_transport_quiet_sec(),
-                    reason=reason,
-                )
-
-            # A transfer may have taken ownership and recovered while this
-            # older hangup was draining. Its pending action can already be gone.
-            if call_id not in started:
-                return False
-            session = await self.session_store.get_by_call_id(call_id)
-            if not session or self._session_was_transferred(session):
-                return False
-            if isinstance(getattr(session, "pending_deferred_transfer", None), dict):
-                started.discard(call_id)
-                return False
-            if drain_timeout_cap_sec is not None and (
-                bool(getattr(session, "cleanup_in_progress", False))
-                or self._session_has_pending_attended_transfer(session)
-            ):
-                started.discard(call_id)
-                return False
-            if call_outcome:
-                session.call_outcome = call_outcome
-            session.cleanup_after_tts = False
-            await self._save_session(session)
-            logger.info(
-                "Executing terminal hangup",
-                call_id=call_id,
-                channel_id=session.caller_channel_id,
-                reason=reason,
-                audio_drained=drained,
-                transport=getattr(getattr(self, "config", None), "audio_transport", None),
-            )
-            if getattr(session, "external_platform", None) == "vicidial":
-                finalized = False
-                try:
-                    finalized = await self._finalize_vicidial_call(
-                        session,
-                        semantic="ai_hangup",
-                        operation_reason=reason,
-                    )
-                finally:
-                    if not finalized:
-                        # VICIdial still owns an active call. Release both the
-                        # engine and provider terminal guards so caller audio
-                        # resumes and a later tool or cleanup request can retry.
-                        provider = (getattr(self, "_call_providers", {}) or {}).get(
-                            call_id
-                        )
-                        release_provider = getattr(
-                            provider, "release_terminal_output_protection", None
-                        )
-                        if callable(release_provider):
-                            try:
-                                release_provider()
-                            except Exception:
-                                logger.warning(
-                                    "Failed to release provider terminal protection",
-                                    call_id=call_id,
-                                    provider=type(provider).__name__,
-                                    exc_info=True,
-                                )
-                        started.discard(call_id)
-                return finalized
+            owner_session = session
+            owner_channel = session.caller_channel_id
+            owner_provider = (getattr(self, "_call_providers", {}) or {}).get(call_id)
+            completed = False
             try:
-                await self.ari_client.hangup_channel(session.caller_channel_id)
-                return True
-            except Exception:
-                logger.debug(
-                    "Terminal ARI hangup failed (channel may already be gone)",
+                fallback_tasks = getattr(self, "_terminal_fallback_tasks", {})
+                fallback = fallback_tasks.pop(call_id, None)
+                current_task = asyncio.current_task()
+                if fallback and fallback is not current_task and not fallback.done():
+                    fallback.cancel()
+
+                drained = True
+                if not audio_already_drained:
+                    google_provider = self._google_long_audio_provider(session)
+                    if google_provider:
+                        drain_timeout_sec = max(drain_timeout_sec, google_provider.config.long_audio_backlog_sec + 30.0)
+                    if drain_timeout_cap_sec is not None:
+                        drain_timeout_sec = min(drain_timeout_sec, max(0.0, drain_timeout_cap_sec))
+                    drained = await self._wait_for_call_audio_drain(
+                        call_id,
+                        timeout_sec=drain_timeout_sec,
+                        quiet_sec=self._terminal_transport_quiet_sec(),
+                        reason=reason,
+                    )
+
+                # A transfer may have taken ownership and recovered while this
+                # older hangup was draining. Its pending action can already be gone.
+                if call_id not in started:
+                    return False
+                session = await self.session_store.get_by_call_id(call_id)
+                if (session is not owner_session or session.cleanup_in_progress
+                        or session.cleanup_completed or self._session_was_transferred(session)
+                        or self._session_has_pending_attended_transfer(session)):
+                    return False
+                if isinstance(getattr(session, "pending_deferred_transfer", None), dict):
+                    started.discard(call_id)
+                    return False
+                if call_outcome:
+                    session.call_outcome = call_outcome
+                session.cleanup_after_tts = False
+                await self._save_session(session, require_current=True)
+                logger.info(
+                    "Executing terminal hangup",
                     call_id=call_id,
+                    channel_id=session.caller_channel_id,
                     reason=reason,
-                    exc_info=True,
+                    audio_drained=drained,
+                    transport=getattr(getattr(self, "config", None), "audio_transport", None),
                 )
+                if getattr(session, "external_platform", None) == "vicidial":
+                    finalized = False
+                    try:
+                        finalized = await self._finalize_vicidial_call(
+                            session,
+                            semantic="ai_hangup",
+                            operation_reason=reason,
+                        )
+                    finally:
+                        if not finalized:
+                            # VICIdial still owns an active call. Release both the
+                            # engine and provider terminal guards so caller audio
+                            # resumes and a later tool or cleanup request can retry.
+                            provider = (getattr(self, "_call_providers", {}) or {}).get(
+                                call_id
+                            )
+                            release_provider = getattr(
+                                provider, "release_terminal_output_protection", None
+                            )
+                            if callable(release_provider):
+                                try:
+                                    release_provider()
+                                except Exception:
+                                    logger.warning(
+                                        "Failed to release provider terminal protection",
+                                        call_id=call_id,
+                                        provider=type(provider).__name__,
+                                        exc_info=True,
+                                    )
+                            started.discard(call_id)
+                    completed = finalized
+                    return finalized
+                # DELETE is idempotent; ARIClient treats already-gone (404) as
+                # success. Bound attempts and revalidate ownership before each one.
+                for attempt in range(3):
+                    if attempt:
+                        await asyncio.sleep((0.25, 0.75)[attempt - 1])
+                    latest = await self.session_store.get_by_call_id(call_id)
+                    if (latest is not owner_session or locks.get(call_id) is not lock
+                            or call_id not in started or latest.cleanup_in_progress
+                            or latest.cleanup_completed or latest.caller_channel_id != owner_channel
+                            or self._session_was_transferred(latest)
+                            or self._session_has_pending_attended_transfer(latest)
+                            or isinstance(getattr(latest, "pending_deferred_transfer", None), dict)):
+                        return False
+                    async def delete_if_still_owned():
+                        latest = await self.session_store.get_by_call_id(call_id)
+                        if (latest is not owner_session or locks.get(call_id) is not lock
+                                or call_id not in started or latest.cleanup_in_progress
+                                or latest.cleanup_completed or latest.caller_channel_id != owner_channel
+                                or self._session_was_transferred(latest)
+                                or self._session_has_pending_attended_transfer(latest)
+                                or isinstance(getattr(latest, "pending_deferred_transfer", None), dict)):
+                            return False
+                        return await self.ari_client.hangup_channel(owner_channel)
+
+                    try:
+                        accepted = await asyncio.wait_for(
+                            delete_if_still_owned(), timeout=3.0,
+                        )
+                    except Exception:
+                        accepted = False
+                    if accepted is True:
+                        completed = True
+                        return True
+                    logger.warning("Terminal ARI hangup not accepted", call_id=call_id,
+                                   reason=reason, attempt=attempt + 1)
                 return False
+            finally:
+                if not completed and locks.get(call_id) is lock:
+                    started.discard(call_id)
+                    if (getattr(owner_session, "external_platform", None) != "vicidial"
+                            and not owner_session.cleanup_in_progress
+                            and not owner_session.cleanup_completed
+                            and not self._session_was_transferred(owner_session)
+                            and not self._session_has_pending_attended_transfer(owner_session)
+                            and not isinstance(getattr(owner_session, "pending_deferred_transfer", None), dict)):
+                        provider = (getattr(self, "_call_providers", {}) or {}).get(call_id)
+                        release = getattr(owner_provider, "release_terminal_output_protection", None)
+                        if provider is owner_provider and callable(release):
+                            try:
+                                release()
+                            except Exception:
+                                logger.warning("Failed to release native terminal protection", call_id=call_id)
 
     def _schedule_terminal_fallback(
         self,
@@ -23542,6 +23600,21 @@ class Engine:
             return await self._commit_pending_deferred_transfer_for_call_inner(
                 call_id, session, commit_marker=marker, expected_action_id=expected_action_id,
             )
+        except asyncio.CancelledError:
+            latest = await self.session_store.get_by_call_id(call_id)
+            pending = getattr(latest, "pending_deferred_transfer", None)
+            if (marker.get("voicemail_owner") and isinstance(pending, dict)
+                    and pending.get("id") == expected_action_id
+                    and pending.get("source_tool") == "leave_voicemail"
+                    and getattr(latest, "voicemail_handoff_outcome", None) is None):
+                # Cancellation before ARI has no external effect. Retire only
+                # this action, leaving replacement and uncertain owners alone.
+                latest.pending_deferred_transfer = None
+                await self._record_deferred_transfer_timeout_tool_result(
+                    latest, pending, error_code="voicemail_cancelled",
+                    message="Voicemail handoff cancelled before the dialplan request.",
+                )
+            raise
         finally:
             self._release_deferred_transfer_commit(call_id, expected_action_id)
             markers = committing.get(call_id) or []
@@ -23550,7 +23623,9 @@ class Engine:
             if not markers:
                 committing.pop(call_id, None)
             state = getattr(self, "_transfer_handoffs", {}).get(call_id)
-            if state and state.action_id == expected_action_id:
+            another_voicemail_owner = any(m.get("voicemail_owner") for m in markers)
+            if (state and state.action_id == expected_action_id
+                    and (marker.get("voicemail_owner") or not another_voicemail_owner)):
                 state.cancel()
                 self._transfer_handoffs.pop(call_id, None)
 
@@ -23593,6 +23668,8 @@ class Engine:
                     latest_action_id=action_id,
                 )
                 return None
+            if commit_marker is not None and action.get("source_tool") == "leave_voicemail":
+                commit_marker["voicemail_owner"] = True
             # Preserve #702's original pre-await gate for every legacy action.
             # Only opted-in provider announcements keep admission open here.
             if commit_marker is not None and (not action.get("handoff") or action.get("_engine_handoff_attempted")):
@@ -23627,6 +23704,13 @@ class Engine:
                 pending = getattr(session, "pending_deferred_transfer", None)
                 if not isinstance(pending, dict) or pending.get("id") != action_id:
                     return None
+            if action.get("source_tool") == "leave_voicemail":
+                state = getattr(self, "_transfer_handoffs", {}).get(call_id)
+                if (not state or state.action_id != action_id or state.reason not in {
+                        "origin_sentence_matched", "reply_completed", "pipeline_announcement_completed"}):
+                    return await self._recover_failed_deferred_transfer(
+                        call_id, action_id=action_id, preparation_failed=True,
+                    )
             if commit_marker is not None:
                 commit_marker["action_id"] = action_id
 
@@ -23683,6 +23767,10 @@ class Engine:
                     status=result.get("status"),
                     message=result.get("message"),
                 )
+            if isinstance(result, dict) and result.get("handoff_indeterminate") is True:
+                # The channel may already belong to dialplan. Do not cancel,
+                # speak, terminate, or replay an uncertain external handoff.
+                return result
             if not isinstance(result, dict) or result.get("status") != "success":
                 # Do not replay a potentially side-effectful commit on the next
                 # provider completion, or leave hangup blocked indefinitely.
@@ -23709,6 +23797,8 @@ class Engine:
         preparation_failed: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Cancel the exact failed action; resume AI unless its output has failed."""
+        from src.tools.context import ToolExecutionContext
+
         error_code = "deferred_transfer_commit_failed" if commit_failed else "deferred_audio_drain_timeout"
         message = (
             "Deferred transfer cancelled because the transfer commit failed."
@@ -23734,6 +23824,16 @@ class Engine:
                 latest_action_id=action.get("id") if isinstance(action, dict) else None,
             )
             return None
+
+        if (action.get("source_tool") == "leave_voicemail"
+                and (self._session_was_transferred(session)
+                     or ToolExecutionContext.is_pending_attended_transfer(session))):
+            session.pending_deferred_transfer = None
+            await self._record_deferred_transfer_timeout_tool_result(
+                session, action, error_code="voicemail_superseded",
+                message="Voicemail handoff cancelled because another routing action owns the call.",
+            )
+            return {"status": "failed", "transfer_cancelled": True, "apology_spoken": False}
 
         queue_failed = bool(session.audio_diagnostics.get("provider_queue_failed"))
         if queue_failed:
@@ -23947,7 +24047,8 @@ class Engine:
             parameters=dict(origin.get("params") or {}),
             result={
                 "status": "cancelled",
-                "action": "deferred_transfer_commit_failed" if error_code == "deferred_transfer_commit_failed" else "deferred_transfer_timeout",
+                "action": ("voicemail_failed" if action.get("source_tool") == "leave_voicemail" else
+                           "deferred_transfer_commit_failed" if error_code == "deferred_transfer_commit_failed" else "deferred_transfer_timeout"),
                 "message": message,
                 "error_code": error_code,
                 "transfer_cancelled": True,
@@ -24231,7 +24332,7 @@ class Engine:
             return False
 
         action = getattr(session, "pending_deferred_transfer", None)
-        if not isinstance(action, dict):
+        if not isinstance(action, dict) or action.get("source_tool") == "leave_voicemail":
             return False
 
         description = str(action.get("description") or action.get("destination_key") or action.get("target") or "").strip()
@@ -24450,12 +24551,12 @@ class Engine:
                 ari_client=self.ari_client,
             )
             
-            # Track if we need to play hold audio
-            hold_audio_tasks: Dict[str, asyncio.Task] = {}
+            from src.core.pre_call_hold import PreCallHold
 
             # Collect execution metadata (one entry per tool) for the call history UI.
             # Same shape as post_call_tool_calls so the frontend can render uniformly.
             tool_call_records: List[Dict[str, Any]] = []
+            session.pre_call_tool_calls = tool_call_records
 
             async def run_tool_with_timeout(tool) -> Dict[str, str]:
                 """Execute a single pre-call tool with timeout and hold audio."""
@@ -24471,29 +24572,12 @@ class Engine:
                 tool_start = time.time()
                 tool_results: Dict[str, str] = {}
                 
-                # Schedule hold audio if configured
+                duration_ms = 0.0
+                hold = None
                 if hold_file and self.ari_client:
-                    async def play_hold_audio():
-                        await asyncio.sleep(hold_threshold_ms / 1000.0)
-                        try:
-                            # Connection ringback and the tool's hold prompt both
-                            # target the caller channel. Hand off cleanly before
-                            # starting the configured pre-call hold audio.
-                            await self._stop_connection_audio(
-                                session,
-                                reason="pre-call-hold-audio",
-                            )
-                            # Play the configured hold audio file via ARI
-                            await self.ari_client.play_sound(session.caller_channel_id, hold_file)
-                            logger.debug("Playing hold audio for pre-call tool",
-                                       call_id=call_id, tool=tool_name, file=hold_file)
-                        except Exception as e:
-                            logger.debug("Failed to play hold audio", 
-                                       call_id=call_id, tool=tool_name, error=str(e))
-                    
-                    hold_task = asyncio.create_task(play_hold_audio())
-                    hold_audio_tasks[tool_name] = hold_task
-                
+                    hold = PreCallHold(self.ari_client, session, hold_file,
+                                       hold_threshold_ms, self._stop_connection_audio)
+
                 try:
                     # Execute tool with timeout
                     tool_results = await asyncio.wait_for(
@@ -24518,6 +24602,10 @@ class Engine:
                     # Return empty strings for all expected output variables
                     for var in tool.definition.output_variables:
                         tool_results[var] = ""
+                except asyncio.CancelledError:
+                    exec_status = "error"
+                    exec_error = "cancelled"
+                    raise
                 except Exception as e:
                     duration_ms = (time.time() - tool_start) * 1000
                     exec_status = "error"
@@ -24531,9 +24619,9 @@ class Engine:
                     for var in tool.definition.output_variables:
                         tool_results[var] = ""
                 finally:
-                    # Cancel hold audio if still pending
-                    if tool_name in hold_audio_tasks:
-                        hold_audio_tasks[tool_name].cancel()
+                    duration_ms = (time.time() - tool_start) * 1000
+                    # Record before awaiting cleanup: cancellation during a late
+                    # playback start must not discard the known tool outcome.
                     # Record execution metadata for the call history UI.
                     finished_at_iso = datetime.now(timezone.utc).isoformat()
                     metadata: Dict[str, Any] = {
@@ -24572,6 +24660,8 @@ class Engine:
                         logger.debug("pre-call get_last_result failed",
                                      call_id=call_id, tool=tool_name, exc_info=True)
                     tool_call_records.append(metadata)
+                    if hold:
+                        await hold.close()
 
                 return tool_results
             

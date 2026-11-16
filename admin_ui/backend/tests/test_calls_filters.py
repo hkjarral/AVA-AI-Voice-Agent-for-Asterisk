@@ -1,4 +1,6 @@
 import sys
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -84,3 +86,27 @@ def test_stats_reject_half_metadata_filter_like_the_list(monkeypatch):
 
     assert response.status_code == 422
     assert store.calls == []
+
+
+def test_voicemail_uncertainty_survives_history_api_serialization(monkeypatch):
+    from datetime import datetime, timezone
+    from src.core.call_history import CallRecord
+    from src.tools.execution_history import build_in_call_tool_record
+
+    record = CallRecord(call_id="synthetic-vm", start_time=datetime.now(timezone.utc), outcome="error")
+    record.tool_calls = [build_in_call_tool_record(
+        call_id=record.call_id, tool_call_id="synthetic-tool", tool_name="leave_voicemail", parameters={},
+        result={"status": "failed", "handoff_indeterminate": True, "message": "Voicemail handoff could not be confirmed."},
+    )]
+    store = SimpleNamespace(get=AsyncMock(return_value=record))
+    monkeypatch.setattr(calls, "_get_call_history_store", lambda: store)
+    monkeypatch.setattr(calls, "_agent_name_map", lambda: {})
+    app = FastAPI()
+    app.include_router(calls.router, prefix="/api")
+    response = TestClient(app).get(f"/api/calls/{record.id}")
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "error"
+    result = response.json()["tool_calls"][0]
+    assert result["status"] == "failure"
+    assert result["handoff_indeterminate"] is True
+    assert result["params"] == {}

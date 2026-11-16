@@ -77,6 +77,15 @@ describe('PhaseToolGroup', () => {
 });
 
 describe('InCallToolGroup', () => {
+    it('shows a failed voicemail handoff as uncertain without claiming success', () => {
+        render(<InCallToolGroup entries={[{
+            name: 'leave_voicemail', status: 'failure', params: {}, result: 'failed',
+            handoff_indeterminate: true, timestamp: '2030-01-01T00:00:00Z', duration_ms: 20,
+        }]} />);
+        expect(screen.getByText('error')).toBeInTheDocument();
+        expect(screen.getByRole('status')).toHaveTextContent('Transfer outcome uncertain');
+        expect(screen.getByRole('status')).toHaveTextContent('Do not automatically repeat this transfer');
+    });
     it('shows the Calendly attempt reference next to the recorded outcome', () => {
         render(<InCallToolGroup entries={[{
             name: 'calendly_calendar', action: 'create_booking', status: 'failure',
@@ -221,4 +230,20 @@ it('distinguishes transfer initiation from its terminal failure', () => {
 it.each(['__proto__', 'constructor', 'toString'])('renders the literal legacy action %s safely', (action) => {
     render(<InCallToolGroup entries={[{name:'attended_transfer',action,params:{},result:'success',timestamp:'2026-10-30T12:00:00Z',duration_ms:2}]} />);
     expect(screen.getByText(action)).toBeInTheDocument();
+});
+
+
+it('distinguishes voicemail announcement from confirmed and uncertain handoff', () => {
+    const base = {name: 'leave_voicemail', params: {}, timestamp: '2026-11-01T00:00:00Z', duration_ms: 0};
+    render(<InCallToolGroup entries={[
+        {...base, action: 'voicemail_initiated', result: 'success'},
+        {...base, action: 'voicemail_completed', result: 'success'},
+        {...base, action: 'voicemail_failed', result: 'cancelled'},
+        {...base, action: 'voicemail_indeterminate', result: 'failed', handoff_indeterminate: true},
+    ]} />);
+    expect(screen.getByText('Voicemail announcement started')).toBeInTheDocument();
+    expect(screen.getByText('Voicemail handoff accepted')).toBeInTheDocument();
+    expect(screen.getByText('Voicemail handoff cancelled')).toBeInTheDocument();
+    expect(screen.getByText('Voicemail handoff uncertain')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Do not automatically repeat this transfer');
 });

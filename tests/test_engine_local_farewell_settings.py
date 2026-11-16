@@ -501,7 +501,7 @@ async def test_asterisk_farewell_records_agent_outcome_before_terminal_cleanup(p
 
     engine._execute_provider_tool = hangup
     engine._play_local_asterisk_farewell = AsyncMock(return_value=playback_state)
-    engine.ari_client.hangup_channel = AsyncMock()
+    engine.ari_client.hangup_channel = AsyncMock(return_value=True)
     await engine.on_provider_event({
         "type": "ToolCall", "call_id": session.call_id,
         "tool_calls": [{"id": "hangup", "name": "hangup_call", "parameters": {}}],

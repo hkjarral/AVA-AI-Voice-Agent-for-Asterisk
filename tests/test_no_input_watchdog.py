@@ -743,7 +743,7 @@ async def test_engine_hangup_records_a_distinct_policy_outcome():
     engine = Engine.__new__(Engine)
     engine.session_store = SessionStore()
     engine.conversation_coordinator = None
-    engine.ari_client = SimpleNamespace(hangup_channel=AsyncMock())
+    engine.ari_client = SimpleNamespace(hangup_channel=AsyncMock(return_value=True))
     session = CallSession(call_id="silent-call", caller_channel_id="channel-silent")
     await engine.session_store.upsert_call(session)
 
@@ -818,7 +818,7 @@ async def test_terminal_hangup_is_idempotent_and_uses_shared_drain(legacy_delay)
     )
     engine.session_store = SessionStore()
     engine.conversation_coordinator = None
-    engine.ari_client = SimpleNamespace(hangup_channel=AsyncMock())
+    engine.ari_client = SimpleNamespace(hangup_channel=AsyncMock(return_value=True))
     engine._wait_for_call_audio_drain = AsyncMock(return_value=True)
     session = CallSession(
         call_id="terminal-call", caller_channel_id="channel-terminal", provider_name="google_live"
@@ -844,7 +844,7 @@ async def test_terminal_hangup_yields_to_transfer_state():
     engine.config = SimpleNamespace(audio_transport="externalmedia")
     engine.session_store = SessionStore()
     engine.conversation_coordinator = None
-    engine.ari_client = SimpleNamespace(hangup_channel=AsyncMock())
+    engine.ari_client = SimpleNamespace(hangup_channel=AsyncMock(return_value=True))
     engine._wait_for_call_audio_drain = AsyncMock(return_value=True)
     session = CallSession(call_id="transfer-call", caller_channel_id="channel-transfer")
     session.transfer_active = True

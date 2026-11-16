@@ -53,8 +53,10 @@ def build_deferred_transfer_action(
 async def store_pending_deferred_transfer(
     context: ToolExecutionContext,
     action: Dict[str, Any],
+    *,
+    session=None,
 ) -> None:
-    session = await context.get_session()
+    session = session if session is not None else await context.get_session()
     from src.tools.handoff_config import resolve_handoff, normalize_local_handoff_providers
     from src.config.provider_instances import provider_kind
     transfer = context.get_config_value("tools.transfer") or {}
@@ -62,6 +64,12 @@ async def store_pending_deferred_transfer(
     if action.get("source_tool") == "live_agent_transfer":
         destination = (context.get_config_value("tools.extensions.internal") or {}).get(action.get("target")) or destination
     handoff = resolve_handoff(transfer, destination)
+    if action.get("source_tool") == "leave_voicemail":
+        # Voicemail always waits for its native provider reply, independent of
+        # optional blind-transfer speech settings or Local AI availability.
+        handoff = resolve_handoff({"handoff": {
+            "enabled": True, "message": "I'll connect you to voicemail now.",
+        }})
     if handoff:
         payload = action.get("payload") or {}
         if payload.get("screening_mode") == "caller_recording":
@@ -71,7 +79,8 @@ async def store_pending_deferred_transfer(
         key = getattr(context, "provider_name", None) or ""
         kind = provider_kind(key, (context.get_config_value("providers") or {}).get(key) or {}) or key
         local = normalize_local_handoff_providers(transfer.get("local_handoff_audio_providers", ["deepgram"]))
-        handoff["owner"] = "engine" if local and kind in local and not session.pipeline_name else "provider"
+        handoff["owner"] = ("engine" if local and kind in local and not session.pipeline_name
+                            and action.get("source_tool") != "leave_voicemail" else "provider")
         action["handoff"] = handoff
     session.pending_deferred_transfer = dict(action)
     await context.session_store.upsert_call(session)
