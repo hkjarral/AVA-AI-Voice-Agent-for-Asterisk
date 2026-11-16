@@ -30,11 +30,19 @@ async def voicemail_context(monkeypatch, responses, config=None):
     store = SessionStore()
     await store.upsert_call(session)
     # First response is DIALPLAN_EXISTS; next response is authoritative continue.
-    ari = ari_client([{'value': '1'}, *responses])
+    ari = ari_client([{'value': '1'}, {'value': '1'}, *responses])
     ctx = ToolExecutionContext(call_id=session.call_id, caller_channel_id=session.caller_channel_id,
         session_store=store, ari_client=ari,
         config={'tools': {'leave_voicemail': config or {'enabled': True, 'extension': '100'}}})
     return session, ctx
+
+
+async def commit_voicemail(ctx):
+    tool = VoicemailTool()
+    armed = await tool.execute({}, ctx)
+    if not armed.get('deferred_transfer'):
+        return armed
+    return await tool.commit_deferred_action(armed['deferred_transfer'], ctx)
 
 
 def native_engine(session, ari):
@@ -58,7 +66,7 @@ def native_engine(session, ari):
 ])
 async def test_voicemail_handoff_results_and_actual_engine_ownership(monkeypatch, response, expected, guard):
     session, ctx = await voicemail_context(monkeypatch, [response])
-    result = await VoicemailTool().execute({}, ctx)
+    result = await commit_voicemail(ctx)
     assert result['status'] == expected
     assert bool(getattr(session, 'transfer_active', False)) is guard
     assert Engine._session_was_transferred(session) is guard
@@ -70,6 +78,8 @@ async def test_voicemail_handoff_results_and_actual_engine_ownership(monkeypatch
         assert (await VoicemailTool().execute({}, ctx))['status'] == 'failed'
         assert ctx.ari_client.send_command.await_count == calls  # never replay
     if not guard:
+        # The engine's rejection recovery retires the announcement action.
+        session.pending_deferred_transfer = None
         engine = native_engine(session, ari_client([{'status': 204}]))
         assert await engine._terminate_call_after_audio(session.call_id, reason='after-vm-rejection', audio_already_drained=True)
 
@@ -108,8 +118,8 @@ async def test_voicemail_cancellation_only_reclaims_before_request(monkeypatch, 
     if during_request:
         ctx.ari_client.continue_in_dialplan = wait
     else:
-        voicemail_module.asyncio.sleep = wait
-    task = asyncio.create_task(VoicemailTool().execute({}, ctx))
+        ctx.ari_client.dialplan_target_exists = wait
+    task = asyncio.create_task(commit_voicemail(ctx))
     await reached.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -126,7 +136,7 @@ async def test_voicemail_rejection_does_not_overwrite_newer_transfer_owner(monke
         session.transfer_target = 'new-owner'
         return False
     ctx.ari_client.continue_in_dialplan = rejected
-    assert (await VoicemailTool().execute({}, ctx))['status'] == 'failed'
+    assert (await commit_voicemail(ctx))['status'] == 'failed'
     assert session.transfer_state == 'attended'
     assert session.transfer_target == 'new-owner'
     assert session.transfer_active
@@ -138,7 +148,7 @@ async def test_voicemail_result_persists_uncertainty_without_false_transfer(monk
     monkeypatch.setenv('CALL_HISTORY_ENABLED', 'true')
     session, ctx = await voicemail_context(monkeypatch, [response])
     session.conversation_history = [{'role': 'user', 'content': 'Synthetic voicemail request'}]
-    result = await VoicemailTool().execute({}, ctx)
+    result = await commit_voicemail(ctx)
     session.tool_calls = [build_in_call_tool_record(call_id=session.call_id, tool_call_id='vm-tool',
         tool_name='leave_voicemail', parameters={}, result=result)]
     store = CallHistoryStore(db_path=str(tmp_path / 'history.db'))
@@ -399,7 +409,7 @@ async def test_voicemail_rejection_restores_prior_nontransfer_fields(monkeypatch
     session.transfer_active = False
     session.transfer_state = ''
     session.transfer_target = 'previous-diagnostic-target'
-    assert (await VoicemailTool().execute({}, ctx))['status'] == 'failed'
+    assert (await commit_voicemail(ctx))['status'] == 'failed'
     assert (session.transfer_active, session.transfer_state, session.transfer_target) == (False, '', 'previous-diagnostic-target')
 
 

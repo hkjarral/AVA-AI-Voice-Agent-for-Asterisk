@@ -231,3 +231,19 @@ it.each(['__proto__', 'constructor', 'toString'])('renders the literal legacy ac
     render(<InCallToolGroup entries={[{name:'attended_transfer',action,params:{},result:'success',timestamp:'2026-10-30T12:00:00Z',duration_ms:2}]} />);
     expect(screen.getByText(action)).toBeInTheDocument();
 });
+
+
+it('distinguishes voicemail announcement from confirmed and uncertain handoff', () => {
+    const base = {name: 'leave_voicemail', params: {}, timestamp: '2026-11-01T00:00:00Z', duration_ms: 0};
+    render(<InCallToolGroup entries={[
+        {...base, action: 'voicemail_initiated', result: 'success'},
+        {...base, action: 'voicemail_completed', result: 'success'},
+        {...base, action: 'voicemail_failed', result: 'cancelled'},
+        {...base, action: 'voicemail_indeterminate', result: 'failed', handoff_indeterminate: true},
+    ]} />);
+    expect(screen.getByText('Voicemail announcement started')).toBeInTheDocument();
+    expect(screen.getByText('Voicemail handoff accepted')).toBeInTheDocument();
+    expect(screen.getByText('Voicemail handoff cancelled')).toBeInTheDocument();
+    expect(screen.getByText('Voicemail handoff uncertain')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Do not automatically repeat this transfer');
+});

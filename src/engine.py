@@ -23429,6 +23429,21 @@ class Engine:
             return await self._commit_pending_deferred_transfer_for_call_inner(
                 call_id, session, commit_marker=marker, expected_action_id=expected_action_id,
             )
+        except asyncio.CancelledError:
+            latest = await self.session_store.get_by_call_id(call_id)
+            pending = getattr(latest, "pending_deferred_transfer", None)
+            if (marker.get("voicemail_owner") and isinstance(pending, dict)
+                    and pending.get("id") == expected_action_id
+                    and pending.get("source_tool") == "leave_voicemail"
+                    and getattr(latest, "voicemail_handoff_outcome", None) is None):
+                # Cancellation before ARI has no external effect. Retire only
+                # this action, leaving replacement and uncertain owners alone.
+                latest.pending_deferred_transfer = None
+                await self._record_deferred_transfer_timeout_tool_result(
+                    latest, pending, error_code="voicemail_cancelled",
+                    message="Voicemail handoff cancelled before the dialplan request.",
+                )
+            raise
         finally:
             self._release_deferred_transfer_commit(call_id, expected_action_id)
             markers = committing.get(call_id) or []
@@ -23437,7 +23452,9 @@ class Engine:
             if not markers:
                 committing.pop(call_id, None)
             state = getattr(self, "_transfer_handoffs", {}).get(call_id)
-            if state and state.action_id == expected_action_id:
+            another_voicemail_owner = any(m.get("voicemail_owner") for m in markers)
+            if (state and state.action_id == expected_action_id
+                    and (marker.get("voicemail_owner") or not another_voicemail_owner)):
                 state.cancel()
                 self._transfer_handoffs.pop(call_id, None)
 
@@ -23480,6 +23497,8 @@ class Engine:
                     latest_action_id=action_id,
                 )
                 return None
+            if commit_marker is not None and action.get("source_tool") == "leave_voicemail":
+                commit_marker["voicemail_owner"] = True
             # Preserve #702's original pre-await gate for every legacy action.
             # Only opted-in provider announcements keep admission open here.
             if commit_marker is not None and (not action.get("handoff") or action.get("_engine_handoff_attempted")):
@@ -23514,6 +23533,13 @@ class Engine:
                 pending = getattr(session, "pending_deferred_transfer", None)
                 if not isinstance(pending, dict) or pending.get("id") != action_id:
                     return None
+            if action.get("source_tool") == "leave_voicemail":
+                state = getattr(self, "_transfer_handoffs", {}).get(call_id)
+                if (not state or state.action_id != action_id or state.reason not in {
+                        "origin_sentence_matched", "reply_completed", "pipeline_announcement_completed"}):
+                    return await self._recover_failed_deferred_transfer(
+                        call_id, action_id=action_id, preparation_failed=True,
+                    )
             if commit_marker is not None:
                 commit_marker["action_id"] = action_id
 
@@ -23570,6 +23596,10 @@ class Engine:
                     status=result.get("status"),
                     message=result.get("message"),
                 )
+            if isinstance(result, dict) and result.get("handoff_indeterminate") is True:
+                # The channel may already belong to dialplan. Do not cancel,
+                # speak, terminate, or replay an uncertain external handoff.
+                return result
             if not isinstance(result, dict) or result.get("status") != "success":
                 # Do not replay a potentially side-effectful commit on the next
                 # provider completion, or leave hangup blocked indefinitely.
@@ -23596,6 +23626,8 @@ class Engine:
         preparation_failed: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Cancel the exact failed action; resume AI unless its output has failed."""
+        from src.tools.context import ToolExecutionContext
+
         error_code = "deferred_transfer_commit_failed" if commit_failed else "deferred_audio_drain_timeout"
         message = (
             "Deferred transfer cancelled because the transfer commit failed."
@@ -23621,6 +23653,16 @@ class Engine:
                 latest_action_id=action.get("id") if isinstance(action, dict) else None,
             )
             return None
+
+        if (action.get("source_tool") == "leave_voicemail"
+                and (self._session_was_transferred(session)
+                     or ToolExecutionContext.is_pending_attended_transfer(session))):
+            session.pending_deferred_transfer = None
+            await self._record_deferred_transfer_timeout_tool_result(
+                session, action, error_code="voicemail_superseded",
+                message="Voicemail handoff cancelled because another routing action owns the call.",
+            )
+            return {"status": "failed", "transfer_cancelled": True, "apology_spoken": False}
 
         queue_failed = bool(session.audio_diagnostics.get("provider_queue_failed"))
         if queue_failed:
@@ -23834,7 +23876,8 @@ class Engine:
             parameters=dict(origin.get("params") or {}),
             result={
                 "status": "cancelled",
-                "action": "deferred_transfer_commit_failed" if error_code == "deferred_transfer_commit_failed" else "deferred_transfer_timeout",
+                "action": ("voicemail_failed" if action.get("source_tool") == "leave_voicemail" else
+                           "deferred_transfer_commit_failed" if error_code == "deferred_transfer_commit_failed" else "deferred_transfer_timeout"),
                 "message": message,
                 "error_code": error_code,
                 "transfer_cancelled": True,
@@ -24118,7 +24161,7 @@ class Engine:
             return False
 
         action = getattr(session, "pending_deferred_transfer", None)
-        if not isinstance(action, dict):
+        if not isinstance(action, dict) or action.get("source_tool") == "leave_voicemail":
             return False
 
         description = str(action.get("description") or action.get("destination_key") or action.get("target") or "").strip()

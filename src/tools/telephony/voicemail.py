@@ -1,40 +1,22 @@
-"""
-Voicemail Tool - Route calls to voicemail.
+"""Route voicemail only after its announcement and caller audio finish.
 
-This tool allows the AI to send callers to voicemail when requested.
-
-IMPORTANT BEHAVIOR:
-The FreePBX VoiceMail application requires bidirectional RTP and voice activity
-before it begins playing the voicemail greeting. When a channel enters the 
-VoiceMail application directly from Stasis (via continue), there can be a 
-5-8 second delay before the greeting plays.
-
-WORKAROUND:
-The tool returns a message that asks the caller a question ("Are you ready to 
-leave a message now?"). When the caller responds ("yes", "ok", etc.), it 
-triggers voice activity detection and establishes the bidirectional RTP path,
-allowing the voicemail greeting to play immediately.
-
-Without this interaction, the VoiceMail app stalls and only begins after the
-caller speaks or after an 8-second timeout.
-
-Timeline Evidence (Call 1763009524.4793):
-- 04:52:48.275 - continue() called
-- 04:52:48.280 - Stasis ended (5ms)
-- 21:52:48.xxx - VoiceMail app launched
-- 21:52:48-56  - Channel setting write format (waiting for audio path)
-- 21:52:56.xxx - Caller said "ok" → greeting played immediately
-- Total delay: ~8 seconds until caller spoke
+The engine owns the deferred action. ARI acceptance is a separate, tri-state
+outcome; an uncertain request must never be replayed or reclaim caller ownership.
 """
 
 import asyncio
 import re
 from uuid import uuid4
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import structlog
 
 from ..base import Tool, ToolDefinition, ToolCategory
 from ..context import ToolExecutionContext
+from ..execution_history import record_in_call_tool_result
+from .deferred_transfer import (
+    build_deferred_transfer_action, build_deferred_transfer_result,
+    store_pending_deferred_transfer,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -120,7 +102,7 @@ class VoicemailTool(Tool):
         """
         # Get voicemail config
         config = context.get_config_value("tools.leave_voicemail")
-        if not config:
+        if not isinstance(config, dict) or not config:
             logger.warning("Voicemail tool not configured", call_id=context.call_id)
             return {
                 "status": "failed",
@@ -145,12 +127,7 @@ class VoicemailTool(Tool):
             }
         
         session = await context.get_session()
-        if (session.cleanup_in_progress or session.cleanup_completed
-                or getattr(session, "transfer_active", False)
-                or getattr(session, "transfer_state", None)
-                or getattr(session, "transfer_destination", None)
-                or context.is_pending_attended_transfer(session)
-                or isinstance(getattr(session, "pending_deferred_transfer", None), dict)):
+        if self._unavailable(session):
             return {"status": "failed", "message": "The call is no longer available for voicemail."}
 
         validator = getattr(context.ari_client, "dialplan_target_exists", None)
@@ -163,13 +140,62 @@ class VoicemailTool(Tool):
             if exists is False:
                 return {"status": "failed", "message": "Voicemail destination is not available."}
 
-        # Recheck after discovery, then claim before the first side-effect await.
-        if (await context.get_session() is not session or session.cleanup_in_progress
+        # No await separates the ownership recheck from arming the action.
+        if (await context.get_session() is not session or self._unavailable(session)):
+            return {"status": "failed", "message": "The call is no longer available for voicemail."}
+        action = build_deferred_transfer_action(
+            source_tool="leave_voicemail", commit_tool="leave_voicemail",
+            transfer_type="voicemail", target=extension, description="voicemail",
+            dialplan_context="ext-local", payload={"mailbox_key": _mailbox_key},
+        )
+        await store_pending_deferred_transfer(context, action, session=session)
+        return build_deferred_transfer_result(
+            action=action, message=action["handoff"]["message"],
+            extra={"action": "voicemail_initiated"},
+        )
+
+    @staticmethod
+    def _unavailable(session: Any, *, action_id: Optional[str] = None) -> bool:
+        pending = getattr(session, "pending_deferred_transfer", None)
+        return (session.cleanup_in_progress or session.cleanup_completed
                 or getattr(session, "transfer_active", False)
                 or getattr(session, "transfer_state", None)
-                or context.is_pending_attended_transfer(session)
-                or isinstance(getattr(session, "pending_deferred_transfer", None), dict)):
+                or getattr(session, "transfer_destination", None)
+                or ToolExecutionContext.is_pending_attended_transfer(session)
+                or (isinstance(pending, dict) and (action_id is None or pending.get("id") != action_id)))
+
+    async def commit_deferred_action(
+        self, action: Dict[str, Any], context: ToolExecutionContext,
+    ) -> Dict[str, Any]:
+        session = await context.get_session()
+        pending = getattr(session, "pending_deferred_transfer", None)
+        if (not isinstance(pending, dict) or pending.get("id") != action.get("id")
+                or self._unavailable(session, action_id=action.get("id"))):
             return {"status": "failed", "message": "The call is no longer available for voicemail."}
+        config = context.get_config_value("tools.leave_voicemail") or {}
+        if not isinstance(config, dict):
+            return {"status": "failed", "message": "Voicemail destination is not available."}
+        mailbox_key, extension = self.resolve_mailbox(config)
+        if (config.get("enabled") is False or not extension
+                or not re.fullmatch(r"[A-Za-z0-9_*#.-]+", extension)
+                or action.get("target") != extension
+                or (action.get("payload") or {}).get("mailbox_key") != mailbox_key):
+            return {"status": "failed", "message": "Voicemail destination is not available."}
+        validator = getattr(context.ari_client, "dialplan_target_exists", None)
+        if callable(validator):
+            try:
+                exists = await validator(context.caller_channel_id, context="ext-local",
+                                         extension=f"vmu{extension}", priority=1)
+            except Exception:
+                exists = None
+            if exists is False:
+                return {"status": "failed", "message": "Voicemail destination is not available."}
+        latest = await context.get_session()
+        pending = getattr(session, "pending_deferred_transfer", None)
+        if (latest is not session or not isinstance(pending, dict)
+                or pending.get("id") != action.get("id")
+                or self._unavailable(session, action_id=action.get("id"))):
+            return {"status": "failed", "message": "The call ended before voicemail started."}
         previous = {key: getattr(session, key, None) for key in
                     ("transfer_active", "transfer_state", "transfer_target")}
         claim = uuid4().hex
@@ -178,7 +204,6 @@ class VoicemailTool(Tool):
         session.transfer_active = True
         session.transfer_target = f"Voicemail {extension}"
         session.transfer_state = "voicemail_pending"
-        request_started = False
 
         def still_owned():
             return (session.voicemail_handoff_id == claim
@@ -194,30 +219,22 @@ class VoicemailTool(Tool):
                 session.voicemail_handoff_id = None
 
         try:
-            # Allow the existing caller-facing announcement to finish before
-            # leaving Stasis. Cancellation here has made no external request.
-            await asyncio.sleep(0.8)
-            latest = await context.get_session()
-            if (latest is not session or not still_owned() or session.cleanup_in_progress
-                    or session.cleanup_completed):
-                restore()
-                return {"status": "failed", "message": "The call ended before voicemail started."}
-            request_started = True
             handed_off = await context.ari_client.continue_in_dialplan(
                 context.caller_channel_id, context="ext-local",
                 extension=f"vmu{extension}", priority=1,
             )
         except asyncio.CancelledError:
-            if request_started and still_owned():
+            if still_owned():
                 session.voicemail_handoff_outcome = "indeterminate"
                 session.transfer_state = "voicemail_indeterminate"
-            elif not request_started:
-                restore()
+                self._retire_action(session, action)
+                await self._record_outcome(context, action, {
+                    "status": "failed", "action": "voicemail_indeterminate",
+                    "handoff_indeterminate": True,
+                    "message": "Voicemail handoff could not be confirmed. Do not retry the transfer.",
+                })
             raise
         except Exception:
-            if not request_started:
-                restore()
-                return {"status": "failed", "message": "The call ended before voicemail started."}
             # The request may have reached Asterisk. Never replay or reclaim a
             # potentially handed-off caller after a timeout/transport failure.
             handed_off = None
@@ -236,12 +253,36 @@ class VoicemailTool(Tool):
             if still_owned():
                 session.voicemail_handoff_outcome = "confirmed"
                 session.transfer_state = "voicemail"
-            return {"status": "success", "message": "Are you ready to leave a message now?"}
+            self._retire_action(session, action)
+            result = {"status": "success", "action": "voicemail_completed",
+                      "message": "Voicemail handoff accepted."}
+            await self._record_outcome(context, action, result)
+            return result
         if still_owned():
             session.voicemail_handoff_outcome = "indeterminate"
             session.transfer_state = "voicemail_indeterminate"
-        return {
-            "status": "failed",
+        self._retire_action(session, action)
+        result = {
+            "status": "failed", "action": "voicemail_indeterminate",
             "handoff_indeterminate": True,
             "message": "Voicemail handoff could not be confirmed. Do not retry the transfer; it may already have started.",
         }
+        await self._record_outcome(context, action, result)
+        return result
+
+    @staticmethod
+    def _retire_action(session: Any, action: Dict[str, Any]) -> None:
+        pending = getattr(session, "pending_deferred_transfer", None)
+        if isinstance(pending, dict) and pending.get("id") == action.get("id"):
+            session.pending_deferred_transfer = None
+
+    @staticmethod
+    async def _record_outcome(
+        context: ToolExecutionContext, action: Dict[str, Any], result: Dict[str, Any],
+    ) -> None:
+        origin = action.get("_tool_history_origin") or {}
+        await record_in_call_tool_result(
+            session_store=context.session_store, call_id=context.call_id,
+            tool_call_id=origin.get("tool_call_id") or action.get("id"),
+            tool_name="leave_voicemail", parameters={}, result=result,
+        )

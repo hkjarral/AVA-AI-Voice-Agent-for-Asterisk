@@ -157,6 +157,10 @@ export const PhaseToolGroup = ({ phase, entries }: { phase: Exclude<ToolPhase, '
 );
 
 const transferActionLabels: Record<string, string> = {
+    voicemail_initiated: 'Voicemail announcement started',
+    voicemail_completed: 'Voicemail handoff accepted',
+    voicemail_failed: 'Voicemail handoff cancelled',
+    voicemail_indeterminate: 'Voicemail handoff uncertain',
     attended_transfer_initiated: 'Transfer initiated',
     attended_transfer_failed: 'Transfer failed',
     attended_transfer_completed: 'Transfer completed',

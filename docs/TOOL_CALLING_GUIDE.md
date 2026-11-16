@@ -140,6 +140,28 @@ append-only reduction contract:
   remain available. Messages that echo a redacted parameter are sanitized too.
   Policy changes affect future entries only, and historical `***REDACTED***` values
   cannot be recovered.
+- Voicemail first records `voicemail_initiated`: its announcement is armed, not
+  a completed transfer. Native providers finish a correlated spoken reply;
+  modular pipelines finish their TTS playback. The engine then waits for caller
+  transport buffers to drain before requesting ARI continue. This is mandatory
+  even when optional blind-transfer deferral/announcement settings are disabled;
+  native voicemail does not require Local AI Server TTS. Its native announcement
+  uses the shared 4-second start and 20-second finish bounds. ElevenLabs requires
+  authoritative `agent_response_complete` events; idle estimates cannot release
+  voicemail. Missing/failed speech,
+  interrupted completion, or announcement/drain timeout cancels the handoff and
+  uses the existing transfer recovery path. No fixed announcement delay or
+  post-handoff question is used. No new operator setting is required.
+- For ElevenLabs, enable `agent_response_complete` in the agent's `client_events`
+  before qualifying voicemail. This is an ElevenLabs agent setting, not an AVA
+  provider override; see the official [client-event documentation](https://elevenlabs.io/docs/eleven-agents/customization/events/client-events#agent_response_complete).
+  An `audio_idle_fallback`, duration estimate, or partial/interrupted response is
+  not completion. If the event is missing, voicemail cancels before ARI continue
+  and Call History records a cancelled handoff. Verify the account event setting
+  and repeat the audible acceptance test after configuring it; AVA does not
+  change the provider account automatically. Recovery can resume the AI only
+  while it still owns the caller. A superseding routing owner suppresses recovery
+  speech as well as voicemail. Never automatically retry an uncertain ARI request.
 - A voicemail handoff rejected by ARI is a failure and restores engine ownership.
   A timeout, 5xx, or lost response is also a failed invocation, with
   `handoff_indeterminate: true`: the caller may already have left Stasis. Call
@@ -148,6 +170,9 @@ append-only reduction contract:
   `error` call outcome, not a confirmed `transferred` outcome. The engine retains
   its transfer guard until caller lifecycle cleanup so it cannot hang up a
   potentially handed-off leg. A canceled in-flight request has the same guard.
+  `voicemail_completed` records accepted continue, `voicemail_failed` records a
+  cancellation/rejection, and `voicemail_indeterminate` records an uncertain
+  request. These append terminal evidence under the original invocation ID.
 - The event records the tool execution fact only. A successful voicemail route
   does not claim that a message was recorded, and a successful transfer does
   not claim that a human answered.
@@ -2131,7 +2156,10 @@ The voicemail/hangup/pre-call hold recovery regressions in
 `tests/test_ari_lifecycle_recovery.py` use synthetic ARI responses and temporary
 Call History SQLite databases. They cover explicit rejection, indeterminate
 handoff, deleted mailbox scope, retries, transfer precedence, cancellation,
-cleanup and late playback start. They do not establish audible PBX acceptance.
+cleanup and late playback start. `tests/test_voicemail_deferred_handoff.py`
+adds adapter/Engine announcement correlation, audio queued beyond 800 ms, native
+provider callbacks, pipeline TTS completion, and pre/post-request cancellation.
+These offline checks do not establish audible PBX acceptance.
 For deployed acceptance, use a disposable inbound Agent and mailbox, verify hold
 stops before greeting, farewell audio completes, and accepted voicemail leaves
 Stasis without an engine caller DELETE. Keep ARI failure injections synthetic;
