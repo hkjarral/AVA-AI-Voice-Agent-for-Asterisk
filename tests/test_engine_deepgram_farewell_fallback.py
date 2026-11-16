@@ -79,6 +79,43 @@ def test_casual_thanks_does_not_arm_fallback():
     assert state == {}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_text, expected_hangup",
+    [
+        ("Can you hand off to a real person?", False),
+        ("I was on hold and the call dropped", False),
+        ("Please leave a message and call me back", False),
+        ("Please end the call now.", True),
+        ("Please and the call now.", True),
+        ("Okay, hand up the call.", True),
+    ],
+)
+async def test_farewell_fallback_requires_caller_command(user_text, expected_hangup):
+    provider = DeepgramProvider.__new__(DeepgramProvider)
+    provider.call_id = "call-intent"
+    provider.on_event = AsyncMock()
+    provider._hangup_policy = {}
+    provider._farewell_fallback_state = {}
+    provider._farewell_fallback_audio_seen = False
+    provider._terminal_turn_suppressed = False
+    provider._hangup_pending = False
+
+    provider._track_farewell_fallback(role="user", text=user_text)
+    provider._track_farewell_fallback(role="assistant", text="Thanks for calling!")
+
+    assert provider.terminal_output_protected is expected_hangup
+    assert await provider._emit_farewell_fallback_if_needed() is expected_hangup
+    if expected_hangup:
+        provider.on_event.assert_awaited_once()
+        assert provider.on_event.call_args.args[0]["type"] == "HangupReady"
+    else:
+        provider.on_event.assert_not_awaited()
+        assert provider._farewell_fallback_state == {}
+    # A completed boundary cannot emit a duplicate terminal event.
+    assert await provider._emit_farewell_fallback_if_needed() is False
+
+
 def test_new_non_terminal_user_turn_clears_pending_fallback():
     state = DeepgramProvider.next_farewell_fallback_state(
         {}, role="user", text="That's all."
