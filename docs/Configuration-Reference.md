@@ -1229,3 +1229,52 @@ The integration test is skipped unless both `FISH_AUDIO_API_KEY` and
 ## Cloud full-agent startup connection recovery
 
 Google Live/Vertex, OpenAI Realtime, Grok, Deepgram Agent, and ElevenLabs Agent support optional `connect_timeout_sec` (default 10), `connect_max_retries` (default 0, maximum 3), and `connect_total_timeout_sec` (default unset). Missing fields preserve existing behavior. Configure them per provider in **Providers → Startup connection recovery (Expert)**, then restart AI Engine. These fields affect initial connection establishment, separately from session setup, keepalive, and mid-call recovery. See [configuration, upgrade compatibility, rollback, and real-call verification](Provider-Connection-Recovery.md).
+
+## Provider input gain and audio-energy diagnostics
+
+Input gain remains disabled unless both `input_gain_target_rms` and
+`input_gain_max_db` are positive. It applies to the engine's PCM provider-input
+branch after resampling; the mu-law branch and modular pipelines are unchanged.
+Google Live and OpenAI Realtime expose these controls under their advanced audio
+settings. For other providers with gain configuration, use **Raw YAML** in the
+Admin UI or `config/ai-agent.local.yaml`. Save and restart the AI Engine; test on
+new calls. Per-call/provider state is transient and is reset at provider stop,
+call cleanup, or engine restart.
+
+```yaml
+providers:
+  google_live:
+    input_gain_target_rms: 2500
+    input_gain_max_db: 12
+    input_gain_noise_floor_rms: 200
+```
+
+`input_gain_noise_floor_rms` accepts 0–32767 (default **200**, linear PCM16
+amplitude). Frames at or below the floor do not update the level estimate and
+ramp gain towards unity. Digital silence remains silent. This energy threshold
+is not a speech classifier: choose it below the quietest speech you need to
+retain, and above measured background noise where possible. Setting 0 excludes
+only digital silence. A high maximum gain can still amplify noise above the
+floor; start conservatively and compare real caller audio.
+
+The level follower uses a 10 ms attack for louder audio and a 500 ms release
+for quieter audio. Gain starts at unity, rises with a 50 ms time constant and
+falls with a 10 ms time constant, using a sample ramp. A frame's peak headroom
+can reduce gain immediately to prevent amplified peaks clipping. Loud audio is
+never attenuated. Short pauses therefore do not normalize every frame to the
+same level. These constants follow audio duration at all supported sample rates.
+
+The engine emits at most one excessive-gain warning per provider session, then
+one `Provider input gain summary` on stop/cleanup. The summary reports processed
+frames, below-floor frames, frames/duration with gain above 10x, and the
+energy-weighted RMS of audio above the floor (`active_audio_rms`). This is not
+speech detection or a diagnosis of SIP trunk gain. Per-frame gain INFO logs have
+been removed.
+
+Low-energy diagnostics require a window containing at least one second of
+nonzero audio, rather than warning on the first quiet frame. Empty and digital
+silence frames (including intentional input gating) do not advance that window.
+The window repeats until a low-energy warning is emitted, at most once per stage
+per call. The thresholds remain RMS 200 for PCM and RMS 50 for decoded mu-law.
+This observation does not establish recognition quality; healthy speech and
+initial silence should be checked alongside sustained quiet input.
