@@ -36,6 +36,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from src.audio.resampler import resample_audio
+from src.core.outbound_config import voicemail_drop_enabled
 from src.core.outbound_schedule import normalize_outbound_daily_window
 
 try:
@@ -727,7 +728,7 @@ async def set_campaign_status(campaign_id: str, req: CampaignStatusRequest):
                     status_code=400,
                     detail=f"No pending leads to dial (canceled={canceled}, completed={completed}). Recycle leads back to pending, then Start again.",
                 )
-            if bool(int(campaign.get("voicemail_drop_enabled") or 1)):
+            if voicemail_drop_enabled(campaign.get("voicemail_drop_enabled")):
                 media_uri = (campaign.get("voicemail_drop_media_uri") or "").strip()
                 if not media_uri:
                     raise HTTPException(

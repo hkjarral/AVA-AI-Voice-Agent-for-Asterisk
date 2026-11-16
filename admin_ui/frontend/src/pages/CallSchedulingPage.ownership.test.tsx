@@ -408,3 +408,50 @@ it('does not claim ready when a configured recording is missing', async () => {
     expect(screen.getByText('Needs attention')).toBeInTheDocument();
     expect(screen.queryByText('Ready')).not.toBeInTheDocument();
 });
+
+describe('voicemail campaign checkbox persistence', () => {
+    const voicemailCheckbox = () => screen.getByRole('checkbox', { name: /Voicemail drop \(AMD/ });
+
+    it('serializes an unchecked new-campaign checkbox as JSON false', async () => {
+        render(<CallSchedulingPage />);
+        await screen.findByText('Synthetic lead A');
+        fireEvent.click(screen.getByRole('button', { name: 'New Campaign' }));
+        expect(voicemailCheckbox()).toBeChecked();
+        fireEvent.click(voicemailCheckbox());
+        // The existing Name control is the first text field in the settings form.
+        const dialog = screen.getByRole('dialog', { name: 'Create Campaign' });
+        fireEvent.change(within(dialog).getAllByRole('textbox')[0], { target: { value: 'Synthetic disabled campaign' } });
+        vi.mocked(axios.post).mockResolvedValue({ data: { id: 'A' } });
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/outbound/campaigns', expect.objectContaining({
+            name: 'Synthetic disabled campaign', voicemail_drop_enabled: false, consent_enabled: false,
+        })));
+        expect(vi.mocked(axios.post).mock.calls.some(([url]) => url.includes('recordings'))).toBe(false);
+    });
+
+    it.each([false, 0])('reopens persisted %s unchecked and starts without requiring a recording', async persisted => {
+        let saved = { ...campaign('A'), voicemail_drop_enabled: persisted, voicemail_drop_media_uri: '' };
+        loadCampaigns = async () => ({ data: [saved] });
+        vi.mocked(axios.patch).mockImplementation(async (_url, payload) => {
+            saved = { ...saved, ...(payload as Partial<typeof saved>), voicemail_drop_enabled: 0 };
+            return { data: saved };
+        });
+        render(<CallSchedulingPage />);
+        await screen.findByText('Synthetic lead A');
+        expect(screen.getByText('Ready')).toBeInTheDocument();
+        expect(screen.queryByText('Voicemail recording missing')).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+        expect(voicemailCheckbox()).not.toBeChecked();
+        // Toggle twice to exercise the UI's false-value mutation, then save/reopen.
+        fireEvent.click(voicemailCheckbox());
+        fireEvent.click(voicemailCheckbox());
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+        await waitFor(() => expect(axios.patch).toHaveBeenCalledWith('/api/outbound/campaigns/A', expect.objectContaining({ voicemail_drop_enabled: false })));
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+        fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+        expect(voicemailCheckbox()).not.toBeChecked();
+        fireEvent.click(within(screen.getByRole('dialog')).getAllByRole('button', { name: 'Close' })[0]);
+        fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/outbound/campaigns/A/status', { status: 'running', cancel_pending: false }));
+    });
+});

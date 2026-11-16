@@ -225,7 +225,19 @@ Move “Sample CSV” + “Import CSV” under the New Campaign modal:
 Campaign settings include optional toggles:
 
 - **Consent gate** (HUMAN only): play a consent prompt and require DTMF (`1` accept / `2` deny).
-- **Voicemail drop** (MACHINE/NOTSURE): leave a voicemail recording when AMD indicates a machine.
+- **Voicemail drop** (MACHINE/NOTSURE): enabled by default; leave a voicemail recording when AMD indicates a machine. An enabled campaign requires a recording before Start.
+
+In **Call Scheduling → Create Campaign / Edit → Settings → Features**, uncheck
+**Voicemail drop** to allow starting without a voicemail recording. Save and reopen
+the campaign to confirm the checkbox remains unchecked. The saved setting is used
+for outbound origination, refreshed at the answered dialplan hop, and read again
+for the AMD result. With it disabled, `AAVA_VM_ENABLED=0`, MACHINE/NOTSURE hangs up
+without voicemail playback, and the attempt/lead outcome is `machine_detected`.
+An omitted legacy setting keeps the enabled default; saved `false`/SQLite `0`
+remains disabled after reopening or an engine restart. Consent is independent and
+still requires its own recording when enabled. No additional control or database
+migration is required. Deploying this code correction requires restarting the
+engine and Admin UI; pause campaigns and let active calls finish before updating.
 
 Both recordings are uploaded as `.wav` (recommended) or `.ulaw`; WAV is converted to 8kHz μ-law for Asterisk.
 
@@ -269,7 +281,7 @@ Keep a collapsible “Setup Guide” with dialplan snippet and verification comm
 
 ### Phase 4 — Voicemail drop flow
 
-- Campaign start requires voicemail audio to exist
+- Campaign start requires voicemail audio when voicemail drop is enabled
 - Implement TTS generation (`local_ai_server`) + upload support
 - Implement WAV preview endpoint for Admin UI
 - Play voicemail drop (μ-law 8k) and hang up

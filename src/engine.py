@@ -106,6 +106,7 @@ from .core.transport_orchestrator import TransportOrchestrator, TransportProfile
 from .core.models import CallSession
 from .core.call_diagnostics import build_call_diagnostics_snapshot
 from .core.no_input_watchdog import NoInputPolicy, NoInputWatchdog
+from .core.outbound_config import voicemail_drop_enabled
 from .core.outbound_schedule import normalize_outbound_daily_window
 from .core.outbound_store import get_outbound_store
 from .utils.audio_capture import AudioCaptureManager
@@ -3382,7 +3383,7 @@ class Engine:
                 return u.split("sound:", 1)[1]
             return u
 
-        voicemail_enabled = bool(int(campaign.get("voicemail_drop_enabled") or 1))
+        voicemail_enabled = voicemail_drop_enabled(campaign.get("voicemail_drop_enabled"))
         consent_enabled = bool(int(campaign.get("consent_enabled") or 0))
         consent_timeout = int(campaign.get("consent_timeout_seconds") or 5)
         if consent_timeout < 1:
@@ -3837,7 +3838,7 @@ class Engine:
 
                     # Ensure voicemail/consent controls are present for the dialplan hop.
                     try:
-                        voicemail_enabled = bool(int(campaign.get("voicemail_drop_enabled") or 1))
+                        voicemail_enabled = voicemail_drop_enabled(campaign.get("voicemail_drop_enabled"))
                     except Exception:
                         voicemail_enabled = True
                     try:
@@ -3980,7 +3981,7 @@ class Engine:
                 campaign = await self.outbound_store.get_campaign(campaign_id) if campaign_id else None
             except Exception:
                 campaign = None
-            vm_enabled = bool(int((campaign or {}).get("voicemail_drop_enabled") or 1))
+            vm_enabled = voicemail_drop_enabled((campaign or {}).get("voicemail_drop_enabled"))
             media_uri = str((campaign or {}).get("voicemail_drop_media_uri") or "").strip()
             if not media_uri:
                 media_uri = "sound:beep"

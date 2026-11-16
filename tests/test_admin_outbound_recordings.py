@@ -135,3 +135,69 @@ def test_campaign_schedule_start_validation_rejects_invalid_values(campaign, det
 
     assert exc_info.value.status_code == 400
     assert detail_fragment in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "flag,consent,expected_detail",
+    [
+        ({"voicemail_drop_enabled": 0}, False, None),
+        ({"voicemail_drop_enabled": False}, False, None),
+        ({"voicemail_drop_enabled": 1}, False, "Voicemail drop is enabled"),
+        ({"voicemail_drop_enabled": True}, False, "Voicemail drop is enabled"),
+        ({}, False, "Voicemail drop is enabled"),
+        ({"voicemail_drop_enabled": None}, False, "Voicemail drop is enabled"),
+        ({"voicemail_drop_enabled": 0}, True, "Consent gate is enabled"),
+    ],
+)
+async def test_start_recording_guards_preserve_disabled_and_legacy_defaults(monkeypatch, flag, consent, expected_detail):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    campaign = {
+        "timezone": "UTC", "daily_window_start_local": "09:00", "daily_window_end_local": "17:00",
+        "consent_enabled": int(consent), **flag,
+    }
+    store = SimpleNamespace(
+        get_campaign=AsyncMock(return_value=campaign),
+        campaign_stats=AsyncMock(return_value={"lead_states": {"pending": 1}}),
+        set_campaign_status=AsyncMock(return_value={"status": "running"}),
+    )
+    monkeypatch.setattr(outbound, "_get_outbound_store", lambda: store)
+    request = outbound.CampaignStatusRequest(status="running")
+    if expected_detail:
+        with pytest.raises(HTTPException) as exc:
+            await outbound.set_campaign_status("fixture", request)
+        assert exc.value.status_code == 400
+        assert expected_detail in exc.value.detail
+        store.set_campaign_status.assert_not_awaited()
+    else:
+        assert await outbound.set_campaign_status("fixture", request) == {"status": "running"}
+        store.set_campaign_status.assert_awaited_once_with("fixture", "running", cancel_pending=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled,consent,detail", [(True, False, "Voicemail drop"), (False, True, "Consent gate")])
+async def test_start_rejects_enabled_feature_without_recording_after_api_persistence(tmp_path, monkeypatch, enabled, consent, detail):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from src.core.outbound_store import OutboundStore
+
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    store = OutboundStore(db_path=str(tmp_path / "history.db"))
+    monkeypatch.setattr(outbound, "_get_outbound_store", lambda: store)
+    monkeypatch.setattr(outbound, "_media_uri_exists", lambda _uri: False)
+    app = FastAPI()
+    app.include_router(outbound.router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture") as api:
+        response = await api.post("/outbound/campaigns", json={
+            "name": "Synthetic missing recording", "voicemail_drop_enabled": enabled, "consent_enabled": consent,
+        })
+        assert response.status_code == 200
+        campaign_id = response.json()["id"]
+        assert response.json()["voicemail_drop_enabled"] == int(enabled)
+        await store.import_leads_csv(campaign_id, b"phone_number\n1001\n")
+        response = await api.post(f"/outbound/campaigns/{campaign_id}/status", json={"status": "running"})
+        assert response.status_code == 400
+        assert detail in response.json()["detail"]
+        assert (await store.get_campaign(campaign_id))["status"] == "draft"
