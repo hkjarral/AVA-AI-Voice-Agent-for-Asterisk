@@ -177,6 +177,13 @@ complete suggestion list does not represent every possible off-grid start.
 Slot starts round up to duration multiples from midnight, including nonzero
 seconds or microseconds at the start of a free interval. For 30-minute slots,
 an interval starting at 10:00:30 first permits 10:30, provided the full slot fits.
+Both availability modes use the shared timezone grid: nonexistent DST clock times
+are skipped, repeated times retain distinct offsets, and results are sorted by
+instant before truncation. The first slot can have an earlier clock time after a
+fall-back while still being a later instant. Returned slot ends use the requested
+elapsed duration across clock changes; pass the offset-bearing start/end pair unchanged.
+Range clipping, busy subtraction, aggregation and exact booking containment use
+instants as well, including ranges whose end clock time precedes their start.
 **Absence from suggestions is never proof that a requested interval is busy.**
 For example, 08:00/08:30/09:00 plus `slots_truncated: true` says nothing about
 13:00; check 13:00–13:30 explicitly. Queries are bounded to 93 days; split a wider

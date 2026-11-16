@@ -80,8 +80,8 @@ def working_hours_mask(
     rs = range_start.astimezone(tz)
     re_ = range_end.astimezone(tz)
     intervals: list[tuple[datetime, datetime]] = []
-    cur_day = rs.replace(hour=0, minute=0, second=0, microsecond=0)
-    while cur_day <= re_:
+    cur_day = rs.replace(hour=0, minute=0, second=0, microsecond=0, fold=0)
+    while cur_day.date() <= re_.date():
         if cur_day.weekday() in work_days:
             day_open = cur_day.replace(hour=work_start_hour)
             day_close = (
@@ -89,9 +89,9 @@ def working_hours_mask(
                 if work_end_hour < 24
                 else cur_day + timedelta(days=1)
             )
-            start = max(day_open, rs)
-            end = min(day_close, re_)
-            if start < end:
+            start = max(day_open, rs, key=to_utc)
+            end = min(day_close, re_, key=to_utc)
+            if to_utc(start) < to_utc(end):
                 intervals.append((start, end))
         cur_day = cur_day + timedelta(days=1)
     return intervals
@@ -101,18 +101,18 @@ def subtract_busy(
     free_blocks: Iterable[tuple[datetime, datetime]],
     busy_blocks: Iterable[tuple[datetime, datetime]],
 ) -> list[tuple[datetime, datetime]]:
-    free_sorted = sorted(free_blocks, key=lambda item: item[0])
-    busy_sorted = sorted(busy_blocks, key=lambda item: item[0])
+    free_sorted = sorted(free_blocks, key=lambda item: to_utc(item[0]))
+    busy_sorted = sorted(busy_blocks, key=lambda item: to_utc(item[0]))
     available: list[tuple[datetime, datetime]] = []
     for free_start, free_end in free_sorted:
         current_start = free_start
         for busy_start, busy_end in busy_sorted:
-            if busy_end <= current_start or busy_start >= free_end:
+            if to_utc(busy_end) <= to_utc(current_start) or to_utc(busy_start) >= to_utc(free_end):
                 continue
-            if current_start < busy_start:
+            if to_utc(current_start) < to_utc(busy_start):
                 available.append((current_start, busy_start))
-            current_start = max(current_start, busy_end)
-        if current_start < free_end:
+            current_start = max(current_start, busy_end, key=to_utc)
+        if to_utc(current_start) < to_utc(free_end):
             available.append((current_start, free_end))
     return available
 
@@ -123,12 +123,12 @@ def union_intervals(interval_groups: Iterable[Iterable[tuple[datetime, datetime]
         merged.extend(group)
     if not merged:
         return []
-    merged.sort(key=lambda item: item[0])
+    merged.sort(key=lambda item: to_utc(item[0]))
     out: list[tuple[datetime, datetime]] = []
     cur_start, cur_end = merged[0]
     for start, end in merged[1:]:
-        if start <= cur_end:
-            cur_end = max(cur_end, end)
+        if to_utc(start) <= to_utc(cur_end):
+            cur_end = max(cur_end, end, key=to_utc)
         else:
             out.append((cur_start, cur_end))
             cur_start, cur_end = start, end
@@ -142,14 +142,14 @@ def intersect_intervals(
 ) -> list[tuple[datetime, datetime]]:
     i, j = 0, 0
     result: list[tuple[datetime, datetime]] = []
-    left_sorted = sorted(left, key=lambda item: item[0])
-    right_sorted = sorted(right, key=lambda item: item[0])
+    left_sorted = sorted(left, key=lambda item: to_utc(item[0]))
+    right_sorted = sorted(right, key=lambda item: to_utc(item[0]))
     while i < len(left_sorted) and j < len(right_sorted):
-        start = max(left_sorted[i][0], right_sorted[j][0])
-        end = min(left_sorted[i][1], right_sorted[j][1])
-        if start < end:
+        start = max(left_sorted[i][0], right_sorted[j][0], key=to_utc)
+        end = min(left_sorted[i][1], right_sorted[j][1], key=to_utc)
+        if to_utc(start) < to_utc(end):
             result.append((start, end))
-        if left_sorted[i][1] < right_sorted[j][1]:
+        if to_utc(left_sorted[i][1]) < to_utc(right_sorted[j][1]):
             i += 1
         else:
             j += 1
@@ -181,6 +181,12 @@ def build_slot_starts(
     duration = timedelta(minutes=duration_minutes)
     starts: list[datetime] = []
     for start, end in intervals:
+        if start.tzinfo is not None:
+            # Round all local grid points, including both folds, before choosing
+            # the first chronological instant. Rounding the initial wall clock
+            # alone can skip the later occurrence of an earlier local hour.
+            starts.extend(build_zoned_slot_starts([(start, end)], duration_minutes, start.tzinfo))
+            continue
         if end <= start:
             continue
         cursor = round_up_to_next_slot(start, duration_minutes)
@@ -188,3 +194,37 @@ def build_slot_starts(
             starts.append(cursor)
             cursor += duration
     return starts
+
+
+def build_zoned_slot_starts(
+    intervals: Iterable[tuple[datetime, datetime]],
+    duration_minutes: int,
+    tz: ZoneInfo,
+) -> list[datetime]:
+    """Align local starts while checking elapsed duration across DST changes.
+
+    All-day windows can span a clock change: nonexistent local times are not
+    slots, and repeated times are distinct instants. Generate the local grid
+    with both folds, round-trip through UTC, then check complete slot inclusion.
+    """
+    duration = timedelta(minutes=duration_minutes)
+    starts: set[datetime] = set()
+    for start, end in intervals:
+        start_utc, end_utc = to_utc(start), to_utc(end)
+        if end_utc <= start_utc:
+            continue
+        day = start_utc.astimezone(tz).replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
+        last_day = end_utc.astimezone(tz).replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
+        while day <= last_day:
+            next_day = day + timedelta(days=1)
+            wall = day
+            while wall < next_day:
+                for fold in (0, 1):
+                    candidate = wall.replace(tzinfo=tz, fold=fold).astimezone(timezone.utc)
+                    if candidate.astimezone(tz).replace(tzinfo=None) != wall:
+                        continue
+                    if start_utc <= candidate and candidate + duration <= end_utc:
+                        starts.add(candidate)
+                wall += duration
+            day = next_day
+    return [start.astimezone(tz) for start in sorted(starts)]

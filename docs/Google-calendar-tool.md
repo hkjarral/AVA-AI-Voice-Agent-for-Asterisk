@@ -97,7 +97,7 @@ AI models are generally weak at handling large datasets and at carrying out prec
 
 The Google Calendar API only returns a list of events. For appointment booking over the phone, the agent needs to answer "When are you free?" with concrete, bookable start times. **`get_free_slots`** does that by:
 
-1. **Interpreting the calendar** -- Events whose titles start with `free_prefix` (e.g. "Open") are treated as available windows; events with `busy_prefix` (e.g. "Busy" for a booked slot) are treated as blocked. The tool subtracts busy blocks from free blocks to get truly available intervals.
+1. **Interpreting the calendar** -- Events whose titles start with `free_prefix` (e.g. "Open") are treated as available windows; events with `busy_prefix` (e.g. "Busy" for a booked slot) and bookings created by AVA are treated as blocked. The tool subtracts busy blocks from free blocks to get truly available intervals. See the compatibility and all-day rules below.
 2. **Duration and alignment** -- It returns only start times where a slot of the requested length (e.g. 30 minutes) fits, and aligns those starts to round times (e.g. :00 and :30 for 30-minute slots). That avoids half-off times and gives the AI a short list of times it can read out naturally (e.g. "I have 2pm, 2:30pm, and 3pm").
 
 So instead of the LLM having to fetch raw events and infer availability and alignment, this tool provides ready-to-say slot starts and supports creating the booking with `create_event` in the same flow.
@@ -110,7 +110,7 @@ Under `tools.google_calendar`:
 |-----|-------------|---------|
 | `enabled` | Turn the tool on or off. | `false` |
 | `free_prefix` | Prefix for events that define available windows (e.g. `"Open"`). When non-empty, the tool uses **title-prefix mode** and only events titled with this prefix count as available time. When blank (`''`) or absent, the tool uses **free/busy mode** (Google's native `freebusy.query()` API) intersected with a working-hours mask. The LLM may override the prefix string within title-prefix mode but cannot switch modes — the operator's setting wins. Now exposed in the Tools UI. | *(blank → free/busy mode)* |
-| `busy_prefix` | Prefix for events that define booked slots (e.g. `"Busy"`). Only used in title-prefix mode. The LLM can override this per-call. Now exposed in the Tools UI. | `"Busy"` (backend fallback, title-prefix mode only) |
+| `busy_prefix` | Prefix for events that define booked slots (e.g. `"Busy"`). Only used in title-prefix mode. The LLM can override this per-call. New AVA bookings remain busy regardless of this prefix or their title. Older unmarked bookings need the one-time repair below. Exposed in the Tools UI. | `"Busy"` (backend fallback, title-prefix mode only) |
 | `min_slot_duration_minutes` | Default appointment duration in minutes for `get_free_slots`. | `30` (backend default and Admin UI default for new entries) |
 | `max_slots_returned` | Cap on number of slot start-times surfaced to the LLM by `get_free_slots`. Set to `0` to disable the cap. | `3` |
 | `max_event_duration_minutes` | Refuse `create_event` calls that book a longer event. Set to `0` to disable the cap. | `240` |
@@ -134,6 +134,56 @@ determines mode and always wins over any LLM-supplied value:
 `min_slot_duration_minutes`, the backend falls back to `"Busy"` and `30`
 minutes respectively. `free_prefix` does NOT have a backend default — its
 absence is the explicit signal for free/busy mode.
+
+### Booking identity, all-day events, and older appointments
+
+New `create_event` bookings preserve the requested title and description and store
+`extendedProperties.private.ava_booking: "1"` on the target calendar event, with
+`transparency: "opaque"` (Busy). In title-prefix mode this marker makes the event
+busy even after another call, a tool reload, a restart, a title edit, or a prefix
+change. A booking titled `Open consultation` is still a booking, not a new Open
+window. This marker is internal; no new setting or credential is required.
+
+**One-time upgrade repair:** older bookings have no origin marker, so AVA cannot
+distinguish them from unrelated events intentionally ignored by title-prefix mode.
+In Google Calendar, review those appointments and prepend the configured busy
+prefix to each title (for example, `Consultation` → `Busy Consultation` when
+`busy_prefix: "Busy"`). Keep their dates, times and other event data intact.
+Use the effective prefix if your Agent instructions explicitly override it.
+AVA does not automatically rename, rewrite or backfill existing calendar events.
+Unrelated unprefixed events continue to be ignored. As a deliberate alternative,
+clear **Free prefix** to use native free/busy with working hours; review the whole
+calendar first because that mode uses Google's busy rules for all events, and
+Open-window titles no longer define availability.
+
+Both Open and Busy events may be timed or all-day. All-day `start.date` is local
+midnight in the configured calendar timezone; `end.date` is **exclusive** local
+midnight. Multi-day spans include intervening days and respect timezone changes
+across DST. Set each configured calendar timezone to match Google Calendar's
+timezone. Whole events returned by Google are clipped to the requested search
+range, including all-day Open windows. Invalid or missing bounds on relevant
+Open/Busy/marked events make that calendar unavailable for the search; repair the
+event and retry. Unrelated ignored events do not require valid availability bounds.
+
+Cancelled events do not create Open windows or busy blocks. Busy-prefix and marked
+events explicitly set to **Available** (`transparency: "transparent"`) do not
+block time. An Open window may itself be marked Available and still defines
+availability in title-prefix mode. These rules follow Google's
+[event bounds, status and transparency contract](https://developers.google.com/workspace/calendar/api/v3/reference/events).
+Native free/busy behavior and Agent calendar access restrictions are unchanged.
+
+Deleting or cancelling a booking releases its busy interval on the next search;
+another overlapping busy event may still block it. Correct slot classification
+does **not** reserve a suggested slot or prevent concurrent callers from booking
+the same time. On uncertain write errors, inspect the calendar before creating
+another event; availability searches do not retry writes.
+
+For rollback to a version without marker support, keep or add busy prefixes to
+appointments before relying on title-prefix availability. The marker does not
+alter titles, grant event ownership, or authorize deletion. Retain calendar
+credentials and Agent assignments through upgrade/rollback. Apply tool settings
+with the existing Tools **Save & Apply** flow; active calls keep their captured
+configuration and new calls use the applied settings.
 
 > **Behavior change in this release:** the backend default for
 > `min_slot_duration_minutes` was previously `15`; it is now `30`, matching
@@ -210,20 +260,81 @@ the multi-calendar setup described above.
 
 All times use ISO 8601. The tool is registered as `google_calendar` and is in the **business** tool category.
 
+### Datetime contract and upgrade compatibility
+
+Timed **API event bounds** follow the event endpoint's own `timeZone` when its
+`dateTime` has no offset, falling back to the target calendar timezone when the
+endpoint omits it. Start and end may specify different zones. Explicit offsets
+keep their instant. An unusable zone, malformed timed bound or reversed event
+interval makes that calendar unavailable; it is never silently assumed to be UTC.
+This applies to both Open windows and Busy events before subtraction.
+
+For `time_min`, `time_max`, `start_datetime`, and `end_datetime`:
+
+- **With `Z` or an explicit offset:** the value is an instant. AVA converts it to
+  the target calendar timezone without changing that instant. For New York in
+  April, `2030-04-26T14:00:00Z` and `2030-04-26T16:00:00+02:00` both mean 10:00 local.
+- **Without an offset:** the value remains calendar-local for compatibility.
+  `2030-04-26T14:00:00` means 14:00 on the target calendar. For an aggregate query,
+  naive bounds are interpreted separately in each calendar's zone. Use aware
+  bounds when the selected calendars must search the same absolute interval.
+- **Booking a returned slot:** pass `slots_with_end.start` and `slots_with_end.end`
+  unchanged, including their offsets. When selected zones differ, slots use UTC;
+  either the returned `+00:00` or equivalent `Z` spelling preserves the instant.
+  Set the intended permitted `calendar_key`. When zones agree, display remains
+  calendar-local. `calendar_timezone` describes display, not a request to remove offsets.
+- Google receives offset-bearing RFC3339 event times plus the target IANA
+  `timeZone`. The offset distinguishes the two occurrences of a repeated DST hour.
+  Duration validation uses elapsed time, including across DST changes. For a bare
+  local time in a DST transition, clarify the intended time/offset with the caller.
+
+**Upgrading from the old offset-stripping behavior (issue #865):** previously AVA
+ignored `Z`/offsets and reused their clock digits as calendar-local time. Review
+custom Agent prompts, tool examples, and integrations that relied on that behavior.
+To request 14:00 New York local, use `2030-04-26T14:00:00` or the correct local offset
+(`2030-04-26T14:00:00-04:00` in April), rather than appending `Z`. Remove instructions
+to discard offsets from returned slots. Existing naive inputs, credentials,
+calendar inventory, Agent scope, working hours, and saved events need no migration;
+already-created bookings are not moved or repaired. Load the updated Engine code
+with an Engine restart after draining calls; rebuild Admin UI to see the updated
+help. Save & Apply alone does not load Python code changes. A rollback restores
+old parsing, so check custom prompts again and audit any wrong-time bookings
+separately before recreating them.
+
+Google's official contracts require RFC3339 query bounds and allow an event
+`dateTime` offset alongside `timeZone`: [events](https://developers.google.com/workspace/calendar/api/v3/reference/events),
+[events.list](https://developers.google.com/workspace/calendar/api/v3/reference/events/list),
+and [freebusy.query](https://developers.google.com/workspace/calendar/api/v3/reference/freebusy/query).
+These were checked for this correction; verification uses fake clients, not live bookings.
+
 ### `get_free_slots` response shape
 
 Slot starts round up to a multiple of the requested duration from midnight.
+Only starts strictly after the current time are returned. Both native free/busy
+and title-prefix mode filter elapsed starts **before** sorting, counting and
+applying `max_slots_returned`, including single-calendar selection and multi-calendar
+`all`/`any` aggregation. Availability captures one shared UTC cutoff after all
+calendar reads and slot generation, so slow queries cannot leave elapsed starts
+in the result and calendars in different timezones use the same cutoff. The
+appointment duration and slot grid remain unchanged; a partly elapsed slot is
+not shortened or offered again.
 Seconds and microseconds count: with 30-minute slots, an interval starting at
 10:00:30 first permits a 10:30 start. Each suggested slot must fit entirely
 inside the computed free interval; exact slot boundaries remain unchanged.
+Both availability modes use the same timezone grid: nonexistent DST clock times
+are skipped, both occurrences of repeated times retain their offsets, and starts
+are ordered by instant before the result cap is applied. A range starting at
+01:50 before a fall-back can therefore first offer 01:00 after the fall-back.
+Range clipping, busy subtraction, union and intersection also compare instants:
+a fall-back range can be valid even when its end clock time precedes its start.
 
 `get_free_slots` returns a structured response so the LLM (and any downstream
-prompt logic) can react appropriately to the two distinct empty-result cases:
+prompt logic) can react appropriately to distinct empty-result cases:
 
 ```json
 {
   "status": "success",
-  "message": "Free 30-minute slots (America/Los_Angeles): 2026-04-27 09:00–09:30, 09:30–10:00, 10:00–10:30. All times are in America/Los_Angeles. When booking via create_event, pass start_datetime and end_datetime as the SAME local-time strings (no Z, no offset — calendar timezone is implicit) and set end_datetime = start_datetime + 30 minutes. (showing 3 of 28 available; propose 2-3 of these to the caller — do not read the full list).",
+  "message": "Free 30-minute slots (America/Los_Angeles): 2026-04-27 09:00–09:30, 09:30–10:00, 10:00–10:30. All times are in America/Los_Angeles. When booking via create_event, pass start_datetime and end_datetime as the returned slots_with_end start/end strings, preserving their offsets and set end_datetime = start_datetime + 30 minutes. (showing 3 of 28 available; propose 2-3 of these to the caller — do not read the full list).",
   "slots": ["2026-04-27T09:00:00-07:00", "2026-04-27T09:30:00-07:00", "2026-04-27T10:00:00-07:00"],
   "slots_with_end": [
     {"start": "2026-04-27T09:00:00-07:00", "end": "2026-04-27T09:30:00-07:00"},
@@ -247,6 +358,7 @@ The `reason` field is one of:
 | `reason` | Meaning | Suggested LLM behavior |
 |---|---|---|
 | `available` | Slots returned. `slots` is non-empty. `message` includes a duration nudge and the calendar timezone. | Read back at most 2-3 options in plain language. Never read the entire `slots` list aloud. |
+| `no_future_slots` | All otherwise available slot starts in this range are at or before the request's current time. `slots` is empty. | Query a later time or date with `get_free_slots` and confirm a future option with the caller. |
 | `fully_booked` | Open availability windows (or working-hours mask in free/busy mode) exist for the requested range but are entirely covered by Busy blocks. `slots` is empty. | Apologize and suggest a different day. |
 | `no_open_windows` | No availability for the range. In title-prefix mode, no events titled with `free_prefix` exist. In free/busy mode, the requested time range falls outside configured working hours. `slots` is empty. | Tell the caller you don't see availability; offer to take a message or try a different date range. |
 
@@ -270,12 +382,33 @@ monologue). The cap is configurable via `tools.google_calendar.max_slots_returne
 in the Tools UI; default is `3`. Set to `0` (or any value `≤ 0`) to disable
 the cap.
 
+`total_slots_available` counts only future starts, before the cap; `slots_truncated`
+indicates that the cap omitted some of those future starts. For example, at 14:00
+with 30-minute slots through 17:00, the default cap returns 14:30, 15:00 and 15:30,
+with `total_slots_available: 5`. The 14:00 start is already elapsed.
+
 `open_windows_found` and `busy_blocks_found` surface the underlying counts
 directly — useful if a custom downstream tool wants to distinguish these
 without parsing `reason`. `calendars_without_open_windows` (multi-calendar
 aggregations only) names which selected calendars contributed zero open
 windows — useful in `aggregate_mode='all'` mode when the intersection is
 empty because of one calendar specifically.
+
+### Future booking validation and recovery
+
+`create_event` independently checks the normalized start against a fresh current
+time immediately before dispatching the Google write, after client resolution and
+validation. Starts at or before that instant return `status: "error"`
+and `error_code: "past_booking"` without sending a Google create request or changing
+the call's tracked booking. This rule always applies, including when the duration
+cap is disabled.
+
+An offered time can expire while the caller decides. On `past_booking`, query
+`get_free_slots` again and confirm a future option before retrying `create_event`.
+Do not treat this recoverable date/time error as a credentials or configuration
+failure. Listing, retrieving and deleting historical events retain their existing
+behavior. No new UI setting, stored field, migration or operator opt-in is needed.
+The cutoff uses the engine host's clock; keep the host time synchronized.
 
 ### Native free/busy mode (no `free_prefix` configured)
 
@@ -810,7 +943,8 @@ Time & timezone rules:
   assume it's 2pm Eastern.
 - Today's date is provided in the runtime context — never guess the date.
 - All datetimes sent to google_calendar must be ISO 8601 (e.g.
-  2026-04-23T14:00:00). Seconds may be :00.
+  2030-04-26T14:00:00 for local time). Z or an explicit offset means an
+  absolute instant. Never append Z to local time without converting to UTC.
 
 Finding available times:
 - When a caller asks for availability, use the action get_free_slots.
@@ -825,8 +959,10 @@ Finding available times:
 Booking:
 - Once the caller confirms a time, call create_event.
   - summary: "{caller_name} — {reason}" (e.g. "Jane Smith — Cleaning")
+    AVA marks new bookings as busy automatically; no title prefix is needed.
   - start_datetime / end_datetime: the agreed slot, aligned to the
-    slot grid get_free_slots returned.
+    slot grid get_free_slots returned. Pass slots_with_end.start/end
+    unchanged, preserving their offsets.
   - description: include the caller's phone number and any notes.
 - After a successful booking, read back the confirmed date and time
   once, then move on. Do not re-book the same slot.

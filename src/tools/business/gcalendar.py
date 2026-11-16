@@ -16,6 +16,11 @@ from googleapiclient.discovery import build
 
 logger = structlog.get_logger(__name__)
 
+# Persist booking identity on the calendar itself, independent of titles,
+# prefixes, tool instances and the short-lived per-call deletion cache.
+AVA_BOOKING_PROPERTY = "ava_booking"
+AVA_BOOKING_VERSION = "1"
+
 
 def _get_timezone(config_tz: str = "") -> str:
     """Resolve timezone: config value first, then GOOGLE_CALENDAR_TZ, TZ, system local, UTC."""
@@ -374,6 +379,10 @@ class GCalendar:
         event_body = {
             "summary": summary,
             "description": description,
+            "transparency": "opaque",
+            "extendedProperties": {
+                "private": {AVA_BOOKING_PROPERTY: AVA_BOOKING_VERSION},
+            },
             "start": {
                 "dateTime": start_datetime,
                 "timeZone": timezone,
