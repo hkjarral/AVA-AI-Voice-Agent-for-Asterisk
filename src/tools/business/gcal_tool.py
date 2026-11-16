@@ -36,6 +36,11 @@ from src.tools.business.gcalendar import GCalendar, GoogleCalendarApiError, _get
 
 logger = structlog.get_logger(__name__)
 
+
+def utc_now() -> datetime:
+    """Clock seam for deterministic tests of the final scheduling decision."""
+    return datetime.now(timezone.utc)
+
 # Schema for Google Live / Vertex and OpenAI (input_schema is provider-agnostic)
 _GOOGLE_CALENDAR_INPUT_SCHEMA = {
     "type": "object",
@@ -58,6 +63,7 @@ _GOOGLE_CALENDAR_INPUT_SCHEMA = {
             "type": "string",
             "description": (
                 "ISO 8601 start time. Required for list_events and get_free_slots. "
+                "get_free_slots returns only starts strictly after the current time. "
                 "Z or an explicit offset (±HH:MM) represents an instant, converted to each "
                 "target calendar timezone. Without an offset, the time is calendar-local "
                 "(e.g. '2026-04-25T09:00:00'). For a shared absolute range across "
@@ -110,6 +116,8 @@ _GOOGLE_CALENDAR_INPUT_SCHEMA = {
             "type": "string",
             "description": (
                 "ISO 8601 start time for the new event. Required for create_event. "
+                "Must be strictly in the future. On past_booking, call get_free_slots "
+                "again and confirm a future time with the caller before retrying. "
                 "Pass the chosen slots_with_end.start from get_free_slots as-is, including "
                 "its offset. Z/offset inputs are instants converted to the target calendar "
                 "timezone; naive inputs are calendar-local."
@@ -848,6 +856,19 @@ class GCalendarTool(Tool):
                 # apply in legacy_single mode (only one calendar exists).
                 multi_cal_tz_disagreement = len(tz_set) > 1 and not legacy_single
                 slot_starts = build_zoned_slot_starts(available_intervals, duration_minutes, output_tz)
+                # Read the clock after all calendar reads and slot generation.
+                # One final cutoff applies to every selected calendar, including
+                # when slow client/API work crossed a slot boundary. Filter
+                # before sorting/counting/capping so elapsed slots cannot consume
+                # today's default three suggestions. Compare UTC instants through
+                # repeated DST wall-clock hours too.
+                availability_now = utc_now()
+                generated_slot_count = len(slot_starts)
+                slot_starts = [
+                    start for start in slot_starts
+                    if start.astimezone(timezone.utc) > availability_now
+                ]
+                elapsed_slots_removed = generated_slot_count - len(slot_starts)
                 slot_starts.sort(key=to_utc)
 
                 # Cap how many slots are surfaced to the LLM. Without a cap, get_free_slots
@@ -944,6 +965,12 @@ class GCalendarTool(Tool):
                             f" (showing {len(results)} of {total_slot_starts} available; "
                             f"propose 2-3 of these to the caller — do not read the full list)."
                         )
+                elif elapsed_slots_removed:
+                    reason = "no_future_slots"
+                    message = (
+                        "No future slot starts remain in this range. Try get_free_slots "
+                        "with a later time or date and confirm a future option with the caller."
+                    )
                 elif aggregate_mode == "all" and len(keys_to_use) > 1 and cals_with_no_open:
                     # Intersection mode + at least one selected calendar has no Open
                     # blocks → intersection is empty BECAUSE that calendar lacks
@@ -1323,6 +1350,23 @@ class GCalendarTool(Tool):
                         max_dur=max_dur,
                     )
                     logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
+                    return out
+
+                # Recheck immediately before dispatch, after client resolution
+                # and validation: a start that was future at entry may now have
+                # elapsed. Compare instants through repeated DST wall-clock hours.
+                if start_dt_local.astimezone(timezone.utc) <= utc_now():
+                    out = {
+                        "status": "error",
+                        "error_code": "past_booking",
+                        "message": (
+                            "The appointment must start in the future. Call get_free_slots "
+                            "again and confirm a future date and time with the caller before "
+                            "retrying create_event. No event was created."
+                        ),
+                    }
+                    logger.info("Tool response to AI", call_id=call_id, action=action,
+                                status=out["status"], error_code=out["error_code"])
                     return out
 
                 # Surface Google API errors with their original detail so the

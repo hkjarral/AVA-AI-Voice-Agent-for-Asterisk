@@ -3396,7 +3396,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                             );
                                         }}
                                         placeholder="3"
-                                        tooltip="Cap on how many slot start-times get_free_slots returns to the AI. Default: 3. Without a cap, a multi-day open window can return 20+ slots and the AI may read all of them aloud, producing minutes of robotic monologue. The tool also adds a 'showing N of M' nudge to the response so the AI summarizes 2–3 options to the caller. Set to 0 to disable the cap."
+                                        tooltip="Cap on how many future slot start-times get_free_slots returns to the AI. Starts at or before the current time are excluded before this cap in both availability modes. Bookings must also start in the future. Default: 3. Without a cap, a multi-day open window can return 20+ slots and the AI may read all of them aloud, producing minutes of robotic monologue. The tool also adds a 'showing N of M' nudge to the response so the AI summarizes 2–3 options to the caller. Set to 0 to disable the cap."
                                     />
                                 </div>
                             </div>

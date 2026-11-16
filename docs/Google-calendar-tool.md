@@ -260,6 +260,14 @@ These were checked for this correction; verification uses fake clients, not live
 ### `get_free_slots` response shape
 
 Slot starts round up to a multiple of the requested duration from midnight.
+Only starts strictly after the current time are returned. Both native free/busy
+and title-prefix mode filter elapsed starts **before** sorting, counting and
+applying `max_slots_returned`, including single-calendar selection and multi-calendar
+`all`/`any` aggregation. Availability captures one shared UTC cutoff after all
+calendar reads and slot generation, so slow queries cannot leave elapsed starts
+in the result and calendars in different timezones use the same cutoff. The
+appointment duration and slot grid remain unchanged; a partly elapsed slot is
+not shortened or offered again.
 Seconds and microseconds count: with 30-minute slots, an interval starting at
 10:00:30 first permits a 10:30 start. Each suggested slot must fit entirely
 inside the computed free interval; exact slot boundaries remain unchanged.
@@ -271,7 +279,7 @@ Range clipping, busy subtraction, union and intersection also compare instants:
 a fall-back range can be valid even when its end clock time precedes its start.
 
 `get_free_slots` returns a structured response so the LLM (and any downstream
-prompt logic) can react appropriately to the two distinct empty-result cases:
+prompt logic) can react appropriately to distinct empty-result cases:
 
 ```json
 {
@@ -300,6 +308,7 @@ The `reason` field is one of:
 | `reason` | Meaning | Suggested LLM behavior |
 |---|---|---|
 | `available` | Slots returned. `slots` is non-empty. `message` includes a duration nudge and the calendar timezone. | Read back at most 2-3 options in plain language. Never read the entire `slots` list aloud. |
+| `no_future_slots` | All otherwise available slot starts in this range are at or before the request's current time. `slots` is empty. | Query a later time or date with `get_free_slots` and confirm a future option with the caller. |
 | `fully_booked` | Open availability windows (or working-hours mask in free/busy mode) exist for the requested range but are entirely covered by Busy blocks. `slots` is empty. | Apologize and suggest a different day. |
 | `no_open_windows` | No availability for the range. In title-prefix mode, no events titled with `free_prefix` exist. In free/busy mode, the requested time range falls outside configured working hours. `slots` is empty. | Tell the caller you don't see availability; offer to take a message or try a different date range. |
 
@@ -323,12 +332,33 @@ monologue). The cap is configurable via `tools.google_calendar.max_slots_returne
 in the Tools UI; default is `3`. Set to `0` (or any value `≤ 0`) to disable
 the cap.
 
+`total_slots_available` counts only future starts, before the cap; `slots_truncated`
+indicates that the cap omitted some of those future starts. For example, at 14:00
+with 30-minute slots through 17:00, the default cap returns 14:30, 15:00 and 15:30,
+with `total_slots_available: 5`. The 14:00 start is already elapsed.
+
 `open_windows_found` and `busy_blocks_found` surface the underlying counts
 directly — useful if a custom downstream tool wants to distinguish these
 without parsing `reason`. `calendars_without_open_windows` (multi-calendar
 aggregations only) names which selected calendars contributed zero open
 windows — useful in `aggregate_mode='all'` mode when the intersection is
 empty because of one calendar specifically.
+
+### Future booking validation and recovery
+
+`create_event` independently checks the normalized start against a fresh current
+time immediately before dispatching the Google write, after client resolution and
+validation. Starts at or before that instant return `status: "error"`
+and `error_code: "past_booking"` without sending a Google create request or changing
+the call's tracked booking. This rule always applies, including when the duration
+cap is disabled.
+
+An offered time can expire while the caller decides. On `past_booking`, query
+`get_free_slots` again and confirm a future option before retrying `create_event`.
+Do not treat this recoverable date/time error as a credentials or configuration
+failure. Listing, retrieving and deleting historical events retain their existing
+behavior. No new UI setting, stored field, migration or operator opt-in is needed.
+The cutoff uses the engine host's clock; keep the host time synchronized.
 
 ### Native free/busy mode (no `free_prefix` configured)
 
