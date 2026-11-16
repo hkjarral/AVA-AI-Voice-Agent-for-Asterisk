@@ -173,6 +173,10 @@ append-only reduction contract:
   `voicemail_completed` records accepted continue, `voicemail_failed` records a
   cancellation/rejection, and `voicemail_indeterminate` records an uncertain
   request. These append terminal evidence under the original invocation ID.
+  Cancellation after continue is submitted retains indeterminate evidence under
+  that invocation even if a newer routing action has taken ownership. Only the
+  matching old deferred action is retired; the newer routing fields and action
+  remain untouched.
 - The event records the tool execution fact only. A successful voicemail route
   does not claim that a message was recorded, and a successful transfer does
   not claim that a human answered.
@@ -1413,7 +1417,8 @@ purposes.
 For native calls, terminal ARI hangup checks acceptance and makes at most three
 idempotent DELETE attempts, with a three-second request budget and 250/750ms
 retry pauses. A missing channel (404) counts as complete. Every attempt rechecks
-the same call/channel owner, cleanup state, and pending/active transfers. Failed
+the same call/channel/lock owner, cleanup state, and pending/active transfers,
+including inside the bounded request task immediately before DELETE admission. Failed
 or canceled attempts release terminal ownership so a later request can recover;
 a confirmed hangup keeps its duplicate guard until cleanup. The inline retry
 has no detached retry timer. Call cleanup cancels the existing terminal fallback

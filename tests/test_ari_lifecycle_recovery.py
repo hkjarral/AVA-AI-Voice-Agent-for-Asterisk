@@ -449,3 +449,45 @@ async def test_pre_call_cancellation_during_close_retains_outcome_and_late_clean
     await owner.task
     assert events[-1][0] == 'DELETE'
     assert not session.pre_call_hold_audio
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('new_owner', ['deferred', 'transfer', 'attended', 'cleanup', 'completed', 'session', 'channel', 'lock'])
+async def test_native_delete_admission_rechecks_after_actual_wait_for_scheduling(new_owner):
+    session = CallSession(call_id='scheduled-native', caller_channel_id='scheduled-native')
+    ari = ari_client([{'status': 204}])
+    engine = native_engine(session, ari)
+    scheduled = False
+
+    def take_ownership():
+        if new_owner == 'deferred':
+            session.pending_deferred_transfer = {'id': 'new-action', 'kind': 'transfer'}
+        elif new_owner == 'transfer':
+            session.transfer_active = True
+            session.transfer_state = 'voicemail'
+        elif new_owner == 'attended':
+            session.current_action = {'type': 'attended_transfer', 'decision': 'pending'}
+        elif new_owner == 'cleanup':
+            session.cleanup_in_progress = True
+        elif new_owner == 'completed':
+            session.cleanup_completed = True
+        elif new_owner == 'session':
+            engine.session_store.get_by_call_id.return_value = CallSession(
+                call_id=session.call_id, caller_channel_id='replacement-channel')
+        elif new_owner == 'channel':
+            session.caller_channel_id = 'replacement-channel'
+        else:
+            engine._terminal_hangup_locks[session.call_id] = asyncio.Lock()
+
+    def save(*args, **kwargs):
+        nonlocal scheduled
+        if not scheduled:
+            scheduled = True
+            # A queued routing task runs before wait_for's separately scheduled
+            # coroutine. Neither wait_for nor the ARI wrapper is replaced here.
+            asyncio.get_running_loop().call_soon(take_ownership)
+    engine._save_session.side_effect = save
+    result = await engine._terminate_call_after_audio(session.call_id, reason='scheduled-owner', audio_already_drained=True)
+    assert scheduled
+    assert result is False
+    ari.send_command.assert_not_awaited()

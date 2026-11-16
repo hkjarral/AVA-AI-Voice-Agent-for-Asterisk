@@ -227,12 +227,12 @@ class VoicemailTool(Tool):
             if still_owned():
                 session.voicemail_handoff_outcome = "indeterminate"
                 session.transfer_state = "voicemail_indeterminate"
-                self._retire_action(session, action)
-                await self._record_outcome(context, action, {
-                    "status": "failed", "action": "voicemail_indeterminate",
-                    "handoff_indeterminate": True,
-                    "message": "Voicemail handoff could not be confirmed. Do not retry the transfer.",
-                })
+            self._retire_action(session, action)
+            await self._record_outcome(context, action, {
+                "status": "failed", "action": "voicemail_indeterminate",
+                "handoff_indeterminate": True,
+                "message": "Voicemail handoff could not be confirmed. Do not retry the transfer.",
+            })
             raise
         except Exception:
             # The request may have reached Asterisk. Never replay or reclaim a

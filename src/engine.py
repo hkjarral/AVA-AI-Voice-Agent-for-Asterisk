@@ -17005,9 +17005,20 @@ class Engine:
                             or self._session_has_pending_attended_transfer(latest)
                             or isinstance(getattr(latest, "pending_deferred_transfer", None), dict)):
                         return False
+                    async def delete_if_still_owned():
+                        latest = await self.session_store.get_by_call_id(call_id)
+                        if (latest is not owner_session or locks.get(call_id) is not lock
+                                or call_id not in started or latest.cleanup_in_progress
+                                or latest.cleanup_completed or latest.caller_channel_id != owner_channel
+                                or self._session_was_transferred(latest)
+                                or self._session_has_pending_attended_transfer(latest)
+                                or isinstance(getattr(latest, "pending_deferred_transfer", None), dict)):
+                            return False
+                        return await self.ari_client.hangup_channel(owner_channel)
+
                     try:
                         accepted = await asyncio.wait_for(
-                            self.ari_client.hangup_channel(owner_channel), timeout=3.0,
+                            delete_if_still_owned(), timeout=3.0,
                         )
                     except Exception:
                         accepted = False

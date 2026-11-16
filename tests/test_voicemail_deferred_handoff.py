@@ -474,3 +474,37 @@ async def test_elevenlabs_idle_fallback_cannot_release_mandatory_voicemail(monke
     assert session.pending_deferred_transfer is None
     if superseded:
         assert session.transfer_active and session.transfer_state == 'attended'
+
+
+@pytest.mark.parametrize('replace_pending', [False, True])
+async def test_cancelled_submitted_continue_records_uncertainty_after_routing_takeover(monkeypatch, replace_pending):
+    engine, session, registry, ctx = await setup_call(monkeypatch)
+    await arm(engine, ctx)
+    action = session.pending_deferred_transfer
+    completed_state(engine, session, action)
+    entered = asyncio.Event()
+    async def submitted(*a, **kw):
+        entered.set()
+        await asyncio.Event().wait()
+    engine.ari_client.continue_in_dialplan.side_effect = submitted
+    task = asyncio.create_task(commit(engine, session, action))
+    await asyncio.wait_for(entered.wait(), 1)
+    session.transfer_state = 'attended'
+    session.transfer_target = 'new-routing-owner'
+    replacement = {'id': 'new-routing-action', 'kind': 'transfer'}
+    if replace_pending:
+        session.pending_deferred_transfer = replacement
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    engine.ari_client.continue_in_dialplan.assert_awaited_once()
+    assert session.transfer_active
+    assert (session.transfer_state, session.transfer_target) == ('attended', 'new-routing-owner')
+    assert session.pending_deferred_transfer == (replacement if replace_pending else None)
+    assert session.voicemail_handoff_id is None and session.voicemail_handoff_outcome is None
+    assert [row['action'] for row in session.tool_calls] == ['voicemail_initiated', 'voicemail_indeterminate']
+    assert session.tool_calls[-1]['tool_call_id'] == 'invocation-vm'
+    assert session.tool_calls[-1]['status'] == 'failure'
+    assert session.tool_calls[-1]['handoff_indeterminate'] is True
+    assert await commit(engine, session, action) is None
+    engine.ari_client.continue_in_dialplan.assert_awaited_once()
