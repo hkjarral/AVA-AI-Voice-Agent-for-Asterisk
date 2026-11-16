@@ -3086,3 +3086,35 @@ async def test_replacement_a_b_a_never_reuses_cancelled_graph_transaction(phoeni
     assert len(fake.events) == 1 and len(fake.created) == 3
     transactions = [r[4]["transaction_id"] for r in fake.created]
     assert len(set(transactions)) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['freebusy', 'title_prefix'])
+@pytest.mark.parametrize('start,first', [('05:00:00', '05:00:00'), ('05:50:00', '06:00:00')])
+async def test_fallback_slots_keep_chronological_first_start_and_elapsed_ends(
+    ms_context, ms_config, monkeypatch, mode, start, first
+):
+    monkeypatch.setattr('src.tools.business.microsoft_calendar.utc_now',
+                        lambda: datetime(2027, 11, 6, tzinfo=timezone.utc))
+    tool = MicrosoftCalendarTool()
+    ms_config['accounts']['default']['timezone'] = 'America/New_York'
+    ms_config.update(working_hours_start=0, working_hours_end=24, working_days=list(range(7)),
+                     max_slots_returned=0, free_prefix='Open' if mode == 'title_prefix' else '')
+    lower = datetime.fromisoformat(f'2027-11-07T{start}+00:00')
+    upper = datetime(2027, 11, 7, 7, 30, tzinfo=timezone.utc)
+    fake = FakeMicrosoftClient()
+    if mode == 'title_prefix':
+        fake.events = [busy_event(lower.isoformat(), upper.isoformat(), subject='Open hours', showAs='free')]
+    with patch.object(tool, '_client_for_config', return_value=fake):
+        offered = await tool.execute({'action': 'get_free_slots', 'time_min': lower.isoformat(),
+                                      'time_max': upper.isoformat(), 'duration': 30}, ms_context)
+    assert offered['status'] == 'success'
+    cursor = datetime.fromisoformat(f'2027-11-07T{first}+00:00')
+    expected = []
+    while cursor + timedelta(minutes=30) <= upper:
+        expected.append(cursor)
+        cursor += timedelta(minutes=30)
+    assert [datetime.fromisoformat(slot).astimezone(timezone.utc) for slot in offered['slots']] == expected
+    for pair in offered['slots_with_end']:
+        start_dt, end_dt = [datetime.fromisoformat(pair[key]).astimezone(timezone.utc) for key in ('start', 'end')]
+        assert end_dt - start_dt == timedelta(minutes=30)

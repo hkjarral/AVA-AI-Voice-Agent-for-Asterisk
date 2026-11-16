@@ -269,3 +269,27 @@ async def test_naive_legacy_ranges_stay_calendar_local(monkeypatch, action):
         args = client.service.events.return_value.list.call_args.kwargs
     assert args["timeMin"] == "2030-04-26T09:00:00-04:00"
     assert args["timeMax"] == "2030-04-26T10:00:00-04:00"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['freebusy', 'title_prefix'])
+@pytest.mark.parametrize('start,first', [('05:00:00', '05:00:00'), ('05:50:00', '06:00:00')])
+async def test_fallback_slots_include_both_folds_in_instant_order(monkeypatch, mode, start, first):
+    tool, clients = make_tool(monkeypatch, {'A': 'America/New_York'}, mode=mode)
+    tool._get_config.return_value.update(working_hours_start=0, working_hours_end=24, max_slots_returned=0)
+    lower, upper = f'2027-11-07T{start}Z', '2027-11-07T07:30:00Z'
+    if mode == 'title_prefix':
+        events = clients['A'].service.events.return_value
+        events.list.return_value.execute.side_effect = lambda: {'items': [
+            {'summary': 'Open hours', 'start': {'dateTime': lower}, 'end': {'dateTime': upper}}
+        ]}
+    offered = await tool.execute({'action': 'get_free_slots', 'time_min': lower, 'time_max': upper, 'duration': 30}, CTX)
+    assert offered['status'] == 'success'
+    cursor = instant(f'2027-11-07T{first}Z')
+    expected = []
+    while cursor + timedelta(minutes=30) <= instant(upper):
+        expected.append(cursor)
+        cursor += timedelta(minutes=30)
+    assert [instant(slot) for slot in offered['slots']] == expected
+    for pair in offered['slots_with_end']:
+        assert instant(pair['end']) - instant(pair['start']) == timedelta(minutes=30)

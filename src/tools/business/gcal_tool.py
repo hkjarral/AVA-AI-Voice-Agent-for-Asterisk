@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 from src.tools.base import Tool, ToolDefinition, ToolCategory
 from src.tools.context import ToolExecutionContext, resolve_scoped_tool_config
 
-from src.tools.business._calendar_utils import build_slot_starts, normalize_to_tz, to_utc
+from src.tools.business._calendar_utils import build_zoned_slot_starts, normalize_to_tz, to_utc
 from src.tools.business.gcalendar import GCalendar, GoogleCalendarApiError, _get_timezone
 
 logger = structlog.get_logger(__name__)
@@ -857,8 +857,6 @@ class GCalendarTool(Tool):
                 except (TypeError, ValueError):
                     duration_minutes = 30
 
-                slot_starts = build_slot_starts(available_intervals, duration_minutes)
-
                 # Keep familiar local display when selected calendars agree; mixed
                 # zones use UTC. All structured slot strings carry offsets and can
                 # be passed unchanged to create_event for any selected target.
@@ -901,8 +899,8 @@ class GCalendarTool(Tool):
                 # to pass UTC datetimes (with 'Z') to create_event. Doesn't
                 # apply in legacy_single mode (only one calendar exists).
                 multi_cal_tz_disagreement = len(tz_set) > 1 and not legacy_single
-                slot_starts = [t.astimezone(output_tz) for t in slot_starts]
-                slot_starts.sort()
+                slot_starts = build_zoned_slot_starts(available_intervals, duration_minutes, output_tz)
+                slot_starts.sort(key=to_utc)
 
                 # Cap how many slots are surfaced to the LLM. Without a cap, get_free_slots
                 # over a multi-day range can return 20-50+ slots; the LLM then dutifully

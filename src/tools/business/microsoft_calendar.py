@@ -20,7 +20,7 @@ import structlog
 from src.tools.base import Tool, ToolCategory, ToolDefinition
 from src.tools.business._calendar_utils import (
     graph_datetime,
-    build_slot_starts,
+    build_zoned_slot_starts,
     intersect_intervals,
     parse_iso_datetime,
     subtract_busy,
@@ -679,7 +679,6 @@ class MicrosoftCalendarTool(Tool):
                 "agent_hint": "This checks the exact interval. Confirm it with the caller before creation; creation rechecks availability.",
             }
 
-        slot_starts = build_slot_starts(available_intervals, duration_minutes)
         tz_set = {
             self._account_config(accounts[k]).timezone or "UTC"
             for k in keys_to_use
@@ -688,7 +687,8 @@ class MicrosoftCalendarTool(Tool):
         output_tz_name = next(iter(tz_set)) if len(tz_set) == 1 else "UTC"
         output_tz = ZoneInfo(output_tz_name)
         tz_disagreement = len(tz_set) > 1
-        slot_starts = sorted([slot.astimezone(output_tz) for slot in slot_starts])
+        slot_starts = build_zoned_slot_starts(available_intervals, duration_minutes, output_tz)
+        slot_starts.sort(key=to_utc)
 
         try:
             max_slots = int(config.get("max_slots_returned", 3))
@@ -698,7 +698,8 @@ class MicrosoftCalendarTool(Tool):
         if max_slots and max_slots > 0 and total_slots > max_slots:
             slot_starts = slot_starts[:max_slots]
         slot_pairs = [
-            (slot, slot + timedelta(minutes=duration_minutes)) for slot in slot_starts
+            (slot, (to_utc(slot) + timedelta(minutes=duration_minutes)).astimezone(output_tz))
+            for slot in slot_starts
         ]
         slots_with_end = [
             {"start": start.isoformat(), "end": end.isoformat()}

@@ -181,19 +181,50 @@ def build_slot_starts(
     duration = timedelta(minutes=duration_minutes)
     starts: list[datetime] = []
     for start, end in intervals:
-        if to_utc(end) <= to_utc(start):
+        if start.tzinfo is not None:
+            # Round all local grid points, including both folds, before choosing
+            # the first chronological instant. Rounding the initial wall clock
+            # alone can skip the later occurrence of an earlier local hour.
+            starts.extend(build_zoned_slot_starts([(start, end)], duration_minutes, start.tzinfo))
+            continue
+        if end <= start:
             continue
         cursor = round_up_to_next_slot(start, duration_minutes)
-        if cursor.tzinfo is not None:
-            cursor = to_utc(cursor).astimezone(cursor.tzinfo)
-        # ZoneInfo arithmetic uses wall-clock time even through DST folds/gaps.
-        # Keep local grid alignment, then step and bound actual elapsed instants.
-        while to_utc(cursor) + duration <= to_utc(end):
+        while cursor + duration <= end:
             starts.append(cursor)
-            next_instant = to_utc(cursor) + duration
-            cursor = (
-                next_instant.astimezone(cursor.tzinfo)
-                if cursor.tzinfo is not None
-                else next_instant.replace(tzinfo=None)
-            )
+            cursor += duration
     return starts
+
+
+def build_zoned_slot_starts(
+    intervals: Iterable[tuple[datetime, datetime]],
+    duration_minutes: int,
+    tz: ZoneInfo,
+) -> list[datetime]:
+    """Align local starts while checking elapsed duration across DST changes.
+
+    All-day windows can span a clock change: nonexistent local times are not
+    slots, and repeated times are distinct instants. Generate the local grid
+    with both folds, round-trip through UTC, then check complete slot inclusion.
+    """
+    duration = timedelta(minutes=duration_minutes)
+    starts: set[datetime] = set()
+    for start, end in intervals:
+        start_utc, end_utc = to_utc(start), to_utc(end)
+        if end_utc <= start_utc:
+            continue
+        day = start_utc.astimezone(tz).replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
+        last_day = end_utc.astimezone(tz).replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
+        while day <= last_day:
+            next_day = day + timedelta(days=1)
+            wall = day
+            while wall < next_day:
+                for fold in (0, 1):
+                    candidate = wall.replace(tzinfo=tz, fold=fold).astimezone(timezone.utc)
+                    if candidate.astimezone(tz).replace(tzinfo=None) != wall:
+                        continue
+                    if start_utc <= candidate and candidate + duration <= end_utc:
+                        starts.add(candidate)
+                wall += duration
+            day = next_day
+    return [start.astimezone(tz) for start in sorted(starts)]

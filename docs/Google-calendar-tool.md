@@ -256,6 +256,10 @@ Slot starts round up to a multiple of the requested duration from midnight.
 Seconds and microseconds count: with 30-minute slots, an interval starting at
 10:00:30 first permits a 10:30 start. Each suggested slot must fit entirely
 inside the computed free interval; exact slot boundaries remain unchanged.
+Both availability modes use the same timezone grid: nonexistent DST clock times
+are skipped, both occurrences of repeated times retain their offsets, and starts
+are ordered by instant before the result cap is applied. A range starting at
+01:50 before a fall-back can therefore first offer 01:00 after the fall-back.
 
 `get_free_slots` returns a structured response so the LLM (and any downstream
 prompt logic) can react appropriately to the two distinct empty-result cases:
