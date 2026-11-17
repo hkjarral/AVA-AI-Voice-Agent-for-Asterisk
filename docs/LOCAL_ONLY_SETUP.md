@@ -608,11 +608,11 @@ Models are **not bundled** in Docker images. Download them via:
 - See [Sherpa-ONNX Models](https://github.com/k2-fsa/sherpa-onnx/releases)
 
 **Sherpa-ONNX Offline SenseVoice** (VAD-gated, multilingual):
-- `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09` (~158 MB; Chinese, English, Japanese, Korean, Cantonese)
+- `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17` (~155 MB, original SenseVoiceSmall export; Chinese, English, Japanese, Korean, Cantonese)
 - Use with `SHERPA_MODEL_TYPE=offline`; no extra dependencies beyond the bundled `sherpa-onnx`
 - SenseVoice is detected automatically when the model directory contains `model.onnx` or `model.int8.onnx` plus `tokens.txt` (no `encoder*.onnx`)
 - `SHERPA_SENSE_VOICE_LANGUAGE=auto` (or `zh`, `en`, `ja`, `ko`, `yue` to pin a language)
-- `SHERPA_SENSE_VOICE_USE_ITN=true` adds punctuation and digit formatting
+- `SHERPA_SENSE_VOICE_USE_ITN=true` adds punctuation and digit formatting (the Cantonese fine-tuned `...-int8-2025-09-09` export also loads, but does not produce punctuation)
 - Emotion and audio-event tags are not added to transcripts; they are logged at debug level
 - The same VAD tuning knobs as the offline transducer apply
 

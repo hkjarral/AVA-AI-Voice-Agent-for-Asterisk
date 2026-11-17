@@ -717,7 +717,7 @@ Notes:
 - Offline mode auto-detects SenseVoice model directories (`model*.onnx` + `tokens.txt`); `sherpa_sense_voice_language` (`auto|zh|en|ja|ko|yue`) and `sherpa_sense_voice_use_itn` (boolean) apply only to those models
 
 ```json
-{ "type": "switch_model", "stt_backend": "sherpa", "sherpa_model_type": "offline", "sherpa_model_path": "/app/models/stt/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09", "sherpa_sense_voice_language": "auto", "sherpa_sense_voice_use_itn": true }
+{ "type": "switch_model", "stt_backend": "sherpa", "sherpa_model_type": "offline", "sherpa_model_path": "/app/models/stt/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17", "sherpa_sense_voice_language": "auto", "sherpa_sense_voice_use_itn": true }
 ```
 
 Response:

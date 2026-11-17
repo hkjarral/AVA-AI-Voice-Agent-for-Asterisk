@@ -150,7 +150,7 @@ def _make_backend(model_dir: Path, vad: Path, **kwargs):
 
 class TestSenseVoiceDetection:
     def test_sense_voice_layout_uses_from_sense_voice(self, tmp_path, fake_sherpa):
-        model_dir = tmp_path / "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09"
+        model_dir = tmp_path / "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17"
         model_file = _touch(model_dir / "model.int8.onnx")
         tokens = _touch(model_dir / "tokens.txt")
         vad = _touch(tmp_path / "silero_vad.onnx")
@@ -374,3 +374,24 @@ def test_models_catalog_has_sense_voice_entry():
     assert entry["model_type"] == "offline"
     assert entry["model_path"] in entry["download_url"]
     assert entry["download_url"].startswith("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/")
+
+
+def _load_catalog():
+    path = REPO_ROOT / "admin_ui" / "backend" / "api" / "models_catalog.py"
+    spec = importlib.util.spec_from_file_location("_ava_models_catalog_sv_filter", path)
+    catalog = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(catalog)
+    return catalog
+
+
+@pytest.mark.parametrize("language,expected", [("zh-CN", True), ("en-US", True), ("ko-KR", True), ("es-ES", False), ("ru-RU", False)])
+def test_sense_voice_offered_only_for_supported_languages(language, expected):
+    catalog = _load_catalog()
+    ids = {m["id"] for m in catalog.get_models_by_language(language)["stt"]}
+    assert ("sherpa_sense_voice_offline" in ids) is expected
+
+
+def test_multi_models_without_supported_languages_still_match_everywhere():
+    catalog = _load_catalog()
+    ids = {m["id"] for m in catalog.get_models_by_language("es-ES")["stt"]}
+    assert "faster_whisper_base" in ids
