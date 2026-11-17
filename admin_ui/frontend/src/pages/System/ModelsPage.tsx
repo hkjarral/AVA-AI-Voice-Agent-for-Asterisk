@@ -62,7 +62,7 @@ interface DownloadProgress {
 }
 
 interface ActiveModels {
-    stt: { backend: string; path: string; loaded: boolean; display?: string; language?: string | null; device?: string | null; compute_type?: string | null; sherpa_model_type?: string | null; tone_decoder_type?: string | null };
+    stt: { backend: string; path: string; loaded: boolean; display?: string; language?: string | null; device?: string | null; compute_type?: string | null; sherpa_model_type?: string | null; sherpa_model_family?: string | null; sherpa_sense_voice_language?: string | null; sherpa_sense_voice_use_itn?: boolean | null; tone_decoder_type?: string | null };
     tts: { backend: string; path: string; loaded: boolean; display?: string };
     llm: {
         path: string;
@@ -94,6 +94,9 @@ interface ActiveModels {
         };
     };
 }
+
+// SenseVoice model directories are auto-detected by local-ai-server; the name is a UI hint only.
+const isSenseVoicePath = (value?: string | null) => /sense[-_]?voice/i.test(value || '');
 
 interface AvailableModels {
     stt: Record<string, { name: string; path: string }[]>;
@@ -172,7 +175,7 @@ const ModelsPage = () => {
     const [serverStatus, setServerStatus] = useState<ServerStatus>('loading');
     const [restarting, setRestarting] = useState(false);
     const [pendingChanges, setPendingChanges] = useState<{ stt?: string; tts?: string; llm?: string }>({});
-    const [pendingSttExtra, setPendingSttExtra] = useState<{ language?: string; device?: string; compute_type?: string; sherpa_model_type?: string; sherpa_vad_model_path?: string; tone_decoder_type?: string; tone_kenlm_path?: string }>({});
+    const [pendingSttExtra, setPendingSttExtra] = useState<{ language?: string; device?: string; compute_type?: string; sherpa_model_type?: string; sherpa_vad_model_path?: string; sherpa_sense_voice_language?: string; sherpa_sense_voice_use_itn?: boolean; tone_decoder_type?: string; tone_kenlm_path?: string }>({});
     const [pendingLlmConfig, setPendingLlmConfig] = useState<{ context?: number; max_tokens?: number }>({});
     const [pendingRuntimeConfig, setPendingRuntimeConfig] = useState<{ enable_filler_audio?: boolean; llm_streaming_tts_overlap?: boolean }>({});
     const [startingServer, setStartingServer] = useState(false);
@@ -226,6 +229,9 @@ const ModelsPage = () => {
                 device: details?.models?.stt?.device || null,
                 compute_type: details?.models?.stt?.compute_type || null,
                 sherpa_model_type: details?.models?.stt?.sherpa_model_type || null,
+                sherpa_model_family: details?.models?.stt?.sherpa_model_family || null,
+                sherpa_sense_voice_language: details?.models?.stt?.sherpa_sense_voice_language || null,
+                sherpa_sense_voice_use_itn: details?.models?.stt?.sherpa_sense_voice_use_itn ?? null,
                 tone_decoder_type: details?.models?.stt?.tone_decoder_type || null,
             },
             tts: {
@@ -872,6 +878,8 @@ const ModelsPage = () => {
                     } else if (backend === 'sherpa') {
                         if (pendingSttExtra.sherpa_model_type) extra.sherpa_model_type = pendingSttExtra.sherpa_model_type;
                         if (pendingSttExtra.sherpa_vad_model_path) extra.sherpa_vad_model_path = pendingSttExtra.sherpa_vad_model_path;
+                        if (pendingSttExtra.sherpa_sense_voice_language) extra.sherpa_sense_voice_language = pendingSttExtra.sherpa_sense_voice_language;
+                        if (pendingSttExtra.sherpa_sense_voice_use_itn !== undefined) extra.sherpa_sense_voice_use_itn = pendingSttExtra.sherpa_sense_voice_use_itn;
                     } else if (backend === 'tone') {
                         if (pendingSttExtra.tone_decoder_type) extra.tone_decoder_type = pendingSttExtra.tone_decoder_type;
                         if (pendingSttExtra.tone_kenlm_path) extra.tone_kenlm_path = pendingSttExtra.tone_kenlm_path;
@@ -1280,6 +1288,50 @@ const ModelsPage = () => {
                                                                 placeholder="/app/models/vad/silero_vad.onnx"
                                                                 disabled={restarting}
                                                             />
+                                                        </div>
+                                                    )}
+                                                    {(activeModels.stt.sherpa_model_family === 'sense_voice' || isSenseVoicePath(selectedStt)) && (
+                                                        <div className="grid grid-cols-2 gap-1.5">
+                                                            <div>
+                                                                <label className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                                                    SenseVoice Language
+                                                                    <HelpTooltip content={<><strong>SenseVoice language hint</strong> — <code>auto</code> detects zh/en/ja/ko/yue per utterance; pin a language to avoid misdetection on short replies.</>} />
+                                                                </label>
+                                                                <select
+                                                                    className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.sherpa_sense_voice_language ? 'border-yellow-500' : 'border-border'}`}
+                                                                    value={pendingSttExtra.sherpa_sense_voice_language ?? activeModels.stt.sherpa_sense_voice_language ?? 'auto'}
+                                                                    onChange={(e) => {
+                                                                        setPendingSttExtra(prev => ({ ...prev, sherpa_sense_voice_language: e.target.value }));
+                                                                        if (!pendingChanges.stt) setPendingChanges(prev => ({ ...prev, stt: selectedStt }));
+                                                                    }}
+                                                                    disabled={restarting}
+                                                                >
+                                                                    <option value="auto">Auto-detect</option>
+                                                                    <option value="zh">Mandarin (zh)</option>
+                                                                    <option value="en">English (en)</option>
+                                                                    <option value="ja">Japanese (ja)</option>
+                                                                    <option value="ko">Korean (ko)</option>
+                                                                    <option value="yue">Cantonese (yue)</option>
+                                                                </select>
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                                                    Punctuation (ITN)
+                                                                    <HelpTooltip content={<><strong>Inverse text normalization</strong> — adds punctuation and writes numbers as digits.</>} />
+                                                                </label>
+                                                                <select
+                                                                    className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.sherpa_sense_voice_use_itn !== undefined ? 'border-yellow-500' : 'border-border'}`}
+                                                                    value={String(pendingSttExtra.sherpa_sense_voice_use_itn ?? activeModels.stt.sherpa_sense_voice_use_itn ?? true)}
+                                                                    onChange={(e) => {
+                                                                        setPendingSttExtra(prev => ({ ...prev, sherpa_sense_voice_use_itn: e.target.value === 'true' }));
+                                                                        if (!pendingChanges.stt) setPendingChanges(prev => ({ ...prev, stt: selectedStt }));
+                                                                    }}
+                                                                    disabled={restarting}
+                                                                >
+                                                                    <option value="true">On</option>
+                                                                    <option value="false">Off</option>
+                                                                </select>
+                                                            </div>
                                                         </div>
                                                     )}
                                                 </div>

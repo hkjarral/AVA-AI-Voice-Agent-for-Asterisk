@@ -1457,12 +1457,16 @@ def get_full_catalog():
     }
 
 def _multi_model_supports(model: dict, language_code: str) -> bool:
-    """Multi-language models without supported_languages match every language."""
+    """Multi-language models without supported_languages match every language.
+
+    Entries may be base codes ("zh") or region-qualified ("en-US"); both sides are
+    compared by base language so "en-GB" still offers an "en-US" model.
+    """
     supported = model.get("supported_languages")
     if not supported:
         return True
-    base = str(language_code or "").split("-", 1)[0].lower()
-    return base in supported
+    base = str(language_code or "").strip().lower().split("-", 1)[0]
+    return any(str(entry).strip().lower().split("-", 1)[0] == base for entry in supported)
 
 
 def get_models_by_language(language_code: str):

@@ -4,7 +4,8 @@ Tests for SenseVoice support in the Sherpa offline STT path (issue #407):
 - Recognizer construction via a mocked sherpa_onnx module
 - Rich-transcription tag stripping and language normalization
 - Config env vars, switch_model handling, and protocol schema fields
-- Models catalog entry
+- Model metadata validation, ambiguous/incomplete directories, decode diagnostics
+- Models catalog entry and language filter (incl. Kroko Cloud region codes)
 """
 from __future__ import annotations
 
@@ -134,6 +135,43 @@ def _touch(path: Path) -> Path:
     return path
 
 
+def _varint(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def _len_field(field: int, payload: bytes) -> bytes:
+    return _varint((field << 3) | 2) + _varint(len(payload)) + payload
+
+
+def _onnx_bytes(metadata: dict, graph_size: int = 4096) -> bytes:
+    """Minimal ONNX ModelProto: ir_version, a large opaque graph, then metadata_props."""
+    data = _varint((1 << 3) | 0) + _varint(8)  # ir_version = 8
+    data += _len_field(7, b"\x00" * graph_size)  # graph (skipped by the reader)
+    for key, value in metadata.items():
+        entry = _len_field(1, key.encode()) + _len_field(2, str(value).encode())
+        data += _len_field(14, entry)
+    return data
+
+
+def _sense_voice_metadata() -> dict:
+    sb = _load_module("stt_backends")
+    return {key: "1" for key in sb.SENSE_VOICE_REQUIRED_METADATA}
+
+
+def _sense_voice_model(path: Path, metadata: dict | None = None) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_onnx_bytes(_sense_voice_metadata() if metadata is None else metadata))
+    return path
+
+
 def _make_backend(model_dir: Path, vad: Path, **kwargs):
     sb = _load_module("stt_backends")
     return sb.SherpaOfflineSTTBackend(
@@ -151,7 +189,7 @@ def _make_backend(model_dir: Path, vad: Path, **kwargs):
 class TestSenseVoiceDetection:
     def test_sense_voice_layout_uses_from_sense_voice(self, tmp_path, fake_sherpa):
         model_dir = tmp_path / "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17"
-        model_file = _touch(model_dir / "model.int8.onnx")
+        model_file = _sense_voice_model(model_dir / "model.int8.onnx")
         tokens = _touch(model_dir / "tokens.txt")
         vad = _touch(tmp_path / "silero_vad.onnx")
 
@@ -169,8 +207,8 @@ class TestSenseVoiceDetection:
 
     def test_prefers_fp32_model_when_both_present(self, tmp_path, fake_sherpa):
         model_dir = tmp_path / "sense-voice"
-        _touch(model_dir / "model.int8.onnx")
-        fp32 = _touch(model_dir / "model.onnx")
+        _sense_voice_model(model_dir / "model.int8.onnx")
+        fp32 = _sense_voice_model(model_dir / "model.onnx")
         _touch(model_dir / "tokens.txt")
         vad = _touch(tmp_path / "silero_vad.onnx")
 
@@ -191,7 +229,7 @@ class TestSenseVoiceDetection:
 
     def test_sense_voice_missing_tokens_fails(self, tmp_path, fake_sherpa):
         model_dir = tmp_path / "sense-voice"
-        _touch(model_dir / "model.int8.onnx")
+        _sense_voice_model(model_dir / "model.int8.onnx")
         vad = _touch(tmp_path / "silero_vad.onnx")
 
         backend = _make_backend(model_dir, vad)
@@ -209,10 +247,84 @@ class TestSenseVoiceDetection:
         assert fake_sherpa.calls == []
 
 
+    def test_non_sense_voice_single_file_model_is_rejected_before_native_load(self, tmp_path, fake_sherpa, caplog):
+        # e.g. a Paraformer/Whisper export: model.onnx + tokens.txt but no SenseVoice metadata.
+        model_dir = tmp_path / "sherpa-onnx-paraformer-zh"
+        _sense_voice_model(model_dir / "model.int8.onnx", metadata={"model_type": "paraformer", "vocab_size": "8404"})
+        _touch(model_dir / "tokens.txt")
+        vad = _touch(tmp_path / "silero_vad.onnx")
+
+        backend = _make_backend(model_dir, vad)
+        with caplog.at_level("ERROR"):
+            assert backend.initialize() is False
+        assert fake_sherpa.calls == []
+        assert "not a SenseVoice export" in caplog.text
+        assert "lfr_window_size" in caplog.text
+
+    def test_unreadable_model_file_is_rejected(self, tmp_path, fake_sherpa, caplog):
+        model_dir = tmp_path / "sense-voice"
+        (model_dir).mkdir()
+        (model_dir / "model.onnx").write_bytes(b"\xff" * 64)  # truncated varint / garbage
+        _touch(model_dir / "tokens.txt")
+        vad = _touch(tmp_path / "silero_vad.onnx")
+
+        backend = _make_backend(model_dir, vad)
+        with caplog.at_level("ERROR"):
+            assert backend.initialize() is False
+        assert fake_sherpa.calls == []
+        assert "not a readable ONNX model" in caplog.text
+
+    def test_ambiguous_directory_prefers_transducer_and_warns(self, tmp_path, fake_sherpa, caplog):
+        model_dir = tmp_path / "mixed"
+        for name in ("tokens.txt", "encoder.onnx", "decoder.onnx", "joiner.onnx"):
+            _touch(model_dir / name)
+        _sense_voice_model(model_dir / "model.onnx")
+        vad = _touch(tmp_path / "silero_vad.onnx")
+
+        backend = _make_backend(model_dir, vad)
+        with caplog.at_level("WARNING"):
+            assert backend.initialize() is True
+        assert backend.model_family == "transducer"
+        assert fake_sherpa.calls[-1][0] == "transducer"
+        assert "ignoring model.onnx" in caplog.text
+
+    def test_empty_directory_reports_missing_files(self, tmp_path, fake_sherpa, caplog):
+        model_dir = tmp_path / "empty"
+        model_dir.mkdir()
+        vad = _touch(tmp_path / "silero_vad.onnx")
+
+        backend = _make_backend(model_dir, vad)
+        with caplog.at_level("ERROR"):
+            assert backend.initialize() is False
+        assert fake_sherpa.calls == []
+        assert "Missing model files" in caplog.text
+
+
+class TestOnnxMetadataReader:
+    def test_reads_metadata_after_large_graph(self, tmp_path):
+        sb = _load_module("stt_backends")
+        path = tmp_path / "model.onnx"
+        path.write_bytes(_onnx_bytes({"lang_zh": "3", "comment": "SenseVoice"}, graph_size=200_000))
+        assert sb.read_onnx_metadata(str(path)) == {"lang_zh": "3", "comment": "SenseVoice"}
+
+    def test_missing_keys_listed(self, tmp_path):
+        sb = _load_module("stt_backends")
+        meta = _sense_voice_metadata()
+        meta.pop("neg_mean")
+        path = _sense_voice_model(tmp_path / "model.onnx", metadata=meta)
+        assert sb.missing_sense_voice_metadata(str(path)) == ["neg_mean"]
+
+    def test_truncated_file_returns_none(self, tmp_path):
+        sb = _load_module("stt_backends")
+        path = tmp_path / "model.onnx"
+        path.write_bytes(_onnx_bytes({"a": "b"})[:20])
+        assert sb.missing_sense_voice_metadata(str(path)) is None
+
+
 class TestSenseVoiceTranscripts:
     def test_process_audio_strips_rich_tags(self, tmp_path, fake_sherpa):
         model_dir = tmp_path / "sense-voice"
-        _touch(model_dir / "model.int8.onnx")
+        _sense_voice_model(model_dir / "model.int8.onnx")
         _touch(model_dir / "tokens.txt")
         vad_path = _touch(tmp_path / "silero_vad.onnx")
         backend = _make_backend(model_dir, vad_path)
@@ -230,6 +342,23 @@ class TestSenseVoiceTranscripts:
 
         result = backend.process_audio(vad, b"\x00\x00" * 320)
         assert result == {"type": "final", "text": "I want a refund."}
+
+    def test_decode_log_has_call_id_and_timing(self, tmp_path, fake_sherpa, caplog):
+        model_dir = tmp_path / "sense-voice"
+        _sense_voice_model(model_dir / "model.int8.onnx")
+        _touch(model_dir / "tokens.txt")
+        vad_path = _touch(tmp_path / "silero_vad.onnx")
+        backend = _make_backend(model_dir, vad_path)
+        assert backend.initialize() is True
+
+        segment = _FakeSegment(np.full(8000, 0.1, dtype=np.float32).tolist())
+        with caplog.at_level("INFO"):
+            backend.finalize(_FakeVAD(segments=[segment]), call_id="call-42")
+        line = next(r.getMessage() for r in caplog.records if "decode - " in r.getMessage())
+        assert "call_id=call-42" in line
+        assert "family=sense_voice" in line
+        assert "audio_ms=500" in line
+        assert "decode_ms=" in line and "rtf=" in line
 
     def test_transducer_text_is_untouched(self, tmp_path, fake_sherpa):
         model_dir = tmp_path / "zipformer"
@@ -326,6 +455,47 @@ class TestSenseVoiceSwitchModel:
         new_cfg, _ = cp.apply_switch_model_request(cfg, {"sherpa_sense_voice_use_itn": "no"})
         assert new_cfg.sherpa_sense_voice_use_itn is cfg.sherpa_sense_voice_use_itn
 
+    def test_repeated_top_level_values_are_no_change(self):
+        cp, cfg = self._cp_and_config()
+        request = {"sherpa_sense_voice_language": "en", "sherpa_sense_voice_use_itn": False}
+        cfg, changed = cp.apply_switch_model_request(cfg, request)
+        assert len(changed) == 2
+        _, changed_again = cp.apply_switch_model_request(cfg, request)
+        assert changed_again == []
+
+    def test_repeated_request_does_not_reload(self):
+        import asyncio
+
+        mm = _load_module("model_manager")
+        cfg = _load_module("config").LocalAIConfig()
+
+        class _Server:
+            config = cfg
+            reloads = 0
+
+            def _apply_config(self, config):
+                pass
+
+            async def reload_models(self):
+                _Server.reloads += 1
+
+        server = _Server()
+        manager = mm.ModelManager(server)
+        request = {"sherpa_sense_voice_language": "ja", "sherpa_sense_voice_use_itn": False}
+        first = asyncio.run(manager.switch_model(dict(request)))
+        second = asyncio.run(manager.switch_model(dict(request)))
+        assert first["status"] == "success"
+        assert second["status"] == "no_change"
+        assert _Server.reloads == 1
+
+    def test_stt_config_invalid_language_ignored(self):
+        cp, cfg = self._cp_and_config()
+        new_cfg, changed = cp.apply_switch_model_request(
+            cfg, {"stt_backend": "sherpa", "stt_config": {"sherpa_sense_voice_language": "fr"}}
+        )
+        assert new_cfg.sherpa_sense_voice_language == "auto"
+        assert not any(c.startswith("sherpa_sense_voice_language") for c in changed)
+
     def test_stt_config_dict(self):
         cp, cfg = self._cp_and_config()
         new_cfg, _ = cp.apply_switch_model_request(
@@ -354,6 +524,40 @@ class TestSenseVoiceProtocolSchema:
         constants = _load_module("constants")
         props = pc.PROTOCOL_SCHEMA["$defs"]["SwitchModelRequest"]["properties"]
         assert tuple(props["sherpa_sense_voice_language"]["enum"]) == constants.SENSE_VOICE_LANGUAGES
+
+
+class TestSenseVoiceStatus:
+    def _server(self, backend):
+        class _S:
+            stt_backend = "sherpa"
+            sherpa_backend = backend
+
+        return _S()
+
+    def test_reports_effective_sense_voice_settings(self):
+        sb_status = _load_module("status_builder")
+
+        class _B:
+            model_family = "sense_voice"
+            sense_voice_language = "yue"
+            sense_voice_use_itn = False
+
+        assert sb_status._sherpa_sense_voice_status(self._server(_B())) == {
+            "sherpa_model_family": "sense_voice",
+            "sherpa_sense_voice_language": "yue",
+            "sherpa_sense_voice_use_itn": False,
+        }
+
+    def test_transducer_and_unloaded_hide_sense_voice_settings(self):
+        sb_status = _load_module("status_builder")
+
+        class _T:
+            model_family = "transducer"
+            sense_voice_language = "auto"
+            sense_voice_use_itn = True
+
+        assert sb_status._sherpa_sense_voice_status(self._server(_T()))["sherpa_sense_voice_language"] is None
+        assert sb_status._sherpa_sense_voice_status(self._server(None))["sherpa_model_family"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -395,3 +599,14 @@ def test_multi_models_without_supported_languages_still_match_everywhere():
     catalog = _load_catalog()
     ids = {m["id"] for m in catalog.get_models_by_language("es-ES")["stt"]}
     assert "faster_whisper_base" in ids
+
+
+@pytest.mark.parametrize(
+    "language,expected",
+    [("en-US", True), ("en", True), ("en-GB", True), ("es-ES", True), ("he-IL", True), ("zh-CN", False), ("ru-RU", False)],
+)
+def test_kroko_cloud_region_codes_still_match(language, expected):
+    # Regression: base-code comparison dropped Kroko Cloud (en-US style entries) everywhere.
+    catalog = _load_catalog()
+    ids = {m["id"] for m in catalog.get_models_by_language(language)["stt"]}
+    assert ("kroko_cloud" in ids) is expected

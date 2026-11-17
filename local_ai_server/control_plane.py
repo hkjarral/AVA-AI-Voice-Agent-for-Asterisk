@@ -103,6 +103,10 @@ def _apply_config_dict(
             value = float(value)
         else:
             value = str(value)
+        if target == "sherpa_sense_voice_language":
+            value = value.strip().lower()
+            if value not in SENSE_VOICE_LANGUAGES:
+                continue
         if current == value:
             continue
         config = replace(config, **{target: value})
@@ -206,13 +210,13 @@ def apply_switch_model_request(
 
     if "sherpa_sense_voice_language" in data:
         value = str(data["sherpa_sense_voice_language"]).strip().lower()
-        if value in SENSE_VOICE_LANGUAGES:
+        if value in SENSE_VOICE_LANGUAGES and value != new_config.sherpa_sense_voice_language:
             new_config = replace(new_config, sherpa_sense_voice_language=value)
             changed.append(f"sherpa_sense_voice_language={value}")
 
     if "sherpa_sense_voice_use_itn" in data:
         value = data["sherpa_sense_voice_use_itn"]
-        if isinstance(value, bool):
+        if isinstance(value, bool) and value != new_config.sherpa_sense_voice_use_itn:
             new_config = replace(new_config, sherpa_sense_voice_use_itn=value)
             changed.append(f"sherpa_sense_voice_use_itn={value}")
 

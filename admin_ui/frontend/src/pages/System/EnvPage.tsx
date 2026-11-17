@@ -722,7 +722,7 @@ const EnvPage = () => {
         // Local AI Server - Sherpa offline/VAD
         'SHERPA_MODEL_TYPE', 'SHERPA_VAD_MODEL_PATH', 'SHERPA_VAD_THRESHOLD',
         'SHERPA_VAD_MIN_SILENCE_MS', 'SHERPA_VAD_MIN_SPEECH_MS', 'SHERPA_OFFLINE_PREROLL_MS',
-        'SHERPA_OFFLINE_DEBUG_SEGMENTS',
+        'SHERPA_OFFLINE_DEBUG_SEGMENTS', 'SHERPA_SENSE_VOICE_LANGUAGE', 'SHERPA_SENSE_VOICE_USE_ITN',
         // Local AI Server - Tone STT
         'TONE_MODEL_PATH', 'TONE_DECODER_TYPE', 'TONE_KENLM_PATH', 'INCLUDE_TONE',
         // Local AI Server - Silero TTS
@@ -1649,7 +1649,7 @@ const EnvPage = () => {
                                         { value: 'online', label: 'Online (Streaming)' },
                                         { value: 'offline', label: 'Offline (VAD-Gated)' },
                                     ]}
-                                    tooltip="Offline mode requires a non-streaming Sherpa transducer model. Streaming models must stay on online mode."
+                                    tooltip="Offline mode requires a non-streaming Sherpa transducer or a SenseVoice model. Streaming models must stay on online mode."
                                 />
                                 <FormInput
                                     label="Sherpa Model Path"
@@ -1658,7 +1658,7 @@ const EnvPage = () => {
                                         : '/app/models/stt/sherpa-onnx-streaming-zipformer-en-2023-06-26')}
                                     onChange={(e) => updateEnv('SHERPA_MODEL_PATH', e.target.value)}
                                     tooltip={(env['SHERPA_MODEL_TYPE'] || 'online') === 'offline'
-                                        ? 'Path to a non-streaming Sherpa transducer model directory such as sherpa-onnx-zipformer-en-2023-06-26.'
+                                        ? 'Path to a non-streaming Sherpa transducer or SenseVoice model directory, such as sherpa-onnx-zipformer-en-2023-06-26.'
                                         : 'Path to a streaming Sherpa model directory.'}
                                 />
                                 {(env['SHERPA_MODEL_TYPE'] || 'online') === 'offline' && (
@@ -1692,6 +1692,30 @@ const EnvPage = () => {
                                             value={env['SHERPA_OFFLINE_PREROLL_MS'] || '350'}
                                             onChange={(e) => updateEnv('SHERPA_OFFLINE_PREROLL_MS', e.target.value)}
                                             tooltip="Audio padding retained before VAD start so Sherpa offline does not clip the beginning of utterances."
+                                        />
+                                        <FormSelect
+                                            label="SenseVoice Language"
+                                            value={env['SHERPA_SENSE_VOICE_LANGUAGE'] || 'auto'}
+                                            onChange={(e) => updateEnv('SHERPA_SENSE_VOICE_LANGUAGE', e.target.value)}
+                                            options={[
+                                                { value: 'auto', label: 'Auto-detect' },
+                                                { value: 'zh', label: 'Mandarin (zh)' },
+                                                { value: 'en', label: 'English (en)' },
+                                                { value: 'ja', label: 'Japanese (ja)' },
+                                                { value: 'ko', label: 'Korean (ko)' },
+                                                { value: 'yue', label: 'Cantonese (yue)' },
+                                            ]}
+                                            tooltip="Only used when SHERPA_MODEL_PATH is a SenseVoice model (model.onnx + tokens.txt). Transducer models ignore it."
+                                        />
+                                        <FormSelect
+                                            label="SenseVoice Punctuation (ITN)"
+                                            value={env['SHERPA_SENSE_VOICE_USE_ITN'] || 'true'}
+                                            onChange={(e) => updateEnv('SHERPA_SENSE_VOICE_USE_ITN', e.target.value)}
+                                            options={[
+                                                { value: 'true', label: 'On' },
+                                                { value: 'false', label: 'Off' },
+                                            ]}
+                                            tooltip="Inverse text normalization for SenseVoice: punctuation and digits. Transducer models ignore it."
                                         />
                                     </>
                                 )}

@@ -615,6 +615,9 @@ Models are **not bundled** in Docker images. Download them via:
 - `SHERPA_SENSE_VOICE_USE_ITN=true` adds punctuation and digit formatting (the Cantonese fine-tuned `...-int8-2025-09-09` export also loads, but does not produce punctuation)
 - Emotion and audio-event tags are not added to transcripts; they are logged at debug level
 - The same VAD tuning knobs as the offline transducer apply
+- Language and punctuation can also be changed from the Models page, Local Provider settings, Environment page or Health widget; the status panel shows the effective values
+- A directory with both `encoder*.onnx` and `model.onnx` loads as a transducer (a warning names the ignored file). A `model.onnx` without SenseVoice metadata is rejected at startup with the missing keys listed
+- Each decoded segment logs `call_id`, `audio_ms`, `decode_ms` and the real-time factor at INFO level
 
 **T-one** (Russian telephony streaming CTC):
 - Requires rebuild: `docker compose build --build-arg INCLUDE_TONE=true local_ai_server`

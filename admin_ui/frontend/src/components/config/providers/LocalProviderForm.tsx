@@ -765,6 +765,45 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
                                         </p>
                                     </div>
                                 )}
+                                {config.sherpa_model_type === 'offline' && (
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="space-y-2">
+                                            <div className="flex items-center gap-1.5">
+                                                <label className="text-sm font-medium">SenseVoice Language</label>
+                                                <HelpTooltip
+                                                    content={
+                                                        <>
+                                                            <strong>SenseVoice language hint</strong> — only used when the model directory is a SenseVoice export (<code>model.onnx</code> + <code>tokens.txt</code>). <code>auto</code> detects zh/en/ja/ko/yue.
+                                                        </>
+                                                    }
+                                                />
+                                            </div>
+                                            <select
+                                                className="w-full p-2 rounded border border-input bg-background"
+                                                value={config.sherpa_sense_voice_language || 'auto'}
+                                                onChange={(e) => handleChange('sherpa_sense_voice_language', e.target.value)}
+                                            >
+                                                <option value="auto">Auto-detect</option>
+                                                <option value="zh">Mandarin (zh)</option>
+                                                <option value="en">English (en)</option>
+                                                <option value="ja">Japanese (ja)</option>
+                                                <option value="ko">Korean (ko)</option>
+                                                <option value="yue">Cantonese (yue)</option>
+                                            </select>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-sm font-medium">SenseVoice Punctuation (ITN)</label>
+                                            <select
+                                                className="w-full p-2 rounded border border-input bg-background"
+                                                value={String(config.sherpa_sense_voice_use_itn ?? true)}
+                                                onChange={(e) => handleChange('sherpa_sense_voice_use_itn', e.target.value === 'true')}
+                                            >
+                                                <option value="true">On</option>
+                                                <option value="false">Off</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                )}
                             </>
                         )}
 

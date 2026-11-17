@@ -3648,7 +3648,7 @@ class LocalAIServer:
         if not hasattr(self.sherpa_backend, "finalize"):
             return
         try:
-            trailing = self.sherpa_backend.finalize(vad)
+            trailing = self.sherpa_backend.finalize(vad, call_id=session.call_id)
             if not trailing:
                 return
             trailing_text = (trailing.get("text") or "").strip()
@@ -4161,6 +4161,7 @@ class LocalAIServer:
                 session.sherpa_offline_vad,
                 audio_bytes,
                 preroll_pcm16=session.stt_segment_preroll,
+                call_id=session.call_id,
             )
         else:
             # Ensure sherpa stream exists for this session
