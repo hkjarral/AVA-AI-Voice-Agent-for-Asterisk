@@ -145,8 +145,13 @@ def missing_sense_voice_metadata(path: str) -> Optional[List[str]]:
         value = metadata.get(key, "").strip()
         if key in {"neg_mean", "inv_stddev"}:
             try:
-                values = [float(part) for part in value.split(",") if part.strip()]
-                valid = bool(values) and all(math.isfinite(part) for part in values)
+                parts = [part.strip() for part in value.split(",") if part]
+                # Match C++ decimal parsing, not Python-only forms such as 1_000.
+                decimal = r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"
+                valid = bool(parts) and all(re.fullmatch(decimal, part) for part in parts)
+                if valid:
+                    values = [float(part) for part in parts]
+                    valid = all(math.isfinite(part) and abs(part) <= float(np.finfo(np.float32).max) for part in values)
             except ValueError:
                 valid = False
         else:

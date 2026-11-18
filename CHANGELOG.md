@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **SenseVoice final review:** failed model switches restore absent environment overrides, dry-run changes retain their pending reload, invalid native metadata values are rejected, failed UI applies retain pending settings, and SenseVoice selects have accessible labels (#879).
+- **SenseVoice final review:** failed model switches restore absent environment overrides, dry-run changes retain their pending reload across concurrent requests and degraded model loads, invalid native metadata values (including float32 overflow and unsupported numeric syntax) are rejected, failed UI applies retain pending settings, and SenseVoice selects have accessible labels (#879).
 
 - **SenseVoice Environment apply:** language and ITN changes now request Local AI container recreation, including when removing an override. The Environment page retains the pending action after refresh until the running container matches the saved environment (#879).
 

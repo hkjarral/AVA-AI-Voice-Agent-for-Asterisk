@@ -617,7 +617,8 @@ def test_kroko_cloud_region_codes_still_match(language, expected):
     ("vocab_size", "2147483648"), ("lang_en", "english"),
     ("lfr_window_shift", "0"), ("neg_mean", ""),
     ("neg_mean", "1,bad"), ("inv_stddev", "inf"), ("inv_stddev", "nan"),
-    ("blank_id", "-1"),
+    ("blank_id", "-1"), ("neg_mean", "1_000"),
+    ("inv_stddev", "1e39"), ("neg_mean", "1, ,2"),
 ])
 def test_invalid_metadata_is_rejected_before_native_construction(tmp_path, fake_sherpa, key, value):
     metadata = _sense_voice_metadata()
@@ -660,3 +661,66 @@ def test_dry_run_keeps_a_pending_model_reload_until_success(fail_once):
     assert applied["status"] == "success"
     assert reload.await_count == (2 if fail_once else 1)
     assert asyncio.run(manager.switch_model(request))["status"] == "no_change"
+
+
+@pytest.mark.parametrize("component", ["stt", "llm", "tts"])
+def test_degraded_reload_reports_error_and_retries_unchanged_config(component):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    cfg = _load_module("config").LocalAIConfig()
+    server = SimpleNamespace(config=cfg, startup_errors={}, _apply_config=lambda config: None)
+    attempts = 0
+
+    async def reload():
+        nonlocal attempts
+        attempts += 1
+        server.startup_errors = {component: "load failed"} if attempts == 1 else {}
+
+    server.reload_models = AsyncMock(side_effect=reload)
+    manager = _load_module("model_manager").ModelManager(server)
+    request = {"sherpa_sense_voice_language": "zh"}
+    failed = asyncio.run(manager.switch_model(request))
+    assert failed["status"] == "error"
+    assert f"{component}: load failed" in failed["message"]
+    assert manager._pending_model_reload is True
+    assert asyncio.run(manager.switch_model(request))["status"] == "success"
+    assert server.reload_models.await_count == 2
+    assert manager._pending_model_reload is False
+    assert asyncio.run(manager.switch_model(request))["status"] == "no_change"
+
+
+def test_concurrent_dry_run_stays_pending_after_earlier_reload():
+    import asyncio
+    from types import SimpleNamespace
+
+    async def scenario():
+        started = asyncio.Event()
+        finish = asyncio.Event()
+        loaded = []
+        cfg = _load_module("config").LocalAIConfig()
+        server = SimpleNamespace(config=cfg, startup_errors={}, _apply_config=lambda config: None)
+
+        async def reload():
+            loaded.append(server.config.sherpa_sense_voice_language)
+            started.set()
+            await finish.wait()
+
+        server.reload_models = reload
+        manager = _load_module("model_manager").ModelManager(server)
+        first = asyncio.create_task(manager.switch_model({"sherpa_sense_voice_language": "zh"}))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        staged = asyncio.create_task(manager.switch_model({"sherpa_sense_voice_language": "ja", "dry_run": True}))
+        await asyncio.sleep(0)
+        assert not staged.done()
+        assert server.config.sherpa_sense_voice_language == "zh"
+        finish.set()
+        assert (await first)["status"] == "success"
+        assert (await staged)["status"] == "success"
+        assert loaded == ["zh"]
+        assert manager._pending_model_reload is True
+        assert (await manager.switch_model({"sherpa_sense_voice_language": "ja"}))["status"] == "success"
+        assert loaded == ["zh", "ja"]
+        assert manager._pending_model_reload is False
+
+    asyncio.run(scenario())

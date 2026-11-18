@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict
 
@@ -25,8 +26,14 @@ class ModelManager:
     def __init__(self, server: Any):
         self._server = server
         self._pending_model_reload = False
+        self._switch_lock = asyncio.Lock()
 
     async def switch_model(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        # Keep staged config and reload completion in one serialized transition.
+        async with self._switch_lock:
+            return await self._switch_model(data)
+
+    async def _switch_model(self, data: Dict[str, Any]) -> Dict[str, Any]:
         dry_run = bool(data.get("dry_run", False))
         new_config, changed = apply_switch_model_request(self._server.config, data)
 
@@ -48,6 +55,11 @@ class ModelManager:
             logging.info("🧪 SWITCH MODEL DRY-RUN - Skipping reload_models()")
         elif requires_reload:
             await self._server.reload_models()
+            errors = getattr(self._server, "startup_errors", {}) or {}
+            if errors:
+                message = "Model reload failed: " + "; ".join(f"{key}: {value}" for key, value in errors.items())
+                logging.error("❌ %s (reload remains pending)", message)
+                return {"type": "switch_response", "status": "error", "message": message, "changed": changed}
             self._pending_model_reload = False
         else:
             if any(_changed_key(item) == "enable_filler_audio" for item in changed):
