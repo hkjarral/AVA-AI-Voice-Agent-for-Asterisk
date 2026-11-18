@@ -98,10 +98,17 @@ docker compose up -d --build
 
 ## Migrating a checkout from a retired branch
 
+If `origin` fetches only the old branch, as in a `--single-branch` clone,
+configure it to fetch `main` first:
+
+```bash
+git remote set-branches origin main
+```
+
 While on the old local branch, check for local commits before switching:
 
 ```bash
-git fetch origin
+git fetch origin refs/heads/main:refs/remotes/origin/main
 git log --oneline origin/main..HEAD
 
 # Move to main
