@@ -264,7 +264,10 @@ def _ai_engine_env_key(key: str) -> bool:
 def _local_ai_env_key(key: str) -> bool:
     return (
         _is_prefix(key, ("LOCAL_", "KROKO_", "FASTER_WHISPER_", "WHISPER_CPP_", "MELOTTS_", "KOKORO_"))
-        or key in ("SHERPA_MODEL_PATH", "HEALTH_API_TOKEN")
+        or key in (
+            "SHERPA_MODEL_PATH", "SHERPA_SENSE_VOICE_LANGUAGE", "SHERPA_SENSE_VOICE_USE_ITN",
+            "HEALTH_API_TOKEN",
+        )
         or key in _LIVE_STATUS_PUBLISHER_KEYS
     )
 

@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **SenseVoice Environment apply:** language and ITN changes now request Local AI container recreation, including when removing an override. The Environment page retains the pending action after refresh until the running container matches the saved environment (#879).
+
 - **Voicemail announcement drain:** voicemail uses the shared deferred handoff owner and waits for correlated provider completion (or pipeline playback) plus caller transport drain before leaving Stasis. Incomplete announcements cancel safely; uncertain ARI requests cannot trigger recovery speech, hangup, or replay. Submitted-request cancellation retains uncertainty evidence even after a newer routing owner takes over, and native hangup rechecks ownership inside its bounded request task. Call History distinguishes announcement, accepted, cancelled, and uncertain handoffs, and preserves the same cleanup reporting outcome as post-call tools when a request settles during teardown (#863).
 - **ARI lifecycle recovery:** voicemail reports rejected or uncertain dialplan handoffs accurately without taking ownership back from a potentially transferred caller. Native hangup checks acceptance and retries safely; pre-call hold playback is stopped on completion, failure, cancellation, and caller cleanup, including late starts (#863).
 
