@@ -305,3 +305,13 @@ describe('Environment read ownership', () => {
         expect(vi.mocked(axios.get).mock.calls).toHaveLength(before);
     });
 });
+
+
+describe('SenseVoice ITN environment display', () => {
+    it.each(['0', 'false', 'no', 'n', ' OFF ', undefined])('matches runtime parsing for %s', async raw => {
+        window.history.replaceState(null, '', '/env#local-ai');
+        readEnv = async () => ({ data: { LOCAL_STT_BACKEND: 'sherpa', SHERPA_MODEL_TYPE: 'offline', ...(raw === undefined ? {} : { SHERPA_SENSE_VOICE_USE_ITN: raw }) } });
+        render(page());
+        expect(await screen.findByLabelText('SenseVoice Punctuation (ITN)')).toHaveValue(raw === undefined ? 'true' : 'false');
+    });
+});

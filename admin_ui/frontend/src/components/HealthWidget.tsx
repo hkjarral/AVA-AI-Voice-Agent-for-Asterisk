@@ -230,8 +230,11 @@ export const HealthWidget = () => {
                     if (modelType === 'stt' && change.backend === 'sherpa') {
                         if (change.sherpa_model_type) payload.sherpa_model_type = change.sherpa_model_type;
                         if (change.sherpa_vad_model_path) payload.sherpa_vad_model_path = change.sherpa_vad_model_path;
-                        if (change.sherpa_sense_voice_language) payload.sherpa_sense_voice_language = change.sherpa_sense_voice_language;
-                        if (change.sherpa_sense_voice_use_itn !== undefined) payload.sherpa_sense_voice_use_itn = change.sherpa_sense_voice_use_itn;
+                        const currentStt = health?.local_ai_server?.details?.models?.stt;
+                        if (/sense[-_]?voice/i.test(change.modelPath || '') || ((!change.modelPath || change.modelPath === currentStt?.path) && currentStt?.sherpa_model_family === 'sense_voice')) {
+                            payload.sherpa_sense_voice_language = change.sherpa_sense_voice_language ?? currentStt?.sherpa_sense_voice_language ?? 'auto';
+                            payload.sherpa_sense_voice_use_itn = change.sherpa_sense_voice_use_itn ?? currentStt?.sherpa_sense_voice_use_itn ?? true;
+                        }
                     }
                     if (modelType === 'stt' && change.backend === 'tone') {
                         if (change.tone_decoder_type) payload.tone_decoder_type = change.tone_decoder_type;
@@ -243,8 +246,8 @@ export const HealthWidget = () => {
 
                     const res = await axios.post('/api/local-ai/switch', payload);
 
-                    // Only check success on last change (which triggers restart)
-                    if (isLast && !res.data.success) {
+                    // Each response may report a failed switch and rollback.
+                    if (!res.data.success) {
                         throw new Error(res.data.message || 'Failed to switch model');
                     }
                 } else if (modelType === 'llm') {

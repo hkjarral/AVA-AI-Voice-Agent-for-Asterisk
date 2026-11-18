@@ -98,7 +98,7 @@ const installedModelsPayload = {
     ],
 };
 
-const mockModelsPageApis = (healthStatus = 'error') => {
+const mockModelsPageApis = (healthStatus = 'error', environment: Record<string, string> = {}, modelsPayload: unknown = installedModelsPayload) => {
     vi.mocked(axios.get).mockImplementation((url) => {
         if (url === '/api/wizard/local/available-models') {
             return Promise.resolve({
@@ -123,13 +123,13 @@ const mockModelsPageApis = (healthStatus = 'error') => {
             });
         }
         if (url === '/api/local-ai/models') {
-            return Promise.resolve({ data: installedModelsPayload });
+            return Promise.resolve({ data: modelsPayload });
         }
         if (url === '/api/local-ai/capabilities') {
             return Promise.resolve({ data: { stt: {}, tts: {} } });
         }
         if (url === '/api/config/env') {
-            return Promise.resolve({ data: {} });
+            return Promise.resolve({ data: environment });
         }
         if (url === '/api/custom-models') {
             return Promise.resolve({ data: { enabled: false, models: [] } });
@@ -256,6 +256,27 @@ describe('ModelsPage Local AI status', () => {
         for (const [, payload] of vi.mocked(axios.post).mock.calls) {
             expect(payload).toMatchObject({ sherpa_sense_voice_language: 'zh', sherpa_sense_voice_use_itn: false });
         }
+    });
+
+    it('shows persisted SenseVoice settings while another backend is active and sends exactly those values', async () => {
+        const path = '/app/models/stt/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17';
+        const component = { ...localAIComponent, state: 'ready', details: {
+            ...localAIComponent.details, config: { runtime_mode: 'full' },
+        } };
+        liveStatusState.current.snapshot = { ...liveStatusSnapshot(), components: { local_ai_server: component } };
+        mockModelsPageApis('connected', { SHERPA_SENSE_VOICE_LANGUAGE: 'zh', SHERPA_SENSE_VOICE_USE_ITN: ' OFF ' }, {
+            ...installedModelsPayload, stt: { ...installedModelsPayload.stt, sherpa: [{ name: 'SenseVoice', path, size_mb: 155 }] },
+        });
+        vi.mocked(axios.post).mockResolvedValue({ data: { success: true } });
+        render(<MemoryRouter><ModelsPage /></MemoryRouter>);
+        const option = await screen.findByRole('option', { name: 'SenseVoice' });
+        fireEvent.change(option.closest('select')!, { target: { value: `sherpa:${path}` } });
+        expect(await screen.findByLabelText('SenseVoice Language')).toHaveValue('zh');
+        expect(screen.getByLabelText('Punctuation (ITN)')).toHaveValue('false');
+        fireEvent.click(screen.getByRole('button', { name: /Apply Changes/i }));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/local-ai/switch', expect.objectContaining({
+            sherpa_sense_voice_language: 'zh', sherpa_sense_voice_use_itn: false,
+        })));
     });
 
 });

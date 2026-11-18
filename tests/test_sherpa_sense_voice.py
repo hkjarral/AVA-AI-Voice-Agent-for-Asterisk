@@ -163,7 +163,9 @@ def _onnx_bytes(metadata: dict, graph_size: int = 4096) -> bytes:
 
 def _sense_voice_metadata() -> dict:
     sb = _load_module("stt_backends")
-    return {key: "1" for key in sb.SENSE_VOICE_REQUIRED_METADATA}
+    metadata = {key: "1" for key in sb.SENSE_VOICE_REQUIRED_METADATA}
+    metadata.update(neg_mean=",".join(["0"] * 80), inv_stddev=",".join(["1"] * 80))
+    return metadata
 
 
 def _sense_voice_model(path: Path, metadata: dict | None = None) -> Path:
@@ -632,7 +634,7 @@ def test_invalid_metadata_is_rejected_before_native_construction(tmp_path, fake_
 
 def test_valid_signed_float_vectors_and_optional_blank_id_are_accepted(tmp_path, fake_sherpa):
     metadata = _sense_voice_metadata()
-    metadata.update(neg_mean="0.1,-2e-2,3", inv_stddev="1,2,3", blank_id="0")
+    metadata.update(neg_mean=",".join(["0.1", "-2e-2"] * 40), inv_stddev=",".join(["1", "2"] * 40), blank_id="0")
     _sense_voice_model(tmp_path / "model" / "model.onnx", metadata)
     _touch(tmp_path / "model" / "tokens.txt")
     backend = _make_backend(tmp_path / "model", _touch(tmp_path / "vad.onnx"))
@@ -724,3 +726,16 @@ def test_concurrent_dry_run_stays_pending_after_earlier_reload():
         assert manager._pending_model_reload is False
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("window,mean_count,std_count,valid", [
+    (1, 80, 1, False), (7, 560, 1, False), (7, 80, 80, False), (7, 560, 560, True),
+])
+def test_normalization_vectors_match_stacked_feature_dimension(tmp_path, fake_sherpa, window, mean_count, std_count, valid):
+    metadata = _sense_voice_metadata()
+    metadata.update(lfr_window_size=str(window), neg_mean=",".join(["0"] * mean_count), inv_stddev=",".join(["1"] * std_count))
+    _sense_voice_model(tmp_path / "model" / "model.onnx", metadata)
+    _touch(tmp_path / "model" / "tokens.txt")
+    backend = _make_backend(tmp_path / "model", _touch(tmp_path / "vad.onnx"))
+    assert backend.initialize() is valid
+    assert bool(fake_sherpa.calls) is valid

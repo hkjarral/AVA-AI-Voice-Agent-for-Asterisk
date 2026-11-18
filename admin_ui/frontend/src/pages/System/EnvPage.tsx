@@ -1709,7 +1709,7 @@ const EnvPage = () => {
                                         />
                                         <FormSelect
                                             label="SenseVoice Punctuation (ITN)"
-                                            value={env['SHERPA_SENSE_VOICE_USE_ITN'] || 'true'}
+                                            value={['0', 'false', 'no', 'n', 'off'].includes((env['SHERPA_SENSE_VOICE_USE_ITN'] || 'true').trim().toLowerCase()) ? 'false' : 'true'}
                                             onChange={(e) => updateEnv('SHERPA_SENSE_VOICE_USE_ITN', e.target.value)}
                                             options={[
                                                 { value: 'true', label: 'On' },

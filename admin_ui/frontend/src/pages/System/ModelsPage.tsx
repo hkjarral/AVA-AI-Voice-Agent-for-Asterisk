@@ -632,6 +632,13 @@ const ModelsPage = () => {
     const runtimeGpuKnown = runtimeGpu !== null && typeof runtimeGpu.runtime_detected === 'boolean';
     const runtimeGpuDetected = runtimeGpu?.runtime_detected === true;
     const runtimeGpuUsable = runtimeGpu?.runtime_usable === true;
+    const configuredSenseVoiceLanguage = (envConfig.SHERPA_SENSE_VOICE_LANGUAGE || 'auto').trim().toLowerCase();
+    const senseVoiceLanguage = pendingSttExtra.sherpa_sense_voice_language
+        ?? activeModels?.stt.sherpa_sense_voice_language
+        ?? (['auto', 'zh', 'en', 'ja', 'ko', 'yue'].includes(configuredSenseVoiceLanguage) ? configuredSenseVoiceLanguage : 'auto');
+    const senseVoiceItn = pendingSttExtra.sherpa_sense_voice_use_itn
+        ?? activeModels?.stt.sherpa_sense_voice_use_itn
+        ?? !['0', 'false', 'no', 'n', 'off'].includes((envConfig.SHERPA_SENSE_VOICE_USE_ITN || 'true').trim().toLowerCase());
     const currentFillerAudio = isTruthy(envConfig.LOCAL_ENABLE_FILLER_AUDIO);
     const currentStreamingOverlap = isTruthy(envConfig.LOCAL_LLM_STREAMING_TTS_OVERLAP ?? 'true');
     const hasPendingModelChanges = Object.keys(pendingChanges).length > 0;
@@ -885,8 +892,11 @@ const ModelsPage = () => {
                     } else if (backend === 'sherpa') {
                         if (pendingSttExtra.sherpa_model_type) extra.sherpa_model_type = pendingSttExtra.sherpa_model_type;
                         if (pendingSttExtra.sherpa_vad_model_path) extra.sherpa_vad_model_path = pendingSttExtra.sherpa_vad_model_path;
-                        if (pendingSttExtra.sherpa_sense_voice_language) extra.sherpa_sense_voice_language = pendingSttExtra.sherpa_sense_voice_language;
-                        if (pendingSttExtra.sherpa_sense_voice_use_itn !== undefined) extra.sherpa_sense_voice_use_itn = pendingSttExtra.sherpa_sense_voice_use_itn;
+                        const modelPath = pathParts.join(':');
+                        if (isSenseVoicePath(modelPath) || (modelPath === activeModels?.stt.path && activeModels?.stt.sherpa_model_family === 'sense_voice')) {
+                            extra.sherpa_sense_voice_language = senseVoiceLanguage;
+                            extra.sherpa_sense_voice_use_itn = senseVoiceItn;
+                        }
                     } else if (backend === 'tone') {
                         if (pendingSttExtra.tone_decoder_type) extra.tone_decoder_type = pendingSttExtra.tone_decoder_type;
                         if (pendingSttExtra.tone_kenlm_path) extra.tone_kenlm_path = pendingSttExtra.tone_kenlm_path;
@@ -1306,7 +1316,7 @@ const ModelsPage = () => {
                                                                 </div>
                                                                 <select id="models-sensevoice-language"
                                                                     className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.sherpa_sense_voice_language ? 'border-yellow-500' : 'border-border'}`}
-                                                                    value={pendingSttExtra.sherpa_sense_voice_language ?? activeModels.stt.sherpa_sense_voice_language ?? 'auto'}
+                                                                    value={senseVoiceLanguage}
                                                                     onChange={(e) => {
                                                                         setPendingSttExtra(prev => ({ ...prev, sherpa_sense_voice_language: e.target.value }));
                                                                         if (!pendingChanges.stt) setPendingChanges(prev => ({ ...prev, stt: selectedStt }));
@@ -1328,7 +1338,7 @@ const ModelsPage = () => {
                                                                 </div>
                                                                 <select id="models-sensevoice-itn"
                                                                     className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.sherpa_sense_voice_use_itn !== undefined ? 'border-yellow-500' : 'border-border'}`}
-                                                                    value={String(pendingSttExtra.sherpa_sense_voice_use_itn ?? activeModels.stt.sherpa_sense_voice_use_itn ?? true)}
+                                                                    value={String(senseVoiceItn)}
                                                                     onChange={(e) => {
                                                                         setPendingSttExtra(prev => ({ ...prev, sherpa_sense_voice_use_itn: e.target.value === 'true' }));
                                                                         if (!pendingChanges.stt) setPendingChanges(prev => ({ ...prev, stt: selectedStt }));

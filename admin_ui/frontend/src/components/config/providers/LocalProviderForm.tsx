@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
+import { Link } from 'react-router-dom';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 import HelpTooltip from '../../ui/HelpTooltip';
 import { localAIStatusFromLiveSnapshot } from '../../../utils/liveStatus';
@@ -766,43 +767,12 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
                                     </div>
                                 )}
                                 {config.sherpa_model_type === 'offline' && (
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div className="space-y-2">
-                                            <div className="flex items-center gap-1.5">
-                                                <label htmlFor="provider-sensevoice-language" className="text-sm font-medium">SenseVoice Language</label>
-                                                <HelpTooltip
-                                                    content={
-                                                        <>
-                                                            <strong>SenseVoice language hint</strong> — only used when the model directory is a SenseVoice export (<code>model.onnx</code> + <code>tokens.txt</code>). <code>auto</code> detects zh/en/ja/ko/yue.
-                                                        </>
-                                                    }
-                                                />
-                                            </div>
-                                            <select id="provider-sensevoice-language"
-                                                className="w-full p-2 rounded border border-input bg-background"
-                                                value={config.sherpa_sense_voice_language || 'auto'}
-                                                onChange={(e) => handleChange('sherpa_sense_voice_language', e.target.value)}
-                                            >
-                                                <option value="auto">Auto-detect</option>
-                                                <option value="zh">Mandarin (zh)</option>
-                                                <option value="en">English (en)</option>
-                                                <option value="ja">Japanese (ja)</option>
-                                                <option value="ko">Korean (ko)</option>
-                                                <option value="yue">Cantonese (yue)</option>
-                                            </select>
-                                        </div>
-                                        <div className="space-y-2">
-                                            <label htmlFor="provider-sensevoice-itn" className="text-sm font-medium">SenseVoice Punctuation (ITN)</label>
-                                            <select id="provider-sensevoice-itn"
-                                                className="w-full p-2 rounded border border-input bg-background"
-                                                value={String(config.sherpa_sense_voice_use_itn ?? true)}
-                                                onChange={(e) => handleChange('sherpa_sense_voice_use_itn', e.target.value === 'true')}
-                                            >
-                                                <option value="true">On</option>
-                                                <option value="false">Off</option>
-                                            </select>
-                                        </div>
-                                    </div>
+                                    <p className="text-sm text-muted-foreground">
+                                        SenseVoice language and punctuation are global Local AI settings.
+                                        Configure and apply them on the <Link className="text-primary underline" to="/models">Models page</Link> or{' '}
+                                        <Link className="text-primary underline" to="/env#local-ai">Environment page</Link>.
+                                        Saving this provider does not apply these settings.
+                                    </p>
                                 )}
                             </>
                         )}

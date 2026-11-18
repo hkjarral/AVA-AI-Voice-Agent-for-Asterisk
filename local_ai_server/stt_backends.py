@@ -141,6 +141,7 @@ def missing_sense_voice_metadata(path: str) -> Optional[List[str]]:
     except (OSError, ValueError):
         return None
     invalid = []
+    vector_lengths = {}
     for key in SENSE_VOICE_REQUIRED_METADATA:
         value = metadata.get(key, "").strip()
         if key in {"neg_mean", "inv_stddev"}:
@@ -152,6 +153,7 @@ def missing_sense_voice_metadata(path: str) -> Optional[List[str]]:
                 if valid:
                     values = [float(part) for part in parts]
                     valid = all(math.isfinite(part) and abs(part) <= float(np.finfo(np.float32).max) for part in values)
+                    vector_lengths[key] = len(values)
             except ValueError:
                 valid = False
         else:
@@ -160,6 +162,12 @@ def missing_sense_voice_metadata(path: str) -> Optional[List[str]]:
                 valid = int(value) > 0
         if not valid:
             invalid.append(key)
+    if "lfr_window_size" not in invalid:
+        # from_sense_voice uses 80 mel bins; CMVN maps both vectors to this width.
+        expected_dim = 80 * int(metadata["lfr_window_size"].strip())
+        for key in ("neg_mean", "inv_stddev"):
+            if key not in invalid and vector_lengths.get(key) != expected_dim:
+                invalid.append(key)
     # The optional native blank_id reader can also terminate on a negative value.
     blank = metadata.get("blank_id", "").strip()
     if blank and (not re.fullmatch(r"\+?[0-9]+", blank) or int(blank) > 2**31 - 1):
