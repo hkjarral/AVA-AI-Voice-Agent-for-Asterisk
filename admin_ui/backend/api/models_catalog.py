@@ -211,6 +211,12 @@ SHERPA_STT_MODELS = [
      "download_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-ru-2024-09-18.tar.bz2",
      "is_archive": True, "archive_type": "tar.bz2", "model_type": "offline",
      "note": "Use with SHERPA_MODEL_TYPE=offline after English offline validation passes."},
+    {"id": "sherpa_sense_voice_offline", "name": "SenseVoice Multilingual (Offline, zh/en/ja/ko/yue)", "language": "multi", "region": "global", "backend": "sherpa",
+     "size_mb": 155, "size_display": "155 MB", "model_path": "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
+     "download_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
+     "is_archive": True, "archive_type": "tar.bz2", "model_type": "offline",
+     "supported_languages": ["zh", "en", "ja", "ko", "yue"],
+     "note": "Use with SHERPA_MODEL_TYPE=offline. SenseVoice is auto-detected; set SHERPA_SENSE_VOICE_LANGUAGE (auto|zh|en|ja|ko|yue)."},
     {"id": "sherpa_zh", "name": "Chinese-English Bilingual (Streaming)", "language": "zh-CN", "region": "asia", "backend": "sherpa",
      "size_mb": 120, "size_display": "120 MB", "model_path": "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20",
      "download_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.tar.bz2",
@@ -1450,13 +1456,28 @@ def get_full_catalog():
         "llm": LLM_MODELS,
     }
 
+def _multi_model_supports(model: dict, language_code: str) -> bool:
+    """Multi-language models without supported_languages match every language.
+
+    Entries may be base codes ("zh") or region-qualified ("en-US"); both sides are
+    compared by base language so "en-GB" still offers an "en-US" model.
+    """
+    supported = model.get("supported_languages")
+    if not supported:
+        return True
+    base = str(language_code or "").strip().lower().split("-", 1)[0]
+    return any(str(entry).strip().lower().split("-", 1)[0] == base for entry in supported)
+
+
 def get_models_by_language(language_code: str):
     """Get all models available for a specific language."""
     catalog = get_full_catalog()
     result = {"stt": [], "tts": []}
     
     for stt in catalog["stt"]:
-        if stt.get("language") == language_code or stt.get("language") == "multi":
+        if stt.get("language") == language_code or (
+            stt.get("language") == "multi" and _multi_model_supports(stt, language_code)
+        ):
             result["stt"].append(stt)
     
     for tts in catalog["tts"]:

@@ -607,6 +607,18 @@ Models are **not bundled** in Docker images. Download them via:
   - `SHERPA_OFFLINE_DEBUG_SEGMENTS=true` for targeted diagnostics only
 - See [Sherpa-ONNX Models](https://github.com/k2-fsa/sherpa-onnx/releases)
 
+**Sherpa-ONNX Offline SenseVoice** (VAD-gated, multilingual):
+- `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17` (~155 MB, original SenseVoiceSmall export; Chinese, English, Japanese, Korean, Cantonese)
+- Use with `SHERPA_MODEL_TYPE=offline`; no extra dependencies beyond the bundled `sherpa-onnx`
+- SenseVoice is detected automatically when the model directory contains `model.onnx` or `model.int8.onnx` plus `tokens.txt` (no `encoder*.onnx`)
+- `SHERPA_SENSE_VOICE_LANGUAGE=auto` (or `zh`, `en`, `ja`, `ko`, `yue` to pin a language)
+- `SHERPA_SENSE_VOICE_USE_ITN=true` adds punctuation and digit formatting (the Cantonese fine-tuned `...-int8-2025-09-09` export also loads, but does not produce punctuation)
+- Emotion and audio-event tags are not added to transcripts; they are logged at debug level
+- The same VAD tuning knobs as the offline transducer apply. Offline initialization requires a Silero VAD file at `SHERPA_VAD_MODEL_PATH`. When unset, the server uses `/app/models/vad/silero_vad.onnx` and downloads it if missing. Manual installs outside `/app` should set an existing VAD file path or make the default location writable; download or file-creation failure prevents initialization.
+- Language and punctuation can also be changed from the Models page, Environment page or Health widget; the status panel shows the effective values. The Local Provider editor links to these global controls. Saving a provider does not apply them.
+- A directory with both `encoder*.onnx` and `model.onnx` loads as a transducer (a warning names the ignored file). A `model.onnx` without SenseVoice metadata is rejected at startup with the missing keys listed
+- Each decoded segment logs `call_id`, `audio_ms`, `decode_ms` and the real-time factor at INFO level
+
 **T-one** (Russian telephony streaming CTC):
 - Requires rebuild: `docker compose build --build-arg INCLUDE_TONE=true local_ai_server`
 - Set `LOCAL_STT_BACKEND=tone`

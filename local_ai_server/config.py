@@ -83,6 +83,9 @@ class LocalAIConfig:
     sherpa_vad_min_silence_ms: int = 700
     sherpa_vad_min_speech_ms: int = 200
     sherpa_offline_preroll_ms: int = 350
+    # SenseVoice models (auto-detected in Sherpa offline mode)
+    sherpa_sense_voice_language: str = "auto"
+    sherpa_sense_voice_use_itn: bool = True
     tone_model_path: str = "/app/models/stt/t-one"
     tone_decoder_type: str = "beam_search"
     tone_kenlm_path: str = ""
@@ -273,6 +276,8 @@ class LocalAIConfig:
             sherpa_vad_min_silence_ms=_parse_int(os.getenv("SHERPA_VAD_MIN_SILENCE_MS"), 700),
             sherpa_vad_min_speech_ms=_parse_int(os.getenv("SHERPA_VAD_MIN_SPEECH_MS"), 200),
             sherpa_offline_preroll_ms=_parse_int(os.getenv("SHERPA_OFFLINE_PREROLL_MS"), 350),
+            sherpa_sense_voice_language=(os.getenv("SHERPA_SENSE_VOICE_LANGUAGE", "auto") or "auto").strip().lower(),
+            sherpa_sense_voice_use_itn=_parse_bool(os.getenv("SHERPA_SENSE_VOICE_USE_ITN"), default=True),
             tone_model_path=os.getenv("TONE_MODEL_PATH", "/app/models/stt/t-one"),
             tone_decoder_type=(os.getenv("TONE_DECODER_TYPE", "beam_search") or "beam_search").strip().lower(),
             tone_kenlm_path=os.getenv("TONE_KENLM_PATH", ""),

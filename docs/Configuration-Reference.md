@@ -107,7 +107,7 @@ Environment variables for selecting local STT/TTS backends:
 
 **STT Backends**:
 - **Vosk**: Offline ASR with good accuracy, multiple language models
-- **Sherpa-ONNX**: Low-latency streaming ASR using ONNX runtime
+- **Sherpa-ONNX**: Low-latency streaming ASR using ONNX runtime; offline mode also runs transducer and SenseVoice (zh/en/ja/ko/yue) models
 - **Kroko**: High-quality streaming ASR with 12+ languages (requires API key for hosted mode)
 - **T-one**: Native Russian telephony STT using the upstream streaming CTC pipeline
 - **Faster-Whisper**: Whisper inference via `faster-whisper` (model IDs like `base`, `small`, etc., or a local model directory depending on your install)

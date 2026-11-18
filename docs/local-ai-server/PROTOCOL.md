@@ -712,8 +712,16 @@ Request (examples):
 
 Notes:
 - `sherpa_model_type=online` expects a streaming Sherpa model directory such as `sherpa-onnx-streaming-zipformer-en-2023-06-26`
-- `sherpa_model_type=offline` expects a non-streaming Sherpa transducer model directory such as `sherpa-onnx-zipformer-en-2023-06-26`
+- `sherpa_model_type=offline` expects a non-streaming Sherpa transducer model directory such as `sherpa-onnx-zipformer-en-2023-06-26`, or a SenseVoice directory
 - Offline mode will reject streaming Sherpa model directories
+- Offline mode auto-detects SenseVoice model directories (`model*.onnx` + `tokens.txt`); `sherpa_sense_voice_language` (`auto|zh|en|ja|ko|yue`) and `sherpa_sense_voice_use_itn` (boolean) apply only to those models
+- A settings-only request that re-sends unchanged SenseVoice values returns `no_change` when no model reload is pending. This excludes requests containing top-level `stt_backend`, `sherpa_model_type`, or `sherpa_model_path`, which currently trigger a reload even when unchanged.
+- A dry run stages configuration without loading it. A subsequent real switch applies any pending model reload, including when it repeats the staged SenseVoice values. Switches are serialized across connections; a degraded reload returns an error and keeps the reload pending for retry.
+- `status_response.models.stt` includes `sherpa_model_family` (`transducer` or `sense_voice` for offline Sherpa), `sherpa_sense_voice_language` and `sherpa_sense_voice_use_itn` (the loaded model's effective values; `null` unless SenseVoice is loaded)
+
+```json
+{ "type": "switch_model", "stt_backend": "sherpa", "sherpa_model_type": "offline", "sherpa_model_path": "/app/models/stt/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17", "sherpa_sense_voice_language": "auto", "sherpa_sense_voice_use_itn": true }
+```
 
 Response:
 
@@ -727,9 +735,9 @@ Optional fields:
 
 Accepted payload shapes:
 
-- Top-level keys (for compatibility): `stt_backend`, `tts_backend`, `llm_model_path`, `kokoro_*`, `kroko_*`, `sherpa_model_path`, `sherpa_model_type`, `sherpa_vad_model_path`, `tone_model_path`, `tone_decoder_type`, `tone_kenlm_path`, `faster_whisper_language`, `whisper_cpp_language`, `stt_model_path`, `tts_model_path`, `silero_speaker`, `silero_language`, `silero_model_id`, `silero_model_path`.
+- Top-level keys (for compatibility): `stt_backend`, `tts_backend`, `llm_model_path`, `kokoro_*`, `kroko_*`, `sherpa_model_path`, `sherpa_model_type`, `sherpa_vad_model_path`, `sherpa_sense_voice_language`, `sherpa_sense_voice_use_itn`, `tone_model_path`, `tone_decoder_type`, `tone_kenlm_path`, `faster_whisper_language`, `whisper_cpp_language`, `stt_model_path`, `tts_model_path`, `silero_speaker`, `silero_language`, `silero_model_id`, `silero_model_path`.
 - Nested config objects:
-  - `stt_config`: `model`, `device`, `compute_type`, `faster_whisper_language`, `whisper_cpp_language`, `sherpa_model_type`, `sherpa_vad_model_path`, `tone_model_path`, `tone_decoder_type`, `tone_kenlm_path`, plus Kroko aliases (`url`, `language`, `port`, `embedded`, `model_path`)
+  - `stt_config`: `model`, `device`, `compute_type`, `faster_whisper_language`, `whisper_cpp_language`, `sherpa_model_type`, `sherpa_vad_model_path`, `sherpa_sense_voice_language`, `sherpa_sense_voice_use_itn`, `tone_model_path`, `tone_decoder_type`, `tone_kenlm_path`, plus Kroko aliases (`url`, `language`, `port`, `embedded`, `model_path`)
   - `tts_config`: `voice`, `mode`, `lang`, `api_base_url`, `api_key`, `api_model`, `device`, `speed`, `model_path`, `silero_speaker`, `silero_language`, `silero_model_id`, `silero_model_path`
   - `llm_config`: `model_path`, `threads`, `context`, `batch`, `max_tokens`, `temperature`, `top_p`, `repeat_penalty`, `gpu_layers`, `system_prompt`, `use_mlock`, `chat_format`
   - `runtime_config`: `enable_filler_audio`, `llm_streaming_tts_overlap`

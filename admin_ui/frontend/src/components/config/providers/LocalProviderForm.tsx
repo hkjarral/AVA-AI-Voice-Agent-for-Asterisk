@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
+import { Link } from 'react-router-dom';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 import HelpTooltip from '../../ui/HelpTooltip';
 import { localAIStatusFromLiveSnapshot } from '../../../utils/liveStatus';
@@ -764,6 +765,14 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
                                             Required for offline mode. Download from sherpa-onnx releases.
                                         </p>
                                     </div>
+                                )}
+                                {config.sherpa_model_type === 'offline' && (
+                                    <p className="text-sm text-muted-foreground">
+                                        SenseVoice language and punctuation are global Local AI settings.
+                                        Configure and apply them on the <Link className="text-primary underline" to="/models">Models page</Link> or{' '}
+                                        <Link className="text-primary underline" to="/env#local-ai">Environment page</Link>.
+                                        Saving this provider does not apply these settings.
+                                    </p>
                                 )}
                             </>
                         )}

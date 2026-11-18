@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict
 
@@ -24,12 +25,20 @@ def _requires_model_reload(changed: list[str]) -> bool:
 class ModelManager:
     def __init__(self, server: Any):
         self._server = server
+        self._pending_model_reload = False
+        self._switch_lock = asyncio.Lock()
 
     async def switch_model(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        # Keep staged config and reload completion in one serialized transition.
+        async with self._switch_lock:
+            return await self._switch_model(data)
+
+    async def _switch_model(self, data: Dict[str, Any]) -> Dict[str, Any]:
         dry_run = bool(data.get("dry_run", False))
         new_config, changed = apply_switch_model_request(self._server.config, data)
 
-        if not changed:
+        requires_reload = _requires_model_reload(changed) or self._pending_model_reload
+        if not changed and (dry_run or not requires_reload):
             return {
                 "type": "switch_response",
                 "status": "no_change",
@@ -41,10 +50,17 @@ class ModelManager:
         self._server.buffer_timeout_ms = self._server.config.stt_idle_ms
 
         logging.info("📝 Configuration updated: %s", ", ".join(changed))
+        self._pending_model_reload = requires_reload
         if dry_run:
             logging.info("🧪 SWITCH MODEL DRY-RUN - Skipping reload_models()")
-        elif _requires_model_reload(changed):
+        elif requires_reload:
             await self._server.reload_models()
+            errors = getattr(self._server, "startup_errors", {}) or {}
+            if errors:
+                message = "Model reload failed: " + "; ".join(f"{key}: {value}" for key, value in errors.items())
+                logging.error("❌ %s (reload remains pending)", message)
+                return {"type": "switch_response", "status": "error", "message": message, "changed": changed}
+            self._pending_model_reload = False
         else:
             if any(_changed_key(item) == "enable_filler_audio" for item in changed):
                 if self._server.config.enable_filler_audio:
@@ -53,7 +69,7 @@ class ModelManager:
                     self._server._filler_cache.clear()
             logging.info("✅ Runtime-only configuration applied without model reload")
 
-        if not dry_run and not _requires_model_reload(changed) and hasattr(self._server, "_publish_live_status_now"):
+        if not dry_run and not requires_reload and hasattr(self._server, "_publish_live_status_now"):
             self._server._publish_live_status_now()
 
         return {
@@ -64,7 +80,7 @@ class ModelManager:
                 if dry_run
                 else (
                     f"Models switched and reloaded: {', '.join(changed)}"
-                    if _requires_model_reload(changed)
+                    if requires_reload
                     else f"Runtime config updated: {', '.join(changed)}"
                 )
             ),
