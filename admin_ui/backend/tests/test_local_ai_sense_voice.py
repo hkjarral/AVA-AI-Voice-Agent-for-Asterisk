@@ -121,17 +121,38 @@ def test_admin_verification_ignores_settings_for_transducer(admin_local_ai):
     assert admin_local_ai._sherpa_status_matches(req, status) is True
 
 
-def test_admin_rollback_snapshot_restores_defaults_for_new_keys(admin_local_ai):
+def test_admin_rollback_snapshot_preserves_absence_for_new_keys(admin_local_ai):
     previous = {"SHERPA_MODEL_PATH": "/m/old"}
     updates = {"SHERPA_SENSE_VOICE_LANGUAGE": "ja", "SHERPA_SENSE_VOICE_USE_ITN": "false"}
     snapshot = admin_local_ai._rollback_env_snapshot(previous, updates)
     assert snapshot == {
         "SHERPA_MODEL_PATH": "/m/old",
-        "SHERPA_SENSE_VOICE_LANGUAGE": "auto",
-        "SHERPA_SENSE_VOICE_USE_ITN": "true",
+        "SHERPA_SENSE_VOICE_LANGUAGE": None,
+        "SHERPA_SENSE_VOICE_USE_ITN": None,
     }
     # Existing values are kept, and untouched keys are not added.
     assert admin_local_ai._rollback_env_snapshot({"SHERPA_SENSE_VOICE_LANGUAGE": "zh"}, {"SHERPA_SENSE_VOICE_LANGUAGE": "ja"}) == {
         "SHERPA_SENSE_VOICE_LANGUAGE": "zh"
     }
-    assert admin_local_ai._rollback_env_snapshot({}, {"SHERPA_MODEL_PATH": "/m"}) == {}
+    assert admin_local_ai._rollback_env_snapshot({}, {"SHERPA_MODEL_PATH": "/m"}) == {"SHERPA_MODEL_PATH": None}
+
+
+@pytest.mark.parametrize("previous_mode", [None, "online", ""])
+def test_catalog_switch_rollback_restores_original_model_mode(tmp_path, admin_local_ai, previous_mode):
+    env_file = tmp_path / ".env"
+    original = "SHERPA_MODEL_PATH=/m/streaming\n# operator note\n"
+    if previous_mode is not None:
+        original += f"SHERPA_MODEL_TYPE={previous_mode}\n"
+    env_file.write_text(original)
+    previous = admin_local_ai._read_env_values(str(env_file), ["SHERPA_MODEL_PATH", "SHERPA_MODEL_TYPE"])
+    req = admin_local_ai._normalize_switch_request(admin_local_ai.SwitchModelRequest(
+        model_type="stt", backend="sherpa",
+        model_path="/app/models/stt/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
+    ))
+    updates, _ = admin_local_ai._build_local_ai_env_and_yaml_updates(req)
+    assert updates["SHERPA_MODEL_TYPE"] == "offline"
+    snapshot = admin_local_ai._rollback_env_snapshot(previous, updates)
+    admin_local_ai._update_env_file(str(env_file), updates)
+    admin_local_ai._restore_env_file(str(env_file), snapshot)
+    assert admin_local_ai._read_env_values(str(env_file), ["SHERPA_MODEL_PATH", "SHERPA_MODEL_TYPE"]) == previous
+    assert "# operator note" in env_file.read_text()

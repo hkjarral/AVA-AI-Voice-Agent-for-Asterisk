@@ -715,7 +715,8 @@ Notes:
 - `sherpa_model_type=offline` expects a non-streaming Sherpa transducer model directory such as `sherpa-onnx-zipformer-en-2023-06-26`, or a SenseVoice directory
 - Offline mode will reject streaming Sherpa model directories
 - Offline mode auto-detects SenseVoice model directories (`model*.onnx` + `tokens.txt`); `sherpa_sense_voice_language` (`auto|zh|en|ja|ko|yue`) and `sherpa_sense_voice_use_itn` (boolean) apply only to those models
-- Re-sending unchanged SenseVoice values returns `no_change` without reloading models
+- A settings-only request that re-sends unchanged SenseVoice values returns `no_change` when no model reload is pending. This excludes requests containing top-level `stt_backend`, `sherpa_model_type`, or `sherpa_model_path`, which currently trigger a reload even when unchanged.
+- A dry run stages configuration without loading it. A subsequent real switch applies any pending model reload, including when it repeats the staged SenseVoice values.
 - `status_response.models.stt` includes `sherpa_model_family` (`transducer` or `sense_voice` for offline Sherpa), `sherpa_sense_voice_language` and `sherpa_sense_voice_use_itn` (the loaded model's effective values; `null` unless SenseVoice is loaded)
 
 ```json

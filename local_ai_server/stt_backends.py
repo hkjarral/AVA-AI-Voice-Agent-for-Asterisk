@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -130,12 +131,35 @@ def read_onnx_metadata(path: str) -> Dict[str, str]:
 
 
 def missing_sense_voice_metadata(path: str) -> Optional[List[str]]:
-    """Return SenseVoice metadata keys missing from ``path``; None if unreadable."""
+    """Return missing/invalid metadata keys; None if the ONNX file is unreadable.
+
+    sherpa-onnx 1.13.4 native metadata readers exit on empty/negative integers
+    or unparsable comma-separated float vectors. Reject them before construction.
+    """
     try:
         metadata = read_onnx_metadata(path)
     except (OSError, ValueError):
         return None
-    return [key for key in SENSE_VOICE_REQUIRED_METADATA if key not in metadata]
+    invalid = []
+    for key in SENSE_VOICE_REQUIRED_METADATA:
+        value = metadata.get(key, "").strip()
+        if key in {"neg_mean", "inv_stddev"}:
+            try:
+                values = [float(part) for part in value.split(",") if part.strip()]
+                valid = bool(values) and all(math.isfinite(part) for part in values)
+            except ValueError:
+                valid = False
+        else:
+            valid = bool(re.fullmatch(r"\+?[0-9]+", value)) and int(value) <= 2**31 - 1
+            if valid and key in {"vocab_size", "lfr_window_size", "lfr_window_shift"}:
+                valid = int(value) > 0
+        if not valid:
+            invalid.append(key)
+    # The optional native blank_id reader can also terminate on a negative value.
+    blank = metadata.get("blank_id", "").strip()
+    if blank and (not re.fullmatch(r"\+?[0-9]+", blank) or int(blank) > 2**31 - 1):
+        invalid.append("blank_id")
+    return invalid
 
 
 class KrokoSTTBackend:
@@ -607,7 +631,7 @@ class SherpaOfflineSTTBackend:
             return None
         if missing:
             logging.error(
-                "❌ SHERPA-OFFLINE - %s is not a SenseVoice export (missing metadata: %s). "
+                "❌ SHERPA-OFFLINE - %s is not a SenseVoice export (missing/invalid metadata: %s). "
                 "Offline mode supports SenseVoice (model.onnx + tokens.txt) and non-streaming "
                 "transducers (encoder/decoder/joiner + tokens.txt).",
                 model_file,

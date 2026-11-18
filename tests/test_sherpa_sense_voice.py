@@ -610,3 +610,53 @@ def test_kroko_cloud_region_codes_still_match(language, expected):
     catalog = _load_catalog()
     ids = {m["id"] for m in catalog.get_models_by_language(language)["stt"]}
     assert ("kroko_cloud" in ids) is expected
+
+
+@pytest.mark.parametrize("key,value", [
+    ("vocab_size", ""), ("vocab_size", "0"), ("vocab_size", "-1"),
+    ("vocab_size", "2147483648"), ("lang_en", "english"),
+    ("lfr_window_shift", "0"), ("neg_mean", ""),
+    ("neg_mean", "1,bad"), ("inv_stddev", "inf"), ("inv_stddev", "nan"),
+    ("blank_id", "-1"),
+])
+def test_invalid_metadata_is_rejected_before_native_construction(tmp_path, fake_sherpa, key, value):
+    metadata = _sense_voice_metadata()
+    metadata[key] = value
+    _sense_voice_model(tmp_path / "model" / "model.onnx", metadata)
+    _touch(tmp_path / "model" / "tokens.txt")
+    backend = _make_backend(tmp_path / "model", _touch(tmp_path / "vad.onnx"))
+    assert backend.initialize() is False
+    assert fake_sherpa.calls == []
+
+
+def test_valid_signed_float_vectors_and_optional_blank_id_are_accepted(tmp_path, fake_sherpa):
+    metadata = _sense_voice_metadata()
+    metadata.update(neg_mean="0.1,-2e-2,3", inv_stddev="1,2,3", blank_id="0")
+    _sense_voice_model(tmp_path / "model" / "model.onnx", metadata)
+    _touch(tmp_path / "model" / "tokens.txt")
+    backend = _make_backend(tmp_path / "model", _touch(tmp_path / "vad.onnx"))
+    assert backend.initialize() is True
+
+
+@pytest.mark.parametrize("fail_once", [False, True])
+def test_dry_run_keeps_a_pending_model_reload_until_success(fail_once):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    cfg = _load_module("config").LocalAIConfig()
+    reload = AsyncMock()
+    if fail_once:
+        reload.side_effect = [RuntimeError("load failed"), None]
+    server = SimpleNamespace(config=cfg, reload_models=reload, _apply_config=lambda config: None)
+    manager = _load_module("model_manager").ModelManager(server)
+    request = {"sherpa_sense_voice_language": "zh"}
+    staged = asyncio.run(manager.switch_model({**request, "dry_run": True}))
+    assert staged["status"] == "success"
+    assert reload.await_count == 0
+    if fail_once:
+        with pytest.raises(RuntimeError, match="load failed"):
+            asyncio.run(manager.switch_model(request))
+    applied = asyncio.run(manager.switch_model(request))
+    assert applied["status"] == "success"
+    assert reload.await_count == (2 if fail_once else 1)
+    assert asyncio.run(manager.switch_model(request))["status"] == "no_change"

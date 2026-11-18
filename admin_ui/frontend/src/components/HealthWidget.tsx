@@ -721,8 +721,8 @@ export const HealthWidget = () => {
                                                 || /sense[-_]?voice/i.test(pendingChanges.stt?.modelPath || '')) && (
                                                 <div className="grid grid-cols-2 gap-1.5">
                                                     <div>
-                                                        <label className="text-[10px] text-muted-foreground">SenseVoice Language</label>
-                                                        <select
+                                                        <label htmlFor="health-sensevoice-language" className="text-[10px] text-muted-foreground">SenseVoice Language</label>
+                                                        <select id="health-sensevoice-language"
                                                             className={`w-full text-xs p-1.5 rounded border bg-background ${pendingChanges.stt?.sherpa_sense_voice_language ? 'border-yellow-500' : 'border-border'}`}
                                                             value={pendingChanges.stt?.sherpa_sense_voice_language ?? health.local_ai_server.details.models?.stt?.sherpa_sense_voice_language ?? 'auto'}
                                                             onChange={(e) => {
@@ -740,8 +740,8 @@ export const HealthWidget = () => {
                                                         </select>
                                                     </div>
                                                     <div>
-                                                        <label className="text-[10px] text-muted-foreground">Punctuation (ITN)</label>
-                                                        <select
+                                                        <label htmlFor="health-sensevoice-itn" className="text-[10px] text-muted-foreground">Punctuation (ITN)</label>
+                                                        <select id="health-sensevoice-itn"
                                                             className={`w-full text-xs p-1.5 rounded border bg-background ${pendingChanges.stt?.sherpa_sense_voice_use_itn !== undefined ? 'border-yellow-500' : 'border-border'}`}
                                                             value={String(pendingChanges.stt?.sherpa_sense_voice_use_itn ?? health.local_ai_server.details.models?.stt?.sherpa_sense_voice_use_itn ?? true)}
                                                             onChange={(e) => {

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -226,4 +226,36 @@ describe('ModelsPage Local AI status', () => {
         await waitFor(() => expect(screen.getByText('Error')).toBeInTheDocument());
         expect(screen.getByText(/Local AI Server is not reachable/i)).toBeInTheDocument();
     });
+    it('retains SenseVoice settings after a failed apply and retries their exact values', async () => {
+        const path = '/app/models/stt/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17';
+        const component = {
+            ...localAIComponent, state: 'ready',
+            details: { ...localAIComponent.details, config: { runtime_mode: 'full' },
+                models: { ...localAIComponent.details.models, stt: {
+                    backend: 'sherpa', loaded: true, path, sherpa_model_type: 'offline',
+                    sherpa_model_family: 'sense_voice', sherpa_sense_voice_language: 'auto',
+                    sherpa_sense_voice_use_itn: true,
+                } },
+            },
+        };
+        liveStatusState.current.snapshot = { ...liveStatusSnapshot(), components: { local_ai_server: component } };
+        mockModelsPageApis();
+        vi.mocked(axios.post)
+            .mockResolvedValueOnce({ data: { success: false, message: 'Recognizer verification failed' } })
+            .mockResolvedValueOnce({ data: { success: true } });
+        render(<MemoryRouter><ModelsPage /></MemoryRouter>);
+        const language = await screen.findByLabelText('SenseVoice Language');
+        fireEvent.change(language, { target: { value: 'zh' } });
+        fireEvent.change(screen.getByLabelText('Punctuation (ITN)'), { target: { value: 'false' } });
+        fireEvent.click(screen.getByRole('button', { name: /Apply Changes/i }));
+        await screen.findAllByText(/Recognizer verification failed/);
+        expect(language).toHaveValue('zh');
+        expect(screen.getByLabelText('Punctuation (ITN)')).toHaveValue('false');
+        fireEvent.click(screen.getByRole('button', { name: /Apply Changes/i }));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(2));
+        for (const [, payload] of vi.mocked(axios.post).mock.calls) {
+            expect(payload).toMatchObject({ sherpa_sense_voice_language: 'zh', sherpa_sense_voice_use_itn: false });
+        }
+    });
+
 });

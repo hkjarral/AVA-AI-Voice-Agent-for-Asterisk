@@ -424,7 +424,11 @@ const ModelsPage = () => {
         if (extra) {
             Object.assign(payload, extra);
         }
-        return axios.post('/api/local-ai/switch', payload);
+        const response = await axios.post('/api/local-ai/switch', payload);
+        if (response.data.success === false) {
+            throw new Error(response.data.message || 'Failed to switch model');
+        }
+        return response;
     };
 
     // Get model name from path
@@ -851,7 +855,7 @@ const ModelsPage = () => {
                     }
                 }
 
-                await axios.post('/api/local-ai/switch', {
+                const llmResponse = await axios.post('/api/local-ai/switch', {
                     model_type: 'llm',
                     model_path: remainingChanges.llm || undefined,
                     llm_context: pendingLlmConfig.context || undefined,
@@ -860,6 +864,9 @@ const ModelsPage = () => {
                     llm_streaming_tts_overlap: pendingRuntimeConfig.llm_streaming_tts_overlap,
                     force_incompatible_apply: forceIncompatibleApply
                 });
+                if (llmResponse.data.success === false) {
+                    throw new Error(llmResponse.data.message || 'Failed to switch LLM');
+                }
                 delete remainingChanges.llm;
             }
 
@@ -1293,11 +1300,11 @@ const ModelsPage = () => {
                                                     {(activeModels.stt.sherpa_model_family === 'sense_voice' || isSenseVoicePath(selectedStt)) && (
                                                         <div className="grid grid-cols-2 gap-1.5">
                                                             <div>
-                                                                <label className="text-[10px] text-muted-foreground flex items-center gap-1">
-                                                                    SenseVoice Language
+                                                                <div className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                                                    <label htmlFor="models-sensevoice-language">SenseVoice Language</label>
                                                                     <HelpTooltip content={<><strong>SenseVoice language hint</strong> — <code>auto</code> detects zh/en/ja/ko/yue per utterance; pin a language to avoid misdetection on short replies.</>} />
-                                                                </label>
-                                                                <select
+                                                                </div>
+                                                                <select id="models-sensevoice-language"
                                                                     className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.sherpa_sense_voice_language ? 'border-yellow-500' : 'border-border'}`}
                                                                     value={pendingSttExtra.sherpa_sense_voice_language ?? activeModels.stt.sherpa_sense_voice_language ?? 'auto'}
                                                                     onChange={(e) => {
@@ -1315,11 +1322,11 @@ const ModelsPage = () => {
                                                                 </select>
                                                             </div>
                                                             <div>
-                                                                <label className="text-[10px] text-muted-foreground flex items-center gap-1">
-                                                                    Punctuation (ITN)
+                                                                <div className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                                                    <label htmlFor="models-sensevoice-itn">Punctuation (ITN)</label>
                                                                     <HelpTooltip content={<><strong>Inverse text normalization</strong> — adds punctuation and writes numbers as digits.</>} />
-                                                                </label>
-                                                                <select
+                                                                </div>
+                                                                <select id="models-sensevoice-itn"
                                                                     className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.sherpa_sense_voice_use_itn !== undefined ? 'border-yellow-500' : 'border-border'}`}
                                                                     value={String(pendingSttExtra.sherpa_sense_voice_use_itn ?? activeModels.stt.sherpa_sense_voice_use_itn ?? true)}
                                                                     onChange={(e) => {

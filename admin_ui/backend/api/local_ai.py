@@ -17,7 +17,7 @@ import asyncio
 import websockets
 import shutil
 import time
-from services.fs import upsert_env_vars
+from services.fs import upsert_env_vars, remove_env_vars
 
 router = APIRouter()
 
@@ -223,21 +223,18 @@ def _infer_kroko_embedded(backend: str, model_path: Optional[str], kroko_url: Op
 SENSE_VOICE_LANGUAGES = ("auto", "zh", "en", "ja", "ko", "yue")
 
 
-# Server defaults for SenseVoice env keys. A rollback writes these back when the key
-# was absent before the switch, because upserting cannot delete a key from .env.
-SENSE_VOICE_ENV_DEFAULTS = {
-    "SHERPA_SENSE_VOICE_LANGUAGE": "auto",
-    "SHERPA_SENSE_VOICE_USE_ITN": "true",
-}
-
-
-def _rollback_env_snapshot(previous_env: Dict[str, str], env_updates: Dict[str, str]) -> Dict[str, str]:
-    """Return the .env values to restore on rollback for this switch."""
-    snapshot = dict(previous_env)
-    for key, default in SENSE_VOICE_ENV_DEFAULTS.items():
-        if key in env_updates:
-            snapshot.setdefault(key, default)
+def _rollback_env_snapshot(previous_env: Dict[str, str], env_updates: Dict[str, str]) -> Dict[str, Optional[str]]:
+    """Preserve both values and absence for every environment key a switch writes."""
+    snapshot: Dict[str, Optional[str]] = dict(previous_env)
+    for key in env_updates:
+        snapshot.setdefault(key, None)
     return snapshot
+
+
+def _restore_env_file(env_file: str, snapshot: Dict[str, Optional[str]]) -> None:
+    """Restore values and remove overrides introduced by a failed switch."""
+    remove_env_vars(env_file, [key for key, value in snapshot.items() if value is None])
+    _update_env_file(env_file, {key: value for key, value in snapshot.items() if value is not None})
 
 
 def _catalog_sherpa_model_type(model_path: Optional[str]) -> Optional[str]:
@@ -1372,7 +1369,7 @@ async def switch_model(request: SwitchModelRequest):
                     )
                 # Rollback on verification failure (enforce by recreate)
                 try:
-                    _update_env_file(env_file, previous_env)
+                    _restore_env_file(env_file, previous_env)
                 except Exception:
                     pass
                 try:
@@ -1423,7 +1420,7 @@ async def switch_model(request: SwitchModelRequest):
         except Exception as e:
             # Attempt rollback on any error (env + YAML)
             try:
-                _update_env_file(env_file, previous_env)
+                _restore_env_file(env_file, previous_env)
             except Exception:
                 pass
             if previous_yaml:
@@ -1454,7 +1451,7 @@ async def switch_model(request: SwitchModelRequest):
 
     # Rollback env + YAML, and enforce rollback by recreating container.
     try:
-        _update_env_file(env_file, previous_env)
+        _restore_env_file(env_file, previous_env)
     except Exception:
         pass
     if previous_yaml:
