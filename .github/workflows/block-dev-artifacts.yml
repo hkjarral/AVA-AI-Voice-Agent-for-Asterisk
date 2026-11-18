@@ -2,7 +2,7 @@ name: Block dev-only artifacts
 
 on:
   pull_request:
-    branches: [staging, main]
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
@@ -21,10 +21,8 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
-          # Files/dirs that must stay on the develop branch only.
-          # These are development artifacts (IDE rules, contributor guides,
-          # templates, AI assistant configs) that should never reach
-          # staging or main.
+          # Keep local development artifacts such as IDE rules and assistant
+          # configs out of main.
           #
           # Directory patterns use trailing / (prefix match).
           # File patterns use $ (exact match) to avoid over-matching.
@@ -69,8 +67,7 @@ jobs:
             echo "::error::Dev-only files detected in PR targeting ${BASE_REF}:"
             echo "$BLOCKED"
             echo ""
-            echo "These files must stay on the develop branch."
-            echo "Remove them from this PR or retarget to develop."
+            echo "Remove these local development files from this PR."
             exit 1
           fi
 

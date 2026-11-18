@@ -6,7 +6,7 @@ This guide explains how to test the latest unreleased code on `main` (or a speci
 
 `main` is now the active development branch — new features and fixes land there before they're cut into a tagged release. Testing `main` (or a PR branch) lets you catch regressions early, validate fixes for issues you've reported, and try features before they ship.
 
-> **Note:** the previous `develop` branch is no longer maintained. If you have an old checkout on `develop`, follow the migration steps below.
+> If your checkout still uses `develop` or `staging`, follow the migration steps below.
 
 ## What gets preserved
 
@@ -96,23 +96,27 @@ docker compose up -d --build
 
 ---
 
-## Migrating from an old `develop` checkout
+## Migrating a checkout from a retired branch
 
-If your local clone is still on `develop`:
+If `origin` fetches only the old branch, as in a `--single-branch` clone,
+configure it to fetch `main` first:
 
 ```bash
-# See where develop is vs main
-git fetch origin
-git log --oneline origin/develop..origin/main | head        # what main has that develop doesn't
-git log --oneline origin/main..origin/develop | head        # anything stranded on develop (should be empty)
+git remote set-branches origin main
+```
+
+While on the old local branch, check for local commits before switching:
+
+```bash
+git fetch origin refs/heads/main:refs/remotes/origin/main
+git log --oneline origin/main..HEAD
 
 # Move to main
 git checkout main
-git pull origin main
-
-# Optional: drop the stale develop tracking branch locally
-git branch -D develop
+git pull --ff-only origin main
 ```
+
+If the log lists commits, keep the old local branch until you have reviewed them.
 
 ---
 

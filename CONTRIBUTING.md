@@ -56,8 +56,7 @@ These are reserved for contributors making their first PR to AVA. If you've alre
 
 ## Branches and Workflow
 
-Start contributions from current upstream `main`. `staging` is used for release
-preparation; the former `develop` contribution workflow is no longer maintained.
+Start contributions from current upstream `main`.
 
 Recommended flow:
 
@@ -67,7 +66,8 @@ Recommended flow:
 4. Include a clear description and testing notes
 5. A maintainer will review, run CI/manual checks, and merge
 
-Release candidates are staged on `staging` for golden baseline validation before being tagged from `main`.
+Validate golden baselines on the exact release candidate from `main` before
+tagging that commit. Follow the [release checklist](docs/RELEASE_CHECKLIST.md).
 
 ## Development Setup
 
