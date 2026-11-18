@@ -1,8 +1,8 @@
-name: Regression Hardening (staging/main)
+name: Regression Hardening
 
 on:
   push:
-    branches: [ main, staging ]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:

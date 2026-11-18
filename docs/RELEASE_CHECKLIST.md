@@ -4,6 +4,9 @@ CI is the hard gate for code quality (unit tests + lint/compile checks). Real-ca
 
 ## CI Gate (Must Pass)
 
+Select and record an exact release candidate on `main`. Verify that commit's
+checks and tag it only after the applicable release gates pass.
+
 - GitHub Actions `CI` workflow green
 - Admin UI frontend lint, Vitest, and production build green on the pull request
 - Admin UI backend test job green

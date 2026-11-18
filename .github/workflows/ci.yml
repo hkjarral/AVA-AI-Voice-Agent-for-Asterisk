@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, staging ]
+    branches: [main]
   pull_request:
-    branches: [ main, staging ]
+    branches: [main]
     types: [opened, synchronize, reopened, ready_for_review, labeled]
   workflow_dispatch:
 
@@ -160,7 +160,7 @@ jobs:
           PYTHONPATH=. pytest tests ../../tests/test_admin_call_recordings.py -q
 
   # Frontend checks must gate pull requests. The extended regression workflow
-  # only runs after pushes to staging/main, which is too late to stop a broken
+  # runs after pushes to main, which is too late to stop a broken
   # Admin UI from merging.
   admin-frontend-tests:
     name: Admin UI frontend checks

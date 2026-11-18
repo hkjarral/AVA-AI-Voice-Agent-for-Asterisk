@@ -31,7 +31,8 @@ pytest tests/ --cov=src --cov-report=term-missing
 
 ## CI Integration
 
-CI runs on `staging` and `main` branches:
+CI runs for pull requests targeting `main` and pushes to `main`.
+Regression Hardening runs after pushes to `main` and can also run manually.
 
 | Workflow | File | What It Does |
 |----------|------|-------------|
