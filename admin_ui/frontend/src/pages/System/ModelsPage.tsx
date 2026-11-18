@@ -893,7 +893,7 @@ const ModelsPage = () => {
                         if (pendingSttExtra.sherpa_model_type) extra.sherpa_model_type = pendingSttExtra.sherpa_model_type;
                         if (pendingSttExtra.sherpa_vad_model_path) extra.sherpa_vad_model_path = pendingSttExtra.sherpa_vad_model_path;
                         const modelPath = pathParts.join(':');
-                        if (isSenseVoicePath(modelPath) || (modelPath === activeModels?.stt.path && activeModels?.stt.sherpa_model_family === 'sense_voice')) {
+                        if (pendingSttExtra.sherpa_sense_voice_language !== undefined || pendingSttExtra.sherpa_sense_voice_use_itn !== undefined || isSenseVoicePath(modelPath) || activeModels?.stt.sherpa_model_family === 'sense_voice') {
                             extra.sherpa_sense_voice_language = senseVoiceLanguage;
                             extra.sherpa_sense_voice_use_itn = senseVoiceItn;
                         }

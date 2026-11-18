@@ -20,6 +20,7 @@ import time
 from services.fs import upsert_env_vars, remove_env_vars
 
 router = APIRouter()
+_model_switch_lock = asyncio.Lock()
 
 DISK_WARNING_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
 DISK_BUILD_BLOCK_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB (hard stop for image builds)
@@ -993,6 +994,14 @@ async def get_local_ai_status():
 
 @router.post("/switch", response_model=SwitchModelResponse)
 async def switch_model(request: SwitchModelRequest):
+    """Apply one verified switch, rejecting overlap across snapshot through rollback."""
+    if _model_switch_lock.locked():
+        raise HTTPException(status_code=409, detail="A Local AI model switch is already in progress. Retry after it completes.")
+    async with _model_switch_lock:
+        return await _switch_model(request)
+
+
+async def _switch_model(request: SwitchModelRequest):
     """
     Switch the active model on local-ai-server with rollback support.
     

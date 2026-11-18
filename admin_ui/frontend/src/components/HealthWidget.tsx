@@ -231,7 +231,7 @@ export const HealthWidget = () => {
                         if (change.sherpa_model_type) payload.sherpa_model_type = change.sherpa_model_type;
                         if (change.sherpa_vad_model_path) payload.sherpa_vad_model_path = change.sherpa_vad_model_path;
                         const currentStt = health?.local_ai_server?.details?.models?.stt;
-                        if (/sense[-_]?voice/i.test(change.modelPath || '') || ((!change.modelPath || change.modelPath === currentStt?.path) && currentStt?.sherpa_model_family === 'sense_voice')) {
+                        if (change.sherpa_sense_voice_language !== undefined || change.sherpa_sense_voice_use_itn !== undefined || /sense[-_]?voice/i.test(change.modelPath || '') || currentStt?.sherpa_model_family === 'sense_voice') {
                             payload.sherpa_sense_voice_language = change.sherpa_sense_voice_language ?? currentStt?.sherpa_sense_voice_language ?? 'auto';
                             payload.sherpa_sense_voice_use_itn = change.sherpa_sense_voice_use_itn ?? currentStt?.sherpa_sense_voice_use_itn ?? true;
                         }

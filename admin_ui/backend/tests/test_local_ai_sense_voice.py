@@ -156,3 +156,47 @@ def test_catalog_switch_rollback_restores_original_model_mode(tmp_path, admin_lo
     admin_local_ai._restore_env_file(str(env_file), snapshot)
     assert admin_local_ai._read_env_values(str(env_file), ["SHERPA_MODEL_PATH", "SHERPA_MODEL_TYPE"]) == previous
     assert "# operator note" in env_file.read_text()
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancelled"])
+def test_switch_route_rejects_overlap_through_completion_and_releases_guard(admin_local_ai, monkeypatch, outcome):
+    import asyncio
+
+    async def scenario():
+        entered = asyncio.Event()
+        finish = asyncio.Event()
+        calls = []
+
+        async def lifecycle(request):
+            calls.append(request.sherpa_sense_voice_language)
+            entered.set()
+            await finish.wait()
+            if outcome == "failure":
+                raise RuntimeError("verification and rollback finished")
+            return admin_local_ai.SwitchModelResponse(success=True, message="verified")
+
+        monkeypatch.setattr(admin_local_ai, "_switch_model", lifecycle)
+        request = admin_local_ai.SwitchModelRequest(model_type="stt", backend="sherpa", sherpa_sense_voice_language="ja")
+        first = asyncio.create_task(admin_local_ai.switch_model(request))
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        with pytest.raises(admin_local_ai.HTTPException) as exc:
+            await admin_local_ai.switch_model(request.model_copy(update={"sherpa_sense_voice_language": "en"}))
+        assert exc.value.status_code == 409
+        assert calls == ["ja"]
+        if outcome == "cancelled":
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+        else:
+            finish.set()
+            if outcome == "failure":
+                with pytest.raises(RuntimeError, match="rollback finished"):
+                    await first
+            else:
+                assert (await first).success is True
+        assert admin_local_ai._model_switch_lock.locked() is False
+        finish.set()
+        monkeypatch.setattr(admin_local_ai, "_switch_model", lambda request: asyncio.sleep(0, result=admin_local_ai.SwitchModelResponse(success=True, message="retry verified")))
+        assert (await admin_local_ai.switch_model(request)).success is True
+
+    asyncio.run(scenario())

@@ -85,6 +85,8 @@ const EnvPage = () => {
     const [statusKnown, setStatusKnown] = useState(false);
     const [env, setEnv] = useState<Record<string, string>>({});
     const [loading, setLoading] = useState(true);
+    const configuredSenseVoiceLanguage = (env['SHERPA_SENSE_VOICE_LANGUAGE'] || 'auto').trim().toLowerCase();
+    const displayedSenseVoiceLanguage = ['auto', 'zh', 'en', 'ja', 'ko', 'yue'].includes(configuredSenseVoiceLanguage) ? configuredSenseVoiceLanguage : 'auto';
     const [saving, setSaving] = useState(false);
     const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
     const [ariTestResult, setAriTestResult] = useState<{success: boolean; message?: string; error?: string; asterisk_version?: string} | null>(null);
@@ -1695,7 +1697,7 @@ const EnvPage = () => {
                                         />
                                         <FormSelect
                                             label="SenseVoice Language"
-                                            value={env['SHERPA_SENSE_VOICE_LANGUAGE'] || 'auto'}
+                                            value={displayedSenseVoiceLanguage}
                                             onChange={(e) => updateEnv('SHERPA_SENSE_VOICE_LANGUAGE', e.target.value)}
                                             options={[
                                                 { value: 'auto', label: 'Auto-detect' },

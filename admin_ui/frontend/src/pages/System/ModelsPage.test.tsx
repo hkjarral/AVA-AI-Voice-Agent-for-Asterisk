@@ -226,24 +226,25 @@ describe('ModelsPage Local AI status', () => {
         await waitFor(() => expect(screen.getByText('Error')).toBeInTheDocument());
         expect(screen.getByText(/Local AI Server is not reachable/i)).toBeInTheDocument();
     });
-    it('retains SenseVoice settings after a failed apply and retries their exact values', async () => {
-        const path = '/app/models/stt/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17';
+    it.each(['/app/models/stt/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17', '/models/custom-b'])('retains and applies explicit SenseVoice settings at %s after a failure', async path => {
         const component = {
             ...localAIComponent, state: 'ready',
             details: { ...localAIComponent.details, config: { runtime_mode: 'full' },
                 models: { ...localAIComponent.details.models, stt: {
-                    backend: 'sherpa', loaded: true, path, sherpa_model_type: 'offline',
+                    backend: 'sherpa', loaded: true, path: '/models/loaded-sense-voice', sherpa_model_type: 'offline',
                     sherpa_model_family: 'sense_voice', sherpa_sense_voice_language: 'auto',
                     sherpa_sense_voice_use_itn: true,
                 } },
             },
         };
         liveStatusState.current.snapshot = { ...liveStatusSnapshot(), components: { local_ai_server: component } };
-        mockModelsPageApis();
+        mockModelsPageApis('connected', {}, { ...installedModelsPayload, stt: { sherpa: [{ name: 'Target SenseVoice', path, size_mb: 155 }] } });
         vi.mocked(axios.post)
             .mockResolvedValueOnce({ data: { success: false, message: 'Recognizer verification failed' } })
             .mockResolvedValueOnce({ data: { success: true } });
         render(<MemoryRouter><ModelsPage /></MemoryRouter>);
+        const target = await screen.findByRole('option', { name: 'Target SenseVoice' });
+        fireEvent.change(target.closest('select')!, { target: { value: `sherpa:${path}` } });
         const language = await screen.findByLabelText('SenseVoice Language');
         fireEvent.change(language, { target: { value: 'zh' } });
         fireEvent.change(screen.getByLabelText('Punctuation (ITN)'), { target: { value: 'false' } });

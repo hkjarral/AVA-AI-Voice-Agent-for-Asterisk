@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import '@testing-library/jest-dom/vitest';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import axios from 'axios';
+import axios, { type AxiosResponse } from 'axios';
 import { toast } from 'sonner';
 import { HealthWidget } from './HealthWidget';
 
@@ -54,4 +54,28 @@ it('stops a multi-model apply when the first switch reports failure and keeps pe
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('STT failed'));
     expect(axios.post).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: /Apply & Restart/ })).toBeEnabled();
+});
+
+
+it('forwards explicit SenseVoice settings when selecting a renamed export', async () => {
+    const originalGet = vi.mocked(axios.get).getMockImplementation()!;
+    vi.mocked(axios.get).mockImplementation(async (url, config) => {
+        const result = await originalGet(url, config) as AxiosResponse;
+        if (url === '/api/system/health') result.data.local_ai_server.details.models.stt = {
+            backend: 'sherpa', path: '/models/current-a', loaded: true, sherpa_model_family: 'sense_voice',
+            sherpa_sense_voice_language: 'auto', sherpa_sense_voice_use_itn: true,
+        };
+        if (url === '/api/local-ai/models') result.data.stt.sherpa[0].path = '/models/custom-b';
+        return result;
+    });
+    vi.mocked(axios.post).mockResolvedValue({ data: { success: false, message: 'test ended' } });
+    render(<MemoryRouter><HealthWidget /></MemoryRouter>);
+    const option = await screen.findByRole('option', { name: /SenseVoice/ });
+    fireEvent.change(option.closest('select')!, { target: { value: 'sherpa:/models/custom-b' } });
+    fireEvent.change(screen.getByLabelText('SenseVoice Language'), { target: { value: 'zh' } });
+    fireEvent.change(screen.getByLabelText('Punctuation (ITN)'), { target: { value: 'false' } });
+    fireEvent.click(screen.getByRole('button', { name: /Apply & Restart/ }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/local-ai/switch', expect.objectContaining({
+        model_path: '/models/custom-b', sherpa_sense_voice_language: 'zh', sherpa_sense_voice_use_itn: false,
+    })));
 });
