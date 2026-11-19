@@ -18,6 +18,7 @@ UPDATE_CLI_HOST="${AAVA_UPDATE_UPDATE_CLI_HOST:-true}" # true|false
 CLI_INSTALL_PATH="${AAVA_UPDATE_CLI_INSTALL_PATH:-}" # optional absolute host path
 BUILD_CLI_FROM_SOURCE="${AAVA_UPDATE_BUILD_CLI_FROM_SOURCE:-false}" # true|false
 KEEP_JOB_LOGS="${AAVA_UPDATE_KEEP_JOB_LOGS:-10}" # keep last N job logs
+COMPOSE_BUILD_HELPER="${AAVA_COMPOSE_BUILD_HELPER:-/usr/local/bin/aava-compose-build}"
 
 drop_to_project_owner() {
   if [ "$(id -u)" -ne 0 ] || [ ! -d "${PROJECT_ROOT}" ]; then
@@ -291,7 +292,10 @@ for port in ports:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/sessions/stats", timeout=3) as resp:
             payload = json.load(resp)
-        print(int(payload.get("active_calls", payload.get("active_sessions", 0)) or 0))
+        count = payload.get("active_calls", payload.get("active_sessions"))
+        if isinstance(count, bool) or not isinstance(count, (int, float)) or count < 0 or int(count) != count:
+            raise ValueError("missing or invalid active-call count")
+        print(int(count))
         sys.exit(0)
     except Exception as exc:
         last_error = str(exc)
@@ -302,8 +306,25 @@ PY
 }
 
 guard_rollback_active_calls() {
+  local local_ai_changes="${1:-false}"
   if is_truthy "${FORCE_ACTIVE_CALLS}"; then
     echo "==> Active-call guard bypassed by override" >&2
+    return 0
+  fi
+
+  local running
+  if ! running="$(compose_running_services)"; then
+    echo "ERR: cannot inspect engine running state before rollback" >&2
+    return 1
+  fi
+  if ! grep -Fxq ai_engine <<<"${running}"; then
+    if [ "${local_ai_changes}" = "true" ]; then
+      local existing
+      if ! existing="$(compose_existing_services)" || ! grep -Fxq ai_engine <<<"${existing}"; then
+        echo "ERR: cannot verify remote active calls on an inference-only host; drain every remote engine, then explicitly set AAVA_UPDATE_FORCE_ACTIVE_CALLS=true" >&2
+        return 1
+      fi
+    fi
     return 0
   fi
 
@@ -810,18 +831,34 @@ run_rollback() {
       rebuild_services=("${rollback_default_rebuild[@]}")
     fi
 
-    rollback_touches_ai_engine=false
+    rollback_touches_calls=false
+    rollback_changes_local_ai=false
     if [ "${compose_changed}" = "true" ]; then
-      rollback_touches_ai_engine=true
+      rollback_touches_calls=true
+      # Older job plans may omit Local AI even though Compose reconciliation
+      # recreates every previously running service. Guard the actual targets.
+      for running in "${recovery_running_svcs[@]}"; do
+        if [ "${running}" = "local_ai_server" ]; then
+          rollback_changes_local_ai=true
+          break
+        fi
+      done
     fi
     for svc in "${rebuild_services[@]}" "${restart_services[@]}"; do
       if [ "${svc}" = "ai_engine" ]; then
-        rollback_touches_ai_engine=true
-        break
+        rollback_touches_calls=true
+      fi
+      if [ "${svc}" = "local_ai_server" ]; then
+        for running in "${recovery_running_svcs[@]}"; do
+          if [ "${running}" = "local_ai_server" ]; then
+            rollback_touches_calls=true
+            rollback_changes_local_ai=true
+          fi
+        done
       fi
     done
-    if [ "${rollback_touches_ai_engine}" = "true" ]; then
-      guard_rollback_active_calls
+    if [ "${rollback_touches_calls}" = "true" ]; then
+      guard_rollback_active_calls "${rollback_changes_local_ai}"
     fi
 
     # Best-effort: preserve any current local changes before switching branches.
@@ -888,10 +925,7 @@ run_rollback() {
       else
         mapfile -t targets < <(printf '%s\n' "${targets[@]}" | awk 'NF && !seen[$0]++')
       fi
-      echo "==> Compose changed; reconciling services (no-build): ${targets[*]:-none}" >&2
-      if [ "${#targets[@]}" -gt 0 ]; then
-        docker compose up -d --remove-orphans --no-build "${targets[@]}"
-      fi
+      echo "==> Compose changed; will reconcile after image builds: ${targets[*]:-none}" >&2
     fi
 
     # Preserve pre-update runtime state: running services may be recreated, while any
@@ -941,19 +975,38 @@ run_rollback() {
 
     if [ "${#build_only_services[@]}" -gt 0 ]; then
       echo "==> Rebuilding stopped service images without starting them: ${build_only_services[*]}" >&2
-      docker compose build "${build_only_services[@]}"
+      "${COMPOSE_BUILD_HELPER}" "${build_only_services[@]}"
     fi
 
     if [ "${#rebuild_services[@]}" -gt 0 ]; then
       echo "==> Rebuilding services: ${rebuild_services[*]}" >&2
-      docker compose up -d --build "${rebuild_services[@]}"
+      "${COMPOSE_BUILD_HELPER}" "${rebuild_services[@]}"
+    fi
+
+    # A long build can outlast the initial active-call check. Check again
+    # immediately before any runtime reconciliation or recreation.
+    if [ "${rollback_touches_calls}" = "true" ]; then
+      guard_rollback_active_calls "${rollback_changes_local_ai}"
+    fi
+    if [ "${compose_changed}" = "true" ] && [ "${#targets[@]}" -gt 0 ]; then
+      docker compose up -d --remove-orphans --no-build --pull never "${targets[@]}"
+    fi
+    if [ "${#rebuild_services[@]}" -gt 0 ]; then
+      docker compose up -d --no-build --pull never "${rebuild_services[@]}"
     fi
 
     if [ "${#restart_services[@]}" -gt 0 ]; then
       echo "==> Restarting services: ${restart_services[*]}" >&2
       for svc in "${restart_services[@]}"; do
-        docker compose restart "${svc}" || docker compose up -d --no-build "${svc}"
+        docker compose restart "${svc}" || docker compose up -d --no-build --pull never "${svc}"
       done
+    fi
+
+    # Successful rollback supersedes forward-update intent. Archive rather
+    # than replaying (or deleting) that journal after the old code is restored.
+    if [ -e "${UPDATES_DIR}/pending-docker.json" ] || [ -L "${UPDATES_DIR}/pending-docker.json" ]; then
+      mkdir -p "${UPDATES_DIR}/rolled-back"
+      mv -- "${UPDATES_DIR}/pending-docker.json" "${UPDATES_DIR}/rolled-back/${JOB_ID}.pending-docker.json"
     fi
   ) 2>&1 | tee "${JOB_LOG_PATH}"
   code="${PIPESTATUS[0]}"

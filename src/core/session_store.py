@@ -249,6 +249,11 @@ class SessionStore:
             if prior_count == 0 and session.tts_active_count > 0:
                 session.tts_playing = True
                 session.audio_capture_enabled = False
+                # A local/file playback can follow provider audio. Its completion
+                # must not inherit the previous Google response's drain clock.
+                session.google_playback_drained_monotonic = 0.0
+                session.google_output_emission_end_monotonic = 0.0
+                session.google_output_interrupted = False
                 # Record TTS start time for barge-in protection window
                 session.tts_started_ts = time.time()
 
@@ -303,6 +308,7 @@ class SessionStore:
                 # Record TTS end time so the engine can guard a short post-TTS window
                 try:
                     session.tts_ended_ts = time.time()
+                    session.tts_ended_monotonic = time.monotonic()
                 except Exception:
                     session.tts_ended_ts = 0.0
 

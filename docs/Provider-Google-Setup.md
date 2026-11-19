@@ -9,6 +9,12 @@ Google AI integration provides two modes for the Asterisk AI Voice Agent:
 
 This guide covers setup for both modes.
 
+For v7.7.1, the modular Google LLM default is `models/gemini-3.8-flash` when
+no model is selected; explicit saved selections remain unchanged. Native Google
+Live's default is not changed by this modular update. See the
+[Admin capability notes](ADMIN_UI_GUIDE.md#providers) for model-specific sampling
+controls, complete-candidate selection and summary truncation handling.
+
 If you used the Admin UI Setup Wizard, you may not need to follow this guide end-to-end. For first-call onboarding and transport selection, see:
 - `INSTALLATION.md`
 - `Transport-Mode-Compatibility.md`
@@ -76,6 +82,16 @@ If you omit these, the engine selects the default Agent/provider using the prece
 ```bash
 asterisk -rx "dialplan reload"
 ```
+
+## Google Live playback prefill (v7.7)
+
+`providers.google_live.playback_prefill_ms` is opt-in and defaults to `0`.
+It accepts `0`–`3000` milliseconds and can smooth streamed playback at the cost
+of extra first-audio latency. It is not a substitute for greeting readiness or
+a guarantee against provider/network stalls. Save the provider configuration
+and restart the engine to apply it; leave it at zero unless your deployment
+needs buffering. See the [configuration reference](Configuration-Reference.md)
+for the separate greeting timing controls and audio profile settings.
 
 ## Pipelines (Optional / Operator-Defined)
 
@@ -207,9 +223,15 @@ pipelines:
 
 If using service account authentication, grant these roles:
 
-- **Cloud Speech-to-Text User** (`roles/speech.user`)
-- **Cloud Text-to-Speech User** (`roles/texttospeech.user`)
-- **Generative AI User** (`roles/aiplatform.user`)
+- For Cloud Speech-to-Text, use the [Cloud Speech Client role](https://docs.cloud.google.com/iam/docs/roles-permissions/speech)
+  (`roles/speech.client`).
+- For Text-to-Speech, enable the Cloud Text-to-Speech API and use the credential
+  path described in [Google pipeline authentication](Configuration-Reference.md#google-pipelines).
+  See [Google authentication guidance](https://docs.cloud.google.com/text-to-speech/docs/authentication)
+  for the applicable service-account and quota permissions.
+- Default pipeline endpoints are `generativelanguage.googleapis.com` for LLM,
+  `speech.googleapis.com` for STT, and `texttospeech.googleapis.com` for TTS.
+  Configure Vertex access separately only for the Google Live Vertex mode.
 
 Google Live / Generative Language access is authenticated with API key or OAuth credentials. There is no separate `roles/generativelanguage.liveapi.user` IAM role.
 
@@ -382,6 +404,31 @@ End-to-end testing on 2026-05-09 with `llm_model: gemini-3.1-flash-live-preview`
 
 Investigation logs and timeline are captured in the [#350 / #356 verification discussion on PR #384](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/384).
 
+### Greeting and post-playback echo protection
+
+For Google sessions using engine-managed input gating (including Gemini 2.5 and
+Gemini 3.8 with native full-duplex disabled), greeting input remains silence-gated
+until caller-facing playback drains. Generation completion alone does not prove
+that buffered audio has finished playing (#849). This applies to Vertex and
+Developer API without enabling long-response playback.
+
+`barge_in.post_tts_end_protection_ms` also applies to these sessions on AudioSocket
+and the shared ExternalMedia/WebSocket input path (#850). The engine substitutes
+silence at the normal frame rate, then resumes real caller audio. Confirmed drain
+supersedes the earlier gating-token timestamp; protection starts at the last
+emitted audio frame, including input received during the transport quiet wait.
+The existing transport quiet tail
+counts toward the configured interval rather than adding a second full delay.
+Zero disables this additional guard. Increasing it can discard the beginning of
+an early reply. Accepted mid-call barge-in resumes caller input without a new
+post-playback mute. Later turns retain the existing interruption ownership.
+
+Gemini 3.8 native full-duplex deliberately keeps real caller audio flowing during
+and after output. The engine input guard does not apply in that mode. Other native
+continuous-input providers are unchanged. Configure the existing global field in
+**Advanced → Barge-in → Post-TTS Protection (ms)**; Save Changes and restart the
+AI Engine after active calls finish. No new setting or default change is required.
+
 ### Hangup Fallback Tuning
 
 Google Live may occasionally miss or delay `turnComplete` near the end of a farewell.  
@@ -391,6 +438,30 @@ The fallback watchdog protects against stuck calls:
 - `hangup_fallback_min_armed_sec`: minimum time the fallback must stay armed before it can fire.
 - `hangup_fallback_no_audio_timeout_sec`: fail-safe when no farewell audio arrives at all.
 - `hangup_fallback_turn_complete_timeout_sec`: grace window to wait for `turnComplete` before fallback.
+
+### Marker-based hangup heuristics
+
+`hangup_markers_enabled` defaults to `false` and should remain off in production;
+prefer the explicit `hangup_call` tool. When enabled, Google evaluates the completed
+turn's caller and assistant text, using whole-word/phrase boundaries. A greeting
+such as "thank you for calling" does not remain a farewell for later turns.
+Weak caller markers require an assistant farewell; configured explicit end-call
+markers can still end a call without one. Phrases such as "all set", "that's it",
+or "bye" are ambiguous even with word boundaries, so false positives remain possible.
+
+Google and Grok do not arm marker fallback while a deferred transfer is pending.
+A `HangupReady` event gives a pending transfer priority. Before committing, the
+engine clears superseded hangup timers/state so a transfer drain timeout can
+return the caller to the AI, play its apology, and accept a later legitimate
+hangup. Failed commits cancel their exact pending action and recover without
+automatic replay on later completion events; a replacement action survives an
+older action's failure. Grok also uses whole-word/phrase boundaries for its
+farewell fallback.
+
+Before enabling heuristics, validate a greeting followed by continued conversation,
+a genuine farewell, a successful transfer, and a transfer drain timeout followed
+by more conversation and a later hangup. Keep call IDs and the tested revision
+with the validation evidence.
 
 ## Features
 
@@ -431,7 +502,7 @@ providers:
 
 `long_audio_backlog_sec` defaults to **120 seconds** and accepts **10–120**. It controls queued audio capacity, not total response duration or how long Google is asked to speak. The checkbox is the UI control; the advanced budget is configured in YAML. See the [configuration reference](Configuration-Reference.md#google-live-monolithic-agent).
 
-The backlog is bounded by audio bytes and item count. Overflow or failed drain ends the call with an explicit error instead of silently dropping speech chunks. Playback drain, rather than generation completion, releases input gating. Barge-in discards the queued response and clears playback-owned gating so subsequent caller input can resume. Terminal tool actions retain their protocol completion boundary. On opted-in, silence-gated Developer calls, local fallback caps the required qualifying speech at 120 ms (or a shorter configured duration) within a 200-ms window, tolerating quiet gaps up to 40 ms; the existing energy threshold, enhanced-VAD votes, greeting protection, cooldown and media isolation still apply. Vertex and opt-out timing are unchanged; Gemini 3.8 native full-duplex interruption continues to use the provider signal.
+The backlog is bounded by audio bytes and item count. Overflow or failed drain ends the call with an explicit error instead of silently dropping speech chunks. Playback drain, rather than generation completion, releases input gating. Barge-in discards the queued response and clears playback-owned gating so subsequent caller input can resume. Terminal tool actions retain their protocol completion boundary. On opted-in, silence-gated Developer calls, local fallback caps the required qualifying speech at 120 ms (or a shorter configured duration) within a 200-ms window, tolerating quiet gaps up to 40 ms; the existing energy threshold, enhanced-VAD votes, greeting protection, cooldown and media isolation still apply. Vertex and opt-out sessions share the greeting/post-playback protection described above; Gemini 3.8 native full-duplex interruption continues to use the provider signal.
 
 An interrupted terminal response cannot reuse its old audio or completion boundary to hang up. If the Developer connection closes abnormally, already-accepted audio receives at most eight seconds to drain before cleanup, with transfer/caller teardown taking priority. This may preserve a short buffered farewell; it does not fix an upstream API error or recover audio that Google never generated. Overflows and stalled playback remain explicit failures. Disabling the checkbox restores the original queue/completion path after saving and restarting. Stopping old playback locally and receiving Google's next response are separate events; the option cannot guarantee the model's response latency.
 

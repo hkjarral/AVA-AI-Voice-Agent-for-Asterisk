@@ -53,8 +53,35 @@ def build_deferred_transfer_action(
 async def store_pending_deferred_transfer(
     context: ToolExecutionContext,
     action: Dict[str, Any],
+    *,
+    session=None,
 ) -> None:
-    session = await context.get_session()
+    session = session if session is not None else await context.get_session()
+    from src.tools.handoff_config import resolve_handoff, normalize_local_handoff_providers
+    from src.config.provider_instances import provider_kind
+    transfer = context.get_config_value("tools.transfer") or {}
+    destination = (transfer.get("destinations") or {}).get(action.get("destination_key")) or {}
+    if action.get("source_tool") == "live_agent_transfer":
+        destination = (context.get_config_value("tools.extensions.internal") or {}).get(action.get("target")) or destination
+    handoff = resolve_handoff(transfer, destination)
+    if action.get("source_tool") == "leave_voicemail":
+        # Voicemail always waits for its native provider reply, independent of
+        # optional blind-transfer speech settings or Local AI availability.
+        handoff = resolve_handoff({"handoff": {
+            "enabled": True, "message": "I'll connect you to voicemail now.",
+        }})
+    if handoff:
+        payload = action.get("payload") or {}
+        if payload.get("screening_mode") == "caller_recording":
+            prompt = str(payload.get("caller_screening_prompt") or "").strip()
+            if prompt:
+                handoff["message"] = f"{handoff['message']} {prompt}"
+        key = getattr(context, "provider_name", None) or ""
+        kind = provider_kind(key, (context.get_config_value("providers") or {}).get(key) or {}) or key
+        local = normalize_local_handoff_providers(transfer.get("local_handoff_audio_providers", ["deepgram"]))
+        handoff["owner"] = ("engine" if local and kind in local and not session.pipeline_name
+                            and action.get("source_tool") != "leave_voicemail" else "provider")
+        action["handoff"] = handoff
     session.pending_deferred_transfer = dict(action)
     await context.session_store.upsert_call(session)
     logger.info(
@@ -76,6 +103,9 @@ def build_deferred_transfer_result(
     status: str = "success",
     extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    handoff = action.get("handoff") or {}
+    if handoff:
+        message = handoff["message"]
     result = {
         "status": status,
         "message": message,
@@ -88,6 +118,9 @@ def build_deferred_transfer_result(
             if not str(key).startswith("_")
         },
     }
+    if handoff.get("owner") == "engine":
+        result["message"] = "The transfer announcement is played by the engine. Do not speak again."
+        result["ai_should_speak"] = False
     if extra:
         result.update(extra)
     return result
@@ -113,7 +146,11 @@ async def commit_deferred_transfer_action(
     tool = tool_registry.get(commit_tool) if commit_tool else None
     if not tool or not hasattr(tool, "commit_deferred_action"):
         message = f"Deferred transfer commit tool unavailable: {commit_tool or 'unknown'}"
-        logger.error(message, call_id=context.call_id, action=action)
+        logger.error(
+            message,
+            call_id=context.call_id,
+            action={key: value for key, value in action.items() if not str(key).startswith("_")},
+        )
         return {"status": "error", "message": message}
 
     return await tool.commit_deferred_action(action, context)
@@ -157,10 +194,8 @@ async def commit_pending_deferred_transfer(
             )
         return result
     except Exception as exc:
-        latest = await context.session_store.get_by_call_id(context.call_id)
-        if latest:
-            latest.pending_deferred_transfer = dict(action)
-            await context.session_store.upsert_call(latest)
+        # The action remains pending unless the tool deliberately cleared or
+        # replaced it. Never resurrect stale ownership after an awaited commit.
         logger.error(
             "Deferred transfer commit failed",
             call_id=context.call_id,

@@ -380,3 +380,114 @@ async def test_minimax_llm_metadata_contains_assistant_message():
     assert "assistant_message" in response.metadata
     assert response.metadata["assistant_message"]["content"] == original_content
     assert "usage" in response.metadata
+
+
+async def _minimax_tool_calls(arguments):
+    app_config = _build_app_config()
+    provider_config = MiniMaxLLMProviderConfig(**app_config.providers["minimax_llm"])
+    body = json.dumps({
+        "choices": [{
+            "message": {
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "hangup_call", "arguments": arguments},
+                }],
+            },
+        }],
+    }).encode("utf-8")
+    adapter = MiniMaxLLMAdapter(
+        "minimax_llm",
+        app_config,
+        provider_config,
+        {},
+        session_factory=lambda: _FakeSession(body),
+    )
+    await adapter.start()
+    response = await adapter.generate("call-1", "bye", {}, {})
+    return response.tool_calls
+
+
+@pytest.mark.asyncio
+async def test_minimax_llm_tool_call_with_empty_arguments_keeps_the_call():
+    """A parameterless call arrives with arguments "" and must not be dropped."""
+    tool_calls = await _minimax_tool_calls("")
+
+    assert [(tc["name"], tc["parameters"]) for tc in tool_calls] == [("hangup_call", {})]
+
+
+@pytest.mark.asyncio
+async def test_minimax_llm_tool_call_with_object_arguments_keeps_the_call():
+    tool_calls = await _minimax_tool_calls({"reason": "done"})
+
+    assert [(tc["name"], tc["parameters"]) for tc in tool_calls] == [("hangup_call", {"reason": "done"})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arguments", ["", None, {"reason": "done"}, "null"])
+async def test_minimax_llm_replays_normalized_tool_arguments_with_original_reasoning(arguments):
+    """Accepted argument shapes must remain valid on the following API request."""
+    app_config = _build_app_config()
+    provider_config = MiniMaxLLMProviderConfig(**app_config.providers["minimax_llm"])
+    raw_content = "<think>Original reasoning.</think>"
+    first_body = json.dumps({"choices": [{"message": {
+        "role": "assistant", "content": raw_content, "reasoning_content": "Original reasoning.",
+        "tool_calls": [{"id": "call_1", "type": "function", "function": {
+            "name": "hangup_call", "arguments": arguments,
+        }}],
+    }}]}).encode("utf-8")
+    next_body = json.dumps({"choices": [{"message": {"role": "assistant", "content": "Done."}}]}).encode("utf-8")
+    fake_session = _SequencedFakeSession([(first_body, 200), (next_body, 200)])
+    adapter = MiniMaxLLMAdapter("minimax_llm", app_config, provider_config, {}, session_factory=lambda: fake_session)
+    await adapter.start()
+    try:
+        response = await adapter.generate("call-1", "bye", {}, {})
+        assistant_message = response.metadata["assistant_message"]
+        messages = [assistant_message, {"role": "tool", "tool_call_id": "call_1", "content": "Done."}]
+        await adapter.generate("call-1", "", {"messages": messages}, {})
+
+        replayed = fake_session.requests[1]["json"]["messages"][0]
+        assert replayed["content"] == raw_content
+        assert replayed["reasoning_content"] == "Original reasoning."
+        replayed_arguments = replayed["tool_calls"][0]["function"]["arguments"]
+        assert isinstance(replayed_arguments, str)
+        expected = arguments if isinstance(arguments, dict) else {}
+        assert json.loads(replayed_arguments) == expected
+        assert response.tool_calls[0]["parameters"] == expected
+    finally:
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arguments", ['[1]', '"text"', 'true'])
+async def test_minimax_llm_drops_non_object_tool_arguments(arguments):
+    """Malformed parameter types must not reach a tool execution."""
+    assert await _minimax_tool_calls(arguments) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_arguments", ['{not json', '[1]'])
+async def test_minimax_llm_replay_contains_only_accepted_tool_calls(invalid_arguments):
+    """Rejected calls must not create unmatched tool IDs in replayed history."""
+    app_config = _build_app_config()
+    provider_config = MiniMaxLLMProviderConfig(**app_config.providers["minimax_llm"])
+    body = json.dumps({"choices": [{"message": {
+        "role": "assistant", "content": "<think>Keep the reasoning.</think>",
+        "tool_calls": [
+            {"id": "invalid", "type": "function", "function": {"name": "hangup_call", "arguments": invalid_arguments}},
+            {"id": "valid", "type": "function", "function": {"name": "hangup_call", "arguments": ""}},
+        ],
+    }}]}).encode("utf-8")
+    adapter = MiniMaxLLMAdapter("minimax_llm", app_config, provider_config, {}, session_factory=lambda: _FakeSession(body))
+    await adapter.start()
+    try:
+        response = await adapter.generate("call-1", "bye", {}, {})
+        assert [call["id"] for call in response.tool_calls] == ["valid"]
+        retained = response.metadata["assistant_message"]
+        assert retained["content"] == "<think>Keep the reasoning.</think>"
+        assert retained["tool_calls"] == [{
+            "id": "valid", "type": "function", "function": {"name": "hangup_call", "arguments": "{}"},
+        }]
+    finally:
+        await adapter.stop()

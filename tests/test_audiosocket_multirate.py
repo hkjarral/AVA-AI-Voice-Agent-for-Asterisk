@@ -12,6 +12,7 @@ from src.audio.audiosocket_protocol import (
     supports_multirate_audiosocket,
 )
 from src.audio.audiosocket_server import AudioSocketServer, TYPE_TERMINATE, TYPE_UUID
+from src.core.models import CallSession
 from src.core.streaming_playback_manager import StreamingPlaybackManager
 from src.core.transport_orchestrator import TransportOrchestrator
 from src.engine import Engine
@@ -475,8 +476,12 @@ def test_local_tts_preferences_use_supported_contract_for_each_wire_rate():
 @pytest.mark.asyncio
 async def test_streaming_manager_keeps_audiosocket_framing_per_call():
     sessions = {
-        "call-8k": SimpleNamespace(audiosocket_conn_id="conn-8k"),
-        "call-16k": SimpleNamespace(audiosocket_conn_id="conn-16k"),
+        "call-8k": CallSession(
+            call_id="call-8k", caller_channel_id="caller-8k", audiosocket_conn_id="conn-8k"
+        ),
+        "call-16k": CallSession(
+            call_id="call-16k", caller_channel_id="caller-16k", audiosocket_conn_id="conn-16k"
+        ),
     }
     session_store = SimpleNamespace(
         get_by_call_id=AsyncMock(side_effect=lambda call_id: sessions[call_id])

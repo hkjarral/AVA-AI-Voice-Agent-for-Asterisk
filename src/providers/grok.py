@@ -50,6 +50,7 @@ from ..config import GrokProviderConfig
 from src.tools.registry import tool_registry
 from src.tools.adapters.grok import GrokToolAdapter
 from src.tools.execution_history import record_in_call_tool_result
+from src.tools.telephony.hangup_policy import text_contains_marker_word
 
 logger = get_logger(__name__)
 
@@ -431,6 +432,7 @@ class GrokProvider(AIProviderInterface):
             return None
 
     async def start_session(self, call_id: str, context: Optional[Dict[str, Any]] = None):
+        self._handoff_evidence.reset(call_id)
         if not self.config.api_key:
             raise ValueError("Grok Voice Agent provider requires XAI_API_KEY (or per-instance api_key_file)")
 
@@ -827,6 +829,7 @@ class GrokProvider(AIProviderInterface):
             }
             
             # Execute tool via adapter
+            handoff_origin = self._handoff_evidence.turn(self._call_id, event_data.get("response_id") or getattr(self, "_current_response_id", None))["id"]
             result = await self.tool_adapter.handle_tool_call_event(event_data, context)
 
             # Check if this is a hangup_call tool that will trigger hangup
@@ -856,6 +859,9 @@ class GrokProvider(AIProviderInterface):
 
             # Wait for response.done before submitting function_call_output (see
             # _await_parent_response_done for the full rationale).
+            await self.prepare_handoff_result(result, self._call_id, handoff_origin)
+            context["handoff_result_sent"] = self.handoff_result_sent
+
             await self._await_parent_response_done(event_data, function_name=function_name)
 
             # Send result back to Grok
@@ -1016,6 +1022,7 @@ class GrokProvider(AIProviderInterface):
             except Exception:
                 pass
             previous_call_id = self._call_id
+            self._handoff_evidence.reset(previous_call_id)
             self._receive_task = None
             self._keepalive_task = None
             self._greeting_vad_task = None
@@ -1400,6 +1407,15 @@ class GrokProvider(AIProviderInterface):
             call_id=self._call_id
         )
     
+    def release_terminal_output_protection(self) -> None:
+        """Discard a superseded farewell without ending the provider session."""
+        self._cancel_farewell_timeout()
+        self._farewell_response_id = None
+        self._farewell_waiting_for_audio_done = False
+        self._hangup_after_response = False
+        self._hangup_fallback_armed = False
+        self._last_final_user_text = ""
+
     def _cancel_farewell_timeout(self):
         """Cancel the farewell timeout if it's still running."""
         if self._farewell_timeout_task and not self._farewell_timeout_task.done():
@@ -1464,6 +1480,7 @@ class GrokProvider(AIProviderInterface):
     
     async def _cancel_response(self, response_id: str):
         """Cancel an in-progress response in manual/non-VAD mode."""
+        self.interrupt_handoff(self._call_id)
         if not self.websocket or self.websocket.state.name != "OPEN":
             return
 
@@ -1999,6 +2016,9 @@ class GrokProvider(AIProviderInterface):
             return
 
         if event_type in ("response.completed", "response.error", "response.cancelled", "response.done"):
+            response_status = (event.get("response") or {}).get("status")
+            if event_type in {"response.error", "response.cancelled"} or response_status in {"cancelled", "failed", "incomplete"}:
+                self.interrupt_handoff(self._call_id)
             # Signal any function_call handler waiting on this response. The server
             # commits output items to the conversation on response finalization, so
             # this is the earliest point a function_call_output can be safely submitted.
@@ -2027,7 +2047,10 @@ class GrokProvider(AIProviderInterface):
             # Note: Turn latency timer now starts on input_audio_buffer.speech_stopped
             # (moved from here for standardized measurement across providers)
             
+            handoff_flushed = await self.flush_handoff_pacer()
             await self._emit_audio_done()
+            if had_audio_for_response and handoff_flushed:
+                await self.complete_handoff_audio(self._call_id, current_response_id)
             
             # Only emit additional audio_done if this response actually had audio output
             # This prevents premature hangup when tool responses complete (no audio yet)
@@ -2193,6 +2216,12 @@ class GrokProvider(AIProviderInterface):
 
         # Optional acks/telemetry for audio buffer operations
         if event_type and event_type.startswith("input_audio_buffer"):
+            if event_type in ("input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"):
+                # Both VAD edges, so the engine can hold a deferred transfer's
+                # silent-reply timer while the caller is talking.
+                await self.emit_caller_speech(
+                    self._call_id, started=event_type.endswith("speech_started"),
+                )
             # Track turn start time when user STOPS speaking (Milestone 21)
             # This measures: speech end → first AI audio response
             if event_type == "input_audio_buffer.speech_stopped":
@@ -2549,14 +2578,11 @@ class GrokProvider(AIProviderInterface):
             if not outbound:
                 return
 
-        # Append to egress buffer and start pacer, or emit immediately if disabled
-        try:
+        # Retain bytes only when a provider pacer will consume them. The
+        # immediate/transport-paced path must not accumulate a second copy.
+        if self._egress_pacer_enabled:
             async with self._pacer_lock:
                 self._outbuf.extend(outbound)
-        except Exception:
-            logger.debug("Failed appending to pacer buffer", call_id=self._call_id, exc_info=True)
-
-        if self._egress_pacer_enabled:
             await self._ensure_pacer_started()
         else:
             # Fallback to immediate emit (legacy behavior)
@@ -2574,6 +2600,8 @@ class GrokProvider(AIProviderInterface):
                     await self.on_event(
                         {
                             "type": "AgentAudio",
+                            "audio_item_id": self._assistant_audio_item_id,
+                            "audio_content_index": self._assistant_audio_content_index,
                             "data": outbound,
                             "streaming_chunk": True,
                             "call_id": self._call_id,
@@ -2592,7 +2620,7 @@ class GrokProvider(AIProviderInterface):
                 await self.on_event(
                     {
                         "type": "AgentAudioDone",
-                        "streaming_done": True,
+                        "streaming_done": True, "_handoff_complete": False,
                         "call_id": self._call_id,
                     }
                 )
@@ -2695,6 +2723,7 @@ class GrokProvider(AIProviderInterface):
             complete += part
         if not complete:
             return
+        await self.handoff_transcript(self._call_id, complete, event.get("response_id") or (event.get("response") or {}).get("id") or self._current_response_id)
         await self._track_conversation("assistant", complete)
         await self._emit_transcript(complete, is_final=True)
 
@@ -2741,18 +2770,19 @@ class GrokProvider(AIProviderInterface):
                     role == "assistant"
                     and not self._hangup_after_response
                     and not self._hangup_fallback_armed
+                    and not isinstance(getattr(session, "pending_deferred_transfer", None), dict)
                 ):
                     assistant_lower = (text or "").lower()
                     user_lower = (self._last_final_user_text or "").lower()
-                    assistant_farewell = any(
-                        phrase in assistant_lower for phrase in (
+                    assistant_farewell = text_contains_marker_word(
+                        assistant_lower, (
                             "goodbye", "good bye", "have a great day", "have a good day",
                             "have a nice day", "take care", "talk to you later", "see you",
                             "the call will end", "i'll hang up", "ill hang up", "ending the call",
                         )
                     )
-                    user_farewell = any(
-                        phrase in user_lower for phrase in (
+                    user_farewell = text_contains_marker_word(
+                        user_lower, (
                             "goodbye", "good bye", "bye", "thank you. goodbye", "thanks goodbye",
                             "that's all", "thats all", "hang up", "end the call", "end call",
                             "no thank you", "no thanks",
@@ -3179,6 +3209,7 @@ class GrokProvider(AIProviderInterface):
                     if len(self._outbuf) >= chunk_bytes:
                         chunk = bytes(self._outbuf[:chunk_bytes])
                         del self._outbuf[:chunk_bytes]
+                handoff_real_audio = bool(chunk)
                 if not chunk:
                     # Underrun: emit silence to maintain cadence
                     self._pacer_underruns += 1
@@ -3210,7 +3241,7 @@ class GrokProvider(AIProviderInterface):
                 try:
                     await self.on_event(
                         {
-                            "type": "AgentAudio",
+                            "type": "AgentAudio", "_handoff_real_audio": handoff_real_audio,
                             "data": chunk,
                             "streaming_chunk": True,
                             "call_id": call_id,

@@ -1,14 +1,19 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { AlertCircle, ArrowRight, Loader2, Cloud, Server, Shield, Zap, SkipForward, CheckCircle, CheckCircle2, XCircle, Terminal, Copy, HardDrive, Play, RefreshCw, Info, AlertTriangle, Wrench } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { AlertCircle, ArrowRight, Loader2, Cloud, Server, Shield, Zap, SkipForward, CheckCircle, CheckCircle2, XCircle, HardDrive, Play, RefreshCw, Info, AlertTriangle } from 'lucide-react';
 import axios from 'axios';
 import { toast } from 'sonner';
+import { useAsyncScope } from '../hooks/useAsyncScope';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import HelpTooltip from '../components/ui/HelpTooltip';
-import { buildAgentDialplan } from '../utils/dialplan';
+import SetupHandoff from '../components/SetupHandoff';
+import { readWizardDraft, saveWizardDraft, clearWizardDraft } from '../utils/wizardDraft';
 
 interface SetupConfig {
     provider: string;
+    deployment_topology?: 'same_host' | 'remote';
+    audio_transport?: 'audiosocket' | 'externalmedia' | 'websocket';
+    media_advertise_host?: string;
     asterisk_host: string;
     asterisk_username: string;
     asterisk_password: string;
@@ -66,13 +71,19 @@ type BackendCapabilities = {
 
 const Wizard = () => {
     const navigate = useNavigate();
+    const { isMounted, beginRead, cancelRead, later, clearLater } = useAsyncScope();
     const { confirm } = useConfirmDialog();
     const [step, setStep] = useState(1);
+    const [loaded, setLoaded] = useState(false);
+    const [resumedDraft, setResumedDraft] = useState(false);
     const [loading, setLoading] = useState(false);
     const [showAdvancedKokoro, setShowAdvancedKokoro] = useState(false);
 
     const [config, setConfig] = useState<SetupConfig>({
         provider: 'openai_realtime',
+        deployment_topology: 'same_host',
+        audio_transport: 'audiosocket',
+        media_advertise_host: '',
         asterisk_host: '127.0.0.1',
         asterisk_username: 'asterisk',
         asterisk_password: '',
@@ -126,13 +137,14 @@ const Wizard = () => {
     // Check if hostname is being used (requires server IP for RTP security)
     const isUsingHostname = !isIPAddress(config.asterisk_host) && config.asterisk_host !== 'localhost';
 
-    const nonLocalDialplanSnippet = buildAgentDialplan(config.provider, config.asterisk_app);
+    const [loadError, setLoadError] = useState(false);
 
-    const showToast = (message: string, type: 'success' | 'error' | 'warning') => {
+    const showToast = useCallback((message: string, type: 'success' | 'error' | 'warning') => {
+        if (!isMounted()) return;
         if (type === 'success') toast.success(message);
         else if (type === 'warning') toast.warning(message);
         else toast.error(message);
-    };
+    }, [isMounted]);
     const [engineStatus, setEngineStatus] = useState<{
         running: boolean;
         exists: boolean;
@@ -141,11 +153,15 @@ const Wizard = () => {
     const [startingEngine, setStartingEngine] = useState(false);
     const [reloadingEngine, setReloadingEngine] = useState(false);
     const [startingLocalServer, setStartingLocalServer] = useState(false);
-    const localServerPollRef = useRef<{ cancelled: boolean; timeouts: number[]; startedAt: number | null }>({
-        cancelled: false,
-        timeouts: [],
-        startedAt: null
-    });
+    const serverOwner = useRef<object | null>(null);
+    const serverSubmitting = useRef(false);
+    const serverTimer = useRef<number | undefined>(undefined);
+    const autoStartAttempted = useRef(false);
+    const downloadOwner = useRef<{ selection?: string } | null>(null);
+    const downloadSubmitting = useRef(false);
+    const downloadTimer = useRef<number | undefined>(undefined);
+    const [downloadTracking, setDownloadTracking] = useState<'checking' | 'known' | 'unknown'>('checking');
+    const [downloadCheckVersion, setDownloadCheckVersion] = useState(0);
     const [engineProgress, setEngineProgress] = useState<{
         steps: Array<{ name: string; status: string; message: string }>;
         currentStep: string;
@@ -203,32 +219,93 @@ const Wizard = () => {
 
     const [modelsStatus, setModelsStatus] = useState<LocalModelsStatus | null>(null);
     const [backendCaps, setBackendCaps] = useState<BackendCapabilities | null>(null);
+    const localDownloadBusy = localAIStatus.downloading || downloadTracking !== 'known';
+
+    // Only a submitted download can establish readiness for this exact selection.
+    const selection = JSON.stringify([
+        config.provider, selectedLanguage, config.local_stt_backend, config.local_stt_model,
+        config.local_tts_backend, config.local_tts_model, config.local_llm_model,
+        config.kroko_embedded, config.kokoro_mode, config.kokoro_voice,
+        config.silero_speaker, config.silero_language, config.local_llm_custom_url,
+        config.local_llm_custom_filename, config.kokoro_api_base_url
+    ]);
+    useLayoutEffect(() => {
+        setLocalAIStatus(prev => ({ ...prev, downloadCompleted: false, modelsReady: false }));
+        if (downloadOwner.current?.selection !== undefined) {
+            // The accepted job still writes .env before completing. Keep it
+            // tracked and locked; only revoke its claim on this selection.
+            downloadOwner.current.selection = undefined;
+        }
+    }, [selection]);
+
+    useLayoutEffect(() => {
+        autoStartAttempted.current = false;
+        return () => {
+            if (serverOwner.current) {
+                serverOwner.current = null;
+                setLocalAIStatus(prev => ({ ...prev, serverStarted: false, serverReady: false }));
+            }
+            clearLater(serverTimer.current);
+            cancelRead('server-logs');
+        };
+    }, [step, config.provider, clearLater, cancelRead]);
 
     // Load existing config from .env on mount
     useEffect(() => {
+        let cancelled = false;
         const loadExistingConfig = async () => {
             try {
                 const res = await axios.get('/api/wizard/load-config');
+                if (cancelled) return;
                 if (res.data) {
+                    const draft = ['configuration_saved', 'verified', 'existing'].includes(res.data.onboarding?.stage) ? null : readWizardDraft();
                     setConfig(prev => ({
                         ...prev,
                         ...res.data,
+                        ...draft?.config,
                         // Keep provider selection if not set in loaded config
-                        provider: res.data.provider || prev.provider
+                        provider: draft?.config.provider as string || res.data.provider || prev.provider
                     }));
+                    if (draft) { setStep(draft.step); setResumedDraft(true); }
+                    setLoaded(true);
+                    if (['configuration_saved', 'verified'].includes(res.data.onboarding?.stage)) {
+                        setStep(5);
+                        try {
+                            const engine = await axios.get('/api/wizard/engine-status');
+                            if (cancelled) return;
+                            setEngineStatus({ ...engine.data, checked: true });
+                            if (res.data.provider === 'local') {
+                                const local = await axios.get('/api/wizard/local/server-logs');
+                                if (cancelled) return;
+                                setLocalAIStatus(prev => ({ ...prev, serverReady: !!local.data.ready, serverStarted: !!local.data.ready }));
+                            }
+                        } catch {
+                            if (cancelled) return;
+                            setEngineStatus({ running: false, exists: false, checked: true });
+                        }
+                    }
                 }
             } catch {
-                // Non-fatal - continue with defaults
+                if (!cancelled) setLoadError(true);
             }
         };
         loadExistingConfig();
+        return () => { cancelled = true; };
     }, []);
+
+    useEffect(() => {
+        if (loaded && step < 5) saveWizardDraft(step, config);
+    }, [loaded, step, config]);
 
     // Load available languages and models when reaching local AI step
     useEffect(() => {
+        if (step !== 3) return;
+        const request = beginRead('catalog');
+        if (!request) return;
         const loadModelsAndLanguages = async () => {
             try {
-                const res = await axios.get('/api/wizard/local/available-models');
+                const res = await axios.get('/api/wizard/local/available-models', { signal: request.signal, timeout: 15000 });
+                if (!request.isCurrent()) return;
                 if (res.data) {
                     setModelCatalog(res.data.catalog);
                     setAvailableLanguages({
@@ -239,16 +316,20 @@ const Wizard = () => {
                 }
             } catch {
                 // Non-fatal - keep defaults
+            } finally {
+                request.finish();
             }
         };
-        if (step === 3) {
-            loadModelsAndLanguages();
-        }
-    }, [step]);
+        loadModelsAndLanguages();
+        return () => cancelRead('catalog');
+    }, [step, beginRead, cancelRead]);
 
     const refreshModelsStatus = useCallback(async () => {
+        const request = beginRead('models-status');
+        if (!request) return;
         try {
-            const res = await axios.get('/api/wizard/local/models-status');
+            const res = await axios.get('/api/wizard/local/models-status', { signal: request.signal, timeout: 15000 });
+            if (!request.isCurrent()) return;
             setModelsStatus(res.data);
             setLocalAIStatus(prev => ({
                 ...prev,
@@ -260,80 +341,92 @@ const Wizard = () => {
             }));
         } catch {
             // Non-fatal; models status is best-effort (host may not have models dir yet).
+        } finally {
+            request.finish();
         }
-    }, []);
+    }, [beginRead]);
 
-    // Resume download on mount if active
-    useEffect(() => {
-        let mounted = true;
-        const checkActiveDownload = async () => {
-            try {
-                const res = await axios.get('/api/wizard/local/download-progress');
-                if (res.data && res.data.running && mounted) {
-                    setLocalAIStatus(prev => ({
-                        ...prev,
-                        downloading: true,
-                        downloadOutput: res.data.output || []
-                    }));
-
-                    const pollProgress = async () => {
-                        if (!mounted) return;
-                        try {
-                            const pRes = await axios.get('/api/wizard/local/download-progress');
-                            setLocalAIStatus(prev => ({
-                                ...prev,
-                                downloadOutput: pRes.data.output || [],
-                                downloadProgress: pRes.data.running
-                                    ? {
-                                        bytes_downloaded: pRes.data.bytes_downloaded || 0,
-                                        total_bytes: pRes.data.total_bytes || 0,
-                                        percent: pRes.data.percent || 0,
-                                        speed_bps: pRes.data.speed_bps || 0,
-                                        eta_seconds: pRes.data.eta_seconds,
-                                        current_file: pRes.data.current_file || ''
-                                    }
-                                    : null
-                            }));
-
-                            if (pRes.data.completed) {
-                                setLocalAIStatus(prev => ({
-                                    ...prev,
-                                    downloading: false,
-                                    downloadProgress: null
-                                }));
-                                refreshModelsStatus();
-                                return;
-                            }
-                            if (pRes.data.error) {
-                                showToast('Download failed: ' + pRes.data.error, 'error');
-                                setLocalAIStatus(prev => ({ ...prev, downloading: false, downloadProgress: null }));
-                                return;
-                            }
-                            if (pRes.data.running) {
-                                window.setTimeout(pollProgress, 1000);
-                            }
-                        } catch {
-                            window.setTimeout(pollProgress, 2000);
-                        }
-                    };
-                    pollProgress();
-                }
-            } catch {
-                // Ignore errors on mount check
+    const followDownload = useCallback(async (
+        owner: { selection?: string }, jobId?: string, markDownloaded = false
+    ) => {
+        if (downloadOwner.current !== owner) return;
+        const request = beginRead('download');
+        if (!request) return;
+        const current = () => request.isCurrent() && downloadOwner.current === owner;
+        try {
+            const res = await axios.get('/api/wizard/local/download-progress', {
+                params: jobId ? { job_id: jobId } : undefined,
+                signal: request.signal, timeout: 15000
+            });
+            if (!current()) return;
+            setLocalAIStatus(prev => ({
+                ...prev,
+                downloadOutput: res.data.output || [],
+                downloadProgress: res.data.running ? {
+                    bytes_downloaded: res.data.bytes_downloaded || 0,
+                    total_bytes: res.data.total_bytes || 0, percent: res.data.percent || 0,
+                    speed_bps: res.data.speed_bps || 0, eta_seconds: res.data.eta_seconds,
+                    current_file: res.data.current_file || ''
+                } : null
+            }));
+            if (res.data.completed || res.data.error || !res.data.running) {
+                downloadOwner.current = null;
+                setLocalAIStatus(prev => ({
+                    ...prev, downloading: false, downloadProgress: null,
+                    downloadCompleted: res.data.completed && markDownloaded && owner.selection !== undefined ? true : prev.downloadCompleted,
+                    modelsReady: res.data.completed && markDownloaded && owner.selection !== undefined ? true : prev.modelsReady
+                }));
+                if (res.data.completed) void refreshModelsStatus();
+                if (res.data.error) showToast('Download failed: ' + res.data.error, 'error');
+                return;
             }
-        };
-        checkActiveDownload();
-        return () => { mounted = false; };
-    }, [refreshModelsStatus]);
+            downloadTimer.current = later(() => followDownload(owner, jobId, markDownloaded), 1000);
+        } catch {
+            if (current()) downloadTimer.current = later(() => followDownload(owner, jobId, markDownloaded), 2000);
+        } finally {
+            request.finish();
+        }
+    }, [beginRead, later, refreshModelsStatus, showToast]);
+
+    // Resumed jobs have unknown selection provenance; refresh installed files on completion.
+    useEffect(() => {
+        if (!loaded || downloadOwner.current) return;
+        const owner = {};
+        downloadOwner.current = owner;
+        const request = beginRead('download');
+        if (!request) return;
+        setDownloadTracking('checking');
+        void (async () => {
+            try {
+                const res = await axios.get('/api/wizard/local/download-progress', { signal: request.signal, timeout: 15000 });
+                if (!request.isCurrent() || downloadOwner.current !== owner) return;
+                setDownloadTracking('known');
+                if (res.data?.running) {
+                    setLocalAIStatus(prev => ({ ...prev, downloading: true, downloadOutput: res.data.output || [] }));
+                    void followDownload(owner, res.data.job_id);
+                } else downloadOwner.current = null;
+            } catch {
+                if (request.isCurrent() && downloadOwner.current === owner) {
+                    downloadOwner.current = null;
+                    setDownloadTracking('unknown');
+                }
+            } finally { request.finish(); }
+        })();
+    }, [loaded, downloadCheckVersion, beginRead, followDownload]);
 
     const refreshBackendCaps = useCallback(async () => {
+        const request = beginRead('capabilities');
+        if (!request) return;
         try {
-            const res = await axios.get('/api/local-ai/capabilities');
+            const res = await axios.get('/api/local-ai/capabilities', { signal: request.signal, timeout: 15000 });
+            if (!request.isCurrent()) return;
             setBackendCaps(res.data || null);
         } catch {
             // Non-fatal; capabilities are best-effort.
+        } finally {
+            request.finish();
         }
-    }, []);
+    }, [beginRead]);
 
     useEffect(() => {
         if (step !== 3) return;
@@ -342,74 +435,30 @@ const Wizard = () => {
         refreshBackendCaps();
     }, [step, config.provider, refreshModelsStatus, refreshBackendCaps]);
 
-    // Auto-select first available model when language changes
+    // Reconcile only on language/catalog changes, preserving manual backend choices.
     useEffect(() => {
-        if (modelCatalog?.stt?.length > 0) {
-            const sttModels = modelCatalog.stt.filter((m: any) =>
-                m.language === selectedLanguage || m.language === 'multi'
-            );
-            const ttsModels = modelCatalog.tts.filter((m: any) =>
-                m.language === selectedLanguage || m.language === 'multi'
-            );
-
-            // Auto-select first STT model for the language, but preserve the
-            // user's chosen backend.  Only reset backend if no models exist
-            // for the current backend + language combination.
-            if (sttModels.length > 0 && !sttModels.find((m: any) => m.id === config.local_stt_model)) {
-                const currentBackend = (config.local_stt_backend || 'vosk').toLowerCase();
-                const sameBackendModels = sttModels.filter(
-                    (m: any) => (m.backend || '').toLowerCase() === currentBackend
-                );
-                if (sameBackendModels.length > 0) {
-                    // Keep the user's backend, just pick the first model for it
-                    setConfig(prev => ({
-                        ...prev,
-                        local_stt_model: sameBackendModels[0].id,
-                    }));
-                } else {
-                    // No models for current backend in this language; fall back
-                    setConfig(prev => ({
-                        ...prev,
-                        local_stt_model: sttModels[0].id,
-                        local_stt_backend: sttModels[0].backend
-                    }));
+        setConfig(prev => {
+            const updates: Partial<SetupConfig> = {};
+            const stt = (modelCatalog?.stt || []).filter(m => m.language === selectedLanguage || m.language === 'multi');
+            const tts = (modelCatalog?.tts || []).filter(m => m.language === selectedLanguage || m.language === 'multi');
+            if (stt.length && !stt.some(m => m.id === prev.local_stt_model)) {
+                const model = stt.find(m => (m.backend || '').toLowerCase() === (prev.local_stt_backend || 'vosk').toLowerCase()) || stt[0];
+                updates.local_stt_model = model.id;
+                updates.local_stt_backend = model.backend;
+                updates.kroko_embedded = model.backend === 'kroko' && model.embedded === true;
+            }
+            if (tts.length && !tts.some(m => m.id === prev.local_tts_model)) {
+                const model = tts.find(m => (m.backend || '').toLowerCase() === (prev.local_tts_backend || 'piper').toLowerCase()) || tts[0];
+                updates.local_tts_model = model.id;
+                updates.local_tts_backend = model.backend;
+                if (model.backend === 'silero') {
+                    updates.silero_speaker = model.speaker;
+                    const lang = (model.language || '').split('-')[0];
+                    updates.silero_language = lang === 'uk' ? 'ua' : lang;
                 }
             }
-
-            // Auto-select first TTS model for the language (same logic)
-            if (ttsModels.length > 0 && !ttsModels.find((m: any) => m.id === config.local_tts_model)) {
-                const currentTtsBackend = (config.local_tts_backend || 'piper').toLowerCase();
-                const sameTtsBackendModels = ttsModels.filter(
-                    (m: any) => (m.backend || '').toLowerCase() === currentTtsBackend
-                );
-                if (sameTtsBackendModels.length > 0) {
-                    const autoModel = sameTtsBackendModels[0];
-                    setConfig(prev => {
-                        const updates: Partial<SetupConfig> = { local_tts_model: autoModel.id };
-                        if (autoModel.backend === 'silero') {
-                            updates.silero_speaker = autoModel.speaker;
-                            const lang = (autoModel.language || '').split('-')[0];
-                            updates.silero_language = lang === 'uk' ? 'ua' : lang;
-                        }
-                        return { ...prev, ...updates };
-                    });
-                } else {
-                    const autoModel = ttsModels[0];
-                    setConfig(prev => {
-                        const updates: Partial<SetupConfig> = {
-                            local_tts_model: autoModel.id,
-                            local_tts_backend: autoModel.backend,
-                        };
-                        if (autoModel.backend === 'silero') {
-                            updates.silero_speaker = autoModel.speaker;
-                            const lang = (autoModel.language || '').split('-')[0];
-                            updates.silero_language = lang === 'uk' ? 'ua' : lang;
-                        }
-                        return { ...prev, ...updates };
-                    });
-                }
-            }
-        }
+            return Object.keys(updates).length ? { ...prev, ...updates } : prev;
+        });
     }, [selectedLanguage, modelCatalog]);
 
     const pickRecommendedLlmId = () => {
@@ -447,6 +496,7 @@ const Wizard = () => {
     const confirmSkip = async () => {
         try {
             await axios.post('/api/wizard/skip');
+            clearWizardDraft();
             navigate('/');
         } catch (err: any) {
             showToast('Failed to skip setup: ' + err.message, 'error');
@@ -544,123 +594,86 @@ const Wizard = () => {
     };
 
     const startLocalAIServer = useCallback(async () => {
-        if (startingLocalServer) return;
+        if (!isMounted() || serverSubmitting.current) return;
+        serverSubmitting.current = true;
+        const owner = {};
+        serverOwner.current = owner;
+        clearLater(serverTimer.current);
+        cancelRead('server-logs');
+        const current = () => isMounted() && serverOwner.current === owner;
         setStartingLocalServer(true);
-
-        localServerPollRef.current.cancelled = false;
-        localServerPollRef.current.timeouts.forEach((id) => clearTimeout(id));
-        localServerPollRef.current.timeouts = [];
-
-        setLocalAIStatus((prev) => ({ ...prev, serverStarted: true, serverReady: false, serverLogs: ['Starting container...'] }));
-
+        setLocalAIStatus(prev => ({ ...prev, serverStarted: true, serverReady: false, serverLogs: ['Starting container...'] }));
         let isBuilding = false;
         try {
+            // The accepted server operation continues even if this view is left.
             const res = await axios.post('/api/wizard/local/start-server');
-            if (!res.data.success) {
-                throw new Error(res.data.message || 'Failed to start local_ai_server');
-            }
-            // Record startedAt AFTER the blocking POST request completes
-            localServerPollRef.current.startedAt = Date.now();
-
-            // AAVA-177: Backend signals when a full image build was kicked off
+            if (!current()) return;
+            if (!res.data.success) throw new Error(res.data.message || 'Failed to start local_ai_server');
             isBuilding = !!res.data.building;
-            if (isBuilding) {
-                setLocalAIStatus((prev) => ({
-                    ...prev,
-                    serverLogs: ['Building Docker image (this can take 10-60 minutes for GPU builds)...'],
-                }));
-            }
+            if (isBuilding) setLocalAIStatus(prev => ({ ...prev, serverLogs: ['Building Docker image (this can take 10-60 minutes for GPU builds)...'] }));
         } catch (err: any) {
-            setLocalAIStatus((prev) => ({ ...prev, serverStarted: false, serverReady: false }));
-            showToast(err?.response?.data?.message || err?.message || 'Failed to start local_ai_server', 'error');
-            throw err;
+            if (current()) {
+                serverOwner.current = null;
+                setLocalAIStatus(prev => ({ ...prev, serverStarted: false, serverReady: false }));
+                showToast(err?.response?.data?.message || err?.message || 'Failed to start local_ai_server', 'error');
+            }
+            return;
         } finally {
-            setStartingLocalServer(false);
+            serverSubmitting.current = false;
+            if (isMounted()) setStartingLocalServer(false);
         }
-
-        // AAVA-177: Timeout tiers:
-        //   60 min  — Docker image build (isBuilding)
-        //   10 min  — First-run HuggingFace model download (bumped dynamically when detected)
-        //    2 min  — Normal container startup (pre-downloaded models)
-        const NORMAL_TIMEOUT_MS   = 120_000;
-        const DOWNLOAD_TIMEOUT_MS = 600_000;
-        const BUILD_TIMEOUT_MS    = 3_600_000;
-        // Use a ref so the active timeout ceiling can be raised mid-poll without
-        // restarting the loop (e.g. when a model download is detected on the first tick).
-        const effectiveTimeoutRef = { current: isBuilding ? BUILD_TIMEOUT_MS : NORMAL_TIMEOUT_MS };
-
+        // Timeout starts after the blocking POST: normal 2m, model download 10m, image build 60m.
+        const startedAt = Date.now();
+        let timeout = isBuilding ? 3_600_000 : 120_000;
         const pollLogs = async () => {
-            if (localServerPollRef.current.cancelled) return;
-            const startedAt = localServerPollRef.current.startedAt || Date.now();
-            const elapsed = Date.now() - startedAt;
-            if (elapsed >= effectiveTimeoutRef.current) {
-                setLocalAIStatus((prev) => ({
-                    ...prev,
-                    serverLogs: [...prev.serverLogs, "Polling timed out after maximum wait time."],
-                }));
+            if (!current()) return;
+            if (Date.now() - startedAt >= timeout) {
+                serverOwner.current = null;
+                setLocalAIStatus(prev => ({ ...prev, serverStarted: false, serverReady: false,
+                    serverLogs: [...prev.serverLogs, 'Polling timed out after maximum wait time.'] }));
+                showToast('Local AI readiness polling timed out. Check server status before retrying.', 'warning');
                 return;
             }
+            const request = beginRead('server-logs');
+            if (!request) return;
             try {
-                const logRes = await axios.get('/api/wizard/local/server-logs');
-                // If the server reports an active model download, bump the ceiling to
-                // 10 minutes so large HuggingFace downloads (distil-large-v3, turbo,
-                // large-v3, etc.) aren't cut off by the normal 2-minute window.
-                if (logRes.data.downloading && !isBuilding) {
-                    effectiveTimeoutRef.current = DOWNLOAD_TIMEOUT_MS;
-                }
-                if (!localServerPollRef.current.cancelled) {
-                    setLocalAIStatus((prev) => ({
-                        ...prev,
-                        serverLogs: logRes.data.downloading && !prev.serverLogs.includes("⬇️ Downloading model from HuggingFace, please wait…")
-                            ? [...(logRes.data.logs || []), "⬇️ Downloading model from HuggingFace, please wait…"]
-                            : logRes.data.logs || [],
-                        serverReady: logRes.data.ready,
-                        serverPhase: logRes.data.phase || (logRes.data.ready ? 'running' : 'starting')
-                    }));
-                }
-                if (!logRes.data.ready) {
-                    const id = window.setTimeout(pollLogs, 2000);
-                    localServerPollRef.current.timeouts.push(id);
-                }
+                const res = await axios.get('/api/wizard/local/server-logs', { signal: request.signal, timeout: 15000 });
+                if (!current() || !request.isCurrent()) return;
+                if (res.data.downloading && !isBuilding) timeout = 600_000;
+                setLocalAIStatus(prev => ({
+                    ...prev,
+                    serverLogs: res.data.downloading ? [...(res.data.logs || []), '⬇️ Downloading model from HuggingFace, please wait…'] : res.data.logs || [],
+                    serverReady: !!res.data.ready,
+                    serverPhase: res.data.phase || (res.data.ready ? 'running' : 'starting')
+                }));
+                if (!res.data.ready) serverTimer.current = later(pollLogs, 2000);
             } catch {
-                const id = window.setTimeout(pollLogs, 3000);
-                localServerPollRef.current.timeouts.push(id);
-            }
+                if (current() && request.isCurrent()) serverTimer.current = later(pollLogs, 3000);
+            } finally { request.finish(); }
         };
-        pollLogs();
-    }, [startingLocalServer]);
+        void pollLogs();
+    }, [isMounted, clearLater, cancelRead, beginRead, later, showToast]);
 
+    // One automatic attempt per completion view; a failure requires operator retry.
     useEffect(() => {
-        return () => {
-            localServerPollRef.current.cancelled = true;
-            localServerPollRef.current.timeouts.forEach((id) => clearTimeout(id));
-            localServerPollRef.current.timeouts = [];
-        };
-    }, []);
-
-    // Fully Local: auto-start local_ai_server on completion (after models are present).
-    useEffect(() => {
-        if (step !== 5) return;
-        if (config.provider !== 'local') return;
+        if (step !== 5 || config.provider !== 'local' || autoStartAttempted.current) return;
         if (localAIStatus.serverStarted || startingLocalServer) return;
         if (!localAIStatus.modelsReady && !localAIStatus.downloadCompleted) return;
-
-        startLocalAIServer().catch((err: any) => {
-            showToast(err?.response?.data?.message || err?.message || 'Failed to start local_ai_server', 'error');
-        });
-    }, [
-        step,
-        config.provider,
-        localAIStatus.serverStarted,
-        localAIStatus.modelsReady,
-        localAIStatus.downloadCompleted,
-        startingLocalServer,
-        startLocalAIServer
-    ]);
+        autoStartAttempted.current = true;
+        void startLocalAIServer();
+    }, [step, config.provider, localAIStatus.serverStarted, localAIStatus.modelsReady,
+        localAIStatus.downloadCompleted, startingLocalServer, startLocalAIServer]);
 
     const startSelectedModelsDownload = async (
         options: { skipLlmDownload?: boolean; markDownloaded?: boolean } = {}
     ) => {
+        if (!isMounted() || downloadSubmitting.current || downloadOwner.current || localDownloadBusy) return;
+        downloadSubmitting.current = true;
+        const owner = { selection };
+        downloadOwner.current = owner;
+        clearLater(downloadTimer.current);
+        cancelRead('download');
+        const current = () => isMounted() && downloadOwner.current === owner;
         const skipLlmDownload = !!options.skipLlmDownload;
         const markDownloaded = options.markDownloaded !== false;
 
@@ -696,58 +709,17 @@ const Wizard = () => {
                 skip_llm_download: skipLlmDownload
             });
 
-            const jobId = startRes.data?.job_id;
-            const diskWarning = startRes.data?.disk_warning;
-            if (diskWarning) showToast(diskWarning, 'warning');
-
-            const pollProgress = async () => {
-                try {
-                    const res = await axios.get('/api/wizard/local/download-progress', {
-                        params: jobId ? { job_id: jobId } : undefined
-                    });
-                    setLocalAIStatus(prev => ({
-                        ...prev,
-                        downloadOutput: res.data.output || [],
-                        downloadProgress: res.data.running
-                            ? {
-                                bytes_downloaded: res.data.bytes_downloaded || 0,
-                                total_bytes: res.data.total_bytes || 0,
-                                percent: res.data.percent || 0,
-                                speed_bps: res.data.speed_bps || 0,
-                                eta_seconds: res.data.eta_seconds,
-                                current_file: res.data.current_file || ''
-                            }
-                            : null
-                    }));
-
-                    if (res.data.completed) {
-                        setLocalAIStatus(prev => ({
-                            ...prev,
-                            downloading: false,
-                            downloadCompleted: markDownloaded ? true : prev.downloadCompleted,
-                            modelsReady: markDownloaded ? true : prev.modelsReady,
-                            downloadProgress: null
-                        }));
-                        refreshModelsStatus();
-                        return;
-                    }
-                    if (res.data.error) {
-                        showToast('Download failed: ' + res.data.error, 'error');
-                        setLocalAIStatus(prev => ({ ...prev, downloading: false, downloadProgress: null }));
-                        return;
-                    }
-                    if (res.data.running) {
-                        setTimeout(pollProgress, 1000);
-                    }
-                } catch {
-                    setTimeout(pollProgress, 2000);
-                }
-            };
-            pollProgress();
+            if (!current()) return;
+            if (startRes.data?.disk_warning) showToast(startRes.data.disk_warning, 'warning');
+            void followDownload(owner, startRes.data?.job_id, markDownloaded);
         } catch (err: any) {
-            showToast('Failed to start download: ' + (err.response?.data?.detail || err.message), 'error');
-            setLocalAIStatus(prev => ({ ...prev, downloading: false, downloadProgress: null }));
-        }
+            if (current()) {
+                downloadOwner.current = null;
+                setDownloadTracking('unknown');
+                showToast('Failed to start download: ' + (err.response?.data?.detail || err.message), 'error');
+                setLocalAIStatus(prev => ({ ...prev, downloading: false, downloadProgress: null }));
+            }
+        } finally { downloadSubmitting.current = false; }
     };
 
     const localHybridSelectedSttModel = (modelCatalog?.stt || []).find((m: any) => m.id === config.local_stt_model);
@@ -792,6 +764,8 @@ const Wizard = () => {
         : localHybridTtsNeedsDownload && !localHybridTtsInstalled;
 
     const handleNext = async () => {
+        if (loadError) return;
+        if (step === 4 && (localDownloadBusy || downloadOwner.current || downloadSubmitting.current)) return;
 
         // Basic required-field validation for non-technical users
         if (step === 4) {
@@ -800,8 +774,11 @@ const Wizard = () => {
             if (!config.asterisk_username) missing.push('ARI username');
             if (!config.asterisk_password) missing.push('ARI password');
 
+            if (config.deployment_topology === 'remote' && config.audio_transport !== 'websocket' && !config.media_advertise_host) {
+                missing.push('AVA media IPv4 address reachable from Asterisk');
+            }
             // Require server IP when using hostname (for RTP security)
-            if (isUsingHostname && !config.asterisk_server_ip) {
+            if (isUsingHostname && config.audio_transport === 'externalmedia' && !config.asterisk_server_ip) {
                 missing.push('Asterisk Server IP (required when using hostname)');
             }
 
@@ -1012,6 +989,7 @@ const Wizard = () => {
             setLoading(true);
             try {
                 await axios.post('/api/wizard/save', config);
+                clearWizardDraft();
 
                 // Check engine status for completion step
                 try {
@@ -1071,22 +1049,22 @@ const Wizard = () => {
 
     return (
         <div className="min-h-screen bg-background flex items-center justify-center p-4">
-            <div className="max-w-3xl w-full bg-card border border-border rounded-lg shadow-lg p-8">
-                <div className="mb-8 flex justify-between items-start">
-                    <div>
+            <div className="max-w-3xl w-full bg-card border border-border rounded-lg shadow-lg p-4 sm:p-8">
+                <div className="mb-8 flex justify-between items-start gap-3">
+                    <div className="min-w-0 flex-1">
                         <h1 className="text-3xl font-bold text-foreground mb-2">Setup Wizard</h1>
-                        <div className="flex items-center space-x-2 text-sm text-muted-foreground overflow-x-auto">
+                        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                             <span className={step >= 1 ? "text-primary font-medium whitespace-nowrap" : "whitespace-nowrap"}>1. Welcome</span>
                             <span>&rarr;</span>
                             <span className={step >= 2 ? "text-primary font-medium whitespace-nowrap" : "whitespace-nowrap"}>2. Provider</span>
                             <span>&rarr;</span>
                             <span className={step >= 3 ? "text-primary font-medium whitespace-nowrap" : "whitespace-nowrap"}>3. API Keys</span>
                             <span>&rarr;</span>
-                            <span className={step >= 4 ? "text-primary font-medium whitespace-nowrap" : "whitespace-nowrap"}>4. Config</span>
+                            <span className={step >= 4 ? "text-primary font-medium whitespace-nowrap" : "whitespace-nowrap"}>4. Asterisk &amp; Agent</span>
                             {step === 5 && (
                                 <>
                                     <span>&rarr;</span>
-                                    <span className="text-primary font-medium whitespace-nowrap">5. Done</span>
+                                    <span className="text-primary font-medium whitespace-nowrap">5. First call</span>
                                 </>
                             )}
                         </div>
@@ -1104,16 +1082,18 @@ const Wizard = () => {
                 </div>
 
 
+                {resumedDraft && step < 5 && <p role="status" className="text-sm mb-4">Your choices were restored for this tab. Unsaved passwords and API keys must be entered again.</p>}
+                {loadError && <div role="alert" className="p-4 border rounded mb-4">Saved settings could not be loaded. Check the Admin UI connection and permissions before saving. <button onClick={() => window.location.reload()} className="underline">Retry</button></div>}
                 {step === 1 && (
                     <div className="space-y-6">
                         <div className="prose dark:prose-invert">
                             <p className="text-lg">Welcome to the Asterisk AI Voice Agent setup.</p>
-                            <p>This wizard will help you configure the essential settings to get your agent up and running in minutes.</p>
+                            <p>This wizard guides you through provider settings, connecting Asterisk, and verifying your first call.</p>
                             <div className="bg-muted p-4 rounded-lg">
                                 <h3 className="font-medium mb-2">You will need:</h3>
                                 <ul className="list-disc list-inside space-y-1">
-                                    <li>API Keys (OpenAI, Deepgram, or Google)</li>
-                                    <li>Asterisk Connection Details (Host, Username, Password)</li>
+                                    <li>An API key for your chosen cloud provider, or sufficient disk/RAM for local models</li>
+                                    <li>Asterisk ARI credentials and access to edit PBX routing (a phone for the test call)</li>
                                 </ul>
                             </div>
                         </div>
@@ -1322,7 +1302,7 @@ const Wizard = () => {
                                                     </option>
                                                 </select>
                                                 {/* Rebuild / GPU warning for non-default STT backends */}
-                                                {['faster_whisper', 'whisper_cpp'].includes(config.local_stt_backend) && (
+                                                {['faster_whisper', 'whisper_cpp'].includes(config.local_stt_backend ?? '') && (
                                                     <div className="mt-1.5 text-xs space-y-1">
                                                         {!localAIStatus.gpuDetected && (
                                                             <p className="text-amber-600 dark:text-amber-400">
@@ -1440,7 +1420,7 @@ const Wizard = () => {
                                                             startSelectedModelsDownload({ skipLlmDownload: true, markDownloaded: false })
                                                         }
                                                         className="px-3 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700"
-                                                        disabled={localAIStatus.downloading}
+                                                        disabled={localDownloadBusy}
                                                     >
                                                         Download
                                                     </button>
@@ -1591,7 +1571,7 @@ const Wizard = () => {
                                                             startSelectedModelsDownload({ skipLlmDownload: true, markDownloaded: false })
                                                         }
                                                         className="px-3 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700"
-                                                        disabled={localAIStatus.downloading}
+                                                        disabled={localDownloadBusy}
                                                     >
                                                         Download
                                                     </button>
@@ -1700,7 +1680,7 @@ const Wizard = () => {
                                                         startSelectedModelsDownload({ skipLlmDownload: true, markDownloaded: false })
                                                     }
                                                     className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
-                                                    disabled={localAIStatus.downloading}
+                                                    disabled={localDownloadBusy}
                                                 >
                                                     {localAIStatus.downloading ? 'Downloading…' : 'Download Selected Models'}
                                                 </button>
@@ -2621,7 +2601,7 @@ const Wizard = () => {
                                             </div>
                                             <button
                                                 onClick={() => startSelectedModelsDownload()}
-                                                disabled={localAIStatus.downloading || localAIStatus.downloadCompleted}
+                                                disabled={localDownloadBusy || localAIStatus.downloadCompleted}
                                                 className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
                                             >
                                                 {localAIStatus.downloading ? (
@@ -2709,6 +2689,27 @@ const Wizard = () => {
                 {step === 4 && (
                     <div className="space-y-4">
                         <h2 className="text-xl font-semibold mb-4">Agent Configuration</h2>
+                        <div className="rounded-lg border p-4 space-y-3">
+                            <label className="block text-sm font-medium">Where is Asterisk?
+                                <select aria-label="Deployment topology" className="block w-full p-2 mt-1 border rounded bg-background" value={config.deployment_topology} onChange={e => setConfig({ ...config, deployment_topology: e.target.value as 'same_host' | 'remote' })}>
+                                    <option value="same_host">On the same machine as AVA</option>
+                                    <option value="remote">On a separate machine</option>
+                                </select>
+                            </label>
+                            <p className="text-xs text-muted-foreground">Same-machine setup uses loopback for media. If Asterisk runs on another machine, choose “On a separate machine” and enter AVA&apos;s reachable media address, even when the ARI connection test passes. A LAN address can also belong to this machine; choose the actual deployment location.</p>
+                            <label className="block text-sm font-medium">Audio transport
+                                <select aria-label="Audio transport" className="block w-full p-2 mt-1 border rounded bg-background" value={config.audio_transport} onChange={e => setConfig({ ...config, audio_transport: e.target.value as SetupConfig['audio_transport'] })}>
+                                    <option value="audiosocket">AudioSocket (TCP)</option>
+                                    <option value="externalmedia">ExternalMedia (RTP/UDP)</option>
+                                    {config.audio_transport === 'websocket' && <option value="websocket">Existing authenticated WebSocket setup</option>}
+                                </select>
+                            </label>
+                            {config.deployment_topology === 'remote' && config.audio_transport !== 'websocket' && <label className="block text-sm font-medium">AVA media IPv4 address reachable from Asterisk
+                                <input aria-label="AVA media IPv4 address" className="block w-full p-2 mt-1 border rounded bg-background" value={config.media_advertise_host || ''} onChange={e => setConfig({ ...config, media_advertise_host: e.target.value })} placeholder="e.g. 192.0.2.20" />
+                                <span className="text-xs text-muted-foreground">This is the AVA machine&apos;s LAN/VPN address, not the PBX address. The media listener will bind to all IPv4 interfaces; firewall it to the PBX only. ARI tests check call control, not two-way audio.</span>
+                            </label>}
+                            {config.audio_transport === 'websocket' && <p className="text-sm">Existing WebSocket authentication and listener settings are preserved. Manage them under Advanced Settings → Audio Transport.</p>}
+                        </div>
                         <div className="grid grid-cols-2 gap-4">
                             <div className="space-y-2">
                                 <div className="flex items-center gap-1.5">
@@ -2744,7 +2745,7 @@ const Wizard = () => {
                                                 <strong>ARI Username</strong> — the user defined in <code>ari.conf</code> on the Asterisk server.
                                                 <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                                     <li>Default in many configs is <code>asterisk</code></li>
-                                                    <li>Must have <code>read = all</code> and <code>write = all</code></li>
+                                                    <li>Must have <code>read_only = no</code></li>
                                                 </ul>
                                             </>
                                         }
@@ -2847,7 +2848,7 @@ const Wizard = () => {
                         </div>
 
                         {/* Show Server IP field when using hostname for RTP security */}
-                        {isUsingHostname && (
+                        {isUsingHostname && config.audio_transport === 'externalmedia' && (
                             <div className="p-4 rounded-md border border-yellow-500/50 bg-yellow-500/10">
                                 <div className="flex items-start gap-2 mb-3">
                                     <AlertTriangle className="w-5 h-5 text-yellow-500 mt-0.5" />
@@ -3053,7 +3054,7 @@ const Wizard = () => {
                 {step === 5 && (
                     <div className="space-y-6 text-center">
                         {/* Show different header based on local server readiness */}
-                        {config.provider === 'local' && !localAIStatus.serverReady ? (
+                        {config.provider === 'local' && (startingLocalServer || localAIStatus.serverStarted) && !localAIStatus.serverReady ? (
                             <>
                                 <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
                                     <Loader2 className="w-8 h-8 animate-spin" />
@@ -3070,37 +3071,12 @@ const Wizard = () => {
                                 <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-4">
                                     <CheckCircle className="w-8 h-8" />
                                 </div>
-                                <h2 className="text-2xl font-bold">Setup Complete!</h2>
+                                <h2 className="text-2xl font-bold">Configuration saved</h2>
                                 <p className="text-muted-foreground">
-                                    Your AI Agent is configured and ready.
+                                    Next, start or apply the engine, connect Asterisk, and verify your first call.
                                 </p>
                             </>
                         )}
-
-                        {/* Next steps signpost — Tools.
-                            The wizard configures providers and base settings, but in-call
-                            capabilities (calendar booking, transfers, voicemail, post-call
-                            email summaries, MCP tools) are configured separately on the
-                            Tools page. Without this signpost, first-time users finish the
-                            wizard and don't realize there's another configuration surface
-                            they need to visit. */}
-                        <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-200 dark:border-blue-800 text-left">
-                            <h3 className="font-semibold mb-2 flex items-center text-blue-800 dark:text-blue-300">
-                                <Wrench className="w-4 h-4 mr-2" />
-                                Next: configure Tools (optional)
-                            </h3>
-                            <p className="text-sm text-blue-700 dark:text-blue-400 mb-2">
-                                In-call capabilities — Google Calendar booking, blind/attended transfers,
-                                live agent escalation, voicemail, post-call email summaries, MCP tools —
-                                are configured separately under <strong>Tools</strong>.
-                            </p>
-                            <Link
-                                to="/tools"
-                                className="inline-flex items-center text-sm text-blue-700 dark:text-blue-400 hover:underline font-medium"
-                            >
-                                Open Tools →
-                            </Link>
-                        </div>
 
                         {/* Local AI Server Setup - Only for Local provider */}
                         {config.provider === 'local' && (
@@ -3129,13 +3105,7 @@ const Wizard = () => {
 
                                     {!localAIStatus.serverStarted ? (
                                         <button
-                                            onClick={async () => {
-                                                try {
-                                                    await startLocalAIServer();
-                                                } catch (err: any) {
-                                                    showToast(err?.response?.data?.message || err?.message || 'Failed to start local_ai_server', 'error');
-                                                }
-                                            }}
+                                            onClick={() => void startLocalAIServer()}
                                             disabled={startingLocalServer}
                                             className="w-full px-4 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center"
                                         >
@@ -3203,6 +3173,10 @@ const Wizard = () => {
                                                     // Update progress from response
                                                     if (res.data.steps) {
                                                         setEngineProgress({ steps: res.data.steps, currentStep: '' });
+                                                    }
+                                                    if (res.data.started) {
+                                                        const status = await axios.get('/api/wizard/engine-status');
+                                                        setEngineStatus({ ...status.data, checked: true });
                                                     }
                                                     if (res.data.success) {
                                                         setEngineStatus({ ...engineStatus, running: true, exists: true });
@@ -3345,23 +3319,7 @@ const Wizard = () => {
                                     </div>
                                 )}
 
-                                {/* Dialplan for Local */}
-                                {localAIStatus.serverReady && engineStatus.running && (
-                                    <div className="bg-muted p-4 rounded-lg">
-                                        <h3 className="font-semibold mb-2 flex items-center">
-                                            <Terminal className="w-4 h-4 mr-2" />
-                                            Asterisk Dialplan for Local Provider
-                                        </h3>
-                                        <pre className="bg-black text-green-400 p-3 rounded-md overflow-x-auto text-xs font-mono">
-                                            {`[from-ai-agent-local]
-exten => s,1,NoOp(AI Agent - Local Full)
- same => n,Set(AI_AGENT=default)
- same => n,Set(AI_PROVIDER=local)
- same => n,Stasis(${config.asterisk_app || 'asterisk-ai-voice-agent'})
- same => n,Hangup()`}
-                                        </pre>
-                                    </div>
-                                )}
+
                             </div>
                         )}
 
@@ -3375,13 +3333,8 @@ exten => s,1,NoOp(AI Agent - Local Full)
                                 <p className="text-sm text-blue-700 dark:text-blue-400 mb-4">
                                     {engineStatus.exists
                                         ? "The AI Engine container exists but is not running. Click below to start it."
-                                        : "The AI Engine container needs to be created. Run the command below, then click Start."}
+                                        : "Click Start AI Engine to build and create the container. The first build can take several minutes."}
                                 </p>
-                                {!engineStatus.exists && (
-                                    <pre className="bg-black text-green-400 p-3 rounded-md text-xs font-mono mb-4 overflow-x-auto">
-                                        docker compose up -d ai_engine
-                                    </pre>
-                                )}
                                 <button
                                     onClick={async () => {
                                         setStartingEngine(true);
@@ -3392,6 +3345,10 @@ exten => s,1,NoOp(AI Agent - Local Full)
                                             // Update progress from response
                                             if (res.data.steps) {
                                                 setEngineProgress({ steps: res.data.steps, currentStep: '' });
+                                            }
+                                            if (res.data.started) {
+                                                const status = await axios.get('/api/wizard/engine-status');
+                                                setEngineStatus({ ...status.data, checked: true });
                                             }
                                             if (res.data.success) {
                                                 setEngineStatus({ ...engineStatus, running: true, exists: true });
@@ -3510,49 +3467,23 @@ exten => s,1,NoOp(AI Agent - Local Full)
                             </div>
                         )}
 
-                        {/* Dialplan Section - non-local providers */}
-                        {config.provider !== 'local' && (
-                            <>
-                                <div className="bg-muted p-4 rounded-lg text-left">
-                                    <h3 className="font-semibold mb-2 flex items-center">
-                                        <Terminal className="w-4 h-4 mr-2" />
-                                        Next Step: Update Asterisk Dialplan
-                                    </h3>
-                                    <p className="text-sm text-muted-foreground mb-3">
-                                        Add this to your <code>extensions_custom.conf</code> to route calls to the agent:
-                                    </p>
-                                    <div className="relative group">
-                                        <pre className="bg-black text-green-400 p-4 rounded-md overflow-x-auto text-sm font-mono">
-                                            {nonLocalDialplanSnippet}
-                                        </pre>
-                                        <button
-                                            onClick={() => {
-                                                navigator.clipboard.writeText(nonLocalDialplanSnippet)
-                                                    .then(() => showToast('Copied to clipboard!', 'success'))
-                                                    .catch(() => showToast('Failed to copy to clipboard', 'error'));
-                                            }}
-                                            className="absolute top-2 right-2 p-1 bg-white/10 rounded hover:bg-white/20 text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                                            aria-label="Copy to clipboard"
-                                            title="Copy to clipboard"
-                                        >
-                                            <Copy className="w-4 h-4" />
-                                        </button>
-                                    </div>
-                                </div>
+                        <SetupHandoff />
+                        <button type="button" className="text-sm underline" onClick={() => setStep(4)}>Edit setup settings</button>
+                        <p className="text-xs text-muted-foreground">Existing Agents keep their configured provider and conversation. Edit them in Agents; rerunning setup does not overwrite them.</p>
 
-                                <div className="pt-4">
-                                    <button
-                                        onClick={() => navigate('/')}
-                                        className="w-full px-4 py-3 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 font-medium"
-                                    >
-                                        Go to Dashboard
-                                    </button>
-                                </div>
-                            </>
-                        )}
                     </div>
                 )}
 
+                {downloadTracking !== 'known' ? (
+                    <div role="status" className="mt-4 rounded-md border p-3 text-sm">
+                        {downloadTracking === 'checking' ? 'Checking for an active model download…' : 'Model download status is unknown. Check it before downloading or saving setup.'}
+                        {downloadTracking === 'unknown' && (
+                            <button type="button" className="ml-2 underline" onClick={() => setDownloadCheckVersion(prev => prev + 1)}>Check download status</button>
+                        )}
+                    </div>
+                ) : localAIStatus.downloading && (step !== 3 || !['local', 'local_hybrid'].includes(config.provider)) ? (
+                    <div role="status" className="mt-4 rounded-md border p-3 text-sm">A model download is still applying settings. Wait for it to finish before saving setup.</div>
+                ) : null}
                 <div className="mt-8 flex justify-between">
                     {step > 1 && step < 5 ? (
                         <button
@@ -3568,13 +3499,14 @@ exten => s,1,NoOp(AI Agent - Local Full)
                         <button
                             onClick={handleNext}
                             disabled={
-                                loading ||
+                                !loaded || loadError || loading ||
+                                (step === 4 && localDownloadBusy) ||
                                 (step === 3 &&
                                     ((config.provider === 'local' &&
-                                        (localAIStatus.downloading ||
+                                        (localDownloadBusy ||
                                             (!localAIStatus.downloadCompleted && !!localAIStatus.tier))) ||
                                         (config.provider === 'local_hybrid' &&
-                                            (localAIStatus.downloading || localHybridMissingRequired))))
+                                            (localDownloadBusy || localHybridMissingRequired))))
                             }
                             className="px-4 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 flex items-center disabled:opacity-50 disabled:cursor-not-allowed"
                         >

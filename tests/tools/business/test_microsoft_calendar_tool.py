@@ -3,7 +3,7 @@
 import asyncio
 import copy
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from unittest.mock import Mock, patch
 
@@ -26,6 +26,15 @@ class FakeMicrosoftClient:
         self.events = []
         self.creation_error = None
         self.update_error = None
+        self.update_transform = None
+        self.calendar = {
+            "id": "calendar-a",
+            "canEdit": True,
+            "allowedOnlineMeetingProviders": ["teamsForBusiness"],
+        }
+
+    def get_calendar(self):
+        return copy.deepcopy(self.calendar)
 
     def list_calendar_view(self, start, end):
         def dt(value):
@@ -63,6 +72,20 @@ class FakeMicrosoftClient:
             "@odata.etag": 'W/"version1"',
         }
         self.events.append(event)
+        if kwargs.get("teams"):
+            from src.tools.business.microsoft_teams import teams_body
+
+            event.update(
+                isOnlineMeeting=True,
+                onlineMeetingProvider="teamsForBusiness",
+                onlineMeeting={
+                    "joinUrl": "https://teams.microsoft.com/l/meetup-join/synthetic"
+                },
+            )
+            event["body"] = teams_body(description)
+            event["body"][
+                "content"
+            ] += '<div class="ms-meeting-blob"><a href="https://teams.microsoft.com/l/meetup-join/synthetic">Join meeting</a></div>'
         if self.creation_error:
             raise self.creation_error
         return copy.deepcopy(event)
@@ -79,15 +102,20 @@ class FakeMicrosoftClient:
         self.events = [e for e in self.events if e["id"] != event_id]
         return True
 
-    def get_event(self, event_id):
+    def get_event(self, event_id, **kwargs):
         return next(
             (copy.deepcopy(e) for e in self.events if e["id"] == event_id), None
         )
 
-    def update_event(self, event_id, body, etag=None):
+    def get_owned_event_in_mailbox(self, event_id):
+        return self.get_event(event_id)
+
+    def update_event(self, event_id, body, etag=None, **kwargs):
         self.updated.append((event_id, body, etag))
         event = next(e for e in self.events if e["id"] == event_id)
         event.update(copy.deepcopy(body))
+        if self.update_transform:
+            self.update_transform(event)
         if self.update_error:
             raise self.update_error
         return copy.deepcopy(event)
@@ -338,6 +366,602 @@ def booking(**kwargs):
     }
 
 
+@pytest.fixture
+def teams_booking(ms_config):
+    ms_config.update(teams_enabled=True, invitations_enabled=True)
+    return booking(
+        booking_confirmed=True,
+        invitation_confirmed=True,
+        attendee_emails=["caller@example.com"],
+        caller_name="Example Caller",
+        meeting_purpose="Service consultation",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capabilities", [[], ["skypeForBusiness"], None])
+async def test_teams_unsupported_calendar_never_posts_or_substitutes(
+    ms_context, teams_booking, capabilities
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    fake.calendar["allowedOnlineMeetingProviders"] = capabilities
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        result = await tool.execute(teams_booking, ms_context)
+    assert result["error_code"] == "teams_not_supported"
+    assert not fake.created
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 404, 503])
+async def test_teams_calendar_capability_request_failure_is_not_busy(
+    ms_context, teams_booking, status
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    fake.get_calendar = Mock(
+        side_effect=MicrosoftGraphApiError("synthetic", status=status)
+    )
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        result = await tool.execute(teams_booking, ms_context)
+    assert result["status"] == "error" and result.get("error_code") != "slot_busy"
+    assert not fake.created
+
+
+@pytest.mark.asyncio
+async def test_teams_create_move_cancel_preserves_generated_blob_and_join_link(
+    ms_context, teams_booking
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        created = await tool.execute(teams_booking, ms_context)
+        original = copy.deepcopy(fake.events[0])
+        moved = await tool.execute(
+            {
+                "action": "reschedule_event",
+                "booking_confirmed": True,
+                "start_datetime": "2026-04-29T14:00:00-07:00",
+                "end_datetime": "2026-04-29T14:30:00-07:00",
+            },
+            ms_context,
+        )
+        assert moved["status"] == "success", moved
+        body = fake.events[0]["body"]["content"]
+        assert "14:00" in body and "13:00" not in body
+        assert (
+            body.split('<div class="ms-meeting-blob">')[1]
+            == original["body"]["content"].split('<div class="ms-meeting-blob">')[1]
+        )
+        assert fake.events[0]["onlineMeeting"] == original["onlineMeeting"]
+        assert fake.events[0]["attendees"] == original["attendees"]
+        assert fake.updated[0][2] == original["@odata.etag"]
+        assert "attendees" not in fake.updated[0][1]
+        cancelled = await tool.execute(
+            {"action": "delete_event", "cancellation_confirmed": True}, ms_context
+        )
+    assert created["teams_join_url"] == moved["teams_join_url"]
+    assert created["teams_join_url"] != created["outlook_web_link"] == created["link"]
+    assert created["meeting_status"] == "ready"
+    assert (
+        created["invitation_status"] == "request_accepted"
+        and created["delivery_status"] == "unknown"
+    )
+    assert cancelled["reservation_status"] == "cancelled" and not fake.events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changed", ["body", "join", "provider", "attendees", "time", "recurrence"]
+)
+@pytest.mark.parametrize("action", ["reschedule_event", "delete_event"])
+async def test_teams_external_changes_fail_closed(
+    ms_context, teams_booking, changed, action
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(teams_booking, ms_context)
+        event = fake.events[0]
+        if changed == "body":
+            event["body"]["content"] += "External note"
+        if changed == "join":
+            event["onlineMeeting"]["joinUrl"] += "changed"
+        if changed == "provider":
+            event["onlineMeetingProvider"] = "skypeForBusiness"
+        if changed == "attendees":
+            event["attendees"].append(
+                {"emailAddress": {"address": "other@example.com"}}
+            )
+        if changed == "time":
+            event["start"]["dateTime"] = "2026-04-29T20:01:00+00:00"
+        if changed == "recurrence":
+            event["type"] = "seriesMaster"
+        result = await tool.execute(
+            {
+                "action": action,
+                "booking_confirmed": True,
+                "cancellation_confirmed": True,
+                "start_datetime": "2026-04-29T14:00:00-07:00",
+                "end_datetime": "2026-04-29T14:30:00-07:00",
+            },
+            ms_context,
+        )
+    assert result["error_code"] in {"booking_changed", "unsupported_event"}
+    assert not fake.updated and not fake.deleted
+
+
+@pytest.mark.asyncio
+async def test_teams_lost_creation_response_reconciles_without_authorizing_unknown_body(
+    ms_context, teams_booking
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    fake.creation_error = MicrosoftGraphApiError(
+        "lost response", error_code="graph_unavailable"
+    )
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        uncertain = await tool.execute(teams_booking, ms_context)
+        recovered = await tool.execute(teams_booking, ms_context)
+        refused = await tool.execute(
+            {"action": "delete_event", "cancellation_confirmed": True}, ms_context
+        )
+    assert uncertain["error_code"] == "mutation_uncertain"
+    assert recovered["reconciled"] and recovered["changes_require_staff"]
+    assert recovered["teams_join_url"] and len(fake.created) == 1
+    assert refused["error_code"] == "staff_assistance_required" and not fake.deleted
+
+
+@pytest.mark.asyncio
+async def test_teams_lost_patch_response_reconciles_same_link_and_body(
+    ms_context, teams_booking
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    move = {
+        "action": "reschedule_event",
+        "booking_confirmed": True,
+        "start_datetime": "2026-04-29T14:00:00-07:00",
+        "end_datetime": "2026-04-29T14:30:00-07:00",
+    }
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        created = await tool.execute(teams_booking, ms_context)
+        fake.update_error = MicrosoftGraphApiError(
+            "lost response", error_code="graph_unavailable"
+        )
+        uncertain = await tool.execute(move, ms_context)
+        recovered = await tool.execute(move, ms_context)
+    assert uncertain["error_code"] == "mutation_uncertain"
+    assert (
+        recovered["reconciled"]
+        and recovered["teams_join_url"] == created["teams_join_url"]
+    )
+    assert len(fake.updated) == 1
+
+
+def normalize_teams_response(event):
+    content = event["body"]["content"]
+    if '<div id="ava-booking-details">' in content:
+        content = content.replace(
+            '<div id="ava-booking-details">',
+            "<DIV style='font-family:Calibri' id='ava-booking-details'><span>",
+            1,
+        )
+        content = content.replace("</div>", "</span></DIV>", 1)
+    content = content.replace("<br>", "<BR />").replace("&amp;", "&#38;")
+    content = content.replace('class="ms-meeting-blob"', "class='ms-meeting-blob'")
+    event["body"]["content"] = content
+    event["onlineMeeting"].update(conferenceId=None, phones=[])
+    event["@odata.etag"] = 'W/"normalized-version"'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lost_response", [False, True])
+async def test_teams_normalized_patch_and_retry_use_observed_body_baseline(
+    ms_context, teams_booking, lost_response
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    move = {
+        "action": "reschedule_event",
+        "booking_confirmed": True,
+        "start_datetime": "2026-04-29T14:00:00-07:00",
+        "end_datetime": "2026-04-29T14:30:00-07:00",
+    }
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        created = await tool.execute(
+            {**teams_booking, "confirmed_notes": "Review A & B"}, ms_context
+        )
+        fake.update_transform = normalize_teams_response
+        fake.update_error = (
+            MicrosoftGraphApiError(
+                "lost PATCH response", error_code="graph_unavailable"
+            )
+            if lost_response
+            else None
+        )
+        first = await tool.execute(move, ms_context)
+        if lost_response:
+            assert first["error_code"] == "mutation_uncertain"
+        else:
+            assert first["status"] == "success", first
+        fake.update_error = None
+        retry = await tool.execute(move, ms_context)
+        assert retry["status"] == "success" and retry["reconciled"], retry
+        assert retry["teams_join_url"] == created["teams_join_url"]
+        assert len(fake.updated) == 1
+        moved_again = await tool.execute(
+            {
+                **move,
+                "start_datetime": "2026-04-29T15:00:00-07:00",
+                "end_datetime": "2026-04-29T15:30:00-07:00",
+            },
+            ms_context,
+        )
+        assert moved_again["status"] == "success", moved_again
+        assert fake.updated[-1][2] == 'W/"normalized-version"'
+        cancelled = await tool.execute(
+            {"action": "delete_event", "cancellation_confirmed": True}, ms_context
+        )
+        assert cancelled["reservation_status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "details",
+        "outside",
+        "href",
+        "join",
+        "conference",
+        "attendees",
+        "subject",
+        "time",
+        "organizer",
+        "hidden",
+    ],
+)
+async def test_teams_pending_normalization_does_not_authorize_changed_event(
+    ms_context, teams_booking, changed
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    move = {
+        "action": "reschedule_event",
+        "booking_confirmed": True,
+        "start_datetime": "2026-04-29T14:00:00-07:00",
+        "end_datetime": "2026-04-29T14:30:00-07:00",
+    }
+
+    def changed_response(event):
+        normalize_teams_response(event)
+        if changed == "details":
+            event["body"]["content"] = event["body"]["content"].replace(
+                "14:00", "16:00"
+            )
+        elif changed == "outside":
+            event["body"]["content"] += "External note"
+        elif changed == "href":
+            event["body"]["content"] = event["body"]["content"].replace(
+                'href="https://teams.microsoft.com', 'href="https://other.example'
+            )
+        elif changed == "join":
+            event["onlineMeeting"]["joinUrl"] += "changed"
+        elif changed == "conference":
+            event["onlineMeeting"]["conferenceId"] = "new conference"
+        elif changed == "attendees":
+            event["attendees"].append(
+                {"emailAddress": {"address": "other@example.com"}}
+            )
+        elif changed == "subject":
+            event["subject"] += " external edit"
+        elif changed == "time":
+            event["start"]["dateTime"] = "2026-04-29T23:00:00+00:00"
+        elif changed == "organizer":
+            event["isOrganizer"] = False
+        elif changed == "hidden":
+            event["body"]["content"] = event["body"]["content"].replace(
+                "<span>", '<span style="display:none">'
+            )
+
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(teams_booking, ms_context)
+        fake.update_transform = changed_response
+        first = await tool.execute(move, ms_context)
+        assert first["error_code"] == "mutation_uncertain", first
+        retry = await tool.execute(move, ms_context)
+        assert retry["status"] == "error", retry
+        assert len(fake.updated) == 1 and not fake.deleted
+        replacement = await tool.execute(
+            {**teams_booking, "replacement_confirmed": True}, ms_context
+        )
+        assert replacement["status"] == "error" and len(fake.created) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verification_error", [False, True])
+async def test_teams_incomplete_patch_response_reads_once_and_retains_pending_on_read_error(
+    ms_context, teams_booking, verification_error
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    move = {
+        "action": "reschedule_event",
+        "booking_confirmed": True,
+        "start_datetime": "2026-04-29T14:00:00-07:00",
+        "end_datetime": "2026-04-29T14:30:00-07:00",
+    }
+    original_update, original_get = fake.update_event, fake.get_event
+
+    def incomplete_response(*args, **kwargs):
+        result = original_update(*args, **kwargs)
+        return {"id": result["id"]}
+
+    def read_event(*args, **kwargs):
+        if fake.updated and verification_error:
+            raise MicrosoftGraphApiError(
+                "forbidden after PATCH", status=403, error_code="forbidden_calendar"
+            )
+        return original_get(*args, **kwargs)
+
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(teams_booking, ms_context)
+        fake.update_transform = normalize_teams_response
+        fake.update_event = incomplete_response
+        fake.get_event = Mock(side_effect=read_event)
+        first = await tool.execute(move, ms_context)
+        assert fake.get_event.call_count == 2
+        if verification_error:
+            assert first["error_code"] == "mutation_uncertain"
+        else:
+            assert first["status"] == "success", first
+        fake.get_event = original_get
+        recovered = await tool.execute(move, ms_context)
+        assert recovered["status"] == "success" and recovered["reconciled"], recovered
+        assert len(fake.updated) == 1
+
+
+@pytest.mark.asyncio
+async def test_teams_identical_and_a_b_a_replacements_have_fresh_stable_transactions(
+    ms_context, teams_booking
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        for purpose in [
+            "Service consultation",
+            "Service consultation",
+            "Other consultation",
+            "Service consultation",
+        ]:
+            args = {
+                **teams_booking,
+                "meeting_purpose": purpose,
+                **({"replacement_confirmed": True} if fake.created else {}),
+            }
+            created = await tool.execute(args, ms_context)
+            retry = await tool.execute(args, ms_context)
+            assert retry["event_id"] == created["event_id"] and retry["reconciled"]
+            cancelled = await tool.execute(
+                {"action": "delete_event", "cancellation_confirmed": True}, ms_context
+            )
+            assert cancelled["reservation_status"] == "cancelled"
+    assert len(fake.created) == 4 and not fake.events
+    assert len({item[4]["transaction_id"] for item in fake.created}) == 4
+
+
+@pytest.mark.asyncio
+async def test_teams_pending_join_link_never_reports_ready_or_posts_again(
+    ms_context, teams_booking
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    original = fake.create_event
+
+    def missing_link(*args, **kwargs):
+        result = original(*args, **kwargs)
+        fake.events[0]["onlineMeeting"] = None
+        result["onlineMeeting"] = None
+        return result
+
+    fake.create_event = missing_link
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        created = await tool.execute(teams_booking, ms_context)
+        retry = await tool.execute(teams_booking, ms_context)
+    assert created["reservation_status"] == "created"
+    assert created["status"] == retry["status"] == "error"
+    assert created["meeting_status"] == "pending" and not created["teams_join_url"]
+    assert len(fake.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_teams_late_link_is_read_without_adopting_unobserved_body_changes(
+    ms_context, teams_booking
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    original = fake.create_event
+
+    def pending(*args, **kwargs):
+        result = original(*args, **kwargs)
+        result["onlineMeeting"] = None
+        fake.events[0]["onlineMeeting"] = None
+        return result
+
+    fake.create_event = pending
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        first = await tool.execute(teams_booking, ms_context)
+        fake.events[0]["onlineMeeting"] = {
+            "joinUrl": "https://teams.microsoft.com/l/synthetic"
+        }
+        ready = await tool.execute(teams_booking, ms_context)
+        refused = await tool.execute(
+            {"action": "delete_event", "cancellation_confirmed": True}, ms_context
+        )
+    assert first["meeting_status"] == "pending" and ready["meeting_status"] == "ready"
+    assert ready["changes_require_staff"] and len(fake.created) == 1
+    assert refused["error_code"] == "staff_assistance_required"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 404, 412])
+async def test_teams_rejected_conditional_update_keeps_original_event(
+    ms_context, teams_booking, status
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+
+    def reject(*args, **kwargs):
+        raise MicrosoftGraphApiError(
+            "synthetic rejection",
+            status=status,
+            error_code="booking_changed" if status == 412 else "forbidden_calendar",
+        )
+
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        created = await tool.execute(teams_booking, ms_context)
+        before = copy.deepcopy(fake.events)
+        fake.update_event = reject
+        refused = await tool.execute(
+            {
+                "action": "reschedule_event",
+                "booking_confirmed": True,
+                "start_datetime": "2026-04-29T14:00:00-07:00",
+                "end_datetime": "2026-04-29T14:30:00-07:00",
+            },
+            ms_context,
+        )
+    assert created["status"] == "success" and refused["status"] == "error"
+    assert fake.events == before and not fake.deleted
+
+
+@pytest.mark.asyncio
+async def test_teams_requires_confirmed_email_before_any_graph_write(
+    ms_context, ms_config
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    ms_config["teams_enabled"] = True
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        refused = await tool.execute(booking(booking_confirmed=True), ms_context)
+    assert refused["error_code"] == "teams_attendees_required" and not fake.created
+
+
+@pytest.mark.asyncio
+async def test_teams_multi_booking_and_disabled_mode_remain_independent(
+    ms_context, teams_booking, ms_config
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        first = await tool.execute(teams_booking, ms_context)
+        second = await tool.execute(
+            {
+                **teams_booking,
+                "start_datetime": "2026-04-29T14:00:00-07:00",
+                "end_datetime": "2026-04-29T14:30:00-07:00",
+            },
+            ms_context,
+        )
+        ms_config["teams_enabled"] = False
+        cancelled = await tool.execute(
+            {
+                "action": "delete_event",
+                "event_id": first["event_id"],
+                "cancellation_confirmed": True,
+            },
+            ms_context,
+        )
+        assert cancelled["reservation_status"] == "cancelled"
+        assert [e["id"] for e in fake.events] == [second["event_id"]]
+        ordinary = await tool.execute(
+            {
+                **teams_booking,
+                "start_datetime": "2026-04-29T15:00:00-07:00",
+                "end_datetime": "2026-04-29T15:30:00-07:00",
+            },
+            ms_context,
+        )
+    assert (
+        ordinary["meeting_status"] == "appointment"
+        and ordinary["teams_join_url"] is None
+    )
+    assert "teams" not in fake.created[-1][4]
+
+
+@pytest.mark.asyncio
+async def test_cancellation_requires_verified_absence_before_replacement(
+    ms_context, teams_booking
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    fake.delete_event = Mock(return_value=True)  # Accepted, but still visible.
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(teams_booking, ms_context)
+        uncertain = await tool.execute(
+            {"action": "delete_event", "cancellation_confirmed": True}, ms_context
+        )
+        blocked = await tool.execute(
+            {**teams_booking, "replacement_confirmed": True}, ms_context
+        )
+    assert uncertain["error_code"] == blocked["error_code"] == "mutation_uncertain"
+    assert len(fake.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_uncertain_cancellation_is_not_cleared_by_forbidden_reconciliation_read(
+    ms_context, teams_booking
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    fake.delete_results = [
+        MicrosoftGraphApiError("lost deletion response", error_code="graph_unavailable")
+    ]
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(teams_booking, ms_context)
+        await tool.execute(
+            {"action": "delete_event", "cancellation_confirmed": True}, ms_context
+        )
+        fake.get_event = Mock(
+            side_effect=MicrosoftGraphApiError("forbidden read", status=403)
+        )
+        unresolved = await tool.execute(
+            {"action": "delete_event", "cancellation_confirmed": True}, ms_context
+        )
+        blocked = await tool.execute(
+            {**teams_booking, "replacement_confirmed": True}, ms_context
+        )
+    assert unresolved["error_code"] == blocked["error_code"] == "mutation_uncertain"
+    assert len(fake.created) == len(fake.deleted) == 1
+
+
+@pytest.mark.asyncio
+async def test_teams_restart_does_not_allow_event_id_to_authorize_mutation(
+    ms_context, teams_booking
+):
+    fake = FakeMicrosoftClient()
+    with patch.object(MicrosoftCalendarTool, "_client_for_config", return_value=fake):
+        created = await MicrosoftCalendarTool().execute(teams_booking, ms_context)
+        refused = await MicrosoftCalendarTool().execute(
+            {
+                "action": "delete_event",
+                "event_id": created["event_id"],
+                "cancellation_confirmed": True,
+            },
+            ms_context,
+        )
+    assert refused["error_code"] == "staff_assistance_required" and not fake.deleted
+
+
+@pytest.mark.asyncio
+async def test_event_moved_to_another_calendar_does_not_authorize_replacement(
+    ms_context, teams_booking
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        created = await tool.execute(teams_booking, ms_context)
+        moved_event = copy.deepcopy(fake.events[0])
+        fake.events = []
+        fake.get_owned_event_in_mailbox = Mock(return_value=moved_event)
+        refused = await tool.execute(
+            {
+                "action": "delete_event",
+                "event_id": created["event_id"],
+                "cancellation_confirmed": True,
+            },
+            ms_context,
+        )
+        blocked = await tool.execute(
+            {**teams_booking, "replacement_confirmed": True}, ms_context
+        )
+    assert refused["error_code"] == "booking_changed" and blocked["status"] == "error"
+    assert len(fake.created) == 1 and not fake.deleted
+
+
 def busy_event(
     start="2026-04-29T20:00:00+00:00", end="2026-04-29T20:30:00+00:00", **kwargs
 ):
@@ -349,6 +973,75 @@ def busy_event(
         "showAs": "busy",
         **kwargs,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["freebusy", "title_prefix"])
+@pytest.mark.parametrize("fraction", ["30", "00.000005"])
+@pytest.mark.parametrize(
+    ("end", "expected"),
+    [("10:30:00", []), ("11:00:00", ["2026-04-29T10:30:00+00:00"])],
+)
+async def test_get_free_slots_never_overlaps_subminute_busy_end(
+    ms_context, ms_config, mode, fraction, end, expected
+):
+    tool = MicrosoftCalendarTool()
+    ms_config["accounts"]["default"]["timezone"] = "UTC"
+    ms_config.update(free_prefix="Open" if mode == "title_prefix" else "", busy_prefix="Busy")
+    busy_end = f"2026-04-29T10:00:{fraction}+00:00"
+    range_end = f"2026-04-29T{end}+00:00"
+    fake = FakeMicrosoftClient()
+    fake.events = [
+        busy_event("2026-04-29T09:00:00+00:00", busy_end, subject="Busy meeting")
+    ]
+    if mode == "title_prefix":
+        fake.events.append(busy_event(
+            "2026-04-29T09:00:00+00:00", range_end,
+            id="open-window", subject="Open hours", showAs="free",
+        ))
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        result = await tool.execute(
+            {
+                "action": "get_free_slots",
+                "time_min": "2026-04-29T09:00:00+00:00",
+                "time_max": range_end,
+                "duration": 30,
+            },
+            ms_context,
+        )
+
+    assert result["status"] == "success"
+    assert result["availability_mode"] == mode
+    assert result["slots"] == expected
+    assert result["total_slots_available"] == len(expected)
+    for slot in result["slots_with_end"]:
+        assert datetime.fromisoformat(slot["start"]) >= datetime.fromisoformat(busy_end)
+        assert datetime.fromisoformat(slot["end"]) <= datetime.fromisoformat(range_end)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fraction", ["30", "00.000005"])
+async def test_get_free_slots_rounds_current_time_up(
+    ms_context, ms_config, monkeypatch, fraction
+):
+    tool = MicrosoftCalendarTool()
+    ms_config["accounts"]["default"]["timezone"] = "UTC"
+    now = datetime.fromisoformat(f"2026-04-29T10:00:{fraction}+00:00")
+    monkeypatch.setattr("src.tools.business.microsoft_calendar.utc_now", lambda: now)
+    fake = FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        result = await tool.execute(
+            {
+                "action": "get_free_slots",
+                "time_min": "2026-04-29T09:00:00+00:00",
+                "time_max": "2026-04-29T11:00:00+00:00",
+                "duration": 30,
+            },
+            ms_context,
+        )
+
+    assert result["status"] == "success"
+    assert result["slots"] == ["2026-04-29T10:30:00+00:00"]
 
 
 @pytest.fixture
@@ -527,19 +1220,266 @@ async def test_identical_retry_and_restart_reconcile_without_second_post(phoenix
     assert len(fake.created) == 1
 
 
+def lost_response():
+    return MicrosoftGraphApiError("lost response", error_code="graph_unavailable")
+
+
+class GraphTransactionClient(FakeMicrosoftClient):
+    """Graph's transactionId handling on POST: an identical body returns the
+    existing event as it is now, a different body is a 400. A lost request
+    never reaches the store. A hidden event exists but calendarView omits it;
+    hide_once omits it from the next calendarView read only."""
+
+    def __init__(self):
+        super().__init__()
+        self.lose_requests = 0
+        self.refusal = None
+        self.hidden = set()
+        self.hide_once = set()
+        self.by_transaction = {}
+
+    def list_calendar_view(self, start, end):
+        omitted, self.hide_once = self.hidden | self.hide_once, set()
+        return [
+            e for e in super().list_calendar_view(start, end) if e["id"] not in omitted
+        ]
+
+    def create_event(self, summary, description, start_utc, end_utc, **kwargs):
+        if self.lose_requests:
+            self.lose_requests -= 1
+            raise MicrosoftGraphApiError("timeout", error_code="graph_unavailable")
+        if self.refusal:
+            raise self.refusal
+        sent = (summary, description, start_utc, end_utc, kwargs)
+        transaction = kwargs.get("transaction_id")
+        if transaction in self.by_transaction:
+            first_sent, event_id = self.by_transaction[transaction]
+            self.created.append(sent)
+            if sent != first_sent:
+                raise MicrosoftGraphApiError(
+                    "The TransactionId specified in the request has already been used to create a different event.",
+                    status=400,
+                    payload={"error": {"code": "ErrorDuplicateTransactionId"}},
+                )
+            # Graph's answer for a deleted event is unknown; return its id,
+            # which is the hardest case for the tool.
+            event = next(
+                (e for e in self.events if e["id"] == event_id), {"id": event_id}
+            )
+        else:
+            lost, self.creation_error = self.creation_error, None
+            event = super().create_event(
+                summary, description, start_utc, end_utc, **kwargs
+            )
+            self.creation_error = lost
+            self.by_transaction[transaction] = (sent, event["id"])
+        if self.creation_error:
+            raise self.creation_error
+        return copy.deepcopy(event)
+
+
 @pytest.mark.asyncio
 async def test_unresolved_creation_blocks_changed_retry(phoenix):
-    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
     fake.creation_error = MicrosoftGraphApiError(
         "timeout", error_code="graph_unavailable"
     )
     with patch.object(tool, "_client_for_config", return_value=fake):
         await tool.execute(booking(), phoenix)
-        fake.events.clear()  # no visible reconciliation evidence yet
+        fake.hidden.add(fake.events[0]["id"])  # no visible reconciliation evidence yet
         unresolved = await tool.execute(booking(), phoenix)
         changed = await tool.execute(booking(summary="Different booking"), phoenix)
     assert unresolved["error_code"] == "mutation_uncertain"
-    assert changed["error_code"] == "existing_booking" and len(fake.created) == 1
+    assert changed["error_code"] == "existing_booking" and len(fake.events) == 1
+    first, resent = (call[4]["transaction_id"] for call in fake.created)
+    assert first == resent
+
+
+@pytest.mark.asyncio
+async def test_unlanded_creation_is_resent_and_books(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.lose_requests = 1
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        uncertain = await tool.execute(booking(), phoenix)
+        retry = await tool.execute(booking(), phoenix)
+    assert uncertain["error_code"] == "mutation_uncertain"
+    assert retry["reservation_status"] == "created"
+    assert len(fake.created) == 1 and len(fake.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_resend_of_landed_but_unlisted_creation_returns_same_event(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.creation_error = lost_response()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        uncertain = await tool.execute(booking(), phoenix)
+        fake.hidden.add(fake.events[0]["id"])
+        fake.creation_error = None
+        retry = await tool.execute(booking(), phoenix)
+    assert uncertain["error_code"] == "mutation_uncertain"
+    assert retry["reservation_status"] == "created"
+    assert retry["event_id"] == fake.events[0]["id"]
+    assert len(fake.created) == 2 and len(fake.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_resend_keeps_first_attendee_order(phoenix, ms_config):
+    ms_config["invitations_enabled"] = True
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    args = booking(booking_confirmed=True, invitation_confirmed=True)
+    fake.creation_error = lost_response()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(
+            {**args, "attendee_emails": ["b@example.com", "A@example.com"]}, phoenix
+        )
+        fake.hidden.add(fake.events[0]["id"])
+        fake.creation_error = None
+        retry = await tool.execute(
+            {**args, "attendee_emails": ["a@example.com", "B@example.com"]}, phoenix
+        )
+    assert retry["reservation_status"] == "created", retry
+    assert fake.created[1][4]["attendee_emails"] == ["b@example.com", "A@example.com"]
+    assert len(fake.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_resend_of_moved_event_reports_booking_changed(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.creation_error = lost_response()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(booking(), phoenix)
+        fake.creation_error = None
+        event = fake.events[0]
+        for edge in ("start", "end"):
+            moved = datetime.fromisoformat(event[edge]["dateTime"]) + timedelta(hours=2)
+            event[edge]["dateTime"] = moved.isoformat()
+        retry = await tool.execute(booking(), phoenix)
+    assert retry["error_code"] == "booking_changed"
+    assert len(fake.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_resend_of_deleted_event_stays_uncertain(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.creation_error = lost_response()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(booking(), phoenix)
+        fake.creation_error = None
+        fake.events.clear()
+        retry = await tool.execute(booking(), phoenix)
+    assert retry["error_code"] == "mutation_uncertain" and not fake.events
+
+
+@pytest.mark.asyncio
+async def test_resend_of_cancelled_event_stays_uncertain(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.creation_error = lost_response()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(booking(), phoenix)
+        fake.creation_error = None
+        fake.hidden.add(fake.events[0]["id"])
+        fake.events[0]["isCancelled"] = True
+        retry = await tool.execute(booking(), phoenix)
+    assert retry["error_code"] == "mutation_uncertain"
+    assert len(fake.created) == 2
+
+
+@pytest.mark.asyncio
+async def test_resend_read_back_failure_stays_uncertain(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.creation_error = lost_response()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(booking(), phoenix)
+        fake.creation_error = None
+        fake.hidden.add(fake.events[0]["id"])
+        with patch.object(fake, "get_event", side_effect=lost_response()):
+            retry = await tool.execute(booking(), phoenix)
+    assert retry["error_code"] == "mutation_uncertain"
+    assert len(fake.created) == 2
+
+
+@pytest.mark.asyncio
+async def test_creation_seen_only_by_slot_check_is_uncertain_not_busy(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.creation_error = lost_response()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(booking(), phoenix)
+        fake.creation_error = None
+        fake.hide_once.add(fake.events[0]["id"])
+        retry = await tool.execute(booking(), phoenix)
+        again = await tool.execute(booking(), phoenix)
+    assert retry["error_code"] == "mutation_uncertain"
+    assert again["reconciled"] and len(fake.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_teams_resend_gives_no_meeting_baseline(phoenix, teams_booking):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.creation_error = lost_response()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(teams_booking, phoenix)
+        fake.hidden.add(fake.events[0]["id"])
+        fake.creation_error = None
+        retry = await tool.execute(teams_booking, phoenix)
+    assert retry["changes_require_staff"] is True
+    assert len(fake.created) == 2 and len(fake.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_resolving_a_lost_creation_frees_earlier_booking(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    later = booking(
+        start_datetime="2026-04-29T14:00:00-07:00",
+        end_datetime="2026-04-29T14:30:00-07:00",
+    )
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        first = await tool.execute(booking(), phoenix)
+        cancel = {
+            "action": "delete_event",
+            "cancellation_confirmed": True,
+            "event_id": first["event_id"],
+        }
+        fake.lose_requests = 1
+        await tool.execute(later, phoenix)
+        blocked = await tool.execute(cancel, phoenix)
+        await tool.execute(later, phoenix)
+        cancelled = await tool.execute(cancel, phoenix)
+    assert blocked["error_code"] == "mutation_uncertain"
+    assert cancelled["reservation_status"] == "cancelled"
+    assert len(fake.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_transaction_400_is_uncertain_not_failed(phoenix):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    fake.creation_error = MicrosoftGraphApiError(
+        "The TransactionId specified in the request has already been used to create a different event.",
+        status=400,
+        payload={"error": {"code": "ErrorDuplicateTransactionId"}},
+    )
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        result = await tool.execute(booking(), phoenix)
+        fake.events.clear()
+        fake.creation_error = None
+        other = await tool.execute(booking(summary="Different booking"), phoenix)
+    assert result["error_code"] == "mutation_uncertain"
+    assert other["error_code"] == "existing_booking" and len(fake.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_refused_resend_stays_uncertain(phoenix):
+    tool, fake = MicrosoftCalendarTool(), GraphTransactionClient()
+    fake.lose_requests = 1
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(booking(), phoenix)
+        fake.refusal = MicrosoftGraphApiError(
+            "Forbidden", error_code="forbidden_calendar", status=403
+        )
+        refused = await tool.execute(booking(), phoenix)
+        fake.refusal = None
+        other = await tool.execute(booking(summary="Different booking"), phoenix)
+    assert refused["error_code"] == "mutation_uncertain"
+    assert other["error_code"] == "existing_booking"
 
 
 @pytest.mark.asyncio
@@ -906,6 +1846,12 @@ async def test_provider_to_tool_to_graph_complete_invitation_lifecycle(
             store.clear()
             return io.BytesIO(b"")
         else:
+            if "graph-event" not in store:
+                import urllib.error
+
+                raise urllib.error.HTTPError(
+                    request.full_url, 404, "deleted", {}, io.BytesIO(b"{}")
+                )
             payload = store["graph-event"]
         return io.BytesIO(json.dumps(payload).encode())
 
@@ -960,7 +1906,16 @@ async def test_provider_to_tool_to_graph_complete_invitation_lifecycle(
     assert post["attendees"][0]["emailAddress"]["address"] == "caller@example.com"
     assert "Agreed consultation details." in post["body"]["content"]
     assert "14:00–14:30" in update["body"]["content"] and "attendees" not in update
-    assert all("/calendars/calendar-a/" in url for _, url, _ in requests)
+    assert all(
+        "/calendars/calendar-a/" in url
+        or (
+            method == "GET"
+            and url.startswith(
+                "https://graph.microsoft.com/v1.0/me/events/graph-event?"
+            )
+        )
+        for method, url, _ in requests
+    )
     assert (
         sanitize_tool_result_for_json_string(created, tool_name="microsoft_calendar")[
             "delivery_status"
@@ -1931,3 +2886,321 @@ async def test_reschedule_version_conflict_keeps_original_time_and_clears_pendin
         assert (await tool.execute(args, phoenix))["error_code"] == "booking_changed"
     assert fake.events[0]["start"] == original_start
     assert attempts == [("ms_event_123", 'W/"version1"')]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("externally_deleted", [False, True])
+async def test_confirmed_identical_replacement_has_new_transaction_and_idempotent_retry(
+    phoenix, externally_deleted
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    args = booking(booking_confirmed=True)
+    cancel = {"action": "delete_event", "cancellation_confirmed": True}
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        original = await tool.execute(args, phoenix)
+        if externally_deleted:
+            fake.events.clear()
+        assert (await tool.execute(cancel, phoenix))[
+            "reservation_status"
+        ] == "cancelled"
+        assert (await tool.execute(args, phoenix))["error_code"] == "cancelled_booking"
+        unconfirmed = await tool.execute(
+            {**args, "booking_confirmed": False, "replacement_confirmed": True}, phoenix
+        )
+        assert unconfirmed["error_code"] in {
+            "cancelled_booking",
+            "confirmation_required",
+        }
+        replacement = await tool.execute(
+            {**args, "replacement_confirmed": True}, phoenix
+        )
+        retry = await tool.execute({**args, "replacement_confirmed": True}, phoenix)
+        retry_without_flag = await tool.execute(args, phoenix)
+        assert replacement["reservation_status"] == "created"
+        assert retry["reconciled"] and retry_without_flag["reconciled"]
+        assert original["event_id"] != replacement["event_id"]
+        assert len(fake.events) == 1 and len(fake.created) == 2
+        first_txn = fake.created[0][4]["transaction_id"]
+        second_txn = fake.created[1][4]["transaction_id"]
+        assert first_txn != second_txn
+        # A second cancellation/replacement is a new generation, not a reused Graph transaction.
+        assert (await tool.execute(cancel, phoenix))[
+            "reservation_status"
+        ] == "cancelled"
+        third = await tool.execute({**args, "replacement_confirmed": True}, phoenix)
+        assert third["reservation_status"] == "created"
+        assert len(fake.events) == 1 and len(fake.created) == 3
+        assert fake.created[2][4]["transaction_id"] not in {first_txn, second_txn}
+
+
+@pytest.mark.asyncio
+async def test_replacement_cannot_bypass_uncertain_cancellation(phoenix):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    args = booking(booking_confirmed=True)
+    fake.delete_results = [
+        MicrosoftGraphApiError("synthetic timeout", error_code="graph_unavailable")
+    ]
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(args, phoenix)
+        uncertain = await tool.execute(
+            {"action": "delete_event", "cancellation_confirmed": True}, phoenix
+        )
+        blocked = await tool.execute({**args, "replacement_confirmed": True}, phoenix)
+    assert uncertain["error_code"] == "mutation_uncertain"
+    assert blocked["error_code"] == "mutation_uncertain"
+    assert len(fake.created) == 1 and len(fake.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_confirmed_replacement_timeout_reconciles_without_duplicate(phoenix):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    args = booking(booking_confirmed=True)
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(args, phoenix)
+        await tool.execute(
+            {"action": "delete_event", "cancellation_confirmed": True}, phoenix
+        )
+        fake.creation_error = MicrosoftGraphApiError(
+            "synthetic lost response", error_code="graph_unavailable"
+        )
+        replacement = {**args, "replacement_confirmed": True}
+        uncertain = await tool.execute(replacement, phoenix)
+        reconciled = await tool.execute(replacement, phoenix)
+    assert uncertain["error_code"] == "mutation_uncertain"
+    assert reconciled["reconciled"]
+    assert len(fake.created) == 2 and len(fake.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_replace_email_is_confirmed_and_replacement_failure_is_not_success(
+    phoenix, ms_config
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    ms_config["invitations_enabled"] = True
+    args = booking(booking_confirmed=True)
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(args, phoenix)
+        await tool.execute(
+            {"action": "delete_event", "cancellation_confirmed": True}, phoenix
+        )
+        replacement = {
+            **args,
+            "replacement_confirmed": True,
+            "attendee_emails": ["caller@example.com"],
+            "caller_name": "Example Caller",
+            "meeting_purpose": "Consultation",
+        }
+        assert (await tool.execute(replacement, phoenix))[
+            "error_code"
+        ] == "confirmation_required"
+        fake.creation_error = MicrosoftGraphApiError(
+            "synthetic rejected write", status=403
+        )
+        rejected = await tool.execute(
+            {**replacement, "invitation_confirmed": True}, phoenix
+        )
+    assert rejected["status"] == "error"
+    assert rejected.get("reservation_status") != "created"
+    assert len(fake.deleted) == 1
+
+
+@pytest.mark.asyncio
+async def test_replacement_retry_after_restart_or_wrong_binding_requires_staff(
+    phoenix, ms_config
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    args = booking(booking_confirmed=True)
+    replacement = {**args, "replacement_confirmed": True}
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(args, phoenix)
+        await tool.execute(
+            {"action": "delete_event", "cancellation_confirmed": True}, phoenix
+        )
+        await tool.execute(replacement, phoenix)
+        restarted = MicrosoftCalendarTool()
+        with patch.object(restarted, "_client_for_config", return_value=fake):
+            assert (await restarted.execute(replacement, phoenix))[
+                "error_code"
+            ] == "staff_assistance_required"
+        ms_config["accounts"]["default"]["calendar_id"] = "different-calendar"
+        assert (await tool.execute(replacement, phoenix))[
+            "error_code"
+        ] == "staff_assistance_required"
+    assert len(fake.created) == 2 and len(fake.events) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("externally_deleted", [False, True])
+async def test_cancel_then_replace_with_confirmed_email_has_one_invited_event(
+    phoenix, ms_config, externally_deleted
+):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    ms_config["invitations_enabled"] = True
+    args = booking(booking_confirmed=True)
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(args, phoenix)
+        if externally_deleted:
+            fake.events.clear()
+        assert (
+            await tool.execute(
+                {"action": "delete_event", "cancellation_confirmed": True}, phoenix
+            )
+        )["reservation_status"] == "cancelled"
+        replacement = {
+            **args,
+            "replacement_confirmed": True,
+            "attendee_emails": ["caller@example.com"],
+            "invitation_confirmed": True,
+            "caller_name": "Example Caller",
+            "meeting_purpose": "Consultation",
+        }
+        created = await tool.execute(replacement, phoenix)
+        retry = await tool.execute(replacement, phoenix)
+    assert created["reservation_status"] == "created"
+    assert created["invitation_status"] == "request_accepted"
+    assert created["delivery_status"] == "unknown"
+    assert retry["reconciled"] and retry["event_id"] == created["event_id"]
+    assert len(fake.events) == 1 and len(fake.created) == 2
+    assert fake.events[0]["attendees"] == [
+        {"emailAddress": {"address": "caller@example.com"}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_replacement_a_b_a_never_reuses_cancelled_graph_transaction(phoenix):
+    tool, fake = MicrosoftCalendarTool(), FakeMicrosoftClient()
+    args = booking(booking_confirmed=True)
+    cancel = {"action": "delete_event", "cancellation_confirmed": True}
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        await tool.execute(args, phoenix)
+        await tool.execute(cancel, phoenix)
+        changed = await tool.execute(
+            {**args, "summary": "Changed purpose", "replacement_confirmed": True},
+            phoenix,
+        )
+        assert changed["reservation_status"] == "created"
+        await tool.execute(cancel, phoenix)
+        returned = await tool.execute({**args, "replacement_confirmed": True}, phoenix)
+        retry = await tool.execute({**args, "replacement_confirmed": True}, phoenix)
+    assert returned["reservation_status"] == "created" and retry["reconciled"]
+    assert len(fake.events) == 1 and len(fake.created) == 3
+    transactions = [r[4]["transaction_id"] for r in fake.created]
+    assert len(set(transactions)) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['freebusy', 'title_prefix'])
+@pytest.mark.parametrize('start,first', [('05:00:00', '05:00:00'), ('05:50:00', '06:00:00')])
+async def test_fallback_slots_keep_chronological_first_start_and_elapsed_ends(
+    ms_context, ms_config, monkeypatch, mode, start, first
+):
+    monkeypatch.setattr('src.tools.business.microsoft_calendar.utc_now',
+                        lambda: datetime(2027, 11, 6, tzinfo=timezone.utc))
+    tool = MicrosoftCalendarTool()
+    ms_config['accounts']['default']['timezone'] = 'America/New_York'
+    ms_config.update(working_hours_start=0, working_hours_end=24, working_days=list(range(7)),
+                     max_slots_returned=0, free_prefix='Open' if mode == 'title_prefix' else '')
+    lower = datetime.fromisoformat(f'2027-11-07T{start}+00:00')
+    upper = datetime(2027, 11, 7, 7, 30, tzinfo=timezone.utc)
+    fake = FakeMicrosoftClient()
+    if mode == 'title_prefix':
+        fake.events = [busy_event(lower.isoformat(), upper.isoformat(), subject='Open hours', showAs='free')]
+    with patch.object(tool, '_client_for_config', return_value=fake):
+        offered = await tool.execute({'action': 'get_free_slots', 'time_min': lower.isoformat(),
+                                      'time_max': upper.isoformat(), 'duration': 30}, ms_context)
+    assert offered['status'] == 'success'
+    cursor = datetime.fromisoformat(f'2027-11-07T{first}+00:00')
+    expected = []
+    while cursor + timedelta(minutes=30) <= upper:
+        expected.append(cursor)
+        cursor += timedelta(minutes=30)
+    assert [datetime.fromisoformat(slot).astimezone(timezone.utc) for slot in offered['slots']] == expected
+    for pair in offered['slots_with_end']:
+        start_dt, end_dt = [datetime.fromisoformat(pair[key]).astimezone(timezone.utc) for key in ('start', 'end')]
+        assert end_dt - start_dt == timedelta(minutes=30)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['freebusy', 'title_prefix'])
+@pytest.mark.parametrize('action', ['get_free_slots', 'check_availability'])
+@pytest.mark.parametrize('busy,slot_available', [(None, True), (('05:40:00', '06:05:00'), False),
+                                               (('06:05:00', '06:10:00'), True)])
+async def test_fold_crossing_range_clipping_and_busy_subtraction_use_instants(
+    ms_context, ms_config, monkeypatch, mode, action, busy, slot_available
+):
+    monkeypatch.setattr('src.tools.business.microsoft_calendar.utc_now',
+                        lambda: datetime(2027, 11, 6, tzinfo=timezone.utc))
+    tool = MicrosoftCalendarTool()
+    ms_config['accounts']['default']['timezone'] = 'America/New_York'
+    ms_config.update(working_hours_start=0, working_hours_end=24, working_days=list(range(7)),
+                     max_slots_returned=0, free_prefix='Open' if mode == 'title_prefix' else '')
+    fake = FakeMicrosoftClient()
+    if mode == 'title_prefix':
+        fake.events.append(busy_event('2027-11-07T05:20:00+00:00', '2027-11-07T06:10:00+00:00',
+                                      subject='Open hours', showAs='free'))
+    if busy:
+        fake.events.append(busy_event(f'2027-11-07T{busy[0]}+00:00', f'2027-11-07T{busy[1]}+00:00'))
+    params = ({'time_min': '2027-11-07T01:20:00-04:00', 'time_max': '2027-11-07T01:10:00-05:00', 'duration': 30}
+              if action == 'get_free_slots' else {'start_datetime': '2027-11-07T01:30:00-04:00',
+                                                  'end_datetime': '2027-11-07T01:00:00-05:00'})
+    with patch.object(tool, '_client_for_config', return_value=fake):
+        offered = await tool.execute({'action': action, **params}, ms_context)
+    assert offered['status'] == 'success'
+    if action == 'check_availability':
+        assert offered['available'] is slot_available
+    else:
+        assert offered['slots_with_end'] == ([{'start': '2027-11-07T01:30:00-04:00',
+                                               'end': '2027-11-07T01:00:00-05:00'}] if slot_available else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('busy,available', [(None, True), (('05:40:00', '06:05:00'), False),
+                                           (('06:05:00', '06:10:00'), True)])
+async def test_create_fold_crossing_booking_respects_exact_busy_instants(ms_context, ms_config, monkeypatch, busy, available):
+    for module in ('microsoft_calendar', 'microsoft_booking'):
+        monkeypatch.setattr(f'src.tools.business.{module}.utc_now',
+                            lambda: datetime(2027, 11, 6, tzinfo=timezone.utc))
+    tool = MicrosoftCalendarTool()
+    ms_config['accounts']['default']['timezone'] = 'America/New_York'
+    ms_config.update(enforce_booking_limits=True, working_hours_start=0, working_hours_end=24,
+                     working_days=list(range(7)))
+    fake = FakeMicrosoftClient()
+    if busy:
+        fake.events.append(busy_event(f'2027-11-07T{busy[0]}+00:00', f'2027-11-07T{busy[1]}+00:00'))
+    with patch.object(tool, '_client_for_config', return_value=fake):
+        booked = await tool.execute({'action': 'create_event', 'summary': 'Synthetic DST appointment',
+                                     'start_datetime': '2027-11-07T01:30:00-04:00',
+                                     'end_datetime': '2027-11-07T01:00:00-05:00'}, ms_context)
+    if available:
+        assert booked['status'] == 'success'
+        assert fake.created[0][2:4] == (datetime(2027, 11, 7, 5, 30, tzinfo=timezone.utc),
+                                       datetime(2027, 11, 7, 6, tzinfo=timezone.utc))
+    else:
+        assert booked['error_code'] == 'slot_busy'
+        assert not fake.created
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['freebusy', 'title_prefix'])
+@pytest.mark.parametrize('boundary', ['now', 'horizon'])
+async def test_fold_range_now_and_horizon_clamps_do_not_widen_requested_instants(
+    ms_context, ms_config, monkeypatch, mode, boundary
+):
+    now = (datetime(2027, 11, 7, 6, 5, tzinfo=timezone.utc) if boundary == 'now'
+           else datetime(2027, 11, 6, 6, 30, tzinfo=timezone.utc))
+    monkeypatch.setattr('src.tools.business.microsoft_calendar.utc_now', lambda: now)
+    tool = MicrosoftCalendarTool()
+    ms_config['accounts']['default']['timezone'] = 'America/New_York'
+    ms_config.update(enforce_booking_limits=True, booking_horizon_days=1, working_hours_start=0,
+                     working_hours_end=24, working_days=list(range(7)), max_slots_returned=0,
+                     free_prefix='Open' if mode == 'title_prefix' else '')
+    fake = FakeMicrosoftClient()
+    if mode == 'title_prefix':
+        fake.events.append(busy_event('2027-11-07T05:00:00+00:00', '2027-11-07T07:00:00+00:00',
+                                      subject='Open hours', showAs='free'))
+    upper = '2027-11-07T01:10:00-05:00' if boundary == 'now' else '2027-11-07T01:50:00-04:00'
+    with patch.object(tool, '_client_for_config', return_value=fake):
+        offered = await tool.execute({'action': 'get_free_slots', 'time_min': '2027-11-07T01:20:00-04:00',
+                                      'time_max': upper, 'duration': 30}, ms_context)
+    assert offered['status'] == 'success'
+    assert offered['slots_with_end'] == []

@@ -56,8 +56,7 @@ These are reserved for contributors making their first PR to AVA. If you've alre
 
 ## Branches and Workflow
 
-Start contributions from current upstream `main`. `staging` is used for release
-preparation; the former `develop` contribution workflow is no longer maintained.
+Start contributions from current upstream `main`.
 
 Recommended flow:
 
@@ -67,7 +66,8 @@ Recommended flow:
 4. Include a clear description and testing notes
 5. A maintainer will review, run CI/manual checks, and merge
 
-Release candidates are staged on `staging` for golden baseline validation before being tagged from `main`.
+Validate golden baselines on the exact release candidate from `main` before
+tagging that commit. Follow the [release checklist](docs/RELEASE_CHECKLIST.md).
 
 ## Development Setup
 
@@ -100,7 +100,8 @@ For Local/Hybrid profiles, run `make model-setup` when prompted to download mode
 
 ## Code Style & Quality
 
-- Python: target 3.10+. Keep code readable and well-logged.
+- Use Python 3.11 for the Core Engine requirements and local tests.
+  The CPU and CUDA Local AI images also package Python 3.11.
 - Prefer small, composable functions and clear error handling.
 - Add or update documentation where behavior changes.
 - See [code-style.md](docs/contributing/code-style.md) for details.

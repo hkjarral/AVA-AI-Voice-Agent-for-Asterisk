@@ -1,6 +1,12 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import List, Callable, Dict, Any, Optional
+import time
+import asyncio
+
+from structlog import get_logger
+
+logger = get_logger(__name__)
 
 class AIProviderInterface(ABC):
     """
@@ -12,6 +18,131 @@ class AIProviderInterface(ABC):
         self.on_event = on_event
         self.provider_key: str = self.__class__.__name__
         self.provider_kind: str = self.__class__.__name__
+
+    @property
+    def on_event(self):
+        return getattr(self, "_handoff_callback", None)
+
+    @on_event.setter
+    def on_event(self, callback):
+        from .handoff import HandoffEvidence, EventCallback
+        if not hasattr(self, "_handoff_evidence"):
+            self._handoff_evidence = HandoffEvidence()
+        self._provider_event_callback = callback
+        if callback is None:
+            self._handoff_callback = None
+            return
+        async def wrapped(event):
+            native = getattr(self, "_current_response_id", None)
+            enriched = self._handoff_evidence.event(event, native)
+            if any(key.startswith("_handoff_") for key in enriched):
+                enriched = {key: value for key, value in enriched.items() if not key.startswith("_handoff_")}
+            return await callback(enriched)
+        self._handoff_callback = EventCallback(wrapped, callback)
+
+    async def prepare_handoff_result(self, result, call_id, origin_id=None):
+        action = result.get("deferred_transfer") if isinstance(result, dict) else None
+        if not isinstance(action, dict) or not action.get("handoff") or not self.on_event:
+            return
+        origin = self._handoff_evidence.prepare(call_id, action, origin_id or self._handoff_evidence.state(call_id).get("tool_origin") or getattr(self, "_current_response_id", None))
+        if origin is not None:
+            await self.on_event({"type": "HandoffPrepared", "call_id": call_id,
+                                 "action_id": action["id"], "origin": origin})
+
+    async def handoff_result_sent(self, result, call_id, *, success=True):
+        action = result.get("deferred_transfer") if isinstance(result, dict) else None
+        if not isinstance(action, dict) or not self.on_event:
+            return
+        if not action.get("handoff"):
+            # No announcement bounds the wait for the reply turn that commits
+            # this action, so let the engine time it from here: the model has
+            # the result now. A failed send arms it too, since no reply follows.
+            # Per-call flags live in the handoff evidence, which every provider
+            # resets when a call's session starts and stops.
+            flags = self._handoff_evidence.deferred_flags(call_id)
+            flags["result_sent"] = True
+            await self.on_event({"type": "DeferredTransferArmed", "call_id": call_id,
+                                 "action_id": action.get("id"), "success": success})
+            if flags["caller_speaking"]:
+                await self.emit_caller_speech(call_id, started=True)  # Still talking.
+            return
+        await self.on_event({"type": "HandoffToolResultSent", "call_id": call_id,
+                             "action_id": action["id"], "sent_at": time.monotonic(),
+                             "success": success})
+
+    async def emit_caller_speech(self, call_id, *, started):
+        """Report a provider VAD caller-speech start or end to the engine.
+
+        Only for providers that report both edges; the engine pauses the
+        deferred-transfer silent-reply timer between them. Sent only once this
+        provider has delivered an unannounced deferred-transfer result on the
+        call, so other calls see no new events.
+        """
+        if not call_id or not self.on_event:
+            return
+        evidence = self._handoff_evidence
+        if call_id not in evidence.deferred and not started:
+            return  # Nothing to track or report for this call.
+        flags = evidence.deferred_flags(call_id)
+        flags["caller_speaking"] = bool(started)
+        if not flags["result_sent"]:
+            return
+        event = {
+            "type": "CallerSpeechStarted" if started else "CallerSpeechStopped",
+            "call_id": call_id,
+            "provider": self.provider_event_name(),
+            "vad": True,
+        }
+        try:
+            await self.on_event(event)
+        except Exception:
+            logger.debug("Failed to emit caller speech edge", call_id=call_id, exc_info=True)
+
+    async def complete_handoff_audio(self, call_id, native_id=None):
+        event = {"type": "HandoffAudioComplete", "call_id": call_id}
+        if native_id is not None:
+            event["audio_response_id"] = native_id
+        enriched = self._handoff_evidence.event(event, native_id)
+        if self._handoff_evidence.state(call_id)["active"] and self.on_event:
+            await self.on_event(enriched)
+
+    async def flush_handoff_pacer(self):
+        """Admit the selected response's remaining bytes before sealing it.
+
+        Only used for an opted-in announcement. The transport already paces
+        queued audio; don't leave bytes in a provider pacer after completion.
+        """
+        call_id = getattr(self, "_call_id", None)
+        if not call_id or not self._handoff_evidence.state(call_id)["active"] or not getattr(self, "_egress_pacer_enabled", False):
+            return True
+        self._pacer_running = False
+        task = getattr(self, "_pacer_task", None)
+        if task and not task.done() and task is not asyncio.current_task():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), 0.25)
+            except asyncio.TimeoutError:
+                return False
+        async with self._pacer_lock:
+            tail = bytes(self._outbuf)
+            self._outbuf.clear()
+        if tail:
+            self._in_audio_burst = True
+            await self.on_event({"type": "AgentAudio", "call_id": call_id, "data": tail,
+                                 "encoding": self.config.target_encoding,
+                                 "sample_rate": self.config.target_sample_rate_hz})
+        return True
+
+    def interrupt_handoff(self, call_id):
+        if hasattr(self, "_handoff_evidence"):
+            self._handoff_evidence.turn(call_id, getattr(self, "_current_response_id", None))["interrupted"] = True
+
+    async def handoff_transcript(self, call_id, text, native_id=None):
+        if not hasattr(self, "_handoff_evidence"):
+            return
+        evidence = self._handoff_evidence.transcript(call_id, text, native_id)
+        if self._handoff_evidence.state(call_id)["active"] and self.on_event:
+            await self.on_event({"type": "HandoffTranscript", "call_id": call_id,
+                                 "text": text, "handoff_evidence": evidence})
 
     def set_provider_identity(self, *, provider_key: str, provider_kind: str) -> None:
         self.provider_key = provider_key

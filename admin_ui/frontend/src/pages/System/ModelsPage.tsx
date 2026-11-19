@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useLayoutEffect, useRef } from 'react';
+import { useAsyncScope } from '../../hooks/useAsyncScope';
 import { HardDrive, Download, Trash2, RefreshCw, CheckCircle2, XCircle, Loader2, Mic, Volume2, Brain, AlertTriangle, Cpu, Terminal, Settings, Play, Wrench } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { ConfigCard } from '../../components/ui/ConfigCard';
@@ -61,7 +62,7 @@ interface DownloadProgress {
 }
 
 interface ActiveModels {
-    stt: { backend: string; path: string; loaded: boolean; display?: string; language?: string | null; device?: string | null; compute_type?: string | null; sherpa_model_type?: string | null; tone_decoder_type?: string | null };
+    stt: { backend: string; path: string; loaded: boolean; display?: string; language?: string | null; device?: string | null; compute_type?: string | null; sherpa_model_type?: string | null; sherpa_model_family?: string | null; sherpa_sense_voice_language?: string | null; sherpa_sense_voice_use_itn?: boolean | null; tone_decoder_type?: string | null };
     tts: { backend: string; path: string; loaded: boolean; display?: string };
     llm: {
         path: string;
@@ -94,6 +95,9 @@ interface ActiveModels {
     };
 }
 
+// SenseVoice model directories are auto-detected by local-ai-server; the name is a UI hint only.
+const isSenseVoicePath = (value?: string | null) => /sense[-_]?voice/i.test(value || '');
+
 interface AvailableModels {
     stt: Record<string, { name: string; path: string }[]>;
     tts: Record<string, { name: string; path: string }[]>;
@@ -108,6 +112,7 @@ interface BackendCapabilities {
         whisper_cpp?: { available: boolean; reason?: string };
     };
     tts?: {
+        silero?: { available: boolean; reason?: string };
         melotts?: { available: boolean; reason?: string };
     };
 }
@@ -144,6 +149,14 @@ type ServerStatus = 'connected' | 'degraded' | 'error' | 'loading';
 const ModelsPage = () => {
     const { confirm } = useConfirmDialog();
     const liveStatus = useLiveStatus();
+    const { isMounted, beginRead, cancelRead, later, clearLater, every, clearEvery } = useAsyncScope();
+    const latestLive = useRef({ snapshot: liveStatus.snapshot, usable: !liveStatus.loading && !liveStatus.error });
+    useLayoutEffect(() => {
+        latestLive.current = { snapshot: liveStatus.snapshot, usable: !liveStatus.loading && !liveStatus.error };
+    }, [liveStatus.snapshot, liveStatus.loading, liveStatus.error]);
+    const downloadOwner = useRef<object | null>(null);
+    const downloadTimer = useRef<number | undefined>(undefined);
+
     const [catalog, setCatalog] = useState<{ stt: ModelInfo[]; tts: ModelInfo[]; llm: ModelInfo[] }>({ stt: [], tts: [], llm: [] });
     const [installedModels, setInstalledModels] = useState<InstalledModel[]>([]);
     const [languageNames, setLanguageNames] = useState<Record<string, string>>({});
@@ -162,7 +175,7 @@ const ModelsPage = () => {
     const [serverStatus, setServerStatus] = useState<ServerStatus>('loading');
     const [restarting, setRestarting] = useState(false);
     const [pendingChanges, setPendingChanges] = useState<{ stt?: string; tts?: string; llm?: string }>({});
-    const [pendingSttExtra, setPendingSttExtra] = useState<{ language?: string; device?: string; compute_type?: string; sherpa_model_type?: string; sherpa_vad_model_path?: string; tone_decoder_type?: string; tone_kenlm_path?: string }>({});
+    const [pendingSttExtra, setPendingSttExtra] = useState<{ language?: string; device?: string; compute_type?: string; sherpa_model_type?: string; sherpa_vad_model_path?: string; sherpa_sense_voice_language?: string; sherpa_sense_voice_use_itn?: boolean; tone_decoder_type?: string; tone_kenlm_path?: string }>({});
     const [pendingLlmConfig, setPendingLlmConfig] = useState<{ context?: number; max_tokens?: number }>({});
     const [pendingRuntimeConfig, setPendingRuntimeConfig] = useState<{ enable_filler_audio?: boolean; llm_streaming_tts_overlap?: boolean }>({});
     const [startingServer, setStartingServer] = useState(false);
@@ -202,7 +215,7 @@ const ModelsPage = () => {
         }
     };
 
-    const hydrateLocalAIStatus = (details: any, status: ServerStatus) => {
+    const hydrateLocalAIStatus = useCallback((details: any, status: ServerStatus) => {
         setServerStatus(status);
         setRuntimeGpu((details?.gpu || null) as RuntimeGpuStatus | null);
         setRuntimeMode((details?.config?.runtime_mode || details?.runtime_mode || null) as string | null);
@@ -216,6 +229,9 @@ const ModelsPage = () => {
                 device: details?.models?.stt?.device || null,
                 compute_type: details?.models?.stt?.compute_type || null,
                 sherpa_model_type: details?.models?.stt?.sherpa_model_type || null,
+                sherpa_model_family: details?.models?.stt?.sherpa_model_family || null,
+                sherpa_sense_voice_language: details?.models?.stt?.sherpa_sense_voice_language || null,
+                sherpa_sense_voice_use_itn: details?.models?.stt?.sherpa_sense_voice_use_itn ?? null,
                 tone_decoder_type: details?.models?.stt?.tone_decoder_type || null,
             },
             tts: {
@@ -234,11 +250,13 @@ const ModelsPage = () => {
                 tool_capability: details?.models?.llm?.tool_capability || {}
             }
         });
-    };
+    }, []);
 
-    const applyLocalAILiveStatus = (component?: LiveStatusComponent | null): boolean => {
+    const applyLocalAILiveStatus = useCallback((component?: LiveStatusComponent | null): boolean => {
         if (!component) return false;
-        if (component.freshness === 'expired') return false;
+        // Cached observations must not override a current direct health check.
+        // This applies to both the HTTP snapshot and subsequent stream events.
+        if (component.freshness !== 'fresh') return false;
         if (component.state === 'ready' || component.state === 'degraded') {
             hydrateLocalAIStatus(component.details || {}, component.state === 'ready' ? 'connected' : 'degraded');
             return true;
@@ -250,21 +268,25 @@ const ModelsPage = () => {
         setRuntimeGpu(null);
         setRuntimeMode(null);
         return true;
-    };
+    }, [hydrateLocalAIStatus]);
 
-    const showToast = (message: string, type: 'success' | 'error' | 'warning') => {
+    const showToast = useCallback((message: string, type: 'success' | 'error' | 'warning') => {
+        if (!isMounted()) return;
         const id = Date.now();
         setToasts(prev => [...prev, { id, message, type }]);
-        setTimeout(() => {
+        later(() => {
             setToasts(prev => prev.filter(t => t.id !== id));
         }, 4000);
-    };
+    }, [isMounted, later]);
 
-    const fetchModels = async () => {
+    const fetchModels = useCallback(async () => {
+        const request = beginRead('catalog');
+        if (!request) return;
         setLoading(true);
         try {
             // Fetch catalog
-            const catalogRes = await axios.get('/api/wizard/local/available-models');
+            const catalogRes = await axios.get('/api/wizard/local/available-models', { signal: request.signal, timeout: 15000 });
+            if (!request.isCurrent()) return;
             if (catalogRes.data) {
                 setCatalog(catalogRes.data.catalog);
                 setLanguageNames(catalogRes.data.language_names || {});
@@ -272,7 +294,8 @@ const ModelsPage = () => {
             }
 
             // Fetch installed models from local-ai-server
-            const installedRes = await axios.get('/api/local-ai/models');
+            const installedRes = await axios.get('/api/local-ai/models', { signal: request.signal, timeout: 15000 });
+            if (!request.isCurrent()) return;
             if (installedRes.data) {
                 // Flatten the nested response into a single array
                 const models: InstalledModel[] = [];
@@ -324,105 +347,38 @@ const ModelsPage = () => {
                 setInstalledModels(models);
             }
         } catch (err) {
-            console.error('Failed to fetch models', err);
+            if (request.isCurrent()) console.error('Failed to fetch models', err);
         } finally {
-            setLoading(false);
+            if (request.isCurrent()) setLoading(false);
+            request.finish();
         }
-    };
-
-    useEffect(() => {
-        fetchModels();
-        fetchActiveModels();
-    }, []);
-
-    useEffect(() => {
-        const localAI = liveStatus.snapshot?.components?.local_ai_server || liveStatus.snapshot?.local_ai_server;
-        if (!applyLocalAILiveStatus(localAI) && !liveStatus.loading) {
-            fetchActiveModels();
-        }
-    }, [
-        liveStatus.loading,
-        liveStatus.snapshot?.event_id,
-        liveStatus.snapshot?.components?.local_ai_server?.updated_at,
-        liveStatus.snapshot?.local_ai_server?.updated_at,
-    ]);
-
-    // Resume download on mount if active
-    useEffect(() => {
-        let mounted = true;
-        const checkActiveDownload = async () => {
-            try {
-                const res = await axios.get('/api/wizard/local/download-progress');
-                if (res.data && res.data.running && mounted) {
-                    setDownloadingModel(res.data.job_id || 'unknown');
-                    setDownloadProgress({
-                        bytes_downloaded: res.data.bytes_downloaded || 0,
-                        total_bytes: res.data.total_bytes || 0,
-                        percent: res.data.percent || 0,
-                        speed_bps: res.data.speed_bps || 0,
-                        eta_seconds: res.data.eta_seconds,
-                        current_file: res.data.current_file || ''
-                    });
-
-                    const pollDownload = async () => {
-                        if (!mounted) return;
-                        try {
-                            const pRes = await axios.get('/api/wizard/local/download-progress');
-                            if (pRes.data.running) {
-                                setDownloadProgress({
-                                    bytes_downloaded: pRes.data.bytes_downloaded || 0,
-                                    total_bytes: pRes.data.total_bytes || 0,
-                                    percent: pRes.data.percent || 0,
-                                    speed_bps: pRes.data.speed_bps || 0,
-                                    eta_seconds: pRes.data.eta_seconds,
-                                    current_file: pRes.data.current_file || ''
-                                });
-                            }
-
-                            if (pRes.data.completed) {
-                                showToast(`Model downloaded successfully!`, 'success');
-                                setDownloadingModel(null);
-                                setDownloadProgress(null);
-                                fetchModels();
-                            } else if (pRes.data.error) {
-                                showToast(`Download failed: ${pRes.data.error}`, 'error');
-                                setDownloadingModel(null);
-                                setDownloadProgress(null);
-                            } else if (pRes.data.running) {
-                                window.setTimeout(pollDownload, 1000);
-                            } else {
-                                setDownloadingModel(null);
-                                setDownloadProgress(null);
-                            }
-                        } catch {
-                            window.setTimeout(pollDownload, 2000);
-                        }
-                    };
-                    pollDownload();
-                }
-            } catch {
-                // Ignore errors on mount check
-            }
-        };
-        checkActiveDownload();
-        return () => { mounted = false; };
-    }, []);
+    }, [beginRead]);
 
     // Fetch active models from Local AI Server health
-    const fetchActiveModels = async () => {
+    const fetchActiveModels = useCallback(async (skipIfPending = false) => {
+        const request = beginRead('active-models', skipIfPending);
+        if (!request) return;
         const [liveStatusRes, healthRes, modelsRes, capabilitiesRes, envRes] = await Promise.allSettled([
-            axios.get('/api/system/live-status'),
-            axios.get('/api/system/health'),
-            axios.get('/api/local-ai/models'),
-            axios.get('/api/local-ai/capabilities'),
-            axios.get('/api/config/env')
+            axios.get('/api/system/live-status', { signal: request.signal, timeout: 15000 }),
+            axios.get('/api/system/health', { signal: request.signal, timeout: 15000 }),
+            axios.get('/api/local-ai/models', { signal: request.signal, timeout: 15000 }),
+            axios.get('/api/local-ai/capabilities', { signal: request.signal, timeout: 15000 }),
+            axios.get('/api/config/env', { signal: request.signal, timeout: 15000 })
         ]);
 
-        let hydratedFromStatus = false;
-        if (liveStatusRes.status === 'fulfilled') {
-            const localAI = liveStatusRes.value.data?.components?.local_ai_server || liveStatusRes.value.data?.local_ai_server;
-            hydratedFromStatus = applyLocalAILiveStatus(localAI);
-        }
+        if (!request.isCurrent()) return;
+        const current = latestLive.current;
+        const currentComponent = current.snapshot?.components?.local_ai_server || current.snapshot?.local_ai_server;
+        const httpSnapshot = liveStatusRes.status === 'fulfilled' ? liveStatusRes.value.data : null;
+        // Select the newest usable component before checking freshness. If that
+        // observation is stale, use health rather than resurrecting an older snapshot.
+        const streamHasStatus = !!currentComponent &&
+            ['ready', 'degraded', 'error', 'unreachable'].includes(currentComponent.state);
+        const useStream = current.usable && streamHasStatus &&
+            (current.snapshot?.event_id ?? -1) >= (httpSnapshot?.event_id ?? -1);
+        const component = useStream ? currentComponent :
+            httpSnapshot?.components?.local_ai_server || httpSnapshot?.local_ai_server;
+        const hydratedFromStatus = applyLocalAILiveStatus(component);
 
         if (!hydratedFromStatus && healthRes.status === 'fulfilled') {
             const localAI = healthRes.value.data?.local_ai_server;
@@ -448,7 +404,8 @@ const ModelsPage = () => {
         if (envRes.status === 'fulfilled' && envRes.value.data) {
             setEnvConfig(envRes.value.data || {});
         }
-    };
+        request.finish();
+    }, [beginRead, applyLocalAILiveStatus, hydrateLocalAIStatus]);
 
     // Handle model switch
     const handleModelSwitch = async (
@@ -467,7 +424,11 @@ const ModelsPage = () => {
         if (extra) {
             Object.assign(payload, extra);
         }
-        return axios.post('/api/local-ai/switch', payload);
+        const response = await axios.post('/api/local-ai/switch', payload);
+        if (response.data.success === false) {
+            throw new Error(response.data.message || 'Failed to switch model');
+        }
+        return response;
     };
 
     // Get model name from path
@@ -486,73 +447,99 @@ const ModelsPage = () => {
         return 'compatible';
     };
 
-    const handleDownload = async (model: ModelInfo, type: 'stt' | 'tts' | 'llm') => {
-        if (!model.download_url) {
-            showToast('This model requires an API key and cannot be downloaded', 'error');
-            return;
-        }
+    const followDownload = useCallback((owner: object, jobId: string | undefined, label: string) => {
+        const isCurrent = () => isMounted() && downloadOwner.current === owner;
+        const poll = async () => {
+            if (!isCurrent()) return;
+            const request = beginRead('download');
+            if (!request) return;
+            try {
+                const res = await axios.get('/api/wizard/local/download-progress', {
+                    params: jobId ? { job_id: jobId } : undefined, signal: request.signal, timeout: 15000,
+                });
+                if (!request.isCurrent() || !isCurrent()) return;
+                if (res.data.running) setDownloadProgress({
+                    bytes_downloaded: res.data.bytes_downloaded || 0, total_bytes: res.data.total_bytes || 0,
+                    percent: res.data.percent || 0, speed_bps: res.data.speed_bps || 0,
+                    eta_seconds: res.data.eta_seconds, current_file: res.data.current_file || '',
+                });
+                if (res.data.completed || res.data.error || !res.data.running) {
+                    downloadOwner.current = null;
+                    setDownloadingModel(null);
+                    setDownloadProgress(null);
+                    if (res.data.error) showToast(`Download failed: ${res.data.error}`, 'error');
+                    else if (res.data.completed) { showToast(`${label} downloaded successfully!`, 'success'); void fetchModels(); }
+                } else downloadTimer.current = later(poll, 1000);
+            } catch {
+                if (request.isCurrent() && isCurrent()) downloadTimer.current = later(poll, 2000);
+            } finally { request.finish(); }
+        };
+        void poll();
+    }, [isMounted, beginRead, later, showToast, fetchModels]);
 
+    useEffect(() => { void fetchModels(); void fetchActiveModels(); }, [fetchModels, fetchActiveModels]);
+    const localAI = liveStatus.snapshot?.components?.local_ai_server || liveStatus.snapshot?.local_ai_server;
+    useEffect(() => {
+        if (liveStatus.error || !applyLocalAILiveStatus(localAI)) {
+            if (!liveStatus.loading) void fetchActiveModels(true);
+        }
+    }, [localAI, liveStatus.error, liveStatus.loading, applyLocalAILiveStatus, fetchActiveModels]);
+
+    useEffect(() => {
+        const owner = {};
+        downloadOwner.current = owner;
+        const request = beginRead('download');
+        if (!request) return;
+        void (async () => {
+            try {
+                const res = await axios.get('/api/wizard/local/download-progress', { signal: request.signal, timeout: 15000 });
+                if (!request.isCurrent() || downloadOwner.current !== owner) return;
+                if (res.data.running) {
+                    setDownloadingModel(res.data.job_id || 'active download');
+                    setDownloadProgress({
+                        bytes_downloaded: res.data.bytes_downloaded || 0,
+                        total_bytes: res.data.total_bytes || 0, percent: res.data.percent || 0,
+                        speed_bps: res.data.speed_bps || 0, eta_seconds: res.data.eta_seconds,
+                        current_file: res.data.current_file || '',
+                    });
+                    followDownload(owner, res.data.job_id, 'Model');
+                } else downloadOwner.current = null;
+            } catch { if (downloadOwner.current === owner) downloadOwner.current = null; }
+            finally { request.finish(); }
+        })();
+        return () => { downloadOwner.current = null; clearLater(downloadTimer.current); cancelRead('download'); };
+    }, [beginRead, cancelRead, clearLater, followDownload]);
+
+    const downloadSubmitting = useRef(false);
+    const handleDownload = async (model: ModelInfo, type: 'stt' | 'tts' | 'llm') => {
+        if (downloadSubmitting.current || downloadingModel || !isMounted()) return;
+        if (!model.download_url) { showToast('This model requires an API key and cannot be downloaded', 'error'); return; }
+        downloadSubmitting.current = true;
+        const owner = {};
+        downloadOwner.current = owner;
+        cancelRead('download');
+        clearLater(downloadTimer.current);
+        const isCurrent = () => isMounted() && downloadOwner.current === owner;
         setDownloadingModel(model.id);
         setDownloadProgress(null);
         try {
-            const startRes = await axios.post('/api/wizard/local/download-model', {
-                model_id: model.id,
-                type: type,
-                download_url: model.download_url,
-                model_path: model.model_path,
-                config_url: model.config_url,  // For TTS models (Piper JSON config)
-                voice_files: model.voice_files,  // For Kokoro TTS voice files
-                vocoder_url: model.vocoder_url,  // For Matcha TTS vocoder
-                expected_sha256: model.expected_sha256  // Custom-model integrity check
+            const res = await axios.post('/api/wizard/local/download-model', {
+                model_id: model.id, type, download_url: model.download_url, model_path: model.model_path,
+                config_url: model.config_url, voice_files: model.voice_files, vocoder_url: model.vocoder_url,
+                expected_sha256: model.expected_sha256,
             });
-            const jobId = startRes.data?.job_id;
-            const diskWarning = startRes.data?.disk_warning;
-            if (diskWarning) showToast(diskWarning, 'warning');
+            if (!isCurrent()) return;
+            if (res.data?.disk_warning) showToast(res.data.disk_warning, 'warning');
             showToast(`Started downloading ${model.name}`, 'success');
-            // Poll for completion with progress updates
-            const pollDownload = async () => {
-                try {
-                    const res = await axios.get('/api/wizard/local/download-progress', {
-                        params: jobId ? { job_id: jobId } : undefined
-                    });
-                    // Update progress state - always set if running to show progress bar
-                    if (res.data.running) {
-                        setDownloadProgress({
-                            bytes_downloaded: res.data.bytes_downloaded || 0,
-                            total_bytes: res.data.total_bytes || 0,
-                            percent: res.data.percent || 0,
-                            speed_bps: res.data.speed_bps || 0,
-                            eta_seconds: res.data.eta_seconds,
-                            current_file: res.data.current_file || ''
-                        });
-                    }
-
-                    if (res.data.completed) {
-                        showToast(`${model.name} downloaded successfully!`, 'success');
-                        setDownloadingModel(null);
-                        setDownloadProgress(null);
-                        fetchModels();
-                    } else if (res.data.error) {
-                        showToast(`Download failed: ${res.data.error}`, 'error');
-                        setDownloadingModel(null);
-                        setDownloadProgress(null);
-                    } else if (res.data.running) {
-                        setTimeout(pollDownload, 1000);
-                    } else {
-                        setDownloadingModel(null);
-                        setDownloadProgress(null);
-                    }
-                } catch (err) {
-                    setTimeout(pollDownload, 2000);
-                }
-            };
-            setTimeout(pollDownload, 500);
-        } catch (err: any) {
-            const message = err.response?.data?.detail || err.response?.data?.message || err.message || 'Unknown error';
-            showToast(`Failed to start download: ${message}`, 'error');
-            setDownloadingModel(null);
-            setDownloadProgress(null);
-        }
+            downloadTimer.current = later(() => followDownload(owner, res.data?.job_id, model.name), 500);
+        } catch (error: any) {
+            if (isCurrent()) {
+                showToast(`Failed to start download: ${error.response?.data?.detail || error.response?.data?.message || error.message || 'Unknown error'}`, 'error');
+                downloadOwner.current = null;
+                setDownloadingModel(null);
+                setDownloadProgress(null);
+            }
+        } finally { downloadSubmitting.current = false; }
     };
 
     const handleDelete = async (model: InstalledModel) => {
@@ -562,7 +549,7 @@ const ModelsPage = () => {
             confirmText: 'Delete',
             variant: 'destructive'
         });
-        if (!confirmed) return;
+        if (!confirmed || !isMounted()) return;
 
         setDeletingModel(model.name);
         try {
@@ -645,6 +632,13 @@ const ModelsPage = () => {
     const runtimeGpuKnown = runtimeGpu !== null && typeof runtimeGpu.runtime_detected === 'boolean';
     const runtimeGpuDetected = runtimeGpu?.runtime_detected === true;
     const runtimeGpuUsable = runtimeGpu?.runtime_usable === true;
+    const configuredSenseVoiceLanguage = (envConfig.SHERPA_SENSE_VOICE_LANGUAGE || 'auto').trim().toLowerCase();
+    const senseVoiceLanguage = pendingSttExtra.sherpa_sense_voice_language
+        ?? activeModels?.stt.sherpa_sense_voice_language
+        ?? (['auto', 'zh', 'en', 'ja', 'ko', 'yue'].includes(configuredSenseVoiceLanguage) ? configuredSenseVoiceLanguage : 'auto');
+    const senseVoiceItn = pendingSttExtra.sherpa_sense_voice_use_itn
+        ?? activeModels?.stt.sherpa_sense_voice_use_itn
+        ?? !['0', 'false', 'no', 'n', 'off'].includes((envConfig.SHERPA_SENSE_VOICE_USE_ITN || 'true').trim().toLowerCase());
     const currentFillerAudio = isTruthy(envConfig.LOCAL_ENABLE_FILLER_AUDIO);
     const currentStreamingOverlap = isTruthy(envConfig.LOCAL_LLM_STREAMING_TTS_OVERLAP ?? 'true');
     const hasPendingModelChanges = Object.keys(pendingChanges).length > 0;
@@ -763,7 +757,7 @@ const ModelsPage = () => {
 
         setRestarting(true);
         const startTime = Date.now();
-        const progressTimer = window.setInterval(() => {
+        const progressTimer = every(() => {
             setApplyProgress(prev => {
                 if (!prev) return prev;
                 return { ...prev, elapsedSeconds: Math.max(0, Math.floor((Date.now() - prev.startedAt) / 1000)) };
@@ -868,7 +862,7 @@ const ModelsPage = () => {
                     }
                 }
 
-                await axios.post('/api/local-ai/switch', {
+                const llmResponse = await axios.post('/api/local-ai/switch', {
                     model_type: 'llm',
                     model_path: remainingChanges.llm || undefined,
                     llm_context: pendingLlmConfig.context || undefined,
@@ -877,6 +871,9 @@ const ModelsPage = () => {
                     llm_streaming_tts_overlap: pendingRuntimeConfig.llm_streaming_tts_overlap,
                     force_incompatible_apply: forceIncompatibleApply
                 });
+                if (llmResponse.data.success === false) {
+                    throw new Error(llmResponse.data.message || 'Failed to switch LLM');
+                }
                 delete remainingChanges.llm;
             }
 
@@ -895,6 +892,11 @@ const ModelsPage = () => {
                     } else if (backend === 'sherpa') {
                         if (pendingSttExtra.sherpa_model_type) extra.sherpa_model_type = pendingSttExtra.sherpa_model_type;
                         if (pendingSttExtra.sherpa_vad_model_path) extra.sherpa_vad_model_path = pendingSttExtra.sherpa_vad_model_path;
+                        const modelPath = pathParts.join(':');
+                        if (pendingSttExtra.sherpa_sense_voice_language !== undefined || pendingSttExtra.sherpa_sense_voice_use_itn !== undefined || isSenseVoicePath(modelPath) || activeModels?.stt.sherpa_model_family === 'sense_voice') {
+                            extra.sherpa_sense_voice_language = senseVoiceLanguage;
+                            extra.sherpa_sense_voice_use_itn = senseVoiceItn;
+                        }
                     } else if (backend === 'tone') {
                         if (pendingSttExtra.tone_decoder_type) extra.tone_decoder_type = pendingSttExtra.tone_decoder_type;
                         if (pendingSttExtra.tone_kenlm_path) extra.tone_kenlm_path = pendingSttExtra.tone_kenlm_path;
@@ -919,19 +921,19 @@ const ModelsPage = () => {
             setPendingRuntimeConfig({});
             setForceIncompatibleApply(false);
             updateApplyProgress('verifying', 95, 'Waiting for Local AI to come back online...', 'Refreshing active model status');
-            setTimeout(() => {
+            later(() => {
                 fetchActiveModels();
-                updateApplyProgress('done', 100, 'Apply completed successfully.', 'Local model configuration is now active');
-                window.setTimeout(() => setApplyProgress(null), 2000);
+                updateApplyProgress('done', 100, 'Changes submitted. Check live model status above.', 'Readiness is reported separately by Local AI status');
+                later(() => setApplyProgress(null), 2000);
                 setRestarting(false);
-                window.clearInterval(progressTimer);
+                clearEvery(progressTimer);
             }, 15000);
         } catch (err: any) {
             const errorMsg = err.response?.data?.detail || err.response?.data?.message || err.message || 'Failed to apply changes';
             updateApplyProgress('error', 100, 'Apply failed.', errorMsg);
             showToast(`Failed to apply changes: ${err.response?.data?.detail || err.response?.data?.message || err.message}`, 'error');
             setRestarting(false);
-            window.clearInterval(progressTimer);
+            clearEvery(progressTimer);
         }
     };
 
@@ -1021,12 +1023,12 @@ const ModelsPage = () => {
                                         confirmText: 'Restart',
                                         variant: 'destructive'
                                     });
-                                    if (!confirmed) return;
+                                    if (!confirmed || !isMounted()) return;
                                     setRestarting(true);
                                     // recreate=true so env_file (.env) changes are applied (MED-R2);
                                     // a plain restart does NOT re-read .env.
                                     axios.post('/api/system/containers/local_ai_server/restart?recreate=true')
-                                        .then(() => setTimeout(() => { fetchActiveModels(); setRestarting(false); }, 5000))
+                                        .then(() => later(() => { fetchActiveModels(); setRestarting(false); }, 5000))
                                         .catch(() => setRestarting(false));
                                 }}
                                 disabled={restarting}
@@ -1303,6 +1305,50 @@ const ModelsPage = () => {
                                                                 placeholder="/app/models/vad/silero_vad.onnx"
                                                                 disabled={restarting}
                                                             />
+                                                        </div>
+                                                    )}
+                                                    {(activeModels.stt.sherpa_model_family === 'sense_voice' || isSenseVoicePath(selectedStt)) && (
+                                                        <div className="grid grid-cols-2 gap-1.5">
+                                                            <div>
+                                                                <div className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                                                    <label htmlFor="models-sensevoice-language">SenseVoice Language</label>
+                                                                    <HelpTooltip content={<><strong>SenseVoice language hint</strong> — <code>auto</code> detects zh/en/ja/ko/yue per utterance; pin a language to avoid misdetection on short replies.</>} />
+                                                                </div>
+                                                                <select id="models-sensevoice-language"
+                                                                    className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.sherpa_sense_voice_language ? 'border-yellow-500' : 'border-border'}`}
+                                                                    value={senseVoiceLanguage}
+                                                                    onChange={(e) => {
+                                                                        setPendingSttExtra(prev => ({ ...prev, sherpa_sense_voice_language: e.target.value }));
+                                                                        if (!pendingChanges.stt) setPendingChanges(prev => ({ ...prev, stt: selectedStt }));
+                                                                    }}
+                                                                    disabled={restarting}
+                                                                >
+                                                                    <option value="auto">Auto-detect</option>
+                                                                    <option value="zh">Mandarin (zh)</option>
+                                                                    <option value="en">English (en)</option>
+                                                                    <option value="ja">Japanese (ja)</option>
+                                                                    <option value="ko">Korean (ko)</option>
+                                                                    <option value="yue">Cantonese (yue)</option>
+                                                                </select>
+                                                            </div>
+                                                            <div>
+                                                                <div className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                                                    <label htmlFor="models-sensevoice-itn">Punctuation (ITN)</label>
+                                                                    <HelpTooltip content={<><strong>Inverse text normalization</strong> — adds punctuation and writes numbers as digits.</>} />
+                                                                </div>
+                                                                <select id="models-sensevoice-itn"
+                                                                    className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.sherpa_sense_voice_use_itn !== undefined ? 'border-yellow-500' : 'border-border'}`}
+                                                                    value={String(senseVoiceItn)}
+                                                                    onChange={(e) => {
+                                                                        setPendingSttExtra(prev => ({ ...prev, sherpa_sense_voice_use_itn: e.target.value === 'true' }));
+                                                                        if (!pendingChanges.stt) setPendingChanges(prev => ({ ...prev, stt: selectedStt }));
+                                                                    }}
+                                                                    disabled={restarting}
+                                                                >
+                                                                    <option value="true">On</option>
+                                                                    <option value="false">Off</option>
+                                                                </select>
+                                                            </div>
                                                         </div>
                                                     )}
                                                 </div>
@@ -1617,7 +1663,7 @@ const ModelsPage = () => {
                                 onClick={() => {
                                     setStartingServer(true);
                                     axios.post('/api/system/containers/local_ai_server/start')
-                                        .then(() => setTimeout(() => { fetchActiveModels(); setStartingServer(false); }, 5000))
+                                        .then(() => later(() => { fetchActiveModels(); setStartingServer(false); }, 5000))
                                         .catch(() => setStartingServer(false));
                                 }}
                                 disabled={startingServer}

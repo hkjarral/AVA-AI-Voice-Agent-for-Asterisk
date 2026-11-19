@@ -20,7 +20,7 @@ import structlog
 from src.tools.base import Tool, ToolCategory, ToolDefinition
 from src.tools.business._calendar_utils import (
     graph_datetime,
-    build_slot_starts,
+    build_zoned_slot_starts,
     intersect_intervals,
     parse_iso_datetime,
     subtract_busy,
@@ -47,6 +47,14 @@ from src.tools.business.microsoft_booking import (
     booking_limits_enabled,
 )
 from src.tools.context import ToolExecutionContext, resolve_scoped_tool_config
+from src.tools.business.microsoft_teams import (
+    teams_enabled,
+    require_teams_calendar,
+    join_url,
+    meeting_snapshot,
+    pending_update_matches,
+    replace_details,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -76,8 +84,14 @@ _MICROSOFT_CALENDAR_INPUT_SCHEMA = {
             "enum": ["all", "any"],
             "description": "For multi-account get_free_slots: 'all' = intersection, 'any' = union.",
         },
-        "time_min": {"type": "string", "description": "ISO 8601 start time."},
-        "time_max": {"type": "string", "description": "ISO 8601 end time."},
+        "time_min": {
+            "type": "string",
+            "description": "ISO 8601 start time with timezone offset, on a whole minute (:00 seconds).",
+        },
+        "time_max": {
+            "type": "string",
+            "description": "ISO 8601 end time with timezone offset, on a whole minute (:00 seconds); use the next boundary, not 23:59:59.",
+        },
         "free_prefix": {
             "type": "string",
             "description": (
@@ -107,6 +121,10 @@ _MICROSOFT_CALENDAR_INPUT_SCHEMA = {
         "booking_confirmed": {
             "type": "boolean",
             "description": "True only after the caller agrees to the exact date, time, timezone and duration. Required for invitation bookings and rescheduling.",
+        },
+        "replacement_confirmed": {
+            "type": "boolean",
+            "description": "True only after cancellation of the tracked same-call booking is verified and the caller explicitly agrees to create its replacement. Required to recreate identical cancelled details; also pass booking_confirmed=true.",
         },
         "invitation_confirmed": {
             "type": "boolean",
@@ -143,6 +161,18 @@ _MICROSOFT_CALENDAR_INPUT_SCHEMA = {
 }
 
 
+def _transaction_already_used(exc: MicrosoftGraphApiError) -> bool:
+    """Graph's 400 for a transactionId that already created an event.
+
+    Graph returns it when a repeated POST carries the same transactionId with a
+    different body, so it shows that an earlier attempt landed.
+    """
+    if exc.status != 400 or not isinstance(exc.payload, dict):
+        return False
+    error = exc.payload.get("error")
+    return isinstance(error, dict) and error.get("code") == "ErrorDuplicateTransactionId"
+
+
 class MicrosoftCalendarTool(Tool):
     _LAST_EVENT_CACHE_CAP = 1024
     # Held inside the worker through read/check/write/cache, even if its awaiting
@@ -163,10 +193,14 @@ class MicrosoftCalendarTool(Tool):
         return ToolDefinition(
             name="microsoft_calendar",
             description=(
-                "Interact with a Microsoft 365 Outlook calendar. Use this to list events, "
-                "check_availability for an exact requested interval before suggesting free slots. "
-                "Confirm bookings and attendee emails before creating invitations. Cancel or "
-                "reschedule only a booking created in this call; older bookings require staff."
+                "Call microsoft_calendar for every calendar operation, always with an action argument. "
+                "Action names are values, never separate functions. Use action=check_availability "
+                "for an exact requested interval before action=get_free_slots to suggest alternatives. "
+                "Resolve invitation delivery before creation: ask for and confirm email, or obtain an explicit decline. "
+                "Confirm booking details before creating the event. Cancel or "
+                "reschedule only a booking created in this call; older bookings require staff. "
+                "Configured Teams mode requires confirmed invitation recipients. Only teams_join_url "
+                "is a Teams join link; pending provisioning is not a ready meeting."
             ),
             category=ToolCategory.BUSINESS,
             requires_channel=False,
@@ -530,7 +564,7 @@ class MicrosoftCalendarTool(Tool):
                     tz_name,
                 )
             else:
-                range_start = max(range_start, utc_now().astimezone(ZoneInfo(tz_name)))
+                range_start = max(range_start, utc_now().astimezone(ZoneInfo(tz_name)), key=to_utc)
                 try:
                     horizon = (
                         int(config.get("booking_horizon_days", 365))
@@ -547,9 +581,10 @@ class MicrosoftCalendarTool(Tool):
                         (utc_now() + timedelta(days=horizon)).astimezone(
                             ZoneInfo(tz_name)
                         ),
+                        key=to_utc,
                     )
             try:
-                if range_end <= range_start:
+                if to_utc(range_end) <= to_utc(range_start):
                     per_account_intervals.append([])
                     per_account_free_counts[key] = 0
                     continue
@@ -566,7 +601,7 @@ class MicrosoftCalendarTool(Tool):
                 )
                 if exact:
                     exact_results.append(
-                        any(a <= range_start and range_end <= b for a, b in intervals)
+                        any(to_utc(a) <= to_utc(range_start) and to_utc(range_end) <= to_utc(b) for a, b in intervals)
                     )
             except MicrosoftGraphApiError as exc:
                 failed_keys.append(key)
@@ -645,7 +680,6 @@ class MicrosoftCalendarTool(Tool):
                 "agent_hint": "This checks the exact interval. Confirm it with the caller before creation; creation rechecks availability.",
             }
 
-        slot_starts = build_slot_starts(available_intervals, duration_minutes)
         tz_set = {
             self._account_config(accounts[k]).timezone or "UTC"
             for k in keys_to_use
@@ -654,7 +688,8 @@ class MicrosoftCalendarTool(Tool):
         output_tz_name = next(iter(tz_set)) if len(tz_set) == 1 else "UTC"
         output_tz = ZoneInfo(output_tz_name)
         tz_disagreement = len(tz_set) > 1
-        slot_starts = sorted([slot.astimezone(output_tz) for slot in slot_starts])
+        slot_starts = build_zoned_slot_starts(available_intervals, duration_minutes, output_tz)
+        slot_starts.sort(key=to_utc)
 
         try:
             max_slots = int(config.get("max_slots_returned", 3))
@@ -664,7 +699,8 @@ class MicrosoftCalendarTool(Tool):
         if max_slots and max_slots > 0 and total_slots > max_slots:
             slot_starts = slot_starts[:max_slots]
         slot_pairs = [
-            (slot, slot + timedelta(minutes=duration_minutes)) for slot in slot_starts
+            (slot, (to_utc(slot) + timedelta(minutes=duration_minutes)).astimezone(output_tz))
+            for slot in slot_starts
         ]
         slots_with_end = [
             {"start": start.isoformat(), "end": end.isoformat()}
@@ -906,6 +942,10 @@ class MicrosoftCalendarTool(Tool):
         reconciled=False,
     ):
         invited = bool(attendees)
+        online = (
+            event.get("isOnlineMeeting") is True
+            and event.get("onlineMeetingProvider") == "teamsForBusiness"
+        )
         return {
             "status": "success",
             "message": (
@@ -914,6 +954,16 @@ class MicrosoftCalendarTool(Tool):
             "id": event["id"],
             "event_id": event["id"],
             "link": event.get("webLink"),
+            "outlook_web_link": event.get("webLink"),
+            "teams_join_url": join_url(event) if online else None,
+            "online_meeting_provider": (
+                event.get("onlineMeetingProvider") if online else None
+            ),
+            "meeting_status": (
+                "ready"
+                if online and join_url(event)
+                else ("pending" if online else "appointment")
+            ),
             "calendar": key,
             "start": start.isoformat(),
             "end": end.isoformat(),
@@ -923,8 +973,80 @@ class MicrosoftCalendarTool(Tool):
             "delivery_status": "unknown" if invited else "not_applicable",
             "attendee_acceptance_status": "unknown" if invited else "not_applicable",
             "reconciled": reconciled,
-            "agent_hint": "Report the booking result. With attendees, Microsoft accepted the invitation/update request; do not claim delivery or acceptance. To cancel or reschedule this booking, obtain caller agreement and use delete_event or reschedule_event with NO event_id for the most recently selected booking; for another current-call booking use its returned event_id. Read back the selected booking before obtaining agreement. Later-call changes require staff. Never delete first to reschedule.",
+            "agent_hint": "Report the booking result. With attendees, Microsoft accepted the invitation/update request; do not claim delivery or acceptance. To cancel or reschedule this booking, obtain caller agreement and use delete_event or reschedule_event with NO event_id for the most recently selected booking; for another current-call booking use its returned event_id. Read back the selected booking before obtaining agreement. Later-call changes require staff. Use reschedule_event for time-only changes. To replace details or attendees, obtain cancellation agreement, use delete_event, require reservation_status=cancelled, then obtain replacement agreement and call create_event with replacement_confirmed=true and booking_confirmed=true. Never create a replacement while cancellation is uncertain.",
         }
+
+    def _teams_result(
+        self, event, record, key, account, start, end, attendees, *, reconciled=False
+    ):
+        """A created event is not proof that Teams provisioning succeeded."""
+        result = self._mutation_result(
+            event, key, account, start, end, attendees, reconciled=reconciled
+        )
+        if record.get("teams"):
+            if not (
+                event.get("isOnlineMeeting") is True
+                and event.get("onlineMeetingProvider") == "teamsForBusiness"
+                and join_url(event)
+            ):
+                result.update(
+                    status="error",
+                    error_code="teams_provisioning_unconfirmed",
+                    meeting_status="pending",
+                    message="The calendar event exists, but a Teams join link is not confirmed.",
+                    agent_hint="Do not claim a Teams meeting is ready or create another event. Retry identical creation arguments to read its status, or ask staff to verify this event.",
+                )
+            if not record.get("teams_snapshot"):
+                result["changes_require_staff"] = True
+                result[
+                    "agent_hint"
+                ] += " The creation response did not establish a safe meeting-body baseline; changes to this booking require staff."
+        return result
+
+    @staticmethod
+    def _capture_teams_snapshot(event):
+        body = event.get("body") or {}
+        # Recognition is required before any later body rewrite. Do not treat an
+        # arbitrary fresh read after a lost POST as a trusted creation response.
+        if (
+            event.get("isOnlineMeeting") is True
+            and event.get("onlineMeetingProvider") == "teamsForBusiness"
+            and isinstance(body.get("content"), str)
+        ):
+            try:
+                replace_details(body, "")
+                return meeting_snapshot(event)
+            except BookingValidationError:
+                pass
+        return None
+
+    def _matches_teams_update(self, event, tracked, account):
+        """Validate the complete observed update before adopting its HTML baseline."""
+        if (
+            not isinstance(event, dict)
+            or event.get("id") != tracked.get("event_id")
+            or event.get("isCancelled")
+            or event.get("type", "singleInstance") != "singleInstance"
+            or event.get("isOrganizer") is not True
+            or event.get("subject") != tracked.get("pending_subject")
+        ):
+            return False
+        start = self._parse_event_dt(event.get("start") or {}, account.timezone)
+        end = self._parse_event_dt(event.get("end") or {}, account.timezone)
+        if (
+            not start
+            or not end
+            or [to_utc(start).isoformat(), to_utc(end).isoformat()]
+            != tracked.get("pending_target")
+        ):
+            return False
+        emails = sorted(
+            str((item.get("emailAddress") or {}).get("address") or "").casefold()
+            for item in event.get("attendees") or []
+        )
+        return emails == sorted(
+            email.casefold() for email in tracked.get("attendees", [])
+        ) and pending_update_matches(event, tracked.get("pending_teams_snapshot") or {})
 
     def _uncertain(self, operation):
         return {
@@ -974,6 +1096,61 @@ class MicrosoftCalendarTool(Tool):
         finally:
             self._MUTATION_LOCK.release()
 
+    def _booking_transaction(self, identity, records, parameters):
+        """Keep retries idempotent; require fresh consent after a verified cancellation."""
+        if parameters.get("replacement_confirmed") is True and not records:
+            raise BookingValidationError(
+                "staff_assistance_required",
+                "Replacement ownership is unavailable; ask staff to verify the earlier booking.",
+            )
+        base = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
+        matching = [
+            r
+            for r in records
+            if r.get("booking_identity", r.get("transaction")) == base
+        ]
+        latest = matching[-1] if matching else {}
+        if (
+            parameters.get("replacement_confirmed") is True
+            and not latest
+            and records
+            and records[-1].get("state") != "cancelled"
+        ):
+            raise BookingValidationError(
+                "staff_assistance_required",
+                "No verified cancellation is selected for this replacement; cancel and verify the intended current-call booking first.",
+            )
+        # Older runtimes retain only the latest booking. A confirmed replacement
+        # of different details must also derive from the cancelled parent, so an
+        # A -> B -> A sequence never reuses the first cancelled Graph transaction.
+        parent = latest if latest.get("state") == "cancelled" else {}
+        if (
+            not latest
+            and parameters.get("replacement_confirmed") is True
+            and records[-1].get("state") == "cancelled"
+        ):
+            parent = records[-1]
+        if parent:
+            if (
+                parameters.get("replacement_confirmed") is not True
+                or parameters.get("booking_confirmed") is not True
+            ):
+                raise BookingValidationError(
+                    "cancelled_booking",
+                    "This booking was cancelled. Obtain fresh agreement to create a replacement, "
+                    "then pass replacement_confirmed=true and booking_confirmed=true.",
+                )
+            # A cancelled Graph transaction must not be reused. The parent makes
+            # repeated cancellation/rebooking generations distinct and deterministic.
+            transaction = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL, f"{base}:replacement:{parent['transaction']}"
+                )
+            )
+        else:
+            transaction = latest.get("transaction") or base
+        return base, transaction
+
     def _create_booking(
         self, parameters, config, cfg, key, call_id, cancelled, deadline
     ):
@@ -1002,6 +1179,12 @@ class MicrosoftCalendarTool(Tool):
             parameters, config, account.timezone, enforce_future=False
         )
         attendees = validated_attendees(parameters, config)
+        teams = teams_enabled(config)
+        if teams and not attendees:
+            raise BookingValidationError(
+                "teams_attendees_required",
+                "Teams bookings require enabled invitations and a caller-confirmed invitation email. Confirm the recipient before creating the meeting.",
+            )
         if (
             config.get("invitations_enabled") is True
             and parameters.get("booking_confirmed") is not True
@@ -1024,12 +1207,17 @@ class MicrosoftCalendarTool(Tool):
                 to_utc(start).isoformat(),
                 to_utc(end).isoformat(),
                 sorted(email.casefold() for email in attendees),
+                *(["teamsForBusiness"] if teams else []),
             ],
             sort_keys=True,
         )
-        transaction = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
         with self._mutation_lock(cancelled, deadline):
             records = self._call_bookings(call_id)
+            booking_identity, transaction = self._booking_transaction(
+                identity,
+                [r for r in records if r.get("binding") == binding],
+                parameters,
+            )
             tracked = next((r for r in records if r["transaction"] == transaction), {})
             for record in records:
                 if record.get("pending_operation"):
@@ -1042,14 +1230,6 @@ class MicrosoftCalendarTool(Tool):
                         "existing_booking",
                         "A booking outcome is uncertain. Reconcile the identical operation before creating another appointment.",
                     )
-            if (
-                tracked.get("state") == "cancelled"
-                and tracked.get("transaction") == transaction
-            ):
-                raise BookingValidationError(
-                    "cancelled_booking",
-                    "This booking was cancelled. Ask staff to rebook the identical appointment.",
-                )
             client = self._client_for_config(account)
             try:
                 events = client.list_calendar_view(to_utc(start), to_utc(end))
@@ -1065,6 +1245,41 @@ class MicrosoftCalendarTool(Tool):
                     event = existing[0]
                     if not event.get("id"):
                         return self._uncertain("creation")
+                    if teams:
+                        event = client.get_event(event["id"], html_body=True)
+                        if not event:
+                            return self._uncertain("creation")
+                        baseline = tracked.get("teams_snapshot")
+                        if baseline and meeting_snapshot(event) != baseline:
+                            if not join_url(
+                                {"onlineMeeting": baseline.get("online_meeting")}
+                            ):
+                                # Graph can provision the link after the POST. Report
+                                # the observed link, but do not adopt an unobserved
+                                # body/version change as authority for later writes.
+                                tracked["teams_snapshot"] = None
+                            else:
+                                raise BookingValidationError(
+                                    "booking_changed",
+                                    "The Teams booking changed in Outlook; ask staff to verify it.",
+                                )
+                        actual_emails = sorted(
+                            str(
+                                (item.get("emailAddress") or {}).get("address") or ""
+                            ).casefold()
+                            for item in event.get("attendees") or []
+                        )
+                        if (
+                            event.get("subject") != summary
+                            or actual_emails
+                            != sorted(email.casefold() for email in attendees)
+                            or event.get("isCancelled")
+                            or event.get("type", "singleInstance") != "singleInstance"
+                        ):
+                            raise BookingValidationError(
+                                "booking_changed",
+                                "The Teams booking details changed in Outlook; ask staff to verify it.",
+                            )
                     if (
                         self._parse_event_dt(event.get("start") or {}, account.timezone)
                         != start
@@ -1085,7 +1300,10 @@ class MicrosoftCalendarTool(Tool):
                             "account_key": key,
                             "binding": binding,
                             "transaction": transaction,
+                            "booking_identity": booking_identity,
                             "state": "active",
+                            "teams": teams,
+                            "teams_snapshot": tracked.get("teams_snapshot"),
                             "attendees": attendees,
                             "template_parameters": {
                                 f: parameters.get(f, "")
@@ -1106,12 +1324,32 @@ class MicrosoftCalendarTool(Tool):
                             "subject": summary,
                         },
                     )
-                    return self._mutation_result(
-                        event, key, account, start, end, attendees, reconciled=True
+                    return self._teams_result(
+                        event,
+                        {
+                            "teams": teams,
+                            "teams_snapshot": tracked.get("teams_snapshot"),
+                        },
+                        key,
+                        account,
+                        start,
+                        end,
+                        attendees,
+                        reconciled=True,
                     )
-                if tracked.get("state") in {"active", "uncertain"}:
+                if tracked.get("state") == "active":
                     return self._uncertain("creation")
+                # An unresolved create is resent with the same transactionId and
+                # the attendee order it was first sent with, so the body is
+                # identical. Graph answers a repeated identical POST with the
+                # event it already made, which covers a create that landed but
+                # is not yet visible in calendarView.
+                resend = tracked.get("state") == "uncertain"
+                if resend:
+                    attendees = tracked.get("attendees") or attendees
                 booking_interval(parameters, config, account.timezone)
+                if teams:
+                    require_teams_calendar(client.get_calendar())
                 if not within_working_hours(start, end, account.timezone, config):
                     raise BookingValidationError(
                         "outside_working_hours",
@@ -1120,7 +1358,11 @@ class MicrosoftCalendarTool(Tool):
                 intervals, _, _ = self._available_intervals(
                     client, start, end, account.timezone, config, for_booking=True
                 )
-                if not any(a <= start and end <= b for a, b in intervals):
+                if not any(to_utc(a) <= to_utc(start) and to_utc(end) <= to_utc(b) for a, b in intervals):
+                    if resend:
+                        # The earlier POST may have become visible since the
+                        # lookup above and be what makes the slot busy.
+                        return self._uncertain("creation")
                     raise BookingValidationError(
                         "slot_busy",
                         "The chosen interval is now busy. Check alternatives and obtain caller agreement again.",
@@ -1131,7 +1373,9 @@ class MicrosoftCalendarTool(Tool):
                 "account_key": key,
                 "binding": binding,
                 "transaction": transaction,
+                "booking_identity": booking_identity,
                 "state": "uncertain",
+                "teams": teams,
                 "attendees": attendees,
                 "template_parameters": {
                     f: parameters.get(f, "")
@@ -1158,20 +1402,57 @@ class MicrosoftCalendarTool(Tool):
                     to_utc(end),
                     attendee_emails=attendees,
                     transaction_id=transaction,
+                    **({"teams": True} if teams else {}),
                 )
             except MicrosoftGraphApiError as exc:
                 if exc.error_code == "graph_unavailable" or exc.status is None:
                     return self._uncertain("creation")
+                if resend or _transaction_already_used(exc):
+                    # The earlier POST may have landed, so a refusal now does
+                    # not free the slot or allow a different booking.
+                    return self._uncertain("creation")
                 record["state"] = "failed"
                 self._track(call_id, record)
-                return self._map_api_error(
+                result = self._map_api_error(
                     exc, "Failed to create Microsoft Calendar event"
                 )
+                if parameters.get("replacement_confirmed") is True:
+                    result.update(
+                        reservation_status="not_created",
+                        agent_hint="The original booking was cancelled. No replacement is confirmed. Explain this accurately and offer staff assistance.",
+                    )
+                return result
             if not isinstance(event, dict) or not event.get("id"):
                 return self._uncertain("creation")
+            if resend:
+                # A repeat may return an event that staff have since moved or
+                # deleted (Graph does not document this case), so read it back
+                # and check it as reconciliation does.
+                try:
+                    event = client.get_event(event["id"], html_body=teams)
+                except MicrosoftGraphApiError:
+                    return self._uncertain("creation")
+                if not event or not event.get("id") or event.get("isCancelled"):
+                    return self._uncertain("creation")
+                if (
+                    self._parse_event_dt(event.get("start") or {}, account.timezone)
+                    != start
+                    or self._parse_event_dt(event.get("end") or {}, account.timezone)
+                    != end
+                ):
+                    raise BookingValidationError(
+                        "booking_changed",
+                        "The booking changed in Outlook; ask staff to verify it.",
+                    )
             record.update(event_id=event["id"], state="active")
+            if teams and not resend:
+                # A resend cannot tell a new event from a repeat, so its body is
+                # not a trusted baseline and changes require staff.
+                record["teams_snapshot"] = self._capture_teams_snapshot(event)
             self._track(call_id, record)
-            return self._mutation_result(event, key, account, start, end, attendees)
+            return self._teams_result(
+                event, record, key, account, start, end, attendees
+            )
 
     def _change_booking(
         self, parameters, config, cfg, key, call_id, operation, cancelled, deadline
@@ -1259,10 +1540,22 @@ class MicrosoftCalendarTool(Tool):
                     ),
                 }
             client = self._client_for_config(account)
+            write_started = False
             try:
-                event = client.get_event(event_id)
+                event = client.get_event(
+                    event_id, **({"html_body": True} if tracked.get("teams") else {})
+                )
                 if event is None or event.get("isCancelled"):
                     if operation == "delete_event":
+                        if event is None:
+                            elsewhere = client.get_owned_event_in_mailbox(event_id)
+                            if elsewhere is not None and not elsewhere.get(
+                                "isCancelled"
+                            ):
+                                raise BookingValidationError(
+                                    "booking_changed",
+                                    "The owned event is still present outside the selected calendar; ask staff to verify it. No cancellation is confirmed.",
+                                )
                         tracked.update(
                             state="cancelled",
                             pending_operation=None,
@@ -1334,7 +1627,25 @@ class MicrosoftCalendarTool(Tool):
                         "not_organizer",
                         "This calendar is not the meeting organizer; ask staff to handle the change.",
                     )
-                if attendees or operation == "delete_event":
+                if tracked.get("teams"):
+                    baseline = tracked.get("teams_snapshot")
+                    pending_baseline = tracked.get("pending_teams_snapshot")
+                    if not baseline:
+                        raise BookingValidationError(
+                            "staff_assistance_required",
+                            "A trusted Teams creation response is unavailable; ask staff to verify this booking before changing it.",
+                        )
+                    snapshot_matches = (
+                        pending_update_matches(event, pending_baseline)
+                        if matches_pending and pending_baseline
+                        else meeting_snapshot(event) == baseline
+                    )
+                    if not snapshot_matches:
+                        raise BookingValidationError(
+                            "booking_changed",
+                            "The Teams body or join information changed in Outlook; ask staff to handle it safely.",
+                        )
+                elif attendees or operation == "delete_event":
                     expected_body = (
                         tracked.get("pending_body", "")
                         if matches_pending
@@ -1373,7 +1684,16 @@ class MicrosoftCalendarTool(Tool):
                     tracked["pending_operation"] = operation
                     self._track(call_id, tracked)
                     # DELETE on an organizer meeting generates cancellation notices.
+                    write_started = True
                     deleted = client.delete_event(event_id, etag=etag)
+                    try:
+                        remaining = client.get_event(event_id)
+                        if remaining is None:
+                            remaining = client.get_owned_event_in_mailbox(event_id)
+                    except MicrosoftGraphApiError:
+                        return self._uncertain("cancellation verification")
+                    if remaining is not None and not remaining.get("isCancelled"):
+                        return self._uncertain("cancellation verification")
                     tracked.update(
                         state="cancelled",
                         pending_operation=None,
@@ -1458,6 +1778,12 @@ class MicrosoftCalendarTool(Tool):
                         pending_body=None,
                         subject=tracked.get("pending_subject")
                         or tracked.get("subject"),
+                        teams_snapshot=(
+                            meeting_snapshot(event)
+                            if tracked.get("teams")
+                            else tracked.get("teams_snapshot")
+                        ),
+                        pending_teams_snapshot=None,
                         pending_subject=None,
                         start_utc=target[0],
                         end_utc=target[1],
@@ -1485,7 +1811,7 @@ class MicrosoftCalendarTool(Tool):
                     exclude_id=event_id,
                     for_booking=True,
                 )
-                if not any(a <= start and end <= b for a, b in intervals):
+                if not any(to_utc(a) <= to_utc(start) and to_utc(end) <= to_utc(b) for a, b in intervals):
                     raise BookingValidationError(
                         "slot_busy",
                         "The new interval is busy; the original booking is retained.",
@@ -1505,10 +1831,11 @@ class MicrosoftCalendarTool(Tool):
                         account.timezone,
                     )
                     update_body["subject"] = rendered_subject
-                    update_body["body"] = {
-                        "contentType": "text",
-                        "content": rendered_body,
-                    }
+                    update_body["body"] = (
+                        replace_details(event["body"], rendered_body)
+                        if tracked.get("teams")
+                        else {"contentType": "text", "content": rendered_body}
+                    )
                 etag = event.get("@odata.etag")
                 if not isinstance(etag, str) or not etag.strip() or etag.strip() == "*":
                     raise BookingValidationError(
@@ -1522,10 +1849,29 @@ class MicrosoftCalendarTool(Tool):
                     pending_body=rendered_body,
                     pending_subject=rendered_subject,
                 )
+                if tracked.get("teams"):
+                    pending_event = {**event, **update_body}
+                    tracked["pending_teams_snapshot"] = meeting_snapshot(pending_event)
                 self._track(call_id, tracked)
-                updated = client.update_event(event_id, update_body, etag)
+                write_started = True
+                updated = client.update_event(
+                    event_id,
+                    update_body,
+                    etag,
+                    **({"html_body": True} if tracked.get("teams") else {}),
+                )
                 if not isinstance(updated, dict) or updated.get("id") != event_id:
                     return self._uncertain("rescheduling")
+                if tracked.get("teams"):
+                    if not self._matches_teams_update(updated, tracked, account):
+                        # An incomplete PATCH response is not another write. Read
+                        # once to verify the applied state before confirming it.
+                        try:
+                            updated = client.get_event(event_id, html_body=True)
+                        except MicrosoftGraphApiError:
+                            return self._uncertain("rescheduling verification")
+                        if not self._matches_teams_update(updated, tracked, account):
+                            return self._uncertain("rescheduling")
                 tracked.update(
                     pending_operation=None,
                     pending_target=None,
@@ -1535,6 +1881,12 @@ class MicrosoftCalendarTool(Tool):
                     pending_subject=None,
                     start_utc=target[0],
                     end_utc=target[1],
+                    teams_snapshot=(
+                        meeting_snapshot(updated)
+                        if tracked.get("teams")
+                        else tracked.get("teams_snapshot")
+                    ),
+                    pending_teams_snapshot=None,
                 )
                 self._track(call_id, tracked)
                 return self._mutation_result(
@@ -1548,13 +1900,18 @@ class MicrosoftCalendarTool(Tool):
                 )
             except MicrosoftGraphApiError as exc:
                 if tracked.get("pending_operation"):
-                    if exc.error_code == "graph_unavailable" or exc.status is None:
+                    if (
+                        not write_started
+                        or exc.error_code == "graph_unavailable"
+                        or exc.status is None
+                    ):
                         return self._uncertain(operation)
                     tracked.update(
                         pending_operation=None,
                         pending_target=None,
                         pending_body=None,
                         pending_subject=None,
+                        pending_teams_snapshot=None,
                     )
                     self._track(call_id, tracked)
                 return self._map_api_error(

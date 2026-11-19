@@ -216,10 +216,16 @@ Enable APIs:
    ```bash
    gcloud projects add-iam-policy-binding PROJECT_ID \
      --member="serviceAccount:asterisk-ai-agent@PROJECT_ID.iam.gserviceaccount.com" \
-     --role="roles/speech.client" \
-     --role="roles/aiplatform.user" \
-     --role="roles/texttospeech.client"
+     --role="roles/speech.client"
    ```
+
+   Default pipeline endpoints are `generativelanguage.googleapis.com` for LLM,
+   `speech.googleapis.com` for STT, and `texttospeech.googleapis.com` for TTS.
+   These adapters need no Vertex AI project role. For Cloud TTS authentication
+   and quota permissions, follow
+   [Google's authentication guide](https://docs.cloud.google.com/text-to-speech/docs/authentication).
+   The AVA adapter credential precedence is documented in the
+   [configuration reference](../../Configuration-Reference.md#google-pipelines).
 
 3. **Download Key**:
    ```bash

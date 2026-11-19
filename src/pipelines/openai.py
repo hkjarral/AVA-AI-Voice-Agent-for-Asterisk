@@ -17,7 +17,7 @@ import uuid
 import wave
 from io import BytesIO
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable, Dict, Iterable, Optional
+from typing import Any, AsyncIterator, Callable, Dict, Iterable, List, Optional
 from urllib.parse import urlparse
 
 import aiohttp
@@ -84,6 +84,37 @@ def _make_ws_headers(options: Dict[str, Any]) -> Iterable[tuple[str, str]]:
     if options.get("project"):
         headers.append(("OpenAI-Project", options["project"]))
     return headers
+
+
+def _tool_call_slot(accum: Dict[int, Dict[str, Any]], tc_delta: Dict[str, Any]) -> int:
+    """Pick the accumulator slot a streamed tool call delta belongs to.
+
+    OpenAI sends an ``index`` on every delta. OpenAI-compatible servers (Gemini,
+    Ollama and others) may omit it or reuse one index for different calls; without
+    this, every call would share a slot and overwrite each other's name and
+    concatenate their arguments. A known id takes precedence over the index.
+    An unseen id at an occupied index starts a new call. Anonymous fragments
+    continue the most recently updated call for their index, or overall when
+    the index is missing. Slots retain their original response ordering.
+    """
+    call_id = tc_delta.get("id")
+    index = tc_delta.get("index")
+    if call_id:
+        for slot, entry in accum.items():
+            if entry["id"] == call_id:
+                return slot
+    if index is not None:
+        same_index = [slot for slot, entry in accum.items() if entry["index"] == index]
+        if not same_index:
+            return index if index not in accum else max(accum) + 1
+        slot = same_index[-1]
+        # Ollama sends distinct calls, each with its own id, all at index 0
+        if call_id and accum[slot]["id"] and accum[slot]["id"] != call_id:
+            return max(accum) + 1
+        return slot
+    if not call_id and not (tc_delta.get("function") or {}).get("name") and accum:
+        return next(reversed(accum))
+    return max(accum) + 1 if accum else 0
 
 
 def _make_http_headers(options: Dict[str, Any]) -> Dict[str, str]:
@@ -461,24 +492,7 @@ class OpenAILLMAdapter(LLMComponent):
         
         # Tool support: tool allowlists are resolved per-context by the engine and passed in via `merged["tools"]`.
         # Do not gate tools by provider-level flags; contexts are the source of truth for tool availability.
-        tools_list = merged.get("tools")
-        tool_schemas = []
-        call_tool_registry = self.tool_registry_or(tool_registry)
-        if tools_list and isinstance(tools_list, list):
-            for tool_name in tools_list:
-                tool = call_tool_registry.get(tool_name)
-                if tool:
-                    try:
-                        from src.tools.base import ToolPhase
-                        if getattr(tool.definition, "phase", ToolPhase.IN_CALL) != ToolPhase.IN_CALL:
-                            logger.warning("Skipping non-in-call tool in pipeline schema", tool=tool_name)
-                            continue
-                    except Exception:
-                        pass
-                    tool_schemas.append(tool.definition.to_openai_schema())
-                else:
-                    logger.warning("Tool not found in registry", tool=tool_name)
-            
+        tool_schemas = self._in_call_tool_schemas(merged, tool_registry)
         if tool_schemas:
             payload["tools"] = tool_schemas
             payload["tool_choice"] = "auto"
@@ -682,14 +696,7 @@ class OpenAILLMAdapter(LLMComponent):
         payload["stream"] = True
 
         # Include tools in streaming request so the LLM can return tool calls
-        tools_list = merged.get("tools")
-        tool_schemas = []
-        call_tool_registry = self.tool_registry_or(tool_registry)
-        if tools_list and isinstance(tools_list, list):
-            for tool_name in tools_list:
-                tool = call_tool_registry.get(tool_name)
-                if tool:
-                    tool_schemas.append(tool.definition.to_openai_schema())
+        tool_schemas = self._in_call_tool_schemas(merged, tool_registry)
         if tool_schemas:
             payload["tools"] = tool_schemas
             payload["tool_choice"] = "auto"
@@ -725,15 +732,21 @@ class OpenAILLMAdapter(LLMComponent):
 
                             # Accumulate tool call deltas
                             for tc_delta in delta.get("tool_calls", []):
-                                idx = tc_delta.get("index", 0)
+                                idx = _tool_call_slot(_tool_call_accum, tc_delta)
                                 if idx not in _tool_call_accum:
                                     _tool_call_accum[idx] = {
                                         "id": tc_delta.get("id", ""),
                                         "name": "",
                                         "arguments": "",
                                         "type": tc_delta.get("type", "function"),
+                                        "index": tc_delta.get("index"),
                                     }
-                                entry = _tool_call_accum[idx]
+                                # Insertion order tracks the last updated call;
+                                # numeric slots preserve the final response order.
+                                entry = _tool_call_accum.pop(idx)
+                                _tool_call_accum[idx] = entry
+                                if tc_delta.get("index") is not None:
+                                    entry["index"] = tc_delta["index"]
                                 if tc_delta.get("id"):
                                     entry["id"] = tc_delta["id"]
                                 func = tc_delta.get("function", {})
@@ -866,6 +879,27 @@ class OpenAILLMAdapter(LLMComponent):
             except Exception:
                 merged["instructions"] = None
         return merged
+
+    def _in_call_tool_schemas(self, merged: Dict[str, Any], tool_registry: Any = None) -> List[Dict[str, Any]]:
+        """OpenAI schemas for the configured tools, leaving out tools that are not in-call."""
+        tools_list = merged.get("tools")
+        tool_schemas: List[Dict[str, Any]] = []
+        call_tool_registry = self.tool_registry_or(tool_registry)
+        if tools_list and isinstance(tools_list, list):
+            for tool_name in tools_list:
+                tool = call_tool_registry.get(tool_name)
+                if tool and getattr(tool, "is_enabled", True):
+                    try:
+                        from src.tools.base import ToolPhase
+                        if getattr(tool.definition, "phase", ToolPhase.IN_CALL) != ToolPhase.IN_CALL:
+                            logger.warning("Skipping non-in-call tool in pipeline schema", tool=tool_name)
+                            continue
+                    except Exception:
+                        pass
+                    tool_schemas.append(tool.definition.to_openai_schema())
+                else:
+                    logger.warning("Tool not found in registry", tool=tool_name)
+        return tool_schemas
 
     def _build_chat_payload(self, transcript: str, context: Dict[str, Any], merged: Dict[str, Any]) -> Dict[str, Any]:
         messages = self._coalesce_messages(transcript, context, merged)

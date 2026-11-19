@@ -889,12 +889,12 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                             <HelpTooltip
                                 content={
                                     <>
-                                        <strong>Input Gain Target RMS</strong> — target loudness (root-mean-square, 0.0–1.0) the AGC normalizes caller audio to.
+                                        <strong>Input Gain Target RMS</strong> — target RMS for inbound PCM audio (linear amplitude, 0–32767).
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                             <li><code>0</code> — AGC disabled, raw audio forwarded</li>
-                                            <li><code>0.05</code>–<code>0.1</code> — typical for quiet callers on mobile</li>
+                                            <li>Pair a measured target with Input Gain Max dB; gain starts at unity and adjusts gradually</li>
                                         </ul>
-                                        Helps soft-spoken callers be heard by VAD/STT without distorting loud ones (capped by Input Gain Max dB).
+                                        Gain follows a smoothed audio level, with a noise floor and peak headroom limit.
                                     </>
                                 }
                             />
@@ -914,8 +914,8 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                                     <>
                                         <strong>Input Gain Max dB</strong> — ceiling on AGC amplification, in decibels.
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                            <li><code>0</code> — disabled (no amplification cap, or AGC off)</li>
-                                            <li><code>12</code>–<code>20</code> dB — typical safety cap; prevents AGC from boosting silence/noise floor</li>
+                                            <li><code>0</code> — disabled (AGC off)</li>
+                                            <li><code>12</code>–<code>20</code> dB — maximum amplification; use Noise Floor RMS to exclude quiet gaps</li>
                                         </ul>
                                         Pair with Input Gain Target RMS; this is the brake on the gain knob.
                                     </>
@@ -928,6 +928,20 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                             value={config.input_gain_max_db || 0}
                             onChange={(e) => handleChange('input_gain_max_db', parseFloat(e.target.value))}
                         />
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium" htmlFor="input-gain-noise-floor">Input Gain Noise Floor RMS</label>
+                        <input
+                            id="input-gain-noise-floor"
+                            type="number"
+                            min={0}
+                            max={32767}
+                            step={1}
+                            className="w-full p-2 rounded border border-input bg-background"
+                            value={config.input_gain_noise_floor_rms ?? 200}
+                            onChange={(e) => handleChange('input_gain_noise_floor_rms', e.target.value ? parseInt(e.target.value, 10) : 200)}
+                        />
+                        <p className="text-xs text-muted-foreground">At or below this level, gain returns to unity. Default: 200. Applies only when input gain is enabled. Restart the AI Engine after saving.</p>
                     </div>
                 </div>
             </div>

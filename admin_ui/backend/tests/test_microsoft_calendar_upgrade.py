@@ -47,6 +47,49 @@ def graph_response(payload):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "enabled,supported", [(False, False), (True, True), (True, False)]
+)
+async def test_teams_verify_uses_selected_calendar_capabilities_without_writes(
+    persisted_account, enabled, supported
+):
+    account, saved, cache = persisted_account
+    before = cache.read_bytes()
+    requests = []
+
+    def send(request, timeout):
+        requests.append(request)
+        assert request.method == "GET"
+        if request.full_url.endswith("/me"):
+            return graph_response({"userPrincipalName": "scheduler@example.com"})
+        assert request.full_url.endswith("/me/calendars/" + account["calendar_id"])
+        return graph_response(
+            {
+                "id": account["calendar_id"],
+                "name": "Selected",
+                "canEdit": True,
+                "allowedOnlineMeetingProviders": (
+                    ["teamsForBusiness"] if supported else []
+                ),
+            }
+        )
+
+    with patch.object(
+        MicrosoftGraphClient, "acquire_token", return_value="synthetic"
+    ), patch("urllib.request.urlopen", side_effect=send):
+        request = config._MicrosoftVerifyRequest(teams_enabled=enabled)
+        if enabled and not supported:
+            with pytest.raises(HTTPException) as caught:
+                await config.verify_microsoft_calendar(request)
+            assert caught.value.detail["error_code"] == "teams_not_supported"
+        else:
+            result = await config.verify_microsoft_calendar(request)
+            assert result["teams_supported"] is supported
+    assert len(requests) == 2 and cache.read_bytes() == before
+    assert saved["tools"]["microsoft_calendar"]["accounts"]["default"] == account
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("default_calendar", [True, False])
 @pytest.mark.parametrize("returned_id", ["A" * 152, "B" * 68])
 async def test_upgrade_verifies_original_saved_id_directly_despite_enumerated_alias(

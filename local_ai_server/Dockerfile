@@ -64,8 +64,10 @@ RUN if [ "$INCLUDE_SHERPA" = "true" ]; then \
 RUN if [ "$INCLUDE_FASTER_WHISPER" = "true" ]; then \
         echo "📦 Installing Faster-Whisper STT..." && \
         FASTER_WHISPER_REQUIREMENT="$(grep -m 1 '^faster-whisper==' requirements.txt || true)"; \
-        if [ -z "$FASTER_WHISPER_REQUIREMENT" ]; then echo "❌ Missing faster-whisper pin" >&2; exit 1; fi; \
-        pip install --no-cache-dir "$FASTER_WHISPER_REQUIREMENT"; \
+        HF_HUB_REQUIREMENT="$(grep -m 1 '^huggingface-hub==' requirements.txt || true)"; \
+        if [ -z "$FASTER_WHISPER_REQUIREMENT" ] || [ -z "$HF_HUB_REQUIREMENT" ]; then echo "❌ Missing faster-whisper/huggingface-hub pin" >&2; exit 1; fi; \
+        pip install --no-cache-dir "$FASTER_WHISPER_REQUIREMENT" "$HF_HUB_REQUIREMENT" && \
+        python -c 'from faster_whisper import WhisperModel'; \
     fi
 
 RUN if [ "$INCLUDE_WHISPER_CPP" = "true" ]; then \
@@ -167,7 +169,7 @@ FROM python:3.11-slim-trixie
 # Build argument to optionally include Kroko embedded server
 ARG INCLUDE_KROKO_EMBEDDED=false
 
-# Install runtime dependencies
+# Install runtime dependencies. Require the Debian Trixie zlib fix (DSA-6613-1).
 RUN apt-get -o Acquire::Retries=5 update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     tzdata \
     libsndfile1 \
@@ -178,6 +180,8 @@ RUN apt-get -o Acquire::Retries=5 update && DEBIAN_FRONTEND=noninteractive apt-g
     sox \
     wget \
     espeak-ng \
+    zlib1g \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' zlib1g)" ge '1:1.3.dfsg+really1.3.1-1+deb13u1' \
     && rm -rf /var/lib/apt/lists/*
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -236,6 +236,45 @@ async def test_openai_llm_uses_captured_registry_for_tool_schemas(monkeypatch):
     live_registry.get.assert_not_called()
 
 
+def _tool_with_phase(name, phase):
+    definition = MagicMock()
+    definition.phase = phase
+    definition.to_openai_schema.return_value = {
+        "type": "function",
+        "function": {"name": name, "description": name, "parameters": {"type": "object", "properties": {}}},
+    }
+    return MagicMock(definition=definition)
+
+
+@pytest.mark.asyncio
+async def test_openai_llm_stream_leaves_non_in_call_tools_out_of_the_request():
+    app_config = _build_app_config()
+    provider_config = OpenAIProviderConfig(**app_config.providers["openai"])
+    fake_session = _FakeStreamingSession(_SSEStream([{"choices": [{"delta": {"content": "ok"}}]}]))
+    adapter = OpenAILLMAdapter(
+        "openai_llm",
+        app_config,
+        provider_config,
+        {"use_realtime": False},
+        session_factory=lambda: fake_session,
+    )
+    in_call = _tool_with_phase("in_call_tool", ToolPhase.IN_CALL)
+    post_call = _tool_with_phase("post_call_tool", ToolPhase.POST_CALL)
+    registry = MagicMock()
+    registry.get.side_effect = {"in_call_tool": in_call, "post_call_tool": post_call}.get
+    adapter.bind_tool_registry(registry)
+
+    await adapter.start()
+    _ = [
+        chunk
+        async for chunk in adapter.generate_stream(
+            "call-1", "hello", {"system_prompt": "You are helpful."}, {"tools": ["in_call_tool", "post_call_tool"]}
+        )
+    ]
+
+    assert fake_session.requests[0]["json"]["tools"] == [in_call.definition.to_openai_schema.return_value]
+
+
 @pytest.mark.asyncio
 async def test_openai_llm_stream_timeout_returns_empty_for_serial_fallback():
     app_config = _build_app_config()
@@ -256,6 +295,75 @@ async def test_openai_llm_stream_timeout_returns_empty_for_serial_fallback():
     assert fake_session.requests[0]["json"]["stream"] is True
     assert fake_session.requests[0]["timeout"] == 1.5
     assert adapter._pending_tool_calls_by_call["call-1"] == []
+
+
+class _SSEStream:
+    def __init__(self, events):
+        self._lines = [("data: " + json.dumps(e) + "\n").encode("utf-8") for e in events] + [b"data: [DONE]\n"]
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._lines:
+            raise StopAsyncIteration
+        return self._lines.pop(0)
+
+
+async def _stream_tool_calls(tool_call_deltas):
+    app_config = _build_app_config()
+    provider_config = OpenAIProviderConfig(**app_config.providers["openai"])
+    events = [{"choices": [{"delta": {"tool_calls": deltas}}]} for deltas in tool_call_deltas]
+    adapter = OpenAILLMAdapter(
+        "openai_llm",
+        app_config,
+        provider_config,
+        {"use_realtime": False},
+        session_factory=lambda: _FakeStreamingSession(_SSEStream(events)),
+    )
+    await adapter.start()
+    _ = [chunk async for chunk in adapter.generate_stream("call-1", "hello", {"system_prompt": "You are helpful."}, {})]
+    return adapter._pending_tool_calls_by_call["call-1"]
+
+
+@pytest.mark.asyncio
+async def test_openai_llm_stream_keeps_two_tool_calls_without_index_apart():
+    calls = await _stream_tool_calls([
+        [{"id": "call_a", "type": "function", "function": {"name": "hangup_call", "arguments": ""}}],
+        [{"function": {"arguments": "{\"reason\":"}}],
+        [{"function": {"arguments": "\"done\"}"}}],
+        [{"id": "call_b", "type": "function", "function": {"name": "transfer", "arguments": "{\"to\":\"100\"}"}}],
+    ])
+
+    assert [(c["id"], c["name"], c["parameters"]) for c in calls] == [
+        ("call_a", "hangup_call", {"reason": "done"}),
+        ("call_b", "transfer", {"to": "100"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_openai_llm_stream_joins_fragments_that_repeat_id_without_index():
+    calls = await _stream_tool_calls([
+        [{"id": "call_a", "function": {"name": "hangup_call", "arguments": "{\"reason\":"}}],
+        [{"id": "call_a", "function": {"name": "hangup_call", "arguments": "\"done\"}"}}],
+    ])
+
+    assert [(c["id"], c["name"], c["parameters"]) for c in calls] == [("call_a", "hangup_call", {"reason": "done"})]
+
+
+@pytest.mark.asyncio
+async def test_openai_llm_stream_still_merges_indexed_tool_calls():
+    calls = await _stream_tool_calls([
+        [{"index": 0, "id": "call_a", "function": {"name": "hangup_call", "arguments": ""}},
+         {"index": 1, "id": "call_b", "function": {"name": "transfer", "arguments": ""}}],
+        [{"index": 1, "function": {"arguments": "{\"to\":\"100\"}"}}],
+        [{"index": 0, "function": {"arguments": "{}"}}],
+    ])
+
+    assert [(c["id"], c["name"], c["parameters"]) for c in calls] == [
+        ("call_a", "hangup_call", {}),
+        ("call_b", "transfer", {"to": "100"}),
+    ]
 
 
 @pytest.mark.asyncio
@@ -342,3 +450,72 @@ async def test_pipeline_orchestrator_registers_openai_adapters():
     assert isinstance(resolution.llm_adapter, OpenAILLMAdapter)
     assert isinstance(resolution.tts_adapter, OpenAITTSAdapter)
     assert resolution.tts_options["format"]["encoding"] == "mulaw"
+
+
+@pytest.mark.asyncio
+async def test_openai_llm_stream_keeps_distinct_ids_apart_when_they_share_index_zero():
+    calls = await _stream_tool_calls([
+        [{"index": 0, "id": "call_a", "type": "function", "function": {"name": "hangup_call", "arguments": "{\"reason\":\"done\"}"}}],
+        [{"index": 0, "id": "call_b", "type": "function", "function": {"name": "transfer", "arguments": "{\"to\":\"100\"}"}}],
+    ])
+
+    assert [(c["id"], c["name"], c["parameters"]) for c in calls] == [
+        ("call_a", "hangup_call", {"reason": "done"}),
+        ("call_b", "transfer", {"to": "100"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_openai_llm_stream_continues_the_latest_call_that_shares_an_index():
+    calls = await _stream_tool_calls([
+        [{"index": 0, "id": "call_a", "function": {"name": "hangup_call", "arguments": "{}"}}],
+        [{"index": 0, "id": "call_b", "function": {"name": "transfer", "arguments": "{\"to\":"}}],
+        [{"index": 0, "function": {"arguments": "\"100\"}"}}],
+    ])
+
+    assert [(c["id"], c["name"], c["parameters"]) for c in calls] == [
+        ("call_a", "hangup_call", {}),
+        ("call_b", "transfer", {"to": "100"}),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("final_index", [0, None])
+@pytest.mark.parametrize("repeat_final_id", [False, True])
+async def test_openai_llm_stream_rejoins_interleaved_calls_sharing_an_index(final_index, repeat_final_id):
+    """Repeated IDs and anonymous fragments must continue the same call once."""
+    final_delta = {"function": {"arguments": '00"}'}}
+    if final_index is not None:
+        final_delta["index"] = final_index
+    if repeat_final_id:
+        final_delta["id"] = "call_a"
+    calls = await _stream_tool_calls([
+        [{"index": 0, "id": "call_a", "function": {"name": "transfer", "arguments": '{"target":'}}],
+        [{"index": 0, "id": "call_b", "function": {"name": "check_extension_status", "arguments": '{"extension":"200"}'}}],
+        [{"index": 0, "id": "call_a", "function": {"name": "transfer", "arguments": '"1'}}],
+        [final_delta],
+    ])
+
+    assert [(c["id"], c["name"], c["parameters"]) for c in calls] == [
+        ("call_a", "transfer", {"target": "100"}),
+        ("call_b", "check_extension_status", {"extension": "200"}),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interleave_other_call", [False, True])
+async def test_openai_llm_stream_remembers_an_index_first_seen_on_a_known_id(interleave_other_call):
+    """A late index must route anonymous fragments back to the original call."""
+    deltas = [[{"id": "call_a", "function": {"name": "transfer", "arguments": '{"target":'}}]]
+    if interleave_other_call:
+        deltas.append([{"index": 0, "id": "call_b", "function": {"name": "hangup_call", "arguments": '{}'}}])
+    deltas.extend([
+        [{"index": 0, "id": "call_a", "function": {"arguments": '"1'}}],
+        [{"index": 0, "function": {"arguments": '00"}'}}],
+    ])
+    calls = await _stream_tool_calls(deltas)
+
+    expected = [("call_a", "transfer", {"target": "100"})]
+    if interleave_other_call:
+        expected.append(("call_b", "hangup_call", {}))
+    assert [(c["id"], c["name"], c["parameters"]) for c in calls] == expected

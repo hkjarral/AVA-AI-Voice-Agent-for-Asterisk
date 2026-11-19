@@ -10,7 +10,7 @@ import asyncio
 import time
 import os
 import inspect
-from typing import Optional, Dict, TYPE_CHECKING
+from typing import Optional, Dict, TYPE_CHECKING, Callable
 import structlog
 
 from src.core.session_store import SessionStore
@@ -20,6 +20,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from src.core.conversation_coordinator import ConversationCoordinator
 
 logger = structlog.get_logger(__name__)
+
+_CANCEL_STOP_ATTEMPTS = 5
+_CANCEL_RETRY_DELAY = 0.1
 
 
 class PlaybackManager:
@@ -101,8 +104,9 @@ class PlaybackManager:
         logger.info("PlaybackManager initialized",
                    media_dir=self.media_dir)
     
-    async def play_audio(self, call_id: str, audio_bytes: bytes, 
-                        playback_type: str = "response") -> Optional[str]:
+    async def play_audio(self, call_id: str, audio_bytes: bytes,
+                        playback_type: str = "response", *,
+                        owner_check: Optional[Callable[[], bool]] = None) -> Optional[str]:
         """
         Play audio with deterministic playback ID and gating.
         
@@ -110,10 +114,14 @@ class PlaybackManager:
             call_id: Canonical call ID
             audio_bytes: Audio data to play
             playback_type: Type of playback (greeting, response, etc.)
+            owner_check: Optional admission fence for stream-owned fallback.
         
         Returns:
             playback_id if successful, None if failed
         """
+        playback_id = None
+        audio_file = None
+        ari_attempted = False
         try:
             # Get session to determine target channel
             session = await self.session_store.get_by_call_id(call_id)
@@ -123,6 +131,9 @@ class PlaybackManager:
                            call_id=call_id)
                 return None
             
+            if owner_check is not None and not owner_check():
+                return None
+
             # Generate deterministic playback ID
             playback_id = self._generate_playback_id(call_id, playback_type)
             
@@ -130,7 +141,10 @@ class PlaybackManager:
             audio_file = await self._create_audio_file(audio_bytes, playback_id)
             if not audio_file:
                 return None
-            
+            if owner_check is not None and not owner_check():
+                await self._cleanup_audio_file(audio_file)
+                return None
+
             # Set TTS gating before playing (via coordinator if available)
             gating_success = True
             if self.conversation_coordinator:
@@ -138,6 +152,9 @@ class PlaybackManager:
             else:
                 gating_success = await self.session_store.set_gating_token(call_id, playback_id)
 
+            if owner_check is not None and not owner_check():
+                await self._cancel_playback_start(call_id, playback_id, audio_file, False, notify_no_input=False)
+                return None
             if not gating_success:
                 logger.error(
                     "Failed to start playback gating",
@@ -162,8 +179,18 @@ class PlaybackManager:
             # (PlaybackFinished might arrive before add_playback completes if order is reversed)
             await self.session_store.add_playback(playback_ref)
             
+            if owner_check is not None and not owner_check():
+                await self._cancel_playback_start(call_id, playback_id, audio_file, False, notify_no_input=False)
+                return None
+
             # Play audio via ARI
+            ari_attempted = True
             success = await self._play_via_ari(session, audio_file, playback_id)
+            if owner_check is not None and not owner_check():
+                # A submitted request cannot be unsent. Reuse the exact-ID stop
+                # and retained retry owner from cancelled playback startup.
+                await self._cancel_playback_start(call_id, playback_id, audio_file, True, notify_no_input=False)
+                return None
             if not success:
                 # Cleanup if playback failed to start
                 await self.session_store.pop_playback(playback_id)
@@ -177,7 +204,10 @@ class PlaybackManager:
             
             # Schedule token-aware fallback to ensure gating is cleared even if PlaybackFinished is missed
             await self._schedule_gating_fallback(call_id, playback_id, len(audio_bytes))
-            
+            if owner_check is not None and not owner_check():
+                await self._cancel_playback_start(call_id, playback_id, audio_file, True, notify_no_input=False)
+                return None
+
             logger.info("🔊 AUDIO PLAYBACK - Started",
                        call_id=call_id,
                        playback_id=playback_id,
@@ -186,6 +216,9 @@ class PlaybackManager:
             
             return playback_id
             
+        except asyncio.CancelledError:
+            await self._cancel_playback_start(call_id, playback_id, audio_file, ari_attempted)
+            raise
         except Exception as e:
             logger.error("Error playing audio",
                         call_id=call_id,
@@ -194,6 +227,127 @@ class PlaybackManager:
                         exc_info=True)
             return None
     
+    async def _cancel_playback_start(
+        self, call_id: str, playback_id: Optional[str], audio_file: Optional[str],
+        ari_attempted: bool, *, notify_no_input: bool = True,
+    ) -> None:
+        """Retire only this playback, retaining its retry owner if remote stop is unknown."""
+        stopped = not ari_attempted
+        retained_ref = None
+        if ari_attempted and playback_id:
+            retained_ref = await self.retain_cancelled_playback(
+                call_id, playback_id, notify_no_input=notify_no_input,
+            )
+            try:
+                stopped = bool(await asyncio.wait_for(self.ari_client.stop_playback(playback_id), 1.0))
+            except Exception:
+                stopped = False
+        if stopped and playback_id:
+            retired_ref = await self.session_store.pop_playback(playback_id)
+            policy_ref = retired_ref if retired_ref is not None else retained_ref
+            if policy_ref is not None:
+                notify_no_input = notify_no_input and policy_ref.cancel_notify_no_input
+            if self.conversation_coordinator:
+                if notify_no_input:
+                    await self.conversation_coordinator.cancel_tts(call_id, playback_id)
+                else:
+                    await self.conversation_coordinator.on_tts_end(
+                        call_id, playback_id, "ownership-lost", notify_no_input=False,
+                    )
+                latest = await self.session_store.get_by_call_id(call_id)
+                if (
+                    latest and not latest.tts_tokens
+                    and not latest.cleanup_in_progress and not latest.cleanup_completed
+                ):
+                    await self.conversation_coordinator.update_conversation_state(call_id, "listening")
+            else:
+                await self.session_store.clear_gating_token(call_id, playback_id)
+            if audio_file:
+                await self._cleanup_audio_file(audio_file)
+        elif playback_id:
+            logger.warning("Cancelled playback startup stop unconfirmed; retaining output ownership", call_id=call_id, playback_id=playback_id)
+
+    async def retain_cancelled_playback(
+        self, call_id: str, playback_id: str, *, notify_no_input: bool = True,
+    ) -> Optional[PlaybackRef]:
+        """Keep an exact-playback retry owner across transfer cancellation/replacement."""
+        ref = await self.session_store.get_playback(playback_id)
+        if not ref or ref.call_id != call_id:
+            return
+        # The ref owns this policy through both retry-stop and ARI-finish races.
+        # A duplicate default retain must not weaken an ownership-loss fence.
+        ref.cancel_notify_no_input = ref.cancel_notify_no_input and notify_no_input
+        if ref.cancel_cleanup_pending:
+            return ref
+        ref.cancel_cleanup_pending = True
+
+        async def retry_stop():
+            delay = _CANCEL_RETRY_DELAY
+            for _attempt in range(_CANCEL_STOP_ATTEMPTS):
+                await asyncio.sleep(delay)
+                current = await self.session_store.get_playback(playback_id)
+                session = await self.session_store.get_by_call_id(call_id)
+                if not current or current.call_id != call_id:
+                    return
+                if not session:
+                    await self.discard_terminal_playbacks(call_id)
+                    return
+                if session.cleanup_in_progress or session.cleanup_completed:
+                    return
+                try:
+                    stopped = bool(await asyncio.wait_for(self.ari_client.stop_playback(playback_id), 1.0))
+                except Exception:
+                    stopped = False
+                if stopped:
+                    await self.on_playback_finished(playback_id)
+                    return
+                delay = min(delay * 2, 5.0)
+            session = await self.session_store.get_by_call_id(call_id)
+            if not session or session.cleanup_in_progress or session.cleanup_completed:
+                return
+            # Retry exhaustion is a terminal call failure, not evidence that
+            # the remote playback completed. Close the AI context fail-closed
+            # and use the engine's existing telephony-ownership cleanup rules.
+            session.call_outcome = "failed"
+            session.cleanup_in_progress = True
+            session.audio_capture_enabled = False
+            await self.session_store.upsert_call(session)
+            logger.error("Cancelled playback stop retries exhausted; closing AI call", call_id=call_id, playback_id=playback_id)
+            engine = getattr(self.ari_client, "engine", None)
+            cleanup = getattr(engine, "_cleanup_call", None)
+            try:
+                if callable(cleanup):
+                    await cleanup(call_id)
+                else:
+                    logger.critical("Engine lifecycle unavailable during terminal playback recovery", call_id=call_id)
+                    await self.discard_terminal_playbacks(call_id)
+                    await self.session_store.remove_call(call_id)
+            finally:
+                await self.discard_terminal_playbacks(call_id)
+
+        engine = getattr(self.ari_client, "engine", None)
+        schedule = getattr(engine, "_fire_and_forget_for_call", None)
+        if callable(schedule):
+            schedule(call_id, retry_stop(), name=f"cancelled-playback-{playback_id}")
+        else:
+            asyncio.create_task(retry_stop(), name=f"cancelled-playback-{playback_id}")
+        return ref
+
+    async def discard_terminal_playbacks(self, call_id: str) -> None:
+        """Release local resources as a call closes, without claiming remote completion."""
+        for playback_id in await self.session_store.list_playbacks_for_call(call_id):
+            ref = await self.session_store.pop_playback(playback_id)
+            if ref is None:
+                continue
+            if self.conversation_coordinator:
+                await self.conversation_coordinator.cancel_tts(call_id, playback_id)
+            else:
+                await self.session_store.clear_gating_token(call_id, playback_id)
+            await self._cleanup_audio_file(ref.audio_file)
+        session = await self.session_store.get_by_call_id(call_id)
+        if session:
+            session.audio_capture_enabled = False
+
     async def on_playback_finished(self, playback_id: str) -> bool:
         """
         Handle PlaybackFinished event from Asterisk.
@@ -218,6 +372,7 @@ class PlaybackManager:
                     playback_ref.call_id,
                     playback_id,
                     reason="playback-finished",
+                    notify_no_input=playback_ref.cancel_notify_no_input,
                 )
                 await self.conversation_coordinator.update_conversation_state(
                     playback_ref.call_id,
@@ -303,7 +458,18 @@ class PlaybackManager:
                 with open(file_path, 'wb') as f:
                     f.write(audio_bytes)
 
-            await asyncio.to_thread(_write)
+            write_task = asyncio.create_task(asyncio.to_thread(_write))
+            try:
+                await asyncio.shield(write_task)
+            except asyncio.CancelledError:
+                # The worker can finish after cancellation. Remove its file
+                # only after the write completes so it cannot recreate a leak.
+                def cleanup_after_write(done):
+                    if not done.cancelled():
+                        done.exception()
+                    asyncio.create_task(self._cleanup_audio_file(file_path))
+                write_task.add_done_callback(cleanup_after_write)
+                raise
             
             # Set file permissions for Asterisk readability via group
             # Files inherit group ownership from setgid directory (set up by preflight.sh)
@@ -459,6 +625,10 @@ class PlaybackManager:
             # Check if playback is still active
             playback_ref = await self.session_store.get_playback(playback_id)
             if playback_ref:
+                if playback_ref.cancel_cleanup_pending:
+                    # Timing is not evidence that an uncertain remote stop
+                    # succeeded. Its exact-playback retry owner clears it.
+                    return
                 # PlaybackFinished may have been missed. Clean up gating and local playback tracking
                 # so we don't leak playbacks/gating for long-running calls.
                 popped_ref = None

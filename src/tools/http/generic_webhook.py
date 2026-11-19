@@ -45,6 +45,7 @@ def _now_iso() -> str:
 
 from src.tools.base import PostCallTool, ToolDefinition, ToolCategory, ToolPhase
 from src.tools.context import PostCallContext
+from src.tools.http.template import TemplateError, render_body, render_headers, render_template, render_url
 from src.tools.http.debug_trace import (
     BODY_CAPABLE_HTTP_METHODS,
     build_var_snapshot,
@@ -190,6 +191,7 @@ class GenericWebhookTool(PostCallTool):
         body_text: str = "",
         error_message: Optional[str] = None,
         summary_diagnostics: Optional[Dict[str, Any]] = None,
+        request_diagnostics: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Store execution diagnostics for ``call_id`` in ``self._last_results``."""
         max_chars = _resolve_body_max_chars(self.config.response_body_max_chars)
@@ -208,6 +210,11 @@ class GenericWebhookTool(PostCallTool):
             )
             return
         self._last_results[call_id] = {
+            "phase": "post_call",
+            "delivery_status": ("accepted" if http_status is not None and 200 <= http_status < 300 else
+                                "rejected" if http_status is not None and 400 <= http_status < 500 and http_status != 408 else
+                                "skipped" if status == "skipped" else "uncertain"),
+            **(request_diagnostics or {}),
             "status": status,
             "http_status": http_status,
             "response_summary": response_summary,
@@ -254,6 +261,15 @@ class GenericWebhookTool(PostCallTool):
             return
 
         try:
+            # Fail local preparation before invoking a potentially expensive LLM.
+            values = context.to_payload_dict()
+            values.update(schema_version="1", summary_json=json.dumps(context.summary or ""))
+            render_url(self.config.url, values)
+            initial_headers = render_headers(self.config.headers, values)
+            if str(self.config.method or "POST").strip().upper() in BODY_CAPABLE_HTTP_METHODS and self.config.payload_template:
+                if not any(key.lower() == "content-type" for key in initial_headers):
+                    initial_headers["Content-Type"] = self.config.content_type
+                render_body(self.config.payload_template, values, initial_headers)
             # Each webhook gets its own context copy. Post-call tools execute
             # concurrently, so mutating the shared context would let one
             # webhook's provider/prompt leak into a sibling webhook payload.
@@ -311,11 +327,9 @@ class GenericWebhookTool(PostCallTool):
                 summary_diagnostics = {"summary_status": "existing"}
             
             # Build request
-            url = self._substitute_variables(self.config.url, request_context)
-            headers = {
-                k: self._substitute_variables(v, request_context)
-                for k, v in self.config.headers.items()
-            }
+            values = self._template_values(request_context)
+            url = render_url(self.config.url, values)
+            headers = render_headers(self.config.headers, values)
             
             method = str(self.config.method or "POST").strip().upper()
             body_capable = method in BODY_CAPABLE_HTTP_METHODS
@@ -328,7 +342,7 @@ class GenericWebhookTool(PostCallTool):
             payload = None
             if body_capable:
                 if self.config.payload_template:
-                    payload = self._build_payload(request_context)
+                    payload = self._build_payload(request_context, headers)
                 else:
                     # Default payload using context's to_payload_dict
                     payload = json.dumps(request_context.to_payload_dict())
@@ -427,6 +441,14 @@ class GenericWebhookTool(PostCallTool):
                             summary_diagnostics=summary_diagnostics,
                         )
 
+        except TemplateError as exc:
+            logger.warning("HTTP tool template rejected call_id=%s tool=%s phase=post_call error_code=%s template_variable=%s",
+                           call_id, self.config.name, exc.code, exc.variable,
+                           extra={"call_id": call_id, "tool": self.config.name,
+                           "phase": "post_call", **exc.diagnostics()})
+            self._record_result(call_id=call_id, status="error", started_iso=started_iso,
+                                started_monotonic=started, error_message=str(exc), summary_diagnostics=summary_diagnostics,
+                                request_diagnostics={"delivery_status": "skipped", **exc.diagnostics()})
         except (asyncio.TimeoutError, aiohttp.ServerTimeoutError) as e:
             # Explicit timeout exception types — covers asyncio.TimeoutError
             # raised by aiohttp.ClientTimeout and SocketTimeoutError aliases.
@@ -460,7 +482,7 @@ class GenericWebhookTool(PostCallTool):
                 summary_diagnostics=summary_diagnostics,
             )
     
-    def _build_payload(self, context: PostCallContext) -> str:
+    def _build_payload(self, context: PostCallContext, headers: Optional[Dict[str, str]] = None) -> str:
         """
         Build payload from template with variable substitution.
         """
@@ -478,63 +500,33 @@ class GenericWebhookTool(PostCallTool):
         else:
             payload_vars["summary_json"] = json.dumps("")
         
-        # Substitute variables
-        result = template
-        
-        # Simple variable substitution: {var_name}
-        for key, value in payload_vars.items():
-            placeholder = "{" + key + "}"
-            if placeholder in result:
-                # For JSON fields (ending with _json), don't quote
-                if key.endswith("_json"):
-                    result = result.replace(placeholder, str(value))
-                else:
-                    # Escape for JSON string
-                    escaped = json.dumps(str(value))[1:-1]  # Remove outer quotes
-                    result = result.replace(placeholder, escaped)
-        
-        # Environment variables: ${VAR_NAME}
-        env_pattern = r'\$\{([A-Z_][A-Z0-9_]*)\}'
-        def env_replacer(match):
-            var_name = match.group(1)
-            value = os.environ.get(var_name, "")
-            return json.dumps(value)[1:-1]  # Escape for JSON
-        
-        result = re.sub(env_pattern, env_replacer, result)
-        
-        return result
+        if headers is None:
+            headers = render_headers(self.config.headers, self._template_values(context))
+            if not any(key.lower() == "content-type" for key in headers):
+                headers["Content-Type"] = self.config.content_type
+        return render_body(template, payload_vars, headers)
     
     def _substitute_variables(self, template: str, context: PostCallContext) -> str:
         """
         Substitute variables in URL/headers.
         """
-        result = template
-        
-        # Context variables
-        replacements = {
-            "{call_id}": context.call_id or "",
-            "{caller_number}": context.caller_number or "",
-            "{called_number}": context.called_number or "",
-            "{caller_name}": context.caller_name or "",
-            "{context_name}": context.context_name or "",
-            "{provider}": context.provider or "",
-            "{call_direction}": context.call_direction or "",
-            "{campaign_id}": context.campaign_id or "",
-            "{lead_id}": context.lead_id or "",
+        return render_template(template, self._template_values(context))
+
+    @staticmethod
+    def _template_values(context: PostCallContext) -> Dict[str, str]:
+        return {
+            **context.to_payload_dict(),
+            "schema_version": "1", "summary_json": json.dumps(context.summary or ""),
+            "call_id": context.call_id or "",
+            "caller_number": context.caller_number or "",
+            "called_number": context.called_number or "",
+            "caller_name": context.caller_name or "",
+            "context_name": context.context_name or "",
+            "provider": context.provider or "",
+            "call_direction": context.call_direction or "",
+            "campaign_id": context.campaign_id or "",
+            "lead_id": context.lead_id or "",
         }
-        
-        for placeholder, value in replacements.items():
-            result = result.replace(placeholder, value)
-        
-        # Environment variables: ${VAR_NAME}
-        env_pattern = r'\$\{([A-Z_][A-Z0-9_]*)\}'
-        def env_replacer(match):
-            var_name = match.group(1)
-            return os.environ.get(var_name, "")
-        
-        result = re.sub(env_pattern, env_replacer, result)
-        
-        return result
     
     def _redact_url(self, url: str) -> str:
         """Redact sensitive parts of URL for logging."""

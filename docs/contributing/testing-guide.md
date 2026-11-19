@@ -16,15 +16,23 @@ pytest tests/ -k "test_hangup" -v
 pytest tests/ --cov=src --cov-report=term-missing
 
 # CLI tests (Go)
-cd cli && go test ./...
+(cd cli && go test ./...)
 
-# Admin UI build check
-cd admin_ui/frontend && npm ci && npm run build
+# Admin UI checks (Node 22.12+ within 22.x; nvm is optional)
+(
+  cd admin_ui/frontend || exit
+  # If using nvm, run `nvm install && nvm use` here first.
+  npm ci &&
+    npm run lint &&
+    npm test &&
+    npm run build
+)
 ```
 
 ## CI Integration
 
-CI runs on `staging` and `main` branches:
+CI runs for pull requests targeting `main` and pushes to `main`.
+Regression Hardening runs after pushes to `main` and can also run manually.
 
 | Workflow | File | What It Does |
 |----------|------|-------------|

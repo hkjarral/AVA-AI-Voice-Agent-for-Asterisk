@@ -90,5 +90,20 @@ def test_gpu_ci_limits_llama_build_to_representative_architecture() -> None:
     assert "--build-arg LLAMA_CUDA_ARCHITECTURES=70" in workflow
     assert "import faster_whisper, kokoro, importlib.util" in workflow
     assert "find_spec(\\\"llama_cpp\\\")" in workflow
-    assert 'find /opt/venv/lib/python3.10/site-packages/llama_cpp/lib' in workflow
+    assert 'find /opt/venv/lib -path' in workflow
+    assert 'python3.10/site-packages' not in workflow
     assert 'grep -q "libcuda.so.1"' in workflow
+
+
+def test_engine_and_local_ai_use_the_same_websockets_pin() -> None:
+    manifests = (
+        REPO_ROOT / "requirements.txt",
+        LOCAL_AI_ROOT / "requirements.txt",
+        LOCAL_AI_ROOT / "requirements-base.txt",
+    )
+    pins = []
+    for path in manifests:
+        match = re.search(r"^websockets==(.+)$", path.read_text(), re.MULTILINE)
+        assert match is not None, path
+        pins.append(match.group(1))
+    assert len(set(pins)) == 1, pins

@@ -1,14 +1,22 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { ToolSection } from './toolSections';
+import TransferHandoffFields from './TransferHandoffFields';
+import EndpointDiscoveryModal from './EndpointDiscoveryModal';
+import { stageAdditions } from './endpointDiscovery';
+import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { Plus, Trash2, Settings, Loader2, X } from 'lucide-react';
+import { Plus, Trash2, Settings, Loader2, X, CheckCircle2, XCircle, HelpCircle, ExternalLink } from 'lucide-react';
 import { FormInput, FormSwitch, FormSelect, FormLabel } from '../ui/FormComponents';
 import { Modal } from '../ui/Modal';
 import { EmailTemplateModal } from './EmailTemplateModal';
 import HelpTooltip from '../ui/HelpTooltip';
 import { MicrosoftBookingSettings } from './MicrosoftBookingSettings';
+import CalendlyToolForm from './CalendlyToolForm';
 
 interface ToolFormProps {
+    // Keep the form mounted while navigating so OAuth and local field drafts survive.
+    section?: ToolSection;
     config: any;
     contexts?: Record<string, any>;
     hangupUsage?: {
@@ -114,7 +122,33 @@ const DEVICE_STATE_STATUS_OPTIONS: { value: string; label: string }[] = [
     { value: 'unavailable', label: 'Unavailable' },
 ];
 
-const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, onSaveNow }: ToolFormProps) => {
+// One entry of GET /api/config/providers/tts-options (secret-safe).
+interface AnnouncementVoiceOption {
+    key: string;
+    label: string;
+    ready: boolean;
+    reason?: string;
+}
+
+const ANNOUNCEMENT_VOICE_NOT_READY: Record<string, string> = {
+    disabled: 'This provider is disabled.',
+    credential_missing: 'Its credentials are not configured.',
+    voice_missing: 'It has no voice model configured.',
+};
+
+const isAnnouncementVoiceOption = (value: unknown): value is AnnouncementVoiceOption => {
+    if (!value || typeof value !== 'object') return false;
+    const item = value as Record<string, unknown>;
+    return typeof item.key === 'string' && typeof item.label === 'string' && typeof item.ready === 'boolean';
+};
+
+const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, onSaveNow, section }: ToolFormProps) => {
+    const [discoveryOpen, setDiscoveryOpen] = useState(false);
+    useEffect(() => setDiscoveryOpen(false), [section]);
+    // Background connection/verification requests can complete after the operator
+    // navigates to another tool. Merge their results into the current draft.
+    const latestConfigRef = useRef(config);
+    latestConfigRef.current = config;
     // Migrate calendar key references in all contexts' selected_calendars
     const migrateCalendarKeyInContexts = (oldKey: string, newKey: string | null) => {
         if (!contexts || !onContextsChange) return;
@@ -332,12 +366,16 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                 // the operator has explicitly typed (e.g. they want a different
                 // display tz than the calendar's own tz).
                 const calActualTz = res.data?.calendar_actual_timezone || '';
-                if (calActualTz && !((cal as any)?.timezone || '').trim()) {
-                    const cals = { ...(config.google_calendar?.calendars || {}) };
+                const current = latestConfigRef.current;
+                const currentCalendar = current.google_calendar?.calendars?.[key];
+                const canAutofill = currentCalendar && _verifyFingerprint(currentCalendar) === _verifyFingerprint(cal)
+                    && calActualTz && !(currentCalendar.timezone || '').trim();
+                if (canAutofill) {
+                    const cals = { ...(current.google_calendar?.calendars || {}) };
                     cals[key] = { ...(cals[key] || {}), timezone: calActualTz };
                     onChange({
-                        ...config,
-                        google_calendar: { ...(config.google_calendar || {}), calendars: cals },
+                        ...current,
+                        google_calendar: { ...(current.google_calendar || {}), calendars: cals },
                     });
                 }
                 // Use the post-autofill cal snapshot for the fingerprint, not
@@ -347,7 +385,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                 // pre-autofill state. The next field-change check would
                 // immediately invalidate the green check on something that
                 // didn't actually change. CodeRabbit minor finding.
-                const calForFingerprint = (calActualTz && !((cal as any)?.timezone || '').trim())
+                const calForFingerprint = canAutofill
                     ? { ...cal, timezone: calActualTz }
                     : cal;
                 setVerifyByKey((prev) => ({
@@ -437,7 +475,13 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 
                 // Build the next config in one shot. Always set credentials_path; conditionally
                 // set calendar_id + timezone if discovery returned exactly 1 reachable calendar.
-                const cals = { ...(config.google_calendar?.calendars || {}) };
+                const current = latestConfigRef.current;
+                const cals = { ...(current.google_calendar?.calendars || {}) };
+                if (!cals[key]) {
+                    setUploadByKey(prev => ({ ...prev, [key]: { uploading: false } }));
+                    toast.warning('Credentials uploaded, but the calendar was removed. No calendar settings were changed.');
+                    return;
+                }
                 const existing = cals[key] || {};
                 const updates: any = {
                     ...existing,
@@ -450,8 +494,8 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                 }
                 cals[key] = updates;
                 onChange({
-                    ...config,
-                    google_calendar: { ...(config.google_calendar || {}), calendars: cals },
+                    ...current,
+                    google_calendar: { ...(current.google_calendar || {}), calendars: cals },
                 });
 
                 setUploadByKey((prev) => ({
@@ -552,15 +596,27 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
         const [msDevice, setMsDevice] = useState<MsDeviceState>({ status: 'idle' });
         const [msCalendars, setMsCalendars] = useState<MsCalendarSummary[]>([]);
         const [msVerify, setMsVerify] = useState<MsVerifyState>({});
+        const msVerifyGeneration = useRef(0);
+        const msVerifyIdentity = JSON.stringify([config.microsoft_calendar?.accounts?.default || {}, config.microsoft_calendar?.teams_enabled === true]);
+        const msVerifyIdentityRef = useRef(msVerifyIdentity);
+        if (msVerifyIdentityRef.current !== msVerifyIdentity) {
+            msVerifyIdentityRef.current = msVerifyIdentity;
+            msVerifyGeneration.current += 1;
+        }
+        useEffect(() => { setMsVerify({}); }, [msVerifyIdentity]);
+        useEffect(() => () => { msVerifyGeneration.current += 1; }, []);
 
         const microsoftAccount = config.microsoft_calendar?.accounts?.default || {};
         const updateMicrosoftAccount = (patch: Record<string, any>) => {
-            const accounts = { ...(config.microsoft_calendar?.accounts || {}) };
+            msVerifyGeneration.current += 1;
+            setMsVerify({});
+            const current = latestConfigRef.current;
+            const accounts = { ...(current.microsoft_calendar?.accounts || {}) };
             accounts.default = { ...(accounts.default || {}), ...patch };
             onChange({
-                ...config,
+                ...current,
                 microsoft_calendar: {
-                    ...(config.microsoft_calendar || {}),
+                    ...(current.microsoft_calendar || {}),
                     accounts,
                 },
             });
@@ -608,12 +664,13 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                         const result = res.data?.result || {};
                         const calendars: MsCalendarSummary[] = result.calendars || [];
                         const defaultCal = calendars.find((c) => c.is_default_calendar) || calendars[0];
+                        const latestAccount = latestConfigRef.current?.microsoft_calendar?.accounts?.default || {};
                         setMsCalendars(calendars);
                         updateMicrosoftAccount({
                             token_cache_path: result.token_cache_path || '',
                             user_principal_name: result.user_principal_name || '',
-                            calendar_id: defaultCal?.id || microsoftAccount.calendar_id || '',
-                            timezone: microsoftAccount.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+                            calendar_id: latestAccount.calendar_id || defaultCal?.id || '',
+                            timezone: latestAccount.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
                         });
                         setMsDevice((prev) => ({ ...prev, status: 'success' }));
                         toast.success('Microsoft Calendar connected');
@@ -639,6 +696,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
         }, [msDevice.flowId, msDevice.status]);
 
         const runMicrosoftVerify = async () => {
+            const generation = ++msVerifyGeneration.current;
             const account = config.microsoft_calendar?.accounts?.default || {};
             setMsVerify({ loading: true });
             try {
@@ -650,15 +708,18 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                     user_principal_name: account.user_principal_name || '',
                     calendar_id: account.calendar_id || '',
                     timezone: account.timezone || '',
+                    teams_enabled: config.microsoft_calendar?.teams_enabled === true,
                 });
+                if (generation !== msVerifyGeneration.current) return;
                 setMsVerify({
                     loading: false,
                     ok: true,
-                    message: `Reachable: ${res.data?.calendar_name || account.calendar_id || 'calendar'}`,
+                    message: `Reachable: ${res.data?.calendar_name || account.calendar_id || 'calendar'}${res.data?.teams_supported ? ' · Teams supported' : ''}. Save & Apply to use these settings.`,
                     calendarName: res.data?.calendar_name || '',
                 });
                 toast.success('Microsoft Calendar verified');
             } catch (err: any) {
+                if (generation !== msVerifyGeneration.current) return;
                 const detail = err?.response?.data?.detail || {};
                 setMsVerify({
                     loading: false,
@@ -1227,6 +1288,35 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
         };
     }, []);
 
+    // Pipeline TTS components that can speak the attended-transfer prompts.
+    const [announcementVoices, setAnnouncementVoices] = useState<AnnouncementVoiceOption[]>([]);
+    const [announcementVoicesLoading, setAnnouncementVoicesLoading] = useState(true);
+    const [announcementVoicesFailed, setAnnouncementVoicesFailed] = useState(false);
+    useEffect(() => {
+        let cancelled = false;
+        const load = async () => {
+            try {
+                const res = await axios.get('/api/config/providers/tts-options');
+                const items: unknown = res?.data;
+                if (!cancelled) {
+                    setAnnouncementVoices(Array.isArray(items) ? items.filter(isAnnouncementVoiceOption) : []);
+                }
+            } catch {
+                // Readiness is unknown, not "not configured".
+                if (!cancelled) {
+                    setAnnouncementVoices([]);
+                    setAnnouncementVoicesFailed(true);
+                }
+            } finally {
+                if (!cancelled) setAnnouncementVoicesLoading(false);
+            }
+        };
+        load();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
     useEffect(() => {
         // If user has no Live Agents configured or already has an override set, keep advanced visible.
         if (!hasLiveAgents || hasLiveAgentDestinationOverride) {
@@ -1318,6 +1408,61 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
         onChange({ ...config, attended_transfer: next });
     };
 
+    // tts_provider / tts_options are written only when the operator changes
+    // them, so an untouched form saves attended_transfer exactly as loaded.
+    const handleAnnouncementVoiceChange = (componentKey: string) => {
+        const next: Record<string, unknown> = { ...(config.attended_transfer || {}) };
+        if (componentKey) {
+            // Voice names are provider-specific; drop them when switching.
+            if (next.tts_provider !== componentKey) delete next.tts_options;
+            next.tts_provider = componentKey;
+        } else {
+            delete next.tts_provider;
+            delete next.tts_options;
+        }
+        onChange({ ...config, attended_transfer: next });
+    };
+
+    const handleAnnouncementVoiceOption = (field: 'voice' | 'language', value: string) => {
+        const next: Record<string, unknown> = { ...(config.attended_transfer || {}) };
+        const current = next.tts_options;
+        const options: Record<string, unknown> =
+            current && typeof current === 'object' && !Array.isArray(current)
+                ? { ...(current as Record<string, unknown>) }
+                : {};
+        if (value.trim()) options[field] = value;
+        else delete options[field];
+        if (Object.keys(options).length > 0) next.tts_options = options;
+        else delete next.tts_options;
+        onChange({ ...config, attended_transfer: next });
+    };
+
+    const selectedTtsProvider: string =
+        typeof config.attended_transfer?.tts_provider === 'string' ? config.attended_transfer.tts_provider : '';
+    const selectedAnnouncementVoice = selectedTtsProvider
+        ? announcementVoices.find((option) => option.key === selectedTtsProvider)
+        : undefined;
+    const announcementVoiceText = (field: 'voice' | 'language'): string => {
+        const value = config.attended_transfer?.tts_options?.[field];
+        return typeof value === 'string' ? value : '';
+    };
+    const announcementVoiceSelectOptions = [
+        { value: '', label: 'Local AI Server (default)' },
+        ...announcementVoices.map((option) => ({
+            value: option.key,
+            label: `${option.label} — ${option.ready ? 'ready' : 'not ready'}`,
+        })),
+        ...(selectedTtsProvider && !selectedAnnouncementVoice
+            ? [{
+                value: selectedTtsProvider,
+                label:
+                    announcementVoicesLoading || announcementVoicesFailed
+                        ? selectedTtsProvider
+                        : `${selectedTtsProvider} — not configured`,
+            }]
+            : []),
+    ];
+
     // Transfer Destinations Management
     const handleEditDestination = (key: string, data: any) => {
         setEditingDestination(key);
@@ -1336,6 +1481,10 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 
     const handleSaveDestination = () => {
         if (!destinationForm.key) return;
+        if (destinationForm.handoff?.mode === 'custom' && !destinationForm.handoff.message?.trim()) {
+            toast.error('Enter a custom transfer announcement before saving.');
+            return;
+        }
 
         const destinations = { ...(config.transfer?.destinations || {}) };
 
@@ -1366,8 +1515,13 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 
     return (
         <div className="space-y-8">
+            {section === 'calendly_calendar' && <CalendlyToolForm
+                config={config.calendly_calendar || {}}
+                onChange={value => onChange({ ...latestConfigRef.current, calendly_calendar: value })}
+                onSave={async value => { if (onSaveNow) await onSaveNow({ ...latestConfigRef.current, calendly_calendar: value }); }}
+            />}
             {/* AI Identity & General Settings */}
-            <div className="space-y-4 border-b border-border pb-6">
+            <div hidden={section !== undefined && section !== 'defaults'} className="space-y-4 border-b border-border pb-6">
                 <h3 className="text-lg font-semibold text-primary">General Settings</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <FormInput
@@ -1393,11 +1547,11 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
             </div>
 
             {/* Telephony Tools */}
-            <div className="space-y-6">
-                <h3 className="text-lg font-semibold text-primary">Telephony Tools</h3>
+            <div hidden={section !== undefined && !['transfer', 'hangup_call', 'leave_voicemail'].includes(section)} className="space-y-6">
+                <h3 hidden={section !== undefined} className="text-lg font-semibold text-primary">Telephony Tools</h3>
 
                 {/* Transfer Tool */}
-                <div className="border border-border rounded-lg p-4 bg-card/50">
+                <div hidden={section !== undefined && section !== 'transfer'} className="border border-border rounded-lg p-4 bg-card/50">
                     <div className="flex justify-between items-center mb-4">
                         <FormSwitch
                             label="Transfer Tool"
@@ -1410,13 +1564,6 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 
 	                    {config.transfer?.enabled !== false && (
 	                        <div className="mt-4 space-y-4">
-		                            <FormInput
-		                                label="Channel Technology"
-		                                value={config.transfer?.technology || 'PJSIP'}
-		                                onChange={(e) => updateNestedConfig('transfer', 'technology', e.target.value.trim() || 'PJSIP')}
-		                                tooltip="Channel technology for extension transfers (PJSIP, SIP, IAX2, etc.). Default: PJSIP"
-		                                placeholder="PJSIP"
-		                            />
                                     <FormSwitch
                                         label="Defer Transfer Until Playback Completes"
                                         description="Speak the handoff message before executing blind, live-agent, or attended transfer actions."
@@ -1424,7 +1571,22 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                         onChange={(e) => updateNestedConfig('transfer', 'defer_until_playback_complete', e.target.checked)}
                                         className="mb-0 border border-border rounded-lg p-3 bg-background/50"
                                     />
-                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <TransferHandoffFields
+                                        value={config.transfer?.handoff}
+                                        disabled={config.transfer?.defer_until_playback_complete === false}
+                                        onChange={value => updateNestedConfig('transfer', 'handoff', value)}
+                                    />
+                                    <details open={section === undefined ? true : undefined} className="border-t border-border pt-4">
+                                        <summary className="cursor-pointer text-sm font-medium">Advanced transfer settings — routing and timing</summary>
+                                        <div className="space-y-4 pt-4">
+                                            <FormInput
+		                                label="Channel Technology"
+		                                value={config.transfer?.technology || 'PJSIP'}
+		                                onChange={(e) => updateNestedConfig('transfer', 'technology', e.target.value.trim() || 'PJSIP')}
+		                                tooltip="Channel technology for extension transfers (PJSIP, SIP, IAX2, etc.). Default: PJSIP"
+		                                placeholder="PJSIP"
+		                            />
+                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                         <FormSelect
                                             label="Deferred Transfer Strategy"
                                             value={config.transfer?.deferred_strategy || 'drain_then_dial'}
@@ -1450,7 +1612,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                             tooltip="How long Asterisk should keep ringing the pre-dialed destination leg."
                                         />
                                     </div>
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                         <FormInput
                                             label="Deferred Audio Drain Timeout (seconds)"
                                             type="number"
@@ -1482,6 +1644,23 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                                 );
                                             }}
                                             tooltip="How long the caller-facing audio path must remain empty before the deferred transfer can commit."
+                                        />
+                                        <FormInput
+                                            label="Silent Reply Commit Timeout (seconds)"
+                                            type="number"
+                                            min={0}
+                                            max={30}
+                                            step={0.5}
+                                            value={config.transfer?.deferred_silent_commit_timeout_sec ?? 4}
+                                            onChange={(e) => {
+                                                const parsed = parseFloat(e.target.value);
+                                                updateNestedConfig(
+                                                    'transfer',
+                                                    'deferred_silent_commit_timeout_sec',
+                                                    Number.isFinite(parsed) ? Math.max(0, Math.min(30, parsed)) : 4,
+                                                );
+                                            }}
+                                            tooltip="If the agent starts no reply audio within this many seconds of a transfer tool result, the transfer goes ahead anyway. Has no effect when a transfer announcement is configured. 0 disables it."
                                         />
                                     </div>
                                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -1558,14 +1737,25 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 	                                    tooltip="Advanced/legacy override for live_agent_transfer. When set, live-agent requests route to this destination key instead of Live Agents."
 	                                />
 	                            )}
-	                            <div className="flex justify-between items-center">
+	                            </div>
+                                    </details>
+                                </div>
+                            )}
+                            <div className="mt-4 space-y-4">
+                                    <div className="flex flex-wrap justify-between items-center gap-2">
 	                                <FormLabel>Destinations</FormLabel>
+                                    <div className="flex flex-wrap gap-2">
+                                        <button type="button" onClick={() => setDiscoveryOpen(true)}
+                                            className="text-xs flex items-center bg-secondary px-2 py-1 rounded hover:bg-secondary/80 transition-colors">
+                                            Discover endpoints
+                                        </button>
 	                                <button
 	                                    onClick={handleAddDestination}
                                     className="text-xs flex items-center bg-secondary px-2 py-1 rounded hover:bg-secondary/80 transition-colors"
                                 >
                                     <Plus className="w-3 h-3 mr-1" /> Add Destination
                                 </button>
+                                    </div>
                             </div>
 
                             <div className="grid grid-cols-1 gap-2">
@@ -1606,14 +1796,13 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                 })}
                             </div>
                         </div>
-                    )}
                 </div>
 
                 {/* Attended (Warm) Transfer */}
-                <div className="border border-border rounded-lg p-4 bg-card/50">
+                <div hidden={section !== undefined && section !== 'transfer'} className="border border-border rounded-lg p-4 bg-card/50">
                     <FormSwitch
                         label="Attended Transfer (Warm)"
-                        description="Warm transfer with MOH, one-way announcement to the agent, and DTMF accept/decline. Requires Local AI Server for TTS. AI Briefing is experimental, requires Local AI Server LLM capability, and falls back to Basic TTS when unavailable."
+                        description="Warm transfer with MOH, one-way announcement to the agent, and DTMF accept/decline. Prompts are spoken by the selected announcement voice (Local AI Server when none is selected). AI Briefing is experimental, needs Local AI Server LLM capability to write the summary, and falls back to Basic TTS when unavailable."
                         checked={config.attended_transfer?.enabled ?? false}
                         onChange={(e) => handleAttendedTransferToggle(e.target.checked)}
                         className="mb-0 border-0 p-0 bg-transparent"
@@ -1640,8 +1829,94 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                         { value: 'ai_briefing', label: 'AI Briefing (Experimental)' },
                                         { value: 'caller_recording', label: 'Caller Recording' },
                                     ]}
-                                    tooltip="Basic TTS uses caller ID and context. AI Briefing is experimental and generates a short AI-written summary from the live conversation using Local AI Server LLM. Caller Recording asks the caller to state their name and reason, then plays that clip to the destination agent."
+                                    tooltip="Basic TTS uses caller ID and context. AI Briefing is experimental: Local AI Server LLM writes a short summary of the live conversation, and the announcement voice speaks it. Caller Recording asks the caller to state their name and reason, then plays that clip to the destination agent."
                                 />
+                                <FormSelect
+                                    label="Announcement voice"
+                                    value={selectedTtsProvider}
+                                    onChange={(e) => handleAnnouncementVoiceChange(e.target.value)}
+                                    options={announcementVoiceSelectOptions}
+                                    tooltip="TTS provider that speaks the announcement and prompts. Local AI Server (default) keeps the built-in path. A selected provider is never replaced by another: if it fails before dialling, no call is placed to the destination and the AI carries on with the caller. In AI Briefing mode the intro and summary are spoken after the destination answers: if the intro fails, the answered destination is hung up and the AI carries on with the caller; if only the summary fails, it is skipped and the accept prompt follows."
+                                />
+                                {selectedTtsProvider && (
+                                    <>
+                                        <FormInput
+                                            label="Voice name"
+                                            value={announcementVoiceText('voice')}
+                                            onChange={(e) => handleAnnouncementVoiceOption('voice', e.target.value)}
+                                            placeholder="Provider default"
+                                            tooltip="Voice for the selected provider, for example en-US-Chirp3-HD-Charon for Google. Leave blank to use the provider's configured voice."
+                                        />
+                                        <FormInput
+                                            label="Voice language"
+                                            value={announcementVoiceText('language')}
+                                            onChange={(e) => handleAnnouncementVoiceOption('language', e.target.value)}
+                                            placeholder="Provider default"
+                                            tooltip="Language code for the selected provider, for example en-US. Leave blank to use the provider's configured language."
+                                        />
+                                        {announcementVoicesFailed ? (
+                                            <div
+                                                role="status"
+                                                className="md:col-span-2 flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground"
+                                            >
+                                                <HelpCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                                                <div>
+                                                    <p className="font-medium">{"Couldn't load the provider list"}</p>
+                                                    <p className="mt-0.5 opacity-90">
+                                                        Readiness is unknown. Reload the page to check again.
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div
+                                                role="status"
+                                                className={`md:col-span-2 flex items-start gap-2 rounded-md border p-3 text-xs ${
+                                                    selectedAnnouncementVoice?.ready
+                                                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                                                        : 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                                                }`}
+                                            >
+                                                {selectedAnnouncementVoice?.ready ? (
+                                                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                                                ) : (
+                                                    <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                                                )}
+                                                <div>
+                                                    <p className="font-medium">
+                                                        {selectedAnnouncementVoice?.ready
+                                                            ? 'Provider is ready'
+                                                            : announcementVoicesLoading
+                                                              ? 'Checking provider...'
+                                                              : 'Provider is not ready'}
+                                                    </p>
+                                                    {!selectedAnnouncementVoice?.ready && !announcementVoicesLoading && (
+                                                        <>
+                                                            <p className="mt-0.5 opacity-90">
+                                                                {selectedAnnouncementVoice
+                                                                    ? ANNOUNCEMENT_VOICE_NOT_READY[selectedAnnouncementVoice.reason ?? ''] ?? 'Check it on the Providers page.'
+                                                                    : 'This provider is not configured.'}{' '}
+                                                                Attended transfers will not ring the destination until it is ready; there is no fallback voice.
+                                                            </p>
+                                                            {/* New tab: this page has unsaved edits that navigating away would drop. */}
+                                                            <Link
+                                                                to="/providers"
+                                                                target="_blank"
+                                                                rel="noopener noreferrer"
+                                                                className="mt-1 inline-flex items-center gap-1 underline"
+                                                            >
+                                                                Open Providers <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                                                                <span className="sr-only">(opens in a new tab)</span>
+                                                            </Link>
+                                                        </>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                        <p className="md:col-span-2 text-xs text-muted-foreground">
+                                            This status reflects the saved provider settings. Adding or changing a TTS provider needs an AI Engine restart before attended transfers can use it; a reload is not enough.
+                                        </p>
+                                    </>
+                                )}
                                 <FormInput
                                     label="MOH Class"
                                     value={config.attended_transfer?.moh_class || 'default'}
@@ -1667,7 +1942,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                     type="number"
                                     value={config.attended_transfer?.tts_timeout_seconds ?? 8}
                                     onChange={(e) => updateNestedConfig('attended_transfer', 'tts_timeout_seconds', parseInt(e.target.value) || 8)}
-                                    tooltip="Max time to wait for Local AI Server TTS per prompt."
+                                    tooltip="Max time to wait for the announcement voice (Local AI Server when none is selected) to synthesize each prompt."
                                 />
                                 <FormInput
                                     label="Accept Digit"
@@ -1711,7 +1986,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                 {config.attended_transfer?.screening_mode === 'ai_briefing' && (
                                     <>
                                         <div className="md:col-span-2 space-y-2">
-                                            <FormLabel tooltip="Spoken to the destination agent before the AI-generated summary. AI Briefing is experimental, requires Local AI Server LLM capability, and falls back to Basic TTS when summary generation is unavailable.">
+                                            <FormLabel tooltip="Spoken to the destination agent before the AI-generated summary. AI Briefing is experimental, needs Local AI Server LLM capability to write the summary, and falls back to Basic TTS when summary generation is unavailable.">
                                                 AI Briefing Intro Template (Experimental)
                                             </FormLabel>
                                             <textarea
@@ -1727,14 +2002,14 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                             value={config.attended_transfer?.ai_briefing_language ?? ''}
                                             onChange={(e) => updateNestedConfig('attended_transfer', 'ai_briefing_language', e.target.value)}
                                             placeholder="e.g. German, French, Spanish (leave blank for English)"
-                                            tooltip="Language for the AI-generated briefing text. Must match the language your Local AI Server TTS voice speaks. Leave blank for English."
+                                            tooltip="Language for the AI-generated briefing text. Must match the language the announcement voice speaks (Local AI Server when none is selected). Leave blank for English."
                                         />
                                         <FormInput
                                             label="AI Briefing Timeout (seconds, Experimental)"
                                             type="number"
                                             value={config.attended_transfer?.ai_briefing_timeout_seconds ?? 2}
                                             onChange={(e) => updateNestedConfig('attended_transfer', 'ai_briefing_timeout_seconds', parseFloat(e.target.value) || 2)}
-                                            tooltip="Maximum time to wait for the experimental Local AI Server LLM briefing before falling back to Basic TTS."
+                                            tooltip="Maximum time to wait for Local AI Server LLM to write the experimental briefing before falling back to Basic TTS. Speaking it is bounded separately by TTS Timeout."
                                         />
                                     </>
                                 )}
@@ -1742,7 +2017,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 
                             {config.attended_transfer?.screening_mode === 'basic_tts' && (
                                 <div className="space-y-2">
-                                    <FormLabel tooltip="Spoken to the destination agent (one-way) before requesting DTMF acceptance. Placeholders: {caller_display}, {caller_name}, {caller_number}, {context_name}, {destination_description}, {screening_summary}, {screened_caller_name}, {screened_call_reason}, {screened_caller_display}, {screened_reason_display}.">
+                                    <FormLabel tooltip="Spoken to the destination agent (one-way) before requesting DTMF acceptance. Placeholders: {caller_display}, {caller_name}, {caller_number}, {context_name}, {destination_description}, {screening_summary}, {screened_caller_name}, {screened_call_reason}, {screened_caller_display}, {screened_reason_display}. {caller_name} is the caller ID name. The screened_* placeholders are filled from the name and reason the caller told the AI agent during the call; {screened_caller_display} falls back to {caller_display}, and {screened_reason_display} falls back to the screening summary, then {context_name}.">
                                         Agent Announcement Template
                                     </FormLabel>
                                     <textarea
@@ -1796,7 +2071,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                 </div>
 
                 {/* Cancel Transfer */}
-                <div className="border border-border rounded-lg p-4 bg-card/50">
+                <div hidden={section !== undefined && section !== 'transfer'} className="border border-border rounded-lg p-4 bg-card/50">
                     <FormSwitch
                         label="Cancel Transfer"
                         description="Allow callers to cancel an in-progress transfer."
@@ -1816,7 +2091,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                 </div>
 
                 {/* Check Extension Status */}
-                <div className="border border-border rounded-lg p-4 bg-card/50">
+                <div hidden={section !== undefined && section !== 'transfer'} className="border border-border rounded-lg p-4 bg-card/50">
                     <div className="space-y-2">
                         <FormLabel tooltip="Controls whether availability checks are limited to extensions explicitly configured under Live Agents or Transfer Destinations. Disable only if you intentionally want the model to probe arbitrary extension numbers.">
                             Check Extension Status
@@ -1881,7 +2156,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                 </div>
 
                 {/* Hangup Call */}
-                <div className="border border-border rounded-lg p-4 bg-card/50">
+                <div hidden={section !== undefined && section !== 'hangup_call'} className="border border-border rounded-lg p-4 bg-card/50">
                     <FormSwitch
                         label="Hangup Call"
                         description="Allow the agent to end the call gracefully. Call ending behavior is controlled via agent prompts."
@@ -2052,7 +2327,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                 </div>
 
                 {/* Leave Voicemail */}
-                <div className="border border-border rounded-lg p-4 bg-card/50">
+                <div hidden={section !== undefined && section !== 'leave_voicemail'} className="border border-border rounded-lg p-4 bg-card/50">
                     <FormSwitch
                         label="Leave Voicemail"
                         description="Transfer caller to a voicemail box."
@@ -2181,7 +2456,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                 </div>
 
 	                {/* Extensions (basic editor) */}
-	                <div className="border border-border rounded-lg p-4 bg-card/50">
+	                <div hidden={section !== undefined && section !== 'transfer'} className="border border-border rounded-lg p-4 bg-card/50">
 	                    <div className="flex justify-between items-center mb-4">
 	                        <FormLabel>Live Agents</FormLabel>
 	                        <button
@@ -2237,6 +2512,14 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 
                                     return (
 	                            <div key={rowId} className="flex flex-col gap-4 p-5 border border-border/60 rounded-lg bg-card/40 hover:bg-card/60 transition-colors shadow-sm">
+
+                                <TransferHandoffFields override value={ext.handoff} global={config.transfer?.handoff}
+                                    disabled={config.transfer?.defer_until_playback_complete === false}
+                                    onChange={value => {
+                                        const updated = { ...(config.extensions?.internal || {}) };
+                                        updated[key] = { ...ext, handoff: value };
+                                        updateNestedConfig('extensions', 'internal', updated);
+                                    }} />
 
                                 {/* Core Info Row */}
                                 <div className="flex flex-col xl:flex-row gap-4 xl:items-end items-start w-full">
@@ -2554,11 +2837,11 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
             </div>
 
             {/* Business Tools */}
-            <div className="space-y-6 border-t border-border pt-6">
-                <h3 className="text-lg font-semibold text-primary">Business Tools</h3>
+            <div hidden={section !== undefined && !['send_email_summary', 'request_transcript', 'google_calendar', 'microsoft_calendar'].includes(section)} className="space-y-6 border-t border-border pt-6">
+                <h3 hidden={section !== undefined} className="text-lg font-semibold text-primary">Business Tools</h3>
 
                 {/* Send Email Summary */}
-                <div className="border border-border rounded-lg p-4 bg-card/50">
+                <div hidden={section !== undefined && section !== 'send_email_summary'} className="border border-border rounded-lg p-4 bg-card/50">
                     <FormSwitch
                         label="Send Email Summary"
                         description="Automatically send a call summary to the admin after each call."
@@ -2794,7 +3077,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                 </div>
 
                 {/* Request Transcript */}
-                <div className="border border-border rounded-lg p-4 bg-card/50">
+                <div hidden={section !== undefined && section !== 'request_transcript'} className="border border-border rounded-lg p-4 bg-card/50">
                     <FormSwitch
                         label="Request Transcript"
                         description="Allow callers to request a transcript via email."
@@ -3036,7 +3319,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                 </div>
 
                 {/* Google Calendar */}
-                <div className="border border-border rounded-lg p-4 bg-card/50">
+                <div hidden={section !== undefined && section !== 'google_calendar'} className="border border-border rounded-lg p-4 bg-card/50">
                     <FormSwitch
                         label="Google Calendar"
                         description="Enable the Google Calendar tool for listing events, creating events, and finding free slots."
@@ -3056,7 +3339,12 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                     Configures how <code className="px-1 bg-muted rounded">get_free_slots</code> determines availability.
                                     <strong className="block mt-1"> Free prefix non-empty</strong> →
                                     <em> title-prefix mode</em>: the tool scans your calendar for events titled with this prefix
-                                    (e.g. "Open 9-5") and treats those windows as available, minus events titled with the busy prefix.
+                                    (e.g. "Open 9-5") and treats those windows as available, minus busy-prefix events and
+                                    bookings created by AVA. Timed and all-day events are supported; cancelled events and
+                                    busy events marked Available do not block time.
+                                    <span className="block mt-1">Older AVA bookings have no booking marker. In Google Calendar,
+                                        add your busy prefix to each older appointment title once (e.g. &quot;Busy Consultation&quot;).
+                                        Unrelated titles remain ignored in title-prefix mode.</span>
                                     <strong className="block mt-1"> Free prefix blank or unset</strong> →
                                     <em> free/busy mode</em>: the tool uses Google's native free/busy API intersected with a
                                     working-hours mask (Mon–Fri 09:00–17:00 by default; tunable via YAML).
@@ -3081,7 +3369,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                         value={config.google_calendar?.busy_prefix ?? ''}
                                         onChange={(e) => updateNestedConfig('google_calendar', 'busy_prefix', e.target.value)}
                                         placeholder="Busy"
-                                        tooltip="Only used in title-prefix mode. Events titled with this prefix block availability inside the open windows. Default: 'Busy'. Ignored when Free prefix is blank (free/busy mode uses any non-prefix-matching event as a busy block via Google's native API)."
+                                        tooltip="Only used in title-prefix mode. Events titled with this prefix and new AVA bookings block availability inside open windows, unless cancelled or marked Available. Default: 'Busy'. Add this prefix to older unmarked AVA appointments once. Unrelated titles stay ignored. With Free prefix blank, Google's native free/busy rules apply instead."
                                     />
                                     <FormInput
                                         label="Default slot duration (minutes)"
@@ -3113,7 +3401,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                             );
                                         }}
                                         placeholder="3"
-                                        tooltip="Cap on how many slot start-times get_free_slots returns to the AI. Default: 3. Without a cap, a multi-day open window can return 20+ slots and the AI may read all of them aloud, producing minutes of robotic monologue. The tool also adds a 'showing N of M' nudge to the response so the AI summarizes 2–3 options to the caller. Set to 0 to disable the cap."
+                                        tooltip="Cap on how many future slot start-times get_free_slots returns to the AI. Starts at or before the current time are excluded before this cap in both availability modes. Bookings must also start in the future. Default: 3. Without a cap, a multi-day open window can return 20+ slots and the AI may read all of them aloud, producing minutes of robotic monologue. The tool also adds a 'showing N of M' nudge to the response so the AI summarizes 2–3 options to the caller. Set to 0 to disable the cap."
                                     />
                                 </div>
                             </div>
@@ -3210,7 +3498,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                                         onChange({ ...config, google_calendar: { ...(config.google_calendar || {}), calendars: cals } });
                                                     }}
                                                     placeholder="America/New_York"
-                                                    tooltip="IANA timezone for this calendar (e.g. America/New_York)."
+                                                    tooltip="IANA timezone for working hours and local times (e.g. America/New_York). Tool timestamps with Z or an offset keep their instant and are converted to this zone; timestamps without an offset are local to this calendar."
                                                 />
                                             </div>
                                             <div className="md:col-span-1 flex justify-end">
@@ -3567,7 +3855,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                 </div>
 
                 {/* Microsoft Calendar */}
-                <div className="border border-border rounded-lg p-4 bg-card/50">
+                <div hidden={section !== undefined && section !== 'microsoft_calendar'} className="border border-border rounded-lg p-4 bg-card/50">
                     <FormSwitch
                         label="Microsoft Calendar"
                         description="Enable the Microsoft 365 Outlook Calendar tool using device-code OAuth."
@@ -3768,6 +4056,20 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
             </div>
 
             {/* Destination Edit Modal */}
+            {discoveryOpen && <EndpointDiscoveryModal
+                transfer={config.transfer}
+                onClose={() => setDiscoveryOpen(false)}
+                onAdd={rows => {
+                    const latest = latestConfigRef.current;
+                    const next = { ...latest, transfer: stageAdditions(latest.transfer, rows) };
+                    latestConfigRef.current = next;
+                    onChange(next);
+                    setDiscoveryOpen(false);
+                    toast.success('Destinations added to your edits', {
+                        description: 'Click Save & Apply to activate them for new calls.',
+                    });
+                }}
+            />}
             <Modal
                 isOpen={!!editingDestination}
                 onClose={() => setEditingDestination(null)}
@@ -3780,6 +4082,9 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                 }
             >
                 <div className="space-y-4">
+                    <TransferHandoffFields override value={destinationForm.handoff} global={config.transfer?.handoff}
+                        disabled={config.transfer?.defer_until_playback_complete === false}
+                        onChange={value => setDestinationForm({ ...destinationForm, handoff: value })} />
                     <FormInput
                         label="Key (Name)"
                         value={destinationForm.key || ''}

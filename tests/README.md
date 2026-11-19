@@ -20,7 +20,7 @@ This document explains the test layout and how to run tests locally and on a ser
 
 - Engine running via `docker-compose up -d` (or `make up`)
 - Health endpoint available at `http://127.0.0.1:15000/health`
-- Python 3.10+ and dependencies (inside the ai_engine container or host venv)
+- Python 3.11 and dependencies (inside the ai_engine container or host venv)
 
 ## Running Unit Tests
 

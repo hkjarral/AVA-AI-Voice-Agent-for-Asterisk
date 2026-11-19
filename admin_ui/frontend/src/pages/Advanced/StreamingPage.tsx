@@ -1,30 +1,52 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import yaml from 'js-yaml';
-import { Save, Zap, AlertCircle, RefreshCw, Loader2, Clock } from 'lucide-react';
+import { Save, AlertCircle, RefreshCw, Loader2, Clock } from 'lucide-react';
 import { YamlErrorBanner, YamlErrorInfo } from '../../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput, FormSelect, FormSwitch } from '../../components/ui/FormComponents';
 import { sanitizeConfigForSave } from '../../utils/configSanitizers';
 import { getCachedConfig, loadConfigYaml } from '../../utils/configCache';
+import { greetingRtpSupport, type GreetingAgent } from './greetingSupport';
 import { useRestartRequired } from '../../hooks/useRestartRequired';
 
 const StreamingPage = () => {
     const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
     const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
+    const [agents, setAgents] = useState<GreetingAgent[] | null>(null);
+    const rtpSupport = greetingRtpSupport(config, agents);
     const [saving, setSaving] = useState(false);
     const { restartRequired, refetch } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
     const [applyMethod, setApplyMethod] = useState<string>('restart');
+    const greetingSettings = [
+        { key: 'greeting_media_ready_delay_ms', label: 'Greeting Media-Ready Delay (ms)', max: 2000, fallback: 0,
+            help: '0 disables the guard entirely. Otherwise, wait for inbound media and send this much silence before the initial greeting. More silence adds greeting latency.' },
+        { key: 'greeting_media_ready_timeout_ms', label: 'Greeting Media-Ready Timeout (ms)', max: 5000, fallback: 1000,
+            help: 'Maximum readiness wait. 0 checks immediately and resumes existing playback/fallback if not ready. Ignored when delay is 0.' },
+    ];
+    const greetingErrors = Object.fromEntries(greetingSettings.map(({ key, max }) => {
+        const value = config.streaming?.[key];
+        return [key, value !== undefined && (
+            typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > max
+        ) ? `Enter a whole number from 0 to ${max} ms.` : undefined];
+    }));
+    const invalidGreetingSettings = Object.values(greetingErrors).some(Boolean);
 
     useEffect(() => {
         // Cache-first: seed from the shared cache (no flash on revisit). The write
         // interceptor invalidates the cache on every save, so a background
         // revalidate is unnecessary and could clobber in-progress form edits.
         fetchConfig();
+        let mounted = true;
+        // A failed/malformed catalog must not imply universal provider support.
+        Promise.resolve().then(() => axios.get('/api/agents')).then(response => {
+            if (mounted && Array.isArray(response.data)) setAgents(response.data);
+        }).catch(() => { /* Keep the saved value read-only when routes are unknown. */ });
+        return () => { mounted = false; };
     }, []);
 
     const fetchConfig = async (force = false) => {
@@ -41,6 +63,10 @@ const StreamingPage = () => {
     };
 
     const handleSave = async () => {
+        if (invalidGreetingSettings) {
+            toast.error('Check the greeting media-readiness settings.');
+            return;
+        }
         setSaving(true);
         try {
             const sanitized = sanitizeConfigForSave(config);
@@ -61,7 +87,7 @@ const StreamingPage = () => {
         }
     };
 
-    const handleApplyAIEngine = async (force: boolean = false) => {
+    const handleApplyAIEngine = async () => {
         setRestartingEngine(true);
         try {
             // Prefer hot-reload (no dropped calls) when the backend says it suffices (MED-R1).
@@ -85,19 +111,10 @@ const StreamingPage = () => {
                 return;
             }
 
-            const response = await axios.post(`/api/system/containers/ai_engine/restart?force=${force}`);
+            const response = await axios.post('/api/system/containers/ai_engine/restart?force=false');
 
             if (response.data.status === 'warning') {
-                if (!force) {
-                    const confirmForce = window.confirm(
-                        `${response.data.message}\n\nDo you want to force restart anyway? This may disconnect active calls.`
-                    );
-                    if (confirmForce) {
-                        await handleApplyAIEngine(true);
-                    }
-                    return;
-                }
-                toast.warning(response.data.message, { description: 'Force restart is still blocked.' });
+                toast.warning(response.data.message, { description: 'Wait until active calls finish before applying streaming changes.' });
                 return;
             }
 
@@ -205,7 +222,7 @@ const StreamingPage = () => {
                         {bannerMessage}
                     </div>
                     <button
-                        onClick={() => handleApplyAIEngine(false)}
+                        onClick={() => handleApplyAIEngine()}
                         disabled={restartingEngine}
                         className="flex items-center text-xs px-3 py-1.5 rounded transition-colors bg-orange-500 text-white hover:bg-orange-600 font-medium disabled:opacity-50"
                     >
@@ -230,7 +247,7 @@ const StreamingPage = () => {
                 </div>
                 <button
                     onClick={handleSave}
-                    disabled={saving}
+                    disabled={saving || invalidGreetingSettings}
                     className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
                 >
                     <Save className="w-4 h-4 mr-2" />
@@ -320,20 +337,50 @@ const StreamingPage = () => {
                                 onChange={(e) => updateStreamingConfig('min_start_ms', parseInt(e.target.value))}
                                 tooltip="Minimum audio required before starting response playback (default: 120ms)."
                             />
-                            <FormInput
-                                label="Greeting Min Start (ms)"
-                                type="number"
-                                value={streamingConfig.greeting_min_start_ms || 40}
-                                onChange={(e) => updateStreamingConfig('greeting_min_start_ms', parseInt(e.target.value))}
-                                tooltip="Reduced min start for greetings - faster initial response (default: 40ms)."
-                            />
-                            <FormInput
-                                label="Greeting RTP Wait (ms)"
-                                type="number"
-                                value={streamingConfig.greeting_rtp_wait_ms || 250}
-                                onChange={(e) => updateStreamingConfig('greeting_rtp_wait_ms', parseInt(e.target.value))}
-                                tooltip="ExternalMedia only: How long to wait for RTP endpoint before falling back to file playback for greeting (default: 250ms). Increase if greetings are cut off."
-                            />
+                            <div>
+                                <FormInput
+                                    label="Greeting Min Start (ms)"
+                                    type="number"
+                                    value={streamingConfig.greeting_min_start_ms ?? ''}
+                                    placeholder="Unset"
+                                    readOnly
+                                    aria-disabled="true"
+                                    aria-describedby="greeting-min-support"
+                                    className="!bg-muted text-muted-foreground cursor-not-allowed"
+                                    tooltip="Saved configuration only. The engine does not currently apply this value."
+                                />
+                                <p id="greeting-min-support" className="text-xs text-muted-foreground">
+                                    {streamingConfig.greeting_min_start_ms === undefined ? 'Unset — backend default: 0 ms. ' : 'Saved configuration. '}
+                                    This value is not currently applied by the engine; it is read-only and preserved when saving.
+                                </p>
+                            </div>
+                            <div>
+                                <FormInput
+                                    label="Greeting RTP Wait (ms)"
+                                    type="number"
+                                    value={streamingConfig.greeting_rtp_wait_ms ?? ''}
+                                    placeholder="Unset"
+                                    readOnly={!rtpSupport.editable}
+                                    aria-disabled={!rtpSupport.editable}
+                                    aria-describedby="greeting-rtp-support"
+                                    className={!rtpSupport.editable ? '!bg-muted text-muted-foreground cursor-not-allowed' : ''}
+                                    onChange={(e) => {
+                                        if (!rtpSupport.editable) return;
+                                        if (e.target.value === '') {
+                                            const next = { ...config.streaming };
+                                            delete next.greeting_rtp_wait_ms;
+                                            setConfig({ ...config, streaming: next });
+                                        } else {
+                                            updateStreamingConfig('greeting_rtp_wait_ms', Number(e.target.value));
+                                        }
+                                    }}
+                                    tooltip="Saved wait for supported ExternalMedia provider greetings. Backend default: 1000 ms. A saved 0 currently also uses 1000 ms at runtime."
+                                />
+                                <p id="greeting-rtp-support" className="text-xs text-muted-foreground">
+                                    {streamingConfig.greeting_rtp_wait_ms === undefined ? 'Unset — backend default: 1000 ms; no value is added on save. ' : 'Saved configuration. '}
+                                    {rtpSupport.help} A saved 0 currently uses 1000 ms at runtime.
+                                </p>
+                            </div>
                             <FormInput
                                 label="Empty Backoff Ticks Max"
                                 type="number"
@@ -350,6 +397,31 @@ const StreamingPage = () => {
                             onChange={(e) => updateStreamingConfig('continuous_stream', e.target.checked)}
                         />
                     </div>
+                </ConfigCard>
+            </ConfigSection>
+
+            <ConfigSection title="Initial Greeting Media Readiness" description="Optional protection for opening words on AudioSocket and ExternalMedia streaming. File playback, WebSocket, and later responses are unchanged.">
+                <ConfigCard>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {greetingSettings.map(({ key, label, max, fallback, help }) => (
+                            <FormInput
+                                key={key}
+                                label={label}
+                                type="number"
+                                min="0"
+                                max={max}
+                                step="1"
+                                value={config.streaming?.[key] ?? fallback}
+                                onChange={(e) => {
+                                    const raw = e.target.value;
+                                    updateStreamingConfig(key, /^\d+$/.test(raw) ? Number(raw) : raw);
+                                }}
+                                error={greetingErrors[key]}
+                                tooltip={help}
+                            />
+                        ))}
+                    </div>
+                    <p className="text-xs text-muted-foreground">The caller does not need to speak: valid inbound silence counts as readiness. With delay 0, neither readiness waiting nor silence is added.</p>
                 </ConfigCard>
             </ConfigSection>
 

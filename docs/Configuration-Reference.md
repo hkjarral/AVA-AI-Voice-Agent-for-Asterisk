@@ -4,12 +4,24 @@ This document explains every major option in `config/ai-agent.yaml`, the precede
 
 ## Local Override File (`ai-agent.local.yaml`)
 
+### v7.7 integration storage and tool references
+
+[Calendly](Calendly-calendar-tool.md) uses a protected token and durable journal,
+not a token in Agent prompts or YAML. Both services must share its configured
+`CALENDLY_DB_PATH` and `CALENDLY_TOKEN_PATH`; see [environment wiring](ENVIRONMENT_VARIABLES.md)
+and [backup limits](INTEGRATION_BACKUPS.md). Native [Pushover](Pushover.md) reuses
+phase assignments and managed credential references. [HTTP summaries](In-Call-Summaries.md)
+separate generation/delivery budgets. [ARI discovery](ARI-Endpoint-Discovery.md)
+stages existing transfer entries without a new routing source.
+
 Operator customizations are stored in `config/ai-agent.local.yaml` (git-ignored). At startup the engine deep-merges this file on top of the base `config/ai-agent.yaml`:
 
 - **Base file** (`config/ai-agent.yaml`) — shipped golden defaults, git-tracked. Updated by upstream releases.
 - **Local override** (`config/ai-agent.local.yaml`) — operator changes only. All Admin UI saves, CLI wizard writes, and `agent setup` output go here.
 
 Keys in the local file win over the base file (deep merge — nested dicts are merged recursively, scalars are replaced). If the local file does not exist, the base file is used as-is.
+
+Admin UI saves preserve comments already in the local file when the rewrite can be verified. Saves fall back to plain YAML if the local file or saved data contains environment variable references such as `${NAME}` or `$NAME`, or if the save migrates an inline provider secret. The engine expands references before parsing the file, so retaining quotes or comments can change the expanded configuration. The Raw YAML editor shows the merged configuration without comments, so a comment typed there is discarded on save.
 
 This separation means `git pull` during updates will never conflict with operator config, eliminating the merge-conflict problem on `ai-agent.yaml`.
 
@@ -42,6 +54,14 @@ Starting in v4.0, the project added a **modular pipeline architecture** alongsid
 - **Best for**: Simplicity, fastest response times
 
 ### Pipeline Configurations
+
+In v7.7.1, an omitted Google modular `llm_model` defaults to
+`models/gemini-3.8-flash`. Existing explicit model selections remain. Native
+Google Live's default and Audio Profiles are unchanged. See the
+[Admin model capability notes](ADMIN_UI_GUIDE.md#providers) for sampling controls
+and complete-answer/summary behavior. The optional
+[transcription API](OpenAI-Compatible-Transcription.md) uses environment wiring,
+not an extra YAML pipeline or Agent persona.
 - **Separate providers** for STT, LLM, and TTS
 - Examples: Local Hybrid (Vosk STT + OpenAI LLM + Piper TTS)
 - Configuration: Define under `pipelines:` block and set `active_pipeline: "pipeline_name"`
@@ -87,7 +107,7 @@ Environment variables for selecting local STT/TTS backends:
 
 **STT Backends**:
 - **Vosk**: Offline ASR with good accuracy, multiple language models
-- **Sherpa-ONNX**: Low-latency streaming ASR using ONNX runtime
+- **Sherpa-ONNX**: Low-latency streaming ASR using ONNX runtime; offline mode also runs transducer and SenseVoice (zh/en/ja/ko/yue) models
 - **Kroko**: High-quality streaming ASR with 12+ languages (requires API key for hosted mode)
 - **T-one**: Native Russian telephony STT using the upstream streaming CTC pipeline
 - **Faster-Whisper**: Whisper inference via `faster-whisper` (model IDs like `base`, `small`, etc., or a local model directory depending on your install)
@@ -407,6 +427,7 @@ Applies when `audio_transport: websocket` (opt-in; see [WebSocket Transport](Web
 - websocket_media.fallback_format: `ulaw` | `alaw` | `slin` | `slin16` (default `ulaw`); used when the profile does not pin a wire format.
 - websocket_media.control_format: `json` | `auto` | `plain` (default `json`). Explicit `plain` is experimental and limited to Asterisk 20.17.0. `auto` opts into plain on exactly 20.17.0 and selects JSON on 20.18+, 22.8+, or 23.2+; unsupported release lines fail closed. See the Transports section above.
 - websocket_media.direction: `both` (only value).
+- websocket_media.output_pacing: `legacy` | `asterisk` (default `legacy`). Select in **Advanced Settings → Audio Transport → WebSocket → Output pacing**; the readiness card distinguishes saved and running modes. Experimental issue #808 mode: `asterisk` forwards buffered streaming media ahead and bypasses optional OpenAI/Grok provider pacers on call-owned instances. Asterisk owns playback timing; XOFF/XON and correlated completion remain active. Other transports keep their pacing. Requires engine restart after call drain. Remove this field entirely before downgrading to older strict schemas. See [reporter testing](ISSUE_808_TESTING.md).
 - websocket_media.handshake_timeout_ms: WebSocket open/close handshake timeout (default `5000`; 100–60000).
 - websocket_media.media_start_timeout_ms: Max wait for the per-call connection to become ready (`MEDIA_START`) before the call fails (default `5000`; 100–60000).
 - websocket_media.drain_timeout_ms: Max wait for queued playback to drain (e.g. farewell audio) before hangup proceeds (default `30000`; 1000–120000).
@@ -428,7 +449,7 @@ Controls interruption of TTS playback when the caller speaks.
 - barge_in.min_ms: 250–600 ms. Minimum sustained speech before a barge‑in is acknowledged (de‑bounce).
 - barge_in.energy_threshold: 1000–3000. RMS energy threshold; raise on noisy lines.
 - barge_in.cooldown_ms: 500–1500 ms. Ignore new barge‑ins after one triggers.
-- barge_in.post_tts_end_protection_ms: 250–500 ms. Short guard to avoid clipping the start of the next caller utterance.
+- barge_in.post_tts_end_protection_ms: default 250 ms; 0 disables the guard. Suppresses caller input briefly after playback to reject echo tails; larger values can clip an early caller reply. Engine-gated Google sessions send silence instead of dropping frames on AudioSocket, ExternalMedia and WebSocket. Playback completion supersedes generation/token completion: protection starts when the last audio is emitted (or remote playback completes), including input received during the transport quiet wait. Time spent in that wait counts toward the guard. Gemini 3.8 native full-duplex and other native continuous-input providers retain real input; ordinary local/pipeline media paths retain their existing guard behavior.
 - barge_in.pipeline_min_ms: 80–250 ms. Pipeline-only (local file playback) minimum talk duration before triggering barge-in.
 - barge_in.pipeline_energy_threshold: 200–1200. Pipeline-only RMS threshold (more sensitive than full-agent mode).
 - barge_in.pipeline_talk_detect_enabled: true/false. Pipeline-only; uses Asterisk `TALK_DETECT` (ARI `ChannelTalkingStarted`) to trigger barge-in during channel playback.
@@ -467,6 +488,76 @@ Controls the pacing and robustness of streamed agent audio.
 - streaming.egress_force_mulaw: When true, converts outbound streaming audio to μ-law 8 kHz regardless of provider encoding.
 - streaming.greeting_rtp_wait_ms: ExternalMedia-only. How long to wait (ms) for the remote RTP endpoint to be discovered during the initial greeting before falling back to file playback (prevents “dead air until caller speaks” in some Asterisk setups).
 
+### Saved greeting controls in Admin UI
+
+Advanced Settings → Streaming shows `greeting_min_start_ms` as read-only in every
+mode: its saved value is not forwarded to playback by the engine. An unset key
+is labelled unset with its backend default (0 ms), without inserting it on save.
+
+`greeting_rtp_wait_ms` is editable only when ExternalMedia and at least one
+configured active full-provider Agent route are identified. Pipeline greetings,
+AudioSocket and WebSocket do not use it. Mixed Agent routes show partial support;
+missing/loading Agent information is read-only. This describes saved routes, not
+live calls or dialplan overrides. The wait applies only to provider streams tagged
+as greetings whose remote RTP endpoint is missing, before existing file fallback.
+
+The saved value remains visible, including zero. The backend default is 1000 ms;
+a saved zero also currently uses 1000 ms at runtime. Clearing an editable wait
+unsets it. Unrelated saves preserve both keys, including their absence; making a
+control read-only never clears its value. Help remains keyboard accessible.
+Saving does not apply or restart the engine; existing apply/restart protections
+remain in place. These UI explanations do not activate Greeting Min Start or
+change timeout, routing, media-readiness, or call behavior.
+
+### Initial greeting media readiness
+
+Advanced Settings → Streaming exposes an optional initial-greeting guard for
+AudioSocket and ExternalMedia **streaming**, for full-agent and pipeline greetings:
+
+```yaml
+streaming:
+  greeting_media_ready_delay_ms: 0       # integer 0..2000; default 0 (disabled)
+  greeting_media_ready_timeout_ms: 1000  # integer 0..5000; default 1000
+```
+
+Delay **0 bypasses the entire guard**, including the readiness check. Existing
+installations retain their current timing without adding these keys. With a
+positive delay, the first prepared greeting frame starts one monotonic readiness
+deadline. Valid inbound audio, including silence, confirms the media path for the
+same live call and connection; the caller need not speak. ARI answer, bridge
+creation, socket connection, and talk detection alone are insufficient.
+
+After readiness, the engine sends the configured number of milliseconds of paced,
+correctly encoded silence before the greeting. Timeout **0** checks immediately:
+if ready it sends that silence; otherwise it resumes existing playback/fallback
+immediately. A positive timeout bounds waiting, then resumes that same existing
+path without an additional readiness retry or replaying the greeting. The delay
+and timeout do not apply again to later chunks or responses. Stop, hangup,
+transfer, or lost output ownership cancels pending work, including output and
+fallback that have not yet started after an asynchronous session lookup.
+During the hold, the pacer continues consuming queued speech into a bounded
+prefetch buffer at its normal cadence. The additional buffer is limited to the
+configured timeout plus delay window and one prepared frame; a single converted
+source chunk may cross that limit. Further audio uses the existing bounded
+upstream queues until playback resumes. Sentinels and transport boundaries keep
+their order.
+
+Values must be whole-number YAML integers; strings, booleans, fractions, negatives,
+and values above the ranges are rejected. Larger settings trade greeting latency
+for settling time; inbound readiness is not proof of audibility at the handset.
+This does not repair missing inbound audio throughout a call.
+
+Save preserves unrelated YAML and does not restart services. Streaming changes
+require an AI Engine restart; apply them after active calls finish. Set delay back
+to **0**, save, and restart after calls finish to disable the feature. WebSocket,
+explicit file playback, and existing file fallback remain unchanged. For the
+existing Greeting Min Start/Greeting RTP Wait controls, see
+[Saved greeting controls in Admin UI](#saved-greeting-controls-in-admin-ui).
+Transfer handoff remains separate work.
+
+Transport contracts: [Asterisk AudioSocket protocol](https://docs.asterisk.org/Configuration/Channel-Drivers/AudioSocket/)
+and [Python monotonic loop time](https://docs.python.org/3.11/library/asyncio-eventloop.html#asyncio.loop.time).
+
 ## VAD (Voice Activity Detection)
 
 Defines how inbound speech is segmented into utterances for STT.
@@ -480,12 +571,18 @@ Defines how inbound speech is segmented into utterances for STT.
 - vad.fallback_enabled: When true, sends audio at a fixed interval if VAD fails to detect speech.
 - vad.fallback_interval_ms: Interval between fallback sends.
 - vad.fallback_buffer_size: Bytes to accumulate at fallback thresholds.
-- vad.upstream_squelch_enabled: When true, replaces low-energy/noise frames with silence for continuous-audio providers that have native VAD (improves end-of-turn detection in noisy environments; may suppress quiet callers if too aggressive).
+- vad.upstream_squelch_enabled: On AudioSocket only, replaces low-energy frames with silence for continuous-audio providers that have native VAD. RTP and Media WebSocket bypass this squelch. Call-local WebRTC speech evidence protects detected speech from noise-floor learning and allows recovery from sustained non-speech noise. Aggressive thresholds can suppress quiet callers.
 - vad.upstream_squelch_base_rms: Minimum RMS threshold (PCM16 space) before audio is treated as “speech”.
 - vad.upstream_squelch_noise_factor: Dynamic threshold multiplier relative to estimated noise floor.
-- vad.upstream_squelch_noise_ema_alpha: EMA smoothing factor (0–1) for noise floor estimation.
+- vad.upstream_squelch_noise_ema_alpha: EMA smoothing factor (0–1). Independently detected non-speech updates the floor even when squelch is open; detected speech does not train it. Zero disables noise-floor adaptation.
 - vad.upstream_squelch_min_speech_frames: Hysteresis: speech frames required to enter “speaking”.
 - vad.upstream_squelch_end_silence_frames: Hysteresis: silence frames required to exit “speaking”.
+
+The initial adaptive threshold is bounded by the base RMS threshold, even when
+the first received frame already contains speech. Existing learned floors remain
+call-scoped across greeting/output gating. VAD changes require saving and an
+AI Engine restart. See [upstream squelch behavior and validation](Upstream-Squelch.md)
+for provider/transport scope, diagnostics and the startup-noise tradeoff.
 
 Common pitfalls:
 
@@ -684,6 +781,12 @@ Notes:
 
 - google_llm.system_instruction/system_prompt: Persona; if missing, adapter falls back to `llm.prompt`.
 - google_tts/tts fields: voice, language, audio encoding/sample rate, target format.
+- google_tts/stt/llm authentication (pipelines):
+  - Credentials: an API key from `providers.google` (`api_key`, `api_key_file` or `api_key_env`) or the `GOOGLE_API_KEY` environment variable, sent as the `key` query parameter; otherwise a service-account JSON key file named by `GOOGLE_APPLICATION_CREDENTIALS`. An API key wins when both exist.
+  - The engine sets `GOOGLE_APPLICATION_CREDENTIALS` to `/app/project/secrets/gcp-service-account.json` when that file exists and the variable is unset or points to a missing file.
+  - `providers.google.credentials_path`, Application Default Credentials and the Vertex AI settings (`vertex_project`, `vertex_location`, which belong to `google_live`) are not used to authenticate the pipeline adapters.
+  - With neither credential, `google_stt` and `google_tts` are not registered, so `google_tts` is rejected as a `tts_provider`.
+  - Google Cloud: the Cloud Text-to-Speech API must be enabled for the project. Google publishes no predefined IAM role for Text-to-Speech, and `text:synthesize` requires only the `cloud-platform` OAuth scope, so the service account needs no extra role. See [Provider-Google-Setup.md](Provider-Google-Setup.md).
 - google_stt/stt fields: encoding, language, model, sampleRateHertz.
 
 ### Groq Speech (pipelines)
@@ -714,6 +817,7 @@ Config notes:
 - `providers.google_live.response_modalities`: `audio`, `text`, or `audio_text` (provider behavior varies by model generation).
 - `providers.google_live.long_audio_playback_enabled`: boolean, default `false`. Opts this instance into bounded long-response playback on the actual Developer API connection only. UI: **Providers → Google Live → API Mode → Enable long-response playback**; hidden in Vertex mode. Existing installations are not automatically opted in. Save and restart the AI Engine to enable or disable it.
 - `providers.google_live.long_audio_backlog_sec`: seconds of queued-audio capacity, default `120`, inclusive range `10–120`. Advanced YAML setting used only when long-response playback is enabled on Developer API; not a total response-duration limit. Overflow or stalled drain terminates the call with an explicit error. See [long-response setup, limits and validation](Provider-Google-Setup.md#long-response-playback-developer-api-opt-in).
+- `providers.google_live.playback_prefill_ms`: optional audio reserve at the start of each response, default `0` (disabled), range `0–3000` milliseconds. Applies to this Google provider instance in either API mode. A `2000` ms reserve absorbs the burst gaps reproduced in the Calendly demo test, at the cost of additional response latency. Short responses flush on generation/turn completion; interruption and teardown discard unsent audio. This is separate from queue capacity and long-response playback. Save and restart the engine after changing it. Other providers retain their existing pacing.
 - `providers.google_live.hangup_fallback_audio_idle_sec`: idle-audio timeout after hangup is armed.
 - `providers.google_live.hangup_fallback_min_armed_sec`: minimum armed duration before fallback can fire.
 - `providers.google_live.hangup_fallback_no_audio_timeout_sec`: timeout when provider emits no farewell audio.
@@ -816,6 +920,28 @@ HTTP tools are configured in YAML and/or via the Admin UI:
 
 See `docs/TOOL_CALLING_GUIDE.md` for full examples and variable substitution details.
 
+### A2A tools
+
+A2A tools live under `in_call_tools:<name>` with `kind: a2a_agent`. Configure them
+in **Tools → In-Call → Add Tool → A2A Agent**, then assign under **Agents → Tools
+→ In-call**. They require explicit Agent access.
+
+- `agent_url`: A2A 1.0 service base URL; no credentials, query or fragment.
+- `description`: explains when the voice agent should delegate.
+- `enabled`: boolean, defaults to `true`; disabled tools cannot execute and are
+  omitted from model offers, while remaining visible in the Admin catalog.
+- `bearer_token_file`: optional managed A2A credential reference, created by Admin.
+- `bearer_token_env`: optional Engine environment variable; mutually exclusive
+  with the file reference. New Admin references require `AVA_A2A_` or `AAVA_A2A_`.
+- `timeout_ms`: 1,000–120,000 (default 15,000).
+- `poll_interval_ms`: 50–5,000 (default 250).
+- `max_input_chars`: 1–16,000 (default 4,000).
+- `max_response_chars`: 1–8,000 (default 1,000).
+- `error_message`: caller-facing failure text.
+
+Bearer authentication requires HTTPS except on loopback. See the
+[A2A setup guide](A2A-Agent-Tool.md) for credential backup, lifecycle and deletion.
+
 ### Background Music
 
 Play ambient music during AI conversations. Music is mixed into the call audio.
@@ -845,6 +971,110 @@ contexts:
     prompt: "You are a helpful support agent."
     background_music: "ambient"  # MOH class name
 ```
+
+### Deferred transfer silent-reply timeout (`tools.transfer`)
+
+A deferred transfer commits when the agent's handoff reply finishes. If the
+model sends no audio after the transfer tool result (seen with Vertex Live
+models), no completion event arrives and the transfer stays armed.
+`deferred_silent_commit_timeout_sec` bounds that wait.
+
+```yaml
+tools:
+  transfer:
+    defer_until_playback_complete: true
+    deferred_silent_commit_timeout_sec: 4   # 0 disables; range 0-30
+```
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `tools.transfer.deferred_silent_commit_timeout_sec` | `4` | `0`-`30` | Seconds to wait for reply audio after the transfer tool result. `0` disables the timer. |
+
+- **Scope:** deferred blind, attended and live-agent transfers on full-agent
+  providers, when no handoff announcement is configured. Transfers with a
+  handoff announcement use `handoff.start_timeout_sec`. Modular pipelines commit
+  after their own announcement and are not affected.
+- **Behaviour:** the timer starts when the provider has sent the tool result to
+  the model, or reports a failed send via
+  `handoff_result_sent(..., success=False)`. Successful delivery is not required
+  for a transfer to commit. For OpenAI Realtime and Grok sending follows the parent
+  `response.done`, which can take up to 5 s. If no agent audio has
+  started when the timer expires, the engine commits the armed transfer through
+  the normal drain-and-commit path. If agent audio starts first, the timer
+  holds and the transfer commits when that reply finishes, as before.
+- **Caller speech:** provider VAD holds the model's reply while the caller
+  talks, so caller speech does not count as silence. OpenAI Realtime, Grok and
+  Deepgram report when the caller starts and stops (Deepgram's stop is its
+  final user transcript). The timer pauses at the start and restarts at the
+  full timeout when the caller stops. If no stop arrives, the transfer commits
+  30 s after the start. Google Live, ElevenLabs and the local provider report
+  caller activity without an end event, so each transcription fragment, user
+  transcript or interruption restarts the full timeout.
+- **Barge-in:** if the caller interrupts the reply and the provider reports a
+  barge-in (`ProviderBargeIn` or `interruption`), the timer starts again, so a
+  cut-off reply cannot leave the transfer waiting.
+- **Known limit:** once reply audio has started, the timer only resumes on a
+  barge-in. A reply that stalls part-way without a barge-in and without a
+  final completion event still leaves the transfer armed until the call ends.
+- **Slow providers:** if a provider's first reply audio can take longer than the
+  timeout (for example a local model on CPU), raise the value. Otherwise the
+  transfer goes ahead without its handoff line.
+- **Log line:** `deferred_transfer_watchdog_commit`, with the call id and action
+  id, is logged at warning level when the timer commits a transfer.
+- **Admin UI:** **Tools → Transfer → Advanced transfer settings** shows the
+  field as "Silent Reply Commit Timeout (seconds)". Saving applies to new calls;
+  active calls keep their configuration snapshot.
+
+## Attended transfer (`tools.attended_transfer`)
+
+Attended (warm) transfer keeps the caller on hold music while the destination extension hears an announcement and accepts or declines with a DTMF digit. Destinations come from `tools.transfer.destinations.<key>` and must have `type: extension` and `attended_allowed: true`. See "Attended Transfer" in [TOOL_CALLING_GUIDE.md](TOOL_CALLING_GUIDE.md) for the call flow.
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | Read when the destination answers. If false, the answered leg is hung up. The model's access to the tool comes from the context or agent tool list, not from this key. |
+| `moh_class` | `"default"` | Asterisk MOH class played to the caller while dialling and screening. |
+| `dial_timeout_seconds` | `30` | Originate timeout for the destination leg (integer). |
+| `screening_mode` | `"basic_tts"` | `basic_tts`, `caller_recording` or `ai_briefing`. The legacy value `ai_summary` maps to `ai_briefing` with a deprecation warning. |
+| `pass_caller_info_to_context` | `false` | Deprecated. `true` with no `screening_mode` selects `ai_briefing`. |
+| `caller_screening_prompt` | `"Before I connect you, please say your name and the reason for your call."` | `caller_recording` mode only. Spoken to the caller. |
+| `caller_screening_max_seconds` | `6` | `caller_recording`: maximum caller clip length. |
+| `caller_screening_silence_ms` | `1200` | `caller_recording`: silence that ends the clip. |
+| `ai_briefing_timeout_seconds` | `2.0` | `ai_briefing`: Local AI Server summary timeout. On failure the transfer falls back to `basic_tts`. |
+| `ai_briefing_language` | `""` (none) | `ai_briefing`: summary language hint. |
+| `ai_briefing_intro_template` | `"Hi, this is Ava. Here is a short summary of the caller."` | `ai_briefing`: announcement intro. |
+| `announcement_template` | `"Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."` | With a `caller_recording` clip the default is `"Hi, this is Ava. Here is the caller's screening."`. Blank means default. |
+| `agent_accept_prompt_template` | `"Press 1 to accept this transfer, or 2 to decline."` | Wins over `agent_accept_prompt` when the key is present. The default text does not follow custom digits; set it when you change them. |
+| `agent_accept_prompt` | none | Legacy alias of `agent_accept_prompt_template`. |
+| `accept_digit` | `"1"` | Digit that accepts the transfer. |
+| `decline_digit` | `"2"` | Digit that declines. No digit before the timeout counts as a decline. |
+| `accept_timeout_seconds` | `15` | Wins over `agent_accept_timeout_seconds` when the key is present. |
+| `agent_accept_timeout_seconds` | `15` | Legacy alias of `accept_timeout_seconds`. |
+| `tts_timeout_seconds` | `8` | TTS timeout per prompt. File playback waits up to `max(3, 4 × this)`. |
+| `caller_connected_prompt` | `""` (none) | Played to the caller on accept. |
+| `caller_declined_prompt` | `"I’m not able to complete that transfer right now. Would you like me to take a message, or is there anything else I can help with?"` | Local playback after a decline, timeout, `no-answer` or `dial-timeout` for non-Google providers. A missing key uses this default; `""` plays nothing. Google Live receives only a configured value and otherwise words its own recovery. |
+| `delivery_mode` | `"file"` | `file` (ARI playback on the destination) or `stream` (helper ExternalMedia RTP). Enabling the tool in the Admin UI writes `stream`. |
+| `stream_fallback_to_file` | `true` | If stream setup or a stream send fails, use file playback. If false, setup, announcement, caller-recording, or acceptance-prompt failures cause `stream-unavailable` and the AI resumes. A failed AI briefing send logs a warning and continues to acceptance handling. |
+| `external_media_helper.bind_host` | `external_media.rtp_host`, else `"0.0.0.0"` | Process-wide. |
+| `external_media_helper.rtp_port` | `external_media.rtp_port` (default 18080) + 100 | Process-wide. |
+| `external_media_helper.port_range` | Same width as `external_media.port_range`, starting at `rtp_port` | Process-wide. |
+| `external_media_helper.allowed_remote_hosts` | `external_media.allowed_remote_hosts`, else `asterisk.host` | Process-wide. |
+| `external_media_helper.lock_remote_endpoint` | `true` | Process-wide. |
+| `external_media_helper.advertise_host` | `external_media.advertise_host`, else the active helper server’s bind host. Explicit advertise addresses are preserved for NAT. `0.0.0.0` or `::` resolves to a derived routable address | Per call. |
+| `external_media_helper.endpoint_wait_ms` | `1000` (each wait lasts at least 200 ms) | Per call. |
+| `external_media_helper.direction` | `"both"` | Per call. The helper codec is fixed at ulaw 8 kHz. |
+
+### When settings apply
+
+Each call keeps the tool settings it started with: the tool generation in force at call start, with the agent's transfer destination policy applied. The `attended_transfer` tool, the answer and acceptance handler, and failure recovery all read that same per-call copy. A config reload applies to calls that start after it; calls in progress finish with their own settings. Agents cannot override `attended_transfer` keys. Agent tool policy only narrows `tools.transfer.destinations`.
+
+The exception is the helper RTP server's bind settings (`bind_host`, `rtp_port`, `port_range`, `allowed_remote_hosts`, `lock_remote_endpoint`). They are read from the global config once, when the server starts: at engine start if the global `delivery_mode` is `stream`, otherwise on the first call that streams. Changing them needs an engine restart. If the server cannot start, or a per-call RTP port cannot be bound, `stream_fallback_to_file` decides what happens.
+
+Numeric keys treat `0` or blank as "use the default". For example, `accept_timeout_seconds: 0` means 15.
+
+- tools.attended_transfer.tts_provider: Optional pipeline TTS component key (`google_tts`, `deepgram_tts`, `openai_tts`, `elevenlabs_tts`, `groq_tts`, `azure_tts`, `cambai_tts`, `fishaudio_tts` or a custom Fish Audio `*_tts` instance) that speaks every attended-transfer prompt. The provider must be configured under `providers:` with working credentials. Default: unset, so Local AI Server speaks every prompt. Fails closed: an unknown, disabled or unconfigured provider, an error, empty audio or a timeout never falls back to Local AI Server or another provider. The accept prompt, and the announcement in `basic_tts` and `caller_recording`, is synthesized before dialling; if that fails, no call is placed to the destination and the AI continues with the caller. In `ai_briefing` the intro and briefing are synthesized after the destination answers (see `docs/TOOL_CALLING_GUIDE.md`). Adding or changing a TTS provider needs an AI Engine restart before attended transfers can use it; a config reload is not enough.
+- tools.attended_transfer.tts_options: Optional, used only with `tts_provider`; ignored without it. Keys: `voice` (provider voice name, for example `en-US-Chirp3-HD-Charon`) and `language` (for example `en-US`). Omitted keys fall back to the provider block's own voice and language. Default: unset.
+
+See [TOOL_CALLING_GUIDE.md](TOOL_CALLING_GUIDE.md) for the attended-transfer TTS flow.
 
 ## Environment Variable Resolution
 
@@ -999,3 +1229,52 @@ The integration test is skipped unless both `FISH_AUDIO_API_KEY` and
 ## Cloud full-agent startup connection recovery
 
 Google Live/Vertex, OpenAI Realtime, Grok, Deepgram Agent, and ElevenLabs Agent support optional `connect_timeout_sec` (default 10), `connect_max_retries` (default 0, maximum 3), and `connect_total_timeout_sec` (default unset). Missing fields preserve existing behavior. Configure them per provider in **Providers → Startup connection recovery (Expert)**, then restart AI Engine. These fields affect initial connection establishment, separately from session setup, keepalive, and mid-call recovery. See [configuration, upgrade compatibility, rollback, and real-call verification](Provider-Connection-Recovery.md).
+
+## Provider input gain and audio-energy diagnostics
+
+Input gain remains disabled unless both `input_gain_target_rms` and
+`input_gain_max_db` are positive. It applies to the engine's PCM provider-input
+branch after resampling; the mu-law branch and modular pipelines are unchanged.
+Google Live and OpenAI Realtime expose these controls under their advanced audio
+settings. For other providers with gain configuration, use **Raw YAML** in the
+Admin UI or `config/ai-agent.local.yaml`. Save and restart the AI Engine; test on
+new calls. Per-call/provider state is transient and is reset at provider stop,
+call cleanup, or engine restart.
+
+```yaml
+providers:
+  google_live:
+    input_gain_target_rms: 2500
+    input_gain_max_db: 12
+    input_gain_noise_floor_rms: 200
+```
+
+`input_gain_noise_floor_rms` accepts 0–32767 (default **200**, linear PCM16
+amplitude). Frames at or below the floor do not update the level estimate and
+ramp gain towards unity. Digital silence remains silent. This energy threshold
+is not a speech classifier: choose it below the quietest speech you need to
+retain, and above measured background noise where possible. Setting 0 excludes
+only digital silence. A high maximum gain can still amplify noise above the
+floor; start conservatively and compare real caller audio.
+
+The level follower uses a 10 ms attack for louder audio and a 500 ms release
+for quieter audio. Gain starts at unity, rises with a 50 ms time constant and
+falls with a 10 ms time constant, using a sample ramp. A frame's peak headroom
+can reduce gain immediately to prevent amplified peaks clipping. Loud audio is
+never attenuated. Short pauses therefore do not normalize every frame to the
+same level. These constants follow audio duration at all supported sample rates.
+
+The engine emits at most one excessive-gain warning per provider session, then
+one `Provider input gain summary` on stop/cleanup. The summary reports processed
+frames, below-floor frames, frames/duration with gain above 10x, and the
+energy-weighted RMS of audio above the floor (`active_audio_rms`). This is not
+speech detection or a diagnosis of SIP trunk gain. Per-frame gain INFO logs have
+been removed.
+
+Low-energy diagnostics require a window containing at least one second of
+nonzero audio, rather than warning on the first quiet frame. Empty and digital
+silence frames (including intentional input gating) do not advance that window.
+The window repeats until a low-energy warning is emitted, at most once per stage
+per call. The thresholds remain RMS 200 for PCM and RMS 50 for decoded mu-law.
+This observation does not establish recognition quality; healthy speech and
+initial silence should be checked alongside sustained quiet input.

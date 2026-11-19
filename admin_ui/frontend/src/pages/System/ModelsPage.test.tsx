@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
-import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -99,7 +98,7 @@ const installedModelsPayload = {
     ],
 };
 
-const mockModelsPageApis = () => {
+const mockModelsPageApis = (healthStatus = 'error', environment: Record<string, string> = {}, modelsPayload: unknown = installedModelsPayload) => {
     vi.mocked(axios.get).mockImplementation((url) => {
         if (url === '/api/wizard/local/available-models') {
             return Promise.resolve({
@@ -117,20 +116,20 @@ const mockModelsPageApis = () => {
             return Promise.resolve({
                 data: {
                     local_ai_server: {
-                        status: 'error',
-                        details: { error: 'old health path timed out' },
+                        status: healthStatus,
+                        details: healthStatus === 'connected' ? localAIComponent.details : { error: 'old health path timed out' },
                     },
                 },
             });
         }
         if (url === '/api/local-ai/models') {
-            return Promise.resolve({ data: installedModelsPayload });
+            return Promise.resolve({ data: modelsPayload });
         }
         if (url === '/api/local-ai/capabilities') {
             return Promise.resolve({ data: { stt: {}, tts: {} } });
         }
         if (url === '/api/config/env') {
-            return Promise.resolve({ data: {} });
+            return Promise.resolve({ data: environment });
         }
         if (url === '/api/custom-models') {
             return Promise.resolve({ data: { enabled: false, models: [] } });
@@ -165,6 +164,43 @@ describe('ModelsPage Local AI status', () => {
         expect(screen.getAllByText('en_US-lessac-medium.onnx').length).toBeGreaterThan(0);
     });
 
+    it.each(['stale', 'expired'])('uses current health instead of a %s failure, including stream updates', async (freshness) => {
+        const failed = { ...localAIComponent, state: 'unreachable', freshness };
+        liveStatusState.current.snapshot = {
+            ...liveStatusSnapshot(),
+            components: { local_ai_server: failed },
+        };
+        mockModelsPageApis('connected');
+        const view = render(<MemoryRouter><ModelsPage /></MemoryRouter>);
+        await waitFor(() => expect(screen.getByText('Connected')).toBeInTheDocument());
+
+        liveStatusState.current.snapshot = {
+            ...liveStatusSnapshot(), event_id: 8,
+            components: { local_ai_server: { ...failed, updated_at: '2026-06-27T05:31:23Z' } },
+        };
+        view.rerender(<MemoryRouter><ModelsPage /></MemoryRouter>);
+        await waitFor(() => expect(screen.getByText('Connected')).toBeInTheDocument());
+        expect(screen.queryByText(/Local AI Server is not reachable/i)).not.toBeInTheDocument();
+
+        // A new, fresh failure must still be shown; recovery is not sticky.
+        liveStatusState.current.snapshot = {
+            ...liveStatusSnapshot(), event_id: 9,
+            components: { local_ai_server: { ...failed, freshness: 'fresh', updated_at: '2026-06-27T05:31:24Z' } },
+        };
+        view.rerender(<MemoryRouter><ModelsPage /></MemoryRouter>);
+        await waitFor(() => expect(screen.getByText('Error')).toBeInTheDocument());
+    });
+
+    it('does not hide a current outage behind stale ready status', async () => {
+        liveStatusState.current.snapshot = {
+            ...liveStatusSnapshot(),
+            components: { local_ai_server: { ...localAIComponent, state: 'ready', freshness: 'stale' } },
+        };
+        mockModelsPageApis('error');
+        render(<MemoryRouter><ModelsPage /></MemoryRouter>);
+        await waitFor(() => expect(screen.getByText('Error')).toBeInTheDocument());
+    });
+
     it('falls back to legacy health status when pushed Local AI state is unknown', async () => {
         liveStatusState.current.snapshot = {
             ...liveStatusSnapshot(),
@@ -185,9 +221,63 @@ describe('ModelsPage Local AI status', () => {
         );
 
         await waitFor(() => {
-            expect(vi.mocked(axios.get)).toHaveBeenCalledWith('/api/system/health');
+            expect(vi.mocked(axios.get)).toHaveBeenCalledWith('/api/system/health', expect.objectContaining({ signal: expect.any(AbortSignal) }));
         });
         await waitFor(() => expect(screen.getByText('Error')).toBeInTheDocument());
         expect(screen.getByText(/Local AI Server is not reachable/i)).toBeInTheDocument();
     });
+    it.each(['/app/models/stt/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17', '/models/custom-b'])('retains and applies explicit SenseVoice settings at %s after a failure', async path => {
+        const component = {
+            ...localAIComponent, state: 'ready',
+            details: { ...localAIComponent.details, config: { runtime_mode: 'full' },
+                models: { ...localAIComponent.details.models, stt: {
+                    backend: 'sherpa', loaded: true, path: '/models/loaded-sense-voice', sherpa_model_type: 'offline',
+                    sherpa_model_family: 'sense_voice', sherpa_sense_voice_language: 'auto',
+                    sherpa_sense_voice_use_itn: true,
+                } },
+            },
+        };
+        liveStatusState.current.snapshot = { ...liveStatusSnapshot(), components: { local_ai_server: component } };
+        mockModelsPageApis('connected', {}, { ...installedModelsPayload, stt: { sherpa: [{ name: 'Target SenseVoice', path, size_mb: 155 }] } });
+        vi.mocked(axios.post)
+            .mockResolvedValueOnce({ data: { success: false, message: 'Recognizer verification failed' } })
+            .mockResolvedValueOnce({ data: { success: true } });
+        render(<MemoryRouter><ModelsPage /></MemoryRouter>);
+        const target = await screen.findByRole('option', { name: 'Target SenseVoice' });
+        fireEvent.change(target.closest('select')!, { target: { value: `sherpa:${path}` } });
+        const language = await screen.findByLabelText('SenseVoice Language');
+        fireEvent.change(language, { target: { value: 'zh' } });
+        fireEvent.change(screen.getByLabelText('Punctuation (ITN)'), { target: { value: 'false' } });
+        fireEvent.click(screen.getByRole('button', { name: /Apply Changes/i }));
+        await screen.findAllByText(/Recognizer verification failed/);
+        expect(language).toHaveValue('zh');
+        expect(screen.getByLabelText('Punctuation (ITN)')).toHaveValue('false');
+        fireEvent.click(screen.getByRole('button', { name: /Apply Changes/i }));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(2));
+        for (const [, payload] of vi.mocked(axios.post).mock.calls) {
+            expect(payload).toMatchObject({ sherpa_sense_voice_language: 'zh', sherpa_sense_voice_use_itn: false });
+        }
+    });
+
+    it('shows persisted SenseVoice settings while another backend is active and sends exactly those values', async () => {
+        const path = '/app/models/stt/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17';
+        const component = { ...localAIComponent, state: 'ready', details: {
+            ...localAIComponent.details, config: { runtime_mode: 'full' },
+        } };
+        liveStatusState.current.snapshot = { ...liveStatusSnapshot(), components: { local_ai_server: component } };
+        mockModelsPageApis('connected', { SHERPA_SENSE_VOICE_LANGUAGE: 'zh', SHERPA_SENSE_VOICE_USE_ITN: ' OFF ' }, {
+            ...installedModelsPayload, stt: { ...installedModelsPayload.stt, sherpa: [{ name: 'SenseVoice', path, size_mb: 155 }] },
+        });
+        vi.mocked(axios.post).mockResolvedValue({ data: { success: true } });
+        render(<MemoryRouter><ModelsPage /></MemoryRouter>);
+        const option = await screen.findByRole('option', { name: 'SenseVoice' });
+        fireEvent.change(option.closest('select')!, { target: { value: `sherpa:${path}` } });
+        expect(await screen.findByLabelText('SenseVoice Language')).toHaveValue('zh');
+        expect(screen.getByLabelText('Punctuation (ITN)')).toHaveValue('false');
+        fireEvent.click(screen.getByRole('button', { name: /Apply Changes/i }));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/local-ai/switch', expect.objectContaining({
+            sherpa_sense_voice_language: 'zh', sherpa_sense_voice_use_itn: false,
+        })));
+    });
+
 });

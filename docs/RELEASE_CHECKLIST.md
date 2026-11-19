@@ -4,6 +4,9 @@ CI is the hard gate for code quality (unit tests + lint/compile checks). Real-ca
 
 ## CI Gate (Must Pass)
 
+Select and record an exact release candidate on `main`. Verify that commit's
+checks and tag it only after the applicable release gates pass.
+
 - GitHub Actions `CI` workflow green
 - Admin UI frontend lint, Vitest, and production build green on the pull request
 - Admin UI backend test job green
@@ -13,6 +16,51 @@ CI is the hard gate for code quality (unit tests + lint/compile checks). Real-ca
   revision (or be repeated after any call-path change)
 
 ## Manual Golden Baselines (Must Pass Before Tagging)
+
+For v7.7.3, use the [current validation matrix](baselines/golden/v7.7.3-validation-matrix.md).
+The maintainer approved reuse of existing testing evidence for this release.
+Additional runtime, deployment, live-call and upgrade testing, including an
+exact-candidate successful-call baseline, is waived for v7.7.3. Keep original
+revisions, fixtures, operator reports and unverified lanes visible. Required CI,
+image/security checks and review remain required. The maintainer authorized
+merge and tag after successful main checks. The
+[v7.7.3-only security exception](baselines/golden/v7.7.3-validation-matrix.md#v773-only-security-exception)
+covers the recorded residual findings and expires before a later stable tag.
+
+### Historical v7.7.2 evidence acceptance
+
+For v7.7.2, use the [historical validation matrix](baselines/golden/v7.7.2-validation-matrix.md).
+For v7.7.2, the maintainer accepted existing runtime and upgrade evidence in place
+of additional exact-candidate calls and deployment tests. Record the source
+revision, configuration and limits for each evidence item.
+The [security disposition](baselines/golden/v7.7.2-validation-matrix.md#security)
+documents the v7.7.2-only Bookworm exception. The exact main revision still
+requires green CI and a release-candidate image scan before tagging.
+
+### Historical v7.7.1 waiver
+
+See the [historical v7.7.1 validation matrix](baselines/golden/v7.7.1-validation-matrix.md).
+The maintainer explicitly approved a fresh scoped waiver of additional deployment,
+runtime, live-call and upgrade testing, including the CI Gate's exact-revision
+live-call evidence and the successful-call requirement below. Reused evidence,
+skipped cases and unverified lanes remain labelled, not new exact-candidate passes.
+Required CI, automated/image checks, security assessment and review are not waived.
+The supported release trains were 7.7.x/7.6.x. This waiver applied to v7.7.1.
+
+### Historical v7.7.0 waiver
+
+For v7.7.0, use its [historical validation matrix](baselines/golden/v7.7.0-validation-matrix.md).
+The maintainer explicitly approved reuse of the existing evidence and waived
+the CI Gate's exact-revision live-call evidence and additional deployment,
+live-call, runtime and upgrade testing for this release. This also waives the
+successful-call requirement below for v7.7.0.
+The rows remain reused evidence or waived/untested, not exact-candidate passes.
+Required CI, automated checks and security review are not waived. The backup
+safety PR must merge first; refresh and revalidate the release PR against that
+base before merging it. Both merges and the tag require separate approval.
+Keep the outstanding 7.5 security-backport disposition separate: mitigation
+guidance is published, but a backport is not claimed. The general manual gates
+below remain the default for releases without an explicit scoped waiver.
 
 Run at least one successful call for each baseline you intend to claim as supported.
 

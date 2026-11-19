@@ -10,6 +10,11 @@ This is the **canonical guide** for all local deployment topologies:
 
 ## Overview
 
+For authenticated batch uploads using your installed local STT backend, see the
+[OpenAI-compatible transcription API](OpenAI-Compatible-Transcription.md).
+It has no cloud fallback or transcription UI; live calls take priority over its
+single isolated batch worker. Preserve backend profiles/models during upgrades.
+
 A fully local deployment uses:
 - **STT**: Faster Whisper (recommended with GPU), Vosk, or Sherpa-ONNX
 - **LLM**: Phi-3 Mini or other GGUF models via llama.cpp
@@ -150,6 +155,14 @@ LOCAL_WS_URL=ws://127.0.0.1:8765
 
 The GPU compose file (`docker-compose.gpu.yml`) builds a CUDA-enabled `local_ai_server` image using `Dockerfile.gpu`:
 
+The GPU image packages Python 3.11.15 in both build and runtime stages because
+WebSockets 17.4 requires Python 3.11 or newer. It retains CUDA 12.4.1/cuDNN and
+does not use Ubuntu 22.04's Python 3.10. A digest-pinned uv bootstrap downloads
+the managed interpreter during the build; the runtime contains the interpreter
+and venv at the same paths, without requiring uv or host Python. Both stages
+point Python TLS at Ubuntu's maintained CA bundle. Native GPU
+inference still requires the NVIDIA driver/toolkit and separate hardware testing.
+
 > AVA's supported GPU image is NVIDIA CUDA-only. AMD/ROCm and Apple Metal are
 > not currently implemented by the Docker deployment path; those hosts must use
 > CPU mode unless they maintain a custom inference server.
@@ -196,6 +209,13 @@ PBX + `ai_engine` on Machine A, `local_ai_server` on Machine B (GPU box).
 This is common for production: a small VPS runs Asterisk/ai_engine, and a beefy box (or cloud GPU) handles inference.
 
 ### Machine B (GPU Server) — local_ai_server only
+
+Before updating or rolling back this host, pause new calls and drain active calls
+on every engine that uses it. No local `ai_engine` exists to verify remote call
+state, so the updater refuses Local AI runtime changes unless the operator has
+verified that drain and explicitly sets `AAVA_UPDATE_FORCE_ACTIVE_CALLS=true`.
+An image-only build does not recreate the service. See the
+[upgrade recovery procedure](CLI_TOOLS_GUIDE.md#interrupted-docker-builds-and-same-version-recovery).
 
 ```bash
 git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
@@ -291,7 +311,12 @@ python3 scripts/check_local_server.py --local
 python3 scripts/check_local_server.py --remote <gpu-ip>
 ```
 
-See [CLI Tools Guide](CLI_TOOLS_GUIDE.md#agent-check---local--agent-check---remote) for full flag reference.
+See [CLI Tools Guide](CLI_TOOLS_GUIDE.md#local-ai-server-round-trip) for full flag reference.
+
+The Admin UI connects directly to the configured Local AI WebSocket URL, including
+remote URLs. It ignores environment and system proxy settings for these connections,
+preserving the behavior used before WebSockets 17. Other HTTP clients retain their
+existing proxy behavior.
 
 ### Manual Verification (advanced)
 
@@ -581,6 +606,18 @@ Models are **not bundled** in Docker images. Download them via:
   - `SHERPA_OFFLINE_PREROLL_MS=350`
   - `SHERPA_OFFLINE_DEBUG_SEGMENTS=true` for targeted diagnostics only
 - See [Sherpa-ONNX Models](https://github.com/k2-fsa/sherpa-onnx/releases)
+
+**Sherpa-ONNX Offline SenseVoice** (VAD-gated, multilingual):
+- `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17` (~155 MB, original SenseVoiceSmall export; Chinese, English, Japanese, Korean, Cantonese)
+- Use with `SHERPA_MODEL_TYPE=offline`; no extra dependencies beyond the bundled `sherpa-onnx`
+- SenseVoice is detected automatically when the model directory contains `model.onnx` or `model.int8.onnx` plus `tokens.txt` (no `encoder*.onnx`)
+- `SHERPA_SENSE_VOICE_LANGUAGE=auto` (or `zh`, `en`, `ja`, `ko`, `yue` to pin a language)
+- `SHERPA_SENSE_VOICE_USE_ITN=true` adds punctuation and digit formatting (the Cantonese fine-tuned `...-int8-2025-09-09` export also loads, but does not produce punctuation)
+- Emotion and audio-event tags are not added to transcripts; they are logged at debug level
+- The same VAD tuning knobs as the offline transducer apply. Offline initialization requires a Silero VAD file at `SHERPA_VAD_MODEL_PATH`. When unset, the server uses `/app/models/vad/silero_vad.onnx` and downloads it if missing. Manual installs outside `/app` should set an existing VAD file path or make the default location writable; download or file-creation failure prevents initialization.
+- Language and punctuation can also be changed from the Models page, Environment page or Health widget; the status panel shows the effective values. The Local Provider editor links to these global controls. Saving a provider does not apply them.
+- A directory with both `encoder*.onnx` and `model.onnx` loads as a transducer (a warning names the ignored file). A `model.onnx` without SenseVoice metadata is rejected at startup with the missing keys listed
+- Each decoded segment logs `call_id`, `audio_ms`, `decode_ms` and the real-time factor at INFO level
 
 **T-one** (Russian telephony streaming CTC):
 - Requires rebuild: `docker compose build --build-arg INCLUDE_TONE=true local_ai_server`

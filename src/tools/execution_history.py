@@ -45,6 +45,7 @@ _DEFAULT_TOOL_REDACTION_MODE = "strict"
 _warned_invalid_redaction_modes: set[str] = set()
 
 _SECRET_PARAMETER_KEYS = {
+    "confirmation_reference",
     # Credentials and authorization material. This follows the repository-wide
     # logging and HTTP-diagnostic redaction posture without substring matches
     # that would turn ordinary keys such as ``bypass`` into false positives.
@@ -74,6 +75,7 @@ _SECRET_PARAMETER_KEYS = {
     "headers",
 }
 _PII_PARAMETER_KEYS = {
+    "answers", "questions_and_answers", "answer",
     # Caller-supplied PII and free text accepted by built-in in-call tools.
     "name",
     "first_name",
@@ -81,6 +83,7 @@ _PII_PARAMETER_KEYS = {
     "full_name",
     "customer_name",
     "caller_name",
+    "call_reason",
     "contact_name",
     "email",
     "email_address",
@@ -421,11 +424,19 @@ def build_in_call_tool_record(
         redacted_fields.append("message")
 
     return {
+        **({key: result_dict[key] for key in ("reservation_status", "attempt_reference", "appointment_name", "start_datetime", "end_datetime", "timezone") if key in result_dict}
+           if name == "calendly_calendar" else {}),
+        **{key: result_dict[key] for key in ("summary_provider", "summary_model", "summary_status",
+            "summary_duration_ms", "summary_error_code") if key in result_dict},
+        **({key: result_dict[key] for key in ("phase", "http_status", "delivery_status", "error_code", "template_variable") if key in result_dict}
+           if result_dict.get("http_tool") else {}),
+        **({key: result_dict[key] for key in ("delivery_status", "notification_deliveries", "notification_service") if key in result_dict} if result_dict.get("internal_notification") else {}),
         "type": "tool_result",
         "call_id": str(call_id or ""),
         "tool_call_id": stable_tool_call_id(tool_call_id),
         "name": name,
         "action": action,
+        **({"handoff_indeterminate": True} if result_dict.get("handoff_indeterminate") is True else {}),
         "status": terminal_status,
         "target_id": target_id,
         "params": params,
@@ -481,6 +492,15 @@ async def record_in_call_tool_result(
             and deferred_action.get("kind") == "transfer"
             else ""
         )
+        if record["status"] == "success" and (
+            (isinstance(deferred_action, dict) and deferred_action.get("transfer_type") == "attended_transfer")
+            or (
+                record["name"] == "attended_transfer"
+                and isinstance(result, dict) and result.get("type") == "attended_transfer"
+                and not result.get("action")
+            )
+        ):
+            record["action"] = "attended_transfer_initiated"
         deferred_origin = {
             "tool_call_id": record["tool_call_id"],
             "name": record["name"],

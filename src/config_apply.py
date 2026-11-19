@@ -19,6 +19,7 @@ HOT_RELOADABLE_ROOT_KEYS: FrozenSet[str] = frozenset(
         "no_input",
         "tools",
         "in_call_tools",
+        "pushover",
         "farewell_hangup_delay_sec",
         "on_provider_failure",
         "provider_failure_prompt",

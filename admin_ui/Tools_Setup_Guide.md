@@ -1,14 +1,60 @@
 # HTTP Tools Setup Guide (Admin UI)
 
 **Version**: 1.1.0
-**Last Updated**: July 2026
-**Applies to**: v7.4+
+**Last Updated**: October 2026
+**Applies to**: v7.7.3
 
 ---
 
 ## Overview
 
 This guide explains how to set up **Pre-Call HTTP Lookups**, **In-Call HTTP Tools**, and **Post-Call Webhooks** using the Admin UI. These tools enable CRM integration with platforms like GoHighLevel, n8n, and Make.
+
+### Navigating Tools
+
+The Tools page opens a searchable list. **In-Call** groups built-in tools under
+Call handling and Business, followed by custom HTTP tools. Choose **Configure**
+to open one tool's dedicated editor, then **Back to tools** to return. Built-in
+drafts and pending calendar connection flows survive navigation between tool
+editors and phases. Transfer destinations, warm transfer, cancellation, extension
+status, and Live Agents are grouped under **Transfer & live agents**. Expand
+**Advanced transfer settings — routing and timing** for technical overrides;
+expanding or collapsing it never changes configuration.
+
+Inside **Transfer & live agents → Destinations**, **Discover endpoints** uses
+the configured ARI connection to assist setup. Select candidates, confirm each
+number/name/context, and **Add to configuration** before **Save & Apply**.
+Discovery does not enable tools, create Live Agents, or place calls. Manual
+destinations remain supported. See the
+[endpoint discovery guide](../docs/ARI-Endpoint-Discovery.md).
+
+**Tool defaults** contains the shared caller identity and action timeout.
+**Catalog** remains a read-only reference to registered engine schemas (including
+MCP tools), not a list of the tools assigned to an individual Agent. Enablement
+and assignment are separate: manage Agent access in **Agents → Tools**.
+
+HTTP configuration opens in a dedicated editor. **Update tool** validates and
+stages the edit in the page draft; it does not write to the server. **Cancel and
+return to tools** discards that HTTP editor's uncommitted changes. After updating,
+use **Save & Apply** to persist the page draft. Pending changes remain available
+when navigating within Tools; save before leaving the page.
+
+Save & Apply follows the backend's apply plan. A hot reload affects new calls;
+active calls retain their tool generation. Changes requiring a restart remain
+saved until the explicit restart action is used. Save failures keep the draft;
+apply failures or partial reloads display their status and preserve the existing
+apply/restart controls. Stale engine status is labeled rather than treated as
+success. Existing credential upload/connect/disconnect and email-template saves
+retain their immediate operations; they are not undone by returning to the list.
+
+### A2A remote agents
+
+Use **Tools → In-Call → Add Tool → A2A Agent** for endpoint, description,
+optional Bearer credential and timeout. **Update tool** stages the edit and
+**Save & Apply** activates it for new calls. Then grant access under **Agents →
+Edit Agent → Tools → In-call** using the **A2A** badge. Assigned tools cannot be
+deleted until removed from all saved Agents. See the [A2A setup guide](../docs/A2A-Agent-Tool.md)
+for advanced limits, YAML compatibility and credential backup.
 
 ### What You'll Learn
 
@@ -21,6 +67,17 @@ This guide explains how to set up **Pre-Call HTTP Lookups**, **In-Call HTTP Tool
 ---
 
 ## Prerequisites
+
+Appointment booking can use a self-hosted calendar through the existing
+[Streamable HTTP MCP route](../docs/Appointment-booking-providers.md). Optional
+native integrations have separate guides: [Calendly](../docs/Calendly-calendar-tool.md),
+[A2A agent delegation](../docs/A2A-Agent-Tool.md),
+[Pushover](../docs/Pushover.md), [generated summaries](../docs/In-Call-Summaries.md)
+and [Microsoft Teams verification](../docs/Microsoft-teams-verification.md).
+Calendly submission uncertainty must not be retried blindly. Pushover remains a
+separate notification tool, and API acceptance is not proof that a person read
+a notification. Agent assignment and phase permissions still apply; exposing a
+configured tool is not authorization.
 
 1. Admin UI running and accessible at `http://localhost:3003`
 2. API keys for your integration platform (GoHighLevel, n8n, Make)
@@ -104,7 +161,7 @@ Output variables map API response fields to prompt variables:
 
 ### Step 6: Save
 
-Click **Save** to apply changes.
+Click **Update tool**, then **Save & Apply** on the Tools page.
 
 Optional: use **Test** to validate your request/response shape before saving.
 
@@ -126,7 +183,7 @@ In-call HTTP tools are **AI-invoked** during a live conversation. Unlike pre-cal
 
 1. Go to **Tools**
 2. Select the **In-Call** tab
-3. Scroll to **In-Call HTTP Tools** section
+3. Find the **In-Call HTTP Tools** section below the built-in tool list
 4. Click **+ Add Tool**
 
 ### Step 2: Configure the Tool
@@ -197,7 +254,7 @@ Toggle **Return Raw JSON** to return the entire response to the AI.
 
 ### Step 8: Save
 
-Click **Save** to apply changes.
+Click **Update tool**, then **Save & Apply** on the Tools page.
 
 ---
 
@@ -268,7 +325,7 @@ When enabled, `{summary}` contains the generated text and `{summary_json}` conta
 
 ### Step 6: Save
 
-Click **Save Configuration** to apply changes.
+Click **Update tool**, then **Save & Apply** on the Tools page.
 
 ---
 

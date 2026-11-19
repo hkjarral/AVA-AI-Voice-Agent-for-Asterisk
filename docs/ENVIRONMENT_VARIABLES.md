@@ -27,6 +27,31 @@ Set these in `.env`:
 
 ## Common operator variables
 
+### Local transcription API
+
+Admin's optional `/v1/models` and `/v1/audio/transcriptions` facade uses separate
+speech credentials, not browser login. Configure either `AAVA_SPEECH_API_KEY`
+(Bearer), or both `AAVA_SPEECH_API_USERNAME` and `AAVA_SPEECH_API_PASSWORD`
+(Basic); it fails closed when neither scheme is set. Keep credentials private.
+`AAVA_SPEECH_STT_TIMEOUT_SECONDS` defaults to 240 and is clamped to 10–600; it
+bounds the STT response wait, not the whole upload/decode operation.
+
+For split servers, configure Admin's `HEALTH_CHECK_LOCAL_AI_URL` with the actual
+inference WebSocket and supply its matching `LOCAL_WS_AUTH_TOKEN` when required.
+Recreate Admin after environment changes. See [transcription setup and limits](OpenAI-Compatible-Transcription.md).
+
+### Calendly and managed notification state
+
+- `CALENDLY_DB_PATH`: default `/app/data/operator/calendly.db`.
+- `CALENDLY_TOKEN_PATH`: default `/app/project/secrets/calendly-default-token.json`.
+
+Both Engine and Admin require matching mounts and compatible ownership. Changing
+paths requires coordinated recreation and preserved state; never start a fresh
+journal to bypass pending operations. Host backups support standard mappings and
+in-checkout overrides, not arbitrary external/Compose-only mounts. Follow
+[backup guidance](INTEGRATION_BACKUPS.md). Enter PATs/Pushover keys through
+authenticated editors; they use managed secret files, not new plaintext env keys.
+
 ### Asterisk ARI
 
 - `ASTERISK_HOST`: where `ai_engine` reaches ARI (IP/hostname).

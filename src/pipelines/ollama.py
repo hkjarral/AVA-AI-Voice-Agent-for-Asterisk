@@ -35,6 +35,7 @@ from urllib.parse import urlparse
 
 from ..logging_config import get_logger
 from ..tools.execution_history import stable_tool_call_id
+from ..tools.adapters.sanitize import INTERNAL_NOTIFICATION_INSTRUCTIONS
 from ..tools.registry import tool_registry
 from .base import Component, LLMComponent, LLMResponse
 
@@ -138,7 +139,7 @@ class OllamaLLMAdapter(LLMComponent):
     _KNOWN_KEYS = frozenset({
         # consumed by the adapter
         "base_url", "model", "temperature", "timeout_sec", "stream",
-        "max_tokens", "tools_enabled", "tools",
+        "max_tokens", "tools_enabled", "tools", "system_prompt",
         "num_ctx", "context_window", "context_length",
         # provider-level meta keys from providers.ollama_llm
         "enabled", "type", "display_name", "customer", "capabilities",
@@ -204,7 +205,7 @@ class OllamaLLMAdapter(LLMComponent):
         call_tool_registry = self.tool_registry_or(tool_registry)
         for name in tool_names:
             tool = call_tool_registry.get(name)
-            if tool:
+            if tool and getattr(tool, "is_enabled", True):
                 # Ollama uses same format as OpenAI for tools
                 tools.append({
                     "type": "function",
@@ -228,6 +229,15 @@ class OllamaLLMAdapter(LLMComponent):
                 })
         return tools
 
+    @staticmethod
+    def _recent_messages(messages: List[Dict[str, Any]], limit: int = 10) -> List[Dict[str, Any]]:
+        """Last ``limit`` messages for context, always keeping a leading system prompt."""
+        if len(messages) <= limit:
+            return messages
+        if messages and messages[0].get("role") == "system":
+            return [messages[0], *messages[-(limit - 1):]]
+        return messages[-limit:]
+
     async def generate(
         self,
         call_id: str,
@@ -249,7 +259,7 @@ class OllamaLLMAdapter(LLMComponent):
         # Build messages array
         # Add system message if not already present
         if not messages or messages[0].get("role") != "system":
-            system_prompt = context.get("system_prompt", "")
+            system_prompt = merged.get("system_prompt") or context.get("system_prompt", "")
             if system_prompt:
                 messages.insert(0, {"role": "system", "content": system_prompt})
         
@@ -266,6 +276,12 @@ class OllamaLLMAdapter(LLMComponent):
                 if role == "system":
                     continue  # System already handled above
                 elif role == "tool":
+                    if context.get("internal_notification"):
+                        messages.append({
+                            "role": "user",
+                            "content": f"{INTERNAL_NOTIFICATION_INSTRUCTIONS}\nInternal tool outcome: {content}",
+                        })
+                        continue
                     # Convert tool result to a user-style message Ollama understands
                     tool_content = content or "Tool executed successfully."
                     # Add as assistant message first acknowledging the tool was called
@@ -297,7 +313,7 @@ class OllamaLLMAdapter(LLMComponent):
         url = f"{merged['base_url'].rstrip('/')}/api/chat"
         payload = {
             "model": model,
-            "messages": messages[-10:],  # Keep last 10 messages for context
+            "messages": self._recent_messages(messages),
             "stream": False,
             "options": {},
         }

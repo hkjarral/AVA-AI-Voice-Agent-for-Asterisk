@@ -7,6 +7,7 @@ import axios from 'axios';
 
 interface HealthInfo {
     local_ai_server: {
+        warning?: string;
         status: string;
         details: any;
     };
@@ -31,7 +32,7 @@ interface AvailableModels {
 }
 
 interface PendingChanges {
-    stt?: { backend: string; modelPath?: string; embedded?: boolean; language?: string; sherpa_model_type?: string; sherpa_vad_model_path?: string; tone_decoder_type?: string; tone_kenlm_path?: string };
+    stt?: { backend: string; modelPath?: string; embedded?: boolean; language?: string; sherpa_model_type?: string; sherpa_vad_model_path?: string; sherpa_sense_voice_language?: string; sherpa_sense_voice_use_itn?: boolean; tone_decoder_type?: string; tone_kenlm_path?: string };
     tts?: { backend: string; modelPath?: string; voice?: string; mode?: string };
     llm?: { modelPath: string };
 }
@@ -229,6 +230,11 @@ export const HealthWidget = () => {
                     if (modelType === 'stt' && change.backend === 'sherpa') {
                         if (change.sherpa_model_type) payload.sherpa_model_type = change.sherpa_model_type;
                         if (change.sherpa_vad_model_path) payload.sherpa_vad_model_path = change.sherpa_vad_model_path;
+                        const currentStt = health?.local_ai_server?.details?.models?.stt;
+                        if (change.sherpa_sense_voice_language !== undefined || change.sherpa_sense_voice_use_itn !== undefined || /sense[-_]?voice/i.test(change.modelPath || '') || currentStt?.sherpa_model_family === 'sense_voice') {
+                            payload.sherpa_sense_voice_language = change.sherpa_sense_voice_language ?? currentStt?.sherpa_sense_voice_language ?? 'auto';
+                            payload.sherpa_sense_voice_use_itn = change.sherpa_sense_voice_use_itn ?? currentStt?.sherpa_sense_voice_use_itn ?? true;
+                        }
                     }
                     if (modelType === 'stt' && change.backend === 'tone') {
                         if (change.tone_decoder_type) payload.tone_decoder_type = change.tone_decoder_type;
@@ -240,8 +246,8 @@ export const HealthWidget = () => {
 
                     const res = await axios.post('/api/local-ai/switch', payload);
 
-                    // Only check success on last change (which triggers restart)
-                    if (isLast && !res.data.success) {
+                    // Each response may report a failed switch and rollback.
+                    if (!res.data.success) {
                         throw new Error(res.data.message || 'Failed to switch model');
                     }
                 } else if (modelType === 'llm') {
@@ -712,6 +718,45 @@ export const HealthWidget = () => {
                                                         placeholder="/app/models/vad/silero_vad.onnx"
                                                         disabled={applyingChanges}
                                                     />
+                                                </div>
+                                            )}
+                                            {(health.local_ai_server.details.models?.stt?.sherpa_model_family === 'sense_voice'
+                                                || /sense[-_]?voice/i.test(pendingChanges.stt?.modelPath || '')) && (
+                                                <div className="grid grid-cols-2 gap-1.5">
+                                                    <div>
+                                                        <label htmlFor="health-sensevoice-language" className="text-[10px] text-muted-foreground">SenseVoice Language</label>
+                                                        <select id="health-sensevoice-language"
+                                                            className={`w-full text-xs p-1.5 rounded border bg-background ${pendingChanges.stt?.sherpa_sense_voice_language ? 'border-yellow-500' : 'border-border'}`}
+                                                            value={pendingChanges.stt?.sherpa_sense_voice_language ?? health.local_ai_server.details.models?.stt?.sherpa_sense_voice_language ?? 'auto'}
+                                                            onChange={(e) => {
+                                                                const existing = pendingChanges.stt || { backend: 'sherpa' };
+                                                                queueChange('stt', { ...existing, backend: 'sherpa', sherpa_sense_voice_language: e.target.value });
+                                                            }}
+                                                            disabled={applyingChanges}
+                                                        >
+                                                            <option value="auto">Auto-detect</option>
+                                                            <option value="zh">Mandarin (zh)</option>
+                                                            <option value="en">English (en)</option>
+                                                            <option value="ja">Japanese (ja)</option>
+                                                            <option value="ko">Korean (ko)</option>
+                                                            <option value="yue">Cantonese (yue)</option>
+                                                        </select>
+                                                    </div>
+                                                    <div>
+                                                        <label htmlFor="health-sensevoice-itn" className="text-[10px] text-muted-foreground">Punctuation (ITN)</label>
+                                                        <select id="health-sensevoice-itn"
+                                                            className={`w-full text-xs p-1.5 rounded border bg-background ${pendingChanges.stt?.sherpa_sense_voice_use_itn !== undefined ? 'border-yellow-500' : 'border-border'}`}
+                                                            value={String(pendingChanges.stt?.sherpa_sense_voice_use_itn ?? health.local_ai_server.details.models?.stt?.sherpa_sense_voice_use_itn ?? true)}
+                                                            onChange={(e) => {
+                                                                const existing = pendingChanges.stt || { backend: 'sherpa' };
+                                                                queueChange('stt', { ...existing, backend: 'sherpa', sherpa_sense_voice_use_itn: e.target.value === 'true' });
+                                                            }}
+                                                            disabled={applyingChanges}
+                                                        >
+                                                            <option value="true">On</option>
+                                                            <option value="false">Off</option>
+                                                        </select>
+                                                    </div>
                                                 </div>
                                             )}
                                         </div>

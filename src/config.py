@@ -178,6 +178,8 @@ class WebSocketMediaConfig(BaseModel):
     format_policy: Literal["profile"] = "profile"
     fallback_format: Literal["ulaw", "alaw", "slin", "slin16"] = "ulaw"
     control_format: Literal["json", "auto", "plain"] = "json"
+    # Opt-in until provider/pipeline qualification of Asterisk-owned pacing.
+    output_pacing: Literal["legacy", "asterisk"] = "legacy"
     direction: Literal["both"] = "both"
     handshake_timeout_ms: int = Field(default=5000, ge=100, le=60000)
     media_start_timeout_ms: int = Field(default=5000, ge=100, le=60000)
@@ -368,6 +370,7 @@ class DeepgramProviderConfig(CloudConnectionConfig):
     input_sample_rate_hz: int = Field(default=8000)
     input_gain_target_rms: int = Field(default=0)
     input_gain_max_db: float = Field(default=0.0)
+    input_gain_noise_floor_rms: int = Field(default=200, ge=0, le=32767)
     continuous_input: bool = Field(default=True)
     output_encoding: str = Field(default="mulaw")
     output_sample_rate_hz: int = Field(default=8000)
@@ -535,7 +538,7 @@ class GoogleProviderConfig(CloudConnectionConfig):
     tts_voice_name: str = Field(default="en-US-Neural2-C")
     tts_audio_encoding: str = Field(default="MULAW")
     tts_sample_rate_hz: int = Field(default=8000)
-    llm_model: str = Field(default="models/gemini-1.5-pro-latest")
+    llm_model: str = Field(default="models/gemini-3.8-flash")
     greeting: Optional[str] = None  # For Google Live API initial greeting
     instructions: Optional[str] = None  # System prompt/instructions for Google Live API
     enabled: bool = Field(default=True)  # Provider enabled flag
@@ -571,6 +574,7 @@ class GoogleProviderConfig(CloudConnectionConfig):
     provider_input_sample_rate_hz: int = Field(default=16000)  # Gemini Live input rate
     input_gain_target_rms: int = Field(default=0)
     input_gain_max_db: float = Field(default=0.0)
+    input_gain_noise_floor_rms: int = Field(default=200, ge=0, le=32767)
     output_encoding: str = Field(default="linear16")  # Gemini Live outputs PCM16
     output_sample_rate_hz: int = Field(default=24000)  # Gemini Live native output rate
     output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
@@ -613,6 +617,9 @@ class GoogleProviderConfig(CloudConnectionConfig):
     # Qualification switch: only the actual Developer API connection uses this.
     long_audio_playback_enabled: bool = Field(default=False)
     long_audio_backlog_sec: float = Field(default=120.0, ge=10.0, le=120.0)
+    # Optional per-response reserve for bursty Google audio. Short responses
+    # flush at generation/turn completion; interruption discards the reserve.
+    playback_prefill_ms: int = Field(default=0, ge=0, le=3000)
     vertex_project: Optional[str] = None  # GCP project ID (GOOGLE_CLOUD_PROJECT)
     vertex_location: str = Field(default="us-central1")  # GCP region (GOOGLE_CLOUD_LOCATION)
 
@@ -974,6 +981,7 @@ class OpenAIRealtimeProviderConfig(CloudConnectionConfig):
     provider_input_sample_rate_hz: int = Field(default=24000)  # OpenAI Realtime input sample rate
     input_gain_target_rms: int = Field(default=0)
     input_gain_max_db: float = Field(default=0.0)
+    input_gain_noise_floor_rms: int = Field(default=200, ge=0, le=32767)
     output_encoding: str = Field(default="linear16")  # Provider emits PCM16 frames
     output_sample_rate_hz: int = Field(default=24000)
     output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
@@ -1034,6 +1042,7 @@ class GrokProviderConfig(CloudConnectionConfig):
     target_sample_rate_hz: int = Field(default=8000)
     input_gain_target_rms: int = Field(default=0)
     input_gain_max_db: float = Field(default=0.0)
+    input_gain_noise_floor_rms: int = Field(default=200, ge=0, le=32767)
     # Response shape
     response_modalities: List[str] = Field(default_factory=lambda: ["text", "audio"])
     egress_pacer_enabled: bool = Field(default=False)
@@ -1155,13 +1164,13 @@ class VADConfig(BaseModel):
     fallback_buffer_size: int = 128000
 
     # Provider-agnostic upstream squelch (helps server-side VAD providers terminate turns in noisy environments).
-    # Applies only to providers that require continuous audio.
+    # AudioSocket only; requires continuous audio and native VAD. RTP/WebSocket bypass this squelch.
     upstream_squelch_enabled: bool = True
     # Base RMS threshold in PCM16 space. Lower values are more permissive (less likely to clip quiet speakers).
     upstream_squelch_base_rms: int = 200
     # Dynamic threshold multiplier: threshold = max(base_rms, noise_floor_rms * noise_factor)
     upstream_squelch_noise_factor: float = 2.5
-    # Exponential moving average factor for noise floor updates (0..1). Higher adapts faster.
+    # EMA factor for non-speech noise updates (0..1); independent speech evidence protects the floor.
     upstream_squelch_noise_ema_alpha: float = 0.06
     # Hysteresis: require N speech frames to enter speaking state, and M silence frames to exit.
     upstream_squelch_min_speech_frames: int = 2
@@ -1222,6 +1231,9 @@ class StreamingConfig(BaseModel):
     # ExternalMedia-specific: safety net timeout (ms) for RTP endpoint establishment.
     # With RTP kick fix, RTP establishes in ~40-50ms. This fallback rarely triggers.
     greeting_rtp_wait_ms: int = Field(default=1000)
+    # Opt-in initial-greeting guard. Zero delay bypasses readiness entirely.
+    greeting_media_ready_delay_ms: int = Field(default=0, strict=True, ge=0, le=2000)
+    greeting_media_ready_timeout_ms: int = Field(default=1000, strict=True, ge=0, le=5000)
     # Egress endianness control for PCM16 slin16 over AudioSocket: 'auto'|'force_true'|'force_false'
     # - auto: derive from inbound probe (current behavior)
     # - force_true: always byteswap outbound PCM16
@@ -1353,6 +1365,9 @@ class AppConfig(BaseModel):
     # P1: profiles/contexts for transport orchestration
     profiles: Dict[str, Any] = Field(default_factory=dict)
     contexts: Dict[str, Any] = Field(default_factory=dict)
+    # Preserve settings from the unreleased integration-panel prototype for rollback.
+    # Named tools are the only executable Pushover configuration.
+    pushover: Dict[str, Any] = Field(default_factory=dict)
     # Tool calling configuration (v4.1)
     tools: Dict[str, Any] = Field(default_factory=dict)
     # In-call HTTP tool definitions (Milestone 24)
@@ -1401,6 +1416,15 @@ class AppConfig(BaseModel):
             logger.debug("Pipeline normalization failed (will be caught by Pydantic)", error=str(e))
             pass
         return data
+
+    @model_validator(mode="after")
+    def _validate_transfer_handoff(self) -> "AppConfig":
+        if self.tools.get("calendly_calendar") is not None:
+            from src.tools.business.calendly_client import validate_config as validate_calendly_config
+            validate_calendly_config(self.tools["calendly_calendar"])
+        from src.tools.handoff_config import validate_handoff_config
+        validate_handoff_config(self.tools)
+        return self
 
     @model_validator(mode="after")
     def _validate_audio_profile_contracts(self) -> "AppConfig":

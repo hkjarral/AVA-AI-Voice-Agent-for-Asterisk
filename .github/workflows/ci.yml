@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, staging ]
+    branches: [main]
   pull_request:
-    branches: [ main, staging ]
+    branches: [main]
     types: [opened, synchronize, reopened, ready_for_review, labeled]
   workflow_dispatch:
 
@@ -42,6 +42,14 @@ jobs:
       - name: Check current release documentation
         run: |
           python scripts/check_release_docs.py
+
+      - name: Set up Node for workflow helper tests
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Test fork-review trust boundaries
+        run: node --test tests/codex_review.test.cjs
 
       - name: Check provider model catalogs
         run: |
@@ -143,13 +151,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r admin_ui/backend/requirements.txt -r requirements-dev.txt
 
+      - name: Install recording codec fixture dependency
+        run: sudo apt-get update && sudo apt-get install -y sox
+
       - name: Run Admin backend tests
         run: |
           cd admin_ui/backend
-          PYTHONPATH=. pytest tests -q
+          PYTHONPATH=. pytest tests ../../tests/test_admin_call_recordings.py -q
 
   # Frontend checks must gate pull requests. The extended regression workflow
-  # only runs after pushes to staging/main, which is too late to stop a broken
+  # runs after pushes to main, which is too late to stop a broken
   # Admin UI from merging.
   admin-frontend-tests:
     name: Admin UI frontend checks
@@ -163,7 +174,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: admin_ui/frontend/package-lock.json
 
@@ -174,6 +185,10 @@ jobs:
       - name: Lint frontend
         working-directory: admin_ui/frontend
         run: npm run lint
+
+      - name: Typecheck frontend
+        working-directory: admin_ui/frontend
+        run: npm run typecheck
 
       - name: Test frontend
         working-directory: admin_ui/frontend

@@ -3,6 +3,7 @@ import yaml
 from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode, SequenceNode, ScalarNode
 import errno
+import io
 import os
 import re
 import asyncio
@@ -21,7 +22,7 @@ from copy import deepcopy
 from email.message import EmailMessage
 from contextlib import contextmanager
 from pathlib import Path
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 from typing import Dict, Any, Optional, Union
 import settings
 
@@ -41,6 +42,7 @@ from src.fish_audio_url import (
     fish_audio_verification_url,
 )
 from src.config.loaders import substitute_braced_env_vars
+from src.config.provider_instances import PROVIDER_SECRETS_ROOT
 from src.tools.execution_history import CALL_HISTORY_TOOL_REDACTION_MODES
 from services.provider_validation import (
     MODULAR_HTTP_KINDS, test_modular_provider,
@@ -262,7 +264,10 @@ def _ai_engine_env_key(key: str) -> bool:
 def _local_ai_env_key(key: str) -> bool:
     return (
         _is_prefix(key, ("LOCAL_", "KROKO_", "FASTER_WHISPER_", "WHISPER_CPP_", "MELOTTS_", "KOKORO_"))
-        or key in ("SHERPA_MODEL_PATH", "HEALTH_API_TOKEN")
+        or key in (
+            "SHERPA_MODEL_PATH", "SHERPA_SENSE_VOICE_LANGUAGE", "SHERPA_SENSE_VOICE_USE_ITN",
+            "HEALTH_API_TOKEN",
+        )
         or key in _LIVE_STATUS_PUBLISHER_KEYS
     )
 
@@ -526,7 +531,279 @@ def _read_merged_config_content() -> str:
     return yaml.dump(merged, default_flow_style=False, sort_keys=False) if merged else ""
 
 
-def _write_local_config(content: str) -> None:
+class _CommentsNotKept(Exception):
+    """The local file's comments cannot be carried safely; write the plain dump."""
+
+
+def _kind(value) -> str:
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, dict):
+        return "map"
+    if isinstance(value, list):
+        return "seq"
+    if value is None:
+        return "null"
+    return type(value).__name__
+
+
+def _same(a, b) -> bool:
+    """Equality that also tells ``True`` from ``1`` and ``1`` from ``1.0``."""
+    if _kind(a) != _kind(b):
+        return False
+    if isinstance(a, dict):
+        if {(_kind(k), k) for k in a} != {(_kind(k), k) for k in b}:
+            return False
+        return all(_same(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    return a == b
+
+
+def _to_round_trip(value):
+    """Convert plain data for the round-trip dumper, quoting strings such as
+    ``on`` that a YAML 1.1 reader would not load as text."""
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+    from ruamel.yaml.scalarstring import SingleQuotedScalarString
+
+    if isinstance(value, dict):
+        out = CommentedMap()
+        for k, v in value.items():
+            out[k] = _to_round_trip(v)
+        return out
+    if isinstance(value, list):
+        return CommentedSeq(_to_round_trip(v) for v in value)
+    if isinstance(value, str):
+        tag = yaml.SafeLoader.resolve(yaml.SafeLoader, ScalarNode, value, (True, False))
+        if tag != "tag:yaml.org,2002:str":
+            return SingleQuotedScalarString(value)
+    return value
+
+
+# ruamel keeps the comment lines that follow an entry on the token that ends
+# it: the end-of-line comment, then every full-line comment up to the next key.
+# For a nested block value that token sits on its last leaf; a flow value keeps
+# it on its own key. After a ``|`` or ``>`` block scalar there is no
+# end-of-line part.
+
+def _tail_slot(node, key):
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+    from ruamel.yaml.scalarstring import FoldedScalarString, LiteralScalarString
+
+    value = node[key]
+    if isinstance(value, (CommentedMap, CommentedSeq)) and len(value) and not value.fa.flow_style():
+        last = list(value)[-1] if isinstance(value, CommentedMap) else len(value) - 1
+        return _tail_slot(value, last)
+    block = isinstance(value, (LiteralScalarString, FoldedScalarString))
+    return node, key, 0 if isinstance(node, CommentedSeq) else 2, block
+
+
+def _split_eol(text: str, block: bool = False):
+    if block:
+        return "", text
+    cut = text.find("\n") + 1
+    return (text[:cut], text[cut:]) if cut else (text, "")
+
+
+def _split_leading(text: str, column=None):
+    """Split *text* into what stays and the comment block that ends it, which
+    belongs to the key below at *column* (lines before a blank line, or at
+    another indent, belong to no key)."""
+    lines = text.splitlines(keepends=True)
+    cut = len(lines)
+    while cut:
+        line = lines[cut - 1]
+        body = line.lstrip(" ")
+        if not body.startswith("#") or (column is not None and len(line) - len(body) != column):
+            break
+        cut -= 1
+    return "".join(lines[:cut]), "".join(lines[cut:])
+
+
+def _key_column(node, key):
+    try:
+        return node.lc.key(key)[1]
+    except Exception:
+        return None
+
+
+def _take_tail(node, key) -> str:
+    owner, slot, pos, block = _tail_slot(node, key)
+    entry = owner.ca.items.get(slot)
+    if not entry or entry[pos] is None:
+        return ""
+    eol, rest = _split_eol(entry[pos].value, block)
+    # ruamel cannot emit an empty comment token, so drop it instead.
+    entry[pos] = _set_token(entry[pos], eol)
+    return rest
+
+
+def _give_tail(node, key, text: str, leading_column=False) -> None:
+    """Append *text* after the entry *key*. With *leading_column* set, first
+    drop the comment block above the next key at that column."""
+    from ruamel.yaml.error import CommentMark
+    from ruamel.yaml.tokens import CommentToken
+
+    owner, slot, pos, block = _tail_slot(node, key)
+    entry = owner.ca.items.setdefault(slot, [None, None, None, None])
+    token = entry[pos]
+    if token is None:
+        if text:
+            entry[pos] = CommentToken(("" if block else "\n") + text, CommentMark(0), None)
+        return
+    eol, rest = _split_eol(token.value, block)
+    if leading_column is not False:
+        rest = _split_leading(rest, leading_column)[0]
+    entry[pos] = _set_token(token, eol + rest + text)
+
+
+def _set_token(token, value: str):
+    token.value = value
+    return token if value else None
+
+
+def _delete_commented(node, key) -> None:
+    """Delete *key*, dropping its own comments and keeping the ones above the
+    next key where they were."""
+    from ruamel.yaml.error import CommentMark
+    from ruamel.yaml.tokens import CommentToken
+
+    keys = list(node)
+    index = keys.index(key)
+    column = _key_column(node, key)
+    tail = _take_tail(node, key)
+    if index:
+        _give_tail(node, keys[index - 1], tail, leading_column=column)
+    elif node.ca.comment and node.ca.comment[0] is not None:
+        # The parent key has an end-of-line comment: ruamel keeps the comment
+        # above this first key in that same token, shared with the parent.
+        token = node.ca.comment[0]
+        eol, rest = _split_eol(token.value)
+        lines = (_split_leading(rest, column)[0] + tail).splitlines(keepends=True)
+        pad = " " * (column or 0)
+        token.value = eol + "".join(pad + line.lstrip(" ") if line.strip() else line for line in lines)
+    else:
+        tokens = node.ca.comment[1] if node.ca.comment and node.ca.comment[1] else []
+        # These tokens hold their lines without the indent, so no column test.
+        above = _split_leading("".join(t.value for t in tokens))[0]
+        lines = (above + tail).splitlines(keepends=True)
+        # Comments above a first key are printed at the key's column.
+        fresh = [CommentToken(line.lstrip(" "), CommentMark(column or 0), None) for line in lines]
+        for token in tokens:
+            token.value = ""  # a parent entry may hold the same tokens
+        if node.ca.comment and node.ca.comment[1] is not None:
+            node.ca.comment[1][:] = fresh  # the parent entry shares this list
+        elif node.ca.comment:
+            node.ca.comment[1] = fresh
+        elif fresh:
+            node.ca.comment = [None, fresh]
+    del node[key]
+    if not len(node) and tail:
+        raise _CommentsNotKept("mapping emptied")
+
+
+def _sync_commented(target, desired: dict) -> None:
+    """Make round-trip mapping *target* equal *desired*, keeping its comments."""
+    for key in [k for k in target if k not in desired]:
+        _delete_commented(target, key)
+    added = [k for k in desired if k not in target]
+    for key, value in desired.items():
+        if key not in target:
+            continue
+        current = target[key]
+        if isinstance(value, dict) and isinstance(current, dict):
+            _sync_commented(current, value)
+        elif not _same(current, value):
+            tail = _take_tail(target, key)
+            target[key] = _to_round_trip(value)
+            _give_tail(target, key, tail)
+    if added:
+        tail = _take_tail(target, list(target)[-1]) if len(target) else ""
+        for key in added:
+            target[key] = _to_round_trip(desired[key])
+        _give_tail(target, added[-1], tail)
+
+
+def _guess_map_indent(text: str) -> int:
+    """Indent of the first nested mapping, as the file already uses it."""
+    parent = None
+    for line in text.splitlines():
+        body = line.strip()
+        if not body or body.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if parent is not None and indent > parent and not body.startswith("-"):
+            return indent - parent
+        parent = indent if body.endswith(":") else None
+    return 2
+
+
+_YAML_ENV_REFERENCE = re.compile(r"\$(?:\{|\w)")
+
+
+def _keep_local_comments(previous: bytes, content: str) -> str:
+    """
+    Carry comments from the current local file into *content*.
+
+    Callers build *content* with ``yaml.dump``, which drops every comment an
+    operator wrote in the file. Load the old file round-trip, change only the
+    keys that differ, and use the result if it loads to exactly the same data.
+    Otherwise *content* is returned unchanged.
+    """
+    try:
+        # The engine expands references in the YAML source before parsing.
+        # Quotes, layout and even comments can change the expanded document.
+        # Keep the plain dump when the file can depend on the engine's env.
+        if b"#" not in previous or _YAML_ENV_REFERENCE.search(content):
+            return content
+        text = previous.decode("utf-8")
+        if "\r" in text or _YAML_ENV_REFERENCE.search(text):
+            return content
+        desired = _safe_load_no_duplicates(content)
+        if not isinstance(desired, dict):
+            return content
+        if all(not line.strip() or line.lstrip().startswith("#") for line in text.splitlines()):
+            # Only comments so far, such as a starter template: keep them on top.
+            kept = text if text.endswith("\n") else text + "\n"
+            kept += content if desired else ""
+            return kept if _same(_safe_load_no_duplicates(kept) or {}, desired) else content
+        from ruamel.yaml import YAML
+        from ruamel.yaml.util import load_yaml_guess_indent
+
+        rt = YAML()
+        rt.preserve_quotes = True
+        # ruamel cannot keep how a long string was wrapped; writing it on one
+        # line changes fewer lines than re-wrapping it at another width.
+        rt.width = 4096
+        target, seq_indent, offset = load_yaml_guess_indent(text, yaml=rt)
+        if not isinstance(target, dict):
+            return content
+        map_indent = _guess_map_indent(text)
+        rt.indent(mapping=map_indent, sequence=seq_indent or map_indent, offset=offset or 0)
+        rt.representer.add_representer(
+            type(None), lambda r, _d: r.represent_scalar("tag:yaml.org,2002:null", "null")
+        )
+        first = next((s for s in (l.strip() for l in text.splitlines()) if s and not s.startswith("#")), "")
+        rt.explicit_start = first == "---"
+        _sync_commented(target, desired)
+        out = io.StringIO()
+        rt.dump(target, out)
+        kept = out.getvalue()
+        if not _same(_safe_load_no_duplicates(kept), desired):
+            return content
+        return kept
+    except Exception:
+        logger.debug("Could not keep comments in local config", exc_info=True)
+        return content
+
+
+def _write_local_config(content: str, *, keep_comments: bool = True) -> None:
     """
     Write *content* to the local override config file.
 
@@ -534,13 +811,14 @@ def _write_local_config(content: str) -> None:
     and normally performs an atomic temp-file + rename write. Docker cannot
     replace a path that is itself a bind-mount target (``EBUSY``), so that
     topology falls back to a validated, fsynced in-place rewrite with automatic
-    rollback to the backup if the rewrite fails.
+    rollback to the backup if the rewrite fails. Comments in the existing
+    file are kept unless *keep_comments* is false.
     """
     with _CONFIG_UPDATE_LOCK:
-        _write_local_config_locked(content)
+        _write_local_config_locked(content, keep_comments=keep_comments)
 
 
-def _write_local_config_locked(content: str) -> None:
+def _write_local_config_locked(content: str, *, keep_comments: bool = True) -> None:
     """Persist local config while the process-wide writer lock is held."""
     import datetime
     dir_path = os.path.dirname(settings.LOCAL_CONFIG_PATH)
@@ -560,6 +838,8 @@ def _write_local_config_locked(content: str) -> None:
                 dst.flush()
                 os.fsync(dst.fileno())
         _rotate_backups(settings.LOCAL_CONFIG_PATH)
+        if keep_comments:
+            content = _keep_local_comments(previous_bytes, content)
 
     # Preserve permissions from existing local or base file
     original_mode = None
@@ -932,11 +1212,63 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
             detail=f"Server misconfiguration: cannot import config schema (src.config). Error: {exc}",
         )
 
+    # Native tool config is also saved by the normal full-document Tools/YAML flow.
+    # Reject invalid shapes without returning Pydantic input values (possible keys).
+    from src.tools.business.calendly_client import validate_config as validate_calendly_config
+    try:
+        validate_calendly_config((parsed.get("tools") or {}).get("calendly_calendar"))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=400, detail="Invalid Calendly configuration. Save credentials through the connection panel.") from None
+    from src.integrations.pushover import PushoverToolConfig
+    for block in ("tools", "in_call_tools"):
+        section = parsed.get(block)
+        if not isinstance(section, dict):
+            continue
+        for name, doc in section.items():
+            if isinstance(doc, dict) and doc.get("kind") == "pushover":
+                try:
+                    from .tools import _reserved_builtin_names, RESERVED_TOOL_NAMES
+                    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", str(name)) or name in _reserved_builtin_names() or name in RESERVED_TOOL_NAMES or str(name).startswith("mcp_"):
+                        raise ValueError()
+                    native = PushoverToolConfig.model_validate(doc)
+                    if (native.phase == "in_call") != (block == "in_call_tools"):
+                        raise ValueError()
+                except Exception:
+                    raise HTTPException(400, "Invalid managed Pushover tool configuration") from None
+            elif isinstance(doc, dict) and doc.get("kind") == "a2a_agent":
+                from src.tools.a2a_config import parse_a2a_agent_config
+                from src.tools.registry import ToolRegistry
+                from .tools import RESERVED_TOOL_NAMES, _reserved_builtin_names
+
+                if block != "in_call_tools":
+                    raise HTTPException(400, "A2A tools belong under in_call_tools")
+                if (
+                    name in RESERVED_TOOL_NAMES
+                    or name in _reserved_builtin_names()
+                    or name in ToolRegistry.TOOL_ALIASES
+                    or str(name).startswith("mcp_")
+                    or name in (parsed.get("tools") or {})
+                ):
+                    raise HTTPException(400, "A2A tool name is reserved or already in use")
+                try:
+                    parse_a2a_agent_config(name, doc)
+                    from services.a2a_tools import validate_document
+                    previous = ((_read_merged_config_dict() or {}).get("in_call_tools") or {}).get(name)
+                    validate_document(name, doc, previous)
+                except (TypeError, ValueError) as exc:
+                    raise HTTPException(400, str(exc)) from None
+
     warnings: list[str] = []
 
     try:
         validate_provider_instances(parsed)
     except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        from src.tools.handoff_config import validate_handoff_config
+        validate_handoff_config(parsed.get("tools") or {})
+    except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     # Warn if user put credentials in YAML (they will be ignored by design).
@@ -1059,7 +1391,8 @@ def _persist_config_content_locked(
         migrated_warnings = validation.get("warnings")
         warnings = warnings if migrated_warnings is None else migrated_warnings
 
-    if _migrate_inline_provider_secrets(new_parsed):
+    secrets_migrated = _migrate_inline_provider_secrets(new_parsed)
+    if secrets_migrated:
         content = yaml.dump(new_parsed, default_flow_style=False, sort_keys=False)
         validation = _validate_ai_agent_config(content)
         migrated_warnings = validation.get("warnings")
@@ -1077,13 +1410,21 @@ def _persist_config_content_locked(
         trusted_profile_reset=trusted_profile_reset,
     )
 
+    from services.a2a_tools import protect_assigned_tools
+    protect_assigned_tools(old_merged, new_parsed)
+
     # Convert desired merged config into a minimal local override (supports deletions).
     base = _read_base_config_dict()
     local_override = _compute_local_override(base, new_parsed)
     local_content = yaml.dump(local_override or {}, default_flow_style=False, sort_keys=False)
 
     # Write to LOCAL override file (keeps base ai-agent.yaml clean for git)
-    _write_local_config(local_content)
+    if secrets_migrated:
+        # Comments may hold the old key material (a commented-out key line,
+        # "old: sk-..."); write the file without them.
+        _write_local_config(local_content, keep_comments=False)
+    else:
+        _write_local_config(local_content)
 
     decision = classify_config_change(old_merged, new_parsed)
     recommended_method = decision.recommended_apply_method
@@ -1366,6 +1707,9 @@ async def get_config():
 def _redact_websocket_media_secrets(config: Dict[str, Any]) -> Dict[str, Any]:
     """Defensively keep an accidentally hand-written WS secret out of API reads."""
     safe = deepcopy(config)
+    if isinstance(safe.get("tools"), dict) and "calendly_calendar" in safe["tools"]:
+        from src.tools.business.calendly_client import public_config
+        safe["tools"]["calendly_calendar"] = public_config(safe["tools"]["calendly_calendar"])
     websocket_media = safe.get("websocket_media") if isinstance(safe, dict) else None
     auth = websocket_media.get("auth") if isinstance(websocket_media, dict) else None
     if isinstance(auth, dict):
@@ -1373,6 +1717,38 @@ def _redact_websocket_media_secrets(config: Dict[str, Any]) -> Dict[str, Any]:
         # so operators know exactly which ai_engine env var is required.
         for key in ("password", "secret", "token"):
             auth.pop(key, None)
+    for block in ("tools", "in_call_tools"):
+        section = safe.get(block)
+        if not isinstance(section, dict):
+            continue
+        for doc in section.values():
+            if isinstance(doc, dict) and doc.get("kind") == "a2a_agent":
+                for secret in ("token", "bearer_token", "api_key"):
+                    doc.pop(secret, None)
+            if isinstance(doc, dict) and doc.get("kind") == "pushover":
+                for secret in ("token", "application_token", "app_token", "user", "user_key", "group_key", "key", "recipient_key"):
+                    doc.pop(secret, None)
+    for block in ("tools", "in_call_tools"):
+        section = safe.get(block)
+        if not isinstance(section, dict): continue
+        for doc in section.values():
+            if not isinstance(doc, dict) or doc.get("kind") != "pushover": continue
+            recipients = doc.get("recipients")
+            if isinstance(recipients, dict):
+                for entry in recipients.values():
+                    if isinstance(entry, dict):
+                        for key in ("key", "user", "user_key", "group_key", "recipient_key"):
+                            entry.pop(key, None)
+    pushover = safe.get("pushover") if isinstance(safe, dict) else None
+    if isinstance(pushover, dict):
+        for key in ("token", "application_token", "app_token"):
+            pushover.pop(key, None)
+        recipients = pushover.get("recipients")
+        if isinstance(recipients, dict):
+            for recipient in recipients.values():
+                if isinstance(recipient, dict):
+                    for key in ("key", "user", "user_key", "group_key"):
+                        recipient.pop(key, None)
     return safe
 
 
@@ -1984,7 +2360,7 @@ async def test_provider_connection(request: ProviderTestRequest):
                     return url
 
                 async def _try_connect(url: str):
-                    async with websockets.connect(url, open_timeout=5.0) as ws:
+                    async with websockets.connect(url, open_timeout=5.0, proxy=None) as ws:
                         if auth_token:
                             await ws.send(json.dumps({"type": "auth", "auth_token": auth_token}))
                             response = await asyncio.wait_for(ws.recv(), timeout=5.0)
@@ -2187,7 +2563,7 @@ async def test_provider_connection(request: ProviderTestRequest):
             try:
                 import websockets
                 # Try connecting to the WebSocket
-                async with websockets.connect(ws_url, open_timeout=5.0) as ws:
+                async with websockets.connect(ws_url, open_timeout=5.0, proxy=None) as ws:
                     await ws.close()
                 return {"success": True, "message": "Local AI server is reachable via WebSocket"}
             except ImportError:
@@ -2651,8 +3027,8 @@ async def get_provider_options(provider_type: str):
     ]
     
     GOOGLE_MODELS = [
-        {"id": "gemini-1.5-flash", "name": "Gemini 1.5 Flash (Fastest)"},
-        {"id": "gemini-1.5-pro", "name": "Gemini 1.5 Pro (Best Quality)"},
+        {"id": "gemini-3.8-flash", "name": "Gemini 3.8 Flash (Recommended)"},
+        {"id": "gemini-3.6-flash", "name": "Gemini 3.6 Flash (Previous generation)"},
     ]
 
     GOOGLE_VOICES = [
@@ -2702,7 +3078,6 @@ async def get_provider_options(provider_type: str):
 
 # Store in project secrets dir - Admin UI has write access, ai_engine mounts it
 VERTEX_CREDENTIALS_PATH = "/app/project/secrets/gcp-service-account.json"
-PROVIDER_SECRETS_ROOT = "/app/project/secrets/providers"
 
 
 def _provider_instances_module():
@@ -3290,6 +3665,268 @@ async def get_llm_provider_options():
             "legacy": True,
         },
     }
+
+
+# Default labels for the pipeline TTS components the engine can build.
+_TTS_OPTION_LABELS = {
+    "google_tts": "Google Cloud Text-to-Speech",
+    "deepgram_tts": "Deepgram Aura",
+    "openai_tts": "OpenAI TTS",
+    "elevenlabs_tts": "ElevenLabs",
+    "groq_tts": "Groq TTS",
+    "azure_tts": "Azure Speech",
+    "cambai_tts": "CAMB AI",
+    "fishaudio_tts": "Fish Audio",
+}
+
+_TTS_ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}")
+
+
+def _tts_provider_block(providers: Dict[str, Any], name: str) -> Optional[Dict[str, Any]]:
+    block = providers.get(name)
+    return block if isinstance(block, dict) and block else None
+
+
+def _is_tts_component_key(name: Any) -> bool:
+    parts = str(name).rsplit("_", 1)
+    return len(parts) == 2 and parts[1] == "tts"
+
+
+def _tts_secret_configured(
+    provider_cfg: Dict[str, Any],
+    *,
+    env_names: tuple[str, ...],
+    inline: bool,
+    file_fields: bool,
+) -> bool:
+    """Report whether the engine would find a key, without returning it.
+
+    ``inline=False`` is for providers whose inline YAML ``api_key`` the engine
+    replaces with the environment variable at load time
+    (``inject_provider_api_keys``). ``file_fields=False`` is for adapters that
+    never read ``api_key_file`` / ``api_key_env``.
+    """
+    candidate: Dict[str, Any] = {}
+    if file_fields:
+        for field in ("api_key_file", "api_key_env"):
+            value = str(provider_cfg.get(field) or "").strip()
+            if value:
+                candidate[field] = value
+    if inline:
+        raw = str(provider_cfg.get("api_key") or "").strip()
+        env_ref = _TTS_ENV_REFERENCE.fullmatch(raw)
+        if env_ref:
+            candidate.setdefault("api_key_env", env_ref.group(1))
+        elif raw:
+            candidate["api_key"] = raw
+    resolved = str(
+        _provider_instances_module()["resolve_secret_value"](
+            candidate,
+            file_field="api_key_file",
+            env_field="api_key_env",
+            inline_field="api_key",
+            legacy_env_names=env_names,
+        )
+        or ""
+    ).strip()
+    return bool(resolved) and resolved.lower() != "not-needed"
+
+
+def _google_service_account_file_present() -> bool:
+    """Google pipeline adapters read only GOOGLE_APPLICATION_CREDENTIALS.
+
+    The engine points that variable at the shared service-account file when
+    the file exists and drops a stale path, so the file has to exist to count.
+    ``providers.google.credentials_path`` is never read by these adapters.
+    """
+    env_path = str(os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
+    if env_path and os.path.isfile(env_path):
+        return True
+    return os.path.isfile(VERTEX_CREDENTIALS_PATH)
+
+
+def _tts_component_disabled(providers: Dict[str, Any], component_key: str) -> bool:
+    """Mirror ``PipelineOrchestrator._provider_explicitly_disabled``.
+
+    The engine checks a block named after the component key, then the
+    provider prefix (``google_tts`` -> ``google``), and the first block found
+    decides.
+    """
+    parts = component_key.rsplit("_", 1)
+    prefix = parts[0] if len(parts) == 2 else None
+    for key in (component_key, prefix):
+        if not key or key not in providers:
+            continue
+        block = providers.get(key)
+        if isinstance(block, dict):
+            return block.get("enabled") is False
+    return False
+
+
+@router.get("/providers/tts-options")
+async def get_tts_provider_options():
+    return await asyncio.to_thread(_build_tts_provider_options)
+
+
+def _build_tts_provider_options() -> list[Dict[str, Any]]:
+    """Return a secret-safe catalog for the attended-transfer announcement voice.
+
+    Lists the pipeline TTS components the engine registers from configured
+    provider blocks, in its registration order so a later registration of the
+    same key wins (``PipelineOrchestrator._register_builtin_factories``).
+    ``local_tts`` is omitted: leaving ``tts_provider`` unset already uses
+    Local AI Server. Readiness counts only credentials the engine reads.
+
+    Deliberately stricter than the engine in a few places, so it under-reports
+    on purpose: Deepgram without a key, CAMB, and the non-canonical ElevenLabs
+    blocks are reported not ready even where the engine might still build them.
+    """
+    merged = _read_merged_config_dict()
+    providers = merged.get("providers") if isinstance(merged.get("providers"), dict) else {}
+    # component key -> (provider block, credential configured, voice configured)
+    entries: Dict[str, tuple[Dict[str, Any], bool, bool]] = {}
+
+    deepgram = _tts_provider_block(providers, "deepgram")
+    if deepgram:
+        entries["deepgram_tts"] = (
+            deepgram,
+            _tts_secret_configured(
+                deepgram, env_names=("DEEPGRAM_API_KEY",), inline=False, file_fields=False
+            ),
+            True,
+        )
+
+    openai_base = _tts_provider_block(providers, "openai")
+    openai_tts = _tts_provider_block(providers, "openai_tts")
+    openai_block = openai_tts or openai_base
+    if openai_block:
+        openai_cfg: Dict[str, Any] = {}
+        if openai_tts and openai_base and openai_base.get("enabled", True):
+            openai_cfg.update(openai_base)
+        openai_cfg.update(openai_block)
+        entries["openai_tts"] = (
+            openai_block,
+            _tts_secret_configured(
+                openai_cfg, env_names=("OPENAI_API_KEY",), inline=False, file_fields=True
+            ),
+            True,
+        )
+
+    google = _tts_provider_block(providers, "google")
+    if google:
+        entries["google_tts"] = (
+            google,
+            _tts_secret_configured(
+                google, env_names=("GOOGLE_API_KEY",), inline=True, file_fields=True
+            )
+            or _google_service_account_file_present(),
+            True,
+        )
+
+    groq = _tts_provider_block(providers, "groq_tts")
+    if not groq:
+        for name, cfg in providers.items():
+            if (
+                isinstance(cfg, dict)
+                and _is_tts_component_key(name)
+                and str(cfg.get("type", "")).lower() == "groq"
+            ):
+                groq = cfg
+                break
+    if groq:
+        entries["groq_tts"] = (
+            groq,
+            _tts_secret_configured(
+                groq, env_names=("GROQ_API_KEY",), inline=False, file_fields=False
+            ),
+            True,
+        )
+
+    elevenlabs = _tts_provider_block(providers, "elevenlabs")
+    if not elevenlabs:
+        for name, cfg in providers.items():
+            if not isinstance(cfg, dict):
+                continue
+            cfg_type = str(cfg.get("type", "")).lower()
+            if cfg_type in ("elevenlabs_agent", "full"):
+                continue
+            caps = cfg.get("capabilities", [])
+            if isinstance(caps, list) and "stt" in caps and "llm" in caps and "tts" in caps:
+                continue
+            if str(name).lower().startswith("elevenlabs_") or cfg_type == "elevenlabs":
+                elevenlabs = cfg or None
+                break
+    if elevenlabs:
+        entries["elevenlabs_tts"] = (
+            elevenlabs,
+            _tts_secret_configured(
+                elevenlabs, env_names=("ELEVENLABS_API_KEY",), inline=False, file_fields=False
+            ),
+            True,
+        )
+
+    cambai = _tts_provider_block(providers, "cambai") or _tts_provider_block(providers, "cambai_tts")
+    if cambai:
+        entries["cambai_tts"] = (
+            cambai,
+            _tts_secret_configured(
+                cambai, env_names=("CAMB_API_KEY",), inline=True, file_fields=False
+            ),
+            True,
+        )
+
+    fish_blocks: Dict[str, Dict[str, Any]] = {}
+    for name, cfg in providers.items():
+        if not isinstance(cfg, dict):
+            continue
+        key = str(name)
+        if key in {"fishaudio", "fishaudio_tts"} or (
+            _is_tts_component_key(key) and str(cfg.get("type") or "").strip().lower() == "fishaudio"
+        ):
+            fish_blocks["fishaudio_tts" if key == "fishaudio" else key] = cfg
+    for component_key, cfg in fish_blocks.items():
+        entries[component_key] = (
+            cfg,
+            _tts_secret_configured(
+                cfg, env_names=("FISH_AUDIO_API_KEY",), inline=True, file_fields=True
+            ),
+            bool(str(cfg.get("reference_id") or "").strip()),
+        )
+
+    azure = _tts_provider_block(providers, "azure_tts")
+    if azure:
+        entries["azure_tts"] = (
+            azure,
+            _tts_secret_configured(
+                azure, env_names=("AZURE_SPEECH_KEY",), inline=False, file_fields=False
+            ),
+            True,
+        )
+
+    options: list[Dict[str, Any]] = []
+    for component_key, (cfg, credential_configured, voice_configured) in entries.items():
+        if cfg.get("enabled") is False or _tts_component_disabled(providers, component_key):
+            reason = "disabled"
+        elif not credential_configured:
+            reason = "credential_missing"
+        elif not voice_configured:
+            reason = "voice_missing"
+        else:
+            reason = ""
+        option: Dict[str, Any] = {
+            "key": component_key,
+            "label": str(
+                cfg.get("display_name")
+                or _TTS_OPTION_LABELS.get(component_key)
+                or cfg.get("name")
+                or component_key
+            ),
+            "ready": not reason,
+        }
+        if reason:
+            option["reason"] = reason
+        options.append(option)
+    return sorted(options, key=lambda item: item["label"].lower())
 
 
 @router.get("/providers/{provider_key}/credentials")
@@ -4882,6 +5519,7 @@ class _MicrosoftVerifyRequest(BaseModel):
     calendar_id: Optional[str] = None
     timezone: Optional[str] = None
     account_key: str = "default"
+    teams_enabled: Optional[StrictBool] = None
 
 
 class _MicrosoftDisconnectRequest(BaseModel):
@@ -5173,6 +5811,8 @@ async def verify_microsoft_calendar(req: _MicrosoftVerifyRequest):
     if project_root and project_root not in sys.path:
         sys.path.insert(0, project_root)
     from src.tools.business.ms_graph_client import MicrosoftAccountConfig, MicrosoftGraphApiError, MicrosoftGraphClient
+    from src.tools.business.microsoft_teams import require_teams_calendar, teams_enabled
+    from src.tools.business.microsoft_booking import BookingValidationError
 
     account_key = _validate_ms_account_key_or_400(req.account_key or "default")
     persisted = _read_microsoft_calendar_account(account_key)
@@ -5265,6 +5905,14 @@ async def verify_microsoft_calendar(req: _MicrosoftVerifyRequest):
         )
     if matched.get("canEdit") is False:
         raise HTTPException(status_code=403, detail={"error_code": "calendar_read_only", "message": "The selected calendar is read-only; choose an editable calendar."})
+    try:
+        mode = req.teams_enabled
+        if mode is None:
+            mode = teams_enabled((_read_merged_config_dict().get("tools") or {}).get("microsoft_calendar") or {})
+        if mode:
+            require_teams_calendar(matched)
+    except BookingValidationError as exc:
+        raise HTTPException(status_code=400, detail={"error_code": exc.code, "message": str(exc)})
     return {
         "status": "ok",
         "can_edit": matched.get("canEdit"),
@@ -5273,6 +5921,9 @@ async def verify_microsoft_calendar(req: _MicrosoftVerifyRequest):
         "calendar_id": calendar_id,
         "calendar_name": matched.get("name") or "",
         "configured_timezone": timezone,
+        "teams_enabled": mode,
+        "teams_supported": "teamsForBusiness" in (matched.get("allowedOnlineMeetingProviders") or []),
+        "allowed_online_meeting_providers": matched.get("allowedOnlineMeetingProviders") or [],
     }
 
 

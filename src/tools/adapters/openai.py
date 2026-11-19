@@ -7,7 +7,7 @@ Handles translation between unified tool format and OpenAI's function calling fo
 from typing import Dict, Any, List, Optional
 from src.tools.registry import ToolRegistry
 from src.tools.context import ToolExecutionContext
-from src.tools.adapters.sanitize import sanitize_tool_result_for_json_string
+from src.tools.adapters.sanitize import notify_result_not_sent, sanitize_tool_result_for_json_string
 import structlog
 import json
 
@@ -178,6 +178,7 @@ class OpenAIToolAdapter:
             ari_client=context['ari_client'],
             config=context.get('config'),
             tool_registry=self.registry,
+            tool_call_id=function_call_id,
             provider_name="openai_realtime",
             user_input=context.get('user_input')
         )
@@ -251,6 +252,7 @@ class OpenAIToolAdapter:
         websocket = context.get('websocket')
         if not websocket:
             logger.error("No websocket in context, cannot send tool result")
+            await notify_result_not_sent(result, context)
             return
         
         # Extract call_id and function_name from result
@@ -259,8 +261,10 @@ class OpenAIToolAdapter:
         
         if not call_id:
             logger.error("No call_id in result, cannot send response")
+            await notify_result_not_sent(result, context)
             return
         
+        output_sent = False
         try:
             # Step 1: Send function_call_output
             safe_result = sanitize_tool_result_for_json_string(result, max_bytes=12000, tool_name=function_name)
@@ -273,6 +277,10 @@ class OpenAIToolAdapter:
                 }
             }
             await websocket.send(json.dumps(output_event))
+            output_sent = True
+            notify = context.get("handoff_result_sent")
+            if notify:
+                await notify(result, context.get("call_id"), success=True)
             logger.info(
                 f"✅ Sent function output to OpenAI: {safe_result.get('status')}",
                 call_id=context.get("call_id"),
@@ -315,7 +323,55 @@ class OpenAIToolAdapter:
             
             # If tool has a message and AI should speak, add direct instruction to speak it
             # Instructions work in both GA and Beta modes
-            if tool_message:
+            if result.get("internal_notification"):
+                response_config["instructions"] = (
+                    "Continue the conversation and any remaining tools using the business instructions. "
+                    "Treat the latest tool result as internal notification data. Do not read acknowledgements, "
+                    "delivery diagnostics or technical errors aloud. Never claim a write succeeded without "
+                    "a successful result. Continue the caller's request naturally."
+                )
+            elif function_name == "calendly_calendar":
+                response_config["instructions"] = (
+                    "Use the structured Calendly result as data and follow the business instructions. "
+                    "Do not read codes, identifiers, validation messages or internal acknowledgements aloud. "
+                    "Errors do not mean a busy slot. Ask for missing caller details naturally. "
+                    "Confirm exact email and booking details before creation. An uncertain/pending outcome "
+                    "must never be retried or bypassed using another calendar tool. Refer to staff. "
+                    "A success describes the retained original booking; it does not apply requested changes. "
+                    "Never claim invitation delivery or RSVP. Later changes use Calendly confirmation links or staff."
+                )
+            elif function_name == "microsoft_calendar":
+                # Calendar results describe state and recoverable errors, not a script
+                # to read aloud. Keep data in function_call_output, out of instructions.
+                response_config["instructions"] = (
+                    "Continue using the latest structured microsoft_calendar result and the business instructions. "
+                    "Do not read internal error codes, validation messages, agent hints or parameter names aloud. "
+                    "For a malformed read-only request, correct your own arguments once without asking the caller "
+                    "to solve the technical error or changing their requested date or duration. "
+                    "A tool error does not mean a slot is busy. Ask only for genuinely missing caller information. "
+                    "Before creation, resolve the invitation email choice and obtain the required confirmations. "
+                    "Never claim creation, cancellation or invitation success unless the result verifies it; "
+                    "do not claim email delivery. Respect uncertain outcomes and same-call ownership guards. "
+                    "A Teams meeting is ready only with meeting_status=ready and teams_join_url; "
+                    "link and outlook_web_link are Outlook links. Respect changes_require_staff. "
+                    "Use reschedule_event for time-only changes. Replace a booking only after caller-confirmed "
+                    "cancellation returns reservation_status=cancelled, then recheck and confirm replacement details. "
+                    "Keep the next spoken response brief and useful; do not repeat a closing offer while a problem is unresolved."
+                )
+            elif function_name == "update_call_metadata":
+                # Bookkeeping acknowledgements are internal, but response.create
+                # must still run so the model can chain tools or answer the caller.
+                response_config["instructions"] = (
+                    "Continue the conversation using the business instructions and latest tool result. "
+                    "Treat update_call_metadata as silent internal bookkeeping. "
+                    "Do not read or paraphrase its acknowledgement, validation message, field names, "
+                    "source labels or stored values aloud, and do not announce that information was saved or updated. "
+                    "Complete any remaining required metadata or source updates silently using the tools, "
+                    "then address the caller's latest request naturally. "
+                    "If the update failed, do not claim it succeeded or repeatedly retry it; "
+                    "continue helping the caller without exposing the technical error."
+                )
+            elif tool_message:
                 # Use direct instruction format like greeting: "Please say: {text}"
                 response_config["instructions"] = f"Please say the following to the user: {tool_message}"
                 logger.info(
@@ -337,4 +393,8 @@ class OpenAIToolAdapter:
             logger.info("✅ Triggered OpenAI response generation (audio+text)")
             
         except Exception as e:
-            logger.error(f"Failed to send tool result to OpenAI: {e}", exc_info=True)
+            notify = context.get("handoff_result_sent")
+            if notify and not output_sent:
+                await notify(result, context.get("call_id"), success=False)
+            failure = "Delivered tool result follow-up failed" if output_sent else "Tool result send failed"
+            logger.error(f"{failure} (OpenAI): {e}", exc_info=True)

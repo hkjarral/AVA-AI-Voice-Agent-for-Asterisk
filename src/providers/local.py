@@ -817,12 +817,15 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         (back-compat for callers that haven't been updated yet). Per
         CodeRabbit review of PR #384 comment 3214139216.
         """
+        effective_call_id = call_id or self._active_call_id
+        await self.prepare_handoff_result(result, effective_call_id)
         if not self.websocket or self.websocket.state.name != "OPEN":
             logger.warning(
                 "Cannot send local tool result: WebSocket not open",
                 call_id=call_id or self._active_call_id,
                 function_call_id=function_call_id,
             )
+            await self.handoff_result_sent(result, effective_call_id, success=False)
             return False
         function_call_id = str(function_call_id or "").strip()
         effective_tool_name = str(tool_name or "").strip()
@@ -848,6 +851,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         }
         try:
             await self.websocket.send(json.dumps(payload, default=str))
+            await self.handoff_result_sent(result, effective_call_id)
             logger.debug(
                 "Sent local tool result to Local AI Server",
                 call_id=effective_call_id,
@@ -857,6 +861,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             )
             return True
         except Exception:
+            await self.handoff_result_sent(result, effective_call_id, success=False)
             logger.error(
                 "Failed to send local tool result to Local AI Server",
                 call_id=effective_call_id,
@@ -1305,6 +1310,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             raise
 
     async def start_session(self, call_id: str, context: Optional[Dict[str, Any]] = None):
+        self._handoff_evidence.reset(call_id)
         try:
             # Check if already connected
             if self.is_connected():
@@ -1823,7 +1829,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                         # Local provider emits one audio blob per response; treat each
                         # done event as a completed response boundary so engine can
                         # act on cleanup_after_tts (hangup_call) reliably.
-                        "streaming_done": True,
+                        "streaming_done": True, "reason": "duration_estimate",
                     })
             except asyncio.CancelledError:
                 return
@@ -1859,6 +1865,9 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             "sample_rate": effective_rate,
             "source_mode": source_mode,
         })
+
+        # A whole synthesized blob has been admitted. Playback drain remains engine-owned.
+        await self.complete_handoff_audio(call_id)
 
         # Hold TTS gating until the audio should be fully played out.
         duration_s = self._estimate_audio_duration_seconds(audio_bytes, normalized_encoding, effective_rate)
@@ -1980,6 +1989,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 if task and not task.done():
                     task.cancel()
         
+        self._handoff_evidence.reset(target_call_id)
         # DON'T clear the active call ID immediately - keep it for AgentAudio processing
         # The call_id will be cleared when the TTS playback is complete
         # self._active_call_id = None
@@ -2049,6 +2059,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         self._barge_in_ack_tasks.clear()
         self._tts_audio_meta_by_call.clear()
         self._pending_tts_audio_meta.clear()
+        self._handoff_evidence.reset(self._active_call_id)
         self._active_call_id = None
         self._last_system_prompt_digest = None
         logger.info("Local AI provider connection closed permanently")
@@ -2056,6 +2067,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
     async def clear_active_call_id(self):
         """Clear the active call ID after TTS playback is complete."""
         old_call_id = self._active_call_id
+        self._handoff_evidence.reset(old_call_id)
         if old_call_id:
             self._tts_audio_meta_by_call.pop(old_call_id, None)
             self._last_user_transcript_by_call.pop(old_call_id, None)

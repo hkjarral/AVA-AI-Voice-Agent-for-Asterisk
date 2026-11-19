@@ -19,7 +19,7 @@ import aiohttp
 from ..config import AppConfig, TelnyxLLMProviderConfig
 from ..logging_config import get_logger
 from ..tools.registry import tool_registry
-from .base import LLMComponent, LLMResponse
+from .base import LLMComponent, LLMResponse, parse_tool_call_arguments
 
 logger = get_logger(__name__)
 
@@ -344,7 +344,7 @@ class TelnyxLLMAdapter(LLMComponent):
         if tools_list and isinstance(tools_list, list):
             for tool_name in tools_list:
                 tool = call_tool_registry.get(tool_name)
-                if tool:
+                if tool and getattr(tool, "is_enabled", True):
                     try:
                         from ..tools.base import ToolPhase
 
@@ -455,7 +455,7 @@ class TelnyxLLMAdapter(LLMComponent):
                                 {
                                     "id": tc.get("id"),
                                     "name": name,
-                                    "parameters": json.loads(args),
+                                    "parameters": parse_tool_call_arguments(args),
                                     "type": tc.get("type", "function"),
                                 }
                             )

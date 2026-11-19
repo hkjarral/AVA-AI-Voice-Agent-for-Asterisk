@@ -91,6 +91,55 @@ def test_legacy_graph_create_without_attendees_keeps_appointment_body():
     assert "attendees" not in json.loads(send.call_args.args[0].data)
 
 
+def test_teams_http_create_and_conditional_html_update_use_calendar_permissions():
+    graph = client()
+    start = datetime(2026, 10, 5, 20, tzinfo=timezone.utc)
+    with patch(
+        "urllib.request.urlopen", return_value=response({"id": "event"})
+    ) as send:
+        graph.create_event(
+            "Consultation",
+            "Caller <confirmed>\nnotes",
+            start,
+            start,
+            attendee_emails=["caller@example.com"],
+            transaction_id="stable",
+            teams=True,
+        )
+        request = send.call_args.args[0]
+        body = json.loads(request.data)
+        assert (
+            body["isOnlineMeeting"] is True
+            and body["onlineMeetingProvider"] == "teamsForBusiness"
+        )
+        assert (
+            body["body"]["contentType"] == "HTML"
+            and "&lt;confirmed&gt;<br>notes" in body["body"]["content"]
+        )
+        assert 'outlook.body-content-type="html"' in request.get_header("Prefer")
+        graph.get_event("event", html_body=True)
+        assert 'IdType="ImmutableId"' in send.call_args.args[0].get_header("Prefer")
+        graph.update_event(
+            "event", {"body": body["body"]}, 'W/"version"', html_body=True
+        )
+        request = send.call_args.args[0]
+        assert request.get_header("If-match") == 'W/"version"'
+        assert 'outlook.body-content-type="html"' in request.get_header("Prefer")
+    assert MS_CALENDAR_SCOPES == ["User.Read", "Calendars.ReadWrite"]
+
+
+def test_owned_missing_event_lookup_is_read_only_and_keeps_immutable_ids():
+    graph = client()
+    with patch(
+        "urllib.request.urlopen",
+        return_value=response({"id": "owned", "isCancelled": False}),
+    ) as send:
+        assert graph.get_owned_event_in_mailbox("owned/id")["id"] == "owned"
+    request = send.call_args.args[0]
+    assert request.method == "GET" and "/me/events/owned%2Fid?" in request.full_url
+    assert 'IdType="ImmutableId"' in request.get_header("Prefer")
+
+
 def test_selected_calendar_view_pagination_keeps_all_busy_events():
     graph = client()
     next_link = "https://graph.microsoft.com/v1.0/me/calendars/named%2Fcalendar/calendarView?$skip=1"

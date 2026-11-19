@@ -44,6 +44,9 @@ class ElevenLabsAgentConfig:
     connect_total_timeout_sec: Optional[float] = None
 
     def __post_init__(self):
+        self.input_gain_noise_floor_rms = int(self.input_gain_noise_floor_rms)
+        if not 0 <= self.input_gain_noise_floor_rms <= 32767:
+            raise ValueError("input_gain_noise_floor_rms must be between 0 and 32767")
         policy = CloudConnectionConfig.model_validate({
             name: getattr(self, name) for name in CloudConnectionConfig.model_fields
         })
@@ -97,6 +100,7 @@ class ElevenLabsAgentConfig:
     # Input audio normalization
     input_gain_target_rms: int = 0
     input_gain_max_db: int = 0
+    input_gain_noise_floor_rms: int = 200
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ElevenLabsAgentConfig":
@@ -137,6 +141,7 @@ class ElevenLabsAgentConfig:
             continuous_input=data.get("continuous_input", True),
             input_gain_target_rms=data.get("input_gain_target_rms", 0),
             input_gain_max_db=data.get("input_gain_max_db", 0),
+            input_gain_noise_floor_rms=data.get("input_gain_noise_floor_rms", 200),
         )
 
 

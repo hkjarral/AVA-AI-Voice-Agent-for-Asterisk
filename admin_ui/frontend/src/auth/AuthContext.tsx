@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import axios from 'axios';
+import axios, { AxiosHeaders } from 'axios';
 import { toast } from 'sonner';
 
 // Decode the `exp` claim (seconds since epoch) from a JWT without verifying it.
@@ -107,7 +107,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     useEffect(() => {
         const interceptor = axios.interceptors.request.use(config => {
             if (!config.headers) {
-                config.headers = {};
+                config.headers = new AxiosHeaders();
             }
             if (token && !(config.headers as any).Authorization) {
                 (config.headers as any).Authorization = `Bearer ${token}`;

@@ -19,7 +19,7 @@ import { toast } from 'sonner';
 import { Modal } from '../ui/Modal';
 import { FormInput, FormSelect, FormSwitch } from '../ui/FormComponents';
 import HelpTooltip from '../ui/HelpTooltip';
-import { describeApiError } from '../../utils/apiErrors';
+import { apiErrorMessage } from '../../utils/apiErrors';
 import { copyTextToClipboard } from '../../utils/clipboard';
 
 type Connection = {
@@ -612,7 +612,7 @@ export const VicidialRemoteAgentsTab = () => {
             });
             setActivity(response.data);
         } catch (error) {
-            setActivityError(describeApiError(error, 'Unable to load Remote Agent activity'));
+            setActivityError(apiErrorMessage(error, 'Unable to load Remote Agent activity'));
         } finally {
             setActivityLoading(false);
         }
@@ -633,7 +633,7 @@ export const VicidialRemoteAgentsTab = () => {
             setRetiredRoutes(retiredRoutesResponse.data || []);
             setAgents((metaResponse.data?.agents || []).filter((agent: Agent) => agent?.slug));
         } catch (error) {
-            toast.error(describeApiError(error, 'Unable to load VICIdial setup'));
+            toast.error(apiErrorMessage(error, 'Unable to load VICIdial setup'));
         } finally {
             setLoading(false);
         }
@@ -707,7 +707,7 @@ export const VicidialRemoteAgentsTab = () => {
     const openConnection = (connection?: Connection) => {
         setEditingConnection(connection?.id || null);
         setConnectionForm(
-            connection ? { ...emptyConnection, ...connection } : { ...emptyConnection }
+            connection ? { ...emptyConnection, ...connection, vicidial_host: connection.vicidial_host ?? '', timezone: connection.timezone ?? emptyConnection.timezone } : { ...emptyConnection }
         );
         setConnectionModal(true);
     };
@@ -766,7 +766,7 @@ export const VicidialRemoteAgentsTab = () => {
         } catch (error) {
             setEndpointDiscovery(null);
             setEndpointDiscoveryError(
-                describeApiError(error, 'Unable to query Asterisk endpoints')
+                apiErrorMessage(error, 'Unable to query Asterisk endpoints')
             );
         } finally {
             setEndpointDiscoveryLoading(false);
@@ -790,7 +790,7 @@ export const VicidialRemoteAgentsTab = () => {
             setConnectionModal(false);
             await refresh();
         } catch (error) {
-            toast.error(describeApiError(error, 'Unable to save connection'));
+            toast.error(apiErrorMessage(error, 'Unable to save connection'));
         } finally {
             setBusy('');
         }
@@ -839,7 +839,7 @@ export const VicidialRemoteAgentsTab = () => {
             setMappingModal(false);
             await refresh();
         } catch (error) {
-            toast.error(describeApiError(error, 'Unable to save mapping'));
+            toast.error(apiErrorMessage(error, 'Unable to save mapping'));
         } finally {
             setBusy('');
         }
@@ -868,7 +868,7 @@ export const VicidialRemoteAgentsTab = () => {
             else toast.warning('Verification found items that need attention');
             await refresh();
         } catch (error) {
-            toast.error(describeApiError(error, 'Verification failed'));
+            toast.error(apiErrorMessage(error, 'Verification failed'));
         } finally {
             setBusy('');
         }
@@ -886,7 +886,7 @@ export const VicidialRemoteAgentsTab = () => {
             toast.success('Deleted');
             await refresh();
         } catch (error) {
-            toast.error(describeApiError(error, 'Delete failed'));
+            toast.error(apiErrorMessage(error, 'Delete failed'));
         }
     };
 
@@ -903,7 +903,7 @@ export const VicidialRemoteAgentsTab = () => {
             toast.success('Retired route protection removed');
             await refresh();
         } catch (error) {
-            toast.error(describeApiError(error, 'Unable to retire route protection'));
+            toast.error(apiErrorMessage(error, 'Unable to retire route protection'));
         } finally {
             setBusy('');
         }
@@ -918,7 +918,7 @@ export const VicidialRemoteAgentsTab = () => {
             const response = await axios.get(`/api/outbound/vicidial/mappings/${id}/guidance`);
             setGuidance(response.data);
         } catch (error) {
-            toast.error(describeApiError(error, 'Unable to generate setup guidance'));
+            toast.error(apiErrorMessage(error, 'Unable to generate setup guidance'));
         } finally {
             setBusy('');
         }
@@ -1726,9 +1726,12 @@ export const VicidialRemoteAgentsTab = () => {
                         label="Call direction"
                         tooltip={mappingHelp.direction}
                         value={mappingForm.direction}
-                        onChange={e =>
-                            setMappingForm({ ...mappingForm, direction: e.target.value })
-                        }
+                        onChange={e => {
+                            const direction = e.target.value;
+                            if (direction === 'both' || direction === 'inbound' || direction === 'outbound') {
+                                setMappingForm({ ...mappingForm, direction });
+                            }
+                        }}
                         options={[
                             { value: 'both', label: 'Inbound and outbound' },
                             { value: 'outbound', label: 'Outbound only' },
@@ -2155,15 +2158,15 @@ export const VicidialRemoteAgentsTab = () => {
                             {Object.entries(mappingForm.statuses || {}).map(([key, value]) => (
                                 <label key={key} className="block">
                                     <span className="mb-1 flex items-center gap-1 text-xs text-muted-foreground">
-                                        {key.replaceAll('_', ' ')}
+                                        {key.replace(/_/g, ' ')}
                                         <HelpTooltip
-                                            ariaLabel={`Help for ${key.replaceAll('_', ' ')}`}
+                                            ariaLabel={`Help for ${key.replace(/_/g, ' ')}`}
                                             content={lifecycleHelp[key] || mappingHelp.lifecycle}
                                         />
                                     </span>
                                     <input
                                         title={lifecycleHelp[key] || mappingHelp.lifecycle}
-                                        aria-label={`${key.replaceAll('_', ' ')} status`}
+                                        aria-label={`${key.replace(/_/g, ' ')} status`}
                                         value={String(value)}
                                         maxLength={6}
                                         onChange={e =>
@@ -2443,7 +2446,7 @@ export const VicidialRemoteAgentsTab = () => {
                                 {Object.entries(guidance.artifact_inputs).map(([key, value]) => (
                                     <div key={key} className="rounded-md border bg-background p-2">
                                         <div className="text-xs text-muted-foreground">
-                                            {key.replaceAll('_', ' ')}
+                                            {key.replace(/_/g, ' ')}
                                         </div>
                                         <div className="break-all font-mono text-xs">
                                             {String(value || '—')}
@@ -2617,9 +2620,9 @@ export const VicidialRemoteAgentsTab = () => {
                                             ([key, value]) => (
                                                 <div key={key} className="rounded-md border p-2">
                                                     <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                                                        {key.replaceAll('_', ' ')}
+                                                        {key.replace(/_/g, ' ')}
                                                         <HelpTooltip
-                                                            ariaLabel={`Help for trunk ${key.replaceAll('_', ' ')}`}
+                                                            ariaLabel={`Help for trunk ${key.replace(/_/g, ' ')}`}
                                                             content={
                                                                 trunkHelp[key] ||
                                                                 'Generated FreePBX trunk value for this VICIdial mapping.'

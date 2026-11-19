@@ -12,6 +12,7 @@ from datetime import datetime
 
 if TYPE_CHECKING:
     from .transport_orchestrator import TransportProfile as OrchestratorTransportProfile
+    from .upstream_speech_evidence import UpstreamSpeechEvidence
 
 
 @dataclass
@@ -45,6 +46,23 @@ class PlaybackRef:
     media_uri: str
     audio_file: str
     timestamp: float = field(default_factory=time.time)
+    cancel_cleanup_pending: bool = False
+    cancel_notify_no_input: bool = True
+
+
+@dataclass
+class GreetingMediaState:
+    """Ephemeral state owned by one live call, never by a provider turn."""
+
+    inbound_token: Optional[tuple] = None
+    inbound_at: Optional[float] = None  # monotonic; first validated frame for token
+    claimed: bool = False
+    output_token: Optional[tuple] = None
+    phase: str = "new"  # new | waiting | silence | released | timeout | done | cancelled
+    deadline: Optional[float] = None
+    silence_samples: int = 0
+    silence_until: float = 0.0
+    fallback_started: bool = False
 
 
 @dataclass
@@ -134,6 +152,11 @@ class CallSession:
     # TTS timing for barge-in/protection windows
     tts_started_ts: float = 0.0
     tts_ended_ts: float = 0.0
+    # Process-local clocks; never restore monotonic values across engine restarts.
+    tts_ended_monotonic: float = 0.0
+    google_playback_drained_monotonic: float = 0.0
+    google_output_emission_end_monotonic: float = 0.0
+    google_output_interrupted: bool = False
     # Barge-in detection accumulators
     barge_in_candidate_ms: int = 0
     last_barge_in_ts: float = 0.0
@@ -141,6 +164,8 @@ class CallSession:
     
     # VAD and audio processing state
     vad_state: Dict[str, Any] = field(default_factory=dict)
+    # Runtime-only detector owned by this session; removed with the call. Never persisted.
+    upstream_speech_evidence: Optional["UpstreamSpeechEvidence"] = field(default=None, repr=False, compare=False)
     fallback_state: Dict[str, Any] = field(default_factory=dict)
     enhanced_vad_enabled: Optional[bool] = None
     enhanced_vad_frames: int = 0
@@ -163,6 +188,10 @@ class CallSession:
     connection_audio_playback_id: Optional[str] = None
     connection_audio_media_uri: Optional[str] = None
     connection_audio_started_ts: float = 0.0
+    # Runtime-only resource owners. Each pre-call tool owns only its hold playback.
+    pre_call_hold_audio: Set[Any] = field(default_factory=set, repr=False)
+    voicemail_handoff_id: Optional[str] = None
+    voicemail_handoff_outcome: Optional[str] = None  # pending | confirmed | indeterminate
     created_at: float = field(default_factory=time.time)
     agent_audio_buffer: bytearray = field(default_factory=bytearray)
     last_agent_audio_ts: float = 0.0
@@ -183,6 +212,7 @@ class CallSession:
     # Media path confirmation (first inbound audio frame observed)
     media_rx_confirmed: bool = False
     first_media_rx_ts: float = 0.0
+    greeting_media: GreetingMediaState = field(default_factory=GreetingMediaState)
     streaming_bytes_sent: int = 0
     streaming_fallback_count: int = 0
     streaming_jitter_buffer_depth: int = 0
@@ -216,6 +246,8 @@ class CallSession:
     error_message: Optional[str] = None                              # Error if call failed
     transfer_destination: Optional[str] = None                       # Transfer target if transferred
     
+    notification_state: Any = None  # bounded, in-memory Pushover event ownership
+
     # Pre-call tool results (Milestone 24) - CRM lookup data injected into prompts
     pre_call_results: Dict[str, str] = field(default_factory=dict)  # {variable_name: value}
 

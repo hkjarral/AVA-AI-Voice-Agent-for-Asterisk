@@ -2,6 +2,8 @@
 import json, os, sqlite3, sys
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, field_validator
+from typing import Literal
+from agent_appearance import normalize_avatar
 from agents_store import AgentsStore, slugify
 from starter_agents import seed_starter_agents
 from agents_migration import current_drift, acknowledge_drift, run_migration, \
@@ -69,7 +71,14 @@ def _store_for_agent_write() -> AgentsStore:
         )
     return store
 
-class AgentIn(BaseModel):
+class AgentAppearance(BaseModel):
+    avatar_preset: Literal["male", "female"] | None = None
+    avatar_image: str | None = None
+
+    _check_avatar = field_validator("avatar_image")(normalize_avatar)
+
+
+class AgentIn(AgentAppearance):
     display_name: str
     provider: str | None = None
     prompt: str
@@ -109,7 +118,7 @@ class AgentIn(BaseModel):
         except HangupPolicyConfigError as exc:
             raise ValueError(str(exc)) from exc
 
-class AgentPatch(BaseModel):
+class AgentPatch(AgentAppearance):
     display_name: str | None = None
     provider: str | None = None
     prompt: str | None = None
@@ -154,6 +163,8 @@ class AgentOut(BaseModel):
     as a response_model never drops a field (wire-compatible with the raw rows we
     returned before). The is_* flags stay int 0/1 — existing consumers depend on that
     shape, so they are NOT coerced to bool."""
+    avatar_preset: str | None = None
+    avatar_image: str | None = None
     id: str
     slug: str
     display_name: str
@@ -550,17 +561,19 @@ def dialplan(slug: str):
     row = _store().get_by_slug(slug)
     if not row:
         raise HTTPException(404)
-    ext = row["extension"] or "XXXX"
-    safe_name = (row['display_name'] or "").replace('\n', ' ').replace('\r', '')
-    text = (
-        f"; AVA agent: {safe_name} — paste into extensions_custom.conf\n"
-        f"[from-internal-custom]\n"
-        f"exten => {ext},1,NoOp(AVA agent {slug})\n"
-        f" same => n,Set(AI_AGENT={slug})\n"
-        f" same => n,Stasis({STASIS_APP})\n"
-        f" same => n,Hangup()\n"
-        f"; AI_CONTEXT={slug} is a deprecated compatibility alias; use AI_AGENT\n")
-    return {"dialplan": text, "extension": ext, "stasis_app": STASIS_APP}
+    if not row.get("is_active"):
+        raise HTTPException(409, "Activate this Agent before routing calls to it")
+    from services.onboarding import effective_config
+    from services.dialplan import agent_dialplan, stasis_app
+    ext = row["extension"] or "s"
+    context = "from-internal-custom" if row["extension"] else f"from-ai-agent-{slug}"
+    try:
+        app = stasis_app(effective_config())
+        text = agent_dialplan(slug, app, context=context, extension=ext)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"dialplan": text, "extension": ext, "stasis_app": app}
+
 
 @router.get("/agents-migration/status")
 def migration_status(request: Request):

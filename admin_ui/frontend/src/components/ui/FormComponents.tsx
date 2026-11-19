@@ -172,6 +172,7 @@ FormInput.displayName = 'FormInput';
 
 interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
     label?: string;
+    description?: string;
     tooltip?: string;
     options: { value: string; label: string; disabled?: boolean }[];
     error?: string;
@@ -179,12 +180,13 @@ interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
 
 export const FormSelect = React.forwardRef<HTMLSelectElement, SelectProps>(
     (
-        { label, tooltip, options, error, className = '', id, 'aria-label': ariaLabel, ...props },
+        { label, description, tooltip, options, error, className = '', id, 'aria-label': ariaLabel, ...props },
         ref
     ) => {
         const reactId = React.useId();
         const selectId = id ?? reactId;
         const errorId = error ? `${selectId}-error` : undefined;
+        const descriptionId = description ? `${selectId}-description` : undefined;
         return (
             <div className="mb-4">
                 {label && (
@@ -198,7 +200,7 @@ export const FormSelect = React.forwardRef<HTMLSelectElement, SelectProps>(
                         id={selectId}
                         aria-label={label ? undefined : ariaLabel}
                         aria-invalid={error ? true : undefined}
-                        aria-describedby={errorId}
+                        aria-describedby={[errorId, descriptionId].filter(Boolean).join(' ') || undefined}
                         className={`flex h-9 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 appearance-none ${error ? 'border-destructive' : ''} ${className}`}
                         {...props}
                     >
@@ -231,6 +233,7 @@ export const FormSelect = React.forwardRef<HTMLSelectElement, SelectProps>(
                         {error}
                     </p>
                 )}
+                {description && <p id={descriptionId} className="mt-1 text-xs text-muted-foreground">{description}</p>}
             </div>
         );
     }

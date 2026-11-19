@@ -63,6 +63,8 @@ class ElevenLabsToolAdapter:
         
         try:
             for tool_name, tool in self.registry._tools.items():
+                if not getattr(tool, "is_enabled", True):
+                    continue
                 definition = tool.definition
                 
                 # Use input_schema if available (e.g., MCP tools), otherwise build from parameters
@@ -165,6 +167,8 @@ class ElevenLabsToolAdapter:
                 )
 
             if isinstance(exec_context, ToolExecutionContext):
+                from dataclasses import replace
+                exec_context = replace(exec_context, tool_call_id=tool_call_id)
                 block_result = await exec_context.get_tool_block_response(tool_name)
                 if block_result:
                     return {

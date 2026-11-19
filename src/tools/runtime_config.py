@@ -10,6 +10,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Mapping, Optional
@@ -18,6 +20,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 TRANSFER_SCOPE = "transfer"
 GOOGLE_CALENDAR_SCOPE = "google_calendar"
 MICROSOFT_CALENDAR_SCOPE = "microsoft_calendar"
+CALENDLY_SCOPE = "calendly_calendar"
 VOICEMAIL_SCOPE = "voicemail"
 RESOURCE_POLICIES = frozenset({"inherit", "selected", "none"})
 TRANSFER_POLICIES = RESOURCE_POLICIES
@@ -130,6 +133,7 @@ def normalize_agent_tool_configs(value: Any) -> Dict[str, Any]:
         TRANSFER_SCOPE,
         GOOGLE_CALENDAR_SCOPE,
         MICROSOFT_CALENDAR_SCOPE,
+        CALENDLY_SCOPE,
         VOICEMAIL_SCOPE,
     }
     unknown_scopes = sorted(set(value) - supported_scopes)
@@ -166,6 +170,13 @@ def normalize_agent_tool_configs(value: Any) -> Dict[str, Any]:
             keys_field="account_keys",
         )
 
+    raw_calendly = value.get(CALENDLY_SCOPE)
+    if raw_calendly is not None:
+        result[CALENDLY_SCOPE] = _normalize_multi_resource_scope(
+            raw_calendly, scope=CALENDLY_SCOPE,
+            policy_field="appointment_policy", keys_field="appointment_keys",
+        )
+
     raw_voicemail = value.get(VOICEMAIL_SCOPE)
     if raw_voicemail is not None:
         result[VOICEMAIL_SCOPE] = _normalize_voicemail_scope(raw_voicemail)
@@ -181,6 +192,7 @@ def dump_agent_tool_configs(value: Any) -> Optional[str]:
         TRANSFER_SCOPE: "destination_policy",
         GOOGLE_CALENDAR_SCOPE: "calendar_policy",
         MICROSOFT_CALENDAR_SCOPE: "account_policy",
+        CALENDLY_SCOPE: "appointment_policy",
         VOICEMAIL_SCOPE: "mailbox_policy",
     }
     stored = {
@@ -448,6 +460,11 @@ def resolve_agent_tool_config(
             inventory_field="accounts",
             selection_field="selected_accounts",
         ),
+        CALENDLY_SCOPE: _apply_multi_resource_policy(
+            tools, policies, scope=CALENDLY_SCOPE, tool_name=CALENDLY_SCOPE,
+            policy_field="appointment_policy", keys_field="appointment_keys",
+            inventory_field="appointments", selection_field="selected_appointments",
+        ),
         VOICEMAIL_SCOPE: _apply_voicemail_policy(tools, policies),
     }
     all_policies = {TRANSFER_SCOPE: policy}
@@ -485,19 +502,61 @@ class ToolRuntimeGeneration:
         generation_id: int,
         config: Mapping[str, Any],
         preserved_tools: Optional[Iterable[Any]] = None,
+        skip_invalid_http_templates: bool = False,
     ) -> "ToolRuntimeGeneration":
         from src.tools.registry import ToolRegistry
 
         snapshot = copy.deepcopy(dict(config or {}))
+        from src.tools.handoff_config import validate_handoff_config
+        validate_handoff_config(snapshot.get("tools") or {})
+        from src.integrations.pushover import PushoverToolConfig
         registry = ToolRegistry.isolated()
         registry.initialize_default_tools()
+        skipped_http_names: set[str] = set()
+        if skip_invalid_http_templates:
+            # Startup can omit a broken HTTP integration without disabling the
+            # engine. Reloads remain strict so publication stays atomic.
+            from src.tools.http.template import TemplateError
+            from src.tools.http.template_contract import assert_valid_template
+            for block in ("tools", "in_call_tools"):
+                for name, doc in list((snapshot.get(block) or {}).items()):
+                    if not isinstance(doc, dict):
+                        continue
+                    kind = doc.get("kind") or ("in_call_http_lookup" if block == "in_call_tools" else "")
+                    phase = {"generic_http_lookup": "pre_call", "generic_webhook": "post_call",
+                             "in_call_http_lookup": "in_call"}.get(kind)
+                    if phase is None:
+                        continue
+                    try:
+                        assert_valid_template(doc, phase)
+                    except TemplateError as exc:
+                        skipped_http_names.add(name)
+                        del snapshot[block][name]
+                        logging.getLogger(__name__).warning(
+                            "Skipping invalid HTTP tool at startup: tool=%s phase=%s error_code=%s",
+                            name, phase, exc.code,
+                        )
+        for block in ("tools", "in_call_tools"):
+            for name, doc in (snapshot.get(block) or {}).items():
+                if isinstance(doc, dict) and doc.get("kind") == "pushover":
+                    try:
+                        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", str(name)) or registry.has(name) or str(name).startswith("mcp_"):
+                            raise ValueError()
+                        parsed = PushoverToolConfig.model_validate(doc)
+                        if (parsed.phase == "in_call") != (block == "in_call_tools"):
+                            raise ValueError()
+                    except Exception:
+                        raise ToolConfigPolicyError("Invalid managed Pushover tool configuration") from None
         registry.initialize_http_tools_from_config(snapshot.get("tools") or {})
         registry.initialize_in_call_http_tools_from_config(
-            snapshot.get("in_call_tools") or {}, cache_key="global"
+            snapshot.get("in_call_tools") or {},
+            cache_key="global",
+            skip_invalid_a2a=skip_invalid_http_templates,
+            reserved_tool_names=(snapshot.get("tools") or {}).keys(),
         )
         for tool in preserved_tools or ():
             name = getattr(getattr(tool, "definition", None), "name", None)
-            if name and not registry.has(name):
+            if name and name not in skipped_http_names and not registry.has(name):
                 registry.register_instance(tool)
 
         payload = json.dumps(snapshot, sort_keys=True, default=str, separators=(",", ":"))

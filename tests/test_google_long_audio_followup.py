@@ -93,7 +93,7 @@ async def test_disconnect_cap_overrides_120_second_backlog(drained):
     p = provider()
     e,s = bare_engine(p)
     await e.session_store.upsert_call(s)
-    e.ari_client = SimpleNamespace(hangup_channel=AsyncMock())
+    e.ari_client = SimpleNamespace(hangup_channel=AsyncMock(return_value=True))
     e._wait_for_call_audio_drain = AsyncMock(return_value=drained)
     e._terminate_call_after_audio = Engine._terminate_call_after_audio.__get__(e)
     assert await e._terminate_call_after_audio(s.call_id, reason='google_provider_disconnected', drain_timeout_cap_sec=8)
@@ -191,7 +191,9 @@ async def test_abnormal_close_drains_real_accepted_queue_before_hangup(interrupt
     q=e._provider_stream_queues[s.call_id]
     assert q.pending_bytes>0
     async def hangup(channel):
-        assert q.empty()
+        # A closed backlog retains a control sentinel, but no caller audio.
+        assert q.pending_bytes == 0 and q.audio_items == 0
+        return True
     e.ari_client=SimpleNamespace(hangup_channel=AsyncMock(side_effect=hangup))
     class Socket:
         def __aiter__(self):return self
@@ -268,7 +270,7 @@ async def test_disconnect_observer_is_deduplicated_and_bounds_stalled_transfer()
     e,s=bare_engine(provider())
     s.current_action={'type':'attended_transfer','decision':'pending'}
     await e.session_store.upsert_call(s)
-    e._google_disconnect_transfer_wait_sec=lambda:0.02
+    e._google_disconnect_transfer_wait_sec=lambda *_args:0.02
     event={'type':'ProviderDisconnected','call_id':s.call_id,'code':1007}
     await e.on_provider_event(event)
     await e.on_provider_event(event)

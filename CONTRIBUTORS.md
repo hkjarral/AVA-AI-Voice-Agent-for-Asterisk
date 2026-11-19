@@ -20,16 +20,77 @@ Thanks to all the people who have contributed to the Asterisk AI Voice Agent!
 | <img src="https://github.com/Ai-chan-0411.png" width="50" alt="Ai-chan-0411"> | **[Ai-chan-0411](https://github.com/Ai-chan-0411)** (formerly aoi-dev-0411) | Code — Transcript Search, Provider Health Badges |
 | <img src="https://github.com/exaland.png" width="50" alt="exaland"> | **[exaland](https://github.com/exaland)** | Code — Outbound Recording `.ULAW` Compatibility |
 | <img src="https://github.com/YosefAdPro.png" width="50" alt="YosefAdPro"> | **[YosefAdPro](https://github.com/YosefAdPro)** | Code, Docs, Tests — v7 Agents API/OpenAPI |
-| <img src="https://github.com/cswilsnetex.png" width="50" alt="cswilsnetex"> | **[Chris Wilson (cswilsnetex)](https://github.com/cswilsnetex)** | Code — Google Live Key Handling, Admin UI Accessibility |
+| <img src="https://github.com/cswilsnetex.png" width="50" alt="cswilsnetex"> | **[Chris Wilson (cswilsnetex)](https://github.com/cswilsnetex)** | Code — Google Live Key Handling, Admin UI Accessibility, Transfer Handoff Repeat Suppression ([#702](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/702)) |
 | <img src="https://github.com/Rea-PC08.png" width="50" alt="Rea-PC08"> | **[Rea-PC08](https://github.com/Rea-PC08)** | Code — Fish Audio TTS Provider, Realtime Streaming, Call History Filters |
 | <img src="https://github.com/arnavp27.png" width="50" alt="arnavp27"> | **[Arnav Patil (arnavp27)](https://github.com/arnavp27)** | Code, Tests — Admin UI Accessibility, Numeric Alignment, Shared Empty States ([#681](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/681), [#682](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/682), [#684](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/684)) |
 | <img src="https://github.com/alceops.png" width="50" alt="alceops"> | **[Alce (alceops)](https://github.com/alceops)** | Code — OpenAI Streaming Timeout Handling ([#373](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/373)) |
 | <img src="https://github.com/Genmin.png" width="50" alt="Genmin"> | **[Joey Roth (Genmin)](https://github.com/Genmin)** | Tests — OpenAI Realtime Tool-call State Machine ([#374](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/374)) |
-| <img src="https://img.shields.io/badge/contributor-Ivan%20Garcia-blue" alt="Ivan Garcia contributor badge"> | **Ivan Garcia** | Code — [Azure STT/TTS](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/3053c616) and [OpenAI GA Tool Responses](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/f30f7027); credited by commit author because no GitHub profile is linked |
+| <img src="https://img.shields.io/badge/contributor-Ivan%20Garcia-blue" alt="Ivan Garcia contributor badge"> | **Ivan Garcia** | Code — [Azure STT/TTS](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/3053c616) and [OpenAI GA Tool Responses](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/f30f7027), submitted by [@egorky](https://github.com/egorky) in [#261](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/261) and [#190](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/190). Commit-author credit; Ivan's own GitHub profile is not verified |
+| <img src="https://github.com/pi0n00r.png" width="50" alt="pi0n00r"> | **[pi0n00r](https://github.com/pi0n00r)** | Code, Tests — Authenticated Local AI Checks ([#597](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/597)), DTMF Privacy ([#694](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/694)), Whisper Finalization ([#695](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/695)), Streamable HTTP MCP ([#696](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/696)); proposals/reports — greeting readiness ([#752](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/752)), endpoint discovery ([#753](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/753)) |
+| <img src="https://github.com/MVECoder.png" width="50" alt="MVECoder"> | **[MVECoder](https://github.com/MVECoder)** | Reports, Investigation, Production Evidence — Cloud Startup Recovery ([#676](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/676), [#679](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/679)); Deferred Announcement Report ([#743](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/743)); Farewell/Transfer Recovery ([#675](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/675), [#735](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/735)) |
+| <img src="https://img.shields.io/badge/contributor-NC-blue" alt="NC contributor badge"> | **NC** | Code — [Linear Environment-reference Parser](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/06f039dcf293128fa55478cb4bbd584fadf8f131) in [@pi0n00r](https://github.com/pi0n00r)'s authenticated Local AI checks [#597](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/597), preserved as co-author in the [squash commit](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/8df4e07319031a3bb12a886f4e0772f9504db5a1). NC's own GitHub profile is not verified |
+| <img src="https://github.com/theluckystrike.png" width="50" alt="theluckystrike"> | **[Michael (theluckystrike)](https://github.com/theluckystrike)** | Code — Original Farewell Hangup Fix ([#735](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/735)) |
+| <img src="https://github.com/kevinrossen.png" width="50" alt="kevinrossen"> | **[Kevin Rossen (kevinrossen)](https://github.com/kevinrossen)** | Security Report, Original Renderer Patch, Co-author — HTTP Template Safety ([#739](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/739), [commit](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/d4de6ad0fd09d72ed8c0a27d76e4a67f3bdc32da)) |
+| <img src="https://github.com/pcbeingused333.png" width="50" alt="pcbeingused333"> | **[alexcastgonz (pcbeingused333)](https://github.com/pcbeingused333)** | Code, Tests — CLI Anthropic troubleshooting ([#755](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/755)), OpenAI-compatible streaming tool calls ([#760](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/760)), Telnyx/MiniMax argument handling ([#761](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/761)) |
+| <img src="https://github.com/lucamancusodev.png" width="50" alt="lucamancusodev"> | **[lucamancusodev](https://github.com/lucamancusodev)** | Reports and Requirements — onward transfers ([#699](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/699)) and notification timing ([#766](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/766)); broader post-transfer requirements remain follow-up |
+| <img src="https://github.com/abaichuan1017.png" width="50" alt="abaichuan1017"> | **[Kai (abaichuan1017)](https://github.com/abaichuan1017)** | Docs — Local/Hybrid First-turn Diagnostics ([#777](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/777)); diagnosis guidance, not a claim to fix #439 |
+| <img src="https://github.com/Andrew-Engelbrecht.png" width="50" alt="Andrew-Engelbrecht"> | **[Andrew-Engelbrecht](https://github.com/Andrew-Engelbrecht)** | Report — Compose/Bake Upgrade Failure ([#790](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/790)); implementation and recovery audit in #791 by the maintainer |
+| <img src="https://github.com/jjaroztegi.png" width="50" alt="jjaroztegi"> | **[jjaroztegi](https://github.com/jjaroztegi)** | Report — AudioSocket squelch and WebSocket pacing reports ([#799](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/799), [#808](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/808)) |
+| <img src="https://github.com/ibewackofreak.png" width="50" alt="ibewackofreak"> | **[ibewackofreak](https://github.com/ibewackofreak)** | Report — Docker entitlement failure during Quick Start ([#802](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/802)) |
+| <img src="https://github.com/lucivan212.png" width="50" alt="lucivan212"> | **[lucivan212](https://github.com/lucivan212)** | Proposal and Requirements — Call History recording access and authenticated downloads ([#767](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/767)); the broader reconciliation proposal remains follow-up |
 
 <!-- markdownlint-restore -->
 <!-- prettier-ignore-end -->
 <!-- ALL-CONTRIBUTORS-LIST:END -->
+
+### v7.7.3 contribution updates
+
+- **Chris Wilson (`cswilsnetex`):** AudioSocket correction and attended-transfer
+  settings, early-hangup recovery, silent-transfer watchdog, caller briefings and
+  announcement TTS ([#829–#834](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/834)).
+- **lucivan212:** recording-access proposal and requirements ([#767](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/767));
+  the scoped downloads and error handling shipped through #840.
+- **hkjarral:** Admin lifecycle, recording safety, React/Node integration,
+  TypeScript validation, dependency integration and release preparation.
+- **Dependabot:** the six dependency proposals already merged into this release
+  (#728, #750, #783, #801, #816 and #823).
+
+### v7.7.2 contribution updates
+
+- **Chris Wilson (`cswilsnetex`):** Microsoft Calendar retry recovery
+  ([#798](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/798))
+  and local YAML comment preservation
+  ([#810](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/810)).
+- **pi0n00r:** A2A delegation
+  ([#815](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/815))
+  and remote PBX checklist
+  ([#806](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/806)).
+- **hkjarral:** AudioSocket and WebSocket media work, Docker bootstrap and recovery,
+  A2A Admin controls, UI contributor guidance, first-call onboarding, and validation.
+
+### v7.7.1 contribution updates
+
+- **pi0n00r:** provider-neutral booking/privacy migration
+  ([#778](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/778)),
+  authenticated transcription ([#784](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/784))
+  and Local/Asterisk farewell ownership ([#787](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/787));
+  contributor code and maintainer lifecycle fixes are preserved.
+- **pcbeingused333 / alexcastgonz:** modular Google model/capability fixes
+  ([#785](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/785)),
+  streaming tool-phase filtering ([#789](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/789))
+  and Ollama prompt retention ([#792](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/792)).
+- **lucamancusodev:** notification/transcript requirements
+  ([#766](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/766))
+  and attended-transfer failure report ([#793](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/793)).
+  Broader post-transfer automation and strict attempt policy remain follow-up.
+- **hkjarral:** implementation, lifecycle/security/recovery review, tests and
+  maintenance, including #791, #794 and #795.
+
+NC's existing commit-linked badge remains. Original #778/#784 commits and their
+squash commits also preserve the NC/Debian author labels. Additional commit credit:
+[![Debian contributor badge](https://img.shields.io/badge/contributor-Debian-blue)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/8af035c7dedb1698bac0062833b913d068032985).
+No GitHub profile or distinct-person identity is inferred for these unmapped
+labels, and they are not counted as additional verified people.
 
 Automated contributions by [Dependabot](https://github.com/apps/dependabot) and
 [AVA's AI assistant](https://github.com/ava-ai-assistant), and AI-tool co-author

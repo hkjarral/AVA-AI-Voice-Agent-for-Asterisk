@@ -2,6 +2,40 @@
 
 Complete guide to diagnosing and fixing issues with Asterisk AI Voice Agent.
 
+## v7.7.1 recovery checks
+
+- For a failed build after Git advanced, inspect [same-version update recovery](CLI_TOOLS_GUIDE.md#interrupted-docker-builds-and-same-version-recovery).
+  Replacing source does not replace an old CLI/updater image. Do not delete pending
+  actions or bypass unknown-call-state and backup failures to make an upgrade pass.
+- [Transcription errors](OpenAI-Compatible-Transcription.md#errors-and-troubleshooting)
+  use separate speech credentials. A model list or healthy service is not an
+  inference test; live calls can reject/preempt batch work.
+- [HTTP/Pushover previews](HTTP-Tool-Templates.md) are synthetic, not delivery tests.
+  Inspect safe preparation codes when a tool is skipped or omitted at startup.
+  Invalid reloads retain the last running generation; fix the saved template and apply.
+- Google modular model/sampling behavior differs from native Google Live. See
+  [provider controls](ADMIN_UI_GUIDE.md#providers). Ollama now retains the resolved
+  system prompt in long histories; that fix is not a qualification of every model.
+- Local Asterisk farewell handling waits for the matching playback's terminal
+  state; an ARI `done` event alone is not proof of audible/uninterrupted delivery.
+  Google Live transfer recovery distinguishes initiation from terminal outcomes;
+  #793's two-attempt policy and original PBX cause remain follow-up, not automatic retries.
+
+## v7.7 integration and UI checks
+
+- Refresh after Admin image replacement; new Agent editor routes do not exist in old UI.
+- **Update tool** stages changes; **Save & Apply** publishes them. Partial-apply errors
+  are not full success. See [Admin UI](ADMIN_UI_GUIDE.md).
+- Calendly uncertainty requires [retained-request recovery](Calendly-calendar-tool.md#pending-submissions),
+  not another booking POST. History erasure does not cancel remote appointments.
+- [Pushover](Pushover.md) distinguishes generation and recipient delivery. API acceptance
+  is not phone acknowledgement; do not automatically retry an uncertain send.
+- [Summary failures](In-Call-Summaries.md) follow the configured continue/abort policy.
+- [Endpoint discovery](ARI-Endpoint-Discovery.md) is a temporary snapshot, not
+  proof of dialability or Agent authorization.
+- Protect [journal/credentials](INTEGRATION_BACKUPS.md) during recovery. An old
+  snapshot cannot establish that a remote write never occurred.
+
 ## Table of Contents
 
 - [Installation](#installation)
@@ -297,40 +331,10 @@ agent troubleshoot --list
 
 ### 0. Docker Build Fails (apt-get / DNS)
 
-**Symptoms:** `docker compose up -d --build ai_engine` fails with errors like:
-- `Temporary failure resolving 'deb.debian.org'`
-- `E: Unable to locate package build-essential`
-
-**Cause:** Docker/BuildKit can’t resolve DNS or doesn’t have outbound internet during image build. This is not related to your host Debian version (Debian inside the image can differ).
-
-**Fix (recommended):**
-```bash
-# Pull latest fixes (pins the base image to Debian 12/bookworm)
-git pull
-
-# Rebuild the engine image
-docker compose build --no-cache --pull ai_engine
-docker compose up -d ai_engine
-```
-
-**If DNS is still failing inside Docker:**
-```bash
-# Quick DNS probe inside a container
-docker run --rm busybox:1.36.1 nslookup deb.debian.org
-```
-
-If the DNS probe fails, set explicit DNS servers for Docker and restart it:
-```bash
-sudo mkdir -p /etc/docker
-printf '{\"dns\":[\"1.1.1.1\",\"8.8.8.8\"]}\n' | sudo tee /etc/docker/daemon.json
-sudo systemctl restart docker
-```
-
-If you’re on a Debian/Ubuntu host using `systemd-resolved`, also confirm Docker isn’t inheriting a loopback resolver (e.g. `127.0.0.53`):
-```bash
-readlink -f /etc/resolv.conf
-cat /etc/resolv.conf
-```
+Use the [Docker build checks and recovery guide](BUILD_TROUBLESHOOTING.md).
+It distinguishes the host, Docker daemon/BuildKit metadata, and build-step
+networks. Begin with read-only preflight under the same user as the build.
+Do not replace `daemon.json` or restart a working Docker daemon as a generic fix.
 
 ### 1. No Audio (Complete Silence)
 
@@ -1225,6 +1229,33 @@ providers:
 
 ### Local AI (Vosk + Phi-3 + Piper)
 
+#### First Local/Hybrid Turn Is Slow Despite Healthy Readiness
+
+A healthy `/ready` response does not mean that the next call's modular
+`local_stt` or `local_tts` WebSocket is already open. The
+[local pipeline adapter](../src/pipelines/local.py) creates a call-scoped
+session in `open_call`; starting the adapter alone does not open that session.
+Distinguish this setup delay from slow LLM generation before changing models
+or timeouts. See [the first-turn report](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/439).
+
+Use the call ID and time window to compare these stages in the existing engine
+and Local AI logs:
+
+| Stage | Evidence and relevant adapter option |
+| --- | --- |
+| Socket opening/authentication | `Opening local adapter session`; when authentication is configured, look for `Local adapter authenticated` or `Local adapter auth failed`; inspect the effective `ws_url` and `connect_timeout_sec` |
+| Mode negotiation | `Local adapter set_mode sent`, then `Local adapter handshake complete`; the acknowledgement wait uses `handshake_timeout_sec`, defaulting to at least five seconds |
+| STT audio/transcription | Confirm audio reaches the selected STT adapter and a transcription follows; an open connection alone does not prove transcription works |
+| TTS synthesis | Confirm the selected TTS adapter receives text and returns synthesized audio; an open connection alone does not prove synthesis works |
+
+`Local adapter handshake not confirmed; proceeding without mode_ready` means
+the mode acknowledgement was not confirmed; the current adapter logs the warning
+and continues. It is different from failing to open the socket. Preserve the
+surrounding evidence before restarting anything, and follow the
+[diagnostic workflow](contributing/debugging-guide.md) for a bounded support
+package. Do not assume increasing a timeout fixes a wrong URL, authentication
+failure, or an unavailable model.
+
 #### Common Issues
 
 **1. Models Not Loading**
@@ -1464,94 +1495,26 @@ sudo sysctl --system
 
 ### DNS Resolution Failure During Build
 
-**Symptom:** Docker build fails with DNS resolution errors:
-```
-Failed to establish a new connection: [Errno -3] Temporary failure in name resolution
-ERROR: Could not find a version that satisfies the requirement websockets
-```
+See [Docker build checks and recovery](BUILD_TROUBLESHOOTING.md). Registry
+metadata timeouts and package-download DNS failures occur in different network
+layers; `network.host` on a build step cannot repair a custom BuildKit daemon's
+DNS. Keep existing Docker settings and schedule any necessary daemon restart
+with the operator after diagnosing the failing layer.
 
-**Root Cause:** Docker BuildKit networking can't resolve DNS on some networks/systems.
+### Build timeout or slow download
 
-**Solutions:**
-
-#### Solution 1: Disable BuildKit (Simplest)
-```bash
-DOCKER_BUILDKIT=0 docker compose build
-```
-
-#### Solution 2: Use Host Network for Build
-```bash
-docker build --network=host -t asterisk-ai-voice-agent-ai-engine ./
-docker build --network=host -t asterisk-ai-voice-agent-local-ai-server ./local_ai_server
-```
-
-#### Solution 3: Configure Docker DNS
-```bash
-# Edit Docker daemon config
-sudo nano /etc/docker/daemon.json
-```
-
-Add:
-```json
-{
-  "dns": ["8.8.8.8", "8.8.4.4"]
-}
-```
-
-Then restart Docker:
-```bash
-sudo systemctl restart docker
-```
-
-#### Solution 4: Check System DNS
-```bash
-# Verify DNS resolution works
-nslookup pypi.org
-
-# If not, fix system DNS
-sudo nano /etc/resolv.conf
-# Add: nameserver 8.8.8.8
-```
-
-### Build Timeout or Slow Download
-
-**Symptom:** Build hangs or times out downloading packages.
-
-**Solutions:**
-
-1. **Use pip mirror:**
-   ```bash
-   # In Dockerfile, change pip install to:
-   RUN pip install --no-cache-dir -i https://pypi.org/simple/ -r requirements.txt
-   ```
-
-2. **Increase Docker timeout:**
-   ```bash
-   COMPOSE_HTTP_TIMEOUT=200 docker compose build
-   ```
-
-3. **Build with verbose output:**
-   ```bash
-   docker compose build --progress=plain
-   ```
+Check the failing registry/package repository, proxy and TLS path in the build
+output. AVA does not retry an unrelated download failure with extra privileges.
+Retry the explicit service after connectivity is restored; inspect disk space
+before repeating a large Local AI build. See [build recovery](BUILD_TROUBLESHOOTING.md).
 
 ### docker-compose vs docker compose
 
-**Symptom:** `docker: 'compose' is not a docker command`
-
-**Root Cause:** Older Docker installations (Debian/Ubuntu packages) use `docker-compose` (v1) not `docker compose` (v2).
-
-**Solution:**
-```bash
-# Use docker-compose instead
-docker compose up -d ai_engine admin_ui
-
-# Or install Docker Compose v2
-sudo apt-get update
-sudo apt-get install docker-compose-plugin
-```
-
----
+AVA selects the Docker Compose plugin when available, then standalone Compose
+2+. Compose v1 is unsupported. Check `docker compose version` or
+`docker-compose version` and run `./preflight.sh --build-check` with the same
+identity before installation. Use `AAVA_COMPOSE_BIN=docker-compose` to select
+standalone explicitly when running the manual helper.
 
 ## Getting Help
 

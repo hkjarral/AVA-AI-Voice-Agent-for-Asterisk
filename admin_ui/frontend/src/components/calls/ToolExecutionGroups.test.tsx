@@ -77,6 +77,26 @@ describe('PhaseToolGroup', () => {
 });
 
 describe('InCallToolGroup', () => {
+    it('shows a failed voicemail handoff as uncertain without claiming success', () => {
+        render(<InCallToolGroup entries={[{
+            name: 'leave_voicemail', status: 'failure', params: {}, result: 'failed',
+            handoff_indeterminate: true, timestamp: '2030-01-01T00:00:00Z', duration_ms: 20,
+        }]} />);
+        expect(screen.getByText('error')).toBeInTheDocument();
+        expect(screen.getByRole('status')).toHaveTextContent('Transfer outcome uncertain');
+        expect(screen.getByRole('status')).toHaveTextContent('Do not automatically repeat this transfer');
+    });
+    it('shows the Calendly attempt reference next to the recorded outcome', () => {
+        render(<InCallToolGroup entries={[{
+            name: 'calendly_calendar', action: 'create_booking', status: 'failure',
+            params: {}, result: 'pending', timestamp: '2030-01-01T00:00:00Z',
+            reservation_status: 'uncertain', attempt_reference: 'request-ref-123', duration_ms: 20,
+        }]} />);
+        expect(screen.getByText('request-ref-123')).toBeInTheDocument();
+        expect(screen.getByText('pending')).toBeInTheDocument();
+        expect(screen.getByText(/Recorded outcome: uncertain/)).toBeInTheDocument();
+        expect(screen.getByRole('link', { name: 'Review Calendly requests' })).toHaveAttribute('href', '/tools?section=calendly_calendar');
+    });
     it('renders the enriched contract and treats normalized status as authoritative', () => {
         render(
             <InCallToolGroup
@@ -182,4 +202,48 @@ describe('InCallToolGroup', () => {
         expect(screen.getByText('Mixed redaction policies')).toBeInTheDocument();
         expect(screen.queryByText('Strict redaction')).not.toBeInTheDocument();
     });
+});
+
+it('shows notification delivery independently from summary generation', () => {
+    render(<InCallToolGroup entries={[{name:'pushover_briefing',params:{update_key:'handoff'},result:'success',timestamp:'2026-10-23T12:00:00Z',duration_ms:50,summary_status:'timeout',summary_provider:'mock_llm',delivery_status:'accepted',notification_service:'pushover',notification_deliveries:{staff:{delivery_status:'accepted'}}}]} />);
+    expect(screen.getByText('Status: timeout')).toBeInTheDocument();
+    expect(screen.getByText('Delivery: accepted')).toBeInTheDocument();
+    expect(screen.getByText('staff: accepted')).toBeInTheDocument();
+    expect(screen.getByText(/not displayed or read/)).toBeInTheDocument();
+});
+
+it('does not attach Pushover acknowledgement semantics to calendar delivery', () => {
+    render(<InCallToolGroup entries={[{name:'microsoft_calendar',params:{},result:'success',timestamp:'2026-10-23T12:00:00Z',duration_ms:5,delivery_status:'unknown'}]} />);
+    expect(screen.queryByText(/queued by Pushover/)).not.toBeInTheDocument();
+});
+
+it('distinguishes transfer initiation from its terminal failure', () => {
+    render(<InCallToolGroup entries={[
+        {name:'attended_transfer',action:'attended_transfer_initiated',params:{},result:'success',timestamp:'2026-10-30T12:00:00Z',duration_ms:2},
+        {name:'attended_transfer',action:'attended_transfer_failed',params:{},result:'failed',timestamp:'2026-10-30T12:00:01Z',duration_ms:0},
+    ]} />);
+    expect(screen.getByText('Transfer initiated')).toBeInTheDocument();
+    expect(screen.getByText('Transfer failed')).toBeInTheDocument();
+});
+
+
+it.each(['__proto__', 'constructor', 'toString'])('renders the literal legacy action %s safely', (action) => {
+    render(<InCallToolGroup entries={[{name:'attended_transfer',action,params:{},result:'success',timestamp:'2026-10-30T12:00:00Z',duration_ms:2}]} />);
+    expect(screen.getByText(action)).toBeInTheDocument();
+});
+
+
+it('distinguishes voicemail announcement from confirmed and uncertain handoff', () => {
+    const base = {name: 'leave_voicemail', params: {}, timestamp: '2026-11-01T00:00:00Z', duration_ms: 0};
+    render(<InCallToolGroup entries={[
+        {...base, action: 'voicemail_initiated', result: 'success'},
+        {...base, action: 'voicemail_completed', result: 'success'},
+        {...base, action: 'voicemail_failed', result: 'cancelled'},
+        {...base, action: 'voicemail_indeterminate', result: 'failed', handoff_indeterminate: true},
+    ]} />);
+    expect(screen.getByText('Voicemail announcement started')).toBeInTheDocument();
+    expect(screen.getByText('Voicemail handoff accepted')).toBeInTheDocument();
+    expect(screen.getByText('Voicemail handoff cancelled')).toBeInTheDocument();
+    expect(screen.getByText('Voicemail handoff uncertain')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Do not automatically repeat this transfer');
 });

@@ -35,3 +35,7 @@ PCM16_TARGET_RATE = 16000
 
 def _normalize_text(value: str) -> str:
     return " ".join((value or "").strip().lower().split())
+
+
+# SenseVoice language hints accepted by sherpa-onnx's OfflineRecognizer.from_sense_voice().
+SENSE_VOICE_LANGUAGES = ("auto", "zh", "en", "ja", "ko", "yue")

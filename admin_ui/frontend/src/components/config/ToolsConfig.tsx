@@ -83,9 +83,6 @@ const ToolsConfig: React.FC<ToolsConfigProps> = ({ config, onChange }) => {
 	        negative: false,
 	    });
 
-	    const handleChange = (field: string, value: any) => {
-	        onChange({ ...config, [field]: value });
-	    };
 
     const handleNestedChange = (parent: string, field: string, value: any) => {
         onChange({

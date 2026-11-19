@@ -65,7 +65,12 @@ export function MicrosoftBookingSettings({ config, onChange }: Props) {
         </fieldset>
         <FormSwitch label="Allow caller invitations" checked={config.invitations_enabled === true}
             onChange={event => onChange({ invitations_enabled: event.target.checked })}
-            description="When enabled, the agent must confirm the booking, every attendee email and permission to send invitations. Without attendees, bookings remain appointments. Teams links and automatic staff attendees are not enabled." />
+            description="When enabled, the agent must confirm the booking, every attendee email and permission to send invitations. Microsoft generates the invitations; delivery and attendee acceptance are not verified." />
+        <FormSwitch label="Create Microsoft Teams meetings" checked={config.teams_enabled === true}
+            onChange={event => onChange({ teams_enabled: event.target.checked })}
+            tooltip="Requires a Teams-capable selected calendar and enabled caller invitations. Verify the selection, then Save & Apply for new calls. Existing appointments retain their original type."
+            description="Teams bookings require a caller-confirmed invitation email. Unsupported calendars produce an error. An Outlook event link is separate from the Teams join link." />
+        {config.teams_enabled === true && config.invitations_enabled !== true && <p role="alert" className="text-sm text-destructive">Enable caller invitations before booking Teams meetings.</p>}
         <p className="text-xs text-muted-foreground">Cancellation and rescheduling apply only to bookings created during the current call. Requests about earlier bookings require staff. Availability suggestions are a subset; the agent checks the requested interval first.</p>
         {config.invitations_enabled === true && <div className="space-y-3">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

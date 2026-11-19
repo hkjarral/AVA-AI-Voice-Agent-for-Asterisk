@@ -4,6 +4,36 @@ import json
 from typing import Any, Dict, Tuple
 
 
+INTERNAL_NOTIFICATION_INSTRUCTIONS = (
+    "Continue the conversation and any remaining tools using the business instructions. "
+    "Treat the latest tool result as internal notification data. Do not read acknowledgements, "
+    "delivery diagnostics or technical errors aloud. Never claim a write succeeded without "
+    "a successful result. Continue the caller's request naturally."
+)
+
+
+def prepare_pipeline_tool_result(tool_name, result, options):
+    """Return neutral notification context without changing ordinary tool speech."""
+    if not result.get("internal_notification"):
+        return result.get("message", f"Tool {tool_name} executed successfully."), {}, options
+    status = result.get("status")
+    if status not in ("success", "ok", "failed", "error", "timeout", "cancelled", "skipped"):
+        status = "error"
+    instruction = INTERNAL_NOTIFICATION_INSTRUCTIONS + f" Internal notification outcome: {status}."
+    continuation_options = dict(options or {})
+    prompt = str(continuation_options.get("system_prompt") or "")
+    system_instruction = str(continuation_options.get("system_instruction") or prompt)
+    continuation_options["system_prompt"] = (prompt + "\n\n" + instruction).strip()
+    continuation_options["system_instruction"] = (system_instruction + "\n\n" + instruction).strip()
+    response_instructions = str(continuation_options.get("instructions") or prompt or system_instruction)
+    continuation_options["instructions"] = (response_instructions + "\n\n" + instruction).strip()
+    return (
+        json.dumps({"status": status, "internal_notification": True}),
+        {"internal_notification": True, "system_prompt": continuation_options["system_prompt"]},
+        continuation_options,
+    )
+
+
 TOOL_CHECK_EXTENSION_KEYS: Tuple[str, ...] = (
     "status",
     "message",
@@ -20,13 +50,16 @@ TOOL_CHECK_EXTENSION_KEYS: Tuple[str, ...] = (
     "device_states",
 )
 
-CALENDAR_TOOL_NAMES = frozenset({"google_calendar", "microsoft_calendar"})
+CALENDAR_TOOL_NAMES = frozenset({"google_calendar", "microsoft_calendar", "calendly_calendar"})
 
 # Calendar tools intentionally return structured data that the model needs to
 # answer the caller.  Keep this allowlist shared by every provider adapter so
 # OpenAI, Google Live, Grok, and Deepgram do not diverge at the final response
 # boundary.  Unknown/internal fields remain filtered out.
 TOOL_CALENDAR_KEYS: Tuple[str, ...] = (
+    "code", "appointment_types", "appointment_key", "appointment_name", "duration_minutes",
+    "timezone", "location_summary", "questions", "start_datetime", "end_datetime",
+    "search_start", "search_end", "attempt_reference",
     "status",
     "message",
     "error",
@@ -52,6 +85,11 @@ TOOL_CALENDAR_KEYS: Tuple[str, ...] = (
     "end",
     "calendar",
     "link",
+    "outlook_web_link",
+    "teams_join_url",
+    "online_meeting_provider",
+    "meeting_status",
+    "changes_require_staff",
     "agent_hint",
     "available",
     "slots_returned",
@@ -120,6 +158,13 @@ def sanitize_tool_result_for_json_string(
         selected_keep_keys = TOOL_CHECK_EXTENSION_KEYS
     elif normalized_tool_name in CALENDAR_TOOL_NAMES:
         selected_keep_keys = TOOL_CALENDAR_KEYS
+        if normalized_tool_name == "calendly_calendar":
+            selected_keep_keys += ("confirmation_reference", "confirmation_recap", "spoken_date")
+
+    if isinstance(result, dict) and result.get("internal_notification"):
+        selected_keep_keys = tuple(dict.fromkeys((*selected_keep_keys,
+            "internal_notification", "delivery_status", "notification_deliveries", "notification_service", "error_code",
+            "summary_provider", "summary_model", "summary_status", "summary_duration_ms", "summary_error_code")))
 
     if not isinstance(result, dict):
         payload: Dict[str, Any] = {"status": "success", "message": str(result)}
@@ -135,10 +180,13 @@ def sanitize_tool_result_for_json_string(
                     payload[k] = _safe_calendar_events(result[k])
                 else:
                     payload[k] = _safe_jsonable(result.get(k))
+        action = result.get("deferred_transfer")
+        if isinstance(action, dict) and action.get("handoff") and result.get("ai_should_speak") is False:
+            payload["ai_should_speak"] = False
         if "message" not in payload:
             payload["message"] = str(result.get("message") or "")
         # Keep a compact structured payload when available (helps follow-up reasoning).
-        if "result" in result and "result" not in payload:
+        if "result" in result and "result" not in payload and normalized_tool_name != "calendly_calendar":
             payload["result"] = _safe_jsonable(result.get("result"), max_depth=3, max_items=20)
 
         if normalized_tool_name in CALENDAR_TOOL_NAMES and isinstance(result.get("events"), (list, tuple)):
@@ -252,3 +300,15 @@ def sanitize_tool_result_for_json_string(
     if len(json.dumps(minimal, ensure_ascii=False).encode("utf-8")) <= max_bytes:
         return minimal
     return {} if max_bytes >= 2 else payload
+
+
+async def notify_result_not_sent(result: Any, context: Dict[str, Any]) -> None:
+    """Report a tool result that never reached the model.
+
+    Providers hook delivery through ``context["handoff_result_sent"]``; a
+    deferred transfer is timed from that report, so an early return must
+    still make it, as a failed send.
+    """
+    notify = context.get("handoff_result_sent") if isinstance(context, dict) else None
+    if notify:
+        await notify(result, context.get("call_id"), success=False)

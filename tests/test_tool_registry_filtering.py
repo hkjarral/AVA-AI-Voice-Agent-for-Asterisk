@@ -40,3 +40,19 @@ def test_tool_registry_filtered_schema():
 
     tool_registry.clear()
 
+
+
+def test_optional_calendly_import_failure_does_not_abort_telephony_registration(monkeypatch):
+    import builtins
+    from src.tools.registry import ToolRegistry
+    original = builtins.__import__
+    def unavailable(name, *args, **kwargs):
+        if name == 'src.tools.business.calendly_calendar':
+            raise ImportError('synthetic optional dependency failure')
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', unavailable)
+    registry = ToolRegistry.isolated()
+    registry.initialize_default_tools()
+    assert registry._initialized
+    assert registry.get('hangup_call') is not None
+    assert registry.get('calendly_calendar') is None

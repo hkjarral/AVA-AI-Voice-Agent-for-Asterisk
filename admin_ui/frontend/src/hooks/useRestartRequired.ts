@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import axios from 'axios';
+import axios, { type AxiosRequestConfig } from 'axios';
 
-interface ConfigState {
+export interface ConfigState {
     running_config_hash: string | null;
     disk_config_hash: string | null;
     restart_required: boolean;
@@ -20,6 +20,7 @@ export function useRestartRequired(): {
     recommendedApplyMethod: 'none' | 'hot_reload' | 'restart';
     stateStale: boolean;
     refetch: () => Promise<void>;
+    refreshAndRead: (options?: AxiosRequestConfig) => Promise<ConfigState | null>;
     loading: boolean;
 } {
     const [restartRequired, setRestartRequired] = useState(false);
@@ -30,11 +31,18 @@ export function useRestartRequired(): {
     // Latest-response-wins: a slower older request (e.g. the 15s poll) must not
     // overwrite a newer one (e.g. a post-save/restart refetch) with stale data.
     const requestSeq = useRef(0);
+    const invalidateRequests = useCallback(() => { requestSeq.current++; }, []);
 
-    const refetch = useCallback(async () => {
+    const refreshAndRead = useCallback(async (options?: AxiosRequestConfig): Promise<ConfigState | null> => {
         const seq = ++requestSeq.current;
         try {
-            const res = await axios.get<ConfigState>(CONFIG_STATE_URL);
+            const res = options
+                ? await axios.get<ConfigState>(CONFIG_STATE_URL, options)
+                : await axios.get<ConfigState>(CONFIG_STATE_URL);
+            if (options?.signal?.aborted || seq !== requestSeq.current) return null;
+            if (res.data?.engine_reachable !== true || res.data.disk_config_valid !== true) {
+                throw new Error('Engine configuration state unavailable');
+            }
             if (seq === requestSeq.current) {
                 const needsRestart = res.data?.restart_required === true;
                 const needsApply = res.data?.apply_required === true;
@@ -46,6 +54,7 @@ export function useRestartRequired(): {
                         : (res.data?.recommended_apply_method || (needsApply ? 'hot_reload' : 'none'))
                 );
                 setStateStale(false);
+                return res.data;
             }
         } catch {
             // Keep the last known action visible during transient failures.
@@ -58,7 +67,9 @@ export function useRestartRequired(): {
                 setLoading(false);
             }
         }
+        return null;
     }, []);
+    const refetch = useCallback(async () => { await refreshAndRead(); }, [refreshAndRead]);
 
     useEffect(() => {
         let cancelled = false;
@@ -71,9 +82,10 @@ export function useRestartRequired(): {
         }, POLL_INTERVAL_MS);
         return () => {
             cancelled = true;
+            invalidateRequests();
             clearInterval(interval);
         };
-    }, [refetch]);
+    }, [refetch, invalidateRequests]);
 
-    return { restartRequired, applyRequired, recommendedApplyMethod, stateStale, refetch, loading };
+    return { restartRequired, applyRequired, recommendedApplyMethod, stateStale, refetch, refreshAndRead, loading };
 }

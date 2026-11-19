@@ -10,10 +10,11 @@ interface ModalProps {
     footer?: React.ReactNode;
     size?: 'sm' | 'md' | 'lg' | 'xl' | 'full';
     allowFullscreen?: boolean;
+    busy?: boolean;
 }
 
 const FOCUSABLE_SELECTOR =
-    'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    'a[href], button:not(:disabled), textarea:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"]):not(:disabled)';
 
 export const Modal = ({
     isOpen,
@@ -23,13 +24,14 @@ export const Modal = ({
     footer,
     size = 'md',
     allowFullscreen = false,
+    busy = false,
 }: ModalProps) => {
     const modalRef = useRef<HTMLDivElement>(null);
     const titleId = useId();
     const [isFullscreen, setIsFullscreen] = useState(false);
     // Keep the latest onClose without re-running the focus effect on every render.
     const onCloseRef = useRef(onClose);
-    onCloseRef.current = onClose;
+    onCloseRef.current = () => { if (!busy) onClose(); };
 
     useEffect(() => {
         if (!isOpen) return;
@@ -37,6 +39,10 @@ export const Modal = ({
         const previouslyFocused = document.activeElement as HTMLElement | null;
 
         const handleKeyDown = (e: KeyboardEvent) => {
+            // A confirmation portal may be above this editor, including while
+            // its fieldsets are disabled. Let that dialog own keyboard focus.
+            const dialogs = document.querySelectorAll('[role="dialog"], [role="alertdialog"]');
+            if (dialogs[dialogs.length - 1] !== modalRef.current) return;
             if (e.key === 'Escape') {
                 onCloseRef.current();
                 return;
@@ -107,6 +113,7 @@ export const Modal = ({
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby={titleId}
+                aria-busy={busy}
             >
                 <div className="flex items-center justify-between p-6 border-b border-border">
                     <h2 id={titleId} className="text-lg font-semibold tracking-tight">
@@ -132,20 +139,23 @@ export const Modal = ({
                         <button
                             type="button"
                             onClick={onClose}
+                            disabled={busy}
                             aria-label="Close"
-                            className="p-1 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-ring"
+                            className="p-1 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             <X className="w-5 h-5" />
                         </button>
                     </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-6">{children}</div>
+                <div className="flex-1 overflow-y-auto p-6">
+                    <fieldset disabled={busy} className="min-w-0">{children}</fieldset>
+                </div>
 
                 {footer && (
-                    <div className="p-6 border-t border-border bg-muted/10 flex justify-end gap-3">
+                    <fieldset disabled={busy} className="min-w-0 p-6 border-t border-border bg-muted/10 flex justify-end gap-3">
                         {footer}
-                    </div>
+                    </fieldset>
                 )}
             </div>
         </div>,

@@ -18,6 +18,21 @@ def _stt_language(server) -> Optional[str]:
     return None
 
 
+def _sherpa_sense_voice_status(server) -> Dict[str, Any]:
+    """Effective Sherpa offline model family and SenseVoice settings (None when not applicable)."""
+    if server.stt_backend != "sherpa":
+        return {"sherpa_model_family": None, "sherpa_sense_voice_language": None, "sherpa_sense_voice_use_itn": None}
+    backend = getattr(server, "sherpa_backend", None)
+    family = getattr(backend, "model_family", None) if backend is not None else None
+    if family != "sense_voice":
+        return {"sherpa_model_family": family, "sherpa_sense_voice_language": None, "sherpa_sense_voice_use_itn": None}
+    return {
+        "sherpa_model_family": family,
+        "sherpa_sense_voice_language": getattr(backend, "sense_voice_language", None),
+        "sherpa_sense_voice_use_itn": getattr(backend, "sense_voice_use_itn", None),
+    }
+
+
 def _stt_status(server) -> Tuple[bool, Optional[str], Optional[str]]:
     if server.stt_backend == "vosk":
         loaded = server.mock_models or server.stt_model is not None
@@ -167,6 +182,7 @@ def build_status_response(server) -> Dict[str, Any]:
                 "device": getattr(server, "faster_whisper_device", None) if server.stt_backend == "faster_whisper" else None,
                 "compute_type": getattr(server, "faster_whisper_compute", None) if server.stt_backend == "faster_whisper" else None,
                 "sherpa_model_type": getattr(server, "sherpa_model_type", None) if server.stt_backend == "sherpa" else None,
+                **_sherpa_sense_voice_status(server),
                 "tone_decoder_type": getattr(server, "tone_decoder_type", None) if server.stt_backend == "tone" else None,
             },
             "llm": {

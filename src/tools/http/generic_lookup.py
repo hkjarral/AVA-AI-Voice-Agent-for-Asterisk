@@ -16,6 +16,7 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 
 from src.tools.http.path_utils import extract_path
+from src.tools.http.template import TemplateError, render_body, render_headers, render_template, render_url
 
 import aiohttp
 
@@ -241,6 +242,7 @@ class GenericHTTPLookupTool(PreCallTool):
         body_text: str = "",
         error_message: Optional[str] = None,
         output_variables: Optional[Dict[str, str]] = None,
+        request_diagnostics: Optional[Dict[str, Any]] = None,
     ) -> None:
         if not call_id:
             return
@@ -250,6 +252,11 @@ class GenericHTTPLookupTool(PreCallTool):
             safe_body = self._sanitize_response_text(body_text)
             summary = safe_body if len(safe_body) <= max_chars else safe_body[:max_chars] + "…"
         self._last_results[call_id] = {
+            "phase": "pre_call",
+            "delivery_status": ("accepted" if http_status is not None and 200 <= http_status < 300 else
+                                "rejected" if http_status is not None and 400 <= http_status < 500 and http_status != 408 else
+                                "skipped" if status == "skipped" else "uncertain"),
+            **(request_diagnostics or {}),
             "status": status,
             "http_status": http_status,
             "response_summary": summary,
@@ -295,11 +302,9 @@ class GenericHTTPLookupTool(PreCallTool):
         
         try:
             # Build request
-            url = self._substitute_variables(self.config.url, context)
-            headers = {
-                k: self._substitute_variables(v, context)
-                for k, v in self.config.headers.items()
-            }
+            values = self._template_values(context)
+            url = render_url(self.config.url, values)
+            headers = render_headers(self.config.headers, values)
             params = {
                 k: self._substitute_variables(v, context)
                 for k, v in self.config.query_params.items()
@@ -308,7 +313,9 @@ class GenericHTTPLookupTool(PreCallTool):
             method = str(self.config.method or "GET").strip().upper()
             body = None
             if method in BODY_CAPABLE_HTTP_METHODS and self.config.body_template:
-                body = self._substitute_variables(self.config.body_template, context)
+                if not any(key.lower() == "content-type" for key in headers):
+                    headers["Content-Type"] = "application/json"
+                body = render_body(self.config.body_template, values, headers)
 
             if debug_enabled(logger):
                 used_brace = extract_used_brace_vars(
@@ -523,6 +530,14 @@ class GenericHTTPLookupTool(PreCallTool):
                     
                     logger.info(f"HTTP lookup completed: {self.config.name} status={response.status} keys={list(results.keys())}")
         
+        except TemplateError as exc:
+            logger.warning("HTTP tool template rejected call_id=%s tool=%s phase=pre_call error_code=%s template_variable=%s",
+                           call_id, self.config.name, exc.code, exc.variable,
+                           extra={"call_id": call_id, "tool": self.config.name,
+                           "phase": "pre_call", **exc.diagnostics()})
+            self._record_result(call_id=call_id, status="error", started_at=started_at,
+                                started_monotonic=started, error_message=str(exc), output_variables=results,
+                                request_diagnostics={"delivery_status": "skipped", **exc.diagnostics()})
         except (asyncio.TimeoutError, aiohttp.ServerTimeoutError) as e:
             safe_error = self._sanitize_plain_text(f"{e.__class__.__name__}: {e}")
             logger.warning(f"HTTP lookup timed out: {self.config.name} error={safe_error}")
@@ -558,31 +573,19 @@ class GenericHTTPLookupTool(PreCallTool):
         - {call_id} - Call identifier
         - ${ENV_VAR} - Environment variable
         """
-        result = template
-        
-        # Context variables
-        replacements = {
-            "{caller_number}": context.caller_number or "",
-            "{called_number}": context.called_number or "",
-            "{caller_name}": context.caller_name or "",
-            "{context_name}": context.context_name or "",
-            "{call_id}": context.call_id or "",
-            "{campaign_id}": context.campaign_id or "",
-            "{lead_id}": context.lead_id or "",
+        return render_template(template, self._template_values(context))
+
+    @staticmethod
+    def _template_values(context: PreCallContext) -> Dict[str, str]:
+        return {
+            "caller_number": context.caller_number or "",
+            "called_number": context.called_number or "",
+            "caller_name": context.caller_name or "",
+            "context_name": context.context_name or "",
+            "call_id": context.call_id or "",
+            "campaign_id": context.campaign_id or "",
+            "lead_id": context.lead_id or "",
         }
-        
-        for placeholder, value in replacements.items():
-            result = result.replace(placeholder, value)
-        
-        # Environment variables: ${VAR_NAME}
-        env_pattern = r'\$\{([A-Z_][A-Z0-9_]*)\}'
-        def env_replacer(match):
-            var_name = match.group(1)
-            return os.environ.get(var_name, "")
-        
-        result = re.sub(env_pattern, env_replacer, result)
-        
-        return result
     
     def _extract_output_variables(self, data: Any) -> Dict[str, str]:
         """

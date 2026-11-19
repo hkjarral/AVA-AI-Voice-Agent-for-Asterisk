@@ -90,7 +90,7 @@ export function handleConfigWrite(response: { config?: { method?: string; url?: 
     if (
         path
         && (method === 'post' || method === 'put')
-        && (CONFIG_WRITE_PATHS.includes(path) || CONFIG_AUDIO_RESET_PATH.test(path))
+        && (CONFIG_WRITE_PATHS.includes(path) || path.startsWith('/api/pushover') || CONFIG_AUDIO_RESET_PATH.test(path))
     ) {
         invalidateConfigYaml();
     }

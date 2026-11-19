@@ -156,3 +156,114 @@ async def test_google_live_blocks_hangup_tool_during_pending_attended_transfer(m
     assert event["tool_call_id"] == "tc-1"
     assert event["name"] == "hangup_call"
     assert event["status"] == "failure"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_google_live_farewell_does_not_latch_across_turns():
+    """A greeting like 'thank you for calling' must not latch the farewell for the whole call."""
+    provider = GoogleLiveProvider(
+        config=GoogleProviderConfig(hangup_markers_enabled=True),
+        on_event=lambda e: None,
+    )
+    provider._call_id = "call-1"
+    provider._session_store = _DummySessionStore()
+    # Simulate the greeting latching the farewell in an earlier turn.
+    provider._assistant_farewell_intent = "thank you for calling"
+
+    # A new user turn begins (input transcription fragment).
+    await provider._handle_server_content(
+        {"serverContent": {"inputTranscription": {"text": "goodbye"}}}
+    )
+
+    # The greeting must not survive the turn boundary.
+    assert provider._assistant_farewell_intent is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_google_live_greeting_farewell_does_not_arm_cleanup_on_later_goodbye():
+    """A weak 'goodbye' after a greeting-latched farewell must not end a real call."""
+    provider = GoogleLiveProvider(
+        config=GoogleProviderConfig(hangup_markers_enabled=True),
+        on_event=lambda e: None,
+    )
+    provider._call_id = "call-1"
+    provider._session_store = _DummySessionStore()
+    # Greeting latched the farewell in an earlier turn.
+    provider._assistant_farewell_intent = "thank you for calling"
+
+    # New user turn: the caller says "goodbye" (a weak marker) and the assistant
+    # responds with a normal line, not a farewell.
+    await provider._handle_server_content(
+        {"serverContent": {"inputTranscription": {"text": "goodbye"}}}
+    )
+    await provider._maybe_arm_cleanup_after_tts(
+        user_text="goodbye", assistant_text="I can help you with that."
+    )
+
+    assert provider._session_store.session.cleanup_after_tts is False
+    assert provider._hangup_fallback_armed is False
+
+
+@pytest.mark.parametrize("text", ["byelaws", "goodbyes", "call setup", "maybe"])
+def test_google_marker_matching_rejects_embedded_words(text):
+    provider = GoogleLiveProvider(config=GoogleProviderConfig(hangup_markers_enabled=True), on_event=None)
+    provider._hangup_policy["markers"]["end_call"] = ["bye", "all set"]
+    assert provider._detect_user_end_intent(text) is None
+
+
+@pytest.mark.parametrize("text, expected", [("Bye!", "bye"), ("I'm all set.", "all set")])
+def test_google_marker_matching_accepts_whole_phrases(text, expected):
+    provider = GoogleLiveProvider(config=GoogleProviderConfig(hangup_markers_enabled=True), on_event=None)
+    provider._hangup_policy["markers"]["end_call"] = ["bye", "all set"]
+    assert provider._detect_user_end_intent(text) == expected
+
+
+@pytest.mark.asyncio
+async def test_google_fallback_uses_completed_turn_not_old_intent():
+    provider = GoogleLiveProvider(config=GoogleProviderConfig(hangup_markers_enabled=True), on_event=None)
+    provider._call_id = "call-1"
+    provider._session_store = _DummySessionStore()
+    provider._assistant_farewell_intent = "thank you for calling"
+    provider._user_end_intent = "hang up"
+    await provider._maybe_arm_cleanup_after_tts(user_text="I need an appointment", assistant_text="What day works?")
+    assert not provider._session_store.session.cleanup_after_tts
+
+
+@pytest.mark.asyncio
+async def test_google_fallback_does_not_arm_during_deferred_transfer():
+    provider = GoogleLiveProvider(config=GoogleProviderConfig(hangup_markers_enabled=True), on_event=None)
+    provider._call_id = "call-1"
+    provider._session_store = _DummySessionStore()
+    provider._session_store.session.pending_deferred_transfer = {"id": "transfer-1"}
+    await provider._maybe_arm_cleanup_after_tts(user_text="bye", assistant_text="Goodbye")
+    assert not provider._session_store.session.cleanup_after_tts
+    assert not provider._hangup_fallback_armed
+
+
+@pytest.mark.asyncio
+async def test_google_transfer_reset_cancels_watchdog_and_allows_later_farewell():
+    import asyncio
+    provider = GoogleLiveProvider(config=GoogleProviderConfig(hangup_markers_enabled=True), on_event=None)
+    provider._call_id = "call-1"
+    provider._session_store = _DummySessionStore()
+    provider._hangup_after_response = True
+    provider._hangup_fallback_emitted = True
+    provider._hangup_ready_emitted = True
+    provider._terminal_audio_cutoff_after_tool = True
+    old_watchdog = asyncio.create_task(asyncio.sleep(60))
+    provider._hangup_fallback_task = old_watchdog
+    provider.release_terminal_output_protection()
+    await asyncio.gather(old_watchdog, return_exceptions=True)
+    assert old_watchdog.cancelled()
+    assert not provider._hangup_after_response
+    assert not provider._terminal_audio_cutoff_after_tool
+    assert not provider._hangup_ready_emitted
+    await provider._maybe_arm_cleanup_after_tts(user_text="Goodbye", assistant_text="Goodbye!")
+    assert provider._session_store.session.cleanup_after_tts
+    assert provider._hangup_fallback_armed
+    assert not provider._hangup_fallback_emitted
+    watchdog = provider._hangup_fallback_task
+    provider.release_terminal_output_protection()
+    await asyncio.gather(watchdog, return_exceptions=True)

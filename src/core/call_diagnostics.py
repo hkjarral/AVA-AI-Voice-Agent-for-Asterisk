@@ -77,6 +77,8 @@ STREAMING_FIELDS = (
     "provider_grace_ms",
     "greeting_min_start_ms",
     "greeting_rtp_wait_ms",
+    "greeting_media_ready_delay_ms",
+    "greeting_media_ready_timeout_ms",
     "egress_swap_mode",
     "egress_force_mulaw",
     "pipeline_streaming_overlap",

@@ -17,7 +17,7 @@ authorize changing an earlier booking.
   `Calendars.ReadWrite` (calendar operations and invitations). MSAL adds
   `offline_access`, `openid`, and `profile`; do not pass reserved scopes to MSAL.
 - Personal Outlook.com, group/resource/shared mailbox workflows, automatic staff
-  attendees, recurring series changes, Teams links, reminders sent by AVA, and
+  attendees, recurring series changes, reminders sent by AVA, and
   delivery/acceptance tracking are outside this release. Calendar visibility and
   Verify do not establish every mailbox/license capability; use the acceptance
   test below before rollout.
@@ -39,6 +39,9 @@ authorize changing an earlier booking.
    off for existing installations; the suggestion start remains 09:00 until configured.
 4. Enable **Allow caller invitations** when desired. The default is disabled;
    appointment-only installations do not acquire attendees implicitly.
+   Enable **Create Microsoft Teams meetings** to request Teams for new bookings.
+   Teams mode also requires invitations and a caller-confirmed recipient. Verify
+   the selected calendar again after changing this setting. Teams defaults off.
 5. Edit business/location/contact details and subject/body templates. Preview
    uses synthetic Phoenix booking data and never sends an invitation.
 6. **Agents → Tools**: enable `microsoft_calendar` and choose the permitted
@@ -61,6 +64,15 @@ discovery excludes immutable-ID preferences; event reads, pagination and writes
 retain them. Missing, forbidden and explicitly read-only calendars still fail.
 Reconnect only when authorization actually expires or is revoked, rather than
 as an upgrade workaround.
+Reconnecting retains a previously saved calendar ID; it does not silently choose
+the default calendar. Verify it and explicitly select a different calendar if needed.
+
+Teams adds no OAuth scopes, dependencies or database migration. Existing events
+retain their original appointment/meeting type. Do not disable Teams on an event
+by PATCH: Microsoft does not support reverting an online event to offline.
+When upgrading an older deployment that always enforced working hours, explicitly
+set `enforce_booking_limits: true` and retain its saved days, hours, duration and
+horizon. An absent flag on newer versions does not preserve that older behavior.
 
 The configured `user_principal_name` must match the MSAL cached account username.
 New connections save that canonical username, even when Graph mail or the sign-in
@@ -104,15 +116,16 @@ opt-in settings, and staff must handle changes whose in-memory ownership was los
 1. Determine the desired appointment date, time, timezone, duration and purpose.
    Resolve “tomorrow” from the calendar-local clock in runtime guidance. Clarify
    ambiguous requests and read back an explicit date/time.
-2. Call **`check_availability`** using `start_datetime` and `end_datetime` for the
+2. Call **`microsoft_calendar` with `action=check_availability`**, using `start_datetime` and `end_datetime` for the
    exact requested interval. Offer alternatives only if it is busy or outside
    enforced working hours. Invalid/past times and times beyond an enabled horizon
    must be corrected first.
-3. If the caller wants an invitation and invitations are enabled, ask them to
-   spell each email, read it back and obtain agreement to create the meeting
+3. Resolve invitation delivery before creating anything: collect and confirm
+   each email, or obtain an explicit decline for an ordinary appointment. Ask them to
+   spell unclear parts, read back the address and obtain agreement to create the meeting
    and send invitations. Syntax validation does not verify mailbox ownership
    or deliverability. Confirm only relevant notes the caller agrees to share.
-4. Call `create_event`. The tool rechecks the chosen calendar immediately before
+4. Call `microsoft_calendar` with `action=create_event`. The tool rechecks the chosen calendar immediately before
    creation. Pass `booking_confirmed: true`; invitations also require
    `invitation_confirmed: true` and `attendee_emails`.
 5. Report the structured result. Never promise a booking before success. If
@@ -134,8 +147,8 @@ opt-in settings, and staff must handle changes whose in-memory ownership was los
 }
 ```
 
-If the caller declines invitations, omit attendees and use an appointment-only
-booking. `invitation_confirmed: true` without an email is rejected. Existing
+With Teams mode disabled, if the caller declines invitations, omit attendees and use an appointment-only
+booking. Teams mode requires a confirmed recipient. `invitation_confirmed: true` without an email is rejected. Existing
 appointment-only create calls without the new confirmation flags remain
 compatible while invitations are disabled; explicit `booking_confirmed: false`
 always blocks creation. New conversation guidance requires agreement for every
@@ -161,6 +174,16 @@ prefixes; legacy tool arguments cannot override them.
 `get_free_slots` returns grid-based suggestions, normally the first three. It
 includes `slots_returned`, `total_slots_available` and `slots_truncated`. Even a
 complete suggestion list does not represent every possible off-grid start.
+Slot starts round up to duration multiples from midnight, including nonzero
+seconds or microseconds at the start of a free interval. For 30-minute slots,
+an interval starting at 10:00:30 first permits 10:30, provided the full slot fits.
+Both availability modes use the shared timezone grid: nonexistent DST clock times
+are skipped, repeated times retain distinct offsets, and results are sorted by
+instant before truncation. The first slot can have an earlier clock time after a
+fall-back while still being a later instant. Returned slot ends use the requested
+elapsed duration across clock changes; pass the offset-bearing start/end pair unchanged.
+Range clipping, busy subtraction, aggregation and exact booking containment use
+instants as well, including ranges whose end clock time precedes their start.
 **Absence from suggestions is never proof that a requested interval is busy.**
 For example, 08:00/08:30/09:00 plus `slots_truncated: true` says nothing about
 13:00; check 13:00–13:30 explicitly. Queries are bounded to 93 days; split a wider
@@ -199,6 +222,56 @@ but never the invitation body, which may contain another caller's private notes.
 Rescheduling refreshes date/time placeholders in both the invitation subject
 and body while preserving the confirmed caller details and attendees.
 
+## Microsoft Teams meetings
+
+Verified against Microsoft Graph v1.0 documentation on October 18, 2026:
+[calendar-backed online meetings](https://learn.microsoft.com/en-us/graph/outlook-calendar-online-meetings),
+[event creation and permissions](https://learn.microsoft.com/en-us/graph/api/calendar-post-events?view=graph-rest-1.0),
+and [event updates](https://learn.microsoft.com/en-us/graph/api/event-update?view=graph-rest-1.0).
+AVA uses `isOnlineMeeting=true` and `onlineMeetingProvider=teamsForBusiness`
+on the existing selected-calendar event endpoint. It does not use the separate
+cloud communications API or request `OnlineMeetings.ReadWrite`/`Mail.Send`.
+
+The organizer needs a Microsoft 365 work/school Exchange mailbox with Teams
+meeting entitlement and tenant policies allowing scheduling. Verify checks the
+precisely configured calendar's `allowedOnlineMeetingProviders` for
+`teamsForBusiness`; it creates no event and does not prove actual provisioning
+or invitation delivery. Runtime repeats the capability check before a new write.
+Unsupported, missing, forbidden and read-only calendars fail without selecting
+another calendar or creating an ordinary appointment as a substitute.
+
+Availability still uses only the selected calendar. If Calendly writes into a
+different calendar, its events are not automatically conflicts. Verify the actual
+Calendly destination before changing AVA's selection. A separate conflict-calendar
+feature requires its own design; do not move or delete events to work around it.
+
+In Teams mode, operator template text is escaped into an AVA-owned HTML details
+container. Microsoft adds its meeting content. AVA retains the returned body and
+meeting metadata in call-local ownership state. Rescheduling compares them with
+a fresh HTML read, updates only the AVA details container, preserves every byte
+outside it, and sends the observed ETag with the PATCH. Attendees and meeting
+metadata are omitted from the PATCH. A known pending update tolerates equivalent
+HTML serialization (tag/attribute formatting, entities and limited font wrappers)
+while checking the expected details, time, subject, attendees and join metadata.
+The validated PATCH response, or one verifying HTML read, becomes the next exact
+body baseline; a lost response is reconciled without repeating the write.
+If Exchange removes the recognizable
+container, or external edits change the stored body/join details, staff must
+handle the booking rather than AVA rewriting unknown content.
+
+`teams_join_url` comes only from `onlineMeeting.joinUrl`. `outlook_web_link` and
+the legacy `link` field open Outlook; they are never Teams join links. A successful
+Teams result requires `meeting_status=ready` and a usable HTTPS join URL. If an
+event exists without a confirmed Teams link, the result is an error with
+`reservation_status=created` and `meeting_status=pending`. Retry identical
+arguments to read that event; do not POST another event or announce Teams readiness.
+
+After a lost creation response, retries can reconcile the event/link without a
+duplicate. If no trusted creation-body snapshot was received, the result includes
+`changes_require_staff=true`: later mutations are refused. A link that appears
+only after an unobserved provisioning/body change has the same restriction.
+No durable mutation ownership across process restarts is implemented.
+
 ## Same-call cancellation and rescheduling
 
 - Each current-call booking is tracked independently. Obtain explicit agreement to cancel
@@ -215,8 +288,9 @@ and body while preserving the confirmed caller details and attendees.
   updates the template's date/time wording. A busy new interval leaves the
   original event intact. Do not delete then create.
 - Rescheduling changes time only. Changing attendees, purpose, or other details
-  requires staff. If Outlook changed the invitation body or enabled an online
-  meeting, the tool refuses to overwrite it. Recurring bookings and meetings
+  requires caller-confirmed cancellation/replacement. If Outlook changed an
+  invitation body or enabled an online meeting outside AVA, mutation is refused.
+  Teams created by AVA use the protected body handling above. Recurring bookings and meetings
   this calendar does not organize also require staff.
 - Organizer meeting deletion causes Microsoft to generate cancellation notices.
   A repeated cancellation does not send another DELETE. A missing event is
@@ -225,9 +299,18 @@ and body while preserving the confirmed caller details and attendees.
   go to staff under the existing business policy. This does not authorize an
   immediate human transfer: qualification, business-hours and after-hours
   message/emergency rules remain unchanged.
-- A cancelled identical booking cannot be blindly recreated using its old
-  retry identity; staff can rebook it. A changed slot can be booked anew after
-  cancellation, with fresh caller agreement.
+- **Replace:** confirm cancellation and the replacement details/recipients, call
+  `microsoft_calendar` with `action=delete_event`, and require
+  `reservation_status=cancelled`. AVA verifies absence after deletion; uncertain
+  deletion or failed verification blocks creation. A scoped 404 is checked against
+  the owned immutable ID in the same mailbox: an event moved to another calendar
+  requires staff and is never mutated through that broader read. Recheck availability, then
+  use `action=create_event`, `replacement_confirmed=true` and
+  `booking_confirmed=true` with confirmed invitation arguments. Identical
+  replacements and A → B → A sequences receive fresh deterministic transaction
+  generations; identical retries retain their generation. Lost ownership requires staff.
+- If cancellation succeeds but replacement fails, report that the original is
+  cancelled and no replacement is confirmed. Do not repeat the earlier success.
 
 Cancellation and rescheduling send the freshly observed event ETag in `If-Match`.
 A missing, blank, non-string or wildcard version and a 412 precondition failure
@@ -247,6 +330,23 @@ If found, it reports reconciliation without another POST. This works after a
 process restart when the original call ID and arguments remain available.
 Later calls have different call IDs and do not gain mutation authority.
 
+If the transaction is not found, a creation this process still holds as
+unresolved is resent on the same `transactionId` with the body it first sent,
+attendees in their original order. Graph documents `transactionId` as a way to
+avoid redundant POSTs on client retries. In testing, an identical repeat
+returned the existing event rather than a duplicate, so a creation that landed
+but is not yet visible in calendarView should come back as that event. The
+resent event is read back by ID and reported only if it is still at the
+requested time: a moved event is `booking_changed`, and a missing or cancelled
+one stays `mutation_uncertain`. A resend cannot tell a new event from a repeat,
+so a Teams booking created this way has no trusted meeting-body baseline and
+changes to it require staff. The read-back and the Teams rule apply only
+in-process. After a restart the record is gone, so identical arguments are sent
+as an ordinary creation on the same `transactionId`, without a read-back. If
+that body differs from the first request only in attendee order or letter case,
+which keep the same `transactionId`, Graph has been observed to answer 400
+`ErrorDuplicateTransactionId`, and the outcome stays uncertain.
+
 Within a process, mutation workers share a lock through read/check/write/state
 tracking, including when an already-dispatched write's awaiting coroutine is
 cancelled. Lock acquisition waits at most ten seconds; a contended attempt
@@ -261,7 +361,10 @@ engine or external resource arbitration if exclusive booking is required.
 
 A transport timeout, 5xx response or malformed success result after a write is
 `mutation_uncertain`, with reservation/invitation/delivery state unknown. Retry
-identical arguments to reconcile. If creation is still not visible, ask staff;
+identical arguments to reconcile; a creation that is still not visible is
+resent as above. Any Graph error on that resend, a slot that now looks busy, and a
+Graph 400 `ErrorDuplicateTransactionId` on any create keep the outcome
+uncertain, because an earlier attempt may have landed. If uncertainty remains, ask staff;
 do not change arguments and create another reservation. PATCH retries inspect
 the current start/end to reconcile an applied update; an unobserved pending
 update requires staff rather than blindly sending another notification. Pending changes block a
@@ -278,11 +381,15 @@ a different cached user when the configured identity cannot be found.
 
 | Result field | Meaning |
 | --- | --- |
-| `reservation_status` | `created`, `rescheduled`, `cancelled`, or `unknown` |
+| `reservation_status` | `created`, `rescheduled`, `cancelled`, `not_created` after a rejected replacement, or `unknown` |
 | `invitation_status` | `request_accepted`, `cancellation_request_accepted`, `not_requested`, or `unknown` |
 | `delivery_status` | `unknown` for requested messages; `not_applicable` without invitees |
 | `attendee_acceptance_status` | `unknown` for invitees; `not_applicable` without invitees |
 | `reconciled` | Success was recovered/read back instead of repeating the write |
+| `teams_join_url` | Microsoft's actual Teams join URL, distinct from Outlook |
+| `outlook_web_link`, `link` | Outlook event link; `link` remains backward compatible |
+| `meeting_status` | `appointment`, `pending`, or `ready` |
+| `changes_require_staff` | A trusted Teams creation-body baseline is unavailable |
 
 These fields and exact availability survive provider result sanitization.
 Attendee response tracking and delivery receipts are not implemented.
@@ -294,6 +401,7 @@ tools:
   microsoft_calendar:
     enabled: true
     invitations_enabled: false  # operator opts in after test-mailbox approval
+    teams_enabled: false       # opt in with invitations and a Teams-capable calendar
     free_prefix: ""
     busy_prefix: Busy
     min_slot_duration_minutes: 30
@@ -334,6 +442,11 @@ inventing a call ID/test revision. This is not blanket tenant qualification or
 authorization to change a production calendar; the per-installation rollout
 requirements below remain applicable.
 
+That historical evidence predates Teams support. The Teams change has automated
+coverage; real Teams provisioning, body/container round trips, link usability,
+mailbox delivery and a complete voice-call acceptance require a newly authorized
+test. See [the Teams verification record](Microsoft-teams-verification.md).
+
 Automated tests use only synthetic fixtures/mocked Graph HTTP. Before production:
 
 1. Obtain separate explicit approval identifying a **test organizer mailbox,
@@ -362,6 +475,14 @@ Automated tests use only synthetic fixtures/mocked Graph HTTP. Before production
    rewrite an ID to mask a verification failure.
 8. Record test evidence before approving rollout. Do not edit existing production
    appointments. No live invitation is authorized merely by this plan.
+9. With Teams enabled on a capable calendar, verify the actual join URL opens,
+   the authorized mailbox receives Microsoft's invitation, and rescheduling
+   preserves the join link, Microsoft content and attendees while refreshing
+   AVA's displayed time. Verify a known Calendly conflict in the selected calendar.
+10. Confirm cancellation/replacement, including identical details and A → B → A,
+    leaves exactly the intended meeting. Clean up only tracked test events and
+    verify no duplicates/orphans remain. Confirm ordinary appointments still work
+    with Teams disabled, and complete a real call through hangup and post-call tools.
 
 After merge approval, deploy the reviewed engine/backend/frontend together,
 restart outside active calls, verify health and use the approved test plan.

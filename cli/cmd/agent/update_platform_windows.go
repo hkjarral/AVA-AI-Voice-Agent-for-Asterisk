@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 
@@ -20,6 +21,32 @@ func unlockUpdateFile(f *os.File) {
 	ol := new(windows.Overlapped)
 	_ = windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, ol)
 }
+
+// Windows lacks O_NOFOLLOW. Validate the opened object's identity before any
+// read, and reject reparse/symlink entries rather than reading their targets.
+func openPendingDockerJournal(path string) (*os.File, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !before.Mode().IsRegular() {
+		return nil, errors.New("pending Docker journal must be a regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	after, err := file.Stat()
+	if err != nil || !after.Mode().IsRegular() || !os.SameFile(before, after) {
+		file.Close()
+		return nil, errors.New("pending Docker journal changed while opening")
+	}
+	return file, nil
+}
+
+// Directory fsync is supported on Unix updater hosts. Windows retains the
+// flushed-file/rename behavior; Go's directory handles cannot be flushed there.
+func syncUpdateDirectory(path string) error { return nil }
 
 // execReplace approximates Unix exec semantics on Windows, which has no
 // execve equivalent: run the updated binary as a child and exit with its

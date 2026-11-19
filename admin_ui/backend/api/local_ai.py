@@ -17,9 +17,10 @@ import asyncio
 import websockets
 import shutil
 import time
-from services.fs import upsert_env_vars
+from services.fs import upsert_env_vars, remove_env_vars
 
 router = APIRouter()
+_model_switch_lock = asyncio.Lock()
 
 DISK_WARNING_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
 DISK_BUILD_BLOCK_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB (hard stop for image builds)
@@ -161,6 +162,8 @@ class SwitchModelRequest(BaseModel):
     sherpa_model_path: Optional[str] = None
     sherpa_model_type: Optional[str] = None  # online (streaming) | offline (VAD-gated)
     sherpa_vad_model_path: Optional[str] = None  # Required when sherpa_model_type=offline
+    sherpa_sense_voice_language: Optional[str] = None  # auto | zh | en | ja | ko | yue (SenseVoice only)
+    sherpa_sense_voice_use_itn: Optional[bool] = None  # punctuation/inverse text normalization (SenseVoice only)
     # Whisper.cpp explicit path (optional; preferred over model_path)
     whisper_cpp_model_path: Optional[str] = None
     # Kokoro mode/model controls (optional)
@@ -217,8 +220,54 @@ def _infer_kroko_embedded(backend: str, model_path: Optional[str], kroko_url: Op
     return explicit
 
 
+# Mirrors local_ai_server/constants.py SENSE_VOICE_LANGUAGES (kept in sync by tests).
+SENSE_VOICE_LANGUAGES = ("auto", "zh", "en", "ja", "ko", "yue")
+
+
+def _rollback_env_snapshot(previous_env: Dict[str, str], env_updates: Dict[str, str]) -> Dict[str, Optional[str]]:
+    """Preserve both values and absence for every environment key a switch writes."""
+    snapshot: Dict[str, Optional[str]] = dict(previous_env)
+    for key in env_updates:
+        snapshot.setdefault(key, None)
+    return snapshot
+
+
+def _restore_env_file(env_file: str, snapshot: Dict[str, Optional[str]]) -> None:
+    """Restore values and remove overrides introduced by a failed switch."""
+    remove_env_vars(env_file, [key for key, value in snapshot.items() if value is None])
+    _update_env_file(env_file, {key: value for key, value in snapshot.items() if value is not None})
+
+
+def _catalog_sherpa_model_type(model_path: Optional[str]) -> Optional[str]:
+    """Return the catalog ``model_type`` for a Sherpa model directory, if it is a catalog entry."""
+    if not model_path:
+        return None
+    try:
+        from api.models_catalog import SHERPA_STT_MODELS
+    except Exception:
+        return None
+    name = os.path.basename(os.path.normpath(str(model_path)))
+    for entry in SHERPA_STT_MODELS:
+        if entry.get("model_path") == name and entry.get("model_type"):
+            return str(entry["model_type"])
+    return None
+
+
 def _normalize_switch_request(request: SwitchModelRequest) -> SwitchModelRequest:
     backend = (request.backend or "").strip().lower()
+    updater = getattr(request, "model_copy", None) or getattr(request, "copy", None)
+    if request.model_type == "stt" and backend == "sherpa" and updater:
+        update: Dict[str, Any] = {}
+        if not request.sherpa_model_type:
+            # An explicit operator selection always wins; otherwise use the catalog's mode so
+            # applying an offline model (e.g. SenseVoice) from an online setup switches modes.
+            inferred_type = _catalog_sherpa_model_type(request.sherpa_model_path or request.model_path)
+            if inferred_type:
+                update["sherpa_model_type"] = inferred_type
+        if request.sherpa_sense_voice_language is not None:
+            update["sherpa_sense_voice_language"] = request.sherpa_sense_voice_language.strip().lower()
+        if update:
+            request = updater(update=update)
     if request.model_type == "stt" and backend == "kroko":
         inferred = _infer_kroko_embedded(
             backend=backend,
@@ -231,6 +280,32 @@ def _normalize_switch_request(request: SwitchModelRequest) -> SwitchModelRequest
             if updater:
                 return updater(update={"kroko_embedded": bool(inferred)})
     return request
+
+
+def _sherpa_status_matches(request: SwitchModelRequest, stt: Dict[str, Any]) -> bool:
+    """Verify a Sherpa switch against local-ai-server status, including SenseVoice settings.
+
+    Language/ITN are checked even when the model path is unchanged. They are only
+    enforced when the loaded model reports itself as SenseVoice, since transducers
+    ignore them.
+    """
+    expected_path = request.sherpa_model_path or request.model_path
+    if expected_path and stt.get("path") != expected_path:
+        return False
+    if request.sherpa_model_type and stt.get("sherpa_model_type") not in (None, request.sherpa_model_type):
+        return False
+    if stt.get("sherpa_model_family") == "sense_voice":
+        if (
+            request.sherpa_sense_voice_language
+            and stt.get("sherpa_sense_voice_language") != request.sherpa_sense_voice_language
+        ):
+            return False
+        if (
+            request.sherpa_sense_voice_use_itn is not None
+            and stt.get("sherpa_sense_voice_use_itn") is not bool(request.sherpa_sense_voice_use_itn)
+        ):
+            return False
+    return True
 
 
 def _build_local_ai_env_and_yaml_updates(request: SwitchModelRequest) -> tuple[Dict[str, str], Dict[str, Any]]:
@@ -290,6 +365,12 @@ def _build_local_ai_env_and_yaml_updates(request: SwitchModelRequest) -> tuple[D
                 if request.sherpa_vad_model_path:
                     env_updates["SHERPA_VAD_MODEL_PATH"] = request.sherpa_vad_model_path
                     yaml_updates["sherpa_vad_model_path"] = request.sherpa_vad_model_path
+                if request.sherpa_sense_voice_language:
+                    env_updates["SHERPA_SENSE_VOICE_LANGUAGE"] = request.sherpa_sense_voice_language
+                    yaml_updates["sherpa_sense_voice_language"] = request.sherpa_sense_voice_language
+                if request.sherpa_sense_voice_use_itn is not None:
+                    env_updates["SHERPA_SENSE_VOICE_USE_ITN"] = "true" if request.sherpa_sense_voice_use_itn else "false"
+                    yaml_updates["sherpa_sense_voice_use_itn"] = bool(request.sherpa_sense_voice_use_itn)
             elif request.backend == "whisper_cpp":
                 whisper_path = request.whisper_cpp_model_path or request.model_path
                 if whisper_path:
@@ -426,6 +507,10 @@ def _build_local_ai_ws_switch_payload(request: SwitchModelRequest) -> Optional[D
                 payload["sherpa_model_type"] = request.sherpa_model_type
             if request.sherpa_vad_model_path:
                 payload["sherpa_vad_model_path"] = request.sherpa_vad_model_path
+            if request.sherpa_sense_voice_language:
+                payload["sherpa_sense_voice_language"] = request.sherpa_sense_voice_language
+            if request.sherpa_sense_voice_use_itn is not None:
+                payload["sherpa_sense_voice_use_itn"] = bool(request.sherpa_sense_voice_use_itn)
         if request.backend == "whisper_cpp":
             whisper_path = request.whisper_cpp_model_path or request.model_path
             if whisper_path:
@@ -785,7 +870,7 @@ async def get_backend_capabilities():
     ws_url = get_setting("HEALTH_CHECK_LOCAL_AI_URL", "ws://127.0.0.1:8765")
     
     try:
-        async with websockets.connect(ws_url, open_timeout=5) as ws:
+        async with websockets.connect(ws_url, open_timeout=5, proxy=None) as ws:
             auth_token = (get_setting("LOCAL_WS_AUTH_TOKEN", os.getenv("LOCAL_WS_AUTH_TOKEN", "")) or "").strip()
             if auth_token:
                 await ws.send(json.dumps({"type": "auth", "auth_token": auth_token}))
@@ -881,7 +966,7 @@ async def get_local_ai_status():
     ws_url = get_setting("HEALTH_CHECK_LOCAL_AI_URL", "ws://127.0.0.1:8765")
     
     try:
-        async with websockets.connect(ws_url, open_timeout=5) as ws:
+        async with websockets.connect(ws_url, open_timeout=5, proxy=None) as ws:
             auth_token = (get_setting("LOCAL_WS_AUTH_TOKEN", os.getenv("LOCAL_WS_AUTH_TOKEN", "")) or "").strip()
             if auth_token:
                 await ws.send(json.dumps({"type": "auth", "auth_token": auth_token}))
@@ -909,6 +994,14 @@ async def get_local_ai_status():
 
 @router.post("/switch", response_model=SwitchModelResponse)
 async def switch_model(request: SwitchModelRequest):
+    """Apply one verified switch, rejecting overlap across snapshot through rollback."""
+    if _model_switch_lock.locked():
+        raise HTTPException(status_code=409, detail="A Local AI model switch is already in progress. Retry after it completes.")
+    async with _model_switch_lock:
+        return await _switch_model(request)
+
+
+async def _switch_model(request: SwitchModelRequest):
     """
     Switch the active model on local-ai-server with rollback support.
     
@@ -953,6 +1046,15 @@ async def switch_model(request: SwitchModelRequest):
             )
 
     request = _normalize_switch_request(request)
+    if request.sherpa_sense_voice_language and request.sherpa_sense_voice_language not in SENSE_VOICE_LANGUAGES:
+        return SwitchModelResponse(
+            success=False,
+            message=(
+                f"Unsupported SenseVoice language '{request.sherpa_sense_voice_language}'. "
+                f"Use one of: {', '.join(SENSE_VOICE_LANGUAGES)}."
+            ),
+            requires_restart=False,
+        )
     env_file = os.path.join(PROJECT_ROOT, ".env")
     env_updates: Dict[str, str] = {}
     yaml_updates: Dict[str, Any] = {}  # Track YAML updates for sync
@@ -962,7 +1064,7 @@ async def switch_model(request: SwitchModelRequest):
         """Try to hot-switch via local-ai-server websocket. Returns response dict on success, None on failure."""
         ws_url = get_setting("HEALTH_CHECK_LOCAL_AI_URL", "ws://127.0.0.1:8765")
         try:
-            async with websockets.connect(ws_url, open_timeout=5) as ws:
+            async with websockets.connect(ws_url, open_timeout=5, proxy=None) as ws:
                 auth_token = (get_setting("LOCAL_WS_AUTH_TOKEN", os.getenv("LOCAL_WS_AUTH_TOKEN", "")) or "").strip()
                 if auth_token:
                     await ws.send(json.dumps({"type": "auth", "auth_token": auth_token}))
@@ -980,7 +1082,7 @@ async def switch_model(request: SwitchModelRequest):
 
     async def _fetch_status() -> Optional[Dict[str, Any]]:
         ws_url = get_setting("HEALTH_CHECK_LOCAL_AI_URL", "ws://127.0.0.1:8765")
-        async with websockets.connect(ws_url, open_timeout=5) as ws:
+        async with websockets.connect(ws_url, open_timeout=5, proxy=None) as ws:
             auth_token = (get_setting("LOCAL_WS_AUTH_TOKEN", os.getenv("LOCAL_WS_AUTH_TOKEN", "")) or "").strip()
             if auth_token:
                 await ws.send(json.dumps({"type": "auth", "auth_token": auth_token}))
@@ -1030,8 +1132,7 @@ async def switch_model(request: SwitchModelRequest):
             if request.backend == "vosk" and request.model_path:
                 return stt.get("path") == request.model_path
             if request.backend == "sherpa":
-                expected = request.sherpa_model_path or request.model_path
-                return (not expected) or stt.get("path") == expected
+                return _sherpa_status_matches(request, stt)
             if request.backend == "faster_whisper":
                 # Device/compute_type are intentionally NOT strict-checked here:
                 # local_ai_server applies a CUDA→CPU fallback at model-load time
@@ -1143,6 +1244,7 @@ async def switch_model(request: SwitchModelRequest):
         "MELOTTS_VOICE", "MELOTTS_DEVICE", "FASTER_WHISPER_MODEL", "FASTER_WHISPER_DEVICE",
         "TONE_MODEL_PATH", "TONE_DECODER_TYPE", "TONE_KENLM_PATH",
         "SHERPA_MODEL_TYPE", "SHERPA_VAD_MODEL_PATH",
+        "SHERPA_SENSE_VOICE_LANGUAGE", "SHERPA_SENSE_VOICE_USE_ITN",
         "FASTER_WHISPER_COMPUTE_TYPE", "FASTER_WHISPER_LANGUAGE", "WHISPER_CPP_LANGUAGE",
         "LOCAL_LLM_MODEL_PATH", "LOCAL_LLM_CONTEXT", "LOCAL_LLM_MAX_TOKENS",
         "LOCAL_ENABLE_FILLER_AUDIO", "LOCAL_LLM_STREAMING_TTS_OVERLAP", "GPU_AVAILABLE"
@@ -1193,6 +1295,7 @@ async def switch_model(request: SwitchModelRequest):
             )
     
     env_updates, yaml_updates = _build_local_ai_env_and_yaml_updates(request)
+    previous_env = _rollback_env_snapshot(previous_env, env_updates)
 
     if request.model_type in ("stt", "tts") and request.backend:
         # Prefer hot switching via WS; fallback to recreate if needed.
@@ -1275,7 +1378,7 @@ async def switch_model(request: SwitchModelRequest):
                     )
                 # Rollback on verification failure (enforce by recreate)
                 try:
-                    _update_env_file(env_file, previous_env)
+                    _restore_env_file(env_file, previous_env)
                 except Exception:
                     pass
                 try:
@@ -1326,7 +1429,7 @@ async def switch_model(request: SwitchModelRequest):
         except Exception as e:
             # Attempt rollback on any error (env + YAML)
             try:
-                _update_env_file(env_file, previous_env)
+                _restore_env_file(env_file, previous_env)
             except Exception:
                 pass
             if previous_yaml:
@@ -1357,7 +1460,7 @@ async def switch_model(request: SwitchModelRequest):
 
     # Rollback env + YAML, and enforce rollback by recreating container.
     try:
-        _update_env_file(env_file, previous_env)
+        _restore_env_file(env_file, previous_env)
     except Exception:
         pass
     if previous_yaml:
@@ -1707,43 +1810,42 @@ async def rebuild_local_ai_server(request: RebuildRequest):
         )
 
 
-@router.get("/backends")
-async def list_backends():
-    """Get available backends from local-ai-server registry."""
-    ws_url = get_setting("LOCAL_AI_WS_URL", "ws://127.0.0.1:8765")
-    auth_token = get_setting("LOCAL_WS_AUTH_TOKEN", "")
+async def _query_backend_registry(message: Dict[str, Any]) -> Dict[str, Any]:
+    """Query the same authenticated Local AI server used by status/capabilities."""
+    from settings import get_setting
+
+    ws_url = get_setting("HEALTH_CHECK_LOCAL_AI_URL", "ws://127.0.0.1:8765")
+    auth_token = (get_setting("LOCAL_WS_AUTH_TOKEN", "") or "").strip()
     try:
-        async with websockets.connect(ws_url, close_timeout=5) as ws:
+        async with websockets.connect(ws_url, open_timeout=5, close_timeout=5, proxy=None) as ws:
             if auth_token:
-                await ws.send(json.dumps({"type": "auth", "token": auth_token}))
-                await ws.recv()
-            await ws.send(json.dumps({"type": "backends"}))
-            response = json.loads(await ws.recv())
+                await ws.send(json.dumps({"type": "auth", "auth_token": auth_token}))
+                auth = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+                if auth.get("type") != "auth_response" or auth.get("status") != "ok":
+                    raise RuntimeError("Local AI authentication failed")
+            await ws.send(json.dumps(message))
+            response = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+            if response.get("type") == "auth_response":
+                raise RuntimeError("Local AI authentication required")
             return response
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Failed to connect to local-ai-server: {e}")
+
+
+@router.get("/backends")
+async def list_backends():
+    """Get available backends from local-ai-server registry."""
+    return await _query_backend_registry({"type": "backends"})
 
 
 @router.get("/backends/{backend_type}/{backend_name}/schema")
 async def get_backend_schema(backend_type: str, backend_name: str):
     """Get config schema for a specific backend."""
-    ws_url = get_setting("LOCAL_AI_WS_URL", "ws://127.0.0.1:8765")
-    auth_token = get_setting("LOCAL_WS_AUTH_TOKEN", "")
-    try:
-        async with websockets.connect(ws_url, close_timeout=5) as ws:
-            if auth_token:
-                await ws.send(json.dumps({"type": "auth", "token": auth_token}))
-                await ws.recv()
-            await ws.send(json.dumps({
-                "type": "backend_schema",
-                "backend_type": backend_type,
-                "backend_name": backend_name,
-            }))
-            response = json.loads(await ws.recv())
-            if "error" in response:
-                raise HTTPException(status_code=404, detail=response["error"])
-            return response
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Failed to connect to local-ai-server: {e}")
+    response = await _query_backend_registry({
+        "type": "backend_schema",
+        "backend_type": backend_type,
+        "backend_name": backend_name,
+    })
+    if "error" in response:
+        raise HTTPException(status_code=404, detail=response["error"])
+    return response

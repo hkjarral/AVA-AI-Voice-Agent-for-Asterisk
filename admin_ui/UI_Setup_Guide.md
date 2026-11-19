@@ -1,7 +1,8 @@
 # Admin UI Setup Guide
 
-**Version**: 1.0.0 (Introduced in Release 4.4.1; applies to v4.6.0+)  
-**Release Date**: November 30, 2025  
+**Applies to**: v7.7.3 (Admin UI introduced in v4.4.1)
+
+**Last reviewed**: November 2026
 **Quick Start**: 5 minutes to get running
 
 ---
@@ -12,12 +13,24 @@ The Admin UI provides a modern web interface for managing your Asterisk AI Voice
 
 ### What You Get
 - 🧙 **Setup Wizard** - Quick first-time configuration
-- ⚙️ **Configuration Management** - Visual editors for providers, pipelines, contexts
+- ⚙️ **Configuration Management** - Visual editors for providers, pipelines and Agents
 - 📊 **System Dashboard** - Monitor CPU, memory, and container status
 - 🔍 **Live Logs** - Stream logs from ai_engine in real-time
 - 📝 **YAML Editor** - Direct config editing with syntax validation
 
 ---
+
+## Current Agents and Tools workspace
+
+Use **Agents** for the focused per-Agent editor, tools/access policy and optional
+appearance. Avatar choices never change the provider voice. Use
+**Tools** for the shared inventory and searchable dedicated editors; **Save &
+Apply** persists the page draft, while credential connection operations retain
+their immediate behavior. Tool hot reload affects new calls; process changes
+still need an explicit restart.
+See the [Admin UI guide](../docs/ADMIN_UI_GUIDE.md),
+[Tools guide](Tools_Setup_Guide.md), [Agents rollout](../docs/AGENTS_EXPERIENCE_ROLLOUT.md)
+and [upgrade instructions](../docs/INSTALLATION.md#upgrade-to-v773-existing-checkout).
 
 ## 🚀 Quick Start (Docker)
 
@@ -25,22 +38,20 @@ The Admin UI provides a modern web interface for managing your Asterisk AI Voice
 
 ### 1. Start the Admin UI
 
-```bash
-# From your project root (runs in background)
-docker compose up -d --build admin_ui
+From a v7.7.3 checkout:
 
-# View logs if needed
-docker compose logs -f admin_ui
+```bash
+# From the project root; review preflight findings before proceeding.
+sudo ./preflight.sh --apply-fixes
+./install.sh --ui
 ```
 
-That's it! The container will:
-- ✅ Build the frontend automatically
-- ✅ Set up the backend
-- ✅ Create a default admin user
-- ✅ Mount your config files
-
-> **Note**: Run `./preflight.sh --apply-fixes` first (recommended) to create `.env` and generate a secure `JWT_SECRET`.
-> The Admin UI reads/writes `config/ai-agent.yaml` and `.env`.
+This prepares the management environment and builds/starts Admin UI. It does not
+start the AI Engine or Local AI. Complete the Setup Wizard, then start the engine
+and only the Local AI components you selected. Read the
+[build checks and recovery guide](../docs/BUILD_TROUBLESHOOTING.md) if preflight or
+a build fails. v7.7.1 and older checkouts require the
+[legacy recovery commands](../docs/CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
 
 For first-call onboarding (dialplan + transport selection + verification), see:
 - [Installation Guide](../docs/INSTALLATION.md)
@@ -56,7 +67,7 @@ http://localhost:3003
 **Login Credentials**:
 - Username: `admin`
 - Password: the one-time password printed to the admin_ui logs on first start
-  (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`) —
+  (`docker logs admin_ui | grep -i password`) —
   `admin`/`admin` no longer works.
 
 ⚠️ **Important**: You'll be required to set a new password at first login.
@@ -65,18 +76,23 @@ http://localhost:3003
 
 If this is a new installation, you'll see the Setup Wizard:
 
-1. **Choose Provider** - Select from 5 options:
-   - **Google Gemini Live** - Real-time bidirectional streaming (recommended)
-   - **OpenAI Realtime** - Low-latency voice interactions
-   - **Deepgram Voice Agent** - Enterprise-grade with 'Think' stage
-   - **Local Hybrid** - Privacy-focused (audio local, LLM in cloud)
-   - **Local (Full)** - 100% on-premises, no API keys required
-2. **Enter API Keys** - Keys will be validated before proceeding (not required for Local Full)
-3. **Configure Asterisk** - Enter your Asterisk ARI connection details
-4. **Set AI Personality** - Choose greeting and assistant name
-5. **Complete** - Configuration is saved to `config/ai-agent.yaml` and `.env`
+1. **Choose Provider** — Google Live, OpenAI Realtime, Deepgram, ElevenLabs Agent, Grok, Local Hybrid or Fully Local.
+2. **Credentials and models** — validate the selected cloud keys or prepare local models.
+3. **Asterisk and topology** — enter ARI settings and choose same-host or remote PBX. A remote PBX needs the reachable AVA media address as well as its ARI address.
+4. **Save configuration** — `.env` stores credentials, `config/ai-agent.local.yaml` stores overrides, and a fresh install creates Receptionist/Sales/Support in `agents.db`. Existing Agents are preserved.
+5. **First call** — start/apply the engine, check readiness, install the generated dialplan, attach a PBX test route, and verify greeting, two-way audio, hangup and Call History.
 
-If you already have a working configuration, the wizard will be skipped automatically.
+Follow [First successful call](../docs/FIRST_CALL.md) for the exact FreePBX and plain-Asterisk steps.
+The generated snippet uses the actual active Agent and saved Stasis name, without
+forcing a different provider/pipeline. `default` is not a special Agent slug.
+
+Preflight creating `.env` no longer skips fresh onboarding. Existing Agents and
+legacy migrations are recognized, and **Skip Setup** explicitly selects manual
+configuration. Saved incomplete setup resumes at the first-call step; unsaved
+connection, provider and model selections survive a refresh within the same tab.
+Unsaved greeting, AI name, AI role and Kokoro voice are not retained; keys/passwords
+must be reentered. “Configuration saved” and “First call verified” are separate states.
+The guided first-call flow introduced in v7.7.2 is available in v7.7.3.
 
 ---
 
@@ -86,8 +102,9 @@ If you already have a working configuration, the wizard will be skipped automati
 
 ### Prerequisites
 
-- Node.js 18+ and npm
-- Python 3.10+
+- Node.js 22 (22.12.0 or newer within 22.x) and npm
+  (the commands below use nvm; skip `nvm install` / `nvm use` if this version is already installed)
+- Python 3.11+ (required by the Admin WebSockets dependency)
 - Git
 
 ### Installation Steps
@@ -96,7 +113,9 @@ If you already have a working configuration, the wizard will be skipped automati
 
 ```bash
 cd admin_ui/frontend
-npm install
+nvm install
+nvm use
+npm ci
 npm run build
 ```
 
@@ -194,9 +213,15 @@ Open your browser to:
 http://localhost:3003
 ```
 
-Log in with the one-time password printed to the admin_ui logs on first start
-(`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`); you'll be
-required to set a new password at first login. `admin`/`admin` no longer works.
+For this non-Docker installation, retrieve the one-time password from the
+terminal running the backend, or from `admin_ui.log` if you used the `nohup`
+command above. For systemd, use:
+
+```bash
+sudo journalctl -u admin-ui --no-pager | grep -i password
+```
+
+Set a new password at first login. `admin`/`admin` no longer works.
 
 ---
 
@@ -205,10 +230,14 @@ required to set a new password at first login. `admin`/`admin` no longer works.
 ### Default Credentials
 
 **Username**: `admin`  
-**Password**: a one-time password generated on first run (printed to the admin_ui logs):
+**Password**: a one-time password generated on first run. For Docker, this command
+works in a new shell with either Compose installation mode:
 ```
-docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password
+docker logs admin_ui | grep -i password
 ```
+
+For a non-Docker installation, use the process log or systemd journal described
+above.
 
 The `admin` account is created automatically on first run with this one-time
 password — `admin`/`admin` no longer works. The user data is stored in:
@@ -259,7 +288,7 @@ kill $(cat admin_ui.pid) && nohup python main.py > admin_ui.log 2>&1 &
 **If you forget your password**:
 ```bash
 # Delete the users file. On next start a new one-time password is generated and
-# printed to the admin_ui logs (retrieve with: docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password).
+# printed to Docker logs, or the process/systemd logs for a non-Docker installation.
 rm config/users.json
 
 # Restart admin-ui
@@ -367,16 +396,16 @@ If you've been using `install.sh` and the Agent CLI, the Admin UI works alongsid
 
 1. **Follow the supported upgrade and backup procedure**:
 
-   Read the [Installation and Upgrade Guide](../docs/INSTALLATION.md#upgrade-to-v740-existing-checkout),
+   Read the [Installation and Upgrade Guide](../docs/INSTALLATION.md#upgrade-to-v773-existing-checkout),
    especially when upgrading from v7.3.0–v7.3.3 or when the updater reports
-   `Failed to compute update plan`. At minimum, preserve:
-
-   ```bash
-   cp config/ai-agent.yaml ../ai-agent.yaml.backup
-   cp .env ../aava.env.backup
-   cp data/operator/agents.db ../agents.db.backup 2>/dev/null || true
-   cp data/call_history.db ../call_history.db.backup 2>/dev/null || true
-   ```
+   `Failed to compute update plan`. Preserve configuration and local overlays,
+   `.env`, managed secrets and the actual configured Agent/Call History databases
+   in a private backup directory. Use the
+   [verified SQLite snapshot procedure](../docs/CLI_TOOLS_GUIDE.md#manual-builds-on-affected-composebuildx-versions)
+   for each configured database path; copying a live `.db` file can omit committed
+   WAL data. Stop if a required backup or integrity check fails. Also preserve any
+   integration journal/privacy marker and pending erasure state according to the
+   [integration backup guide](../docs/INTEGRATION_BACKUPS.md).
 
 2. **Start the Admin UI**:
    ```bash
@@ -528,7 +557,19 @@ docker logs admin_ui
 
 **Rebuild if needed**:
 ```bash
-docker compose up -d --build admin_ui
+# Select the same Compose executable for this recovery (Bash).
+if [ -n "${AAVA_COMPOSE_BIN:-}" ]; then
+  export AAVA_COMPOSE_BIN
+  AAVA_COMPOSE=("$AAVA_COMPOSE_BIN")
+elif docker compose version >/dev/null 2>&1; then
+  export AAVA_COMPOSE_BIN=""
+  AAVA_COMPOSE=(docker compose)
+else
+  export AAVA_COMPOSE_BIN=docker-compose
+  AAVA_COMPOSE=(docker-compose)
+fi
+COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
 ```
 
 ### Login Not Working
@@ -590,10 +631,21 @@ docker compose logs admin_ui
 - Build failed: Check Node.js/npm versions
 - Python errors: Check `requirements.txt` dependencies
 
-**Force rebuild**:
+**Force rebuild** (for an older helper, use the linked legacy no-cache recipe):
 ```bash
-docker compose down
-docker compose up -d --build admin_ui
+# Select the same Compose executable for this recovery (Bash).
+if [ -n "${AAVA_COMPOSE_BIN:-}" ]; then
+  export AAVA_COMPOSE_BIN
+  AAVA_COMPOSE=("$AAVA_COMPOSE_BIN")
+elif docker compose version >/dev/null 2>&1; then
+  export AAVA_COMPOSE_BIN=""
+  AAVA_COMPOSE=(docker compose)
+else
+  export AAVA_COMPOSE_BIN=docker-compose
+  AAVA_COMPOSE=(docker-compose)
+fi
+COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh --no-cache admin_ui &&
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never --force-recreate admin_ui
 ```
 
 ### Page Not Loading
@@ -729,7 +781,9 @@ git pull origin main
 
 # Rebuild frontend
 cd admin_ui/frontend
-npm install
+nvm install
+nvm use
+npm ci
 npm run build
 cp -r dist/* ../backend/static/
 
@@ -795,20 +849,33 @@ Coming in future releases:
 ### Essential Commands
 
 ```bash
+# Select the same Compose executable for this recovery (Bash).
+if [ -n "${AAVA_COMPOSE_BIN:-}" ]; then
+  export AAVA_COMPOSE_BIN
+  AAVA_COMPOSE=("$AAVA_COMPOSE_BIN")
+elif docker compose version >/dev/null 2>&1; then
+  export AAVA_COMPOSE_BIN=""
+  AAVA_COMPOSE=(docker compose)
+else
+  export AAVA_COMPOSE_BIN=docker-compose
+  AAVA_COMPOSE=(docker-compose)
+fi
 # Start Admin UI (Docker)
-docker compose up -d admin_ui
+COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui &&
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
 
 # Stop Admin UI
-docker compose stop admin_ui
+"${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent stop admin_ui
 
 # View logs
 docker logs admin_ui -f
 
 # Restart after changes
-docker compose restart admin_ui
+"${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent restart admin_ui
 
-# Rebuild from scratch
-docker compose up -d --build admin_ui
+# Rebuild from scratch with the current helper; older helpers use the legacy no-cache recipe.
+COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh --no-cache admin_ui &&
+  "${AAVA_COMPOSE[@]}" -p asterisk-ai-voice-agent up -d --no-build --pull never admin_ui
 
 # Access UI
 # Browse to: http://localhost:3003

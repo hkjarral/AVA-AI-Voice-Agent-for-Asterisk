@@ -211,7 +211,49 @@ describe('TransportPage audio profile guidance', () => {
         expect(preStartBuffer).toHaveValue(0);
     });
 
+    it('defaults pacing to legacy and keeps editor, saved, and running values distinct', async () => {
+        mocks.config.audio_transport = 'websocket';
+        mocks.systemHealth.ai_engine.details.audio_transport = 'websocket';
+        Object.assign(mocks.systemHealth.ai_engine.details.websocket_media, {
+            output_pacing: 'legacy',
+        });
+        const view = render(<TransportPage />);
+        const selector = await screen.findByLabelText('Output pacing');
+        expect(selector).toHaveValue('legacy');
+        expect(selector).toHaveAccessibleDescription(/Qualify your provider and pipeline/);
+        fireEvent.change(selector, { target: { value: 'asterisk' } });
+        const status = screen.getByLabelText('WebSocket output pacing status');
+        expect(status).toHaveTextContent('Saved output pacing: Legacy');
+        expect(status).toHaveTextContent('Running output pacing: Legacy');
+        expect(status).toHaveTextContent(
+            'Editor output pacing: Asterisk pacing; save before applying'
+        );
+        fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+        await waitFor(() => expect(mocks.post).toHaveBeenCalledTimes(1));
+        const saved = yaml.load(mocks.post.mock.calls[0][1].content) as typeof mocks.config;
+        expect(saved.websocket_media).toMatchObject({ output_pacing: 'asterisk' });
+        await waitFor(() => expect(status).toHaveTextContent('Saved pacing is not active'));
+        // A visit after saving uses the saved YAML; health still reports legacy.
+        Object.assign(mocks.config.websocket_media, { output_pacing: 'asterisk' });
+        view.unmount();
+        render(<TransportPage />);
+        expect(await screen.findByLabelText('Output pacing')).toHaveValue('asterisk');
+        expect(screen.getByLabelText('WebSocket output pacing status')).toHaveTextContent(
+            'Running output pacing: Legacy'
+        );
+    });
+
+    it('does not invent a running pacing mode when an older engine omits health metadata', async () => {
+        mocks.config.audio_transport = 'websocket';
+        mocks.systemHealth.ai_engine.details.audio_transport = 'websocket';
+        render(<TransportPage />);
+        expect(await screen.findByLabelText('WebSocket output pacing status')).toHaveTextContent(
+            'Running output pacing: Unknown'
+        );
+    });
+
     it('preserves unrelated operator configuration through all transport switches', async () => {
+        Object.assign(mocks.config.websocket_media, { output_pacing: 'asterisk' });
         render(<TransportPage />);
 
         const selector = await screen.findByLabelText('Transport Method');
@@ -236,6 +278,7 @@ describe('TransportPage audio profile guidance', () => {
         expect(saved.contexts.sales.prompt).toBe('Keep the agent context unchanged.');
         expect(saved.tools.lookup.enabled).toBe(true);
         expect(saved.websocket_media.auth.password_env).toBe('ASTERISK_MEDIA_WS_PASSWORD');
+        expect(saved.websocket_media).toMatchObject({ output_pacing: 'asterisk' });
     });
 
     it('renders a scalar WebSocket allowlist and saves an edited array', async () => {

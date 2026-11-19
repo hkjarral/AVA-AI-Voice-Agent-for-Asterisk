@@ -315,7 +315,9 @@ class TestGenericHTTPLookupTool:
     async def test_request_exception_diagnostics_redact_resolved_url_secrets(
         self, lookup_config, precall_context
     ):
-        lookup_config.url = "https://[invalid]?token=resolved-secret"
+        # Pass template validation so the mocked HTTP-layer error still tests
+        # redaction of a resolved request URL (invalid authorities fail earlier).
+        lookup_config.url = "https://example.invalid/?token=resolved-secret"
         tool = GenericHTTPLookupTool(lookup_config)
         session = AsyncMock()
         session.request = MagicMock(

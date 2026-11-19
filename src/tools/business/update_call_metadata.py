@@ -28,7 +28,9 @@ class UpdateCallMetadataTool(Tool):
         ]
         description = (
             "Correct one operator-approved, non-authoritative metadata value for this call. "
-            "This does not update a CRM, caller identity, routing, consent, transfer, or disposition."
+            "This does not update a CRM, caller identity, routing, consent, transfer, or disposition. "
+            "Use silently: never announce the update or read its internal acknowledgement, "
+            "field names or validation messages to the caller. Continue the conversation naturally."
         )
         if descriptions:
             description += " Allowed fields: " + "; ".join(descriptions)

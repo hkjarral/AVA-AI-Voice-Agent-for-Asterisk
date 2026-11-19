@@ -1,6 +1,6 @@
 # Tool Calling Guide
 
-**Version**: 7.6.2<br>
+**Version**: 7.7.3<br>
 **Status**: Provider-specific qualification (see setup guides)<br>
 **Last Updated**: October 2026
 
@@ -16,6 +16,10 @@ Complete guide to AI tool calling in Asterisk AI Voice Agent—enabling AI agent
 - [Available Tools](#available-tools)
 - [Calendar Booking Boundaries](#calendar-booking-boundaries)
 - [Pre-Call Tools (HTTP Lookups)](#pre-call-tools-http-lookups)
+- [Native Pushover Tools](#native-pushover-tools)
+- [A2A agent delegation](A2A-Agent-Tool.md)
+- [Native Calendly Booking](#native-calendly-booking)
+- [In-call Generated Summaries](#in-call-generated-summaries)
 - [In-Call HTTP Tools](#in-call-http-tools)
 - [Post-Call Tools (Webhooks)](#post-call-tools-webhooks)
 - [Configuration](#configuration)
@@ -136,6 +140,47 @@ append-only reduction contract:
   remain available. Messages that echo a redacted parameter are sanitized too.
   Policy changes affect future entries only, and historical `***REDACTED***` values
   cannot be recovered.
+- Voicemail first records `voicemail_initiated`: its announcement is armed, not
+  a completed transfer. Native providers finish a correlated spoken reply;
+  modular pipelines finish their TTS playback. The engine then waits for caller
+  transport buffers to drain before requesting ARI continue. This is mandatory
+  even when optional blind-transfer deferral/announcement settings are disabled;
+  native voicemail does not require Local AI Server TTS. Its native announcement
+  uses the shared 4-second start and 20-second finish bounds. ElevenLabs requires
+  authoritative `agent_response_complete` events; idle estimates cannot release
+  voicemail. Missing/failed speech,
+  interrupted completion, or announcement/drain timeout cancels the handoff and
+  uses the existing transfer recovery path. No fixed announcement delay or
+  post-handoff question is used. No new operator setting is required.
+- For ElevenLabs, enable `agent_response_complete` in the agent's `client_events`
+  before qualifying voicemail. This is an ElevenLabs agent setting, not an AVA
+  provider override; see the official [client-event documentation](https://elevenlabs.io/docs/eleven-agents/customization/events/client-events#agent_response_complete).
+  An `audio_idle_fallback`, duration estimate, or partial/interrupted response is
+  not completion. If the event is missing, voicemail cancels before ARI continue
+  and Call History records a cancelled handoff. Verify the account event setting
+  and repeat the audible acceptance test after configuring it; AVA does not
+  change the provider account automatically. Recovery can resume the AI only
+  while it still owns the caller. A superseding routing owner suppresses recovery
+  speech as well as voicemail. Never automatically retry an uncertain ARI request.
+- A voicemail handoff rejected by ARI is a failure and restores engine ownership.
+  A timeout, 5xx, or lost response is also a failed invocation, with
+  `handoff_indeterminate: true`: the caller may already have left Stasis. Call
+  History and scheduled-call details show an uncertainty notice; never replay
+  that transfer automatically. Pending/unconfirmed voicemail ownership is an
+  `error` call outcome, not a confirmed `transferred` outcome. The engine retains
+  its transfer guard until caller lifecycle cleanup so it cannot hang up a
+  potentially handed-off leg. A canceled in-flight request has the same guard.
+  `voicemail_completed` records accepted continue, `voicemail_failed` records a
+  cancellation/rejection, and `voicemail_indeterminate` records an uncertain
+  request. These append terminal evidence under the original invocation ID.
+  Cancellation after continue is submitted retains indeterminate evidence under
+  that invocation even if a newer routing action has taken ownership. Only the
+  matching old deferred action is retired; the newer routing fields and action
+  remain untouched. History and post-call tools share cleanup's terminal reporting
+  outcome: if the request is still unconfirmed at that boundary, its conservative
+  `error` result is retained even if ARI acceptance arrives during teardown. That
+  reporting snapshot does not freeze live routing ownership or the terminal tool
+  evidence; an accepted caller is still spared from engine hangup.
 - The event records the tool execution fact only. A successful voicemail route
   does not claim that a message was recorded, and a successful transfer does
   not claim that a human answered.
@@ -162,7 +207,7 @@ Modular pipelines (e.g., `local_hybrid`) now support full tool execution through
 
 **Supported Tools**: All 6 tools validated in production
 - ✅ `transfer` - Tested with call transfers to ring groups
-- 🟡 `attended_transfer` - Deployed (warm transfer w/ announcement + DTMF acceptance; requires Local AI Server)
+- 🟡 `attended_transfer` - Deployed (warm transfer w/ announcement + DTMF acceptance; prompts use Local AI Server TTS or the configured `tts_provider`)
 - ✅ `hangup_call` - Tested with farewell messages
 - ✅ `send_email_summary` - Tested with auto-summaries
 - ✅ `request_transcript` - Tested with email delivery
@@ -258,19 +303,79 @@ AI: "Transferring you to Sales team ring group now."
 - Destination must press **DTMF** to accept/decline:
   - Default: `1 = accept`, `2 = decline`, timeout = decline.
 - On accept: AI audio is removed and the engine bridges **caller ↔ destination** directly.
-- On decline/timeout: MOH stops and the AI resumes with the caller (optionally plays a short “unable to transfer” prompt).
+- On decline, timeout, or the destination hanging up before accepting: MOH stops and the AI resumes with the caller (optionally plays a short “unable to transfer” prompt).
 - Engine remains alive as a passive bridge supervisor until hangup.
+- After an accepted handoff, a phone-initiated onward transfer can replace the
+  destination leg. AVA adopts the new channel identified by
+  `StasisStart.replace_channel`, keeps the existing caller bridge, and retires the
+  old leg's cleanup ownership. It does not replay announcements or restart the AI.
+  Initial pickup still follows the normal announcement and acceptance flow.
+  Duplicate replacement events are ignored; the active destination or caller
+  ending still triggers normal cleanup. Unknown replacement relationships do not
+  acquire ownership of an existing call.
+
+**Onward-transfer validation (#699)**:
+
+1. Call AVA, request an attended transfer to extension A, answer A, and accept it.
+2. Use A's phone transfer button to blind-transfer the external caller to B.
+3. Confirm B rings and can answer with two-way audio. Repeat B → C if available.
+4. Confirm the engine logs **Attended transfer ownership moved to replacement
+   channel**, with no caller cleanup when an old extension leaves.
+5. Hang up the final destination, then repeat with the external caller hanging up.
+   Each call must leave one history record, run post-call hooks once, and retire
+   its bridge and tracked channels. Also check busy/no-answer onward destinations.
+
+This path has automated ARI event coverage. Qualify the patch on the target
+Asterisk/FreePBX and handset combination before treating it as live verified.
+Deploy the engine change after active calls finish; no configuration or database
+migration is required. Existing in-memory sessions are not recovered on restart.
 
 **Key constraints**:
 - This tool is separate from `transfer`; it does **not** change existing transfer behavior.
 - Only supported for `type: extension` destinations.
-- Requires **Local AI Server** (announcement/prompt TTS is mandatory).
+- Announcement and prompt TTS is mandatory. Local AI Server speaks every prompt unless `tools.attended_transfer.tts_provider` is set; when it is set, that provider speaks the agent announcement, the AI briefing, the accept/decline prompt, `caller_connected_prompt` and `caller_declined_prompt`.
+- A configured `tts_provider` fails closed: there is no fallback to Local AI Server or to another provider. The accept prompt (and the announcement in `basic_tts` and `caller_recording`) is synthesized before dialling, while the caller hears hold music. If that synthesis fails, the music stops, no call is placed to the destination and the AI carries on with the caller. In `basic_tts`, the commit returns a failure. In `caller_recording`, the tool has already acknowledged initiation with success; its background workflow invokes engine recovery instead of changing that tool result.
+- `ai_briefing` still needs Local AI Server LLM capability to write the briefing. Only the speaking moves to `tts_provider`.
 - Config compatibility: `agent_accept_prompt_template` is the canonical key; `agent_accept_prompt` is accepted as a legacy alias.
+- Settings are fixed per call at call start, so a config reload applies to the next call, not a transfer in progress. Helper RTP bind settings are process-wide and need a restart. Keys: [Configuration-Reference](Configuration-Reference.md#attended-transfer-toolsattended_transfer).
+
+#### Announcement voice (`tts_provider`)
+
+`tools.attended_transfer.tts_provider` is optional. Its value is a pipeline TTS component key (`google_tts`, `deepgram_tts`, `openai_tts`, `elevenlabs_tts`, `groq_tts`, `azure_tts`, `cambai_tts`, `fishaudio_tts` or a custom Fish Audio `*_tts` instance), and the provider must be configured under `providers:` with working credentials. Unset, every prompt is synthesized by Local AI Server, as before.
+
+`tools.attended_transfer.tts_options` is optional and used only with `tts_provider`. It takes `voice` (a provider voice name, for example `en-US-Chirp3-HD-Charon` for Google) and `language` (for example `en-US`). Omitted keys fall back to the provider block's own voice and language. `language` has no effect with `openai_tts`, `groq_tts`, `elevenlabs_tts` or `fishaudio_tts`, which take a voice only.
+
+- Rendered announcement, briefing, and prompt text is sent to the selected TTS provider. This can include caller names, numbers, and conversation summaries. Consider this data transmission and any caller-notice obligations before selecting a cloud provider.
+- Output is always forced to mu-law 8 kHz, whatever the provider block says.
+- `tts_timeout_seconds` (default 8) bounds each synthesis, for Local AI Server and for the selected provider alike, and is passed to the adapter as its request timeout. A timeout counts as a failure. Pre-dial synthesis runs while the caller is on hold music, and the texts are synthesized concurrently, so synthesis adds up to one `tts_timeout_seconds` before dialing. Pipeline adapter cleanup has separate two-second budgets for closing the call and stopping the adapter (up to four additional seconds); a slow cleanup does not discard successfully synthesized audio.
+- In `ai_briefing` mode only the accept prompt is prepared before dialling. The briefing is written after the destination answers, so the intro and the briefing are synthesized then (as is the basic announcement when the briefing falls back to `basic_tts`). If the intro or fallback announcement fails, the answered destination is hung up and the AI carries on with the caller. If only the briefing fails, it is skipped and the accept prompt follows.
+- Failures are logged with the exception class only, never the message.
+- Admin UI: Tools > Transfer > Attended Transfer > **Announcement voice** lists the configured TTS providers with a ready / not ready status (from `GET /api/config/providers/tts-options`). Voice name and Voice language appear once a provider is selected. Choosing "Local AI Server (default)" removes both keys.
+- The ready status is read from the saved configuration, not from the running engine. Adding or changing a TTS provider (its `providers:` block or credentials) needs an AI Engine restart before attended transfers can use it; a config reload is not enough.
+
+For Google, `google_tts` authenticates with an API key or `GOOGLE_APPLICATION_CREDENTIALS`; see the Google (pipelines) note in [Configuration-Reference.md](Configuration-Reference.md).
 
 **How destination selection works**:
 - The tool parameter is `destination` and it maps to a key under `tools.transfer.destinations`.
   - Example: `destination: "support_agent"` → dials `target: "6000"`.
 - The engine supports fuzzy matching for common user terms (e.g., `"sales"`, `"support"`, `"6000"`), but for deterministic behavior configure prompts to use destination keys.
+
+**Caller briefing parameters**:
+- `attended_transfer` takes two optional string parameters, `caller_name` and `call_reason`, alongside the required `destination`.
+- The model passes them only when the caller has said their name or reason. The tool description tells it never to guess and never to use caller ID.
+- The tool drops control and format characters (except the joiners U+200C and U+200D, which some scripts need), collapses whitespace, and caps `caller_name` at 80 characters and `call_reason` at 200, cutting at a word boundary. Empty values and common placeholder text (`unknown`, `n/a`, `none`, `not provided`, `not given`, `-`, case-insensitive) are ignored, so the fallbacks apply.
+- They fill `{screened_caller_name}` and `{screened_call_reason}`. `{screened_caller_display}` falls back to `{caller_display}`. `{screened_reason_display}` falls back to the AI-briefing summary, then `{context_name}`. `{caller_name}` keeps meaning the caller ID name.
+- In `ai_briefing` mode, a model-supplied `call_reason` takes priority over the AI summary in `{screened_reason_display}`. The summary stays available as `{screening_summary}`.
+- The default announcement does not use these placeholders, so nothing changes until your `announcement_template` references them (`basic_tts` mode).
+- In `caller_recording` mode the recorded clip is the briefing, and the parameters are ignored.
+- The tool and the engine keep the values out of their own logs and out of tool results. The speech backend receives the rendered announcement text and may log it, so check its log level if the template includes these placeholders. Call history redacts `caller_name` and `call_reason` in `strict` and `show_routing` modes.
+
+```yaml
+tools:
+  attended_transfer:
+    screening_mode: "basic_tts"
+    announcement_template: "Hi, this is Ava. I'm transferring {screened_caller_display} about {screened_reason_display}."
+```
 
 **Recommended context policy**:
 - For predictable behavior, enable either `transfer` or `attended_transfer` per context/pipeline.
@@ -420,6 +525,88 @@ AI: I'd be happy to help. Let me transfer you to support.
 
 ---
 
+See also [Calendly](#native-calendly-booking) and [in-call summaries](#in-call-generated-summaries).
+
+## Native Calendly Booking
+
+`calendly_calendar` lists appointments, finds slots and books after canonical
+recap/fresh approval. Explicit Agent assignment and appointment scope are required.
+The durable journal blocks replay after uncertainty/restart. Native later-call
+management and group/pooled appointments are excluded. See [setup and recovery](Calendly-calendar-tool.md).
+
+## In-call Generated Summaries
+
+Configure an existing HTTP tool's LLM, timeout and failure policy, using protected
+summary placeholders. It snapshots available conversation history at invocation,
+without filtering recorded turns by transfer state; unobserved human conversation
+cannot be summarized. Invoke before transfer for a pre-transfer snapshot. No
+provider fallback or blind retry is introduced. See [summary contracts](In-Call-Summaries.md).
+
+## Native Pushover Tools
+
+Create a named **Pushover** tool through the same Pre-Call, In-Call or Post-Call
+editor as HTTP tools. Configure its application token, enabled user/group recipient
+rows, templates and optional summary; then Update tool and Save & Apply. Use normal
+Agent selection/global opt-outs. In-call descriptions and Agent prompts govern
+AI invocation; pre/post-call selection governs automatic lifecycle execution.
+
+Public defaults contain caller number and call ID, plus the observed outcome for
+completion. A summary appears only when enabled; CRM/company fields are optional
+custom templates. Saved custom bodies are preserved. One invocation generates its
+summary once and delivers the same content to enabled recipients, with individual
+delivery diagnostics. Preview never sends; recipient
+validation and tests require explicit clicks. The Tool Type selector links to the
+official Pushover documentation. See the complete [Pushover Tool guide](Pushover.md)
+for setup, multiple recipients/groups, prompts, templates, transfer policies,
+credentials, limits and testing.
+
+## HTTP Template Safety and Compatibility
+
+See [HTTP tool templates](HTTP-Tool-Templates.md) for phase-specific examples,
+inline variable guidance, configuration validation, synthetic previews, and
+in-call transcript-so-far payloads.
+
+The engine's pre-call lookups, in-call HTTP tools, and post-call webhooks resolve
+`${ENV_VAR}` and `{variable}` only in the original operator-authored template.
+Inserted caller data, model arguments, enrichment, transcripts, summaries, and
+environment values are never interpreted as additional placeholders. Environment
+names use uppercase letters, digits, and underscores; data names also support
+dots and hyphens. Missing environment variables become empty strings. Unknown
+data placeholders remain literal in text; a missing JSON placeholder fails the
+request before any HTTP call.
+
+**Request bodies:** operator-configured Content-Type selects the format; per-call
+placeholders cannot select Content-Type. Absent Content-Type means
+`application/json`. JSON and `application/*+json` templates must produce valid
+JSON. Inside a quoted JSON string, substitutions are escaped as text. An unquoted
+placeholder represents one complete JSON value: native numbers, booleans, null,
+arrays, and objects retain their type; serialized strings must parse as exactly
+one JSON value. For example, `{"note":"{notes}","count":{count}}` escapes notes
+and accepts a numeric count. Invalid JSON is an error, never a raw-body fallback.
+The serialized `transcript_json`, `summary_json`, `tool_calls_json`,
+`pre_call_results_json`, and `call_metadata_json` placeholders remain supported.
+A custom name ending in `_json` does not bypass validation or string escaping.
+
+Explicit `text/plain` bodies use literal single-pass substitution.
+`application/x-www-form-urlencoded` bodies are parsed into template fields before
+substitution and encoded afterward, so inserted ampersands cannot add fields.
+Other template body formats fail closed. Existing raw-text templates must declare
+`Content-Type: text/plain`; XML, multipart, and other structured formats need a
+dedicated serializer instead of arbitrary text substitution. GET and HEAD still
+send no body; POST, PUT, PATCH, DELETE, and OPTIONS retain body support.
+
+**URLs and headers:** use operator configuration or `${BASE_URL}` for the origin.
+Per-call placeholders may supply URL components, not a scheme, host, or port.
+Their slashes, query delimiters, percent signs, and fragments are encoded; dot
+path segments are rejected. Use fixed path separators in the template rather
+than a per-call value containing a whole URL or multiple path segments. Pass
+query values through `query_params` without pre-encoding them. Header CR/LF is
+replaced with spaces; legitimate environment-backed authorization remains valid.
+
+The Admin UI's HTTP **Test** endpoint is a separate operator-only implementation;
+its preview is not acceptance evidence for the engine's runtime renderer. Verify
+configured tools against these engine rules before enabling them.
+
 ## Pre-Call Tools (HTTP Lookups)
 
 **New in v4.2** — Pre-call tools run after call answer but before AI speaks, enabling CRM enrichment and caller data lookup.
@@ -427,6 +614,15 @@ AI: I'd be happy to help. Let me transfer you to support.
 ### Pre-Call Overview
 
 Pre-call tools fetch external data (e.g., CRM contact info, account status) and inject it into AI prompts via output variables. This allows the AI to greet callers by name, reference their account, or provide personalized service.
+
+Hold audio belongs to the individual pre-call invocation. On success, error,
+timeout, cancellation, or caller cleanup, AVA stops only that invocation's ARI
+playback ID before continuing where possible. A start still in flight retains a
+bounded finalizer that stops the same ID after the response arrives. Parallel
+tools never stop each other's playback, greeting speech, or unrelated ringback;
+connection audio is handed off before starting hold audio. Failed stop requests
+receive three bounded attempts. No new setting is needed: existing
+`hold_audio_file`, threshold, and tool timeout controls keep their meanings.
 
 ### Generic HTTP Lookup Tool
 
@@ -631,12 +827,28 @@ contexts:
 
 ### Variable Substitution (Precedence)
 
-In-call HTTP tools have access to three types of variables:
+In-call HTTP tools have access to four sources, in this precedence order:
 
 1. **Context variables** (auto-injected): `{caller_number}`, `{called_number}`, `{call_id}`, etc.
 2. **Effective call metadata**, when selected: corrected values such as `{customer_id}`
 3. **Pre-call variables** (from pre-call HTTP lookups): `{customer_id}`, `{customer_name}`, etc.
-4. **AI parameters** (provided at runtime): Whatever the AI passes when invoking the tool
+4. **AI parameters**: only names declared in the tool's `parameters` configuration,
+   and only when the name is absent from the preceding sources
+
+Built-ins cannot be overwritten by enrichment, metadata, or model arguments.
+Existing enrichment keys remain protected even when empty; declaring a same-named
+parameter does not grant permission to replace them. Undeclared and shadowing
+arguments are ignored with a value-free warning. If the session/enrichment lookup
+fails or the session no longer exists, the HTTP request fails closed.
+
+Metadata retains its existing precedence over the corresponding pre-call value.
+Only operator-selected fields can enter this namespace, and caller corrections
+must use `update_call_metadata` with its configured correction policy. These
+values are non-authoritative: do not mark identity/authorization identifiers as
+correctable or use caller-correctable values as credentials or routing authority.
+Use separate parameter names for newly collected data instead of shadowing CRM
+fields. Renaming parameters may require updating the tool template and Agent
+instructions together.
 
 This means you can use data fetched by pre-call tools in your in-call tool requests. For example, if a pre-call lookup fetches `customer_id`, you can use `{customer_id}` in the in-call tool's body template.
 
@@ -933,6 +1145,29 @@ replacement before its own handoff completes. Timeout recovery clears the
 pending transfer before requesting an apology, so the apology can play.
 Local handoff playback and modular pipeline transfer prompts bypass this gate.
 
+A deferred transfer normally commits when the agent's handoff reply finishes. If
+the model sends no audio after the transfer tool result (seen with Vertex Live
+models), no completion event ever arrives and the transfer would stay armed.
+`tools.transfer.deferred_silent_commit_timeout_sec` (default 4, range 0-30,
+0 disables) bounds that wait: if no reply audio has started by then, the engine
+commits the armed transfer through the normal drain-and-commit path. The timer
+starts once the provider has sent the tool result to the model or reports a
+failed send via `handoff_result_sent(..., success=False)`. Successful delivery
+is not required for the transfer to commit. For OpenAI
+Realtime and Grok, sending follows the parent `response.done`. It holds while agent audio
+plays, after which the transfer commits when that reply finishes, as before. It
+also pauses while the caller is talking, because provider VAD holds the reply
+until they stop, and restarts at the full timeout when they finish. Providers
+that report no end of caller speech restart it on each sign of caller activity
+instead. A barge-in that cuts the reply restarts it too. A reply that stalls
+part-way with no barge-in and no completion event is not covered. Providers
+whose first reply audio can take longer than the timeout (for example a local
+model on CPU) should raise the value, or the transfer goes ahead without its
+handoff line. It does not apply to transfers with a handoff
+announcement, which use `handoff.start_timeout_sec`, or to modular pipelines,
+which commit after their own announcement. When it fires the engine logs
+`deferred_transfer_watchdog_commit` with the call id and action id.
+
 The provider can still generate the repeated turn, so its transcript may show
 the handoff twice. With opt-in Google Developer long-response playback, repeats
 queued before the commit begins can still be heard.
@@ -953,6 +1188,7 @@ tools:
     deferred_strategy: "drain_then_dial"   # Or "predial_then_bridge" to dial while handoff audio plays
     deferred_audio_drain_timeout_sec: 15   # Safety ceiling; timeout cancels the transfer and resumes the AI
     deferred_audio_drain_quiet_ms: 500     # Require this much quiet after the caller-facing queue drains
+    deferred_silent_commit_timeout_sec: 4  # Commit if no reply audio starts after the tool result (0 disables)
     predial_bridge_wait_timeout_sec: 10    # Wait after handoff audio for a predialed destination answer
     predial_timeout_seconds: 30            # Asterisk originate timeout for predialed destination leg
     predial_wait_moh_class: "default"      # MOH class while waiting for predial destination answer
@@ -1050,7 +1286,11 @@ tools:
     moh_class: "default"              # Asterisk MOH class for caller during dial/briefing
     dial_timeout_seconds: 30
     accept_timeout_seconds: 15
-    tts_timeout_seconds: 8
+    tts_timeout_seconds: 8            # Per prompt, for Local AI Server or tts_provider
+    # tts_provider: google_tts        # Optional pipeline TTS component key; unset = Local AI Server
+    # tts_options:                    # Optional, used only with tts_provider
+    #   voice: "en-US-Chirp3-HD-Charon"
+    #   language: "en-US"
     screening_mode: "basic_tts"       # basic_tts | ai_briefing (experimental) | caller_recording
     ai_briefing_timeout_seconds: 2.0  # Experimental Local AI Server LLM summary timeout; falls back to basic_tts on failure
     ai_briefing_intro_template: "Hi, this is Ava. Here is a short summary of the caller."
@@ -1059,16 +1299,19 @@ tools:
     caller_screening_silence_ms: 1200
     accept_digit: "1"
     decline_digit: "2"
+    # {screened_caller_display} / {screened_reason_display} use caller_name / call_reason when given
     announcement_template: "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."
     agent_accept_prompt_template: "Press 1 to accept this transfer, or 2 to decline."
     caller_connected_prompt: "Connecting you now."  # Optional
     caller_declined_prompt: "I’m not able to complete that transfer right now. Would you like me to take a message?"  # Optional
-    # Local AI Server dependency notes:
-    # - basic_tts: requires Local AI Server TTS
-    # - caller_recording: requires Local AI Server TTS for intro/prompt
-    #                     operators are responsible for meeting local caller notice/consent requirements
+    # Announcement voice notes:
+    # - tts_provider unset: every prompt uses Local AI Server TTS (unchanged)
+    # - tts_provider set: every prompt uses that provider only; there is no fallback.
+    #   The accept prompt (and the announcement in basic_tts / caller_recording) is
+    #   synthesized before dialling; if that fails, nothing is dialled and the AI resumes.
+    # - caller_recording: operators are responsible for meeting local caller notice/consent requirements
     #                     screening audio is used transiently for the transfer workflow, not as a retained recording feature
-    # - ai_briefing (experimental): requires Local AI Server TTS and Local AI Server LLM capability
+    # - ai_briefing (experimental): the summary text requires Local AI Server LLM capability
     #                               falls back to basic_tts if summary generation is unavailable
 
   # ----------------------------------------------------------------------------
@@ -1175,12 +1418,153 @@ extra pause. They are no longer editable in the Admin UI. For Local AI,
 `farewell_mode` and `farewell_timeout_sec` remain supported and have separate
 purposes.
 
+For native calls, terminal ARI hangup checks acceptance and makes at most three
+idempotent DELETE attempts, with a three-second request budget and 250/750ms
+retry pauses. A missing channel (404) counts as complete. Every attempt rechecks
+the same call/channel/lock owner, cleanup state, and pending/active transfers,
+including inside the bounded request task immediately before DELETE admission. Failed
+or canceled attempts release terminal ownership so a later request can recover;
+a confirmed hangup keeps its duplicate guard until cleanup. The inline retry
+has no detached retry timer. Call cleanup cancels the existing terminal fallback
+and prevents another retry. VICIdial keeps its separate finalization/recovery
+contract; these native DELETE retries do not bypass it.
+
+With Local AI `farewell_mode: asterisk`, the engine reserves the terminal
+farewell before executing `hangup_call`. An older response's `AgentAudioDone`
+cannot preempt it. The engine starts `sound:goodbye` with a unique ARI playback
+ID, bounds the start request to three seconds, and waits up to eight more
+seconds for that playback's terminal `PlaybackFinished` event. Asterisk
+reports normal completion, stopped playback, and canceled playback as `done`;
+the engine logs that the playback finished, without claiming uninterrupted or
+audible delivery. A failed start, `failed`/unknown state, or timeout is reported
+as unconfirmed. Terminal cleanup still proceeds so the caller is not left on
+dead air; engine-initiated termination is recorded as `agent_hangup` in lifecycle
+logs and post-call tools. Call History retains its existing normalized outcome
+classification (for example, `completed`). An audible farewell must be verified
+on the caller leg.
+
+The bounded farewell finalizer belongs to the call, so replacing a Local AI
+listener during reconnect does not cancel it or release the stale-audio guard
+early. Caller teardown still cancels the finalizer through normal call cleanup.
+
+Reference: [Asterisk 20.17 playback state mapping](https://github.com/asterisk/asterisk/blob/20.17.0/res/res_stasis_playback.c#L196-L215).
+
 The modular pipeline also handles a spoken farewell without a `hangup_call`
 tool invocation when both caller end-of-call intent and an assistant farewell
 are recognized. It plays the response, drains audio, and hangs up. This fallback
 does not depend on `farewell_hangup_delay_sec` and is not a guarantee that every
 model response will be recognized as a closing.
 
+**End-call STT correction:** Local AI, Deepgram's farewell fallback, and modular
+pipeline hangup checks share light transcription normalization. "Hand off" is
+not rewritten to "hang up." The ambiguous "and call" / "and the call" correction
+is limited to a whole utterance with optional leading "please," trailing "now"
+and/or "please," and terminal punctuation (for example, "Please and the call
+now."). "I was on hold and the call dropped" and "and call me back" are not
+corrected into end-call commands. The correction preserves the optional words
+and punctuation so a custom marker such as "end call now" still matches.
+Genuine "end the call" and supported "hand up"
+STT artifacts still match the configured markers. Existing global and per-Agent
+marker lists keep their normal matching behavior; an explicitly configured
+phrase can still match ordinary speech, so choose custom markers carefully.
+
+
+### Optional transfer announcement waiting (#743)
+
+Under **Tools → Transfer**, enable **Wait for transfer announcement** and enter
+an announcement. Destinations and Live Agents can inherit that sentence, disable
+waiting, or use a custom sentence. The setting supports Google Live, OpenAI
+Realtime, Grok, Deepgram Voice Agent, ElevenLabs Agent, Local, and modular pipelines.
+It requires deferred transfer; it does not change destination access policies.
+
+```yaml
+tools:
+  transfer:
+    defer_until_playback_complete: true
+    handoff:
+      enabled: true
+      message: "We are closed. Please leave a message."
+      start_timeout_sec: 4
+      finish_timeout_sec: 20
+    destinations:
+      reception:
+        type: extension
+        target: "6000"
+        handoff:
+          mode: custom  # inherit (default), disabled, or custom
+          message: "I will connect you to reception now."
+```
+
+Live Agent overrides use the same `handoff` block under
+`tools.extensions.internal.<extension>`. A custom override can enable the
+announcement for that target while the global announcement is disabled.
+**Save & Apply** affects new calls; active calls retain their configuration snapshot.
+Disabling the setting restores the existing #702 suppression and drain behavior.
+
+For provider-generated speech, the engine waits before activating the #702
+commit gate. A completed, uninterrupted originating response starting with the full
+normalized sentence (on a word boundary) releases immediately. Otherwise the engine waits for a
+response whose audio starts after the tool result was successfully sent. It has
+4 seconds to start and 20 seconds from its first audio to finish by default.
+The respective configurable limits are 10 and 60 seconds. Provider idle timers,
+partial audio segments, and interrupted responses do not establish completion.
+ElevenLabs deployments should enable authoritative `agent_response_complete`
+events; without one the bounded timeout remains available.
+
+Speech ownership and playback selection use the same normalization of
+`local_handoff_audio_providers`, preserving case-insensitive provider names,
+comma-separated strings, lists and legacy boolean handling. This prevents
+configuration spellings from assigning both a provider and local speech owner.
+Deepgram's configured local handoff and modular pipeline handoffs have one TTS
+owner and use the resolved announcement directly. Pipeline synthesis, playback
+startup and completion share the finish budget; configured engine-owned local
+playback startup is also bounded. If startup is cancelled, its exact playback
+reference and capture gate are cleared after a confirmed stop. An uncertain stop
+retains an exact-playback retry owner across transfer cancellation/replacement.
+Each stop request is bounded to one second; after five retry attempts, the AI
+call enters the existing terminal cleanup lifecycle. Local refs, files and gates
+are retired as the call closes, without claiming that an unconfirmed remote
+playback finished. Elapsed gating timers cannot release uncertain output. An attended caller-recording
+transfer retains its name/reason instruction after the configured sentence.
+
+After readiness or timeout, later provider responses are suppressed and the
+existing caller-facing audio drain runs before transfer. Drain failure still
+cancels the transfer and recovers to the AI. These waits are cumulative: the
+announcement deadline does not replace the configured audio-drain deadline.
+
+This is best-effort speech delivery, not proof that a required sentence was
+heard. Translations cannot match the originating sentence, and completion of a
+later response does not verify its wording. On timeout the engine continues the
+existing transfer process. Runtime logs record action ID and readiness reason
+without adding announcement text. In-memory waiting state is discarded on call
+cleanup/restart; cancelled actions are never recreated from timing evidence.
+If an adapter's preparation event is missing, the engine waits up to the start
+window for it, then cancels the exact action and returns the caller to the AI;
+this internal failure does not silently leave a transfer pending.
+
+
+#### Prompt guidance and verification
+
+Keep the announcement in Tools configuration rather than duplicating its wording
+in a normal Agent prompt. After a successful deferred-transfer tool result, the
+Agent should follow the returned speech instructions, say the configured sentence
+once, and avoid follow-up speech while the transfer is pending. Respect
+`ai_should_speak=false` for engine-owned audio. Availability checks and Agent
+resource restrictions still apply. Restoring a pre-test Agent prompt does not
+reset the separately saved Tools announcement.
+
+Verify both a filler/tool turn followed by the announcement in a later response
+and an announcement contained in the originating response. In the runtime logs,
+expect `Transfer announcement readiness` with `reply_completed` and
+`origin_sentence_matched`, respectively, followed by caller-facing audio drain
+and one successful transfer commit. These reasons describe event evidence; a
+later response's wording is not verified by the coordinator. Also cover
+cancellation, missing audio/completion deadlines, destination failure, cleanup,
+and announcement-disabled behavior when qualifying a deployment.
+
+The [#743 validation record](baselines/golden/transfer-announcement-743-validation.md)
+separates Google Live call evidence from automated coverage for other providers
+and pipelines. A successful provider readiness check is not a live transfer test.
 
 ### Enable Tools per Context / Pipeline (Allowlisting)
 
@@ -1388,7 +1772,7 @@ docker logs ai_engine | egrep "Transfer requested|Unified transfer tool"
 ### Test Attended Transfer (Warm Transfer)
 
 **1. Prerequisites**:
-- Local AI Server running (required for announcement/prompt TTS)
+- Local AI Server running, or `tools.attended_transfer.tts_provider` set to a provider shown as ready in the Admin UI (Announcement voice). `ai_briefing` also needs Local AI Server LLM capability.
 - `tools.attended_transfer.enabled: true`
 - Destination configured with `attended_allowed: true`:
   - Example: `tools.transfer.destinations.support_agent.attended_allowed: true`
@@ -1708,5 +2092,87 @@ Tools written once, work with any provider.
 ---
 
 **Last Updated**: October 2026<br>
-**Version**: 7.6.2<br>
+**Version**: 7.7.3<br>
 **Status**: Provider-specific qualification (see setup guides)
+
+
+### Attended-transfer failure recovery
+
+For Google Live, an attended transfer that ends without connecting sends an
+explicit engine event to the active provider. The agent explains the failed
+connection in the caller's language and follows its configured fallback behavior;
+it is instructed not to redial automatically. This recovery response does not
+require Local AI Server TTS. A configured `caller_declined_prompt` is supplied to
+Google Live as the preferred failure response. Other providers speak `caller_declined_prompt`
+with the announcement voice: `tts_provider` when set, otherwise Local AI Server.
+
+If the destination answers and then hangs up before pressing the accept digit
+(during the announcement, the screening clip or briefing, or the accept prompt),
+AVA now treats it as a decline. Previously this ended the caller's call. MOH
+stops, the caller stays connected, the AI resumes, and Call History records
+`Transfer failed (target-hangup).` If the destination pressed the decline digit
+before hanging up, it is recorded as `declined` instead. Recovery runs once,
+even when the leg's end arrives as more than one channel event.
+
+If AI briefing generation completes during or after recovery, its result is
+discarded. Ownership is checked again after saving the briefing, so caller
+cleanup or a newer transfer during that save cannot restart the old announcement
+or interfere with recovery releasing caller capture.
+
+Recovery follows the same provider split as other failures. Google Live receives
+the failure event; other providers speak `caller_declined_prompt` with the
+configured announcement TTS provider (Local AI Server by default), as they do
+for `declined`, `timeout`, `no-answer` and `dial-timeout`.
+
+Once the destination has accepted, behavior is unchanged: a hangup on that leg
+ends the call. Known limit: a hangup after the accept digit but before the
+bridge still counts as an accepted leg ending, so the call ends. That window
+includes `caller_connected_prompt`: its TTS and playback can take up to five
+times `tts_timeout_seconds` (40 seconds at the default of 8), so a long
+connected prompt widens it.
+
+Call History records **Transfer initiated** separately from **Transfer failed** or
+**Transfer completed**. Initiation and terminal outcomes retain the
+provider tool invocation ID for both deferred and immediate transfers. Initiation
+success means the request was prepared, not that the destination answered. Older
+records without these stages retain their original display. Failure reasons such
+as `no-answer` describe the recovery path; they do not establish SIP cause or prove
+that all operators are busy. This change adds no strict transfer-attempt budget;
+a prompt instruction alone is not an enforced runtime limit.
+
+The provider event uses Google's documented history-bearing `clientContent`
+message with `turnComplete: true`, after the original tool response has been
+acknowledged: https://ai.google.dev/api/live#bidigeneratecontentclientcontent .
+This requests an immediate recovery response; it is not a second function result.
+Failure events wait for the originating Google tool response to finish sending
+within the existing recovery deadline. Failed/aborted sends suppress the event.
+Queued failure events recheck the exact active attempt after acquiring the
+provider send lock. Superseded attempts cannot interrupt a newer transfer.
+Configured failure prompts resolve the attended caller/screening/destination
+variables in both provider and local playback paths. Background caller-recording
+screening/origination failures use the same owned recovery and terminal history
+path, even when no destination channel was created.
+If the provider has disconnected or event delivery fails, recovery logs the
+failure and still restores caller capture and clears the ended action. It does
+not retry notification or dialing automatically. Real-call validation must cover
+failure announcement playback and a subsequent caller turn as well as successful
+handoff. Bridge failures after provider/media teardown still require the existing
+provider/media recovery mechanisms; this patch does not restart a stopped provider.
+
+### ARI lifecycle validation boundary
+
+The voicemail/hangup/pre-call hold recovery regressions in
+`tests/test_ari_lifecycle_recovery.py` use synthetic ARI responses and temporary
+Call History SQLite databases. They cover explicit rejection, indeterminate
+handoff, deleted mailbox scope, retries, transfer precedence, cancellation,
+cleanup and late playback start. `tests/test_voicemail_deferred_handoff.py`
+adds adapter/Engine announcement correlation, audio queued beyond 800 ms, native
+provider callbacks, pipeline TTS completion, and pre/post-request cancellation.
+These offline checks do not establish audible PBX acceptance.
+For deployed acceptance, use a disposable inbound Agent and mailbox, verify hold
+stops before greeting, farewell audio completes, and accepted voicemail leaves
+Stasis without an engine caller DELETE. Keep ARI failure injections synthetic;
+do not break a shared PBX or create real voicemail/campaign traffic to simulate
+409/503 responses. See the official [channel API](https://docs.asterisk.org/Latest_API/API_Documentation/Asterisk_REST_Interface/Channels_REST_API/)
+and [playback API](https://docs.asterisk.org/Latest_API/API_Documentation/Asterisk_REST_Interface/Playbacks_REST_API/)
+for the continue, DELETE and playback-ID contracts.

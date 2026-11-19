@@ -7,7 +7,7 @@ Handles translation between unified tool format and Deepgram's function calling 
 from typing import Dict, Any, List, Optional
 from src.tools.registry import ToolRegistry
 from src.tools.context import ToolExecutionContext
-from src.tools.adapters.sanitize import sanitize_tool_result_for_json_string
+from src.tools.adapters.sanitize import notify_result_not_sent, sanitize_tool_result_for_json_string
 import structlog
 import json
 
@@ -159,6 +159,7 @@ class DeepgramToolAdapter:
             ari_client=context['ari_client'],
             config=context.get('config'),
             tool_registry=self.registry,
+            tool_call_id=function_call_id,
             provider_name="deepgram",
             user_input=context.get('user_input')
         )
@@ -215,6 +216,7 @@ class DeepgramToolAdapter:
         websocket = context.get('websocket')
         if not websocket:
             logger.error("No websocket in context, cannot send tool result")
+            await notify_result_not_sent(result, context)
             return
         
         # Extract function_call_id and function_name from result
@@ -223,10 +225,12 @@ class DeepgramToolAdapter:
         
         if not function_call_id:
             logger.error("No function_call_id in result, cannot send response")
+            await notify_result_not_sent(result, context)
             return
         
         if not function_name:
             logger.error("No function_name in result, cannot send response")
+            await notify_result_not_sent(result, context)
             return
         
         # Build response per actual Deepgram spec
@@ -242,12 +246,21 @@ class DeepgramToolAdapter:
             "content": json.dumps(safe_result)  # Stringify JSON (size-capped)
         }
         
+        output_sent = False
         try:
             await websocket.send(json.dumps(response))
+            output_sent = True
+            notify = context.get("handoff_result_sent")
+            if notify:
+                await notify(result, context.get("call_id"), success=True)
             logger.info(
                 f"✅ Sent tool result to Deepgram: {safe_result.get('status')}",
                 call_id=context.get("call_id"),
                 function_call_id=function_call_id,
             )
         except Exception as e:
-            logger.error(f"Failed to send tool result to Deepgram: {e}", exc_info=True)
+            notify = context.get("handoff_result_sent")
+            if notify and not output_sent:
+                await notify(result, context.get("call_id"), success=False)
+            failure = "Delivered tool result follow-up failed" if output_sent else "Tool result send failed"
+            logger.error(f"{failure} (Deepgram): {e}", exc_info=True)

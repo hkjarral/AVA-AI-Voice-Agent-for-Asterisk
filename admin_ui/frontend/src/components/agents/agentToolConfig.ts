@@ -4,7 +4,7 @@ export interface ToolDef {
     name: string;
     description?: string;
     phase?: string;     // 'pre_call' | 'in_call' | 'post_call'
-    source?: string;    // 'builtin' | 'http' | 'mcp'
+    source?: string;    // 'builtin' | 'http' | 'mcp' | 'a2a'
     is_global?: boolean;
 }
 
@@ -32,6 +32,8 @@ export interface AgentToolState {
     googleCalendarKeys: string[];
     microsoftCalendarPolicy: ResourcePolicy;
     microsoftAccountKeys: string[];
+    calendlyPolicy: ResourcePolicy;
+    calendlyKeys: string[];
     voicemailMailboxPolicy: ResourcePolicy;
     voicemailMailboxKey: string;
 }
@@ -98,12 +100,12 @@ function safeParseObject(raw?: string | null): Record<string, unknown> {
 }
 
 export interface AgentLike {
-    provider?: string;
-    tools_json?: string;
-    mcp_json?: string;
-    extra_json?: string;
-    tool_configs_json?: string;
-    hangup_policy_json?: string;
+    provider?: string | null;
+    tools_json?: string | null;
+    mcp_json?: string | null;
+    extra_json?: string | null;
+    tool_configs_json?: string | null;
+    hangup_policy_json?: string | null;
 }
 
 export function parseAgentConfig(agent: AgentLike | null | undefined): AgentToolState {
@@ -167,6 +169,8 @@ export function parseAgentConfig(agent: AgentLike | null | undefined): AgentTool
         googleCalendarKeys: googleCalendarPolicy === 'selected' || !isKnownPolicy(googleCalendarPolicy)
             ? asStrArray(googleConfig['calendar_keys']) : [],
         microsoftCalendarPolicy,
+        calendlyPolicy: parsePolicy(asObject(toolConfigs['calendly_calendar'])['appointment_policy'] ?? 'inherit'),
+        calendlyKeys: asStrArray(asObject(toolConfigs['calendly_calendar'])['appointment_keys']),
         microsoftAccountKeys: microsoftCalendarPolicy === 'selected' || !isKnownPolicy(microsoftCalendarPolicy)
             ? asStrArray(microsoftConfig['account_keys']) : [],
         voicemailMailboxPolicy,
@@ -204,6 +208,12 @@ export function serializeAgentConfig(state: AgentToolState): SerializedAgentConf
     else delete extra['no_input'];
 
     const toolConfigs: Record<string, unknown> = {};
+    if (state.calendlyPolicy && state.calendlyPolicy !== 'inherit') {
+        toolConfigs.calendly_calendar = {
+            appointment_policy: state.calendlyPolicy,
+            appointment_keys: state.calendlyPolicy === 'selected' ? [...new Set(state.calendlyKeys)] : [],
+        };
+    }
     if (state.transferDestinationPolicy !== 'inherit') {
         toolConfigs.transfer = {
             destination_policy: state.transferDestinationPolicy,
@@ -278,12 +288,21 @@ export function isToolLocked(state: AgentToolState, tool: ToolDef): boolean {
 
 export function isToolChecked(state: AgentToolState, tool: ToolDef): boolean {
     if (isToolLocked(state, tool)) return true;
+    if (tool.source === 'a2a') return [...state.inCallTools, ...state.inCallHttpTools].includes(tool.name);
     if (tool.is_global) return !(state[disableListName(tool)] as string[]).includes(tool.name);
     return (state[ownedListName(tool)] as string[]).includes(tool.name);
 }
 
 export function toggleTool(state: AgentToolState, tool: ToolDef): AgentToolState {
     if (isToolLocked(state, tool)) return state;
+    if (tool.source === 'a2a') {
+        const checked = isToolChecked(state, tool);
+        return {
+            ...state,
+            inCallTools: checked ? state.inCallTools.filter(name => name !== tool.name) : [...state.inCallTools, tool.name],
+            inCallHttpTools: state.inCallHttpTools.filter(name => name !== tool.name),
+        };
+    }
     const listName = tool.is_global ? disableListName(tool) : ownedListName(tool);
     const list = state[listName] as string[];
     const next = list.includes(tool.name) ? list.filter((n) => n !== tool.name) : [...list, tool.name];

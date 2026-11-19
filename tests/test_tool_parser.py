@@ -114,3 +114,29 @@ def test_has_tool_intent_markers_detects_malformed_tool_output():
 def test_has_tool_intent_markers_ignores_plain_text():
     response = "Thanks for calling. Have a great day."
     assert has_tool_intent_markers(response, ["hangup_call"]) is False
+
+
+def test_tool_argument_values_never_reach_parser_debug_logs(caplog):
+    """All logged wrapper paths retain tool diagnostics without caller PII."""
+    import json
+    import logging
+
+    parameters = {"caller_name": "Zelda Quartermain", "call_reason": "Invoice 4471 dispute"}
+    payload = json.dumps({"name": "attended_transfer", "arguments": parameters})
+    wrappers = [
+        f"<tool_call>{payload}</tool_call>",
+        f"<attended_transfer>{payload}</attended_transfer>",
+        f"</tool_call>{payload}",
+        f"*attended_transfer* {payload[:-2]}",
+    ]
+    with caplog.at_level(logging.DEBUG, logger="src.tools.parser"):
+        for response in wrappers:
+            caplog.clear()
+            _, calls = parse_response_with_tools(response)
+            assert calls == [{"name": "attended_transfer", "parameters": parameters}]
+            records = [r for r in caplog.records if r.name == "src.tools.parser"]
+            assert records, "the parser path must exercise a diagnostic log"
+            assert "attended_transfer" in caplog.text
+            for value in parameters.values():
+                assert value not in caplog.text
+                assert value not in repr([r.args for r in records])

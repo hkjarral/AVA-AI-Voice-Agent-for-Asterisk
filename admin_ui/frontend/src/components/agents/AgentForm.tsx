@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import yaml from 'js-yaml';
-import { Modal } from '../ui/Modal';
+import { ArrowLeft, Save } from 'lucide-react';
+import { AgentAvatarPicker, type AgentAppearance } from './AgentAvatar';
 import { FormInput, FormSelect, FormLabel } from '../ui/FormComponents';
 import HelpTooltip from '../ui/HelpTooltip';
 import { isFullAgentProvider } from '../../utils/providerNaming';
@@ -20,6 +21,8 @@ import { canonicalToolName, type ToolStatus } from '../../utils/promptTools';
 import { voiceControlState, type ProviderVoiceMeta } from '../../utils/agentVoice';
 
 export interface Agent {
+    avatar_preset?: string | null;
+    avatar_image?: string | null;
     slug: string;
     display_name: string;
     extension?: string;
@@ -57,13 +60,23 @@ interface AgentFormProps {
     onClose: () => void;
     onSaved: () => void;
     agent?: Agent | null;
+    initialSection?: string;
+    onDirtyChange?: (dirty: boolean) => void;
+    onSavingChange?: (saving: boolean) => void;
 }
 
 const slugify = (name: string): string =>
     name.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
 
-const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }) => {
+const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent, initialSection = 'general', onDirtyChange, onSavingChange }) => {
     const isNew = !agent;
+    const [section, setSection] = useState(initialSection);
+    const [appearance, setAppearance] = useState<AgentAppearance>({});
+    const [readingImage, setReadingImage] = useState(false);
+    const [initialized, setInitialized] = useState(false);
+    const [baseline, setBaseline] = useState<string | null>(null);
+    const initialPayload = useRef<Record<string, unknown>>({});
+    const [saveError, setSaveError] = useState('');
 
     const [displayName, setDisplayName] = useState('');
     const [slug, setSlug] = useState('');
@@ -86,11 +99,13 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
 
     // Tool catalog (for the picker) + engine option sources.
     const [catalog, setCatalog] = useState<ToolDef[]>([]);
+    const [catalogLoading, setCatalogLoading] = useState(true);
     const [catalogError, setCatalogError] = useState(false);
     const [disabledTools, setDisabledTools] = useState<Set<string>>(new Set());
     const [transferDestinations, setTransferDestinations] = useState<TransferDestination[]>([]);
     const [googleCalendars, setGoogleCalendars] = useState<AgentResourceOption[]>([]);
     const [microsoftAccounts, setMicrosoftAccounts] = useState<AgentResourceOption[]>([]);
+    const [calendlyAppointments, setCalendlyAppointments] = useState<AgentResourceOption[]>([]);
     const [voicemailMailboxes, setVoicemailMailboxes] = useState<AgentResourceOption[]>([]);
     // Tool-reference highlighting for the prompt: detect every catalog tool name,
     // colour-code by in-call status for this agent.
@@ -132,6 +147,8 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
 
     useEffect(() => {
         if (!isOpen) return;
+        setAppearance({ avatar_preset: agent?.avatar_preset || 'male', avatar_image: agent?.avatar_image || null });
+        setInitialized(true);
         if (agent) {
             setDisplayName(agent.display_name);
             setSlug(agent.slug);
@@ -226,6 +243,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     : []));
 
             const microsoft = asRecord(toolsBlock.microsoft_calendar);
+            setCalendlyAppointments(resourceOptions(asRecord(asRecord(toolsBlock.calendly_calendar).appointments), ['duration']));
             const microsoftInventory = asRecord(microsoft.accounts);
             setMicrosoftAccounts(Object.keys(microsoftInventory).length
                 ? resourceOptions(microsoftInventory, ['user_principal_name', 'calendar_id', 'timezone'])
@@ -276,6 +294,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     };
 
     const loadCatalog = async () => {
+        setCatalogLoading(true);
         try {
             const res = await axios.get('/api/tools/catalog');
             const tools = Array.isArray(res.data?.tools) ? res.data.tools : [];
@@ -284,6 +303,8 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
         } catch {
             setCatalog([]);
             setCatalogError(true);
+        } finally {
+            setCatalogLoading(false);
         }
     };
 
@@ -333,51 +354,31 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
             toast.error('Add at least one end-call marker or select Inherit global'); return;
         }
 
-        const cfg = serializeAgentConfig(toolState);
-        // Don't persist a voice the selected engine can't use: if the voice
-        // control is disabled (pipeline / platform-managed / unsupported), a
-        // previously saved value would otherwise ride along invisibly and
-        // become active if the agent is later switched back (Codex on #503).
-        const voiceControl = voiceControlState(voiceMeta, engineValue, voice);
-        const effectiveVoice = voiceControl.control === 'disabled' ? null : (voice || null);
+        setSaveError('');
         setSaving(true);
+        onSavingChange?.(true);
         try {
-            const baseBody: Record<string, unknown> = {
-                display_name: displayName.trim(),
-                provider: cfg.provider,
-                voice: effectiveVoice,
-                audio_profile: audioProfile || null,
-                extension: extension || null,
-                role_label: roleLabel || null,
-                greeting: greeting || '',
-                prompt: prompt || '',
-                notes: notes || null,
-                tools_json: cfg.tools_json,
-                mcp_json: cfg.mcp_json,
-                extra_json: cfg.extra_json,
-                tool_configs_json: cfg.tool_configs_json,
-                hangup_policy_json: cfg.hangup_policy_json,
-                email_recipient: emailRecipient || null,
-                email_from: emailFrom || null,
-                // Tri-state: '' means inherit — send explicit null (PATCH clears the column),
-                // never false. 'enabled' -> true, 'disabled' -> false.
-                email_enabled: emailEnabled === '' ? null : emailEnabled === 'enabled',
-            };
+            const baseBody = buildPayload();
 
             if (isNew) {
                 await axios.post('/api/agents', { ...baseBody, slug: slug.trim() });
                 toast.success('Agent created');
             } else {
-                await axios.patch(`/api/agents/${agent!.slug}`, { ...baseBody, is_active: isActive });
+                const changed = Object.fromEntries(Object.entries(baseBody).filter(
+                    ([key, value]) => JSON.stringify(value) !== JSON.stringify(initialPayload.current[key]),
+                ));
+                if (Object.keys(changed).length) await axios.patch(`/api/agents/${agent!.slug}`, changed);
                 toast.success('Agent saved');
             }
             onSaved();
-            onClose();
         } catch (e: unknown) {
             const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-            toast.error(detail ?? 'Save failed');
+            const message = typeof detail === 'string' ? detail : 'Save failed. Check the selected image and settings, then try again.';
+            setSaveError(message);
+            toast.error(message);
         } finally {
             setSaving(false);
+            onSavingChange?.(false);
         }
     };
 
@@ -446,31 +447,82 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
         ...templates.map((t) => ({ value: t.id, label: t.display_name })),
     ];
 
+    const buildPayload = (): Record<string, unknown> => {
+        const cfg = serializeAgentConfig(toolState);
+        const original = parseAgentConfig(agent);
+        const engineChanged = cfg.provider !== original.provider || toolState.pipeline !== original.pipeline;
+        const vc = voiceControlState(voiceMeta, engineValue, voice);
+        // An appearance-only save must never clear an existing provider voice.
+        const effectiveVoice = (isNew || engineChanged) && vc.control === 'disabled' ? null : (voice || null);
+        return {
+            display_name: displayName.trim(),
+            provider: cfg.provider,
+            voice: effectiveVoice,
+            avatar_preset: appearance.avatar_preset || 'male',
+            avatar_image: appearance.avatar_image || null,
+            audio_profile: audioProfile || null,
+            extension: extension || null,
+            role_label: roleLabel || null,
+            greeting: greeting || '',
+            prompt: prompt || '',
+            notes: notes || null,
+            tools_json: cfg.tools_json,
+            mcp_json: cfg.mcp_json,
+            extra_json: cfg.extra_json,
+            tool_configs_json: cfg.tool_configs_json,
+            hangup_policy_json: cfg.hangup_policy_json,
+            email_recipient: emailRecipient || null,
+            email_from: emailFrom || null,
+            // Tri-state: '' means inherit — send explicit null (PATCH clears the column),
+            // never false. 'enabled' -> true, 'disabled' -> false.
+            email_enabled: emailEnabled === '' ? null : emailEnabled === 'enabled',
+            ...(!isNew ? { is_active: isActive } : {}),
+        };
+    };
+    const snapshot = JSON.stringify({ displayName, slug, voice, audioProfile, extension, roleLabel,
+        greeting, prompt, notes, isActive, emailRecipient, emailFrom, emailEnabled, toolState, appearance });
+    const payloadBuilder = useRef(buildPayload);
+    payloadBuilder.current = buildPayload;
+    useEffect(() => {
+        if (initialized && baseline === null) {
+            initialPayload.current = payloadBuilder.current();
+            setBaseline(snapshot);
+        }
+    }, [initialized, baseline, snapshot]);
+    const dirty = baseline !== null && snapshot !== baseline;
+    useEffect(() => { onDirtyChange?.(dirty || readingImage); }, [dirty, readingImage, onDirtyChange]);
+    const sections = [
+        { id: 'general', label: 'General', description: 'Identity, appearance and voice' },
+        { id: 'conversation', label: 'Conversation', description: 'Greeting and instructions' },
+        { id: 'tools', label: 'Tools', description: 'Capabilities and access' },
+        { id: 'advanced', label: 'Advanced', description: 'Call behavior and overrides' },
+    ];
+
+    if (!isOpen) return null;
     return (
-        <Modal
-            isOpen={isOpen}
-            onClose={onClose}
-            title={isNew ? 'New Agent' : `Edit Agent — ${agent?.display_name}`}
-            size="lg"
-            footer={
-                <>
-                    <button
-                        onClick={onClose}
-                        className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"
-                    >
-                        Cancel
-                    </button>
-                    <button
-                        onClick={handleSubmit}
-                        disabled={saving}
-                        className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
-                    >
-                        {saving ? 'Saving…' : isNew ? 'Create Agent' : 'Save Changes'}
-                    </button>
-                </>
-            }
-        >
-            <div className="space-y-4">
+        <div className="mx-auto max-w-5xl space-y-6 pb-6">
+            <button type="button" onClick={onClose} disabled={saving}
+                className="inline-flex min-h-11 items-center gap-2 text-sm text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
+                <ArrowLeft className="h-4 w-4" /> Back to agents
+            </button>
+            <div>
+                <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Agent settings</p>
+                <h1 className="mt-2 break-words text-3xl font-semibold tracking-tight">{isNew ? 'Create an agent' : agent?.display_name}</h1>
+                <p className="mt-2 text-sm text-muted-foreground">{isNew ? 'Set up the voice and capabilities for your next agent.' : 'Changes apply to new calls after saving.'}</p>
+            </div>
+            <div className="flex flex-wrap gap-2 border-b border-border pb-3" aria-label="Settings sections">
+                {sections.map(item => <button key={item.id} type="button" onClick={() => setSection(item.id)}
+                    aria-current={section === item.id ? 'page' : undefined}
+                    className={`min-h-11 rounded-lg px-4 py-2 text-sm font-medium focus-visible:ring-2 focus-visible:ring-ring ${section === item.id ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}>
+                    {item.label}
+                </button>)}
+            </div>
+            {saveError && <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">{saveError}</div>}
+            <fieldset disabled={saving} className="min-w-0 rounded-xl border border-border bg-card p-4 sm:p-6 space-y-6 disabled:opacity-70">
+                <div><h2 className="text-lg font-semibold">{sections.find(item => item.id === section)?.label}</h2>
+                    <p className="mt-1 text-sm text-muted-foreground">{sections.find(item => item.id === section)?.description}</p></div>
+                <section hidden={section !== 'general'} className="space-y-5" aria-label="General settings">
+                    <AgentAvatarPicker value={appearance} onChange={setAppearance} onBusyChange={setReadingImage} />
                 {/* Template picker — create only */}
                 {isNew && templates.length > 0 && (
                     <FormSelect
@@ -602,7 +654,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     tooltip="Audio codec/transport profile. Leave blank to use the system default."
                 />
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <FormInput
                         id="agent-extension"
                         label="Extension"
@@ -621,6 +673,42 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     />
                 </div>
 
+                <div className="mb-4">
+                    <FormLabel htmlFor="agent-notes" tooltip="Internal notes about this agent — not used at runtime.">
+                        Notes
+                    </FormLabel>
+                    <textarea
+                        id="agent-notes"
+                        value={notes}
+                        onChange={(e) => setNotes(e.target.value)}
+                        rows={3}
+                        placeholder="Internal notes about this agent…"
+                        className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
+                    />
+                </div>
+
+                {!isNew && (
+                    <div className="mb-4 flex items-center justify-between p-3 border border-border rounded-lg bg-card/50">
+                        <div>
+                            <p className="text-sm font-medium">Active</p>
+                            <p className="text-xs text-muted-foreground">Inactive agents are excluded from call routing.</p>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                            <input
+                                type="checkbox"
+                                aria-label="Agent active"
+                                className="sr-only peer"
+                                checked={isActive === 1}
+                                onChange={(e) => setIsActive(e.target.checked ? 1 : 0)}
+                            />
+                            <div className="w-9 h-5 bg-muted peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-ring rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-background after:border-border after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
+                        </label>
+                    </div>
+                )}
+
+
+                </section>
+                <section hidden={section !== 'conversation'} className="space-y-5" aria-label="Conversation settings">
                 <div className="mb-4">
                     <FormLabel htmlFor="agent-greeting" tooltip="First words the agent speaks when a call connects. Use {caller_name} for the caller's name.">
                         Greeting
@@ -690,38 +778,26 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     />
                 </div>
 
-                <div className="mb-4">
-                    <FormLabel htmlFor="agent-notes" tooltip="Internal notes about this agent — not used at runtime.">
-                        Notes
-                    </FormLabel>
-                    <textarea
-                        id="agent-notes"
-                        value={notes}
-                        onChange={(e) => setNotes(e.target.value)}
-                        rows={3}
-                        placeholder="Internal notes about this agent…"
-                        className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
-                    />
-                </div>
 
-                {!isNew && (
-                    <div className="mb-4 flex items-center justify-between p-3 border border-border rounded-lg bg-card/50">
-                        <div>
-                            <p className="text-sm font-medium">Active</p>
-                            <p className="text-xs text-muted-foreground">Inactive agents are excluded from call routing.</p>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                            <input
-                                type="checkbox"
-                                className="sr-only peer"
-                                checked={isActive === 1}
-                                onChange={(e) => setIsActive(e.target.checked ? 1 : 0)}
-                            />
-                            <div className="w-9 h-5 bg-muted peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-ring rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-background after:border-border after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
-                        </label>
-                    </div>
-                )}
+                </section>
+                <section hidden={section !== 'tools'} className="space-y-5" aria-label="Tool settings">
+                {catalogLoading ? <div role="status" aria-label="Loading tools" className="rounded-lg border border-border bg-muted/20 p-4 text-sm text-muted-foreground">
+                    Loading tools and selections…
+                </div> : <AgentToolPicker
+                    catalog={catalog}
+                    catalogError={catalogError}
+                    state={toolState}
+                    onChange={setToolState}
+                    transferDestinations={transferDestinations}
+                    googleCalendars={googleCalendars}
+                    microsoftAccounts={microsoftAccounts}
+                    calendlyAppointments={calendlyAppointments}
+                    voicemailMailboxes={voicemailMailboxes}
+                />}
 
+
+                </section>
+                <section hidden={section !== 'advanced'} className="space-y-5" aria-label="Advanced settings">
                 <details
                     className="mb-4 border border-border rounded-lg bg-card/50"
                 >
@@ -822,7 +898,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     />
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <FormInput
                         id="agent-email-recipient"
                         label="Email Recipient"
@@ -852,17 +928,6 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     value={emailEnabled}
                     onChange={(e) => setEmailEnabled(e.target.value)}
                     tooltip="Whether this agent sends call-summary emails. 'Inherit' uses the global/per-context setting; 'Enabled'/'Disabled' override it for this agent."
-                />
-
-                <AgentToolPicker
-                    catalog={catalog}
-                    catalogError={catalogError}
-                    state={toolState}
-                    onChange={setToolState}
-                    transferDestinations={transferDestinations}
-                    googleCalendars={googleCalendars}
-                    microsoftAccounts={microsoftAccounts}
-                    voicemailMailboxes={voicemailMailboxes}
                 />
 
                 <details className="mt-4 border border-border rounded-lg bg-card/50">
@@ -922,8 +987,20 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                         )}
                     </div>
                 </details>
+
+                </section>
+            </fieldset>
+            <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4 shadow-sm">
+                <p className="text-sm text-muted-foreground" role="status">{saving ? 'Saving…' : dirty ? 'Unsaved changes' : isNew ? 'Not created yet' : 'All changes saved'}</p>
+                <div className="flex gap-2">
+                    <button type="button" onClick={onClose} disabled={saving} className="min-h-11 rounded-lg border border-border px-4 text-sm font-medium hover:bg-accent disabled:opacity-50">Cancel</button>
+                    <button type="button" onClick={handleSubmit} disabled={saving || readingImage || !initialized}
+                        className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-ring">
+                        <Save className="h-4 w-4" />{saving ? 'Saving…' : isNew ? 'Create agent' : 'Save changes'}
+                    </button>
+                </div>
             </div>
-        </Modal>
+        </div>
     );
 };
 

@@ -59,7 +59,10 @@ class GoogleToolAdapter:
         function_declarations = []
         
         # Iterate through all registered tools
-        for tool_name, tool in self.registry._tools.items():
+        for tool in self.registry.get_all():
+            if not getattr(tool, "is_enabled", True):
+                continue
+            tool_name = tool.definition.name
             try:
                 definition = tool.definition
                 
@@ -118,7 +121,7 @@ class GoogleToolAdapter:
         
         for tool_name in tool_names:
             tool = self.registry.get(tool_name)
-            if not tool:
+            if not tool or not getattr(tool, "is_enabled", True):
                 logger.warning(f"Tool not found in registry: {tool_name}")
                 continue
             

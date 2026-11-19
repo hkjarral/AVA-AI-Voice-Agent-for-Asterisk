@@ -33,7 +33,8 @@ def test_additive_migration_fails_closed_when_required_column_cannot_be_added():
     import sqlite3
 
     existing = {
-        "email_recipient", "email_from", "email_enabled", "tool_configs_json"
+        "email_recipient", "email_from", "email_enabled", "tool_configs_json",
+        "avatar_preset", "avatar_image",
     }
 
     class Cursor:

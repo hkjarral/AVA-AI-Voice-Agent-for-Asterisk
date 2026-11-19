@@ -131,6 +131,22 @@ async def test_reload_validation_failure_keeps_previous_generation():
 
 
 @pytest.mark.asyncio
+async def test_actual_http_template_reload_failure_keeps_working_generation():
+    old = ToolRuntimeGeneration.build(generation_id=7, config=_config("old").dict())
+    engine = _engine(old)
+    broken = _config("new")
+    broken.dict()["in_call_tools"] = {"broken": {"kind": "in_call_http_lookup", "url": "https://example.invalid",
+                                                 "method": "POST", "body_template": '{"broken":'}}
+    with patch("src.config.load_config", return_value=broken):
+        response = await Engine._reload_handler(engine, SimpleNamespace())
+    assert response.status == 500
+    assert engine._tool_generation is old
+    assert engine.config.dict()["tools"]["transfer"]["destinations"].keys() == {"old"}
+    assert engine._next_tool_generation_id == 8
+    assert not engine._tool_reload_lock.locked()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_reload_returns_conflict_without_releasing_owner_lock():
     old = ToolRuntimeGeneration.build(generation_id=1, config=_config("old").dict())
     engine = _engine(old)

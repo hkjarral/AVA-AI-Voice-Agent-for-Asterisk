@@ -2,6 +2,390 @@
 
 This guide covers upgrading between releases of Asterisk AI Voice Agent.
 
+**Pending Google Calendar datetime correction (#865).**
+
+After installing the correction, `Z` and explicit offsets preserve their instant;
+naive datetimes remain calendar-local. Review custom prompts that appended `Z`
+to local times or discarded returned offsets. No configuration/database migration
+moves existing events. See [datetime compatibility and restart/rollback guidance](Google-calendar-tool.md#datetime-contract-and-upgrade-compatibility).
+
+## v7.7.2 to v7.7.3
+
+Use the [pinned upgrade](INSTALLATION.md#upgrade-to-v773-existing-checkout) after
+publication. Stop new PBX admissions and drain calls before replacing services.
+Update the Engine and Admin UI together, the host CLI/updater with the release,
+and installed CPU or CUDA Local AI images using their original profiles. Retain
+model volumes, managed credentials, Agents, configuration overlays, and stopped
+optional services. Hard-refresh the browser after the Admin UI rebuild.
+
+- **Transfer behavior.** An answered destination that hangs up before acceptance
+  now returns the caller to the AI. Deferred full-agent transfers without a
+  configured handoff announcement commit after four seconds without reply audio.
+  This timer also arms after failed tool-result delivery. Caller speech and
+  barge-in affect the timer. For slow first-audio providers, raise
+  `tools.transfer.deferred_silent_commit_timeout_sec`; `0` disables it. Once
+  reply audio starts, an unfinished reply without barge-in can still remain
+  armed. See the [watchdog rules](Configuration-Reference.md#deferred-transfer-silent-reply-timeout-toolstransfer).
+- **Announcement voices.** `tools.attended_transfer.tts_provider` optionally selects
+  a configured pipeline TTS component, with `tts_options` for voice/language.
+  Restart the Engine after adding or changing provider configuration. A selected
+  provider fails closed when unavailable; preparation failure before dialing
+  leaves the caller with the AI. `ai_briefing` still needs Local AI LLM capability
+  and can fail after the destination answers. Language options are provider-specific.
+  Caller-name/reason placeholders use only the caller-stated values supplied by
+  the model; the default announcement is unchanged. Retain transfer templates
+  and review their privacy implications. See [attended transfers](Configuration-Reference.md#attended-transfer-toolsattended_transfer).
+- **Recording access.** Authenticated downloads and playback use the same WAV
+  representation. Discovery rejects symlinks and ambiguous exact-ID matches.
+  Operators using symlinked paths inside the recording tree need a direct
+  read-only mount of the real files. Resolve duplicate ID associations, retry changing
+  files after recording finishes, and note the 256 MiB source limit. History
+  deletion does not erase the Asterisk files. There is no recording-catalog or
+  database migration. See [recording access](ADMIN_UI_GUIDE.md#call-recording-playback-and-download).
+- **Admin recovery.** Lost Save/Apply or update responses can mean an accepted
+  operation. Use Refresh status or Recent Runs to reconcile it before another
+  write. Drafts and accepted job IDs are preserved where supported. Navigation
+  discards obsolete responses rather than letting them overwrite the current view.
+- **Image and development dependencies.** WebSockets 17.4 requires the updated
+  Engine and Local AI packages. The CUDA image now bundles Python 3.11.15 while
+  retaining CUDA 12.4.1/cuDNN. Rebuild it with the original backend/architecture
+  flags and preserve models. Physical-GPU inference is not established by the
+  hosted build. Frontend source development uses Node 22, minimum 22.12 and below
+  23, React 19 and clean typechecking. Docker supplies Node; operators need no
+  host Node upgrade for the container deployment. See [Local AI](LOCAL_ONLY_SETUP.md)
+  and [React migration](contributing/reviews/REACT_19_MIGRATION.md).
+- **Rollback.** Keep the pre-upgrade image set and coherent state backups. Restore
+  Engine, Admin and any changed Local AI images together, and preserve the saved
+  configuration. Remove newly introduced optional transfer keys before running
+  an older runtime when required. Rollback does not reverse an external transfer
+  or delete recordings already downloaded. The recording/UI changes add no data
+  migration; earlier-release privacy and Agent schema requirements still apply.
+
+The 7.7.x and 7.6.x support trains continue. Existing validation is recorded by
+revision in the [v7.7.3 matrix](baselines/golden/v7.7.3-validation-matrix.md).
+The [v7.7.3-only security exception](baselines/golden/v7.7.3-validation-matrix.md#v773-only-security-exception)
+records the remaining dependency and Bookworm findings, exposure limits and
+follow-up deadline.
+
+## v7.7.1 to v7.7.2
+
+Use the [published v7.7.2 upgrade](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/v7.7.2/docs/INSTALLATION.md#upgrade-to-v772-existing-checkout). Drain calls and update Engine and Admin UI
+together. Use the target CLI and updater for updated build and recovery behavior.
+Keep saved provider selections, transport and Audio Profile settings, models,
+configuration overlays and intentionally stopped services.
+
+- **Build and recovery.** Use the active Docker context's built-in builder or
+  an explicitly selected `BUILDX_BUILDER`. Preserve Compose files, profiles and
+  project across build and startup. The helper scopes the Bake entitlement
+  retry to selected services. On success, startup uses `--no-build --pull never`.
+  For existing checkouts and older helpers, see [build recovery](BUILD_TROUBLESHOOTING.md)
+  and [legacy Compose instructions](CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
+- **Security.** Use the v7.7.2 Engine image for the patched Python dependencies.
+  If you run CPU Local AI, update that image using the same build profile to
+  receive Debian's `zlib1g` fix. Keep intentionally stopped services stopped.
+  See the [Bookworm exception](baselines/golden/v7.7.2-validation-matrix.md#bookworm-exception-for-v772)
+  for the remaining exposure in the Engine, Admin UI and updater images.
+- **First-call setup.** `install.sh --ui` bootstraps management. The wizard saves
+  non-secret progress separately in `data/operator/onboarding.json`. Existing
+  Agents and pending legacy migration are preserved. Older versions ignore the
+  progress file. Keep configuration backups for recovery from partial saves.
+  See [First successful call](FIRST_CALL.md) for custom Stasis, remote media
+  and PBX routing instructions.
+- **A2A.** Rebuild the Engine to include the new SDK. A2A is optional, in-call,
+  and assigned per Agent. Back up private managed credentials and their
+  configuration references together. When reverting to an older runtime,
+  retain the backup and remove unsupported A2A configuration and assignments
+  from the active configuration if required. A local rollback does not undo
+  remote tasks. See [A2A setup and credential cleanup](A2A-Agent-Tool.md).
+- **Media.** AudioSocket squelch recovers first-frame speech with call-local
+  speech detection. Media WebSocket pacing remains `legacy` unless an operator
+  opts into `asterisk` on a qualified setup. Restore the saved pacing choice
+  during rollback. OpenAI audio-tail admission respects interruption and
+  completion ownership. See [media qualification](ISSUE_808_TESTING.md).
+- **Calendar and YAML.** An identical in-process retry of an uncertain Microsoft
+  create reuses the transaction ID and reads back the event before confirming it.
+  After a restart,
+  the same call ID and arguments can reproduce the transaction ID, but a new
+  create attempt lacks the in-process readback. Follow the
+  [restart recovery guide](Microsoft-calendar-tool.md#failures-concurrency-and-restart-recovery)
+  before retrying an uncertain booking. The Admin writer preserves local YAML
+  comments when it can verify the round trip, with documented plain-dump
+  fallback cases.
+
+Supported trains remain 7.7.x and 7.6.x. Existing verification is scoped by
+revision and configuration in the [v7.7.2 matrix](baselines/golden/v7.7.2-validation-matrix.md).
+
+## v7.7.0 to v7.7.1
+
+This historical release added recovery and reliability work, local transcription,
+and template-editor capabilities. Use the [published v7.7.1 guide](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/v7.7.1/docs/INSTALLATION.md#upgrade-to-v771-existing-checkout)
+for that version's pinned instructions.
+
+### Upgrade, images and persistent state
+
+Drain calls and prevent new PBX admissions before upgrading. Update Engine
+and Admin UI together, replace the host CLI/updater image, and update Local AI
+when installed/selected. Its batch worker, protocol and optional Faster-Whisper
+image packaging changed; retain build flags, model volumes and intentionally
+stopped optional services. Hard-refresh browser assets after Admin replacement.
+
+The new CLI/updater journals unfinished Docker work, retries at the same Git
+revision, builds before recreation, and scopes the Compose/Bake host-network
+entitlement fallback. Source revision, installed CLI, updater image and Docker
+plugin versions are distinct. An old binary/image does not gain the fix from
+new source alone. Use the target release CLI/pinned recovery script or the
+[manual helper/Bake procedure](CLI_TOOLS_GUIDE.md#manual-builds-on-affected-composebuildx-versions).
+Failed or unknown health on a running engine and unmapped database overrides
+intentionally block automatic changes. Inference-only hosts require verified
+remote drain before any explicit runtime override. Preserve the original
+pre-advance update job/backup; a later retry can already point at the new source.
+
+Call History adds the internal `calendly_erasure_required` column with a
+conservative default for old rows/writers. Current writers use adapter footprints
+for new rows, so unused installations do not accumulate new Calendly cleanup.
+Required privacy migration fails closed. Opening older Calendly journals
+backfills `calendly.db.configured`, retained through disconnect/journal absence.
+Back up the actual History database, erasure queue, adapter journal/marker,
+managed secrets and configuration coherently. An adapter snapshot alone is not
+the complete recovery set. Never delete the marker, drop the flag or restore an
+older booking journal merely to roll back application code. See
+[integration backups](INTEGRATION_BACKUPS.md) and [booking providers](Appointment-booking-providers.md).
+
+### Configuration and operator-visible changes
+
+- [Local transcription](OpenAI-Compatible-Transcription.md) is optional and
+  fails closed without separate speech credentials. Recreate Admin after setting
+  them and match Local AI WebSocket authentication. No transcription UI or cloud
+  fallback is added; subtitles use synthetic whole-file timing.
+- [HTTP template validation](HTTP-Tool-Templates.md) checks enabled tools before
+  staging/saving. Initial startup omits definitely invalid HTTP tools with safe
+  diagnostics; valid tools still start. Invalid reloads retain the prior generation,
+  and invalid Agent-inline templates retain fail-closed Agent policy. Review and
+  fix templates rather than assuming old malformed JSON will still dispatch.
+- HTTP `{transcript_json}` is an invocation-local snapshot independent of summary
+  enablement. Pushover text has a different variable catalog; HTTP JSON placeholders
+  are not supported there. Synthetic previews do not resolve secrets, generate
+  summaries, send tests or establish receiver-side success.
+- The modular Google LLM default becomes `models/gemini-3.8-flash` when omitted.
+  Explicit saved selections remain; native Google Live defaults and Audio Profiles
+  are unchanged. Sampling/candidate normalization and complete-answer selection
+  are model-specific; see [provider controls](ADMIN_UI_GUIDE.md#providers).
+- OpenAI-compatible streaming excludes pre/post-call tools. Ollama retains the
+  resolved system prompt in bounded long-history requests. Neither is a new
+  provider/transport qualification.
+- Local Full waits for the exact Asterisk farewell playback's terminal state;
+  `done` can include stopped/canceled playback and is not proof of audibility.
+  Google Live can recover a pre-connection attended-transfer failure after the
+  original tool response. Initiation is not completion. Strict two-attempt
+  policy, physical-extension acceptance and the original #793 PBX cause remain
+  follow-up; no automatic retry or general after-human-transfer hook is added.
+
+### Acceptance and rollback limits
+
+The maintainer explicitly approved a fresh v7.7.1 waiver of additional deployment,
+runtime, live-call and upgrade testing, including exact-candidate call acceptance
+and the successful-call baseline requirement. Existing evidence and unverified
+cases remain labelled as such in the [validation matrix](baselines/golden/v7.7.1-validation-matrix.md).
+Required CI, automated checks, reviews and security assessment are not waived.
+This waiver applied specifically to v7.7.1.
+
+Keep current state/models/credentials when reverting code or images. Reconcile
+uncertain external writes with staff before any data recovery; restoring local
+state cannot prove that a remote booking or notification never happened. Supported
+release trains remain 7.7.x and 7.6.x; this patch does not end 7.6.x support.
+
+## v7.6.4 to v7.7.0
+
+v7.7.0 adds Calendly booking, named Pushover tools, in-call HTTP summaries,
+opt-in Teams meetings, refreshed Agents/Tools editors, endpoint discovery,
+greeting readiness, and transfer/pipeline fixes. This is additive functionality;
+existing provider, model, transport, Audio Profile and saved Agent defaults remain.
+
+### Upgrade and persistent state
+
+Drain calls and follow the [pinned upgrade path](INSTALLATION.md#upgrade-to-v770-existing-checkout).
+Rebuild/recreate `ai_engine` and `admin_ui`, then hard-refresh browsers.
+Local AI source/dependencies are unchanged from v7.6.4; preserve its profile/models.
+The standalone Admin backend now requires Python 3.11, matching the primary image.
+Admin WebSockets remains direct even with ambient proxies; Engine/Local AI
+WebSocket versions are not upgraded by that Admin-only dependency change.
+
+Unlike v7.6.4, this release has additive state:
+- Agent initialization adds nullable `avatar_preset` and `avatar_image` columns.
+  Appearance is SQLite data, not voice selection or runtime YAML.
+- Calendly adds `data/operator/calendly.db` and a protected token. Preserve
+  replay/duplicate barriers and pending Call History erasure work.
+- Named Pushover tools reference private immutable files under `secrets/`.
+
+Back up actual SQLite paths coherently, credentials, configuration and overlays.
+Use the target CLI/recovery script and [integration backup instructions](INTEGRATION_BACKUPS.md).
+The backup-safety prerequisite merged in PR #775 (`8c336951`) and is included in v7.7.0.
+Custom mounts and unsupported host SQLite require a verified manual snapshot.
+
+### Operator workflows and limits
+
+- [Agents](AGENTS_EXPERIENCE_ROLLOUT.md): cards/list and a routed editor preserve
+  unsaved edits; saves PATCH changed fields only. Existing browser tabs need refresh.
+- Tools: **Update tool** stages HTTP/native edits; **Save & Apply** saves/publishes
+  new-call generations. Active calls retain their captured settings.
+- [Calendly](Calendly-calendar-tool.md): explicitly assigned, disabled until setup,
+  one account and qualified one-to-one appointments. Slot selection, canonical recap
+  and fresh approval precede submission; uncertain writes never replay. Subsequent
+  cancellation/rescheduling remains in Calendly/staff.
+- [Pushover](Pushover.md): named phase tools, recipient rows, explicit tests,
+  one summary per invocation and per-recipient outcomes. API acceptance does not
+  establish phone display; overlapping groups can duplicate delivery.
+- [In-call summaries](In-Call-Summaries.md): selected LLM and AVA conversation so far.
+  Invoke before transfer when needed. No general post-human-transfer hook is added.
+- [Teams](Microsoft-calendar-tool.md): opt-in calendar-backed meetings preserve
+  ownership, ETags and generated meeting content. Join readiness, invitation delivery
+  and RSVP acceptance are separate observations.
+- [ARI discovery](ARI-Endpoint-Discovery.md): only reviewed candidates are staged;
+  no automatic PBX extension creation or Agent permission expansion.
+- Greeting readiness defaults disabled. Google's separate `playback_prefill_ms`
+  defaults zero and trades latency for buffering; neither repairs missing inbound media.
+
+### Rollback and acceptance
+
+Keep current databases, credentials and booking journal while reverting application
+images. Never remove avatar columns or automatically restore an older journal.
+Pause booking, remove unsupported tool/policy references before older code starts,
+and reconcile remote activity before any data restore. Old UI ignores appearance;
+return to `/agents` if a new editor deep link is unavailable.
+
+The maintainer accepted existing evidence and waived additional deployment,
+runtime/live-call and upgrade testing. Automated gates remain required. Teams and
+other unqualified lanes are not relabelled as passes; see the [v7.7.0 matrix](baselines/golden/v7.7.0-validation-matrix.md).
+The approved support transition retains 7.6.x/7.7.x; 7.5.x support ends only when
+v7.7.0 is published. Dated metadata stages the release, not publication.
+
+## v7.6.3 to v7.6.4
+
+v7.6.4 contains HTTP-tool template hardening, farewell/transfer recovery fixes,
+and compatible Admin dependency updates. No database migration or change to
+saved Agents, providers, models, transports or Audio Profile defaults is required.
+
+Drain calls and preserve configuration, SQLite data, credentials, calendar OAuth
+caches and local Compose overlays using the
+[upgrade guide](INSTALLATION.md#upgrade-to-v764-existing-checkout). Rebuild/recreate
+`ai_engine` and `admin_ui` together, then hard-refresh the browser. Local AI code
+and its dependency profile are unchanged from v7.6.3; retain existing Local AI
+services and model volumes. Earlier upgrades must follow the intervening sections.
+
+### HTTP tool templates
+
+Before upgrading, review pre-call lookups, in-call HTTP tools and post-call
+webhooks against the [template compatibility rules](TOOL_CALLING_GUIDE.md#http-template-safety-and-compatibility):
+
+- Substitutions run once, only against the operator-authored template. Inserted
+  caller/model data and enrichment cannot introduce further placeholders.
+- Built-in call context and enrichment remain protected from model-argument
+  overrides, including when a protected field is empty. Use declared tool
+  parameters for independent model inputs rather than shadowing context names.
+- Absent Content-Type means JSON. Quote text placeholders inside JSON strings;
+  unquoted placeholders must resolve to one valid JSON value. Invalid JSON is
+  rejected before sending. Existing serialized transcript/summary placeholders
+  remain supported.
+- Raw text requires explicit `Content-Type: text/plain`. Form bodies retain
+  field encoding. XML, multipart and other unsupported body formats fail closed.
+- Keep the URL origin in operator configuration or an environment reference.
+  Per-call values supply encoded URL components, not a whole URL or multiple path
+  segments. Dot path segments are rejected. Do not pre-encode `query_params`.
+- The Admin HTTP **Test** preview uses a separate implementation. A successful
+  preview does not establish compatibility with the engine's runtime renderer.
+
+### Farewell and transfer recovery
+
+Google fallback uses the completed turn, while Google/Grok marker matching uses
+word/phrase boundaries. A pending deferred transfer takes priority over
+`HangupReady`; superseded hangup timers and provider farewell state are retired.
+Drain timeout recovery can play its apology and continue the conversation.
+Failed commits cancel their exact action without automatic replay; replacements
+survive older failures, and later independent hangups remain possible.
+
+Google marker heuristics remain off by default. Existing opt-in settings are
+preserved; ambiguous phrases such as "all set" can still cause false positives.
+See the [Google farewell guidance](Provider-Google-Setup.md#marker-based-hangup-heuristics).
+
+### Admin dependencies and custom telemetry
+
+The Admin backend updates FastAPI to 0.143.0 and Pydantic to 2.14.0; the
+supported container Python version remains 3.11. No database migration or
+provider, transport, model, or saved Agent default changes are introduced by
+these dependency updates. Rebuild the Admin image and hard-refresh its frontend
+after upgrading.
+
+FastAPI 0.143 makes automatic OpenTelemetry exporter configuration opt-in.
+The standard AVA deployment does not configure these exporters and requires no
+change. If a custom Admin deployment relies on FastAPI automatically consuming
+`OTEL_*` variables, install the matching `fastapi[opentelemetry]==0.143.0`
+extra (or equivalent SDK and OTLP exporter packages) in your custom Admin image,
+and pass `FASTAPI_OTEL_AUTO_CONFIGURE=true` to that container. The standard image
+does not include this extra. Otherwise, keep configuring providers/exporters
+yourself. See the
+[upstream release notes](https://github.com/fastapi/fastapi/releases/tag/0.143.0).
+
+### Rollback
+
+Drain calls, restore v7.6.3 code/images and pre-upgrade configuration, and retain
+Agent databases, model volumes, credentials and OAuth caches. No database
+downgrade is required. Code rollback cannot undo remote HTTP effects, bookings
+or completed transfers; reconcile ambiguous outcomes before retrying.
+Rolling back also removes HTTP template hardening: restrict or disable affected
+HTTP tools until a fixed release is restored. Remove custom FastAPI telemetry
+changes only if the older image/configuration does not support them.
+
+The [v7.6.4 validation matrix](baselines/golden/v7.6.4-validation-matrix.md)
+records the included PR evidence and the remaining final-candidate acceptance
+and publication gates. Previous-release waivers are not new acceptance evidence.
+
+## v7.6.2 to v7.6.3
+
+v7.6.3 is an in-place reliability, security, and operator-documentation release.
+It does not migrate databases, reassign Agents, or change saved provider,
+transport, Audio Profile, or Google model selections.
+
+Drain calls and back up configuration, SQLite stores, calendar OAuth caches,
+provider secrets and local Compose overlays using the
+[upgrade guide](INSTALLATION.md#upgrade-to-v763-existing-checkout). Then:
+
+1. Rebuild/recreate `ai_engine` and `admin_ui`. Rebuild/recreate
+   `local_ai_server` **if your deployment uses it**: Whisper idle-finalization
+   code changed. Preserve your CPU/GPU build profile and model volumes; do not
+   start the optional local service on a cloud-only installation.
+2. Cloud startup connection recovery is opt-in. Existing installations retain
+   a 10-second opening timeout, zero retries and no aggregate deadline.
+   Expert controls affect initial connection only, not established-call
+   recovery or terminal failure routing. See [connection recovery](Provider-Connection-Recovery.md).
+3. Google Developer long-response playback defaults off, requires a saved
+   provider setting and engine restart, and is ignored on Vertex connections.
+   It cannot recover audio never received from Google. See the
+   [Google guide](Provider-Google-Setup.md#long-response-playback-developer-api-opt-in).
+4. Provider tests now honor explicit endpoints, roles and provider-scoped
+   credentials. Fix invalid/custom endpoint configuration instead of relying
+   on an implicit fallback to a public service. Speech probes may establish
+   reachability only, not transcription or synthesis quality.
+5. Streamable HTTP MCP is configured in YAML with environment-referenced auth
+   headers; the Admin UI editor still supports stdio only. Restart the engine
+   outside calls after connection changes. Ambiguous remote tool outcomes are
+   not replayed automatically; reconcile side effects on the remote service
+   before retrying. See [MCP integration](MCP_INTEGRATION.md).
+6. Admin dependency/security updates include React Router 7. Hard-refresh the
+   rebuilt UI and confirm Call History deep-link opening/closing. DTMF remains
+   delivered to native handlers but no longer appears as raw digits in logs.
+   Google deferred-transfer repeat suppression does not remove a duplicate
+   transcript or prevent a repeat queued before an opt-in playback drain.
+
+Rollback requires no database downgrade. Drain calls, restore the v7.6.2
+code/images and pre-upgrade configuration, and remove any newly adopted HTTP MCP
+or optional provider settings not supported by the older code. Preserve model
+volumes, Agent data, calendar identities and OAuth caches. External tool effects,
+appointments and invitations are not undone by a code rollback.
+
+The [v7.6.3 validation matrix](baselines/golden/v7.6.3-validation-matrix.md)
+separates merged-feature evidence from pending exact-candidate tag acceptance.
+Previous-release acceptance is not silently carried forward as a new pass.
+
 ## v7.6.1 to v7.6.2
 
 v7.6.2 is an in-place feature and reliability release. It adds opt-in Gemini 3.8
@@ -848,10 +1232,11 @@ curl http://localhost:15000/health
 
 For any version upgrade:
 
-1. **Backup** your `.env`, `config/ai-agent.yaml`, and `config/ai-agent.local.yaml`
-2. **Pull** the latest code: `git pull` (or use `agent update` which handles backup/restore automatically)
-3. **Run preflight**: `sudo ./preflight.sh --apply-fixes`
-4. **Rebuild**: `docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate`
-5. **Verify**: `agent check` and make a test call
+1. **Prepare** a maintenance window: pause/reroute new PBX calls and drain existing calls. Record the current Git/CLI versions, local changes, Compose files/project, running services, and the release you intend to install. Read that release's migration/rollback boundaries.
+2. **Back up** configuration, users, overlays, managed secrets and coherent SQLite snapshots of the actual Agent/History/integration paths, including any environment overrides. Live DB/WAL file copies are not coherent backups. Prefer a release CLI/updater containing the required backup fixes; see [installation backup prerequisites](INSTALLATION.md#upgrade-to-v770-existing-checkout).
+3. **Update** using `agent update --plan --ref <release>` followed by `agent update --ref <release>`, or fetch and fast-forward to the chosen release after preserving local edits. Do not use destructive reset/clean commands as a routine upgrade step.
+4. **Run preflight**: `sudo ./preflight.sh --apply-fixes` and resolve failures.
+5. **Build, then recreate** only the affected services. Use the [manual Compose/Bake procedure](CLI_TOOLS_GUIDE.md#manual-builds-on-affected-composebuildx-versions) when not using the updater; keep stopped optional services stopped and use the same Compose files/project for both steps.
+6. **Verify**: `agent check`, service readiness, a hard-refresh of Admin UI, and a test call. Keep the original backups until validation is complete. A retry at the same Git commit may still require unfinished Docker actions.
 
 For detailed release notes, see [CHANGELOG.md](../CHANGELOG.md).

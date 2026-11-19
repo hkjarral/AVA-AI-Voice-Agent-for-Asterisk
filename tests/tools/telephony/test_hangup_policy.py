@@ -103,6 +103,76 @@ def test_end_call_detection_handles_common_stt_misrecognitions():
     assert text_contains_end_call_intent("Please and the call now.", markers)
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Can you hand off to a real person?",
+        "Can you hand-off to a real person?",
+        "Can you handoff to a real person?",
+        "I was on hold and the call dropped",
+        "Please leave a message and call me back",
+        "Please review the agent notes and the call.",
+        "Don't and the call.",
+        "Please and the call tomorrow after the appointment.",
+    ],
+)
+def test_end_call_detection_does_not_rewrite_ordinary_phrases(text):
+    markers = resolve_hangup_policy({})["markers"]["end_call"]
+
+    assert not text_contains_end_call_intent(text, markers)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "And the call.",
+        "and call",
+        "  PLEASE   and the call NOW!  ",
+        "And the call please.",
+        "Please and call now.",
+        "Please end the call now.",
+        "We are finished; end the call please.",
+        "Hang up.",
+        "hangup",
+        "Okay, hand up the call.",
+        "Goodbye!",
+    ],
+)
+def test_end_call_detection_preserves_commands_and_supported_stt_artifacts(text):
+    markers = resolve_hangup_policy({})["markers"]["end_call"]
+
+    assert text_contains_end_call_intent(text, markers)
+
+
+def test_end_call_normalization_respects_agent_replacement_markers():
+    policy = resolve_effective_hangup_policy(
+        {}, {"strategy": "replace", "end_call": ["please hand off", "finish session"]}
+    )["policy"]
+    markers = policy["markers"]["end_call"]
+
+    assert text_contains_end_call_intent("Please hand off to support.", markers)
+    assert text_contains_end_call_intent("Finish session.", markers)
+    assert not text_contains_end_call_intent("Please and the call now.", markers)
+    assert not text_contains_end_call_intent("Hang up.", markers)
+
+
+@pytest.mark.parametrize(
+    "marker, text",
+    [
+        ("end call now", "Please and the call now."),
+        ("end call now", "And call now!"),
+        ("please end call now", "Please and the call now."),
+        ("end call now please", "And the call now please!"),
+    ],
+)
+def test_whole_command_correction_preserves_custom_marker_modifiers(marker, text):
+    markers = resolve_effective_hangup_policy(
+        {}, {"strategy": "replace", "end_call": [marker]}
+    )["policy"]["markers"]["end_call"]
+
+    assert text_contains_end_call_intent(text, markers)
+
+
 def test_short_polite_closing_detection_accepts_terminal_thanks():
     assert text_is_short_polite_closing("Okay, thank you")
     assert text_is_short_polite_closing("thanks goodbye")

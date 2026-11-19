@@ -7,6 +7,7 @@ import base64
 import struct
 import json
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -79,12 +80,19 @@ def _extract_stt_transcript(payload: Dict[str, Any]) -> Optional[str]:
 def _extract_candidate_text(payload: Dict[str, Any]) -> str:
     candidates = payload.get("candidates") or []
     for candidate in candidates:
-        content = candidate.get("content") or {}
-        parts = content.get("parts") or []
-        for part in parts:
-            text = part.get("text")
-            if text:
-                return text
+        # Finish reasons belong to individual candidates. Never mix partial,
+        # blocked, or thought text into a different candidate's complete answer.
+        if candidate.get("finishReason") != "STOP":
+            continue
+        parts = (candidate.get("content") or {}).get("parts") or []
+        text = "".join(
+            part["text"] for part in parts
+            if isinstance(part.get("text"), str) and not part.get("thought")
+        ).strip()
+        if text:
+            return text
+    if any(candidate.get("finishReason") == "MAX_TOKENS" for candidate in candidates):
+        raise GoogleGenerationIncompleteError("Google generation stopped at MAX_TOKENS")
     return ""
 
 
@@ -315,6 +323,10 @@ class GoogleSTTAdapter(STTComponent):
         return options
 
 
+class GoogleGenerationIncompleteError(RuntimeError):
+    """The provider exhausted its output budget before completing the response."""
+
+
 class GoogleLLMAdapter(LLMComponent):
     """# Milestone7: Google Generative Language adapter (Gemini/PaLM)."""
 
@@ -364,6 +376,7 @@ class GoogleLLMAdapter(LLMComponent):
 
         payload = self._build_payload(transcript, context, merged)
         payload = _merge_dicts(payload, merged.get("request_overrides"))
+        self._normalize_generation_config(payload["generationConfig"], merged["model"])
 
         request_id = f"google-llm-{uuid.uuid4().hex[:10]}"
         model_path = merged["model"]
@@ -433,11 +446,53 @@ class GoogleLLMAdapter(LLMComponent):
             "top_p": merged.get("top_p"),
             "candidate_count": int(merged.get("candidate_count", 1)),
             "max_output_tokens": merged.get("max_output_tokens"),
+            "thinking_level": merged.get("thinking_level"),
             "system_instruction": sys_instr,
             "safety_settings": merged.get("safety_settings"),
             "request_overrides": dict(merged.get("request_overrides") or merged.get("request") or {}),
             "timeout_sec": float(merged.get("timeout_sec", 10.0)),
         }
+        return options
+
+    @staticmethod
+    def _gemini_version(model: Optional[str]) -> tuple[int, int]:
+        match = re.match(r"^(?:models/)?gemini-(\d+)(?:\.(\d+))?(?:-|$)", str(model or ""))
+        return (int(match.group(1)), int(match.group(2) or 0)) if match else (0, 0)
+
+    @classmethod
+    def _ignores_sampling_params(cls, model: Optional[str]) -> bool:
+        # 3.5 Flash routes to 3.6; Flash-Lite independently dropped sampling.
+        # Keep these exceptions aligned with frontend/utils/googleLLMModels.ts.
+        name = str(model or "").removeprefix("models/")
+        automatic_models = {"gemini-3.5-flash", "gemini-3.5-flash-lite"}
+        return name in automatic_models or cls._gemini_version(model) >= (3, 6)
+
+    @classmethod
+    def _normalize_generation_config(cls, config: Dict[str, Any], model: str) -> None:
+        # Apply after request overrides too, so legacy configuration cannot
+        # reintroduce unsupported settings when switching to the new default.
+        if cls._ignores_sampling_params(model):
+            for key in ("temperature", "topP", "topK"):
+                config.pop(key, None)
+        if cls._gemini_version(model) >= (3, 0):
+            config.pop("candidateCount", None)
+
+    def summary_options(self, max_output_tokens: int) -> Dict[str, Any]:
+        """Reserve thinking room only for isolated Gemini 3+ summary jobs."""
+        model = self._compose_options({})["model"]
+        if self._gemini_version(model) < (3, 0):
+            return {}
+        options: Dict[str, Any] = {"max_output_tokens": max(4096, max_output_tokens)}
+        # Verified text-model capabilities; do not send low to image models
+        # (e.g. 3.1 Flash-Lite Image) that do not support it.
+        low_thinking_models = {
+            "gemini-3-flash-preview", "gemini-3.1-pro-preview",
+            "gemini-3.1-flash-lite", "gemini-3.5-flash-lite",
+            "gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash",
+            "gemini-3.8-flash", "gemini-4-argon",
+        }
+        if model.removeprefix("models/") in low_thinking_models:
+            options["thinking_level"] = "low"
         return options
 
     def _build_payload(self, transcript: str, context: Dict[str, Any], merged: Dict[str, Any]) -> Dict[str, Any]:
@@ -447,15 +502,20 @@ class GoogleLLMAdapter(LLMComponent):
 
         system_instruction = merged.get("system_instruction") or context.get("system_prompt")
 
-        generation_config = {
-            "temperature": merged["temperature"],
-        }
-        if merged.get("top_p") is not None:
-            generation_config["topP"] = merged["top_p"]
+        generation_config: Dict[str, Any] = {}
+        # Preserve saved sampling values for models that support them.
+        if not self._ignores_sampling_params(merged.get("model")):
+            generation_config["temperature"] = merged["temperature"]
+            if merged.get("top_p") is not None:
+                generation_config["topP"] = merged["top_p"]
         if merged.get("max_output_tokens") is not None:
             generation_config["maxOutputTokens"] = merged["max_output_tokens"]
         if merged.get("candidate_count") not in (None, 1):
             generation_config["candidateCount"] = merged["candidate_count"]
+
+        if merged.get("thinking_level") is not None:
+            generation_config["thinkingConfig"] = {"thinkingLevel": merged["thinking_level"]}
+        self._normalize_generation_config(generation_config, merged.get("model", ""))
 
         payload: Dict[str, Any] = {
             "contents": contents,

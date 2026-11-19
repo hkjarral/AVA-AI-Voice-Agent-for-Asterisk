@@ -255,7 +255,7 @@ async def test_pre_call_execution_seeds_only_selected_metadata():
 
 
 @pytest.mark.asyncio
-async def test_in_call_http_substitution_prefers_final_metadata_then_ai_parameters():
+async def test_in_call_http_substitution_protects_final_metadata_from_declared_parameters():
     from src.core.models import CallSession
     from src.core.session_store import SessionStore
     from src.tools.context import ToolExecutionContext
@@ -266,7 +266,9 @@ async def test_in_call_http_substitution_prefers_final_metadata_then_ai_paramete
     session.pre_call_results = {"customer_tier": "silver"}
     session.call_metadata = {"customer_tier": "gold"}
     await store.upsert_call(session)
-    tool = InCallHTTPTool(InCallHTTPConfig(name="lookup"))
+    tool = InCallHTTPTool(InCallHTTPConfig(
+        name="lookup", parameters=[{"name": "customer_tier", "type": "string"}]
+    ))
     context = ToolExecutionContext(
         call_id=session.call_id,
         caller_number="1001",
@@ -279,7 +281,7 @@ async def test_in_call_http_substitution_prefers_final_metadata_then_ai_paramete
         {"customer_tier": "explicit-tool-parameter"},
         context,
     )
-    assert ai_override["customer_tier"] == "explicit-tool-parameter"
+    assert ai_override["customer_tier"] == "gold"
 
 
 @pytest.mark.asyncio

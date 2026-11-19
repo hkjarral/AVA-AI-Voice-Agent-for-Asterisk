@@ -225,7 +225,57 @@ Move “Sample CSV” + “Import CSV” under the New Campaign modal:
 Campaign settings include optional toggles:
 
 - **Consent gate** (HUMAN only): play a consent prompt and require DTMF (`1` accept / `2` deny).
-- **Voicemail drop** (MACHINE/NOTSURE): leave a voicemail recording when AMD indicates a machine.
+- **Voicemail drop** (MACHINE/NOTSURE): enabled by default; leave a voicemail recording when AMD indicates a machine. An enabled campaign requires a recording before Start.
+
+In **Call Scheduling → Create Campaign / Edit → Settings → Features**, uncheck
+**Voicemail drop** to allow starting without a voicemail recording. Save and reopen
+the campaign to confirm the checkbox remains unchecked. The saved setting is used
+for outbound origination, refreshed at the answered dialplan hop, and read again
+for the AMD result. With it disabled, `AAVA_VM_ENABLED=0`, MACHINE/NOTSURE hangs up
+without voicemail playback, and the attempt/lead outcome is `machine_detected`.
+An omitted legacy setting keeps the enabled default; saved `false`/SQLite `0`
+remains disabled after reopening or an engine restart. Consent is independent and
+still requires its own recording when enabled. No additional control or database
+migration is required. Deploying this code correction requires restarting the
+engine and Admin UI; pause campaigns and let active calls finish before updating.
+
+Draft and paused campaigns may be saved with voicemail enabled before a recording
+is chosen. Start revalidates the current stored setting atomically. While a
+campaign is running, enabling voicemail or clearing its recording is rejected
+unless the merged settings retain a non-empty recording URI; omitting the URI
+preserves the saved one. Start and edits use the same SQLite write transaction
+boundary, including across separate Admin/Engine processes.
+
+At AMD completion, an unreadable/deleted/missing campaign or enabled voicemail
+without a usable configured URI fails closed: no beep or drop is played, the
+attempt is `error`, the lead is `failed`, and the channel is hung up. Invalid or
+unconfirmed playback (rejection, exception, or completion timeout) also records
+`error`, never `voicemail_dropped`, and is not replayed. Successful confirmation
+uses the reserved playback ID, registers before the request, and requires its
+`PlaybackFinished` state to be `done`; this is Asterisk's terminal boundary, not
+proof of uninterrupted handset delivery. The lead table exposes the
+error detail and the existing **Errors** count includes it. Persistence failure
+still runs hangup/ownership cleanup; a rejected hangup retains the existing hangup
+retry owner, never a voicemail replay. A successfully loaded legacy campaign with
+an omitted flag still defaults to enabled and requires a recording. Consent and
+DNC behavior are unchanged.
+
+Hangup and terminal persistence have separate recovery lifetimes. The existing
+attempt metadata retains the captured outcome until both attempt and lead writes
+are acknowledged; scheduler and ChannelDestroyed recovery retry only missing
+writes with capped backoff, never voicemail playback. Conditional writes protect
+an already-finished attempt and an operator-changed, recycled, leased or newer
+lead generation. This in-memory intent does not survive process restart. Durable
+recovery conservatively closes stale unfinished attempts as errors and repairs
+an active lead only from its latest matching terminal attempt. It periodically
+revisits rows that were too recent at startup and excludes live owned attempts;
+it does not redial or replay audio. New dialing generations reuse the existing
+attempt-start/lead-last-attempt timestamp, without a schema migration.
+
+Voicemail playback retains the existing 30-second completion budget. A recording
+that does not confirm completion within that budget is hung up and reported as
+an error, rather than reported as successfully dropped. Recording-duration
+validation and longer playback budgets are separate follow-up work.
 
 Both recordings are uploaded as `.wav` (recommended) or `.ulaw`; WAV is converted to 8kHz μ-law for Asterisk.
 
@@ -269,7 +319,7 @@ Keep a collapsible “Setup Guide” with dialplan snippet and verification comm
 
 ### Phase 4 — Voicemail drop flow
 
-- Campaign start requires voicemail audio to exist
+- Campaign start requires voicemail audio when voicemail drop is enabled
 - Implement TTS generation (`local_ai_server`) + upload support
 - Implement WAV preview endpoint for Admin UI
 - Play voicemail drop (μ-law 8k) and hang up

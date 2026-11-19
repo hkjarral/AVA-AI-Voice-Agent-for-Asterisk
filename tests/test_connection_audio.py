@@ -536,10 +536,12 @@ async def test_pre_call_hold_audio_stops_connection_audio_first(monkeypatch):
 
     async def play_sound(*_args, **_kwargs):
         events.append("play-hold")
+        return {"id": _kwargs["playback_id"]}
 
     engine._stop_connection_audio = AsyncMock(side_effect=stop_connection_audio)
     engine.ari_client = SimpleNamespace(
         play_sound=AsyncMock(side_effect=play_sound),
+        stop_playback=AsyncMock(return_value=True),
     )
     engine._save_session = AsyncMock()
 
@@ -551,5 +553,9 @@ async def test_pre_call_hold_audio_stops_connection_audio_first(monkeypatch):
         session, reason="pre-call-hold-audio"
     )
     engine.ari_client.play_sound.assert_awaited_once_with(
-        session.caller_channel_id, "custom/please-wait"
+        session.caller_channel_id, "custom/please-wait",
+        playback_id=engine.ari_client.play_sound.await_args.kwargs["playback_id"],
+    )
+    engine.ari_client.stop_playback.assert_awaited_once_with(
+        engine.ari_client.play_sound.await_args.kwargs["playback_id"],
     )

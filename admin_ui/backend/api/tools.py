@@ -3,7 +3,7 @@ Tools API endpoints for testing HTTP tools before saving.
 """
 import asyncio
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 from typing import Dict, Any, Optional, List, Literal
 import httpx
@@ -17,12 +17,76 @@ import ipaddress
 import socket
 import yaml
 from string import Formatter
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, quote, quote_plus
 from settings import get_setting
 from . import config as config_api
+from src.tools.http.template import TemplateError, _PLACEHOLDER, body_media_type, render_template
+from src.tools.http.template_contract import assert_valid_template, render_request, request_preview, validate_template, variable_catalog
+from services.ari_endpoint_discovery import DestinationReview, validate_additions
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+async def _a2a_request(request: Request):
+    """Read bounded JSON without echoing credential-bearing validation input."""
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > 16384:
+            raise HTTPException(413, "A2A request is too large")
+        raw.extend(chunk)
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError()
+        return data
+    except (ValueError, UnicodeError):
+        raise HTTPException(422, "Expected an A2A settings object") from None
+
+
+@router.post("/a2a/credentials")
+async def stage_a2a_credentials(request: Request):
+    """Write an immutable private credential and return only its managed reference."""
+    from uuid import uuid4
+    raw = await _a2a_request(request)
+    token = raw.get("token")
+    if set(raw) != {"token"} or not isinstance(token, str) or not 1 <= len(token) <= 4096 or not re.fullmatch(r"[A-Za-z0-9._~+/-]+=*", token):
+        raise HTTPException(422, "Enter a valid Bearer token of at most 4096 characters")
+    identifier = "a2a-tool-" + uuid4().hex
+    await asyncio.to_thread(config_api._write_provider_secret, identifier, "api-key", token.encode())
+    return {"bearer_token_file": config_api._provider_secret_path(identifier, "api-key")}
+
+
+@router.post("/a2a/validate")
+async def validate_a2a_settings(request: Request):
+    """Validate draft A2A settings without contacting the remote service."""
+    from services.a2a_tools import validate_document
+    raw = await _a2a_request(request)
+    name, doc = raw.get("name"), raw.get("config")
+    if not isinstance(name, str) or not isinstance(doc, dict):
+        raise HTTPException(422, "Enter a tool name and A2A settings")
+    _validate_tool_name(name, max_length=64)
+    cfg = _load_cfg()
+    previous = (cfg.get("in_call_tools") or {}).get(name)
+    if _raw_name_exists(cfg, name) and (not isinstance(previous, dict) or previous.get("kind") != "a2a_agent"):
+        raise HTTPException(409, "That tool name is already in use")
+    validate_document(name, doc, previous)
+    return {"valid": True}
+
+
+@router.get("/a2a/{name}/usage")
+def get_a2a_usage(name: str):
+    """Return saved Agent assignments before offering tool deletion."""
+    from services.a2a_tools import agent_usage
+    _validate_tool_name(name, max_length=64)
+    return {"agents": agent_usage({name})[name]}
+
+
+@router.post("/transfer-destinations/validate")
+async def review_transfer_destinations(review: DestinationReview):
+    """Validate reviewed additions against the current draft, without saving."""
+    return validate_additions(review)
+
 
 # Default test values for template variables
 DEFAULT_TEST_VALUES = {
@@ -46,6 +110,8 @@ class TestHTTPRequest(BaseModel):
     body_template: Optional[str] = None
     timeout_ms: int = 5000
     test_values: Dict[str, str] = {}
+    phase: Literal["pre_call", "in_call", "post_call"] = "pre_call"
+    generate_summary: bool = False
 
 
 class TestHTTPResponse(BaseModel):
@@ -60,27 +126,40 @@ class TestHTTPResponse(BaseModel):
     resolved_url: str
     resolved_body: Optional[str] = None
     suggested_mappings: List[Dict[str, str]] = []
+    error_code: Optional[str] = None
+    template_variable: Optional[str] = None
+
+
+class HTTPTemplateReview(BaseModel):
+    phase: Literal["pre_call", "in_call", "post_call"]
+    config: Dict[str, Any]
+
+
+@router.post("/http-templates/validate")
+async def review_http_template(request: HTTPTemplateReview):
+    """Synthetic validation/preview only: no credential lookup, LLM, or HTTP."""
+    try:
+        return validate_template(request.config, request.phase)
+    except (TypeError, ValueError, AttributeError):
+        raise HTTPException(status_code=422, detail="Invalid HTTP template configuration shape") from None
+
+
+def _validate_http_tool_template(doc: Dict[str, Any], phase: str) -> None:
+    if doc.get("kind") in {"pushover", "a2a_agent"}:
+        return
+    try:
+        assert_valid_template(doc, phase)
+    except TemplateError as exc:
+        raise HTTPException(status_code=422, detail={"message": exc.public_message(), **exc.diagnostics()}) from None
 
 
 def _substitute_variables(template: str, values: Dict[str, str]) -> str:
     """
     Substitute template variables like {caller_number} and ${ENV_VAR}.
     """
-    result = template
-    
-    # First, substitute {variable} style placeholders
-    for key, value in values.items():
-        result = result.replace(f"{{{key}}}", str(value))
-    
-    # Then substitute ${ENV_VAR} style environment variables
-    env_pattern = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}')
-    def env_replacer(match):
-        env_name = match.group(1)
-        resolved = get_setting(env_name, default=f"${{{env_name}}}")
-        return resolved
-    
-    result = env_pattern.sub(env_replacer, result)
-    return result
+    environments = {match.group(1): get_setting(match.group(1), default="")
+                    for match in _PLACEHOLDER.finditer(template) if match.group(1)}
+    return render_template(template, values, environ=environments)
 
 
 def _normalize_template(raw: Any) -> Optional[str]:
@@ -317,7 +396,7 @@ def _http_tool_names_from_config(cfg: dict) -> set[str]:
             if not isinstance(tool_cfg, dict):
                 continue
             kind = str(tool_cfg.get("kind") or "").strip()
-            if kind in ("generic_http_lookup", "generic_webhook"):
+            if kind in ("generic_http_lookup", "generic_webhook", "pushover"):
                 names.add(name)
     in_call = cfg.get("in_call_tools") if isinstance(cfg, dict) else None
     if isinstance(in_call, dict):
@@ -327,12 +406,12 @@ def _http_tool_names_from_config(cfg: dict) -> set[str]:
             if not isinstance(tool_cfg, dict):
                 continue
             kind = str(tool_cfg.get("kind") or "in_call_http_lookup").strip()
-            if kind == "in_call_http_lookup":
+            if kind in {"in_call_http_lookup", "pushover", "a2a_agent"}:
                 names.add(name)
     return names
 
 
-def _classify_tool_source(name: str, http_tool_names: set[str]) -> str:
+def _classify_tool_source(name: str, http_tool_names: set[str], a2a_tool_names=None) -> str:
     """Best-effort classification of a tool's origin (builtin / http / mcp).
 
     LOW-T6: the engine does not expose an authoritative `source` field on its
@@ -350,6 +429,8 @@ def _classify_tool_source(name: str, http_tool_names: set[str]) -> str:
     If a future engine release adds an explicit `source` on tool definitions,
     prefer it over this heuristic at the call site.
     """
+    if name in (a2a_tool_names or set()):
+        return "a2a"
     if name.startswith("mcp_"):
         return "mcp"
     if name in http_tool_names:
@@ -374,6 +455,10 @@ async def get_tool_catalog():
         merged_cfg = {}
 
     http_tool_names = _http_tool_names_from_config(merged_cfg)
+    a2a_tool_names = {
+        name for name, doc in (merged_cfg.get("in_call_tools") if isinstance(merged_cfg.get("in_call_tools"), dict) else {}).items()
+        if isinstance(doc, dict) and doc.get("kind") == "a2a_agent"
+    }
 
     # Preferred: ask ai-engine (authoritative for what is actually registered/runnable).
     for base in _ai_engine_base_urls():
@@ -398,10 +483,12 @@ async def get_tool_catalog():
                 # LOW-T6: prefer an engine-provided authoritative source if present;
                 # otherwise fall back to the (robustified) heuristic.
                 engine_source = str(item.get("source") or "").strip().lower()
-                if engine_source in ("builtin", "http", "mcp"):
+                if name in a2a_tool_names:
+                    source = "a2a"
+                elif engine_source in ("builtin", "http", "mcp", "a2a"):
                     source = engine_source
                 else:
-                    source = _classify_tool_source(name, http_tool_names)
+                    source = _classify_tool_source(name, http_tool_names, a2a_tool_names)
 
                 params_raw = item.get("parameters") if isinstance(item.get("parameters"), list) else []
                 params_out: List[ToolParameterInfo] = []
@@ -462,14 +549,19 @@ async def get_tool_catalog():
         if isinstance(tools_cfg, dict):
             tool_registry.initialize_http_tools_from_config(tools_cfg)
         if isinstance(in_call_cfg, dict):
-            tool_registry.initialize_in_call_http_tools_from_config(in_call_cfg, cache_key="global")
+            tool_registry.initialize_in_call_http_tools_from_config(
+                in_call_cfg,
+                cache_key="global",
+                skip_invalid_a2a=True,
+                reserved_tool_names=(tools_cfg if isinstance(tools_cfg, dict) else {}).keys(),
+            )
 
         out: List[ToolDefinitionInfo] = []
         for d in tool_registry.get_definitions():
             name = str(getattr(d, "name", "") or "").strip()
             if not name:
                 continue
-            source = _classify_tool_source(name, http_tool_names)  # LOW-T6
+            source = _classify_tool_source(name, http_tool_names, a2a_tool_names)  # LOW-T6
             params_out: List[ToolParameterInfo] = []
             for p in (getattr(d, "parameters", None) or []):
                 params_out.append(
@@ -758,37 +850,45 @@ async def test_http_tool(request: TestHTTPRequest):
     3. Returns the response with suggested variable mappings
     """
     # Merge default test values with provided ones
-    test_values = {**DEFAULT_TEST_VALUES, **request.test_values}
+    test_values = {**DEFAULT_TEST_VALUES,
+                   **{item["name"]: item["example"] for item in variable_catalog(request.phase, request.generate_summary)},
+                   **request.test_values}
+    doc = request.model_dump()
+    if request.phase == "post_call":
+        doc["payload_template"] = request.body_template
+    environments = {match.group(1): get_setting(match.group(1), default="")
+                    for template in [request.url, *request.headers.values(), *request.query_params.values(), request.body_template or ""]
+                    for match in _PLACEHOLDER.finditer(template) if match.group(1)}
+    try:
+        prepared = render_request(doc, test_values, request.phase, environ=environments)
+    except TemplateError as exc:
+        return TestHTTPResponse(success=False, response_time_ms=0, resolved_url="", error=exc.public_message(), **exc.diagnostics())
     
     # Resolve URL with variable substitution
-    resolved_url = _substitute_variables(request.url, test_values)
+    resolved_url = prepared["url"]
     _validate_http_tool_test_target(resolved_url)
     
     # Build query parameters
-    resolved_params = {}
-    for key, value in request.query_params.items():
-        resolved_params[key] = _substitute_variables(value, test_values)
+    resolved_params = prepared["query_params"]
     
     # Resolve headers
-    resolved_headers = {}
-    for key, value in request.headers.items():
-        resolved_headers[key] = _substitute_variables(value, test_values)
+    resolved_headers = prepared["headers"]
     
     method = (request.method or "GET").strip().upper()
     if method not in _SUPPORTED_HTTP_METHODS:
         raise HTTPException(status_code=400, detail=f"Unsupported HTTP method: {method}")
 
     # Never display or send a stale hidden body for bodyless methods.
-    resolved_body = None
-    if method in _BODY_CAPABLE_HTTP_METHODS and request.body_template:
-        resolved_body = _substitute_variables(request.body_template, test_values)
+    resolved_body = prepared["body"]
+    # Never return expanded server credentials in the test response.
+    safe_preview = request_preview(prepared)
     
     # Prepare the response
     response_data = TestHTTPResponse(
         success=False,
         response_time_ms=0,
-        resolved_url=resolved_url,
-        resolved_body=resolved_body
+        resolved_url=safe_preview.get("url", ""),
+        resolved_body=safe_preview.get("body")
     )
     
     # Make the HTTP request
@@ -810,15 +910,10 @@ async def test_http_tool(request: TestHTTPRequest):
             # body-bearing DELETE/OPTIONS integrations as well as write methods.
             if method in _BODY_CAPABLE_HTTP_METHODS and resolved_body:
                 # Check if Content-Type is JSON
-                content_type = resolved_headers.get("Content-Type", resolved_headers.get("content-type", ""))
-                if "application/json" in content_type.lower():
+                content_type = body_media_type(resolved_headers)
+                if content_type == "application/json" or content_type.endswith("+json"):
                     # Parse and send as JSON to ensure proper encoding
-                    try:
-                        json_data = json.loads(resolved_body)
-                        kwargs["json"] = json_data
-                    except json.JSONDecodeError:
-                        # If it's not valid JSON, send as content
-                        kwargs["content"] = resolved_body
+                    kwargs["json"] = json.loads(resolved_body)
                 else:
                     kwargs["content"] = resolved_body
             
@@ -850,12 +945,12 @@ async def test_http_tool(request: TestHTTPRequest):
 
             if resp is None:
                 raise HTTPException(status_code=400, detail="Request failed: no response received")
-            response_data.resolved_url = str(resp.url)
+            response_data.resolved_url = safe_preview.get("url", "")
             
             response_data.response_time_ms = (time.time() - start_time) * 1000
             response_data.status_code = resp.status_code
             response_data.headers = dict(resp.headers)
-            response_data.body_raw = resp.text[:10000]  # Limit response size
+            response_data.body_raw = resp.text  # Redact before applying the display limit.
             
             # Try to parse as JSON
             try:
@@ -864,7 +959,7 @@ async def test_http_tool(request: TestHTTPRequest):
                 response_data.suggested_mappings = _extract_json_paths(json_body)
             except (ValueError, httpx.DecodingError):
                 # Not JSON, just use raw text
-                response_data.body = resp.text[:10000]
+                response_data.body = resp.text
             
             response_data.success = 200 <= resp.status_code < 300
             
@@ -874,15 +969,50 @@ async def test_http_tool(request: TestHTTPRequest):
     except httpx.TimeoutException:
         response_data.response_time_ms = (time.time() - start_time) * 1000
         response_data.error = f"Request timed out after {request.timeout_ms}ms"
-    except httpx.ConnectError as e:
+    except httpx.ConnectError:
         response_data.response_time_ms = (time.time() - start_time) * 1000
-        response_data.error = f"Connection failed: {e!s}"
-    except Exception as e:
+        response_data.error = "HTTP connection failed"
+        response_data.error_code = "http_connection_failed"
+    except HTTPException:
+        raise
+    except Exception:
         response_data.response_time_ms = (time.time() - start_time) * 1000
-        response_data.error = f"Request failed: {e!s}"
-        logger.exception("HTTP tool test failed")
+        response_data.error = "HTTP test request failed"
+        response_data.error_code = "http_request_failed"
+        logger.warning("HTTP tool test failed")
 
-    return response_data
+    # A test receiver may echo credentials in its body or response headers.
+    secret_values = set()
+    for value in environments.values():
+        if value:
+            # Receivers can echo a JSON string or an encoded URL/form value.
+            secret_values.update((value, json.dumps(value, ensure_ascii=True)[1:-1],
+                                  json.dumps(value, ensure_ascii=False)[1:-1],
+                                  quote(value, safe=""), quote_plus(value)))
+    secret_values = sorted(secret_values, key=len, reverse=True)
+    secret_patterns = []
+    for secret in secret_values:
+        parts, cursor = [], 0
+        for match in re.finditer(r"%[0-9a-fA-F]{2}", secret):
+            parts.extend((re.escape(secret[cursor:match.start()]), "(?i:" + match.group(0) + ")"))
+            cursor = match.end()
+        parts.append(re.escape(secret[cursor:]))
+        secret_patterns.append("".join(parts))
+    secret_pattern = re.compile("|".join(secret_patterns)) if secret_patterns else None
+    def redact(value):
+        if isinstance(value, dict):
+            return {redact(key): redact(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        if isinstance(value, str) and secret_pattern is not None:
+            value = secret_pattern.sub("***", value)
+        return value
+    safe_response = redact(response_data.model_dump())
+    if safe_response["body_raw"] is not None:
+        safe_response["body_raw"] = safe_response["body_raw"][:10000]
+    if isinstance(safe_response["body"], str):
+        safe_response["body"] = safe_response["body"][:10000]
+    return TestHTTPResponse.model_validate(safe_response)
 
 
 # ============================================================================
@@ -914,7 +1044,7 @@ BUILTIN_RESERVED_TOOL_NAMES = frozenset({
     "leave_voicemail", "check_extension_status",
     "send_email_summary", "request_transcript",
     "update_call_metadata",
-    "google_calendar", "microsoft_calendar",
+    "google_calendar", "microsoft_calendar", "calendly_calendar",
     # Engine-registered tool names the AI calls (may differ from config keys).
     "transfer_call", "transfer_to_queue", "live_agent_transfer",
 })
@@ -925,8 +1055,8 @@ _PHASE_TO_KIND = {
     "post_call": "generic_webhook",
 }
 # Recognized `kind` values per config block.
-_TOOLS_BLOCK_KINDS = {"generic_http_lookup", "generic_webhook"}
-_IN_CALL_BLOCK_KINDS = {"in_call_http_lookup"}
+_TOOLS_BLOCK_KINDS = {"generic_http_lookup", "generic_webhook", "pushover"}
+_IN_CALL_BLOCK_KINDS = {"in_call_http_lookup", "pushover", "a2a_agent"}
 
 _SUPPORTED_HTTP_METHODS = frozenset(
     {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
@@ -951,6 +1081,7 @@ _PASSTHROUGH_FIELDS = (
     "summary_max_words",
     "summary_timeout_ms",
     "summary_prompt",
+    "summary_failure_policy",
     "description",
     "return_raw_json",
     "error_message",
@@ -1027,7 +1158,7 @@ class ManagedToolWrite(BaseModel):
     """Body for create (POST) and full replace (PUT)."""
     name: Optional[str] = None  # required for POST; taken from path on PUT
     phase: ToolPhase
-    url: str
+    url: Optional[str] = None
     enabled: bool = True
     is_global: bool = False
     kind: Optional[str] = None
@@ -1046,15 +1177,33 @@ class ManagedToolWrite(BaseModel):
     summary_max_words: Optional[int] = None
     summary_timeout_ms: Optional[int] = None
     summary_prompt: Optional[str] = None
+    summary_failure_policy: Optional[Literal["continue", "abort"]] = None
     description: Optional[str] = None
     parameters: Optional[List[ManagedToolParameter]] = None
     return_raw_json: Optional[bool] = None
     error_message: Optional[str] = None
+    agent_url: Optional[str] = None
+    bearer_token_file: Optional[str] = None
+    bearer_token_env: Optional[str] = None
+    poll_interval_ms: Optional[int] = None
+    max_input_chars: Optional[int] = None
+    max_response_chars: Optional[int] = None
+
+    recipients: Optional[Dict[str, Any]] = None
+    token_file: Optional[str] = None
+    key_file: Optional[str] = None
+    recipient_label: Optional[str] = None
+    title: Optional[str] = None
+    body: Optional[str] = None
+    priority: Optional[int] = None
+    sound: Optional[str] = None
+    destination_key: Optional[str] = None
+    suppress_after_tool: Optional[str] = None
 
     @field_validator("url")
     @classmethod
     def validate_url(cls, value: str) -> str:
-        return _validate_managed_tool_url(value)
+        return _validate_managed_tool_url(value) if value is not None else None
 
     @field_validator("method")
     @classmethod
@@ -1128,10 +1277,28 @@ class ManagedToolPatch(BaseModel):
     summary_max_words: Optional[int] = None
     summary_timeout_ms: Optional[int] = None
     summary_prompt: Optional[str] = None
+    summary_failure_policy: Optional[Literal["continue", "abort"]] = None
     description: Optional[str] = None
     parameters: Optional[List[ManagedToolParameter]] = None
     return_raw_json: Optional[bool] = None
     error_message: Optional[str] = None
+    agent_url: Optional[str] = None
+    bearer_token_file: Optional[str] = None
+    bearer_token_env: Optional[str] = None
+    poll_interval_ms: Optional[int] = None
+    max_input_chars: Optional[int] = None
+    max_response_chars: Optional[int] = None
+
+    recipients: Optional[Dict[str, Any]] = None
+    token_file: Optional[str] = None
+    key_file: Optional[str] = None
+    recipient_label: Optional[str] = None
+    title: Optional[str] = None
+    body: Optional[str] = None
+    priority: Optional[int] = None
+    sound: Optional[str] = None
+    destination_key: Optional[str] = None
+    suppress_after_tool: Optional[str] = None
 
     @field_validator("url")
     @classmethod
@@ -1289,10 +1456,10 @@ def _reserved_builtin_names() -> frozenset:
         import sys
         if project_root and project_root not in sys.path:
             sys.path.insert(0, project_root)
-        from src.tools.registry import tool_registry  # type: ignore
-        tool_registry.clear()
-        tool_registry.initialize_default_tools()
-        for d in tool_registry.get_definitions():
+        from src.tools.registry import ToolRegistry  # type: ignore
+        probe = ToolRegistry.isolated()
+        probe.initialize_default_tools()
+        for d in probe.get_definitions():
             n = str(getattr(d, "name", "") or "").strip()
             if n and not n.startswith("mcp_"):
                 names.add(n)
@@ -1303,12 +1470,14 @@ def _reserved_builtin_names() -> frozenset:
     return _reserved_builtin_cache
 
 
-def _validate_tool_name(name: str) -> None:
+def _validate_tool_name(name: str, *, max_length: Optional[int] = None) -> None:
     if not name or not _TOOL_NAME_RE.match(name):
         raise HTTPException(
             status_code=422,
             detail="Invalid tool name: use letters, digits and underscores, and start with a letter",
         )
+    if max_length is not None and len(name) > max_length:
+        raise HTTPException(status_code=422, detail=f"Pushover tool names must be at most {max_length} characters")
     if name in RESERVED_TOOL_NAMES:
         raise HTTPException(status_code=422, detail=f"'{name}' is a reserved tool name")
     if name.startswith("mcp_"):
@@ -1327,6 +1496,12 @@ def _resolve_kind(phase: str, kind: Optional[str]) -> str:
     a mismatched or unknown value is rejected with 422. An empty/missing value
     is derived from the phase.
     """
+    if kind == "a2a_agent":
+        if phase != "in_call":
+            raise HTTPException(422, "A2A tools only support the in-call phase")
+        return kind
+    if kind == "pushover":
+        return "pushover"
     expected = _kind_for_phase(phase)
     if kind is not None:
         supplied = str(kind).strip()
@@ -1340,6 +1515,32 @@ def _resolve_kind(phase: str, kind: Optional[str]) -> str:
 
 def _build_tool_doc(data: Dict[str, Any], phase: str) -> Dict[str, Any]:
     """Build the stored tool config dict from validated input (None values dropped)."""
+    if data.get("kind") == "a2a_agent":
+        from services.a2a_tools import validate_document
+        doc = {key: value for key, value in data.items() if value is not None and key not in {"name", "method", "headers"}}
+        previous = ((_load_cfg().get("in_call_tools") or {}).get(data.get("name")) or {})
+        return validate_document(data.get("name") or "a2a_tool", {**doc, "phase": phase}, previous)
+    if data.get("kind") == "pushover":
+        from src.integrations.pushover import PushoverToolConfig
+        from src.integrations.pushover_templates import review_templates
+        review = review_templates(data, phase)
+        error = next((issue for issue in review["issues"] if issue["severity"] == "error"), None)
+        if error:
+            raise HTTPException(status_code=422, detail=error)
+        allowed = set(PushoverToolConfig.model_fields)
+        try:
+            http_only = (
+                "url", "headers", "parameters", "query_params", "body_template",
+                "payload_template", "output_variables", "call_metadata_fields",
+                "hold_audio_file", "hold_audio_threshold_ms", "return_raw_json", "error_message",
+            )
+            if any(data.get(key) for key in http_only) or data.get("method") not in (None, "", "POST"):
+                raise ValueError()
+            return PushoverToolConfig.model_validate({key: value for key, value in {**data, "phase": phase}.items() if key in allowed and value is not None}).model_dump()
+        except Exception:
+            raise HTTPException(status_code=422, detail="Invalid Pushover tool settings, templates or summary provider") from None
+    if not data.get("url"):
+        raise HTTPException(status_code=422, detail="HTTP tools require a URL")
     method = (data.get("method") or ("GET" if phase == "pre_call" else "POST"))
     timeout = data.get("timeout_ms")
     if timeout is None:
@@ -1379,6 +1580,7 @@ def _build_tool_doc(data: Dict[str, Any], phase: str) -> Dict[str, Any]:
             )
         except CallMetadataValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _validate_http_tool_template(doc, phase)
     return doc
 
 
@@ -1432,6 +1634,8 @@ def _to_out(
     apply_result: Optional[dict] = None,
 ) -> ManagedToolOut:
     phase = _phase_for(block, doc)
+    if doc.get("kind") == "a2a_agent":
+        doc = {key: value for key, value in doc.items() if key not in {"token", "bearer_token", "api_key"}}
     return ManagedToolOut(
         name=name,
         phase=phase,
@@ -1446,11 +1650,19 @@ def _to_out(
 
 async def _validate_summary_provider_selection(doc: Dict[str, Any]) -> None:
     """Reject an explicit summary provider that cannot run before persistence."""
+    if doc.get("phase") == "in_call":
+        from src.tools.summary import summary_prompt
+        try:
+            summary_prompt(doc.get("summary_prompt"), doc.get("summary_max_words") or 100)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail="In-call summary_prompt only supports the plain {max_words} placeholder") from None
     if not doc.get("generate_summary"):
         return
     provider_key = str(doc.get("summary_provider") or "").strip()
     if not provider_key:
-        # Preserve the legacy OpenAI fallback for existing API-managed configs.
+        # Only post-call configurations retain the legacy behavior.
+        if doc.get("phase") == "in_call" or doc.get("kind") in {"in_call_http_lookup", "pushover"}:
+            raise HTTPException(status_code=422, detail="Select an explicit summary provider")
         return
 
     catalog = await config_api.get_llm_provider_options()
@@ -1487,14 +1699,14 @@ async def list_managed_tools():
 async def create_managed_tool(body: ManagedToolWrite):
     """Create a new managed HTTP tool and persist it to the config."""
     name = (body.name or "").strip()
-    _validate_tool_name(name)
+    _validate_tool_name(name, max_length=64 if body.kind in {"pushover", "a2a_agent"} else None)
 
     cfg = _load_cfg()
     if _raw_name_exists(cfg, name):
         raise HTTPException(status_code=409, detail=f"A tool named '{name}' already exists")
 
     block = _block_for_phase(body.phase)
-    doc = _build_tool_doc(body.model_dump(exclude_none=True), body.phase)
+    doc = _build_tool_doc({**body.model_dump(exclude_none=True), "name": name}, body.phase)
     await _validate_summary_provider_selection(doc)
 
     section = cfg.setdefault(block, {})
@@ -1519,14 +1731,14 @@ async def get_managed_tool(name: str):
 @router.put("/managed/{name}", response_model=ManagedToolOut)
 async def replace_managed_tool(name: str, body: ManagedToolWrite):
     """Replace a managed HTTP tool's full configuration (changing phase moves it between blocks)."""
-    _validate_tool_name(name)
+    _validate_tool_name(name, max_length=64 if body.kind in {"pushover", "a2a_agent"} else None)
     cfg = _load_cfg()
     cur_block, _ = _find_managed_tool(cfg, name)
     if cur_block is None:
         raise HTTPException(status_code=404, detail=f"Tool '{name}' not found")
 
     target_block = _block_for_phase(body.phase)
-    doc = _build_tool_doc(body.model_dump(exclude_none=True), body.phase)
+    doc = _build_tool_doc({**body.model_dump(exclude_none=True), "name": name}, body.phase)
     await _validate_summary_provider_selection(doc)
 
     _remove_tool_everywhere(cfg, name)
@@ -1568,16 +1780,31 @@ async def patch_managed_tool(name: str, body: ManagedToolPatch):
     merged["phase"] = new_phase
     # Always normalize kind to the canonical value for the (possibly new) phase,
     # rejecting any mismatched client-supplied kind.
-    merged["kind"] = _resolve_kind(new_phase, patch.get("kind"))
-    merged["method"] = str(
-        merged.get("method") or ("GET" if new_phase == "pre_call" else "POST")
-    ).upper()
-    if merged["method"] not in _BODY_CAPABLE_HTTP_METHODS:
-        merged.pop("body_template", None)
-        merged.pop("payload_template", None)
+    current_kind = cur_doc.get("kind")
+    requested_kind = patch.get("kind")
+    if current_kind == "a2a_agent":
+        from services.a2a_tools import validate_document
+        if requested_kind not in (None, "a2a_agent") or new_phase != "in_call":
+            raise HTTPException(422, "A2A tool type and phase cannot change")
+        validate_document(name, merged, cur_doc)
+        cfg[cur_block][name] = merged
+        apply_result = await _persist_cfg(cfg)
+        return _to_out(cur_block, name, merged, apply_result)
+    if current_kind == "pushover" and requested_kind not in (None, "", "pushover"):
+        raise HTTPException(status_code=422, detail="kind cannot be changed for a Pushover tool")
+    merged["kind"] = _resolve_kind(
+        new_phase, requested_kind or ("pushover" if current_kind == "pushover" else None)
+    )
+    if merged["kind"] != "pushover":
+        merged["method"] = str(
+            merged.get("method") or ("GET" if new_phase == "pre_call" else "POST")
+        ).upper()
+        if merged["method"] not in _BODY_CAPABLE_HTTP_METHODS:
+            merged.pop("body_template", None)
+            merged.pop("payload_template", None)
 
     raw_metadata_fields = merged.get("call_metadata_fields")
-    if raw_metadata_fields is not None:
+    if merged["kind"] != "pushover" and raw_metadata_fields is not None:
         if new_phase != "pre_call":
             raise HTTPException(status_code=422, detail="call_metadata_fields is only valid for pre-call tools")
         from src.core.call_metadata import CallMetadataValidationError, normalize_call_metadata_policy
@@ -1590,6 +1817,12 @@ async def patch_managed_tool(name: str, body: ManagedToolPatch):
         except CallMetadataValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    if merged["kind"] == "pushover":
+        _validate_tool_name(name, max_length=64)
+        if "recipients" in patch and patch["recipients"] is None:
+            merged["recipients"] = {}
+        merged = _build_tool_doc(merged, new_phase)
+    _validate_http_tool_template(merged, new_phase)
     await _validate_summary_provider_selection(merged)
 
     target_block = _block_for_phase(new_phase)
@@ -1646,6 +1879,7 @@ BUILTIN_TOOL_NAMES = (
     "request_transcript",
     "google_calendar",
     "microsoft_calendar",
+    "calendly_calendar",
 )
 _BUILTIN_TOOL_SET = frozenset(BUILTIN_TOOL_NAMES)
 
@@ -1700,6 +1934,9 @@ def _builtin_to_out(name: str, cfg: Dict[str, Any]) -> BuiltinToolOut:
     doc = tools.get(name) if isinstance(tools, dict) else None
     configured = isinstance(doc, dict)
     doc = doc if configured else {}
+    if name == "calendly_calendar":
+        from src.tools.business.calendly_client import public_config
+        doc = public_config(doc)
     return BuiltinToolOut(
         name=name,
         enabled=bool(doc.get("enabled", False)),

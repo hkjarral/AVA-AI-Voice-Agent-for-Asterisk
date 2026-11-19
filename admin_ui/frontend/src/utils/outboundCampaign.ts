@@ -2,8 +2,8 @@ type CampaignEditForm = {
     default_context?: string;
 };
 
-export const buildCampaignEditPayload = <T extends CampaignEditForm>(
-    form: T,
+export const buildCampaignEditPayload = <T extends object>(
+    form: T & CampaignEditForm,
     originalAgentSelector: string
 ): T & { agent_routing_method?: 'ai_agent' } => {
     const payload: T & { agent_routing_method?: 'ai_agent' } = { ...form };

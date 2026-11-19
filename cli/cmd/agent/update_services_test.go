@@ -42,7 +42,13 @@ func withAIEngineRunningForActiveRouteRead(t *testing.T, running bool) {
 func withDockerActionState(t *testing.T, running string, existing map[string]bool) *[]string {
 	t.Helper()
 	commands := []string{}
+	originalBuild := runComposeBuildForUpdate
+	runComposeBuildForUpdate = func(services []string) (string, error) {
+		return runDockerCommandForUpdate("docker", append([]string{"compose", "build"}, services...)...)
+	}
 	originalRun := runDockerCommandForUpdate
+	originalProbe := queryActiveCallsForUpdate
+	queryActiveCallsForUpdate = func() (int, bool, error) { return 0, true, nil }
 	originalExisting := existingComposeServicesForUpdate
 	originalIncludeUI := updateIncludeUI
 	originalForceRecreate := updateForceRecreate
@@ -60,7 +66,9 @@ func withDockerActionState(t *testing.T, running string, existing map[string]boo
 	updateIncludeUI = false
 	updateForceRecreate = false
 	t.Cleanup(func() {
+		runComposeBuildForUpdate = originalBuild
 		runDockerCommandForUpdate = originalRun
+		queryActiveCallsForUpdate = originalProbe
 		existingComposeServicesForUpdate = originalExisting
 		updateIncludeUI = originalIncludeUI
 		updateForceRecreate = originalForceRecreate
@@ -229,15 +237,22 @@ func TestDockerActionsRebuildRunningLocalAIWithComposeUp(t *testing.T) {
 	commands := withDockerActionState(t, "local_ai_server\n", map[string]bool{"local_ai_server": true})
 	ctx := updateTestContext()
 
+	if err := applyDockerActions(ctx); err == nil || !strings.Contains(err.Error(), "remote active calls") {
+		t.Fatalf("an inference-only host must require a verified remote drain: %v", err)
+	}
+	if commandContainingSeen(*commands, "compose up") {
+		t.Fatal("unverified remote call state must not authorize Local AI recreation")
+	}
+	t.Setenv("AAVA_UPDATE_FORCE_ACTIVE_CALLS", "true")
 	if err := applyDockerActions(ctx); err != nil {
 		t.Fatalf("applyDockerActions: %v", err)
 	}
 
-	if !commandSeen(*commands, "docker compose up -d --build local_ai_server") {
+	if !commandSeen(*commands, "docker compose up -d --no-build --pull never local_ai_server") {
 		t.Fatalf("running Local AI was not rebuilt in place: %#v", *commands)
 	}
-	if commandSeen(*commands, "docker compose build local_ai_server") {
-		t.Fatalf("running Local AI must not use the stopped-service build-only path: %#v", *commands)
+	if !commandSeen(*commands, "docker compose build local_ai_server") {
+		t.Fatalf("running Local AI must build its image before recreation: %#v", *commands)
 	}
 }
 
@@ -251,7 +266,7 @@ func TestDockerActionsStartSelectedLocalAIWithoutExistingContainer(t *testing.T)
 		t.Fatalf("applyDockerActions: %v", err)
 	}
 
-	if !commandSeen(*commands, "docker compose up -d --build local_ai_server") {
+	if !commandSeen(*commands, "docker compose up -d --no-build --pull never local_ai_server") {
 		t.Fatalf("selected Local AI without a container must be started: %#v", *commands)
 	}
 }

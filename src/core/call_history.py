@@ -21,6 +21,38 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXTERNAL_ACTIVITY_MAX_ROWS = 5000
 
 
+def _calendly_path_present_or_unknown(path: Path) -> bool:
+    """Treat an unreadable footprint path as requiring conservative tracking."""
+    try:
+        return path.is_file()
+    except OSError:
+        return True
+
+
+def _calendly_erasure_tracking_required() -> bool:
+    """Return whether adapter footprints require erasure for new history.
+
+    A stock installation must not accumulate provider-specific cleanup work for
+    an integration it never configured. The marker preserves a prior Calendly
+    footprint after disconnect and while the journal is temporarily unavailable.
+    Pre-upgrade history also retains an independent per-record obligation.
+    """
+    try:
+        journal = Path(os.getenv("CALENDLY_DB_PATH") or "/app/data/operator/calendly.db")
+        credential = Path(
+            os.getenv("CALENDLY_TOKEN_PATH") or "/app/project/secrets/calendly-default-token.json"
+        )
+        footprint = journal.with_name(journal.name + ".configured")
+        return any(
+            _calendly_path_present_or_unknown(path)
+            for path in (journal, credential, footprint)
+        )
+    except ValueError as exc:
+        # Invalid path state must not roll back a durable History deletion.
+        logger.warning("Calendly footprint unavailable (%s); erasure tracking retained", type(exc).__name__)
+        return True
+
+
 @dataclass
 class CallRecord:
     """Persisted call record for history and analytics."""
@@ -279,7 +311,8 @@ class CallHistoryStore:
         codec_alignment_ok INTEGER,
         barge_in_count INTEGER,
         diagnostics_snapshot TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        calendly_erasure_required INTEGER NOT NULL DEFAULT 1
     )
     """
     
@@ -304,7 +337,10 @@ class CallHistoryStore:
             "CALL_HISTORY_DB_PATH", 
             "/app/data/call_history.db"
         )
-        self._retention_days = int(os.getenv("CALL_HISTORY_RETENTION_DAYS", "0"))
+        try:
+            self._retention_days = int((os.getenv("CALL_HISTORY_RETENTION_DAYS") or "0").strip())
+        except ValueError:
+            self._retention_days = 0
         self._enabled = os.getenv("CALL_HISTORY_ENABLED", "true").lower() in ("true", "1", "yes")
         self._lock = threading.Lock()
         self._initialized = False
@@ -324,8 +360,18 @@ class CallHistoryStore:
                 conn = self._get_connection()
                 try:
                     cursor = conn.cursor()
+                    cursor.execute("BEGIN IMMEDIATE")
                     cursor.execute(self._CREATE_TABLE_SQL)
+                    cursor.execute("CREATE TABLE IF NOT EXISTS pending_calendly_purges (call_id TEXT PRIMARY KEY)")
                     self._ensure_schema_sync(conn)
+                    columns = {row[1] for row in cursor.execute("PRAGMA table_info(call_records)")}
+                    if "calendly_erasure_required" not in columns:
+                        # SQLite applies the default to existing rows without
+                        # copying history. Older writers also retain the prior
+                        # unconditional erasure contract if code is rolled back.
+                        # Unlike optional display migrations, failure must close
+                        # history writes/deletion rather than lose privacy work.
+                        cursor.execute("ALTER TABLE call_records ADD COLUMN calendly_erasure_required INTEGER NOT NULL DEFAULT 1")
                     for idx_sql in self._CREATE_INDEXES_SQL:
                         cursor.execute(idx_sql)
                     conn.commit()
@@ -419,6 +465,9 @@ class CallHistoryStore:
                         # Already saved, skip duplicate
                         return True
                     
+                    # Current writers explicitly opt into footprint-based
+                    # tracking (literal 0). Older INSERTs omit this column and
+                    # retain DEFAULT 1, including during an application rollback.
                     cursor.execute("""
                         INSERT OR REPLACE INTO call_records (
                             id, call_id, caller_number, caller_name, called_number,
@@ -432,8 +481,8 @@ class CallHistoryStore:
                             tool_calls, pre_call_tool_calls, post_call_tool_calls,
                             avg_turn_latency_ms, max_turn_latency_ms, total_turns,
                             caller_audio_format, codec_alignment_ok, barge_in_count,
-                            diagnostics_snapshot, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            diagnostics_snapshot, created_at, calendly_erasure_required
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
                     """, (
                         record.id,
                         record.call_id,
@@ -1025,14 +1074,22 @@ class CallHistoryStore:
                 conn = self._get_connection()
                 try:
                     cursor = conn.cursor()
+                    cursor.execute("BEGIN IMMEDIATE")
+                    rows = cursor.execute("SELECT call_id, calendly_erasure_required FROM call_records WHERE id = ?", (record_id,)).fetchall()
+                    configured = _calendly_erasure_tracking_required()
+                    cursor.executemany("INSERT OR IGNORE INTO pending_calendly_purges(call_id) VALUES(?)",
+                                       [(row[0],) for row in rows if configured or row[1] != 0])
                     cursor.execute("DELETE FROM call_records WHERE id = ?", (record_id,))
+                    deleted = cursor.rowcount > 0
                     conn.commit()
-                    return cursor.rowcount > 0
+                    return deleted
                 finally:
                     conn.close()
         
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, _delete_sync)
+        deleted = await loop.run_in_executor(None, _delete_sync)
+        await self.retry_pending_calendly_purges()
+        return deleted
     
     async def delete_before(self, before_date: datetime) -> int:
         """Delete all records before a date. Returns count deleted."""
@@ -1044,17 +1101,67 @@ class CallHistoryStore:
                 conn = self._get_connection()
                 try:
                     cursor = conn.cursor()
+                    cursor.execute("BEGIN IMMEDIATE")
+                    rows = cursor.execute("SELECT call_id, calendly_erasure_required FROM call_records WHERE start_time < ?", (before_date.isoformat(),)).fetchall()
+                    configured = _calendly_erasure_tracking_required()
+                    cursor.executemany("INSERT OR IGNORE INTO pending_calendly_purges(call_id) VALUES(?)",
+                                       [(row[0],) for row in rows if configured or row[1] != 0])
                     cursor.execute(
                         "DELETE FROM call_records WHERE start_time < ?",
                         (before_date.isoformat(),)
                     )
+                    deleted = cursor.rowcount
                     conn.commit()
-                    return cursor.rowcount
+                    return deleted
                 finally:
                     conn.close()
         
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, _delete_sync)
+        deleted = await loop.run_in_executor(None, _delete_sync)
+        await self.retry_pending_calendly_purges()
+        return deleted
+
+    async def retry_pending_calendly_purges(self) -> None:
+        """Retry bounded cross-store erasure without blocking history deletion.
+
+        Call IDs are queued atomically with deletion, so a crash or an unavailable
+        Calendly journal cannot lose the erasure obligation. No caller data is
+        copied to the queue. Scrub outside the history lock; remove only after
+        success. Repeated/concurrent scrubs are idempotent.
+        """
+        if not self._enabled and not Path(self._db_path).is_file():
+            return
+
+        def _retry_sync():
+            try:
+                with self._lock:
+                    conn = self._get_connection()
+                    try:
+                        # Disabling new history collection does not revoke an
+                        # already committed erasure obligation. Older/disabled
+                        # stores without this queue have no work to retry here.
+                        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_calendly_purges'").fetchone():
+                            return
+                        calls = [r[0] for r in conn.execute("SELECT call_id FROM pending_calendly_purges LIMIT 100")]
+                    finally:
+                        conn.close()
+                if not calls:
+                    return
+                from src.core.calendly_store import scrub_deleted_calls
+                if not scrub_deleted_calls(calls):
+                    logger.debug("Calendly erasure deferred; journal absent and retry retained")
+                    return
+                with self._lock:
+                    conn = self._get_connection()
+                    try:
+                        conn.executemany("DELETE FROM pending_calendly_purges WHERE call_id=?", [(c,) for c in calls])
+                        conn.commit()
+                    finally:
+                        conn.close()
+            except Exception as exc:  # noqa: BLE001 - erasure retry must not fail history deletion
+                logger.warning("Calendly erasure deferred (%s); history deletion completed and retry retained", type(exc).__name__)
+
+        await asyncio.get_running_loop().run_in_executor(None, _retry_sync)
     
     async def get_stats(
         self,

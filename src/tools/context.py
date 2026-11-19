@@ -78,8 +78,10 @@ class ToolExecutionContext:
     
     # Request metadata
     user_input: Optional[str] = None  # Original user utterance
+    user_input_recorded: bool = False  # Trusted caller path already persisted this turn
     detected_intent: Optional[str] = None
     confidence: Optional[float] = None
+    tool_call_id: Optional[str] = None  # Upstream invocation ID; private runtime metadata
 
     @staticmethod
     def is_pending_attended_transfer(session: Any) -> bool:
@@ -152,6 +154,16 @@ class ToolExecutionContext:
                 exc_info=True,
             )
             return None
+
+        if (getattr(session, "audio_diagnostics", None) or {}).get("provider_queue_failed"):
+            # Native OpenAI/Grok adapters invoke tools directly, independently
+            # of the engine event callback. Keep this boundary closed while the
+            # overflow owner flushes media and performs routing-aware teardown.
+            return {
+                "status": "error",
+                "error_code": "provider_audio_queue_overflow",
+                "message": "Provider audio failed; the call is terminating and cannot execute tools.",
+            }
 
         no_input_state = getattr(session, "no_input_state", None) or {}
         if isinstance(no_input_state, dict) and bool(no_input_state.get("announcement_active", False)):
@@ -243,6 +255,12 @@ class PreCallContext:
     # System access
     config: Any = None  # Config dict
     ari_client: Any = None  # ARIClient instance (for hold audio playback)
+
+    pre_call_results: Dict[str, str] = field(default_factory=dict)
+    call_metadata: Dict[str, str] = field(default_factory=dict)
+    execution_results: Dict[str, Any] = field(default_factory=dict)
+    notification_state: Any = None
+
     
     def get_config_value(self, key: str, default: Any = None) -> Any:
         """Get configuration value with dot notation support."""
@@ -308,6 +326,10 @@ class PostCallContext:
     # fields while exposing final selected values to post-call tools.
     call_metadata: Dict[str, str] = field(default_factory=dict)
     
+    execution_results: Dict[str, Any] = field(default_factory=dict)
+    transfer_destination: Optional[str] = None
+    notification_state: Any = None
+
     def to_payload_dict(self) -> Dict[str, Any]:
         """
         Convert context to a dictionary suitable for webhook payloads.

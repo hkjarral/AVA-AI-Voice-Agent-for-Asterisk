@@ -941,7 +941,7 @@ class ARIClient:
         logger.info("Playing media on channel", channel_id=channel_id, media_uri=media_uri)
         return await self.send_command("POST", f"channels/{channel_id}/play", data={"media": media_uri})
 
-    async def play_sound(self, channel_id: str, sound_file: str) -> Optional[Dict[str, Any]]:
+    async def play_sound(self, channel_id: str, sound_file: str, *, playback_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Convenience wrapper to play an Asterisk sound file (e.g. "custom/please-wait").
         """
@@ -950,6 +950,9 @@ class ARIClient:
             return None
         if not any(media_uri.startswith(prefix) for prefix in ("sound:", "file:", "recording:")):
             media_uri = f"sound:{media_uri}"
+        if playback_id:
+            accepted = await self.play_media_on_channel_with_id(channel_id, media_uri, playback_id)
+            return {"id": playback_id} if accepted else None
         return await self.play_media(channel_id, media_uri)
 
     async def play_media_on_channel_with_id(self, channel_id: str, media_uri: str, playback_id: str) -> bool:
@@ -1407,30 +1410,6 @@ class ARIClient:
                 logger.debug(f"Cleaned up audio file: {file_path}")
         except Exception as e:
             logger.error(f"Error cleaning up audio file {file_path}: {e}")
-
-    async def stop_audio_streaming(self, channel_id: str) -> bool:
-        """Stop audio streaming and clean up media channel and bridge."""
-        media_info = self.active_media_channels.pop(channel_id, None)
-        if not media_info:
-            logger.warning("No active media channel found to stop for channel.", channel_id=channel_id)
-            return True # Not a failure if it's already gone
-
-        media_channel_id = media_info['media_channel_id']
-        bridge_id = media_info['bridge_id']
-        logger.info("Stopping audio streaming and cleaning up resources...",
-                    channel_id=channel_id, media_channel_id=media_channel_id, bridge_id=bridge_id)
-        
-        try:
-            # We don't need to remove channels from the bridge, just destroy it
-            await self.destroy_bridge(bridge_id)
-            # Hanging up the original channel is handled by StasisEnd
-            await self.hangup_channel(media_channel_id)
-            logger.info("Successfully cleaned up bridge and media channel.", bridge_id=bridge_id, media_channel_id=media_channel_id)
-            return True
-        except Exception as e:
-            logger.error("Error during audio streaming cleanup", exc_info=True)
-            return False
-
 
     async def is_channel_active(self, channel_id: str) -> bool:
         """Check if a channel is still active and in Stasis application."""

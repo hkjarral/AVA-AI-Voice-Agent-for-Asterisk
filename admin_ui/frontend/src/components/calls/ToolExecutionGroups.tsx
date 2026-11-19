@@ -4,7 +4,41 @@ export type ToolPhase = 'pre_call' | 'in_call' | 'post_call';
 
 export type ToolExecutionStatus = 'pending' | 'ok' | 'error' | 'timeout' | 'skipped';
 
-export interface PhaseToolCall {
+interface ToolDiagnostics {
+    error_code?: string | null;
+    template_variable?: string | null;
+    summary_provider?: string | null;
+    summary_model?: string | null;
+    summary_status?: string | null;
+    summary_duration_ms?: number | null;
+    summary_error_code?: string | null;
+    delivery_status?: string | null;
+    notification_service?: string | null;
+    notification_deliveries?: Record<string, {delivery_status: string; error_code?: string; label?: string; deduplicated?: boolean}> | null;
+}
+
+const ToolDiagnosticsView = ({entry}: {entry: ToolDiagnostics}) => <>
+    {entry.error_code && <div className="mt-2 rounded bg-destructive/10 p-2 text-xs" role="status">
+        Request error: {entry.error_code}{entry.template_variable && <> — variable: <code>{entry.template_variable}</code></>}
+    </div>}
+    {entry.summary_status && <div className="mt-2 rounded bg-background/50 p-2 text-xs">
+        <span className="font-medium">AI summary</span>
+        <div className="mt-1 flex flex-wrap gap-x-3 text-muted-foreground">
+            <span>Status: {entry.summary_status}</span>
+            {entry.summary_provider && <span>Provider: {entry.summary_provider}</span>}
+            {entry.summary_model && <span>Model: {entry.summary_model}</span>}
+            {typeof entry.summary_duration_ms === 'number' && <span>{Math.round(entry.summary_duration_ms)}ms</span>}
+            {entry.summary_error_code && <span>Error: {entry.summary_error_code}</span>}
+        </div>
+    </div>}
+    {entry.delivery_status && <div className="mt-2 rounded bg-background/50 p-2 text-xs">
+        <span className="font-medium">Delivery: {entry.delivery_status}</span>
+        {Object.entries(entry.notification_deliveries || {}).map(([key,result])=><div key={key}>{result.label || key}: {result.delivery_status}{result.error_code && ` (${result.error_code})`}</div>)}
+        {entry.notification_service === "pushover" && <p className="text-muted-foreground mt-1">Accepted means queued by Pushover, not displayed or read.</p>}
+    </div>}
+</>;
+
+export interface PhaseToolCall extends ToolDiagnostics {
     name: string;
     kind?: string | null;
     phase: ToolPhase;
@@ -24,7 +58,14 @@ export interface PhaseToolCall {
     attempt?: number | null;
 }
 
-export interface InCallToolCall {
+export interface InCallToolCall extends ToolDiagnostics {
+    handoff_indeterminate?: boolean;
+    reservation_status?: string;
+    attempt_reference?: string;
+    appointment_name?: string;
+    start_datetime?: string;
+    end_datetime?: string;
+    timezone?: string;
     type?: 'tool_result';
     call_id?: string;
     tool_call_id?: string;
@@ -89,22 +130,7 @@ export const PhaseToolGroup = ({ phase, entries }: { phase: Exclude<ToolPhase, '
                         {entry.error_message && (
                             <div className="mt-2 text-xs text-red-500/90 break-words">{entry.error_message}</div>
                         )}
-                        {entry.summary_status && (
-                            <div className="mt-2 rounded bg-background/50 p-2 text-xs">
-                                <div className="font-medium">AI summary</div>
-                                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
-                                    <span>Status: {entry.summary_status}</span>
-                                    {entry.summary_provider && <span>Provider: {entry.summary_provider}</span>}
-                                    {entry.summary_model && <span>Model: {entry.summary_model}</span>}
-                                    {typeof entry.summary_duration_ms === 'number' && (
-                                        <span>{Math.round(entry.summary_duration_ms)}ms</span>
-                                    )}
-                                    {entry.summary_error_code && (
-                                        <span className="text-red-500/90">Error: {entry.summary_error_code}</span>
-                                    )}
-                                </div>
-                            </div>
-                        )}
+                        <ToolDiagnosticsView entry={entry} />
                         {entry.response_summary && (
                             <pre className="mt-2 text-xs bg-background/50 rounded p-2 overflow-x-auto whitespace-pre-wrap break-words">
                                 {entry.response_summary}
@@ -130,6 +156,16 @@ export const PhaseToolGroup = ({ phase, entries }: { phase: Exclude<ToolPhase, '
     </div>
 );
 
+const transferActionLabels: Record<string, string> = {
+    voicemail_initiated: 'Voicemail announcement started',
+    voicemail_completed: 'Voicemail handoff accepted',
+    voicemail_failed: 'Voicemail handoff cancelled',
+    voicemail_indeterminate: 'Voicemail handoff uncertain',
+    attended_transfer_initiated: 'Transfer initiated',
+    attended_transfer_failed: 'Transfer failed',
+    attended_transfer_completed: 'Transfer completed',
+};
+
 export const InCallToolGroup = ({ entries }: { entries: InCallToolCall[] }) => {
     const recordedModes = Array.from(new Set(entries.map(entry => entry.redaction_mode ?? 'legacy')));
     const recordedMode = recordedModes.length === 1 ? recordedModes[0] : recordedModes.length > 1 ? 'mixed' : 'legacy';
@@ -154,8 +190,8 @@ export const InCallToolGroup = ({ entries }: { entries: InCallToolCall[] }) => {
         <div className="space-y-2">
             {entries.map((tool, i) => {
                 const succeeded = tool.status ? tool.status === 'success' : tool.result === 'success';
-                const status: ToolExecutionStatus = succeeded ? 'ok' : 'error';
-                const hasParams = tool.params && typeof tool.params === 'object' && Object.keys(tool.params).length > 0;
+                const status: ToolExecutionStatus = tool.name === 'calendly_calendar' && ['submitting', 'uncertain', 'needs_operator'].includes(tool.reservation_status || '') ? 'pending' : succeeded ? 'ok' : 'error';
+                const hasParams = Boolean(tool.params && typeof tool.params === 'object' && Object.keys(tool.params).length > 0);
                 const invocationId = tool.tool_call_id || tool.call_id;
                 return (
                     <div key={`in-${invocationId || tool.name}-${i}`} className="bg-muted/30 rounded-lg p-3 text-sm">
@@ -164,7 +200,7 @@ export const InCallToolGroup = ({ entries }: { entries: InCallToolCall[] }) => {
                                 <Wrench className="w-4 h-4 shrink-0" />
                                 <span className="font-medium truncate">{tool.name}</span>
                                 {tool.action && tool.action !== tool.name && (
-                                    <span className="text-xs text-muted-foreground truncate">{tool.action}</span>
+                                    <span className="text-xs text-muted-foreground truncate">{Object.prototype.hasOwnProperty.call(transferActionLabels, tool.action) ? transferActionLabels[tool.action] : tool.action}</span>
                                 )}
                             </div>
                             <div className="flex items-center gap-2 text-muted-foreground text-xs">
@@ -182,6 +218,16 @@ export const InCallToolGroup = ({ entries }: { entries: InCallToolCall[] }) => {
                                 Invocation: <span className="font-mono">{invocationId}</span>
                             </div>
                         )}
+                        <ToolDiagnosticsView entry={tool} />
+                        {tool.handoff_indeterminate && <div className="mt-2 rounded bg-yellow-500/10 p-2 text-xs" role="status">
+                            Transfer outcome uncertain. The caller may have left the AI agent. Do not automatically repeat this transfer.
+                        </div>}
+                        {tool.name === 'calendly_calendar' && tool.reservation_status && <div className="mt-2 text-xs space-y-1">
+                            {tool.attempt_reference && <p className="break-all">Request reference: <span className="font-mono">{tool.attempt_reference}</span></p>}
+                            <p>{tool.appointment_name} · {tool.start_datetime} · {tool.timezone}</p>
+                            <p>Recorded outcome: {tool.reservation_status}. This is not a continuously synchronized booking status.</p>
+                            <a className="text-primary underline" href="/tools?section=calendly_calendar">Review Calendly requests</a>
+                        </div>}
                         {tool.message && <div className="mt-2 text-xs text-muted-foreground break-words">{tool.message}</div>}
                         {hasParams && (
                             <pre className="mt-2 text-xs bg-background/50 rounded p-2 overflow-x-auto">

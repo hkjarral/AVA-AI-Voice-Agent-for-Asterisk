@@ -8,11 +8,36 @@ globs: src/**/*.py, *.py, docker-compose.yml, Dockerfile, config/ai-agent.yaml
 
 ## System Overview
 
+### v7.7.1 recovery and transcription boundaries
+
+The [Admin transcription facade](../OpenAI-Compatible-Transcription.md) bridges
+authenticated bounded uploads to Local AI's single isolated batch worker. Live
+call setup preempts it; it is not a replacement for in-process live-call STT.
+The updater's [pending-action journal](../CLI_TOOLS_GUIDE.md#interrupted-docker-builds-and-same-version-recovery)
+tracks unfinished Docker actions separately from the Git revision. Preserve
+original running-state intent, private backups and booking replay barriers;
+application rollback does not rewind integration state. Call History's additive
+legacy erasure flag and Calendly privacy marker retain cleanup obligations even
+when adapter files are temporarily absent.
+
+### v7.7 state boundaries
+
+Agent appearance uses additive nullable SQLite columns and never selects a voice.
+Calendly's integration journal durably claims submissions before one remote POST;
+lost/ambiguous results require positive reconciliation or staff, never blind replay.
+Pushover is a named pre/in/post-call tool with bounded, per-recipient outcomes and
+best-effort call-local duplicate control; there is no durable notification outbox.
+In-call summaries snapshot recorded history at invocation without transfer-state
+filtering; they cannot infer unobserved human conversation. Preserve these
+differences in future adapters.
+See [Calendly](../Calendly-calendar-tool.md), [Pushover](../Pushover.md),
+[summaries](../In-Call-Summaries.md), and [backup boundaries](../INTEGRATION_BACKUPS.md).
+
 The Asterisk AI Voice Agent is a **production-ready, modular conversational AI system** that enables **real-time, two-way voice conversations** through Asterisk/FreePBX systems. It features a **modular pipeline architecture** that allows mixing and matching STT, LLM, and TTS providers, alongside support for **monolithic providers** like OpenAI Realtime, Deepgram, Google Live, and ElevenLabs.
 
 ### Key Architecture Components
 
-- **Dual Transport Support** – ExternalMedia RTP (UDP) and AudioSocket (TCP). The shipped `config/ai-agent.yaml` defaults to `audio_transport: audiosocket`; ExternalMedia is a validated option (especially for pipelines). AudioSocket is currently validated with `audiosocket.format: slin`.
+- **Audio transports** – AudioSocket (TCP) remains the default, alongside ExternalMedia RTP (UDP) and opt-in Asterisk Media WebSocket. Availability and release-specific qualification differ; use the [transport compatibility guide](../Transport-Mode-Compatibility.md) rather than inferring that all provider/transport combinations are validated.
 - **Local Override Config** – Operator customizations live in `config/ai-agent.local.yaml` (git-ignored), deep-merged on top of the base `config/ai-agent.yaml` at startup. All Admin UI and CLI writes target the local file, so upstream `git pull` never conflicts with operator settings.
 - **Adaptive Streaming** – Downstream audio with automatic jitter buffering and file playback fallback
 - **Modular Pipelines** – Independent STT, LLM, and TTS provider selection via YAML configuration
@@ -60,6 +85,15 @@ candidate; consult [`docs/baselines/golden/`](../baselines/golden/).
 **Fully Local (optional)** is also supported (no cloud APIs), but performance depends heavily on your hardware (especially local LLM inference). See `docs/LOCAL_ONLY_SETUP.md` and `docs/HARDWARE_REQUIREMENTS.md`.
 
 For deployment guidance, see [docs/PRODUCTION_DEPLOYMENT.md](../PRODUCTION_DEPLOYMENT.md).
+
+ARI terminal ownership distinguishes accepted, rejected, and indeterminate
+commands. Voicemail retains the caller transfer guard on uncertain continue
+responses, while history reports an error rather than confirmed transfer.
+Native hangup retries are bounded and check the same session/channel and transfer
+precedence on every attempt; VICIdial owns its separate finalization contract.
+Pre-call hold resources live on `CallSession`, each with a reserved playback ID,
+a delayed start and bounded late-response cleanup. Only their owner stops them.
+See [tool lifecycle and validation](../TOOL_CALLING_GUIDE.md#ari-lifecycle-validation-boundary).
 
 ## Architecture Overview
 

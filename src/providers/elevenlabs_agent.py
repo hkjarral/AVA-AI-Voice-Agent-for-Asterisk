@@ -173,6 +173,7 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             on_event: Optional callback for events (uses self.on_event if not provided)
             context: Optional context with greeting, instructions, tools, etc.
         """
+        self._handoff_evidence.reset(call_id)
         self._call_id = call_id
         self._session_state = ElevenLabsSessionState()
         ignored_voice = ignored_platform_voice(context)
@@ -509,6 +510,7 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             
             logger.info(f"[elevenlabs] [{previous_call_id}] Session stopped")
         finally:
+            self._handoff_evidence.reset(previous_call_id)
             self._closing = False
             self._closed = True
             self._in_audio_burst = False
@@ -738,6 +740,9 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             reason="agent_response_complete",
             event_id=event.get("event_id") or data.get("event_id"),
         )
+        # An earlier idle fallback may have closed the legacy audio burst.
+        # The authoritative event still completes the correlated announcement.
+        await self.complete_handoff_audio(self._call_id)
 
     def _cancel_audio_idle_completion(self) -> None:
         task = self._audio_idle_task
@@ -889,11 +894,13 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         tool_call_id: str,
         result: Any,
         is_error: bool = False,
-    ) -> None:
+    ) -> bool:
         """Send tool execution result back to ElevenLabs."""
+        await self.prepare_handoff_result(result, self._call_id)
         if not self._ws or not self._connected:
-            return
-        
+            await self.handoff_result_sent(result, self._call_id, success=False)
+            return False
+
         message = {
             "type": "client_tool_result",
             "tool_call_id": tool_call_id,
@@ -903,10 +910,14 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         
         try:
             await self._ws.send(json.dumps(message))
+            await self.handoff_result_sent(result, self._call_id)
             logger.debug(f"[elevenlabs] [{self._call_id}] Sent tool result for {tool_call_id}")
+            return True
         except Exception as e:
+            await self.handoff_result_sent(result, self._call_id, success=False)
             logger.warning(f"[elevenlabs] [{self._call_id}] Failed to send tool result: {e}")
-    
+            return False
+
     async def _handle_error(self, data: Dict[str, Any]) -> None:
         """Handle error message from ElevenLabs."""
         error = data.get("error", {})

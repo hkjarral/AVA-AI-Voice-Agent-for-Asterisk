@@ -304,12 +304,37 @@ class MicrosoftGraphClient:
             busy.append((start, end))
         return busy
 
-    def get_event(self, event_id: str) -> dict[str, Any] | None:
+    def get_event(
+        self, event_id: str, *, html_body: bool = False
+    ) -> dict[str, Any] | None:
         try:
             return self._request(
                 "GET",
                 f"/me/calendars/{urllib.parse.quote(self.account.calendar_id, safe='')}/events/{urllib.parse.quote(event_id, safe='')}",
                 event_resource=True,
+                headers=(
+                    {
+                        "Prefer": 'outlook.timezone="UTC", IdType="ImmutableId", outlook.body-content-type="html"'
+                    }
+                    if html_body
+                    else None
+                ),
+            )
+        except MicrosoftGraphApiError as exc:
+            if exc.status == 404:
+                return None
+            raise
+
+    def get_owned_event_in_mailbox(self, event_id: str) -> dict[str, Any] | None:
+        """Read only: distinguish deletion from a move out of the selected calendar.
+
+        The tool calls this only after authorizing a tracked immutable event ID.
+        It never uses this broader lookup as authority to mutate another calendar.
+        """
+        try:
+            return self._request(
+                "GET", f"/me/events/{urllib.parse.quote(event_id, safe='')}",
+                query={"$select": "id,isCancelled"}, event_resource=True,
             )
         except MicrosoftGraphApiError as exc:
             if exc.status == 404:
@@ -325,6 +350,7 @@ class MicrosoftGraphClient:
         *,
         attendee_emails: list[str] | None = None,
         transaction_id: str | None = None,
+        teams: bool = False,
     ) -> dict[str, Any]:
         body = {
             "subject": summary,
@@ -333,15 +359,30 @@ class MicrosoftGraphClient:
             "end": {"dateTime": graph_datetime(end_utc), "timeZone": "UTC"},
         }
         if attendee_emails:
-            body["attendees"] = [{"emailAddress": {"address": email}, "type": "required"} for email in attendee_emails]
+            body["attendees"] = [
+                {"emailAddress": {"address": email}, "type": "required"}
+                for email in attendee_emails
+            ]
         if transaction_id:
             body["transactionId"] = transaction_id
         body["showAs"] = "busy"
+        if teams:
+            from src.tools.business.microsoft_teams import teams_body
+
+            body["body"] = teams_body(description or "")
+            body.update(isOnlineMeeting=True, onlineMeetingProvider="teamsForBusiness")
         return self._request(
             "POST",
             f"/me/calendars/{urllib.parse.quote(self.account.calendar_id, safe='')}/events",
             body=body,
             event_resource=True,
+            headers=(
+                {
+                    "Prefer": 'outlook.timezone="UTC", IdType="ImmutableId", outlook.body-content-type="html"'
+                }
+                if teams
+                else None
+            ),
         )
 
     def delete_event(self, event_id: str, etag: str | None = None) -> bool:
@@ -358,11 +399,28 @@ class MicrosoftGraphClient:
                 return False
             raise
 
-    def update_event(self, event_id: str, body: dict[str, Any], etag: str | None = None) -> dict[str, Any]:
+    def update_event(
+        self,
+        event_id: str,
+        body: dict[str, Any],
+        etag: str | None = None,
+        *,
+        html_body: bool = False,
+    ) -> dict[str, Any]:
         return self._request(
             "PATCH",
             f"/me/calendars/{urllib.parse.quote(self.account.calendar_id, safe='')}/events/{urllib.parse.quote(event_id, safe='')}",
             event_resource=True,
             body=body,
-            headers={"If-Match": etag} if etag else None,
+            headers={
+                **({"If-Match": etag} if etag else {}),
+                **(
+                    {
+                        "Prefer": 'outlook.timezone="UTC", IdType="ImmutableId", outlook.body-content-type="html"'
+                    }
+                    if html_body
+                    else {}
+                ),
+            }
+            or None,
         )

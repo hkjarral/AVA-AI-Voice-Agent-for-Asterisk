@@ -28,6 +28,10 @@ class _Server:
         self.ws_auth_token = ""
         self.config = SimpleNamespace(ws_host="127.0.0.1")
         self.model_manager = SimpleNamespace()
+        self.live_sessions = set()
+
+    def _mark_live_session(self, session):
+        self.live_sessions.add(id(session))
 
     async def _send_json(self, websocket, payload):
         websocket.sent.append(payload)
@@ -70,6 +74,7 @@ async def test_session_scoped_prompts_are_isolated_and_reset_history():
     assert session_a.llm_messages == []
     assert ws_a.sent[-1]["status"] == ws_b.sent[-1]["status"] == "success"
     assert ws_a.sent[-1]["request_id"] == "prompt-a"
+    assert server.live_sessions == {id(session_a), id(session_b)}
 
 
 @pytest.mark.asyncio

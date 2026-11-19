@@ -1,17 +1,18 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, startTransition } from 'react';
 import {
-    Phone, Filter, Download, Trash2,
-    ChevronLeft, ChevronRight, RefreshCw, X, MessageSquare,
-    Wrench, AlertCircle, CheckCircle, ArrowRightLeft, PhoneOff,
-    BarChart3, Users, Timer, Activity, TrendingUp, Zap, PieChart,
-    Play, Pause, Volume2, FileAudio, Search, ShieldCheck, SlidersHorizontal
+    Phone, Filter, Download, Trash2, Loader2,
+    ChevronLeft, ChevronRight, RefreshCw, X, Wrench, AlertCircle, CheckCircle, ArrowRightLeft, PhoneOff,
+    BarChart3, Timer, Activity, TrendingUp, PieChart,
+    Search, ShieldCheck, SlidersHorizontal
 } from 'lucide-react';
 import axios from 'axios';
 import { toast } from 'sonner';
+import { CallRecordingPlayer } from '../components/calls/CallRecordingPlayer';
 import { EmptyState } from '../components/ui/EmptyState';
 
 import { IconButton } from '../components/ui/IconButton';
 import { FullscreenPanel } from '../components/ui/FullscreenPanel';
+import { usePendingAction } from '../hooks/usePendingAction';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
@@ -129,28 +130,6 @@ const formatDate = (dateStr: string | null): string => {
     return date.toLocaleString();
 };
 
-const formatAudioTime = (seconds: number): string => {
-    if (!seconds || isNaN(seconds)) return '0:00';
-    const m = Math.floor(seconds / 60);
-    const s = Math.floor(seconds % 60);
-    return `${m}:${s.toString().padStart(2, '0')}`;
-};
-
-const formatFileSize = (bytes: number): string => {
-    if (bytes === 0) return '0 B';
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-};
-
-interface RecordingInfo {
-    has_recording: boolean;
-    filename: string | null;
-    file_path: string | null;
-    file_size_bytes: number;
-    duration_hint: string | null;
-}
-
 const OutcomeIcon = ({ outcome }: { outcome: string }) => {
     switch (outcome) {
         case 'completed':
@@ -259,6 +238,7 @@ const RoutingBadge = ({ method }: { method: string | null }) => {
 
 const CallHistoryPage = () => {
     const { confirm } = useConfirmDialog();
+    const { pendingAction, isPending, runAction } = usePendingAction();
     const location = useLocation();
     const navigate = useNavigate();
     const [calls, setCalls] = useState<CallRecordSummary[]>([]);
@@ -273,25 +253,18 @@ const CallHistoryPage = () => {
     const [selectedCall, setSelectedCall] = useState<CallRecordDetail | null>(null);
     const [selectedCallLoading, setSelectedCallLoading] = useState(false);
     const [showStats, setShowStats] = useState(true);
+    const detailRequest = useRef<AbortController | null>(null);
+    useEffect(() => () => detailRequest.current?.abort(), []);
     const callDetailsDialogRef = useRef<HTMLDivElement>(null);
     const modalCall = selectedCall ?? selectedCallSummary;
     const callDetailsOpen = Boolean(modalCall);
-
-    // Recording playback
-    const [recordingInfo, setRecordingInfo] = useState<RecordingInfo | null>(null);
-    const [recordingLoading, setRecordingLoading] = useState(false);
-    const audioRef = useRef<HTMLAudioElement | null>(null);
-    const audioBlobUrl = useRef<string | null>(null);
-    const [audioPlaying, setAudioPlaying] = useState(false);
-    const [audioCurrentTime, setAudioCurrentTime] = useState(0);
-    const [audioDuration, setAudioDuration] = useState(0);
 
     // Pagination
     const [page, setPage] = useState(1);
     const [pageSize] = useState(20);
     const [total, setTotal] = useState(0);
     const [totalPages, setTotalPages] = useState(1);
-    
+
     // Filters
     const [filters, setFilters] = useState<CallHistoryFilters>(EMPTY_FILTERS);
     const [showFilters, setShowFilters] = useState(false);
@@ -455,70 +428,29 @@ const CallHistoryPage = () => {
         fetchRedactionPolicy();
     }, [fetchRedactionPolicy]);
 
-    const cleanupAudio = useCallback(() => {
-        if (audioRef.current) {
-            audioRef.current.pause();
-            audioRef.current.src = '';
-            audioRef.current = null;
-        }
-        if (audioBlobUrl.current) {
-            URL.revokeObjectURL(audioBlobUrl.current);
-            audioBlobUrl.current = null;
-        }
-        setAudioPlaying(false);
-        setAudioCurrentTime(0);
-        setAudioDuration(0);
-    }, []);
-
-    // Cleanup audio on component unmount (e.g. navigating away while playing)
-    useEffect(() => {
-        return () => {
-            if (audioRef.current) {
-                audioRef.current.pause();
-                audioRef.current.src = '';
-                audioRef.current = null;
-            }
-            if (audioBlobUrl.current) {
-                URL.revokeObjectURL(audioBlobUrl.current);
-                audioBlobUrl.current = null;
-            }
-        };
-    }, []);
-
-    const fetchRecordingInfo = useCallback(async (recordId: string) => {
-        cleanupAudio();
-        setRecordingInfo(null);
-        setRecordingLoading(true);
-        try {
-            const res = await axios.get(`/api/calls/${recordId}/recording`);
-            setRecordingInfo(res.data);
-        } catch {
-            setRecordingInfo({ has_recording: false, filename: null, file_path: null, file_size_bytes: 0, duration_hint: null });
-        } finally {
-            setRecordingLoading(false);
-        }
-    }, [cleanupAudio]);
-
     const closeCallDetails = useCallback(() => {
-        cleanupAudio();
-        setRecordingInfo(null);
-        setSelectedCall(null);
-        setSelectedCallSummary(null);
+        detailRequest.current?.abort();
+        // Keep the modal state and Router 7 URL transition in the same update.
+        // Clearing only local state first can replay the still-present deep link.
+        startTransition(() => {
+            setSelectedCall(null);
+            setSelectedCallSummary(null);
 
-        const params = new URLSearchParams(location.search);
-        if (params.has('id')) {
-            params.delete('id');
-            const search = params.toString();
-            navigate(
-                {
-                    pathname: location.pathname,
-                    search: search ? `?${search}` : '',
-                    hash: location.hash,
-                },
-                { replace: true }
-            );
-        }
-    }, [cleanupAudio, location.hash, location.pathname, location.search, navigate]);
+            const params = new URLSearchParams(location.search);
+            if (params.has('id')) {
+                params.delete('id');
+                const search = params.toString();
+                navigate(
+                    {
+                        pathname: location.pathname,
+                        search: search ? `?${search}` : '',
+                        hash: location.hash,
+                    },
+                    { replace: true }
+                );
+            }
+        });
+    }, [location.hash, location.pathname, location.search, navigate]);
 
     useEffect(() => {
         if (!callDetailsOpen) return;
@@ -530,7 +462,7 @@ const CallHistoryPage = () => {
 
         const isTopmostModal = () => {
             const dialogs = Array.from(
-                document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')
+                document.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"]')
             );
             return dialogs[dialogs.length - 1] === dialog;
         };
@@ -540,7 +472,7 @@ const CallHistoryPage = () => {
             if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopPropagation();
-                closeCallDetails();
+                if (!isPending()) closeCallDetails();
                 return;
             }
             if (event.key !== 'Tab') return;
@@ -577,7 +509,7 @@ const CallHistoryPage = () => {
             document.body.style.overflow = previousBodyOverflow;
             previouslyFocused?.focus?.();
         };
-    }, [callDetailsOpen, closeCallDetails]);
+    }, [callDetailsOpen, closeCallDetails, isPending]);
 
     // Deep-link support: /history?id=<call_record_id>
     useEffect(() => {
@@ -585,12 +517,16 @@ const CallHistoryPage = () => {
         if (!id) return;
         if (selectedCall?.id === id || selectedCallSummary?.id === id) return;
 
+        detailRequest.current?.abort();
+        const controller = new AbortController();
+        detailRequest.current = controller;
         setSelectedCallSummary(null);
         setSelectedCall(null);
         setSelectedCallLoading(true);
         axios
-            .get(`/api/calls/${id}`)
+            .get(`/api/calls/${encodeURIComponent(id)}`, { signal: controller.signal })
             .then(res => {
+                if (controller.signal.aborted) return;
                 const detail: CallRecordDetail = res.data;
                 setSelectedCall(detail);
                 setSelectedCallSummary({
@@ -613,14 +549,15 @@ const CallHistoryPage = () => {
                     total_turns: detail.total_turns,
                     barge_in_count: detail.barge_in_count,
                 });
-                fetchRecordingInfo(id);
             })
             .catch(err => {
+                if (controller.signal.aborted) return;
                 console.error('Failed to open deep-linked call record:', err);
                 setError(err?.response?.data?.detail || 'Failed to open call history record');
             })
-            .finally(() => setSelectedCallLoading(false));
-    }, [location.search, selectedCall?.id, selectedCallSummary?.id, fetchRecordingInfo]);
+            .finally(() => { if (!controller.signal.aborted) setSelectedCallLoading(false); });
+        return () => controller.abort();
+    }, [location.search, selectedCall?.id, selectedCallSummary?.id]);
 
     const handleExport = async (format: 'csv' | 'json') => {
         try {
@@ -628,7 +565,7 @@ const CallHistoryPage = () => {
                 params: filterParams,
                 responseType: 'blob'
             });
-            
+
             const url = window.URL.createObjectURL(res.data);
             const a = document.createElement('a');
             a.href = url;
@@ -640,7 +577,7 @@ const CallHistoryPage = () => {
         }
     };
 
-    const handleDelete = async (id: string) => {
+    const handleDelete = (id: string) => runAction(id, async () => {
         const confirmed = await confirm({
             title: 'Delete Call Record?',
             description: 'Are you sure you want to delete this call record?',
@@ -650,70 +587,33 @@ const CallHistoryPage = () => {
         if (!confirmed) return;
         try {
             await axios.delete(`/api/calls/${id}`);
-            fetchCalls();
-            fetchStats();
             if (selectedCall?.id === id || selectedCallSummary?.id === id) {
                 closeCallDetails();
             }
+            await Promise.all([fetchCalls(), fetchStats()]);
         } catch (err) {
             console.error('Failed to delete:', err);
             toast.error('Failed to delete call record');
         }
-    };
+    });
 
     const openCallDetails = async (call: CallRecordSummary) => {
+        if (isPending()) return;
+        detailRequest.current?.abort();
+        const controller = new AbortController();
+        detailRequest.current = controller;
         setSelectedCallSummary(call);
         setSelectedCall(null);
         setSelectedCallLoading(true);
         try {
-            const res = await axios.get(`/api/calls/${call.id}`);
-            setSelectedCall(res.data);
+            const res = await axios.get(`/api/calls/${encodeURIComponent(call.id)}`, { signal: controller.signal });
+            if (!controller.signal.aborted) setSelectedCall(res.data);
         } catch (err) {
-            console.error('Failed to fetch call details:', err);
+            if (!controller.signal.aborted) console.error('Failed to fetch call details:', err);
         } finally {
-            setSelectedCallLoading(false);
+            if (!controller.signal.aborted) setSelectedCallLoading(false);
         }
-        fetchRecordingInfo(call.id);
     };
-
-    const handlePlayRecording = useCallback(async () => {
-        const recordId = selectedCall?.id || selectedCallSummary?.id;
-        if (!recordId) return;
-
-        // Toggle pause/resume on existing audio
-        if (audioRef.current && audioRef.current.src) {
-            if (audioPlaying) {
-                audioRef.current.pause();
-                setAudioPlaying(false);
-            } else {
-                try {
-                    await audioRef.current.play();
-                    setAudioPlaying(true);
-                } catch {
-                    setAudioPlaying(false);
-                    toast.error('Failed to resume playback');
-                }
-            }
-            return;
-        }
-
-        // Fresh play: fetch browser-playable recording audio as blob (auth header required)
-        try {
-            const res = await axios.get(`/api/calls/${recordId}/recording/audio`, { responseType: 'blob' });
-            const url = URL.createObjectURL(res.data);
-            audioBlobUrl.current = url;
-
-            const audio = new Audio(url);
-            audioRef.current = audio;
-            audio.onended = () => { setAudioPlaying(false); setAudioCurrentTime(0); };
-            audio.ontimeupdate = () => setAudioCurrentTime(audio.currentTime);
-            audio.onloadedmetadata = () => setAudioDuration(audio.duration);
-            await audio.play();
-            setAudioPlaying(true);
-        } catch (err: any) {
-            toast.error(err?.response?.data?.detail || 'Failed to play recording');
-        }
-    }, [selectedCall, selectedCallSummary, audioPlaying]);
 
     const openTroubleshoot = (call: CallRecordSummary | CallRecordDetail) => {
         const callId = call.call_id;
@@ -1158,7 +1058,7 @@ return (
                             <tbody className="divide-y divide-border">
                                 {calls.map((call) => (
 	                                    <tr
-	                                        key={call.id} 
+	                                        key={call.id}
 	                                        className="hover:bg-muted/30 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
 	                                        tabIndex={0}
 	                                        aria-label={`Open call details for ${call.caller_number || call.call_id}`}
@@ -1209,12 +1109,15 @@ return (
                                         <td className="px-4 py-3 text-sm tabular-nums">{call.barge_in_count}</td>
                                         <td className="px-4 py-3 text-center w-20">
                                             <IconButton
-                                                icon={Trash2}
+                                                icon={pendingAction === call.id ? Loader2 : Trash2}
+                                                disabled={!!pendingAction}
+                                                aria-busy={pendingAction === call.id}
                                                 variant="destructive"
                                                 label="Delete"
                                                 onClick={(e) => { e.stopPropagation(); handleDelete(call.id); }}
                                                 className="p-2 hover:bg-destructive/10 rounded text-destructive"
                                                 title="Delete"
+                                                iconClassName={pendingAction === call.id ? 'animate-spin' : undefined}
                                             />
                                         </td>
                                     </tr>
@@ -1279,8 +1182,10 @@ return (
                                     Troubleshoot
                                 </button>
                                 <IconButton
-                                    icon={Trash2}
-                                    iconClassName="w-5 h-5"
+                                    icon={pendingAction === modalCall.id ? Loader2 : Trash2}
+                                    disabled={!!pendingAction}
+                                    aria-busy={pendingAction === modalCall.id}
+                                    iconClassName={`w-5 h-5 ${pendingAction === modalCall.id ? 'animate-spin' : ''}`}
                                     variant="destructive"
                                     label="Delete this call"
                                     onClick={() => handleDelete(modalCall.id)}
@@ -1288,8 +1193,9 @@ return (
                                     title="Delete this call"
                                 />
                                 <button
-                                    onClick={closeCallDetails}
-                                    className="p-2 hover:bg-muted rounded-lg"
+                                    onClick={() => { if (!isPending()) closeCallDetails(); }}
+                                    disabled={!!pendingAction}
+                                    className="p-2 hover:bg-muted rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
                                     aria-label="Close call details"
                                     title="Close call details"
                                 >
@@ -1298,65 +1204,7 @@ return (
                             </div>
                         </div>
 
-                        {/* Call Recording Player */}
-                        <div className="px-4 py-3 border-b bg-muted/20">
-                            {recordingLoading ? (
-                                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                    Checking for recording…
-                                </div>
-                            ) : recordingInfo?.has_recording && recordingInfo.duration_hint !== 'empty' ? (
-                                <div className="flex items-center gap-3">
-                                    <button
-                                        onClick={handlePlayRecording}
-                                        className="flex items-center justify-center w-9 h-9 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-colors shrink-0"
-                                        aria-label={audioPlaying ? 'Pause' : 'Play recording'}
-                                        title={audioPlaying ? 'Pause' : 'Play recording'}
-                                    >
-                                        {audioPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
-                                    </button>
-                                    <div className="flex-1 min-w-0">
-                                        <div className="flex items-center gap-2">
-                                            <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden cursor-pointer"
-                                                onClick={(e) => {
-                                                    if (!audioRef.current || !audioDuration) return;
-                                                    const rect = e.currentTarget.getBoundingClientRect();
-                                                    const pct = (e.clientX - rect.left) / rect.width;
-                                                    audioRef.current.currentTime = pct * audioDuration;
-                                                }}
-                                            >
-                                                <div
-                                                    className="h-full bg-primary rounded-full transition-all"
-                                                    style={{ width: `${audioDuration > 0 ? (audioCurrentTime / audioDuration) * 100 : 0}%` }}
-                                                />
-                                            </div>
-                                            <span className="text-xs text-muted-foreground whitespace-nowrap">
-                                                {formatAudioTime(audioCurrentTime)} / {formatAudioTime(audioDuration)}
-                                            </span>
-                                        </div>
-                                        <div className="flex items-center gap-1 mt-1">
-                                            <FileAudio className="w-3 h-3 text-muted-foreground shrink-0" />
-                                            <span className="text-xs text-muted-foreground truncate" title={recordingInfo.file_path || ''}>
-                                                {recordingInfo.filename}
-                                            </span>
-                                            <span className="text-xs text-muted-foreground whitespace-nowrap">
-                                                ({formatFileSize(recordingInfo.file_size_bytes)})
-                                            </span>
-                                        </div>
-                                    </div>
-                                </div>
-                            ) : recordingInfo?.duration_hint === 'empty' ? (
-                                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                    <Volume2 className="w-4 h-4" />
-                                    Recording exists but contains no audio
-                                </div>
-                            ) : (
-                                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                    <Volume2 className="w-4 h-4" />
-                                    No recording available
-                                </div>
-                            )}
-                        </div>
+                        <CallRecordingPlayer key={modalCall.id} recordId={modalCall.id} />
 
                         {/* Modal Content */}
                         <div className="flex-1 overflow-y-auto p-4 space-y-6">
@@ -1527,8 +1375,8 @@ return (
                                             selectedCall.conversation_history.map((msg, i) => (
                                                 <div key={i} className={`flex ${msg.role === 'assistant' ? 'justify-start' : 'justify-end'}`}>
                                                     <div className={`max-w-[80%] rounded-lg px-3 py-2 ${
-                                                        msg.role === 'assistant' 
-                                                            ? 'bg-primary/10 text-foreground' 
+                                                        msg.role === 'assistant'
+                                                            ? 'bg-primary/10 text-foreground'
                                                             : 'bg-muted text-foreground'
                                                     }`}>
                                                         <div className="text-xs text-muted-foreground mb-1 capitalize">{msg.role}</div>

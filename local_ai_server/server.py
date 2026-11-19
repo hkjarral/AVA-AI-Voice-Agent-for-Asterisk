@@ -100,217 +100,6 @@ _MAX_SESSION_END_CALL_MARKERS = 100
 _MAX_SESSION_END_CALL_MARKER_LENGTH = 160
 
 
-class _LegacyKrokoSTTBackend:
-    """
-    Kroko ASR streaming STT backend via WebSocket.
-    
-    Supports both:
-    - Hosted API: wss://app.kroko.ai/api/v1/transcripts/streaming
-    - On-premise: ws://localhost:6006 (Kroko ONNX server)
-    
-    Protocol based on official kroko-ai/integration-demos C module analysis.
-    Audio format: PCM 32-bit float, 16kHz, mono
-    Response format: {"type": "partial"|"final", "text": "...", "segment": N}
-    """
-
-    def __init__(
-        self,
-        url: str,
-        api_key: Optional[str] = None,
-        language: str = "en-US",
-        endpoints: bool = True,
-    ):
-        self.base_url = url
-        self.api_key = api_key
-        self.language = language
-        self.endpoints = endpoints
-        self._subprocess: Optional[asyncio.subprocess.Process] = None
-
-    def build_connection_url(self) -> str:
-        """Build WebSocket URL with query parameters."""
-        # Check if it's the hosted API or on-premise
-        if "app.kroko.ai" in self.base_url:
-            # Hosted API format
-            params = f"?languageCode={self.language}&endpoints={'true' if self.endpoints else 'false'}"
-            if self.api_key:
-                params += f"&apiKey={self.api_key}"
-            return f"{self.base_url}{params}"
-        else:
-            # On-premise server - no query params needed
-            return self.base_url
-
-    async def connect(self) -> Any:
-        """
-        Create and return a WebSocket connection to Kroko server.
-        
-        Returns the websocket object for use in session-specific operations.
-        """
-        url = self.build_connection_url()
-        logging.info("🎤 KROKO - Connecting to %s", url.split("?")[0])  # Don't log API key
-
-        try:
-            ws = await ws_client.connect(url)
-
-            # Wait for connected message (hosted API sends this)
-            if "app.kroko.ai" in self.base_url:
-                try:
-                    msg = await asyncio.wait_for(ws.recv(), timeout=5.0)
-                    data = json.loads(msg)
-                    if data.get("type") == "connected":
-                        logging.info("✅ KROKO - Connected to hosted API, session=%s", data.get("id"))
-                except asyncio.TimeoutError:
-                    logging.warning("⚠️ KROKO - No connected message received, continuing anyway")
-            else:
-                logging.info("✅ KROKO - Connected to on-premise server")
-
-            return ws
-
-        except Exception as exc:
-            logging.error("❌ KROKO - Connection failed: %s", exc)
-            raise
-
-    @staticmethod
-    def pcm16_to_float32(pcm16_audio: bytes) -> bytes:
-        """
-        Convert PCM16 audio to PCM32 float (IEEE-754) for Kroko.
-        
-        This matches the conversion in the official C module:
-        _float32[c] = ((float)_int16[c]) / 32768
-        """
-        samples = np.frombuffer(pcm16_audio, dtype=np.int16)
-        float_samples = samples.astype(np.float32) / 32768.0
-        return float_samples.tobytes()
-
-    async def send_audio(self, ws: Any, pcm16_audio: bytes) -> None:
-        """
-        Send PCM16 audio to Kroko, converting to float32 format.
-        
-        Args:
-            ws: WebSocket connection
-            pcm16_audio: Audio data in PCM16 format (16kHz, mono)
-        """
-        if ws is None:
-            logging.warning("🎤 KROKO - Cannot send audio, no WebSocket connection")
-            return
-
-        float32_audio = self.pcm16_to_float32(pcm16_audio)
-
-        try:
-            await ws.send(float32_audio)
-            if DEBUG_AUDIO_FLOW:
-                logging.debug(
-                    "🎤 KROKO - Sent %d bytes PCM16 → %d bytes float32",
-                    len(pcm16_audio),
-                    len(float32_audio),
-                )
-        except Exception as exc:
-            logging.error("❌ KROKO - Failed to send audio: %s", exc)
-            raise
-
-    async def receive_transcript(self, ws: Any, timeout: float = 0.1) -> Optional[Dict[str, Any]]:
-        """
-        Try to receive a transcript result from Kroko.
-        
-        Returns:
-            Dict with keys: type ("partial"|"final"), text, segment, startedAt
-            None if no message available within timeout
-        """
-        if ws is None:
-            return None
-
-        try:
-            msg = await asyncio.wait_for(ws.recv(), timeout=timeout)
-            data = json.loads(msg)
-
-            if DEBUG_AUDIO_FLOW:
-                logging.debug("🎤 KROKO - Received: %s", data)
-
-            return data
-
-        except asyncio.TimeoutError:
-            return None
-        except json.JSONDecodeError as exc:
-            logging.warning("⚠️ KROKO - Invalid JSON response: %s", exc)
-            return None
-        except ConnectionClosed:
-            logging.warning("⚠️ KROKO - Connection closed")
-            return None
-        except Exception as exc:
-            logging.error("❌ KROKO - Receive error: %s", exc)
-            return None
-
-    async def close(self, ws: Any) -> None:
-        """Close the WebSocket connection."""
-        if ws:
-            try:
-                await ws.close()
-                logging.info("🎤 KROKO - Connection closed")
-            except Exception as exc:
-                logging.debug("KROKO - Close error (ignored): %s", exc)
-
-    async def start_subprocess(self, model_path: str, port: int = 6006) -> bool:
-        """
-        Start the Kroko ONNX server as a subprocess (for embedded mode).
-        
-        Args:
-            model_path: Path to the Kroko ONNX model file
-            port: Port for the WebSocket server
-            
-        Returns:
-            True if subprocess started successfully
-        """
-        kroko_binary = "/usr/local/bin/kroko-server"
-
-        if not os.path.exists(kroko_binary):
-            logging.warning("⚠️ KROKO - Binary not found at %s, using external server", kroko_binary)
-            return False
-
-        if not os.path.exists(model_path):
-            logging.error("❌ KROKO - Model not found at %s", model_path)
-            return False
-
-        try:
-            logging.info("🚀 KROKO - Starting embedded server on port %d", port)
-
-            self._subprocess = await asyncio.create_subprocess_exec(
-                kroko_binary,
-                f"--model={model_path}",
-                f"--port={port}",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-
-            # Wait for server to start
-            await asyncio.sleep(2.0)
-
-            if self._subprocess.returncode is not None:
-                stderr = await self._subprocess.stderr.read()
-                logging.error("❌ KROKO - Subprocess failed: %s", stderr.decode())
-                return False
-
-            logging.info("✅ KROKO - Embedded server started (PID=%d)", self._subprocess.pid)
-            return True
-
-        except Exception as exc:
-            logging.error("❌ KROKO - Failed to start subprocess: %s", exc)
-            return False
-
-    async def stop_subprocess(self) -> None:
-        """Stop the Kroko ONNX server subprocess."""
-        if self._subprocess:
-            try:
-                self._subprocess.terminate()
-                await asyncio.wait_for(self._subprocess.wait(), timeout=5.0)
-                logging.info("🛑 KROKO - Subprocess stopped")
-            except asyncio.TimeoutError:
-                self._subprocess.kill()
-                logging.warning("⚠️ KROKO - Subprocess killed (timeout)")
-            except Exception as exc:
-                logging.error("❌ KROKO - Error stopping subprocess: %s", exc)
-            finally:
-                self._subprocess = None
-
-
 class _LegacySherpaONNXSTTBackend:
     """
     Local streaming STT backend using sherpa-onnx.
@@ -771,6 +560,12 @@ class LocalAIServer:
         self._faster_whisper_lock = asyncio.Lock()
         # Lock to serialize Whisper.cpp inference (avoid concurrent model access).
         self._whisper_cpp_lock = asyncio.Lock()
+        # Batch STT uses a killable child process, never a live-call model lock.
+        # Admission is immediate: one active job, no waiting queue.
+        self._batch_reserved = False
+        self._batch_process: Optional[asyncio.subprocess.Process] = None
+        self._batch_preempted = False
+        self._live_session_ids: set[int] = set()
         # The active local TTS model is shared by every WebSocket session. Most
         # ML TTS libraries are blocking and not documented as thread-safe, so
         # execute them off the event loop while serializing model access.
@@ -1405,6 +1200,8 @@ class LocalAIServer:
                     vad_threshold=getattr(self.config, "sherpa_vad_threshold", 0.5),
                     vad_min_silence_ms=getattr(self.config, "sherpa_vad_min_silence_ms", 500),
                     vad_min_speech_ms=getattr(self.config, "sherpa_vad_min_speech_ms", 250),
+                    sense_voice_language=getattr(self.config, "sherpa_sense_voice_language", "auto"),
+                    sense_voice_use_itn=getattr(self.config, "sherpa_sense_voice_use_itn", True),
                 )
             else:
                 logging.info("🎤 STT backend: Sherpa-onnx (local streaming ASR)")
@@ -2587,6 +2384,256 @@ class LocalAIServer:
             logging.error("Faster-Whisper STT processing failed: %s", exc, exc_info=True)
             return ""
 
+    def _mark_live_session(self, session: SessionContext) -> None:
+        """Give a new live session priority over any in-flight batch worker."""
+        session_id = id(session)
+        if session_id in self._live_session_ids:
+            return
+        self._live_session_ids.add(session_id)
+        if self._batch_reserved:
+            self._batch_preempted = True
+            if self._batch_process and self._batch_process.returncode is None:
+                try:
+                    self._batch_process.kill()
+                except ProcessLookupError:
+                    pass
+
+    def _release_live_session(self, session: SessionContext) -> None:
+        self._live_session_ids.discard(id(session))
+
+    async def _run_batch_worker(self, pcm16: bytes, language: str | None) -> str:
+        """Run one isolated STT model, reaping it on preemption or cancellation."""
+        if self.stt_backend == "faster_whisper":
+            if not self.faster_whisper_backend:
+                raise RuntimeError("stt_unavailable")
+            model = self.faster_whisper_model
+            configured_language = self.faster_whisper_language
+            device = self.faster_whisper_device
+            compute_type = self.faster_whisper_compute
+        elif self.stt_backend == "whisper_cpp":
+            if not self.whisper_cpp_backend:
+                raise RuntimeError("stt_unavailable")
+            model = self.whisper_cpp_model_path
+            configured_language = self.whisper_cpp_language
+            device, compute_type = "cpu", "int8"
+        elif self.stt_backend == "vosk":
+            if not self.stt_model:
+                raise RuntimeError("stt_unavailable")
+            model = self.stt_model_path
+            configured_language = ""
+            device, compute_type = "cpu", "int8"
+        else:
+            raise RuntimeError("unsupported_stt_backend")
+
+        spawn = asyncio.create_task(
+            asyncio.create_subprocess_exec(
+                sys.executable,
+                os.path.join(os.path.dirname(__file__), "batch_stt_worker.py"),
+                "--backend", self.stt_backend,
+                "--model", model,
+                "--device", device,
+                "--compute-type", compute_type,
+                "--configured-language", configured_language,
+                "--language", language or "",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        )
+        try:
+            process = await asyncio.shield(spawn)
+        except asyncio.CancelledError:
+            # If the client closes during spawn, still collect and reap the child.
+            process = await spawn
+            if process.returncode is None:
+                process.kill()
+            await process.wait()
+            raise
+        self._batch_process = process
+        if self._batch_preempted or self._live_session_ids:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        try:
+            async with asyncio.timeout(180):
+                stdout, _ = await process.communicate(pcm16)
+        except TimeoutError as exc:
+            raise RuntimeError("transcription_timeout") from exc
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            reason = "preempted_by_live_call" if self._batch_preempted else "transcription_failed"
+            raise RuntimeError(reason) from exc
+        finally:
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                await process.wait()
+            self._batch_process = None
+        if self._batch_preempted:
+            raise RuntimeError("preempted_by_live_call")
+        if process.returncode != 0 or len(stdout) > 64 * 1024:
+            raise RuntimeError("transcription_failed")
+        try:
+            result = json.loads(stdout)
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError("invalid_worker_response") from exc
+        if not isinstance(result, dict) or result.get("status") != "ok" or not isinstance(result.get("text"), str):
+            raise RuntimeError("transcription_failed")
+        return result["text"]
+
+    async def _handle_transcribe_request(
+        self,
+        websocket,
+        data: Dict[str, Any],
+    ) -> None:
+        """Handle one authenticated, bounded batch transcription request."""
+        request_id = data.get("request_id")
+        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", request_id):
+            await self._send_json(
+                websocket,
+                {"type": "transcribe_response", "status": "error", "error": "invalid_request_id", "request_id": None},
+            )
+            return
+        encoded = data.get("data")
+        if not isinstance(encoded, str) or not encoded:
+            await self._send_json(
+                websocket,
+                {
+                    "type": "transcribe_response",
+                    "status": "error",
+                    "error": "missing_audio_data",
+                    "request_id": request_id,
+                },
+            )
+            return
+        if data.get("encoding") != "pcm_s16le" or data.get("sample_rate_hz") != PCM16_TARGET_RATE:
+            await self._send_json(
+                websocket,
+                {
+                    "type": "transcribe_response",
+                    "status": "error",
+                    "error": "unsupported_audio_format",
+                    "request_id": request_id,
+                },
+            )
+            return
+        max_bytes = 120 * PCM16_TARGET_RATE * 2
+        if len(encoded) > ((max_bytes + 2) // 3) * 4:
+            await self._send_json(
+                websocket,
+                {"type": "transcribe_response", "status": "error", "error": "invalid_audio_data", "request_id": request_id},
+            )
+            return
+        if self._live_session_ids or self._batch_reserved:
+            reason = "live_call_active" if self._live_session_ids else "batch_busy"
+            await self._send_json(
+                websocket,
+                {"type": "transcribe_response", "status": "error", "error": reason, "request_id": request_id},
+            )
+            return
+        try:
+            pcm16 = await asyncio.to_thread(base64.b64decode, encoded, validate=True)
+        except (ValueError, TypeError):
+            pcm16 = b""
+        if not pcm16 or len(pcm16) > max_bytes or len(pcm16) % 2:
+            await self._send_json(
+                websocket,
+                {
+                    "type": "transcribe_response",
+                    "status": "error",
+                    "error": "invalid_audio_data",
+                    "request_id": request_id,
+                },
+            )
+            return
+        language = data.get("language")
+        if language is not None and (
+            not isinstance(language, str)
+            or not re.fullmatch(r"[a-z]{2}|auto", language)
+        ):
+            await self._send_json(
+                websocket,
+                {"type": "transcribe_response", "status": "error", "error": "invalid_language", "request_id": request_id},
+            )
+            return
+        if language is not None:
+            supported = self.stt_backend == "faster_whisper"
+            if supported and ".en" in self.faster_whisper_model and language not in {"en"}:
+                supported = False
+            if not supported:
+                await self._send_json(
+                    websocket,
+                    {"type": "transcribe_response", "status": "error", "error": "unsupported_language", "request_id": request_id},
+                )
+                return
+        if self._live_session_ids:
+            await self._send_json(
+                websocket,
+                {"type": "transcribe_response", "status": "error", "error": "live_call_active", "request_id": request_id},
+            )
+            return
+        if self._batch_reserved:
+            await self._send_json(
+                websocket,
+                {"type": "transcribe_response", "status": "error", "error": "batch_busy", "request_id": request_id},
+            )
+            return
+        self._batch_reserved = True
+        self._batch_preempted = False
+        worker: asyncio.Task[str] | None = None
+        closed: asyncio.Task[None] | None = None
+        try:
+            worker = asyncio.create_task(self._run_batch_worker(pcm16, language))
+            closed = asyncio.create_task(websocket.wait_closed())
+            done, _ = await asyncio.wait({worker, closed}, return_when=asyncio.FIRST_COMPLETED)
+            if closed in done:
+                return
+            text = await worker
+        except RuntimeError as exc:
+            await self._send_json(
+                websocket,
+                {
+                    "type": "transcribe_response",
+                    "status": "error",
+                    "error": str(exc),
+                    "request_id": request_id,
+                },
+            )
+            return
+        except Exception:
+            logging.error("Batch transcription failed", exc_info=True)
+            await self._send_json(
+                websocket,
+                {
+                    "type": "transcribe_response",
+                    "status": "error",
+                    "error": "transcription_failed",
+                    "request_id": request_id,
+                },
+            )
+            return
+        finally:
+            for task in (worker, closed):
+                if task and not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *(task for task in (worker, closed) if task),
+                return_exceptions=True,
+            )
+            self._batch_reserved = False
+            self._batch_preempted = False
+        await self._send_json(
+            websocket,
+            {
+                "type": "transcribe_response",
+                "status": "ok",
+                "text": text,
+                "request_id": request_id,
+            },
+        )
+
     async def _process_stt_vosk(self, audio_data: bytes, input_rate: int = PCM16_TARGET_RATE) -> str:
         """Process STT with Vosk - optimized for telephony audio"""
         try:
@@ -3601,7 +3648,7 @@ class LocalAIServer:
         if not hasattr(self.sherpa_backend, "finalize"):
             return
         try:
-            trailing = self.sherpa_backend.finalize(vad)
+            trailing = self.sherpa_backend.finalize(vad, call_id=session.call_id)
             if not trailing:
                 return
             trailing_text = (trailing.get("text") or "").strip()
@@ -4114,6 +4161,7 @@ class LocalAIServer:
                 session.sherpa_offline_vad,
                 audio_bytes,
                 preroll_pcm16=session.stt_segment_preroll,
+                call_id=session.call_id,
             )
         else:
             # Ensure sherpa stream exists for this session
@@ -6753,7 +6801,9 @@ async def main():
             port,
             ping_interval=60,
             ping_timeout=120,
-            max_size=None,
+            # 120 s PCM16 batch audio is 5.12 MiB after base64. Bound all
+            # inbound WS frames before JSON/base64 allocation.
+            max_size=6 * 1024 * 1024,
             origins=None,  # Allow connections from other containers/browsers
         ):
             logging.info("🚀 Enhanced Local AI Server started on ws://%s:%s", host, port)

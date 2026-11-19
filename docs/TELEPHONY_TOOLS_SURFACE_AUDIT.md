@@ -10,7 +10,7 @@ This document captures the first cleanup tranche for telephony tools and their U
 | `tools.attended_transfer.delivery_mode` | surfaced | active | keep | operator-facing, required for shared-storage-free callee streaming |
 | `tools.attended_transfer.screening_mode` | surfaced | active | keep | `basic_tts`, experimental `ai_briefing`, and `caller_recording` are the supported modes |
 | `tools.attended_transfer.pass_caller_info_to_context` | hidden | compat-only | deprecate | stop writing from UI, keep read-compat for one release |
-| `screened_*` attended-transfer placeholders | hidden in docs/tooltips only | compat-only | deprecate | remove with `ai_summary` after compat window |
+| `screened_*` attended-transfer placeholders | listed in Agent Announcement tooltip | active (filled from `attended_transfer` `caller_name` / `call_reason`) | keep | removal on hold while the `caller_name`/`call_reason` parameters use them; naming to confirm with maintainer |
 | `extensions.internal.*.pass_caller_info` | not surfaced | legacy-only | deprecate | stop creating on new rows, keep read-compat for one release |
 | `tools.transfer.live_agent_destination_key` | surfaced as advanced/legacy | active | keep | revisit after telemetry window |
 | `tools.check_extension_status.restrict_to_configured_extensions` | now surfaced | active | keep | safety guardrail for model-driven availability checks |
@@ -33,7 +33,7 @@ Remove after one compatibility release if telemetry and docs/prompt audits stay 
 
 - `tools.attended_transfer.pass_caller_info_to_context`
 - `ai_summary` attended-transfer branch
-- `screened_*` attended-transfer placeholders
+- `screened_*` attended-transfer placeholders (on hold: now filled by `attended_transfer` `caller_name` / `call_reason`)
 - `extensions.internal.*.pass_caller_info`
 - `transfer_call`
 - `transfer_to_queue`

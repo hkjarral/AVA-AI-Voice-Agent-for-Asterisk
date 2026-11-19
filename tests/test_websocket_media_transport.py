@@ -51,6 +51,60 @@ def _headers():
     return {"Authorization": "Basic " + base64.b64encode(b"asterisk:secret").decode()}
 
 
+@pytest.mark.asyncio
+async def test_remote_progress_requires_correlated_consumption_and_fences_old_marks():
+    server = WebSocketMediaServer(_config(output_pacing="asterisk"), AsyncMock(), AsyncMock())
+    server.register_call("call", "media", "ulaw")
+    ws = SimpleNamespace(send=AsyncMock())
+    binding = WebSocketMediaBinding("call", "media", "ulaw", 8000, 160, 20, "connection", websocket=ws)
+    server._calls["call"].binding = binding
+    generation = await server.begin_output("call")
+    for _ in range(50):
+        assert await server.send_audio("call", b"\x55"*160, generation)
+    assert server.get_confirmed_playback_ms("call") == 0  # A second transmitted is not a second heard.
+    marks = list(binding.progress_marks)
+    await server._handle_event(binding, "MEDIA_MARK_PROCESSED", {"correlation_id": "unknown"})
+    await server._handle_event(binding, "MEDIA_MARK_PROCESSED", {"correlation_id": []})
+    await server._handle_event(binding, "MEDIA_MARK_PROCESSED", {"correlation_id": marks[3]})
+    assert server.get_confirmed_playback_ms("call") == 400
+    assert len(binding.progress_marks) == 6
+    await server._handle_event(binding, "MEDIA_MARK_PROCESSED", {"correlation_id": marks[0]})
+    assert server.get_confirmed_playback_ms("call") == 400
+
+    async def acknowledge_flush(payload):
+        if isinstance(payload, str):
+            command = json.loads(payload)
+            if command["command"] == "MARK_MEDIA":
+                await server._handle_event(binding, "MEDIA_MARK_PROCESSED", command)
+    ws.send.side_effect = acknowledge_flush
+    assert await server.abort_output("call")
+    generation = await server.begin_output("call")
+    await server._handle_event(binding, "MEDIA_MARK_PROCESSED", {"correlation_id": marks[-1]})
+    assert server.get_confirmed_playback_ms("call") == 0
+    # Missing acknowledgments cannot grow per-call state without bound.
+    ws.send.side_effect = None
+    for _ in range(1400):
+        assert await server.send_audio("call", b"\x55"*160, generation)
+    assert len(binding.progress_marks) == 256
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,control", [("legacy", "json"), ("asterisk", "plain")])
+async def test_legacy_and_plain_do_not_emit_progress_commands(mode, control):
+    server = WebSocketMediaServer(_config(output_pacing=mode), AsyncMock(), AsyncMock())
+    server.register_call("call", "media", "ulaw", control_format=control)
+    ws = SimpleNamespace(send=AsyncMock())
+    binding = WebSocketMediaBinding("call", "media", "ulaw", 8000, 160, 20, "conn",
+                                    websocket=ws, control_format=control)
+    server._calls["call"].binding = binding
+    generation = await server.begin_output("call")
+    for _ in range(10):
+        assert await server.send_audio("call", b"\x55"*160, generation)
+    assert not binding.progress_marks
+    assert server.get_confirmed_playback_ms("call") == 0
+    assert len([c for c in ws.send.call_args_list if isinstance(c.args[0], str)]) == 1
+
+
 @pytest.mark.parametrize("allowed,peer,expected", [
     (["127.0.0.1"], "::ffff:127.0.0.1", True),
     (["::ffff:127.0.0.1"], "127.0.0.1", True),

@@ -140,8 +140,10 @@ async def test_output_rechecks_stream_ownership_after_diagnostic_await(kind):
 
 
 @pytest.mark.asyncio
-async def test_boundary_waits_for_all_wire_frames_and_correlated_ack():
+@pytest.mark.parametrize("pacing", ["legacy", "asterisk"])
+async def test_boundary_waits_for_all_wire_frames_and_correlated_ack(pacing):
     mgr, server, store = manager("alaw")
+    mgr.websocket_output_pacing = pacing
     await store.upsert_call(CallSession(call_id="call", caller_channel_id="call", provider_name="local"))
     queue = asyncio.Queue()
     mgr.jitter_buffers["call"] = queue
@@ -161,7 +163,8 @@ async def test_boundary_waits_for_all_wire_frames_and_correlated_ack():
 
 @pytest.mark.asyncio
 async def test_idle_websocket_does_not_send_filler_or_reopen_segment():
-    mgr, server, _ = manager()
+    mgr, server, store = manager()
+    await store.upsert_call(CallSession(call_id="call", caller_channel_id="call", provider_name="local"))
     mgr.active_streams["call"]["empty_backoff_ticks"] = 100
     queue = asyncio.Queue()
     assert await mgr._drain_next_frame("call", "stream", queue) == "wait"
@@ -208,8 +211,10 @@ async def test_stop_reports_failed_remote_abort_after_local_stream_cleanup():
 @pytest.mark.parametrize("codec,rate", [
     ("ulaw", 8000), ("alaw", 8000), ("slin", 8000), ("slin16", 16000),
 ])
-async def test_complete_stream_waits_for_asterisk_boundary_before_cleanup(codec, rate):
+@pytest.mark.parametrize("pacing", ["legacy", "asterisk"])
+async def test_complete_stream_waits_for_asterisk_boundary_before_cleanup(codec, rate, pacing):
     mgr, server, store = manager(codec, rate)
+    mgr.websocket_output_pacing = pacing
     mgr.active_streams.clear()
     await store.upsert_call(CallSession(call_id="call", caller_channel_id="call", provider_name="pipeline"))
     reached_finish = asyncio.Event()
@@ -247,8 +252,10 @@ async def test_complete_stream_waits_for_asterisk_boundary_before_cleanup(codec,
 
 
 @pytest.mark.asyncio
-async def test_final_boundary_is_not_cancelled_by_local_empty_queue_watchdog():
+@pytest.mark.parametrize("pacing", ["legacy", "asterisk"])
+async def test_final_boundary_is_not_cancelled_by_local_empty_queue_watchdog(pacing):
     mgr, server, store = manager()
+    mgr.websocket_output_pacing = pacing
     mgr.active_streams.clear()
     await store.upsert_call(CallSession(call_id="call", caller_channel_id="call", provider_name="local"))
     reached_finish, release_finish = asyncio.Event(), asyncio.Event()
@@ -283,8 +290,10 @@ async def test_final_boundary_is_not_cancelled_by_local_empty_queue_watchdog():
 
 
 @pytest.mark.asyncio
-async def test_stop_owns_single_flush_when_it_invalidates_a_blocked_writer():
+@pytest.mark.parametrize("pacing", ["legacy", "asterisk"])
+async def test_stop_owns_single_flush_when_it_invalidates_a_blocked_writer(pacing):
     mgr, server, store = manager()
+    mgr.websocket_output_pacing = pacing
     mgr.active_streams.clear()
     await store.upsert_call(CallSession(call_id="call", caller_channel_id="call", provider_name="local"))
     entered_send, release_send = asyncio.Event(), asyncio.Event()
@@ -321,8 +330,10 @@ async def test_stop_owns_single_flush_when_it_invalidates_a_blocked_writer():
 
 
 @pytest.mark.asyncio
-async def test_noncontinuous_idle_provider_drains_without_keepalive_file_replay():
+@pytest.mark.parametrize("pacing", ["legacy", "asterisk"])
+async def test_noncontinuous_idle_provider_drains_without_keepalive_file_replay(pacing):
     mgr, server, store = manager()
+    mgr.websocket_output_pacing = pacing
     mgr.active_streams.clear()
     mgr.continuous_stream = False
     mgr.fallback_timeout_ms = 50

@@ -1,16 +1,178 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
+import math
 import os
-from typing import Any, Dict, List, Optional
+import re
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from websockets.exceptions import ConnectionClosed
 import websockets.client as ws_client
 
-from constants import DEBUG_AUDIO_FLOW, PCM16_TARGET_RATE
+from constants import DEBUG_AUDIO_FLOW, PCM16_TARGET_RATE, SENSE_VOICE_LANGUAGES
+
+# Rich-transcription markers such as <|en|><|NEUTRAL|><|Speech|><|withitn|>.
+_SENSE_VOICE_TAG_RE = re.compile(r"<\|[^|<>]*\|>")
+
+
+def normalize_sense_voice_language(value: Optional[str]) -> str:
+    """Return a supported SenseVoice language hint, falling back to ``auto``."""
+    lang = str(value or "").strip().lower()
+    return lang if lang in SENSE_VOICE_LANGUAGES else "auto"
+
+
+def strip_sense_voice_tags(text: str) -> str:
+    """Remove SenseVoice language/emotion/event markers from a transcript."""
+    if not text:
+        return ""
+    return " ".join(_SENSE_VOICE_TAG_RE.sub(" ", text).split())
+
+
+# Metadata keys sherpa-onnx 1.13.4 reads (and exits the process on if missing)
+# when constructing a SenseVoice OfflineRecognizer.
+SENSE_VOICE_REQUIRED_METADATA = (
+    "vocab_size",
+    "lfr_window_size",
+    "lfr_window_shift",
+    "normalize_samples",
+    "with_itn",
+    "without_itn",
+    "lang_auto",
+    "lang_zh",
+    "lang_en",
+    "lang_ja",
+    "lang_ko",
+    "lang_yue",
+    "neg_mean",
+    "inv_stddev",
+)
+
+_ONNX_METADATA_PROPS_FIELD = 14  # ModelProto.metadata_props
+
+
+def _read_varint(fh: Any) -> Optional[int]:
+    result = 0
+    shift = 0
+    while True:
+        byte = fh.read(1)
+        if not byte:
+            return None
+        value = byte[0]
+        result |= (value & 0x7F) << shift
+        if not value & 0x80:
+            return result
+        shift += 7
+        if shift > 63:
+            raise ValueError("varint too long")
+
+
+def _parse_string_entry(raw: bytes) -> Tuple[str, str]:
+    """Decode an ONNX StringStringEntryProto (key=1, value=2)."""
+    key, value = "", ""
+    fh = io.BytesIO(raw)
+    while True:
+        tag = _read_varint(fh)
+        if tag is None:
+            break
+        field, wire = tag >> 3, tag & 7
+        if wire != 2:
+            raise ValueError("unexpected wire type in metadata entry")
+        length = _read_varint(fh)
+        data = fh.read(length or 0)
+        if field == 1:
+            key = data.decode("utf-8", "replace")
+        elif field == 2:
+            value = data.decode("utf-8", "replace")
+    return key, value
+
+
+def read_onnx_metadata(path: str) -> Dict[str, str]:
+    """Read ``metadata_props`` from an ONNX file without loading the graph.
+
+    Walks the top-level protobuf fields and seeks past everything except
+    metadata entries, so a large model costs only a few small reads. Raises
+    ``ValueError`` if the file is not a parseable ONNX ModelProto.
+    """
+    metadata: Dict[str, str] = {}
+    size = os.path.getsize(path)
+    with open(path, "rb") as fh:
+        while fh.tell() < size:
+            tag = _read_varint(fh)
+            if tag is None:
+                break
+            field, wire = tag >> 3, tag & 7
+            if field == 0:
+                raise ValueError("invalid field number")
+            if wire == 0:
+                if _read_varint(fh) is None:
+                    raise ValueError("truncated varint")
+            elif wire == 1:
+                fh.seek(8, os.SEEK_CUR)
+            elif wire == 5:
+                fh.seek(4, os.SEEK_CUR)
+            elif wire == 2:
+                length = _read_varint(fh)
+                if length is None or fh.tell() + length > size:
+                    raise ValueError("truncated length-delimited field")
+                if field == _ONNX_METADATA_PROPS_FIELD:
+                    key, value = _parse_string_entry(fh.read(length))
+                    if key:
+                        metadata[key] = value
+                else:
+                    fh.seek(length, os.SEEK_CUR)
+            else:
+                raise ValueError(f"unsupported wire type {wire}")
+    return metadata
+
+
+def missing_sense_voice_metadata(path: str) -> Optional[List[str]]:
+    """Return missing/invalid metadata keys; None if the ONNX file is unreadable.
+
+    sherpa-onnx 1.13.4 native metadata readers exit on empty/negative integers
+    or unparsable comma-separated float vectors. Reject them before construction.
+    """
+    try:
+        metadata = read_onnx_metadata(path)
+    except (OSError, ValueError):
+        return None
+    invalid = []
+    vector_lengths = {}
+    for key in SENSE_VOICE_REQUIRED_METADATA:
+        value = metadata.get(key, "").strip()
+        if key in {"neg_mean", "inv_stddev"}:
+            try:
+                parts = [part.strip() for part in value.split(",") if part]
+                # Match C++ decimal parsing, not Python-only forms such as 1_000.
+                decimal = r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"
+                valid = bool(parts) and all(re.fullmatch(decimal, part) for part in parts)
+                if valid:
+                    values = [float(part) for part in parts]
+                    valid = all(math.isfinite(part) and abs(part) <= float(np.finfo(np.float32).max) for part in values)
+                    vector_lengths[key] = len(values)
+            except ValueError:
+                valid = False
+        else:
+            valid = bool(re.fullmatch(r"\+?[0-9]+", value)) and int(value) <= 2**31 - 1
+            if valid and key in {"vocab_size", "lfr_window_size", "lfr_window_shift"}:
+                valid = int(value) > 0
+        if not valid:
+            invalid.append(key)
+    if "lfr_window_size" not in invalid:
+        # from_sense_voice uses 80 mel bins; CMVN maps both vectors to this width.
+        expected_dim = 80 * int(metadata["lfr_window_size"].strip())
+        for key in ("neg_mean", "inv_stddev"):
+            if key not in invalid and vector_lengths.get(key) != expected_dim:
+                invalid.append(key)
+    # The optional native blank_id reader can also terminate on a negative value.
+    blank = metadata.get("blank_id", "").strip()
+    if blank and (not re.fullmatch(r"\+?[0-9]+", blank) or int(blank) > 2**31 - 1):
+        invalid.append("blank_id")
+    return invalid
 
 
 class KrokoSTTBackend:
@@ -340,14 +502,16 @@ class SherpaOfflineSTTBackend:
 
     Used for models that only support offline/batch inference (e.g., GigaAM for Russian).
     Silero VAD detects speech segments, and each complete segment is transcribed via
-    OfflineRecognizer.from_transducer().
+    OfflineRecognizer.from_transducer() or, for SenseVoice model directories,
+    OfflineRecognizer.from_sense_voice().
 
     The OfflineRecognizer is shared across sessions (thread-safe for decode_stream).
     VAD instances are per-session to prevent cross-session contamination — create one
     via ``create_session_vad()`` and pass it into ``process_audio()`` / ``finalize()``.
 
     Requires:
-      - Transducer model files (tokens.txt, encoder*.onnx, decoder*.onnx, joiner*.onnx)
+      - Transducer model files (tokens.txt, encoder*.onnx, decoder*.onnx, joiner*.onnx), or
+        SenseVoice model files (tokens.txt, model*.onnx) — detected automatically
       - Silero VAD model (silero_vad.onnx)
     """
 
@@ -360,9 +524,15 @@ class SherpaOfflineSTTBackend:
         vad_threshold: float = 0.5,
         vad_min_silence_ms: int = 500,
         vad_min_speech_ms: int = 250,
+        sense_voice_language: str = "auto",
+        sense_voice_use_itn: bool = True,
     ):
         self.model_path = model_path
         self.vad_model_path = vad_model_path
+        self.sense_voice_language = normalize_sense_voice_language(sense_voice_language)
+        self.sense_voice_use_itn = bool(sense_voice_use_itn)
+        # "transducer" or "sense_voice"; set by initialize() from the model directory layout.
+        self.model_family = "transducer"
         self.sample_rate = sample_rate
         self.preroll_ms = max(0, int(preroll_ms))
         self._preroll_samples = int(self.sample_rate * (self.preroll_ms / 1000.0))
@@ -397,56 +567,13 @@ class SherpaOfflineSTTBackend:
                 )
                 return False
 
-            tokens_file = self._find_file("tokens.txt", ".txt")
-            encoder_file = self._find_onnx("encoder")
-            decoder_file = self._find_onnx("decoder")
-            joiner_file = self._find_onnx("joiner")
-
-            if not all([tokens_file, encoder_file, decoder_file, joiner_file]):
-                missing = []
-                if not tokens_file:
-                    missing.append("tokens.txt")
-                if not encoder_file:
-                    missing.append("encoder*.onnx")
-                if not decoder_file:
-                    missing.append("decoder*.onnx")
-                if not joiner_file:
-                    missing.append("joiner*.onnx")
-                logging.error("❌ SHERPA-OFFLINE - Missing model files: %s", ", ".join(missing))
+            sense_voice_file = self._find_sense_voice_model()
+            if sense_voice_file:
+                self.recognizer = self._create_sense_voice_recognizer(sherpa_onnx, sense_voice_file)
+            else:
+                self.recognizer = self._create_transducer_recognizer(sherpa_onnx)
+            if self.recognizer is None:
                 return False
-
-            # Offline mode only supports non-streaming transducer models. Streaming
-            # zipformer models belong in SherpaONNXSTTBackend.
-            encoder_name = os.path.basename(encoder_file).lower()
-            model_name = os.path.basename(os.path.normpath(self.model_path)).lower()
-            is_streaming = "chunk" in encoder_name or "streaming" in model_name
-
-            logging.info("📁 SHERPA-OFFLINE - Model files found:")
-            logging.info("   tokens: %s", tokens_file)
-            logging.info("   encoder: %s", encoder_file)
-            logging.info("   decoder: %s", decoder_file)
-            logging.info("   joiner: %s", joiner_file)
-            logging.info("   vad: %s", self.vad_model_path)
-            logging.info("   model type: %s", "streaming" if is_streaming else "offline")
-
-            if is_streaming:
-                logging.error(
-                    "❌ SHERPA-OFFLINE - Offline mode requires a non-streaming Sherpa transducer model. "
-                    "Got streaming model at %s. Use SHERPA_MODEL_TYPE=online for streaming models "
-                    "or switch SHERPA_MODEL_PATH to an offline model such as sherpa-onnx-zipformer-en-2023-06-26.",
-                    self.model_path,
-                )
-                return False
-
-            self.recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
-                tokens=tokens_file,
-                encoder=encoder_file,
-                decoder=decoder_file,
-                joiner=joiner_file,
-                num_threads=2,
-                sample_rate=self.sample_rate,
-                decoding_method="greedy_search",
-            )
 
             # Store VAD config for per-session creation (no shared VAD instance).
             self._vad_config = sherpa_onnx.VadModelConfig()
@@ -463,8 +590,9 @@ class SherpaOfflineSTTBackend:
 
             self._initialized = True
             logging.info(
-                "✅ SHERPA-OFFLINE - OfflineRecognizer + Silero VAD initialized with model %s "
+                "✅ SHERPA-OFFLINE - OfflineRecognizer (%s) + Silero VAD initialized with model %s "
                 "(preroll_ms=%d threshold=%.2f min_silence_ms=%d min_speech_ms=%d)",
+                self.model_family,
                 self.model_path,
                 self.preroll_ms,
                 self.vad_threshold,
@@ -478,6 +606,123 @@ class SherpaOfflineSTTBackend:
         except Exception as exc:
             logging.error("❌ SHERPA-OFFLINE - Failed to initialize: %s", exc)
             return False
+
+    def _find_sense_voice_model(self) -> str:
+        """Return the SenseVoice ONNX file if the model dir uses the SenseVoice layout.
+
+        SenseVoice exports ship a single ``model.onnx`` / ``model.int8.onnx`` plus
+        ``tokens.txt``; transducer exports ship ``encoder*/decoder*/joiner*``.
+        """
+        model_file = self._find_onnx("model")
+        if self._find_onnx("encoder"):
+            if model_file:
+                logging.warning(
+                    "⚠️ SHERPA-OFFLINE - %s has both encoder*.onnx and %s; loading it as a transducer "
+                    "and ignoring %s. Remove one of them if this is not intended.",
+                    self.model_path,
+                    os.path.basename(model_file),
+                    os.path.basename(model_file),
+                )
+            return ""
+        return model_file
+
+    def _create_sense_voice_recognizer(self, sherpa_onnx: Any, model_file: str) -> Optional[Any]:
+        tokens_file = self._find_file("tokens.txt", ".txt")
+        if not tokens_file:
+            logging.error("❌ SHERPA-OFFLINE - Missing model files: tokens.txt (SenseVoice)")
+            return None
+
+        # sherpa-onnx terminates the process on missing SenseVoice metadata, so
+        # check it here and fail initialize() with a diagnostic instead.
+        missing = missing_sense_voice_metadata(model_file)
+        if missing is None:
+            logging.error(
+                "❌ SHERPA-OFFLINE - %s is not a readable ONNX model; expected a SenseVoice export "
+                "or a transducer (encoder/decoder/joiner) directory.",
+                model_file,
+            )
+            return None
+        if missing:
+            logging.error(
+                "❌ SHERPA-OFFLINE - %s is not a SenseVoice export (missing/invalid metadata: %s). "
+                "Offline mode supports SenseVoice (model.onnx + tokens.txt) and non-streaming "
+                "transducers (encoder/decoder/joiner + tokens.txt).",
+                model_file,
+                ", ".join(missing),
+            )
+            return None
+
+        logging.info("📁 SHERPA-OFFLINE - SenseVoice model files found:")
+        logging.info("   tokens: %s", tokens_file)
+        logging.info("   model: %s", model_file)
+        logging.info("   vad: %s", self.vad_model_path)
+        logging.info("   language: %s use_itn: %s", self.sense_voice_language, self.sense_voice_use_itn)
+
+        recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+            model=model_file,
+            tokens=tokens_file,
+            num_threads=2,
+            sample_rate=self.sample_rate,
+            language=self.sense_voice_language,
+            use_itn=self.sense_voice_use_itn,
+            decoding_method="greedy_search",
+        )
+        self.model_family = "sense_voice"
+        return recognizer
+
+    def _create_transducer_recognizer(self, sherpa_onnx: Any) -> Optional[Any]:
+        tokens_file = self._find_file("tokens.txt", ".txt")
+        encoder_file = self._find_onnx("encoder")
+        decoder_file = self._find_onnx("decoder")
+        joiner_file = self._find_onnx("joiner")
+
+        if not all([tokens_file, encoder_file, decoder_file, joiner_file]):
+            missing = []
+            if not tokens_file:
+                missing.append("tokens.txt")
+            if not encoder_file:
+                missing.append("encoder*.onnx")
+            if not decoder_file:
+                missing.append("decoder*.onnx")
+            if not joiner_file:
+                missing.append("joiner*.onnx")
+            logging.error("❌ SHERPA-OFFLINE - Missing model files: %s", ", ".join(missing))
+            return None
+
+        # Offline mode only supports non-streaming transducer models. Streaming
+        # zipformer models belong in SherpaONNXSTTBackend.
+        encoder_name = os.path.basename(encoder_file).lower()
+        model_name = os.path.basename(os.path.normpath(self.model_path)).lower()
+        is_streaming = "chunk" in encoder_name or "streaming" in model_name
+
+        logging.info("📁 SHERPA-OFFLINE - Model files found:")
+        logging.info("   tokens: %s", tokens_file)
+        logging.info("   encoder: %s", encoder_file)
+        logging.info("   decoder: %s", decoder_file)
+        logging.info("   joiner: %s", joiner_file)
+        logging.info("   vad: %s", self.vad_model_path)
+        logging.info("   model type: %s", "streaming" if is_streaming else "offline")
+
+        if is_streaming:
+            logging.error(
+                "❌ SHERPA-OFFLINE - Offline mode requires a non-streaming Sherpa transducer model. "
+                "Got streaming model at %s. Use SHERPA_MODEL_TYPE=online for streaming models "
+                "or switch SHERPA_MODEL_PATH to an offline model such as sherpa-onnx-zipformer-en-2023-06-26.",
+                self.model_path,
+            )
+            return None
+
+        recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+            tokens=tokens_file,
+            encoder=encoder_file,
+            decoder=decoder_file,
+            joiner=joiner_file,
+            num_threads=2,
+            sample_rate=self.sample_rate,
+            decoding_method="greedy_search",
+        )
+        self.model_family = "transducer"
+        return recognizer
 
     # ------------------------------------------------------------------
     # Per-session VAD lifecycle
@@ -529,7 +774,34 @@ class SherpaOfflineSTTBackend:
         stream = self.recognizer.create_stream()
         stream.accept_waveform(self.sample_rate, speech_samples)
         self.recognizer.decode_stream(stream)
-        return stream.result.text.strip() if hasattr(stream.result, "text") else str(stream.result).strip()
+        result = stream.result
+        text = result.text.strip() if hasattr(result, "text") else str(result).strip()
+        if self.model_family == "sense_voice":
+            logging.debug(
+                "🔍 SHERPA-OFFLINE SenseVoice tags - lang=%s emotion=%s event=%s",
+                getattr(result, "lang", ""),
+                getattr(result, "emotion", ""),
+                getattr(result, "event", ""),
+            )
+            text = strip_sense_voice_tags(text)
+        return text
+
+    def _transcribe_timed(self, speech_samples: np.ndarray, call_id: Optional[str] = None) -> str:
+        """Transcribe a segment and log call correlation and decode timing."""
+        started = time.perf_counter()
+        text = self._transcribe_segment(speech_samples)
+        decode_ms = (time.perf_counter() - started) * 1000.0
+        audio_ms = len(speech_samples) / self.sample_rate * 1000.0
+        logging.info(
+            "⏱️ SHERPA-OFFLINE decode - call_id=%s family=%s audio_ms=%d decode_ms=%.1f rtf=%.3f chars=%d",
+            call_id,
+            self.model_family,
+            int(audio_ms),
+            decode_ms,
+            decode_ms / audio_ms if audio_ms > 0 else 0.0,
+            len(text or ""),
+        )
+        return text
 
     def _copy_segment_samples(self, speech_segment: Any) -> np.ndarray:
         """Materialize VAD output into Python-owned float32 memory before pop/decode."""
@@ -645,6 +917,7 @@ class SherpaOfflineSTTBackend:
         vad: Any,
         pcm16_audio: bytes,
         preroll_pcm16: Optional[bytes] = None,
+        call_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Feed audio through a per-session VAD; transcribe complete speech segments."""
         if not self._initialized or self.recognizer is None or vad is None:
@@ -699,7 +972,7 @@ class SherpaOfflineSTTBackend:
                     )
                     continue
 
-                text = self._transcribe_segment(speech_samples)
+                text = self._transcribe_timed(speech_samples, call_id=call_id)
                 logging.info(
                     "🔍 SHERPA-OFFLINE transcribe seg[%d] result: '%s' (empty=%s)",
                     seg_idx - 1, text or "", text is None or text == "",
@@ -716,7 +989,7 @@ class SherpaOfflineSTTBackend:
             logging.error("❌ SHERPA-OFFLINE - Process error: %s", exc)
             return None
 
-    def finalize(self, vad: Any) -> Optional[Dict[str, Any]]:
+    def finalize(self, vad: Any, call_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Flush remaining speech from a per-session VAD and transcribe it."""
         if not self._initialized or self.recognizer is None or vad is None:
             return None
@@ -744,7 +1017,7 @@ class SherpaOfflineSTTBackend:
                 if len(speech_samples) < self._min_audio_length:
                     continue
 
-                text = self._transcribe_segment(speech_samples)
+                text = self._transcribe_timed(speech_samples, call_id=call_id)
                 if text:
                     texts.append(text)
 
@@ -1135,7 +1408,9 @@ class FasterWhisperSTTBackend:
         self._audio_buffer = np.array([], dtype=np.float32)
         self._last_text = ""
 
-    def transcribe_pcm16(self, pcm16_audio: bytes) -> str:
+    def transcribe_pcm16(
+        self, pcm16_audio: bytes, language: Optional[str] = None, *, raise_on_error: bool = False
+    ) -> str:
         """
         Transcribe a complete utterance (PCM16 16kHz mono) in one shot.
 
@@ -1144,6 +1419,8 @@ class FasterWhisperSTTBackend:
         mis-detect phone audio as silence.
         """
         if not self._initialized or self.model is None:
+            if raise_on_error:
+                raise RuntimeError("stt_unavailable")
             return ""
         if not pcm16_audio:
             return ""
@@ -1151,11 +1428,13 @@ class FasterWhisperSTTBackend:
         try:
             samples = np.frombuffer(pcm16_audio, dtype=np.int16)
             float_samples = samples.astype(np.float32) / 32768.0
-            lang = (self.language or "").strip().lower()
-            language = None if not lang or lang == "auto" else self.language
+            requested_language = (language or "").strip().lower()
+            configured_language = (self.language or "").strip().lower()
+            effective_language = requested_language or configured_language
+            model_language = None if not effective_language or effective_language == "auto" else effective_language
             segments, _info = self.model.transcribe(
                 float_samples,
-                language=language,
+                language=model_language,
                 beam_size=1,
                 vad_filter=False,
             )
@@ -1163,6 +1442,8 @@ class FasterWhisperSTTBackend:
             return (text or "").strip()
         except Exception:
             logging.error("❌ FASTER-WHISPER - transcribe_pcm16 failed", exc_info=True)
+            if raise_on_error:
+                raise
             return ""
     
     def shutdown(self) -> None:
@@ -1369,9 +1650,11 @@ class WhisperCppSTTBackend:
         self._audio_buffer = np.array([], dtype=np.float32)
         self._last_text = ""
 
-    def transcribe_pcm16(self, pcm16_audio: bytes) -> str:
+    def transcribe_pcm16(self, pcm16_audio: bytes, *, raise_on_error: bool = False) -> str:
         """Transcribe a complete utterance (PCM16 16kHz mono) in one shot."""
         if not self._initialized or self.model is None:
+            if raise_on_error:
+                raise RuntimeError("stt_unavailable")
             return ""
         if not pcm16_audio:
             return ""
@@ -1387,6 +1670,8 @@ class WhisperCppSTTBackend:
             return text
         except Exception:
             logging.error("❌ WHISPER.CPP - transcribe_pcm16 failed", exc_info=True)
+            if raise_on_error:
+                raise
             return ""
     
     def shutdown(self) -> None:

@@ -17,6 +17,7 @@ interface Props {
     transferDestinations: TransferDestination[];
     googleCalendars: AgentResourceOption[];
     microsoftAccounts: AgentResourceOption[];
+    calendlyAppointments?: AgentResourceOption[];
     voicemailMailboxes: AgentResourceOption[];
 }
 
@@ -30,6 +31,7 @@ const SOURCE_BADGE: Record<string, string> = {
     builtin: 'bg-indigo-100 text-indigo-700',
     http: 'bg-green-100 text-green-700',
     mcp: 'bg-amber-100 text-amber-700',
+    a2a: 'bg-violet-100 text-violet-700',
 };
 
 const AgentToolPicker: React.FC<Props> = ({
@@ -40,6 +42,7 @@ const AgentToolPicker: React.FC<Props> = ({
     transferDestinations,
     googleCalendars,
     microsoftAccounts,
+    calendlyAppointments = [],
     voicemailMailboxes,
 }) => {
     const [open, setOpen] = useState<Record<string, boolean>>(
@@ -108,7 +111,7 @@ const AgentToolPicker: React.FC<Props> = ({
                                             {tool.description ? <HelpTooltip content={tool.description} /> : null}
                                             {tool.source ? (
                                                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${SOURCE_BADGE[tool.source] || 'bg-muted text-muted-foreground'}`}>
-                                                    {tool.source}
+                                                    {tool.source === 'a2a' ? 'A2A' : tool.source}
                                                 </span>
                                             ) : null}
                                             {tool.is_global ? (
@@ -142,6 +145,15 @@ const AgentToolPicker: React.FC<Props> = ({
                                                         ? state.googleCalendarKeys : [],
                                                 })}
                                                 onSelectedKeysChange={keys => onChange({ ...state, googleCalendarKeys: keys })}
+                                            />
+                                        )}
+                                        {tool.name === 'calendly_calendar' && checked && (
+                                            <ResourceAccessEditor title="Calendly appointment access"
+                                                description="Select appointments this agent may book. Later changes use the Calendly confirmation or staff."
+                                                resourceName="appointment" options={calendlyAppointments}
+                                                policy={state.calendlyPolicy} selectedKeys={state.calendlyKeys}
+                                                onPolicyChange={policy => onChange({ ...state, calendlyPolicy: policy, calendlyKeys: policy === 'selected' ? state.calendlyKeys : [] })}
+                                                onSelectedKeysChange={keys => onChange({ ...state, calendlyKeys: keys })}
                                             />
                                         )}
                                         {tool.name === 'microsoft_calendar' && checked && (

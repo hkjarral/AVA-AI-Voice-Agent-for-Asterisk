@@ -1,12 +1,21 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpCircle, RefreshCw, Play, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
 import axios from 'axios';
+import { apiErrorMessage, describeApiError } from '../../utils/apiErrors';
 import { useConfirmDialog } from '../../hooks/useConfirmDialog';
 import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import { copyTextToClipboard, extractUpdateRecoveryCommands } from '../../utils/clipboard';
 
 type UpdateAvailable = boolean | null;
+interface PlanQuery {
+  ref: string;
+  includeUI: boolean;
+  checkout: boolean;
+  localChanges: string;
+  checkVersion: number;
+}
+type ReadKey = 'status' | 'branches' | 'history' | 'image' | 'plan' | 'job' | 'log' | 'recovery';
 
 interface UpdatesStatus {
   local: { branch?: string; head_sha: string; describe: string; deployed_tag?: string | null };
@@ -79,6 +88,18 @@ interface UpdaterImageStatus {
 
 const TERMINAL_UPDATE_STATUSES = new Set(['success', 'failed', 'validation_failed', 'stale']);
 const isTerminalUpdateStatus = (st?: string) => TERMINAL_UPDATE_STATUSES.has((st || '').toLowerCase());
+// Matches the backend's reservation/runner states; unknown history is not proof of a running job.
+const activeJobId = (value: unknown): string | null => {
+  if (!value || typeof value !== 'object') return null;
+  const job = value as Record<string, unknown>;
+  const status = typeof job.status === 'string' ? job.status.toLowerCase() : '';
+  return typeof job.job_id === 'string' && job.job_id.trim() && !job.stale &&
+    (status === 'starting' || status === 'running') ? job.job_id : null;
+};
+const isUncertainSubmission = (error: unknown) => {
+  const { status } = describeApiError(error);
+  return status === undefined || status === 409 || status >= 500;
+};
 const ROLLBACK_ELIGIBLE_STATUSES = new Set(['failed', 'validation_failed', 'stale']);
 const canRollbackJob = (job: any, st?: string) =>
   ROLLBACK_ELIGIBLE_STATUSES.has((st || String(job?.status || '')).toLowerCase()) &&
@@ -105,17 +126,20 @@ const UpdatesPage = () => {
   const [updateCliHost, setUpdateCliHost] = useState(true);
   const [cliInstallPath, setCliInstallPath] = useState('');
   const [forceActiveCalls, setForceActiveCalls] = useState(false);
-  const [plan, setPlan] = useState<UpdatePlan | null>(null);
-  const [planLoading, setPlanLoading] = useState(false);
-  const [planError, setPlanError] = useState<string | null>(null);
+  const [planResult, setPlanResult] = useState<{ query: PlanQuery; value: UpdatePlan } | null>(null);
+  const [planFailure, setPlanFailure] = useState<{ query: PlanQuery; message: string } | null>(null);
+  const [checkVersion, setCheckVersion] = useState(0);
   const [planRecoveryCopied, setPlanRecoveryCopied] = useState(false);
 
   const [jobId, setJobId] = useState<string | null>(() => localStorage.getItem('aava_update_job_id'));
   const [job, setJob] = useState<any>(null);
   const [logTail, setLogTail] = useState<string>('');
   const [fullLogLoading, setFullLogLoading] = useState(false);
-  const [running, setRunning] = useState(false);
+  const [running, setRunning] = useState(Boolean(jobId));
+  const [actionPending, setActionPending] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
+  const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
   const [localChangesPolicy, setLocalChangesPolicy] = useState<'retain' | 'overwrite' | 'abort' | ''>('');
   const [updaterImageStatus, setUpdaterImageStatus] = useState<UpdaterImageStatus | null>(null);
 
@@ -123,13 +147,34 @@ const UpdatesPage = () => {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
 
-  const pickDefaultBranch = (remoteBranches: string[], localBranch?: string) => {
-    const uniq = Array.from(new Set(remoteBranches || []));
-    if (selectedBranch && uniq.includes(selectedBranch)) return selectedBranch;
-    if (localBranch && uniq.includes(localBranch)) return localBranch;
-    if (uniq.includes('main')) return 'main';
-    return uniq[0] || 'main';
-  };
+  // Each read channel has one owner, even when an aborted promise still settles.
+  const mounted = useRef(false);
+  const reads = useRef(new Map<ReadKey, AbortController>());
+  const actionLock = useRef(false);
+  const cancelRead = useCallback((key: ReadKey) => {
+    reads.current.get(key)?.abort();
+    reads.current.delete(key);
+  }, []);
+  const startRead = useCallback((key: ReadKey, skipIfPending = false) => {
+    if (!mounted.current || (skipIfPending && reads.current.has(key))) return null;
+    reads.current.get(key)?.abort();
+    const controller = new AbortController();
+    reads.current.set(key, controller);
+    return {
+      signal: controller.signal,
+      isCurrent: () => mounted.current && !controller.signal.aborted && reads.current.get(key) === controller,
+      finish: () => { if (reads.current.get(key) === controller) reads.current.delete(key); },
+    };
+  }, []);
+  useLayoutEffect(() => {
+    mounted.current = true;
+    const pendingReads = reads.current;
+    return () => {
+      mounted.current = false;
+      pendingReads.forEach(controller => controller.abort());
+      pendingReads.clear();
+    };
+  }, []);
 
   const targetRef = useMemo(() => {
     if (targetMode === 'stable') return status?.remote?.latest_tag || '';
@@ -142,6 +187,40 @@ const UpdatesPage = () => {
     return targetMode !== 'stable';
   }, [targetMode]);
 
+  // Object identity also distinguishes A → B → A and repeated status checks.
+  const planQuery = useMemo<PlanQuery | null>(() => initialized && targetRef ? ({
+    ref: targetRef, includeUI, checkout: targetCheckout, localChanges: localChangesPolicy || 'ask', checkVersion,
+  }) : null, [initialized, targetRef, includeUI, targetCheckout, localChangesPolicy, checkVersion]);
+  const activePlanQuery = useRef<PlanQuery | null>(null);
+  const plan = planResult?.query === planQuery ? planResult.value : null;
+  const planError = planFailure?.query === planQuery ? planFailure.message : null;
+  const planLoading = Boolean(planQuery && !plan && !planError);
+  const jobView = useMemo(() => ({ id: jobId }), [jobId]);
+  const activeJobView = useRef<typeof jobView | null>(null);
+  const historyRef = useRef(history);
+  const targetModeRef = useRef(targetMode);
+  const actionView = useMemo(() => ({ preview: planResult, planQuery, updateCliHost, cliInstallPath, forceActiveCalls }),
+    [planResult, planQuery, updateCliHost, cliInstallPath, forceActiveCalls]);
+  const activeActionView = useRef<typeof actionView | null>(null);
+  useLayoutEffect(() => {
+    activePlanQuery.current = planQuery;
+    setPlanRecoveryCopied(false);
+    return () => { activePlanQuery.current = null; cancelRead('plan'); };
+  }, [planQuery, cancelRead]);
+  useLayoutEffect(() => {
+    activeActionView.current = actionView;
+    return () => { activeActionView.current = null; };
+  }, [actionView]);
+  useLayoutEffect(() => { historyRef.current = history; targetModeRef.current = targetMode; }, [history, targetMode]);
+  useLayoutEffect(() => {
+    activeJobView.current = jobView;
+    setJob(null);
+    setLogTail('');
+    setFullLogLoading(false);
+    setRunning(Boolean(jobView.id));
+    return () => { activeJobView.current = null; cancelRead('job'); cancelRead('log'); };
+  }, [jobView, cancelRead]);
+
   const planHasActiveCalls = typeof plan?.active_calls === 'number' && plan.active_calls > 0;
   const activeCallCheckUnavailable = plan?.active_calls_reachable === false;
   const activeCallOverrideRequired = planHasActiveCalls || activeCallCheckUnavailable;
@@ -153,88 +232,107 @@ const UpdatesPage = () => {
   const planRecoveryCommands = useMemo(() => extractUpdateRecoveryCommands(planError || ''), [planError]);
 
   const loadBranches = async (opts?: { force?: boolean; localBranch?: string }) => {
+    const request = startRead('branches');
+    if (!request) return;
     setBranchesError(null);
+    const localBranch = opts?.localBranch ?? status?.local?.branch;
     try {
-      const branchesRes = await axios.get<BranchesResponse>('/api/system/updates/branches', {
-        // Branch listing requires git; if the updater image isn't present, allow a local build fallback.
-        params: { build_updater: true, force: opts?.force ? true : false },
+      const response = await axios.get<BranchesResponse>('/api/system/updates/branches', {
+        params: { build_updater: true, force: opts?.force ? true : false }, signal: request.signal,
       });
-      setBranches(branchesRes.data.branches || []);
-      if (branchesRes.data.error) setBranchesError(branchesRes.data.error);
-      const def = pickDefaultBranch(branchesRes.data.branches || [], opts?.localBranch ?? status?.local?.branch);
-      setSelectedBranch(def);
-    } catch (err: any) {
-      setBranchesError(err.response?.data?.detail || err.message || 'Failed to load branches');
-      setBranches([]);
-    }
+      if (!request.isCurrent()) return;
+      const list = response.data.branches || [];
+      setBranches(list);
+      if (response.data.error) setBranchesError(response.data.error);
+      setSelectedBranch(current => list.includes(current) ? current :
+        localBranch && list.includes(localBranch) ? localBranch :
+          list.includes('main') ? 'main' : list[0] || 'main');
+    } catch (error) {
+      if (request.isCurrent()) {
+        setBranchesError(apiErrorMessage(error, 'Failed to load branches'));
+        setBranches([]);
+      }
+    } finally { request.finish(); }
   };
+
+  const fetchHistory = useCallback(async () => {
+    const request = startRead('history');
+    if (!request) return;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const response = await axios.get<UpdateHistoryResponse>('/api/system/updates/history', {
+        params: { limit: 10 }, signal: request.signal, timeout: 15000,
+      });
+      if (request.isCurrent()) setHistory(response.data.jobs || []);
+    } catch (error) {
+      if (request.isCurrent()) {
+        setHistoryError(apiErrorMessage(error, 'Failed to load update history'));
+        setHistory([]);
+      }
+    } finally {
+      if (request.isCurrent()) setHistoryLoading(false);
+      request.finish();
+    }
+  }, [startRead]);
+
   const checkUpdates = async (opts?: { force?: boolean }) => {
+    const request = startRead('status');
+    if (!request) return;
+    cancelRead('branches');
+    cancelRead('plan');
+    setCheckVersion(value => value + 1);
     setInitialized(false);
-    setPlan(null);
-    setPlanError(null);
+    setPlanResult(null);
+    setPlanFailure(null);
     setRunError(null);
     setStatusError(null);
     setBranchesError(null);
     setLocalChangesPolicy('');
-
     setStatusLoading(true);
     try {
-      const statusRes = await axios.get<UpdatesStatus>('/api/system/updates/status', {
-        // Allow updater image local-build fallback on explicit user action ("Check updates").
-        params: { check_remote: true, build_updater: true, force: opts?.force ? true : false },
+      const response = await axios.get<UpdatesStatus>('/api/system/updates/status', {
+        params: { check_remote: true, build_updater: true, force: opts?.force ? true : false }, signal: request.signal,
       });
-
-      setStatus(statusRes.data);
-      const localDef = statusRes.data.local?.branch || 'main';
-      setSelectedBranch(localDef === 'detached' ? 'main' : localDef);
+      if (!request.isCurrent()) return;
+      setStatus(response.data);
+      const localBranch = response.data.local?.branch || 'main';
+      setSelectedBranch(localBranch === 'detached' ? 'main' : localBranch);
       setInitialized(true);
-
-      // Persist update status for Dashboard/SystemStatus widget
-      const updateInfo = {
-        checked_at: new Date().toISOString(),
-        update_available: statusRes.data.update_available ?? null,
-        local_version: statusRes.data.local?.deployed_tag || statusRes.data.local?.describe || null,
-        remote_version: statusRes.data.remote?.latest_tag || null,
-      };
-      localStorage.setItem('aava_update_status', JSON.stringify(updateInfo));
-
-      // Best-effort: load recent history after a check.
-      fetchHistory();
-
-      // Advanced mode: fetch branches for branch selection.
-      if (targetMode === 'advanced') {
-        loadBranches({ localBranch: localDef });
+      try {
+        localStorage.setItem('aava_update_status', JSON.stringify({
+          checked_at: new Date().toISOString(), update_available: response.data.update_available ?? null,
+          local_version: response.data.local?.deployed_tag || response.data.local?.describe || null,
+          remote_version: response.data.remote?.latest_tag || null,
+        }));
+      } catch {
+        console.warn('Update status checked, but browser cache storage is unavailable.');
       }
-    } catch (err: any) {
-      setStatusError(err.response?.data?.detail || err.message || 'Failed to check updates');
-      setInitialized(false);
+      void fetchHistory();
+      if (targetModeRef.current === 'advanced') void loadBranches({ localBranch });
+    } catch (error) {
+      if (request.isCurrent()) {
+        setStatusError(apiErrorMessage(error, 'Failed to check updates'));
+        setInitialized(false);
+      }
     } finally {
-      setStatusLoading(false);
+      if (request.isCurrent()) setStatusLoading(false);
+      request.finish();
     }
   };
 
-  const fetchHistory = async () => {
-    setHistoryLoading(true);
-    setHistoryError(null);
+  const fetchUpdaterImageStatus = useCallback(async () => {
+    const request = startRead('image', true);
+    if (!request) return;
     try {
-      const res = await axios.get<UpdateHistoryResponse>('/api/system/updates/history', { params: { limit: 10 } });
-      setHistory(res.data.jobs || []);
-    } catch (err: any) {
-      setHistoryError(err.response?.data?.detail || err.message || 'Failed to load update history');
-      setHistory([]);
-    } finally {
-      setHistoryLoading(false);
-    }
-  };
-
-  const fetchUpdaterImageStatus = async () => {
-    try {
-      const res = await axios.get<{ status: UpdaterImageStatus }>('/api/system/updates/updater-image/status');
-      setUpdaterImageStatus(res.data.status || null);
-    } catch (_err) {
-      // Best-effort progress signal only; the main update/status request owns user-facing errors.
-    }
-  };
+      const response = await axios.get<{ status: UpdaterImageStatus }>('/api/system/updates/updater-image/status', {
+        signal: request.signal, timeout: 15000,
+      });
+      if (request.isCurrent()) setUpdaterImageStatus(response.data.status || null);
+    } catch {
+      // Best-effort progress signal; the status/plan/job read owns user-facing errors.
+    } finally { request.finish(); }
+  }, [startRead]);
 
   const copyRecoveryCommands = async (job: any) => {
     const preBranch = job?.pre_update_branch;
@@ -283,212 +381,228 @@ const UpdatesPage = () => {
     setTimeout(() => setPlanRecoveryCopied(false), 2000);
   };
 
-  const rollbackFromJob = async (sourceJob: any) => {
-    const fromJobId = sourceJob?.job_id;
-    if (!fromJobId) return;
-
-    const preBranch = sourceJob?.pre_update_branch || 'unknown';
-    const backupRel = sourceJob?.backup_dir_rel || 'unknown';
-    const ok = await confirm({
-      title: 'Start Rollback?',
-      description: `Source job: ${fromJobId}\nPre-update branch: ${preBranch}\nBackup: ${backupRel}\n\nThis will checkout the pre-update branch and restore operator config from the backup. Services may rebuild/restart.\n\nNote: this restores code + config only — it does NOT touch agents.db. To revert the YAML->agents.db migration too, see docs/OPERATOR_MIGRATION.md (Rollback).`,
-      confirmText: 'Start Rollback',
-      variant: 'destructive'
-    });
-    if (!ok) return;
-
-    const rollbackForceActiveCalls = await confirm({
-      title: 'Active-Call Safety',
-      description: 'Rollback will refuse to rebuild or restart ai_engine if active calls are detected.\n\nChoose Keep Guard for normal safe rollback behavior. Choose Enable Override only if you intentionally want rollback to proceed even when calls are active.',
-      confirmText: 'Enable Override',
-      cancelText: 'Keep Guard',
-      variant: 'destructive'
-    });
-
-    setRunError(null);
+  // Once accepted by the server, keep the job ID even if the page unmounted
+  // during the write, so returning to Updates resumes its status instead of resubmitting.
+  const followJob = (id: string, recovered = false) => {
+    let persisted = true;
     try {
-      const res = await axios.post('/api/system/updates/rollback', {
-        from_job_id: fromJobId,
-        force_active_calls: rollbackForceActiveCalls,
-      });
-      const id = res.data.job_id;
-      setJobId(id);
       localStorage.setItem('aava_update_job_id', id);
+    } catch {
+      persisted = false;
+      // Browser storage failure must not turn an accepted write into a retry.
+      console.warn('Update job accepted, but browser recovery storage is unavailable.');
+    }
+    if (mounted.current) {
+      setJobId(id);
       setRunning(true);
-    } catch (err: any) {
-      setRunError(err.response?.data?.detail || err.message || 'Failed to start rollback');
+      setRecoveryNotice(!persisted
+        ? `Following job ${id}, but browser recovery storage is unavailable. Keep this page open, or use Recent Runs → Follow job after returning.`
+        : recovered ? `Following job ${id} from Recent Runs. No action was repeated.` : null);
     }
   };
 
-  const fetchPlan = async (ref?: string) => {
-    setPlanLoading(true);
-    setPlanError(null);
+  const reconcileSubmission = async () => {
+    const request = startRead('recovery');
+    if (!request) return false;
     try {
-      const res = await axios.get('/api/system/updates/plan', {
-        params: { ref: ref || targetRef, include_ui: includeUI, checkout: targetCheckout, local_changes: localChangesPolicy || 'ask' },
+      const response = await axios.get<UpdateHistoryResponse>('/api/system/updates/history', {
+        params: { limit: 25 }, signal: request.signal, timeout: 15000,
       });
-      setPlan(res.data.plan);
-    } catch (err: any) {
-      setPlanError(err.response?.data?.detail || err.message || 'Failed to compute update plan');
+      if (!request.isCurrent()) return false;
+      const ids = [...new Set(response.data.jobs.map(activeJobId).filter((id): id is string => id !== null))];
+      if (ids.length !== 1) return false;
+      // This might be another operator's job (409). Follow confirmed server state,
+      // without claiming that our request succeeded or repeating an uncertain write.
+      followJob(ids[0], true);
+      return true;
+    } catch {
+      return false;
+    } finally { request.finish(); }
+  };
+
+  const rollbackFromJob = async (sourceJob: any) => {
+    if (actionLock.current || running || !canRollbackJob(sourceJob)) return;
+    actionLock.current = true;
+    setActionPending(true);
+    const owner = jobView;
+    const { job_id: fromJobId, pre_update_branch: preBranch, backup_dir_rel: backupRel } = sourceJob;
+    const stillOwned = () => mounted.current && activeJobView.current === owner &&
+      historyRef.current.some(item => item.job_id === fromJobId && canRollbackJob(item) &&
+        item.pre_update_branch === preBranch && item.backup_dir_rel === backupRel);
+    let submitted = false;
+    try {
+      const accepted = await confirm({
+        title: 'Start Rollback?',
+        description: `Source job: ${fromJobId}\nPre-update branch: ${preBranch}\nBackup: ${backupRel}\n\nThis will checkout the pre-update branch and restore operator config from the backup. Services may rebuild/restart.\n\nNote: this restores code + config only — it does NOT touch agents.db. To revert the YAML->agents.db migration too, see docs/OPERATOR_MIGRATION.md (Rollback).`,
+        confirmText: 'Start Rollback', variant: 'destructive',
+      });
+      if (!accepted || !stillOwned()) return;
+      const force = await confirm({
+        title: 'Active-Call Safety',
+        description: 'Rollback will refuse to rebuild or restart ai_engine if active calls are detected.\n\nChoose Keep Guard for normal safe rollback behavior. Choose Enable Override only if you intentionally want rollback to proceed even when calls are active.',
+        confirmText: 'Enable Override', cancelText: 'Keep Guard', variant: 'destructive',
+      });
+      if (!stillOwned()) return;
+      setRunError(null);
+      setRecoveryNotice(null);
+      setSubmissionError(null);
+      submitted = true;
+      const response = await axios.post('/api/system/updates/rollback', { from_job_id: fromJobId, force_active_calls: force });
+      followJob(response.data.job_id);
+    } catch (error) {
+      const recovered = submitted && isUncertainSubmission(error) && await reconcileSubmission();
+      if (submitted) {
+        if (mounted.current && (!recovered || describeApiError(error).status === 409)) {
+          setSubmissionError(`Rollback from ${fromJobId} failed: ${apiErrorMessage(error, 'Failed to start rollback')}`);
+        }
+      } else if (mounted.current && activeJobView.current === owner) {
+        setRunError(apiErrorMessage(error, 'Failed to confirm rollback'));
+      }
     } finally {
-      setPlanLoading(false);
+      actionLock.current = false;
+      if (mounted.current) setActionPending(false);
     }
   };
 
-  const fetchJob = async (id: string) => {
-    const res = await axios.get<UpdateJobResponse>(`/api/system/updates/jobs/${id}`);
-    setJob(res.data.job);
-    setLogTail(res.data.log_tail || '');
-    const st = (res.data.job?.status || '').toLowerCase();
-    setRunning(!isTerminalUpdateStatus(st));
-    setRunError(null);
-
-    if (isTerminalUpdateStatus(st)) {
-      fetchHistory();
-    }
-    return st;
-  };
+  const fetchPlan = useCallback(async () => {
+    const query = planQuery;
+    if (!query || activePlanQuery.current !== query) return;
+    const request = startRead('plan');
+    if (!request) return;
+    setPlanResult(null);
+    setPlanFailure(null);
+    try {
+      const response = await axios.get<{ plan: UpdatePlan }>('/api/system/updates/plan', {
+        params: { ref: query.ref, include_ui: query.includeUI, checkout: query.checkout, local_changes: query.localChanges },
+        signal: request.signal,
+      });
+      if (request.isCurrent() && activePlanQuery.current === query) setPlanResult({ query, value: response.data.plan });
+    } catch (error) {
+      if (request.isCurrent() && activePlanQuery.current === query) setPlanFailure({ query, message: apiErrorMessage(error, 'Failed to compute update plan') });
+    } finally { request.finish(); }
+  }, [planQuery, startRead]);
 
   const fetchFullLog = async () => {
-    if (!jobId) return;
+    const owner = jobView;
+    if (!owner.id || activeJobView.current !== owner) return;
+    const request = startRead('log');
+    if (!request) return;
+    const isCurrent = () => request.isCurrent() && activeJobView.current === owner;
     setFullLogLoading(true);
     try {
-      const res = await axios.get<{ job_id: string; log: string }>(`/api/system/updates/jobs/${jobId}/log`);
-      setLogTail(res.data.log || '');
-    } catch (err: any) {
-      setRunError(err.response?.data?.detail || err.message || 'Failed to load full log');
+      const response = await axios.get<{ log: string }>(`/api/system/updates/jobs/${owner.id}/log`, { signal: request.signal, timeout: 15000 });
+      if (isCurrent()) setLogTail(response.data.log || '');
+    } catch (error) {
+      if (isCurrent()) setRunError(apiErrorMessage(error, 'Failed to load full log'));
     } finally {
-      setFullLogLoading(false);
+      if (isCurrent()) setFullLogLoading(false);
+      request.finish();
     }
   };
 
   const runUpdate = async () => {
-    setRunError(null);
-    if (!initialized) {
-      setRunError('Click “Check updates” first.');
-      return;
-    }
-    if (!plan) {
-      setRunError('Wait for the preview to load, then proceed.');
-      return;
-    }
-    if (plan.dirty && !localChangesPolicy) {
-      setRunError('Choose how to handle local code changes before starting the update.');
-      return;
-    }
-    if (plan.dirty && localChangesPolicy === 'abort') {
-      setRunError('Update not started. Local code changes are still present.');
-      return;
-    }
-
-    const rebuild = plan.services_rebuild?.length ? plan.services_rebuild.join(', ') : 'none';
-    const restart = plan.services_restart?.length ? plan.services_restart.join(', ') : 'none';
-    const skipped =
-      plan.skipped_services && Object.keys(plan.skipped_services).length
-        ? Object.entries(plan.skipped_services)
-            .map(([k, v]) => `${k}:${v}`)
-            .join(', ')
-        : 'none';
-
-    const localChangeText =
-      plan.dirty
-        ? localChangesPolicy === 'retain'
-          ? 'retain local tracked changes (stash and reapply; may conflict)'
-          : localChangesPolicy === 'overwrite'
-            ? 'overwrite local tracked code changes and restore operator config from backup'
-            : 'abort if local tracked changes are still present'
-        : 'none detected';
-
-    const ok = await confirm({
-      title: 'Proceed with Update?',
-      description: `Target: ${targetRef || 'unknown'}\nMode: ${targetMode === 'stable' ? 'stable release' : targetMode === 'main' ? 'main hotfixes' : 'advanced branch'}\nUpdate UI: ${includeUI ? 'yes' : 'no'}\nUpdate CLI: ${updateCliHost ? 'yes' : 'no'}\nLocal changes: ${localChangeText}\nWill rebuild: ${rebuild}\nWill restart: ${restart}\nSkipped services: ${skipped}\nFiles changed: ${plan.changed_file_count ?? 'unknown'}\nActive calls: ${typeof plan.active_calls === 'number' ? plan.active_calls : 'unknown'}${forceActiveCalls ? ' (override enabled)' : ''}\n\nServices may restart during update.`,
-      confirmText: 'Start Update',
-      variant: 'default'
-    });
-    if (!ok) return;
-
+    if (actionLock.current || running || !plan || !planQuery || planLoading || localChangeChoiceRequired ||
+        (activeCallOverrideRequired && !forceActiveCalls)) return;
+    actionLock.current = true;
+    setActionPending(true);
+    const owner = actionView;
+    const ownerJob = jobView;
+    const stillOwned = () => mounted.current && activeActionView.current === owner && activeJobView.current === ownerJob;
+    const payload = {
+      include_ui: planQuery.includeUI, ref: planQuery.ref, checkout: planQuery.checkout,
+      local_changes: localChangesPolicy || 'abort', update_cli_host: updateCliHost,
+      cli_install_path: cliInstallPath.trim() || null, force_active_calls: forceActiveCalls,
+    };
+    const rebuild = plan.services_rebuild?.join(', ') || 'none';
+    const restart = plan.services_restart?.join(', ') || 'none';
+    const skipped = Object.entries(plan.skipped_services || {}).map(([key, value]) => `${key}:${value}`).join(', ') || 'none';
+    const localChangeText = plan.dirty ? localChangesPolicy === 'retain'
+      ? 'retain local tracked changes (stash and reapply; may conflict)'
+      : 'overwrite local tracked code changes and restore operator config from backup' : 'none detected';
+    let submitted = false;
     try {
-      const res = await axios.post('/api/system/updates/run', {
-        include_ui: includeUI,
-        ref: targetRef,
-        checkout: targetCheckout,
-        local_changes: localChangesPolicy || 'abort',
-        update_cli_host: updateCliHost,
-        cli_install_path: cliInstallPath.trim() || null,
-        force_active_calls: forceActiveCalls,
+      setRunError(null);
+      const accepted = await confirm({
+        title: 'Proceed with Update?',
+        description: `Target: ${planQuery.ref}\nMode: ${targetMode === 'stable' ? 'stable release' : targetMode === 'main' ? 'main hotfixes' : 'advanced branch'}\nUpdate UI: ${includeUI ? 'yes' : 'no'}\nUpdate CLI: ${updateCliHost ? 'yes' : 'no'}\nLocal changes: ${localChangeText}\nWill rebuild: ${rebuild}\nWill restart: ${restart}\nSkipped services: ${skipped}\nFiles changed: ${plan.changed_file_count ?? 'unknown'}\nActive calls: ${typeof plan.active_calls === 'number' ? plan.active_calls : 'unknown'}${forceActiveCalls ? ' (override enabled)' : ''}\n\nServices may restart during update.`,
+        confirmText: 'Start Update', variant: 'default',
       });
-      const id = res.data.job_id;
-      setJobId(id);
-      localStorage.setItem('aava_update_job_id', id);
-      setRunning(true);
-    } catch (err: any) {
-      setRunError(err.response?.data?.detail || err.message || 'Failed to start update');
+      if (!accepted || !stillOwned()) return;
+      setRecoveryNotice(null);
+      setSubmissionError(null);
+      submitted = true;
+      const response = await axios.post('/api/system/updates/run', payload);
+      followJob(response.data.job_id);
+    } catch (error) {
+      const recovered = submitted && isUncertainSubmission(error) && await reconcileSubmission();
+      if (submitted) {
+        if (mounted.current && (!recovered || describeApiError(error).status === 409)) {
+          setSubmissionError(`Update to ${payload.ref} failed: ${apiErrorMessage(error, 'Failed to start update')}`);
+        }
+      } else if (stillOwned()) {
+        setRunError(apiErrorMessage(error, 'Failed to confirm update'));
+      }
+    } finally {
+      actionLock.current = false;
+      if (mounted.current) setActionPending(false);
     }
   };
 
-  useEffect(() => {
-    if (!initialized) return;
-    if (!targetRef) return;
-    fetchPlan(targetRef);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialized, includeUI, targetRef, targetCheckout, localChangesPolicy]);
+  useEffect(() => { void fetchPlan(); }, [fetchPlan]);
 
   useEffect(() => {
-    if (!jobId) return;
-    let cancelled = false;
+    const owner = jobView;
+    if (!owner.id) return;
+    let stopped = false;
+    let timer: number | undefined;
     let notFoundCount = 0;
-    const MAX_NOT_FOUND = 10; // ~20s at 2s intervals
     const tick = async () => {
+      if (stopped || activeJobView.current !== owner) return;
+      const request = startRead('job', true);
+      if (!request) return;
+      const isCurrent = () => !stopped && request.isCurrent() && activeJobView.current === owner;
+      let terminal = false;
       try {
-        const st = await fetchJob(jobId);
+        const response = await axios.get<UpdateJobResponse>(`/api/system/updates/jobs/${owner.id}`, { signal: request.signal, timeout: 15000 });
+        if (!isCurrent()) return;
         notFoundCount = 0;
-        if (!cancelled && isTerminalUpdateStatus(st)) {
-          window.clearInterval(interval);
+        setJob(response.data.job);
+        setLogTail(response.data.log_tail || '');
+        terminal = isTerminalUpdateStatus(response.data.job?.status);
+        setRunning(!terminal);
+        setRunError(null);
+        if (terminal) void fetchHistory();
+      } catch (error) {
+        if (!isCurrent()) return;
+        if (axios.isAxiosError(error) && error.response?.status === 404 && ++notFoundCount >= 10) {
+          terminal = true;
+          setRunning(false);
+          setJobId(null);
+          localStorage.removeItem('aava_update_job_id');
+          setRunError('Update job not found (may be stale or pruned).');
+        } else if (!(axios.isAxiosError(error) && error.response?.status === 404)) {
+          // Unknown job state stays locked, including after an Admin UI restart.
+          setRunError(`Waiting for Admin UI/update job to come back online: ${apiErrorMessage(error, 'Failed to read update job')}`);
         }
-      } catch (err: any) {
-        const status = err?.response?.status;
-        // Immediately after starting a job, there can be a brief delay before the updater container
-        // writes its state/log files. Treat 404 as transient to avoid spurious UI errors.
-        if (!cancelled) {
-          if (status === 404) {
-            notFoundCount += 1;
-            if (notFoundCount < MAX_NOT_FOUND) return;
-            window.clearInterval(interval);
-            setRunning(false);
-            setJob(null);
-            setJobId(null);
-            localStorage.removeItem('aava_update_job_id');
-            setRunError('Update job not found (may be stale or pruned).');
-            return;
-          }
-          const msg = err.response?.data?.detail || err.message || 'Failed to read update job';
-          if (running || job?.include_ui || includeUI) {
-            setRunError(`Waiting for Admin UI/update job to come back online: ${msg}`);
-            return;
-          }
-          setRunError(msg);
-        }
+      } finally {
+        const retry = isCurrent() && !terminal;
+        request.finish();
+        if (retry) timer = window.setTimeout(tick, 2000);
       }
     };
-    const interval = window.setInterval(tick, 2000);
-    tick();
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [jobId]);
+    void tick();
+    return () => { stopped = true; window.clearTimeout(timer); cancelRead('job'); };
+  }, [jobView, startRead, cancelRead, fetchHistory]);
 
   useEffect(() => {
     if (!(statusLoading || planLoading || running)) return;
-    fetchUpdaterImageStatus();
+    void fetchUpdaterImageStatus();
     const interval = window.setInterval(fetchUpdaterImageStatus, 1500);
-    return () => window.clearInterval(interval);
-  }, [statusLoading, planLoading, running]);
+    return () => { window.clearInterval(interval); cancelRead('image'); };
+  }, [statusLoading, planLoading, running, fetchUpdaterImageStatus, cancelRead]);
 
   useEffect(() => {
-    if (!activeCallOverrideRequired && forceActiveCalls) {
-      setForceActiveCalls(false);
-    }
+    if (!activeCallOverrideRequired && forceActiveCalls) setForceActiveCalls(false);
   }, [activeCallOverrideRequired, forceActiveCalls]);
 
   const renderUpdaterImageStatus = (section: 'status' | 'plan' | 'run') => {
@@ -698,6 +812,7 @@ const UpdatesPage = () => {
                     </button>
                   </div>
                   <select
+                    aria-label="Target branch"
                     value={selectedBranch}
                     onChange={(e) => setSelectedBranch(e.target.value)}
                     disabled={!initialized || !branches.length}
@@ -741,6 +856,7 @@ const UpdatesPage = () => {
             <div>
               <div className="text-xs text-muted-foreground mb-1">Agent CLI install path (optional)</div>
               <input
+                aria-label="Agent CLI install path"
                 value={cliInstallPath}
                 onChange={(e) => setCliInstallPath(e.target.value)}
                 placeholder="auto (detect existing or install to /usr/local/bin/agent)"
@@ -922,12 +1038,14 @@ const UpdatesPage = () => {
         </div>
 
         <div className="space-y-3">
+          {submissionError && <div role="alert" className="text-sm text-destructive">{submissionError}</div>}
           {runError && <div className="text-sm text-destructive">{runError}</div>}
+          {recoveryNotice && <div role="status" className="text-sm text-muted-foreground">{recoveryNotice}</div>}
           {renderUpdaterImageStatus('run')}
           <div className="flex items-center gap-2">
             <button
               onClick={runUpdate}
-              disabled={running || !initialized || !plan || localChangeChoiceRequired || (activeCallOverrideRequired && !forceActiveCalls)}
+              disabled={actionPending || running || !initialized || !plan || planLoading || localChangeChoiceRequired || (activeCallOverrideRequired && !forceActiveCalls)}
               className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               title="Proceed"
             >
@@ -1053,10 +1171,21 @@ const UpdatesPage = () => {
                       <td className="px-3 py-2 font-mono text-xs">{restart || '-'}</td>
                       <td className="px-3 py-2 font-mono text-xs">{files !== '' ? String(files) : '-'}</td>
                       <td className="px-3 py-2">
-                        {canRollbackJob(h, st) ? (
+                        {activeJobId(h) && h.job_id !== jobId ? (
+                          <button
+                            onClick={() => {
+                              if (actionLock.current || running) return;
+                              setRunError(null);
+                              followJob(h.job_id, true);
+                            }}
+                            disabled={actionPending || running}
+                            className="px-2 py-1 text-xs rounded-md border border-border hover:bg-accent disabled:opacity-50"
+                          >Follow job</button>
+                        ) : canRollbackJob(h, st) ? (
                           <div className="inline-flex items-center gap-2">
                             <button
                               onClick={() => rollbackFromJob(h)}
+                              disabled={actionPending || running}
                               className="px-2 py-1 text-xs rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
                               title="Rollback using this job's backup"
                             >

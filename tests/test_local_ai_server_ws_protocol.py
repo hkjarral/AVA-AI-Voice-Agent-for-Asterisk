@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -27,6 +29,7 @@ class _FakeServer:
         self.clear_calls = []
         self.cancel_calls = []
         self.rollback_calls = []
+        self.live_sessions = set()
 
     def _apply_tts_output_preferences(self, session, data, *, reset_if_missing=False):
         encoding = data.get("output_encoding")
@@ -48,6 +51,97 @@ class _FakeServer:
 
     def _rollback_interrupted_exchange(self, session):
         self.rollback_calls.append(session.call_id)
+
+    def _mark_live_session(self, session):
+        self.live_sessions.add(id(session))
+
+    def _release_live_session(self, session):
+        self.live_sessions.discard(id(session))
+
+    def _start_session_response_task(self, session, coroutine, **_kwargs):
+        assert id(session) in self.live_sessions
+        coroutine.close()
+
+    async def _handle_tts_request(self, *_args):
+        pass
+
+    async def _handle_llm_request(self, *_args):
+        pass
+
+    async def _handle_tool_context(self, _websocket, session, data):
+        assert id(session) in self.live_sessions
+        session.call_id = data["call_id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", [
+    {"type": "switch_model", "scope": "session", "llm_config": {"system_prompt": "hello"}},
+    {"type": "tool_context", "allowed_tools": []},
+    {"type": "tts_request", "text": "hello caller"},
+    {"type": "llm_request", "text": "hello"},
+])
+async def test_full_provider_setup_protects_live_session_before_audio(message):
+    ws, session_mod, _ = _load_ws_protocol_modules()
+    server = _FakeServer()
+    server.ws_auth_token = "test-token"
+    protocol = ws.WebSocketProtocol(server)
+    session = session_mod.SessionContext()
+    # LocalProvider authenticates without a call ID and never sends set_mode.
+    await protocol.handle_json_message(None, session, json.dumps({
+        "type": "auth", "auth_token": "test-token",
+    }))
+    assert not server.live_sessions
+    await protocol.handle_json_message(None, session, json.dumps({
+        **message, "call_id": "full-provider-call",
+    }))
+    assert server.live_sessions == {id(session)}
+
+
+@pytest.mark.asyncio
+async def test_idle_and_unauthenticated_connections_do_not_reserve_live_session():
+    ws, session_mod, _ = _load_ws_protocol_modules()
+    server = _FakeServer()
+    server.ws_auth_token = "test-token"
+    server.model_manager = SimpleNamespace(status=lambda: {"type": "status_response"})
+    protocol = ws.WebSocketProtocol(server)
+    session = session_mod.SessionContext()
+    await protocol.handle_json_message(None, session, json.dumps({
+        "type": "tts_request", "call_id": "unauthorized", "text": "hello",
+    }))
+    assert not server.live_sessions
+    await protocol.handle_json_message(None, session, json.dumps({
+        "type": "auth", "auth_token": "test-token",
+    }))
+    await protocol.handle_json_message(None, session, '{"type":"status"}')
+    assert not server.live_sessions
+
+
+@pytest.mark.asyncio
+async def test_stop_session_releases_admission_and_next_call_reserves_it():
+    ws, session_mod, _ = _load_ws_protocol_modules()
+    server = _FakeServer()
+    protocol = ws.WebSocketProtocol(server)
+    session = session_mod.SessionContext()
+    async def start(call_id):
+        await protocol.handle_json_message(None, session, json.dumps({
+            "type": "switch_model", "scope": "session", "call_id": call_id,
+            "llm_config": {"system_prompt": "hello"},
+        }))
+    await start("first")
+    await protocol.handle_json_message(None, session, json.dumps({
+        "type": "barge_in", "call_id": "first", "reason": "stop_session",
+    }))
+    assert not server.live_sessions
+    await start("second")
+    assert server.live_sessions == {id(session)}
+    await protocol.handle_json_message(None, session, json.dumps({
+        "type": "barge_in", "call_id": "first", "reason": "stop_session",
+    }))
+    assert server.live_sessions == {id(session)}
+    await protocol.handle_json_message(None, session, json.dumps({
+        "type": "barge_in", "call_id": "second", "reason": "stop_session",
+    }))
+    assert not server.live_sessions
 
 
 @pytest.mark.asyncio

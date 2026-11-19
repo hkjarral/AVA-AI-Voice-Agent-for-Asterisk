@@ -276,3 +276,42 @@ async def test_deepgram_adapter_blocks_tool_during_pending_attended_transfer():
     assert "attended transfer is pending" in result["message"].lower()
 
     tool_registry.clear()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["openai", "grok", "deepgram", "elevenlabs"])
+async def test_adapter_exposes_invocation_id_before_tool_execution(provider):
+    from src.core.models import CallSession
+    from src.core.session_store import SessionStore
+    from src.tools.base import ToolDefinition, ToolCategory
+    from src.tools.registry import ToolRegistry
+    from src.tools.adapters.openai import OpenAIToolAdapter
+    from src.tools.adapters.grok import GrokToolAdapter
+    from src.tools.adapters.deepgram import DeepgramToolAdapter
+    from src.tools.adapters.elevenlabs import ElevenLabsToolAdapter
+
+    class CaptureInvocation(_NoopTool):
+        async def execute(self, parameters, context):
+            assert context.tool_call_id == "invocation-before-dial"
+            return {"status": "success"}
+
+    registry = ToolRegistry()
+    registry.register_instance(CaptureInvocation(ToolDefinition(
+        name="capture_invocation", description="x", category=ToolCategory.BUSINESS)))
+    store = SessionStore()
+    await store.upsert_call(CallSession(call_id="call", caller_channel_id="call"))
+    context = {"call_id": "call", "session_store": store, "ari_client": object(),
+               "config": {"tools": {"enabled": True}}, "allowed_tools": ["capture_invocation"]}
+    if provider == "elevenlabs":
+        from types import SimpleNamespace
+        adapter_registry = SimpleNamespace(get_tool=registry.get)
+        result = await ElevenLabsToolAdapter(adapter_registry).execute_tool(
+            "capture_invocation", "invocation-before-dial", {}, context)
+        assert result["success"] is True
+        assert result["result"]["status"] == "success"
+    else:
+        item = {"type": "function_call", "call_id": "invocation-before-dial",
+                "id": "invocation-before-dial", "name": "capture_invocation", "arguments": "{}"}
+        adapter = {"openai": OpenAIToolAdapter, "grok": GrokToolAdapter,
+                   "deepgram": DeepgramToolAdapter}[provider](registry)
+        result = await adapter.handle_tool_call_event({"item": item, "functions": [item]}, context)
+        assert result["status"] == "success"

@@ -1,21 +1,23 @@
-fastapi==0.109.0
-uvicorn==0.27.0
-python-dotenv==1.2.2
-pyyaml==6.0.1
+fastapi==0.162.0
+uvicorn==0.54.0
+python-dotenv==1.2.4
+pyyaml==6.0.3
+# Keeps operator comments in ai-agent.local.yaml when the Admin UI saves it.
+ruamel.yaml==0.19.1
 # Docker SDK 7.1 carries the Requests 2.32+ Unix-socket adapter fix.
-docker==7.1.0
-pydantic==2.6.1
-httpx==0.27.0
+docker==7.2.0
+pydantic==2.14.3
+httpx==0.28.1
 urllib3<2
-requests==2.33.0
-psutil==5.9.8
+requests==2.34.2
+psutil==7.2.2
 passlib[bcrypt]==1.7.4
-python-jose[cryptography]==3.4.0
-python-multipart==0.0.31
+python-jose[cryptography]==3.5.0
+python-multipart==0.0.33
 structlog==25.5.0
-websockets==12.0
-aiohttp==3.14.1
-prometheus_client==0.19.0
+websockets==17.4
+aiohttp==3.14.5
+prometheus_client==0.26.0
 jinja2==3.1.6
 numpy>=1.24.0
 openpyxl==3.1.5
@@ -27,16 +29,17 @@ openpyxl==3.1.5
 # (can't distinguish "syntactically valid SA file" from "SA actually works
 # against the live API").
 #
-# Note on the >=2.0.0 constraint: we mirror the same minimum-version range
-# used by the root ai_engine requirements.txt rather than pinning to an
-# exact version, so the admin_ui and ai_engine containers are guaranteed
-# compatible with each other AND with whatever the operator has chosen at
-# the root level. CodeRabbit flagged the comment "pinned to match" as
-# misleading — it's a *minimum-version range*, not an exact pin, and the
-# intent is to track the root requirements.
+# Keep minimum-version ranges for operator-selected compatible releases. The
+# Admin API client floor is maintained independently from the engine manifest.
 google-auth>=2.0.0
-google-api-python-client>=2.0.0
+google-api-python-client>=2.201.0
 
 # Microsoft Calendar device-code OAuth and cross-process token-cache locking
-msal>=1.28.0
+msal>=1.39.0
 portalocker>=2.8.0
+
+# Decode and normalize operator-uploaded Agent avatars.
+Pillow==13.0.0
+# Self-contained decoder for OpenAI-compatible speech uploads. This avoids a
+# host package-manager dependency and supports WAV, MP3, M4A, OGG, and WebM.
+imageio-ffmpeg==0.8.1

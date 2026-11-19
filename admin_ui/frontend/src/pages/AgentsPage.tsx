@@ -4,13 +4,13 @@ import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import {
-    Plus, Pencil, Trash2, Copy, Star, Users, AlertCircle, Phone,
+    Plus, Users, AlertCircle, Phone, Search, LayoutGrid, List, RefreshCw,
     TrendingUp, ArrowLeftRight,
 } from 'lucide-react';
-import { ConfigSection } from '../components/ui/ConfigSection';
-import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
-import AgentForm from '../components/agents/AgentForm';
+import AgentOverview from '../components/agents/AgentOverview';
+import { agentEngine, configuredTools } from '../components/agents/agentSummary';
+import type { ToolDef } from '../components/agents/agentToolConfig';
 import type { Agent } from '../components/agents/AgentForm';
 import { copyTextToClipboard } from '../utils/clipboard';
 
@@ -58,7 +58,7 @@ interface KpiCardProps {
 }
 
 const KpiCard = ({ label, value, icon: Icon, iconColor }: KpiCardProps) => (
-    <div className="bg-card border border-border rounded-lg shadow-sm p-5 flex items-center gap-4">
+    <div className="bg-card border border-border rounded-lg shadow-sm p-4 sm:p-5 flex flex-wrap items-center gap-3">
         <div className={`p-2.5 rounded-md bg-secondary flex-shrink-0`}>
             <Icon className={`w-5 h-5 ${iconColor}`} />
         </div>
@@ -107,14 +107,6 @@ const BarPanel = ({ title, rows }: BarPanelProps) => {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const formatDuration = (seconds: number): string => {
-    if (!seconds) return '0s';
-    if (seconds < 60) return `${Math.round(seconds)}s`;
-    const m = Math.floor(seconds / 60);
-    const s = Math.round(seconds % 60);
-    return s > 0 ? `${m}m ${s}s` : `${m}m`;
-};
-
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 const AgentsPage = () => {
@@ -128,9 +120,18 @@ const AgentsPage = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [creatingStarters, setCreatingStarters] = useState(false);
-    const [editingAgent, setEditingAgent] = useState<Agent | null | undefined>(undefined);
+    const [catalog, setCatalog] = useState<ToolDef[]>([]);
+    const [catalogAvailable, setCatalogAvailable] = useState(false);
+    const [query, setQuery] = useState('');
+    const [status, setStatus] = useState('all');
+    const [engine, setEngine] = useState('all');
+    const [layout, setLayout] = useState<'cards' | 'list'>(() => {
+        try { return localStorage.getItem('agents-layout') === 'list' ? 'list' : 'cards'; } catch { return 'cards'; }
+    });
+    const changeLayout = (value: 'cards' | 'list') => {
+        setLayout(value); try { localStorage.setItem('agents-layout', value); } catch { /* Optional preference. */ }
+    };
     const [manualDialplan, setManualDialplan] = useState<{ slug: string; dialplan: string } | null>(null);
-    // undefined = form closed, null = new agent, Agent = edit
 
     useEffect(() => {
         loadAll();
@@ -147,6 +148,7 @@ const AgentsPage = () => {
                 summaryRes,
                 distributionRes,
                 routingRes,
+                catalogRes,
             ] = await Promise.all([
                 axios.get<Agent[]>('/api/agents'),
                 axios.get<MigrationStatus>('/api/agents-migration/status').catch(() => null),
@@ -154,10 +156,13 @@ const AgentsPage = () => {
                 axios.get<Summary>('/api/agents/summary').catch(() => null),
                 axios.get<DistributionEntry[]>('/api/agents/distribution').catch(() => null),
                 axios.get<RoutingMethods>('/api/agents/routing-methods').catch(() => null),
+                axios.get<{ tools: ToolDef[] }>('/api/tools/catalog').catch(() => null),
             ]);
 
             const agentList = Array.isArray(agentsRes.data) ? agentsRes.data : [];
             setAgents(agentList);
+            setCatalog(Array.isArray(catalogRes?.data?.tools) ? catalogRes.data.tools : []);
+            setCatalogAvailable(!!catalogRes);
 
             if (migRes) {
                 if (migRes.data.last_default_promotion) {
@@ -273,44 +278,13 @@ const AgentsPage = () => {
         }
     };
 
-    const toolPolicyLabels = (agent: Agent): string[] => {
-        try {
-            const parsed = JSON.parse(agent.tool_configs_json || '{}');
-            const labels: string[] = [];
-            const policy = parsed?.transfer?.destination_policy;
-            if (policy === 'selected') {
-                const count = Array.isArray(parsed?.transfer?.destination_keys)
-                    ? parsed.transfer.destination_keys.length : 0;
-                labels.push(`Transfer: ${count} selected`);
-            }
-            if (policy === 'none') labels.push('Transfer: none');
-
-            const googlePolicy = parsed?.google_calendar?.calendar_policy;
-            if (googlePolicy === 'selected') {
-                const count = Array.isArray(parsed?.google_calendar?.calendar_keys)
-                    ? parsed.google_calendar.calendar_keys.length : 0;
-                labels.push(`Google Calendar: ${count} selected`);
-            }
-            if (googlePolicy === 'none') labels.push('Google Calendar: none');
-
-            const microsoftPolicy = parsed?.microsoft_calendar?.account_policy;
-            if (microsoftPolicy === 'selected') {
-                const count = Array.isArray(parsed?.microsoft_calendar?.account_keys)
-                    ? parsed.microsoft_calendar.account_keys.length : 0;
-                labels.push(`Microsoft Calendar: ${count} selected`);
-            }
-            if (microsoftPolicy === 'none') labels.push('Microsoft Calendar: none');
-
-            const voicemailPolicy = parsed?.voicemail?.mailbox_policy;
-            if (voicemailPolicy === 'selected') {
-                labels.push(`Voicemail: ${parsed?.voicemail?.mailbox_key || 'missing'}`);
-            }
-            if (voicemailPolicy === 'none') labels.push('Voicemail: none');
-            return labels;
-        } catch {
-            return ['Tool policy invalid'];
-        }
-    };
+    const engines = [...new Set(agents.map(agentEngine))].sort();
+    const visibleAgents = agents.filter(agent => {
+        const text = [agent.display_name, agent.slug, agent.role_label, agent.extension, agent.voice, agentEngine(agent), ...configuredTools(agent, catalog)].join(' ').toLowerCase();
+        return text.includes(query.trim().toLowerCase())
+            && (status === 'all' || (status === 'enabled' ? agent.is_active === 1 : agent.is_active === 0))
+            && (engine === 'all' || agentEngine(agent) === engine);
+    });
 
     // ── Routing-source bar rows (omit "unknown" if zero) ──────────────────────
     const routingRows = routingMethods
@@ -334,10 +308,10 @@ const AgentsPage = () => {
         count: d.count,
     }));
 
-    if (loading) return <div className="p-8 text-center text-muted-foreground">Loading agents…</div>;
+    if (loading) return <div role="status" className="p-8 text-center text-muted-foreground">Loading agents…</div>;
 
     return (
-        <div className="space-y-6">
+        <div className="mx-auto max-w-screen-2xl space-y-6 pb-6">
             {/* Error banner */}
             {error && (
                 <div className="bg-red-500/15 border border-red-500/30 text-red-700 dark:text-red-400 p-4 rounded-md flex items-center justify-between">
@@ -346,7 +320,7 @@ const AgentsPage = () => {
                         {error}
                     </div>
                     <button
-                        onClick={() => window.location.reload()}
+                        onClick={loadAll}
                         className="flex items-center text-xs px-3 py-1.5 rounded transition-colors bg-red-500 text-white hover:bg-red-600 font-medium"
                     >
                         Reload
@@ -354,27 +328,18 @@ const AgentsPage = () => {
                 </div>
             )}
 
-            {/* Page header */}
-            <div className="flex justify-between items-start">
+            <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
-                    <h1 className="text-3xl font-bold tracking-tight">Multi-Agent System</h1>
-                    <p className="text-muted-foreground mt-1">Monitor and manage your agents in real time</p>
+                    <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Voice workspace</p>
+                    <h1 className="mt-2 text-3xl font-semibold tracking-tight">Agents</h1>
+                    <p className="mt-2 text-sm text-muted-foreground">Manage the voices, instructions and tools behind your calls.</p>
                 </div>
-                {/* System status indicator (read-only) */}
-                <div className="flex items-center gap-2 mt-1">
-                    {systemOk === null ? null : systemOk ? (
-                        <>
-                            <span className="w-2.5 h-2.5 rounded-full bg-green-500 flex-shrink-0" />
-                            <span className="text-sm text-muted-foreground">System operational</span>
-                        </>
-                    ) : (
-                        <>
-                            <span className="w-2.5 h-2.5 rounded-full bg-gray-400 flex-shrink-0" />
-                            <span className="text-sm text-muted-foreground">Status unavailable</span>
-                        </>
-                    )}
+                <div className="flex gap-2">
+                    <button type="button" onClick={loadAll} aria-label="Refresh agents" className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-border hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"><RefreshCw className="h-4 w-4" /></button>
+                    <Link to="/agents/new" className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring"><Plus className="h-4 w-4" />New agent</Link>
                 </div>
             </div>
+            {systemOk === false && <p role="status" className="text-sm text-muted-foreground">Call statistics are currently unavailable.</p>}
 
             {/* KPI row */}
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -404,171 +369,45 @@ const AgentsPage = () => {
                 />
             </div>
 
-            {/* Manage Agents panel */}
-            <ConfigSection
-                title="Manage Agents"
-                description="Configure AI voice agents. The default agent handles calls when no specific agent is targeted."
-            >
-                {/* New Agent button */}
-                <div className="flex justify-end -mt-2 mb-2">
-                    <button
-                        onClick={() => setEditingAgent(null)}
-                        className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
-                    >
-                        <Plus className="w-4 h-4 mr-2" />
-                        New Agent
-                    </button>
+            <section aria-label="Manage agents" className="space-y-4">
+                <div className="flex flex-wrap items-center gap-3">
+                    <div className="relative min-w-0 flex-1 basis-64">
+                        <Search className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-muted-foreground" />
+                        <input aria-label="Search agents" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search agents, voices or tools…"
+                            className="h-11 w-full rounded-lg border border-input bg-card pl-10 pr-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+                    </div>
+                    <select aria-label="Filter by status" value={status} onChange={event => setStatus(event.target.value)} className="h-11 rounded-lg border border-input bg-card px-3 text-sm focus-visible:ring-2 focus-visible:ring-ring">
+                        <option value="all">All statuses</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option>
+                    </select>
+                    <select aria-label="Filter by engine" value={engine} onChange={event => setEngine(event.target.value)} className="h-11 max-w-full rounded-lg border border-input bg-card px-3 text-sm focus-visible:ring-2 focus-visible:ring-ring">
+                        <option value="all">All engines</option>{engines.map(value => <option key={value}>{value}</option>)}
+                    </select>
+                    <div className="flex rounded-lg border border-border bg-card p-1" role="group" aria-label="Agent view">
+                        <button aria-label="Cards view" aria-pressed={layout === 'cards'} onClick={() => changeLayout('cards')} className={`inline-flex h-11 w-11 items-center justify-center rounded-md focus-visible:ring-2 focus-visible:ring-ring ${layout === 'cards' ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:bg-accent'}`}><LayoutGrid className="h-4 w-4" /></button>
+                        <button aria-label="List view" aria-pressed={layout === 'list'} onClick={() => changeLayout('list')} className={`inline-flex h-11 w-11 items-center justify-center rounded-md focus-visible:ring-2 focus-visible:ring-ring ${layout === 'list' ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:bg-accent'}`}><List className="h-4 w-4" /></button>
+                    </div>
                 </div>
-
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                    {agents.length === 0 ? (
-                        <div className="col-span-full p-8 border border-dashed rounded-lg text-center text-muted-foreground">
-                            <Users className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                            <p className="font-medium text-foreground">No agents configured</p>
-                            <p className="mt-1 text-sm">Start with three general-purpose agents or create one manually.</p>
-                            <div className="mt-4 flex flex-wrap justify-center gap-2">
-                                <button
-                                    type="button"
-                                    onClick={handleCreateStarters}
-                                    disabled={creatingStarters}
-                                    className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50"
-                                >
-                                    {creatingStarters ? 'Creating…' : 'Create starter agents'}
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => setEditingAgent(null)}
-                                    className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 text-sm font-medium"
-                                >
-                                    Create one agent
-                                </button>
-                            </div>
-                        </div>
-                    ) : (
-                        agents.map((agent) => {
-                            const stats = statsMap[agent.slug];
-                            const isInactive = agent.is_active === 0;
-                            return (
-                                <ConfigCard
-                                    key={agent.slug}
-                                    className={`group relative hover:border-primary/50 transition-colors flex flex-col ${isInactive ? 'opacity-60' : ''}`}
-                                >
-                                    {/* Card header */}
-                                    <div className="flex justify-between items-start mb-3">
-                                        <div className="min-w-0">
-                                            <div className="flex items-center gap-2 flex-wrap">
-                                                <h4 className="font-semibold text-base leading-tight">
-                                                    {agent.display_name}
-                                                </h4>
-                                                {agent.is_default === 1 && (
-                                                    <Star className="w-4 h-4 text-yellow-500 fill-yellow-500 flex-shrink-0" title="Default agent" />
-                                                )}
-                                            </div>
-                                            <div className="flex flex-wrap gap-1.5 mt-1.5">
-                                                {agent.role_label && (
-                                                    <span className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold text-muted-foreground bg-secondary/50">
-                                                        {agent.role_label}
-                                                    </span>
-                                                )}
-                                                {agent.extension && (
-                                                    <span className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold text-muted-foreground bg-secondary/50">
-                                                        Ext. {agent.extension}
-                                                    </span>
-                                                )}
-                                                {agent.is_operator_managed === 0 && (
-                                                    <span className="inline-flex items-center rounded-full border border-blue-500/30 px-2.5 py-0.5 text-xs font-semibold text-blue-600 dark:text-blue-400 bg-blue-500/10">
-                                                        Imported from YAML
-                                                    </span>
-                                                )}
-                                                {isInactive && (
-                                                    <span className="inline-flex items-center rounded-full border border-muted px-2.5 py-0.5 text-xs font-semibold text-muted-foreground bg-muted/40">
-                                                        Inactive
-                                                    </span>
-                                                )}
-                                                {toolPolicyLabels(agent).map(label => (
-                                                    <span key={label} className="inline-flex items-center rounded-full border border-violet-500/30 px-2.5 py-0.5 text-xs font-semibold text-violet-700 dark:text-violet-300 bg-violet-500/10">
-                                                        {label}
-                                                    </span>
-                                                ))}
-                                            </div>
-                                        </div>
-
-                                        {/* Card actions */}
-                                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity flex-shrink-0 ml-2">
-                                            {agent.is_default !== 1 && agent.is_active === 1 && (
-                                                <button
-                                                    onClick={() => handleMakeDefault(agent.slug)}
-                                                    className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
-                                                    title="Make default"
-                                                    aria-label="Make default agent"
-                                                >
-                                                    <Star className="w-4 h-4" />
-                                                </button>
-                                            )}
-                                            <button
-                                                onClick={() => handleCopyDialplan(agent.slug)}
-                                                className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
-                                                title="Copy dialplan snippet"
-                                                aria-label="Copy dialplan"
-                                            >
-                                                <Copy className="w-4 h-4" />
-                                            </button>
-                                            <button
-                                                onClick={() => setEditingAgent(agent)}
-                                                className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
-                                                title="Edit agent"
-                                                aria-label="Edit agent"
-                                            >
-                                                <Pencil className="w-4 h-4" />
-                                            </button>
-                                            <button
-                                                onClick={() => handleDelete(agent)}
-                                                className="p-2 hover:bg-destructive/10 rounded-md text-destructive"
-                                                title="Delete agent"
-                                                aria-label="Delete agent"
-                                            >
-                                                <Trash2 className="w-4 h-4" />
-                                            </button>
-                                        </div>
-                                    </div>
-
-                                    {/* Stats rows */}
-                                    <div className="grid grid-cols-3 gap-2 text-sm border-t border-border pt-3 mt-auto">
-                                        <div className="text-center">
-                                            <p className="text-xs text-muted-foreground mb-0.5">Calls</p>
-                                            <p className="font-semibold">{stats?.calls ?? 0}</p>
-                                        </div>
-                                        <div className="text-center border-x border-border">
-                                            <p className="text-xs text-muted-foreground mb-0.5">Transfers</p>
-                                            <p className="font-semibold">{stats?.transfers ?? 0}</p>
-                                        </div>
-                                        <div className="text-center">
-                                            <p className="text-xs text-muted-foreground mb-0.5">Avg Duration</p>
-                                            <p className="font-semibold">{formatDuration(stats?.avg_duration_seconds ?? 0)}</p>
-                                        </div>
-                                    </div>
-
-                                    {/* Footer: Provider + Voice */}
-                                    {(agent.provider || agent.voice) && (
-                                        <div className="flex flex-wrap gap-1.5 mt-3 pt-3 border-t border-border">
-                                            {agent.provider && (
-                                                <span className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold text-muted-foreground bg-secondary/50">
-                                                    {agent.provider}
-                                                </span>
-                                            )}
-                                            {agent.voice && (
-                                                <span className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold text-muted-foreground bg-secondary/50">
-                                                    {agent.voice}
-                                                </span>
-                                            )}
-                                        </div>
-                                    )}
-                                </ConfigCard>
-                            );
-                        })
-                    )}
+                <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
+                    <p aria-live="polite">{visibleAgents.length} of {agents.length} agents</p>
+                    <p>The default agent handles calls without a specific target.</p>
                 </div>
-            </ConfigSection>
+                <div className={layout === 'cards' ? 'grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3' : 'space-y-3'}>
+                    {visibleAgents.map(agent => <AgentOverview key={agent.slug} agent={agent} stats={statsMap[agent.slug]} tools={configuredTools(agent, catalog)}
+                        catalogAvailable={catalogAvailable} layout={layout} onDefault={() => handleMakeDefault(agent.slug)} onCopy={() => handleCopyDialplan(agent.slug)} onDelete={() => handleDelete(agent)} />)}
+                </div>
+                {!error && agents.length === 0 && <div className="rounded-xl border border-dashed border-border p-8 text-center">
+                    <Users className="mx-auto mb-3 h-10 w-10 text-muted-foreground" /><h2 className="font-semibold">Create your first agent</h2>
+                    <p className="mt-2 text-sm text-muted-foreground">Start with Receptionist, Sales and Support, or create an agent of your own.</p>
+                    <div className="mt-4 flex flex-wrap justify-center gap-2">
+                        <button onClick={handleCreateStarters} disabled={creatingStarters} className="min-h-11 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50">{creatingStarters ? 'Creating…' : 'Create starter agents'}</button>
+                        <Link to="/agents/new" className="inline-flex min-h-11 items-center rounded-lg border border-border px-4 text-sm font-medium hover:bg-accent">Create one agent</Link>
+                    </div>
+                </div>}
+                {agents.length > 0 && !visibleAgents.length && <div className="rounded-xl border border-dashed border-border p-8 text-center">
+                    <h2 className="font-semibold">No matching agents</h2><p className="mt-2 text-sm text-muted-foreground">Try another name, voice, tool or filter.</p>
+                    <button onClick={() => { setQuery(''); setStatus('all'); setEngine('all'); }} className="mt-3 min-h-11 rounded-lg border border-border px-4 text-sm hover:bg-accent">Clear filters</button>
+                </div>}
+            </section>
 
             <div className="rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
                 <span className="font-medium text-foreground">Advanced:</span>{' '}
@@ -578,18 +417,13 @@ const AgentsPage = () => {
                 </Link>.
             </div>
 
-            {/* Analytics panels */}
-            <div className="flex flex-col gap-4 sm:flex-row">
-                <BarPanel title="Routing Source" rows={routingRows} />
-                <BarPanel title="Distribution by Agent" rows={distributionRows} />
-            </div>
-
-            <AgentForm
-                isOpen={editingAgent !== undefined}
-                onClose={() => setEditingAgent(undefined)}
-                onSaved={loadAll}
-                agent={editingAgent ?? null}
-            />
+            <details className="rounded-xl border border-border bg-card p-4">
+                <summary className="cursor-pointer py-2 text-sm font-medium focus-visible:ring-2 focus-visible:ring-ring">Routing and distribution</summary>
+                <div className="mt-4 flex flex-col gap-4 sm:flex-row">
+                    <BarPanel title="Routing source" rows={routingRows} />
+                    <BarPanel title="Distribution by agent" rows={distributionRows} />
+                </div>
+            </details>
 
             <Modal
                 isOpen={manualDialplan !== null}

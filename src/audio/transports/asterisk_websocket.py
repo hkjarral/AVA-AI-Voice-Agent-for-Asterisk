@@ -81,6 +81,12 @@ class WebSocketMediaBinding:
     transition_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     finish_waiters: dict[str, asyncio.Future[bool]] = field(default_factory=dict, repr=False)
     mark_waiters: dict[str, asyncio.Future[bool]] = field(default_factory=dict, repr=False)
+    # Correlated lower bound on media actually consumed, scoped to one output
+    # generation. At 100 ms spacing the remote ~20 s queue holds < 256 marks.
+    progress_marks: dict[str, int] = field(default_factory=dict, repr=False)
+    output_bytes_sent: int = 0
+    output_bytes_played: int = 0
+    progress_last_mark: int = 0
     output_state: str = "idle"
     queue_frames: Optional[int] = None
     xoff_count: int = 0
@@ -123,6 +129,7 @@ class WebSocketMediaServer:
         on_dtmf: Optional[DTMFCallback] = None,
     ) -> None:
         self._config = _section(config)
+        self._track_playback = _value(self._config, "output_pacing", "legacy") == "asterisk"
         self._on_audio = on_audio
         self._on_disconnect = on_disconnect
         self._on_dtmf = on_dtmf
@@ -329,6 +336,8 @@ class WebSocketMediaServer:
                     raise RuntimeError("a media output segment is already active")
                 binding.generation += 1
                 binding.output_state = "buffering"
+                binding.progress_marks.clear()
+                binding.output_bytes_sent = binding.output_bytes_played = binding.progress_last_mark = 0
                 # A stale writer keeps a reference to the previous event.
                 binding.writer_cancel = asyncio.Event()
                 if not await self._send_command(binding, {"command": "START_MEDIA_BUFFERING"}):
@@ -368,6 +377,19 @@ class WebSocketMediaServer:
                             binding.websocket.send(payload[start : start + self._max_message_bytes]),
                             self._output_wait_timeout,
                         )
+                        if generation != binding.generation:
+                            return False
+                        binding.output_bytes_sent += len(payload[start : start + self._max_message_bytes])
+                        mark_interval = binding.optimal_frame_size * max(1, (100 + binding.ptime - 1) // binding.ptime)
+                        if (self._track_playback and binding.control_format == "json"
+                                and binding.output_bytes_sent - binding.progress_last_mark >= mark_interval
+                                and len(binding.progress_marks) < 256):
+                            correlation = self._correlation("p")
+                            binding.progress_marks[correlation] = binding.output_bytes_sent
+                            binding.progress_last_mark = binding.output_bytes_sent
+                            await asyncio.wait_for(binding.websocket.send(encode_control(
+                                {"command": "MARK_MEDIA", "correlation_id": correlation}, "json"
+                            )), self._output_wait_timeout)
                     break
                 except (asyncio.TimeoutError, ConnectionClosed):
                     if generation == binding.generation and binding.output_state == "buffering":
@@ -414,6 +436,7 @@ class WebSocketMediaServer:
             binding.generation += 1  # Invalidates a writer waiting on XON.
             abort_generation = binding.generation
             binding.writer_cancel.set()
+            binding.progress_marks.clear()
             binding.output_state = "aborting"
             binding.admission.clear()
             for waiter in tuple(binding.finish_waiters.values()):
@@ -469,6 +492,17 @@ class WebSocketMediaServer:
                 reason = "post-FLUSH MEDIA_MARK_PROCESSED timeout" if binding.control_format == "json" else "post-FLUSH MEDIA_BUFFERING_COMPLETED timeout"
                 await self._fail_binding(binding, reason)
             return completed
+
+    def get_confirmed_playback_ms(self, call_id: str) -> int:
+        """Return a conservative queue-consumer acknowledgment, never sent bytes.
+
+        JSON progress marks provide a <=100 ms-granularity lower bound. Plain
+        controls have no progress MARK: retain zero until correlated completion.
+        """
+        binding = self.get_binding(call_id)
+        if binding is None:
+            return 0
+        return (binding.output_bytes_played // binding.optimal_frame_size) * binding.ptime
 
     def snapshot(self, call_id: str) -> dict[str, Any]:
         slot = self._calls.get(call_id)
@@ -732,11 +766,18 @@ class WebSocketMediaServer:
             elif event.get("queue_full") is False:
                 binding.xon.set()
         elif event_name == "MEDIA_BUFFERING_COMPLETED":
+            if isinstance(event.get("correlation_id"), str) and event["correlation_id"] in binding.finish_waiters:
+                binding.output_bytes_played = binding.output_bytes_sent
+                binding.progress_marks.clear()
             self._resolve(binding.finish_waiters, event.get("correlation_id"), True)
             if binding.control_format == "plain":
                 self._resolve(binding.mark_waiters, event.get("correlation_id"), True)
         elif event_name == "MEDIA_MARK_PROCESSED":
             if binding.control_format == "json":
+                played = binding.progress_marks.get(event["correlation_id"]) if isinstance(event.get("correlation_id"), str) else None
+                if played is not None:
+                    binding.output_bytes_played = max(binding.output_bytes_played, played)
+                    binding.progress_marks = {k: v for k, v in binding.progress_marks.items() if v > played}
                 self._resolve(binding.mark_waiters, event.get("correlation_id"), True)
         elif event_name == "ERROR":
             correlation_id = event.get("correlation_id")

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
+import { usePendingAction } from '../hooks/usePendingAction';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import yaml from 'js-yaml';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
@@ -20,6 +21,7 @@ import AudioEnvironmentOverrideWarning from '../components/config/AudioEnvironme
 
 const PipelinesPage = () => {
     const { confirm } = useConfirmDialog();
+    const { pendingAction, isPending, runAction } = usePendingAction();
     const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
     const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [error, setError] = useState<string | null>(null);
@@ -131,9 +133,11 @@ const PipelinesPage = () => {
             await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
             setConfig(sanitized);
             await refetch();
+            return true;
         } catch (err) {
             console.error('Failed to save config', err);
             toast.error('Failed to save configuration');
+            return false;
         }
     };
 
@@ -174,6 +178,7 @@ const PipelinesPage = () => {
     };
 
     const handleEditPipeline = (name: string) => {
+        if (isPending()) return;
         setEditingPipeline(name);
         const existing = config.pipelines?.[name] || {};
         const { tools: _legacyTools, ...rest } = (existing && typeof existing === 'object') ? existing : {};
@@ -182,6 +187,7 @@ const PipelinesPage = () => {
     };
 
     const handleAddPipeline = () => {
+        if (isPending()) return;
         setEditingPipeline('new_pipeline');
         setPipelineForm({
             name: '',
@@ -198,6 +204,7 @@ const PipelinesPage = () => {
     };
 
     const handleClonePipeline = (name: string) => {
+        if (isPending()) return;
         const sourceData = config.pipelines?.[name] || {};
         let cloneName = `${name}_copy`;
         let suffix = 2;
@@ -211,7 +218,7 @@ const PipelinesPage = () => {
         setIsNewPipeline(true);
     };
 
-    const handleDeletePipeline = async (name: string) => {
+    const handleDeletePipeline = (name: string) => runAction(`delete:${name}`, async () => {
         // P0 Guard: Check if this is the active pipeline
         if (config.active_pipeline === name) {
             toast.error(`Cannot delete pipeline "${name}"`, { description: 'Please set a different active pipeline first.' });
@@ -239,9 +246,9 @@ const PipelinesPage = () => {
         const newPipelines = { ...config.pipelines };
         delete newPipelines[name];
         await saveConfig({ ...config, pipelines: newPipelines });
-    };
+    });
 
-    const handleSavePipeline = async () => {
+    const handleSavePipeline = () => runAction('save', async () => {
         if (!pipelineForm.name) {
             toast.error('Pipeline name is required');
             return;
@@ -322,7 +329,7 @@ const PipelinesPage = () => {
             return;
         }
 
-        const newConfig = { ...config };
+        const newConfig = { ...config, pipelines: { ...config.pipelines } };
         if (!newConfig.pipelines) newConfig.pipelines = {};
 
         const { name, ...pipelineData } = normalizedForm;
@@ -393,9 +400,8 @@ const PipelinesPage = () => {
 
         newConfig.pipelines[pipelineName] = mergedPipeline;
 
-        await saveConfig(newConfig);
-        setEditingPipeline(null);
-    };
+        if (await saveConfig(newConfig)) setEditingPipeline(null);
+    });
 
     if (loading) return <div className="p-8 text-center text-muted-foreground">Loading configuration...</div>;
     if (yamlError) {
@@ -419,7 +425,7 @@ const PipelinesPage = () => {
     }
 
     return (
-        <div className="space-y-6">
+        <fieldset disabled={!!pendingAction} aria-busy={!!pendingAction} className="min-w-0 space-y-6">
             {restartRequired && (
                 <div className="bg-orange-500/15 border-orange-500/30 border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
                     <div className="flex items-center">
@@ -467,7 +473,7 @@ const PipelinesPage = () => {
                 </div>
                 <button
                     onClick={handleAddPipeline}
-                    className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
+                    className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
                 >
                     <Plus className="w-4 h-4 mr-2" />
                     Add Pipeline
@@ -480,7 +486,7 @@ const PipelinesPage = () => {
                         <select
                             className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                             value={config.active_pipeline || ''}
-                            onChange={(e) => saveConfig({ ...config, active_pipeline: e.target.value })}
+                            onChange={(e) => { const name = e.target.value; void runAction('active', () => saveConfig({ ...config, active_pipeline: name })); }}
                         >
                             <option value="" disabled>Select a pipeline...</option>
                             {Object.keys(config.pipelines || {}).map((name) => (
@@ -488,9 +494,10 @@ const PipelinesPage = () => {
                             ))}
                         </select>
                         <button
-                            onClick={() => saveConfig({ ...config, active_pipeline: config.active_pipeline })}
-                            className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-secondary text-secondary-foreground hover:bg-secondary/80 h-10 px-4 py-2"
+                            onClick={() => runAction('active', () => saveConfig({ ...config, active_pipeline: config.active_pipeline }))}
+                            className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 bg-secondary text-secondary-foreground hover:bg-secondary/80 h-10 px-4 py-2"
                         >
+                            {pendingAction === 'active' && <Loader2 aria-hidden="true" className="w-4 h-4 mr-2 animate-spin" />}
                             Set Active
                         </button>
                     </div>
@@ -529,7 +536,9 @@ const PipelinesPage = () => {
                                         className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
                                     />
                                     <IconButton
-                                        icon={Trash2}
+                                        icon={pendingAction === `delete:${name}` ? Loader2 : Trash2}
+                                        iconClassName={pendingAction === `delete:${name}` ? 'animate-spin' : undefined}
+                                        aria-busy={pendingAction === `delete:${name}`}
                                         variant="destructive"
                                         label={`Delete pipeline ${name}`}
                                         onClick={() => handleDeletePipeline(name)}
@@ -592,7 +601,8 @@ const PipelinesPage = () => {
 
             <Modal
                 isOpen={!!editingPipeline}
-                onClose={() => setEditingPipeline(null)}
+                busy={!!pendingAction}
+                onClose={() => { if (!isPending()) setEditingPipeline(null); }}
                 title={isNewPipeline ? 'Add Pipeline' : 'Edit Pipeline'}
                 size="xl"
                 footer={
@@ -606,15 +616,17 @@ const PipelinesPage = () => {
                             />
                         )}
                         <button
-                            onClick={() => setEditingPipeline(null)}
-                            className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"
+                            onClick={() => { if (!isPending()) setEditingPipeline(null); }}
+                            className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"
                         >
                             Cancel
                         </button>
                         <button
                             onClick={handleSavePipeline}
-                            className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
+                            aria-busy={pendingAction === 'save'}
+                            className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
                         >
+                            {pendingAction === 'save' && <Loader2 aria-hidden="true" className="w-4 h-4 mr-2 animate-spin" />}
                             Save Changes
                         </button>
                     </>
@@ -627,7 +639,7 @@ const PipelinesPage = () => {
                     isNew={isNewPipeline}
                 />
             </Modal>
-        </div >
+        </fieldset>
     );
 };
 
