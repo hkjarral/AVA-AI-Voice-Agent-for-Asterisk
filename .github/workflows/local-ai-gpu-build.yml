@@ -50,7 +50,7 @@ jobs:
             --build-arg INCLUDE_WHISPER_CPP=false \
             --build-arg INCLUDE_PIPER=false \
             --build-arg INCLUDE_KOKORO=true \
-            --build-arg INCLUDE_MELOTTS=false \
+            --build-arg INCLUDE_MELOTTS=true \
             --build-arg INCLUDE_SILERO=false \
             --build-arg INCLUDE_LLAMA=true \
             --build-arg LLAMA_CUDA_ARCHITECTURES=70 \
@@ -59,15 +59,50 @@ jobs:
 
       - name: Verify packaged dependencies without requiring a GPU runner
         run: |
-          docker run --rm local-ai-server-gpu:${{ github.sha }} \
-            bash -ec '
-              python -c "import sys, ssl, sqlite3, websockets; assert sys.version_info[:2] == (3, 11); assert ssl.create_default_context().cert_store_stats()[\"x509_ca\"] > 0; print(sys.version, websockets.__version__)"
-              python -c "import faster_whisper, kokoro, importlib.util; assert importlib.util.find_spec(\"llama_cpp\"); print(\"GPU-independent imports succeed and llama_cpp is packaged\")"
-              python -c "from importlib.metadata import version; from pathlib import Path; pins = dict(line.rstrip().split(\"==\", 1) for line in Path(\"/app/requirements.txt\").read_text().splitlines() if \"==\" in line and not line.startswith(\"#\")); installed = {name: version(name).partition(\"+\")[0] for name in (\"torch\", \"transformers\", \"huggingface-hub\")}; assert installed == {name: pins[name] for name in installed}, installed; print(installed)"
-              python -c "import torch; assert torch.version.cuda == \"12.6\", torch.version.cuda; print(\"Torch CUDA build\", torch.version.cuda)"
-              LLAMA_LIB="$(find /opt/venv/lib -path "*/site-packages/llama_cpp/lib/libllama.so" -print -quit)"
-              test -n "$LLAMA_LIB"
-              ldd "$LLAMA_LIB" | tee /tmp/llama-ldd.txt
-              grep -q "libcuda.so.1" /tmp/llama-ldd.txt
-              echo "llama_cpp shared library is packaged with CUDA linkage"
-            '
+          docker run --rm -i local-ai-server-gpu:${{ github.sha }} bash -es <<'CONTAINER'
+          python - <<'PY'
+          import importlib.util
+          from importlib.metadata import version
+          from pathlib import Path
+          import sqlite3
+          import ssl
+          import sys
+
+          import faster_whisper
+          import kokoro
+          import torch
+          import torchaudio
+          import websockets
+
+          assert sys.version_info[:2] == (3, 11)
+          assert ssl.create_default_context().cert_store_stats()["x509_ca"] > 0
+          assert importlib.util.find_spec("llama_cpp")
+          print(sys.version, sqlite3.sqlite_version, websockets.__version__)
+
+          pins = dict(
+              line.split("==", 1)
+              for line in Path("/app/requirements.txt").read_text().splitlines()
+              if "==" in line and not line.startswith("#")
+          )
+          installed = {
+              name: version(name).partition("+")[0]
+              for name in ("torch", "torchaudio", "transformers", "huggingface-hub")
+          }
+          assert installed == {name: pins[name] for name in installed}, installed
+          print(installed)
+
+          assert torch.version.cuda == "12.6", torch.version.cuda
+          assert torchaudio.__version__.endswith("+cu126"), torchaudio.__version__
+          cudnn_version = torch.backends.cudnn.version()
+          assert cudnn_version, cudnn_version
+          waveform = torch.linspace(-1, 1, 1600)
+          assert torchaudio.functional.resample(waveform, 16000, 8000).shape == (800,)
+          print("Torch CUDA build", torch.version.cuda, "cuDNN", cudnn_version,
+                "TorchAudio", torchaudio.__version__)
+          PY
+          LLAMA_LIB="$(find /opt/venv/lib -path '*/site-packages/llama_cpp/lib/libllama.so' -print -quit)"
+          test -n "$LLAMA_LIB"
+          ldd "$LLAMA_LIB" | tee /tmp/llama-ldd.txt
+          grep -q 'libcuda.so.1' /tmp/llama-ldd.txt
+          echo "llama_cpp shared library is packaged with CUDA linkage"
+          CONTAINER

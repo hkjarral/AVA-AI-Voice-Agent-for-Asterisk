@@ -46,7 +46,12 @@ def test_optional_native_dependency_pins_have_one_source_of_truth() -> None:
         assert not re.search(r"pip install[^\n]*sherpa-onnx==", content), dockerfile
         assert not re.search(r"pip install[^\n]*llama-cpp-python==", content), dockerfile
         assert "grep -m 1 '^faster-whisper==' requirements.txt" in content, dockerfile
-        assert 'pip install --no-cache-dir "$FASTER_WHISPER_REQUIREMENT"' in content, dockerfile
+        assert "grep -m 1 '^requests==' requirements.txt" in content, dockerfile
+        assert (
+            'pip install --no-cache-dir "$FASTER_WHISPER_REQUIREMENT"'
+            ' "$HF_HUB_REQUIREMENT" "$REQUESTS_REQUIREMENT"'
+        ) in content, dockerfile
+        assert "from faster_whisper import WhisperModel" in content, dockerfile
         assert "grep -m 1 '^kokoro==' requirements.txt" in content, dockerfile
         assert 'pip install --no-cache-dir "$KOKORO_REQUIREMENT"' in content, dockerfile
         assert "grep -m 1 '^torch==' requirements.txt" in content, dockerfile
@@ -103,6 +108,11 @@ def test_gpu_torch_install_stays_on_cuda_12() -> None:
         for line in torch_installs
     )
 
+    assert (
+        'pip install --no-cache-dir "$TORCHAUDIO_REQUIREMENT"'
+        " --index-url https://download.pytorch.org/whl/cu126"
+    ) in content
+
 
 def test_gpu_image_includes_cudnn_for_faster_whisper() -> None:
     content = (LOCAL_AI_ROOT / "Dockerfile.gpu").read_text(encoding="utf-8")
@@ -123,11 +133,12 @@ def test_gpu_ci_limits_llama_build_to_representative_architecture() -> None:
         REPO_ROOT / ".github" / "workflows" / "local-ai-gpu-build.yml"
     ).read_text(encoding="utf-8")
     assert "--build-arg LLAMA_CUDA_ARCHITECTURES=70" in workflow
-    assert "import faster_whisper, kokoro, importlib.util" in workflow
-    assert "find_spec(\\\"llama_cpp\\\")" in workflow
+    assert "import faster_whisper" in workflow
+    assert "import kokoro" in workflow
+    assert 'find_spec("llama_cpp")' in workflow
     assert 'find /opt/venv/lib -path' in workflow
     assert 'python3.10/site-packages' not in workflow
-    assert 'grep -q "libcuda.so.1"' in workflow
+    assert "grep -q 'libcuda.so.1'" in workflow
 
 
 def test_engine_and_local_ai_use_the_same_websockets_pin() -> None:

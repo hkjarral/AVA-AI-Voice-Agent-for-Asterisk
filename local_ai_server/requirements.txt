@@ -5,9 +5,12 @@ piper-tts==1.2.0
 numpy==1.26.4
 sherpa-onnx==1.13.4
 faster-whisper==1.0.3
+# Faster-Whisper 1.0.3 imports Requests without declaring it.
+requests==2.34.2
 kokoro==0.9.4
 torch==2.13.0
-torchaudio==2.11.1
+# TorchAudio 2.11.0 has official CPU and CUDA 12.6 wheels.
+torchaudio==2.11.0
 transformers==5.10.1
 huggingface-hub==1.27.0
 # MeloTTS pins librosa before it added SoXR.
