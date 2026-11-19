@@ -7,8 +7,9 @@ import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
+from httpx import ProxyError
 import pytest
 
 
@@ -19,6 +20,25 @@ def _load(name: str):
     if LOCAL_AI_DIR not in sys.path:
         sys.path.insert(0, LOCAL_AI_DIR)
     return importlib.import_module(name)
+
+
+@pytest.mark.parametrize("cache_available", [True, False])
+def test_faster_whisper_retries_with_local_cache_after_proxy_failure(monkeypatch, cache_available):
+    stt = _load("stt_backends")
+    cached_model = object()
+    cached_result = cached_model if cache_available else RuntimeError("no cached model")
+    whisper_model = Mock(side_effect=[ProxyError("proxy unavailable"), cached_result])
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=whisper_model))
+    monkeypatch.setattr(stt, "os", SimpleNamespace(path=stt.os.path, makedirs=Mock()))
+
+    backend = stt.FasterWhisperSTTBackend(model_size="tiny.en")
+
+    assert backend.initialize() is cache_available
+    assert backend.model is (cached_model if cache_available else None)
+    initial, retry = whisper_model.call_args_list
+    assert initial.args == retry.args == ("tiny.en",)
+    assert "local_files_only" not in initial.kwargs
+    assert retry.kwargs == {**initial.kwargs, "local_files_only": True}
 
 
 class _Backend:
