@@ -24,6 +24,7 @@ def test_optional_native_dependency_pins_have_one_source_of_truth() -> None:
     assert re.search(r"^torchaudio==\d+\.\d+\.\d+$", requirements, re.MULTILINE)
     assert re.search(r"^transformers==\d+\.\d+\.\d+$", requirements, re.MULTILINE)
     assert re.search(r"^huggingface-hub==\d+\.\d+\.\d+$", requirements, re.MULTILINE)
+    assert re.search(r"^soxr==\d+\.\d+\.\d+$", requirements, re.MULTILINE)
 
     for dockerfile in DOCKERFILES:
         content = dockerfile.read_text(encoding="utf-8")
@@ -45,7 +46,12 @@ def test_optional_native_dependency_pins_have_one_source_of_truth() -> None:
         assert not re.search(r"pip install[^\n]*sherpa-onnx==", content), dockerfile
         assert not re.search(r"pip install[^\n]*llama-cpp-python==", content), dockerfile
         assert "grep -m 1 '^faster-whisper==' requirements.txt" in content, dockerfile
-        assert 'pip install --no-cache-dir "$FASTER_WHISPER_REQUIREMENT"' in content, dockerfile
+        assert "grep -m 1 '^requests==' requirements.txt" in content, dockerfile
+        assert (
+            'pip install --no-cache-dir "$FASTER_WHISPER_REQUIREMENT"'
+            ' "$HF_HUB_REQUIREMENT" "$REQUESTS_REQUIREMENT"'
+        ) in content, dockerfile
+        assert "from faster_whisper import WhisperModel" in content, dockerfile
         assert "grep -m 1 '^kokoro==' requirements.txt" in content, dockerfile
         assert 'pip install --no-cache-dir "$KOKORO_REQUIREMENT"' in content, dockerfile
         assert "grep -m 1 '^torch==' requirements.txt" in content, dockerfile
@@ -64,9 +70,48 @@ def test_optional_native_dependency_pins_have_one_source_of_truth() -> None:
         assert not re.search(r"pip install[^\n]*torchaudio(?:==|>=)", content), dockerfile
 
 
+def test_optional_model_installs_cannot_replace_shared_versions() -> None:
+    for dockerfile in DOCKERFILES:
+        content = dockerfile.read_text(encoding="utf-8")
+        assert (
+            "grep -E '^(torch|torchaudio|transformers|huggingface-hub|soxr)==' requirements.txt"
+            " > /tmp/aava-model-constraints.txt"
+        ) in content, dockerfile
+        constraints = content.index("ENV PIP_CONSTRAINT=/tmp/aava-model-constraints.txt")
+        assert constraints < content.index("RUN pip install"), dockerfile
+        melo_pin = content.index('sed -i "s/^transformers==.*/$TRANSFORMERS_REQUIREMENT/" requirements.txt')
+        melo_install = content.index("pip install --no-cache-dir -r requirements.filtered.txt")
+        assert melo_pin < melo_install, dockerfile
+        assert (
+            "pip install --no-cache-dir -r requirements.filtered.txt soxr" in content
+        ), dockerfile
+        assert (
+            "from transformers import BertForMaskedLM; from melo.api import TTS" in content
+        ), dockerfile
+        assert '(python -m unidic download || true) &&' in content, dockerfile
+
+
 def test_cpu_image_uses_cpu_only_pytorch_wheels() -> None:
     content = (LOCAL_AI_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert content.count("https://download.pytorch.org/whl/cpu") >= 3
+
+
+def test_gpu_torch_install_stays_on_cuda_12() -> None:
+    content = (LOCAL_AI_ROOT / "Dockerfile.gpu").read_text(encoding="utf-8")
+    torch_installs = [
+        line for line in content.splitlines()
+        if 'pip install --no-cache-dir "$TORCH_REQUIREMENT"' in line
+    ]
+    assert len(torch_installs) == 3
+    assert all(
+        "--index-url https://download.pytorch.org/whl/cu126" in line
+        for line in torch_installs
+    )
+
+    assert (
+        'pip install --no-cache-dir "$TORCHAUDIO_REQUIREMENT"'
+        " --index-url https://download.pytorch.org/whl/cu126"
+    ) in content
 
 
 def test_gpu_image_includes_cudnn_for_faster_whisper() -> None:
@@ -88,11 +133,12 @@ def test_gpu_ci_limits_llama_build_to_representative_architecture() -> None:
         REPO_ROOT / ".github" / "workflows" / "local-ai-gpu-build.yml"
     ).read_text(encoding="utf-8")
     assert "--build-arg LLAMA_CUDA_ARCHITECTURES=70" in workflow
-    assert "import faster_whisper, kokoro, importlib.util" in workflow
-    assert "find_spec(\\\"llama_cpp\\\")" in workflow
+    assert "import faster_whisper" in workflow
+    assert "import kokoro" in workflow
+    assert 'find_spec("llama_cpp")' in workflow
     assert 'find /opt/venv/lib -path' in workflow
     assert 'python3.10/site-packages' not in workflow
-    assert 'grep -q "libcuda.so.1"' in workflow
+    assert "grep -q 'libcuda.so.1'" in workflow
 
 
 def test_engine_and_local_ai_use_the_same_websockets_pin() -> None:

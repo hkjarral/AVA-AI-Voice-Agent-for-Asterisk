@@ -1272,6 +1272,7 @@ class FasterWhisperSTTBackend:
         """Initialize the Faster-Whisper model."""
         try:
             from faster_whisper import WhisperModel
+            from httpx import ProxyError
             
             logging.info(
                 "🎤 FASTER-WHISPER - Loading model=%s device=%s compute=%s",
@@ -1293,12 +1294,19 @@ class FasterWhisperSTTBackend:
             cache_dir = os.path.join("/app", "models", "stt", "faster_whisper_cache")
             os.makedirs(cache_dir, exist_ok=True)
 
-            self.model = WhisperModel(
-                self.model_size,
-                device=device,
-                compute_type=self.compute_type,
-                download_root=cache_dir,
-            )
+            model_options = {
+                "device": device,
+                "compute_type": self.compute_type,
+                "download_root": cache_dir,
+            }
+            try:
+                self.model = WhisperModel(self.model_size, **model_options)
+            except ProxyError:
+                # Hub 1.x uses HTTPX, while Faster-Whisper 1.0.3 catches Requests errors.
+                logging.warning(
+                    "Faster-Whisper model download proxy failed, retrying with the local cache"
+                )
+                self.model = WhisperModel(self.model_size, local_files_only=True, **model_options)
             
             self._initialized = True
             logging.info("✅ FASTER-WHISPER - Model loaded successfully")

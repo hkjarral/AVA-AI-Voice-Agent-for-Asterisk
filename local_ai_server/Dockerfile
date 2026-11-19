@@ -42,6 +42,10 @@ ENV NLTK_DATA="/opt/venv/nltk_data"
 COPY requirements.txt .
 COPY requirements-base.txt .
 
+# Keep later optional-backend installs from replacing the shared model pins.
+RUN grep -E '^(torch|torchaudio|transformers|huggingface-hub|soxr)==' requirements.txt > /tmp/aava-model-constraints.txt
+ENV PIP_CONSTRAINT=/tmp/aava-model-constraints.txt
+
 # Install base dependencies (always required)
 RUN pip install --no-cache-dir -r requirements-base.txt
 
@@ -65,8 +69,11 @@ RUN if [ "$INCLUDE_FASTER_WHISPER" = "true" ]; then \
         echo "📦 Installing Faster-Whisper STT..." && \
         FASTER_WHISPER_REQUIREMENT="$(grep -m 1 '^faster-whisper==' requirements.txt || true)"; \
         HF_HUB_REQUIREMENT="$(grep -m 1 '^huggingface-hub==' requirements.txt || true)"; \
-        if [ -z "$FASTER_WHISPER_REQUIREMENT" ] || [ -z "$HF_HUB_REQUIREMENT" ]; then echo "❌ Missing faster-whisper/huggingface-hub pin" >&2; exit 1; fi; \
-        pip install --no-cache-dir "$FASTER_WHISPER_REQUIREMENT" "$HF_HUB_REQUIREMENT" && \
+        REQUESTS_REQUIREMENT="$(grep -m 1 '^requests==' requirements.txt || true)"; \
+        if [ -z "$FASTER_WHISPER_REQUIREMENT" ] || [ -z "$HF_HUB_REQUIREMENT" ] || [ -z "$REQUESTS_REQUIREMENT" ]; then \
+            echo "❌ Missing Faster-Whisper dependency pins" >&2; exit 1; \
+        fi; \
+        pip install --no-cache-dir "$FASTER_WHISPER_REQUIREMENT" "$HF_HUB_REQUIREMENT" "$REQUESTS_REQUIREMENT" && \
         python -c 'from faster_whisper import WhisperModel'; \
     fi
 
@@ -75,9 +82,15 @@ RUN if [ "$INCLUDE_WHISPER_CPP" = "true" ]; then \
         pip install --no-cache-dir pywhispercpp==1.2.0; \
     fi
 
+# T-one uses hf_hub_download, whose call signature is compatible with Hub 1.x.
 RUN if [ "$INCLUDE_TONE" = "true" ]; then \
         echo "📦 Installing T-one STT..." && \
-        pip install --no-cache-dir "git+https://github.com/voicekit-team/T-one.git@3c5b6c015038173840e62cea99e10cdb1c759116#egg=tone"; \
+        git clone --no-checkout https://github.com/voicekit-team/T-one.git /tmp/T-one && \
+        git -C /tmp/T-one checkout --detach 3c5b6c015038173840e62cea99e10cdb1c759116 && \
+        sed -i 's|huggingface-hub (>=0.14.0,<1.0.0)|huggingface-hub (>=0.14.0,<2.0.0)|' /tmp/T-one/pyproject.toml && \
+        pip install --no-cache-dir /tmp/T-one && \
+        python -c "from tone.onnx_wrapper import StreamingCTCModel" && \
+        rm -rf /tmp/T-one; \
     fi
 
 RUN if [ "$INCLUDE_PIPER" = "true" ]; then \
@@ -104,21 +117,23 @@ RUN if [ "$INCLUDE_MELOTTS" = "true" ]; then \
         git clone https://github.com/myshell-ai/MeloTTS.git /tmp/MeloTTS && \
         cd /tmp/MeloTTS && \
         git checkout "${MELOTTS_GIT_REF}" && \
-        python -c "from pathlib import Path; p=Path('/tmp/MeloTTS/setup.py'); s=p.read_text(); s=s.replace(\"from pip.req import parse_requirements\\n\", \"\"); s=s.replace(\"install_reqs = parse_requirements('requirements.txt')\\nreqs = [str(ir.req) for ir in install_reqs]\\n\", \"with open(os.path.join(cwd, 'requirements.txt'), encoding='utf-8') as _f:\\n    reqs = [ln.strip() for ln in _f if ln.strip() and not ln.startswith('#')]\\n\"); p.write_text(s); req=[]; ex=('torch','torchaudio','gradio'); [req.append(ln.strip()) for ln in Path('/tmp/MeloTTS/requirements.txt').read_text().splitlines() if ln.strip() and not ln.strip().startswith('#') and not ln.strip().lower().startswith(ex)]; Path('/tmp/MeloTTS/requirements.filtered.txt').write_text('\\n'.join(req)+'\\n'); print(f'MeloTTS filtered requirements prepared: {len(req)} packages')" && \
-        pip install --no-cache-dir -r requirements.filtered.txt && \
-        pip install --no-cache-dir "setuptools<81" && \
         TORCH_REQUIREMENT="$(grep -m 1 '^torch==' /usr/src/app/requirements.txt || true)" && \
         TORCHAUDIO_REQUIREMENT="$(grep -m 1 '^torchaudio==' /usr/src/app/requirements.txt || true)" && \
         if [ -z "$TORCH_REQUIREMENT" ] || [ -z "$TORCHAUDIO_REQUIREMENT" ]; then echo "❌ Missing torch/torchaudio pins" >&2; exit 1; fi && \
         if ! python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torch') else 1)"; then pip install --no-cache-dir "$TORCH_REQUIREMENT" --index-url https://download.pytorch.org/whl/cpu; fi && \
         if ! python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torchaudio') else 1)"; then pip install --no-cache-dir "$TORCHAUDIO_REQUIREMENT" --index-url https://download.pytorch.org/whl/cpu; fi && \
+        TRANSFORMERS_REQUIREMENT="$(grep -m 1 '^transformers==' /usr/src/app/requirements.txt)" && \
+        sed -i "s/^transformers==.*/$TRANSFORMERS_REQUIREMENT/" requirements.txt && \
+        python -c "from pathlib import Path; p=Path('/tmp/MeloTTS/setup.py'); s=p.read_text(); s=s.replace(\"from pip.req import parse_requirements\\n\", \"\"); s=s.replace(\"install_reqs = parse_requirements('requirements.txt')\\nreqs = [str(ir.req) for ir in install_reqs]\\n\", \"with open(os.path.join(cwd, 'requirements.txt'), encoding='utf-8') as _f:\\n    reqs = [ln.strip() for ln in _f if ln.strip() and not ln.startswith('#')]\\n\"); p.write_text(s); req=[]; ex=('torch','torchaudio','gradio'); [req.append(ln.strip()) for ln in Path('/tmp/MeloTTS/requirements.txt').read_text().splitlines() if ln.strip() and not ln.strip().startswith('#') and not ln.strip().lower().startswith(ex)]; Path('/tmp/MeloTTS/requirements.filtered.txt').write_text('\\n'.join(req)+'\\n'); print(f'MeloTTS filtered requirements prepared: {len(req)} packages')" && \
+        pip install --no-cache-dir -r requirements.filtered.txt soxr && \
+        pip install --no-cache-dir "setuptools<81" && \
         pip install --no-cache-dir --no-build-isolation --no-deps . && \
         cd / && rm -rf /tmp/MeloTTS && \
-        python -m unidic download || true && \
-        python -c "import nltk; nltk.download('averaged_perceptron_tagger_eng', download_dir='/opt/venv/nltk_data')" || true && \
+        (python -m unidic download || true) && \
+        (python -c "import nltk; nltk.download('averaged_perceptron_tagger_eng', download_dir='/opt/venv/nltk_data')" || true) && \
         echo "📦 Pre-downloading MeloTTS BERT model (best effort)..." && \
-        python -c "from transformers import AutoTokenizer; AutoTokenizer.from_pretrained('bert-base-uncased')" || true && \
-        python -c "from melo.api import TTS; print('MeloTTS package ready')"; \
+        (python -c "from transformers import AutoTokenizer; AutoTokenizer.from_pretrained('bert-base-uncased')" || true) && \
+        python -c "from transformers import BertForMaskedLM; from melo.api import TTS; print('MeloTTS package ready')"; \
     fi
 
 # Ensure cache dir exists so COPY --from=builder never fails
