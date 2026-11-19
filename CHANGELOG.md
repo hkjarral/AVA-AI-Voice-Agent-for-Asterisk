@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Local AI dependency security:** update Torch, TorchAudio, Transformers, and Hugging Face Hub together. Constrain optional backend installs to the shared pins and align MeloTTS package metadata with the patched Transformers version.
+- **Local AI dependency security:** update Torch, TorchAudio, Transformers, and Hugging Face Hub together. Constrain optional backend installs to the shared pins and keep MeloTTS synthesis and T-one builds compatible with the patched dependency set.
 - Run branch-based CI on `main` and validate release candidates at an exact
   commit on `main` as part of retiring the legacy development branches.
 
