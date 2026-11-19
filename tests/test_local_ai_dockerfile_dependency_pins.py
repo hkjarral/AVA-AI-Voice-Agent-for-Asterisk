@@ -64,6 +64,21 @@ def test_optional_native_dependency_pins_have_one_source_of_truth() -> None:
         assert not re.search(r"pip install[^\n]*torchaudio(?:==|>=)", content), dockerfile
 
 
+def test_optional_model_installs_cannot_replace_shared_versions() -> None:
+    for dockerfile in DOCKERFILES:
+        content = dockerfile.read_text(encoding="utf-8")
+        assert (
+            "grep -E '^(torch|torchaudio|transformers|huggingface-hub)==' requirements.txt"
+            " > /tmp/aava-model-constraints.txt"
+        ) in content, dockerfile
+        constraints = content.index("ENV PIP_CONSTRAINT=/tmp/aava-model-constraints.txt")
+        assert constraints < content.index("RUN pip install"), dockerfile
+        melo_pin = content.index('sed -i "s/^transformers==.*/$TRANSFORMERS_REQUIREMENT/" requirements.txt')
+        melo_install = content.index("pip install --no-cache-dir -r requirements.filtered.txt")
+        assert melo_pin < melo_install, dockerfile
+        assert '(python -m unidic download || true) &&' in content, dockerfile
+
+
 def test_cpu_image_uses_cpu_only_pytorch_wheels() -> None:
     content = (LOCAL_AI_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert content.count("https://download.pytorch.org/whl/cpu") >= 3

@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **CPU model compatibility:** update Transformers and Hugging Face Hub together with a matching Torch/Torchaudio 2.11.0 pair so Kokoro imports and Albert inference remain compatible.
+- **Local AI dependency security:** update Torch, TorchAudio, Transformers, and Hugging Face Hub together. Constrain optional backend installs to the shared pins and align MeloTTS package metadata with the patched Transformers version.
 - Run branch-based CI on `main` and validate release candidates at an exact
   commit on `main` as part of retiring the legacy development branches.
 
