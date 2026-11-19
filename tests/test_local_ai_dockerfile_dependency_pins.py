@@ -84,6 +84,19 @@ def test_cpu_image_uses_cpu_only_pytorch_wheels() -> None:
     assert content.count("https://download.pytorch.org/whl/cpu") >= 3
 
 
+def test_gpu_torch_install_stays_on_cuda_12() -> None:
+    content = (LOCAL_AI_ROOT / "Dockerfile.gpu").read_text(encoding="utf-8")
+    torch_installs = [
+        line for line in content.splitlines()
+        if 'pip install --no-cache-dir "$TORCH_REQUIREMENT"' in line
+    ]
+    assert len(torch_installs) == 3
+    assert all(
+        "--index-url https://download.pytorch.org/whl/cu126" in line
+        for line in torch_installs
+    )
+
+
 def test_gpu_image_includes_cudnn_for_faster_whisper() -> None:
     content = (LOCAL_AI_ROOT / "Dockerfile.gpu").read_text(encoding="utf-8")
     assert "12.4.1-cudnn-devel-ubuntu22.04" in content

@@ -51,6 +51,7 @@ RUN if [ -f "${CUDA_HOME}/lib64/stubs/libcuda.so" ] && [ ! -e "${CUDA_HOME}/lib6
 COPY requirements.txt .
 COPY requirements-base.txt .
 
+# Torch is installed from the CUDA 12.6 index for the existing CUDA 12 image.
 # Keep later optional-backend installs from replacing the shared model pins.
 RUN grep -E '^(torch|torchaudio|transformers|huggingface-hub)==' requirements.txt > /tmp/aava-model-constraints.txt
 ENV PIP_CONSTRAINT=/tmp/aava-model-constraints.txt
@@ -99,7 +100,7 @@ RUN if [ "$INCLUDE_KOKORO" = "true" ]; then \
         if [ -z "$KOKORO_REQUIREMENT" ]; then echo "❌ Missing kokoro pin" >&2; exit 1; fi; \
         if [ -z "$TORCH_REQUIREMENT" ]; then echo "❌ Missing torch pin" >&2; exit 1; fi; \
         if [ -z "$TRANSFORMERS_REQUIREMENT" ] || [ -z "$HF_HUB_REQUIREMENT" ]; then echo "❌ Missing transformers/huggingface-hub pins" >&2; exit 1; fi; \
-        pip install --no-cache-dir "$TORCH_REQUIREMENT" && \
+        pip install --no-cache-dir "$TORCH_REQUIREMENT" --index-url https://download.pytorch.org/whl/cu126 && \
         pip install --no-cache-dir "$TRANSFORMERS_REQUIREMENT" "$HF_HUB_REQUIREMENT" && \
         pip install --no-cache-dir "$KOKORO_REQUIREMENT"; \
     fi
@@ -112,7 +113,7 @@ RUN if [ "$INCLUDE_MELOTTS" = "true" ]; then \
         TORCH_REQUIREMENT="$(grep -m 1 '^torch==' /usr/src/app/requirements.txt || true)" && \
         TORCHAUDIO_REQUIREMENT="$(grep -m 1 '^torchaudio==' /usr/src/app/requirements.txt || true)" && \
         if [ -z "$TORCH_REQUIREMENT" ] || [ -z "$TORCHAUDIO_REQUIREMENT" ]; then echo "❌ Missing torch/torchaudio pins" >&2; exit 1; fi && \
-        if ! python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torch') else 1)"; then pip install --no-cache-dir "$TORCH_REQUIREMENT"; fi && \
+        if ! python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torch') else 1)"; then pip install --no-cache-dir "$TORCH_REQUIREMENT" --index-url https://download.pytorch.org/whl/cu126; fi && \
         if ! python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torchaudio') else 1)"; then pip install --no-cache-dir "$TORCHAUDIO_REQUIREMENT"; fi && \
         TRANSFORMERS_REQUIREMENT="$(grep -m 1 '^transformers==' /usr/src/app/requirements.txt)" && \
         sed -i "s/^transformers==.*/$TRANSFORMERS_REQUIREMENT/" requirements.txt && \
@@ -135,7 +136,7 @@ RUN if [ "$INCLUDE_SILERO" = "true" ]; then \
         TORCH_REQUIREMENT="$(grep -m 1 '^torch==' requirements.txt || true)"; \
         if [ -z "$TORCH_REQUIREMENT" ]; then echo "❌ Missing torch pin" >&2; exit 1; fi; \
         if ! python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torch') else 1)"; then \
-            pip install --no-cache-dir "$TORCH_REQUIREMENT"; \
+            pip install --no-cache-dir "$TORCH_REQUIREMENT" --index-url https://download.pytorch.org/whl/cu126; \
         fi && \
         pip install --no-cache-dir omegaconf && \
         echo "📦 Pre-caching Silero Russian model (best effort)..." && \
