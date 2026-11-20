@@ -36,7 +36,7 @@ google-api-python-client>=2.201.0
 
 # Microsoft Calendar device-code OAuth and cross-process token-cache locking
 msal>=1.39.0
-portalocker>=2.8.0
+portalocker>=4.4.2
 
 # Decode and normalize operator-uploaded Agent avatars.
 Pillow==13.0.0
