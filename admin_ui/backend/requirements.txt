@@ -31,7 +31,7 @@ openpyxl==3.1.5
 #
 # Keep minimum-version ranges for operator-selected compatible releases. The
 # Admin API client floor is maintained independently from the engine manifest.
-google-auth>=2.0.0
+google-auth>=2.62.2
 google-api-python-client>=2.201.0
 
 # Microsoft Calendar device-code OAuth and cross-process token-cache locking
