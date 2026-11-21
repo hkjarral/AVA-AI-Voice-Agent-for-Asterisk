@@ -1,16 +1,9 @@
 """
 xAI Grok Voice Agent realtime provider implementation.
 
-This module integrates xAI's server-side Voice Agent WebSocket transport into
-the Asterisk AI Voice Agent. The default audio path is μ-law @ 8 kHz passthrough
-both inbound and outbound — Asterisk's native telephony format streams directly
-to xAI without resampling. A PCM16 fallback branch is preserved in code and
-gated by GrokProviderConfig.provider_input_encoding="linear16".
-
-xAI's Voice Agent API is OpenAI-Realtime-compatible at the wire level with three
-deviations: session.update uses the nested ``audio.{input,output}.format`` shape;
-the text-delta event is ``response.text.delta`` (not ``response.output_text.delta``);
-a 30-min session cap applies (we warn at 28 min and let xAI close cleanly).
+The default telephony path forwards 8 kHz μ-law caller audio to xAI and
+requests 24 kHz PCM16 assistant audio for conversion to the Asterisk target.
+Grok uses nested audio formats in session.update and emits text-delta aliases.
 
 # SYNC-WITH-OPENAI-REALTIME: This module is a structural sibling of
 # src/providers/openai_realtime.py. Bug fixes to shared logic (barge-in, audio
@@ -109,7 +102,7 @@ class GrokProvider(AIProviderInterface):
         self.set_provider_identity(provider_key=provider_key, provider_kind="grok")
         self.provider_key: str = provider_key
         self.config = config
-        self._session_started_ts: float = 0.0  # for 30-min session cap warning
+        self._session_started_ts: float = 0.0  # for the long-session warning
         self._session_warned_long_session: bool = False
         self.websocket: Optional[ClientConnection] = None
         self._receive_task: Optional[asyncio.Task] = None
@@ -2858,9 +2851,6 @@ class GrokProvider(AIProviderInterface):
                 except Exception:
                     logger.debug("Grok keepalive failed", call_id=self._call_id, exc_info=True)
                     break
-                # 30-min session cap warning: xAI closes the socket at the 30-min mark.
-                # Emit one structured warning at the configured threshold (default 28 min)
-                # so operators can correlate call drops with this documented limit.
                 self._maybe_warn_long_session()
         except asyncio.CancelledError:
             pass
@@ -2876,7 +2866,7 @@ class GrokProvider(AIProviderInterface):
             return
         self._session_warned_long_session = True
         logger.warning(
-            "Grok session approaching documented 30-min cap — xAI will close the socket soon",
+            "Grok session reached the configured long-session warning threshold",
             call_id=self._call_id,
             provider_key=self.provider_key,
             elapsed_seconds=int(elapsed),

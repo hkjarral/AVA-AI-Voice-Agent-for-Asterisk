@@ -563,3 +563,18 @@ def test_named_grok_instance_inherits_base_runtime_config():
     assert cfg.display_name == "Grok Three"
     assert cfg.speed == 1.25
     assert cfg.language_hint == "es-MX"
+
+
+@pytest.mark.parametrize("base_instance,expected", [(True, 1.15), (False, None)])
+def test_named_grok_speed_null_in_local_override(base_instance, expected):
+    from src.config.loaders import deep_merge_dicts
+
+    base = {"grok": {"speed": 1.15}}
+    if base_instance:
+        base["sales"] = {"type": "grok", "speed": 1.3}
+    providers = deep_merge_dicts(base, {"sales": {"type": "grok", "speed": None}})
+    engine = Engine.__new__(Engine)
+    engine.config = SimpleNamespace(providers=providers, llm=LLMConfig())
+    cfg = engine._build_grok_config(providers["sales"], "sales")
+    assert cfg is not None
+    assert cfg.speed == expected

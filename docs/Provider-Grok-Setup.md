@@ -104,7 +104,7 @@ normal telephony output conversion remains 24 kHz PCM16 → 8 kHz μ-law.
 
 ## Speech settings
 
-Open **Providers → Settings** on the Grok instance, or add these optional fields to its YAML block. Apply the configuration and start a new call. Named instances inherit missing fields from the canonical `providers.grok` block. Put customer-specific terms and pronunciations on the named instance to keep them scoped to that customer.
+Open **Providers → Settings** on the Grok instance. The model picker offers the latest alias and the versioned `grok-voice-3.0` pin, and displays previously saved model IDs. Use the speech controls in the same form, or add these optional fields to its YAML block. Apply the configuration and start a new call. Named instances inherit missing fields from the canonical `providers.grok` block. Put customer-specific terms and pronunciations on the named instance to keep them scoped to that customer.
 
 ```yaml
 providers:
@@ -125,7 +125,9 @@ providers:
 | `language_hint` | `audio.input.transcription.language_hint` | Use a supported BCP-47 tag. Spanish and Portuguese require regional forms. xAI falls back to auto-detection for unrecognized codes. |
 | `pronunciation_replacements` | `replace` | Phrase-to-spoken-text map. xAI applies whole-word, case-insensitive substitutions during synthesis and retains the original transcript. Enter a JSON object in Admin. |
 
-Clearing an override restores inheritance. AVA omits each field from the session when it has no configured value. Configuration loading warns about unrecognized Grok provider keys and unrecognized `turn_detection` keys by name. Other providers retain their existing validation because modular adapters accept provider-specific options.
+Resetting a setting in Admin removes the instance override. In YAML, an absent instance key inherits the canonical Grok value. When the instance exists in the base file, a local override of `speed: null` deletes its speed key during the merge and restores inheritance. For an instance defined entirely in the local file, that same null is retained and AVA omits speed from the xAI session. Delete the key from that local-only instance to inherit speed.
+
+Configuration loading warns about unrecognized Grok provider keys and unrecognized `turn_detection` keys by name. Other providers retain their existing validation because modular adapters accept provider-specific options.
 
 **Inactivity and reconnects.** Use AVA’s `no_input` policy for check-ins and hangup. xAI’s `turn_detection.idle_timeout_ms` would re-arm after each response and could overlap AVA’s check-in and grace timer. AVA therefore leaves the xAI timer unset. On reconnect, AVA reapplies speech settings to a fresh session. Enabling xAI resumption would also require retaining the call’s xAI conversation ID, reconnecting with it and handling replayed items alongside in-flight tool calls. Session resumption is deferred. [xAI Speech to Speech](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech)
 
@@ -148,8 +150,8 @@ Entries in `extra_tools` are forwarded verbatim into the `session.update.tools` 
 
 ## Known limits
 
-- **Long sessions.** xAI's current [Voice Agent model page](https://docs.x.ai/developers/models/voice-agent-api) lists a 120-minute maximum session. AAVA retains a conservative warning threshold of 1680 seconds (28 minutes) for compatibility with older xAI limits and deployments; it is a warning, not the current documented hard cap. Set `session_warn_after_seconds: 0` to disable it. Provider/socket closure still uses normal call teardown.
-- **100 concurrent sessions per team** (xAI account-level limit, not enforced by AAVA).
+- **Long sessions.** xAI's current [Voice Agent model page](https://docs.x.ai/developers/models/speech-to-speech) lists a 120-minute maximum session. AAVA retains a conservative warning threshold of 1680 seconds (28 minutes) for compatibility with older xAI limits and deployments; it is a warning, not the current documented hard cap. Set `session_warn_after_seconds: 0` to disable it. Provider/socket closure still uses normal call teardown.
+- xAI lists a standard concurrency limit of 10 sessions per team. [Speech to Speech limits](https://docs.x.ai/developers/models/speech-to-speech)
 - **Voice cloning workflow** is not in the admin UI; clone voices in your xAI workspace and paste the resulting voice ID into the `voice` field.
 
 ## Verification
@@ -181,7 +183,7 @@ Grok tool call received ... tool=<your_tool>
 
 ## Pricing
 
-xAI's published rate is $3/hr per session (`$0.05/min`). Materially cheaper than OpenAI Realtime. See [xAI pricing](https://docs.x.ai/developers/pricing) for current rates.
+xAI meters server-VAD audio by session duration and bills eligible client text messages separately. As of November 21, 2026, the published rates are $0.08 per audio minute and $0.004 per billable text message. [Current xAI rates and exclusions](https://docs.x.ai/developers/models/speech-to-speech)
 
 ## Troubleshooting
 

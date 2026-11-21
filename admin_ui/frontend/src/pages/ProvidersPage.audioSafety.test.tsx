@@ -54,7 +54,11 @@ describe('ProvidersPage provider save contracts', () => {
 
     it('validates, saves and clears speech overrides on a named Grok instance', async () => {
         mocks.config = {
-            providers: { sales_realtime: { type: 'grok', enabled: true, voice: 'ara', capabilities: ['stt', 'llm', 'tts'] } },
+            providers: {
+                grok: { type: 'grok', speed: 0.85, turn_detection: { silence_duration_ms: 900, threshold: 0.7 } },
+                sales_realtime: { type: 'grok', enabled: true, voice: 'ara', model: 'grok-voice-think-fast-1.0',
+                    response_modalities: ['audio'], capabilities: ['stt', 'llm', 'tts'] },
+            },
             default_provider: 'sales_realtime',
         };
         vi.mocked(axios.post).mockImplementation(async (url, body) => {
@@ -74,6 +78,14 @@ describe('ProvidersPage provider save contracts', () => {
         const save = () => fireEvent.click(dialog.getByRole('button', { name: 'Save Changes' }));
         const saved = () => (mocks.config.providers as Record<string, Record<string, unknown>>).sales_realtime;
 
+        expect(dialog.getByRole('combobox', { name: 'Model' })).toHaveValue('grok-voice-think-fast-1.0');
+        expect(dialog.getByRole('option', { name: /grok-voice-3.0/ })).toBeInTheDocument();
+        expect(dialog.getByText('0.85× (inherited)')).toBeInTheDocument();
+        expect(dialog.queryByText('Response Modalities')).not.toBeInTheDocument();
+        expect(dialog.getByLabelText('Silence (ms)')).toHaveValue(900);
+        edit(/Prefix Padding/, '450');
+        edit(/Provider Output Encoding/, 'ulaw');
+        expect(dialog.getByLabelText('Provider Output Sample Rate (Hz)')).toHaveValue(8000);
         edit(/Playback speed/, '1.25');
         edit(/Reasoning effort/, 'none');
         edit(/Transcription language hint/, 'es-MX');
@@ -83,6 +95,11 @@ describe('ProvidersPage provider save contracts', () => {
         expect(mocks.toastError).toHaveBeenCalledWith(expect.stringMatching(/pronunciation replacements/i));
         expect(axios.post).not.toHaveBeenCalledWith('/api/config/yaml', expect.anything());
         edit(/Pronunciation replacements/, '{"Acme":"Ack-mee"}');
+        vi.mocked(axios.post).mockRejectedValueOnce(new Error('Save rejected'));
+        save();
+        await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('Failed to save configuration', expect.anything()));
+        expect(dialog.getByLabelText(/Transcription keyterms/)).toHaveValue('Acme\nSan José');
+        expect(saved()).not.toHaveProperty('keyterms');
         save();
         await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
         expect(saved()).toMatchObject({
@@ -101,7 +118,10 @@ describe('ProvidersPage provider save contracts', () => {
         for (const field of ['speed', 'reasoning_effort', 'language_hint', 'keyterms', 'pronunciation_replacements']) {
             expect(saved()).not.toHaveProperty(field);
         }
-        expect(saved().voice).toBe('ara');
+        expect(saved()).toMatchObject({
+            voice: 'ara', model: 'grok-voice-think-fast-1.0', response_modalities: ['audio'],
+            turn_detection: { silence_duration_ms: 900, threshold: 0.7, prefix_padding_ms: 450 },
+        });
     });
 
     it.each([

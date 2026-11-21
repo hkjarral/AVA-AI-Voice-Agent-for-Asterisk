@@ -7,7 +7,7 @@ Focus areas (highest-value first):
 2. Audio passthrough — verify μ-law direct path does NOT resample.
 3. Event alias handling — ``response.text.delta`` is xAI's text-delta name.
 4. provider_key propagation — multi-instance support.
-5. 30-min session cap — warning emission at the configured threshold.
+5. Long sessions — warning emission at the configured threshold.
 """
 
 import asyncio
@@ -410,7 +410,7 @@ async def test_start_session_raises_without_api_key(grok_config):
 
 
 # --------------------------------------------------------------------------- #
-# 5. 30-min session cap warning                                                #
+# 5. Long-session warning                                                      #
 # --------------------------------------------------------------------------- #
 
 

@@ -637,7 +637,7 @@ For ElevenLabs full-agent deployments, also follow the provider-side client-even
 ### xAI Grok Voice Agent (monolithic agent, NEW in v6.5.2)
 
 - providers.grok.api_key: injected from `XAI_API_KEY` (env-only legacy fallback for single-instance setups). Multi-instance deployments should use per-instance `api_key_file: /app/project/secrets/providers/<provider_key>/api-key` instead — never commit secrets to YAML.
-- providers.grok.model: `grok-voice-latest` (default; xAI's only published Voice Agent model as of v6.5.2).
+- providers.grok.model: `grok-voice-latest` tracks the current model. Use `grok-voice-3.0` to pin the version.
 - providers.grok.voice: One of `eve`, `ara`, `rex`, `sal`, `leo`, or a custom cloned-voice ID from your xAI workspace.
 - providers.grok.instructions / greeting: Persona override + explicit greeting. Leave empty to inherit `llm.prompt` / `llm.initial_greeting`.
 - providers.grok.input_encoding / input_sample_rate_hz: AudioSocket inbound format. Default `ulaw` @ 8 kHz (matches Asterisk telephony format with no resampling).
@@ -646,6 +646,7 @@ For ElevenLabs full-agent deployments, also follow the provider-side client-even
 - providers.grok.target_encoding / target_sample_rate_hz: Caller-facing Asterisk transport target. Default `ulaw` @ 8 kHz.
 - providers.grok.turn_detection: Server-side VAD (default `server_vad` with `threshold: 0.5`, `silence_duration_ms: 600`, `prefix_padding_ms: 300`). Named Grok instances inherit the canonical `grok` runtime block before applying instance overrides.
 - providers.grok.session_warn_after_seconds: Conservative long-session warning threshold (default `1680` = 28 minutes; set to `0` to disable). xAI's current model page lists a 120-minute maximum; the earlier warning remains for compatibility and is not a statement of the current provider limit.
+- Optional Grok speech settings include `speed`, `reasoning_effort`, `keyterms`, `language_hint` and `pronunciation_replacements`. All five are available in the provider editor. [Fields, limits and YAML example](Provider-Grok-Setup.md#speech-settings)
 - providers.grok.extra_tools: YAML escape hatch for xAI-native tools (`web_search`, `x_search`, `file_search`, `mcp`) not exposed in the Admin UI. Forwarded verbatim into `session.update.tools`. See [docs/Provider-Grok-Setup.md](Provider-Grok-Setup.md).
 - providers.grok.display_name / customer: Free-text labels surfaced in the Admin UI and call-history attribution. Used to identify multi-instance deployments.
 

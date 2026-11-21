@@ -1030,7 +1030,7 @@ class GrokProviderConfig(CloudConnectionConfig, GrokSessionSettings):
 
     The Voice Agent API is OpenAI-Realtime-compatible at the wire level with
     minor deviations (nested audio.{input,output}.format shape; ``response.text.delta``
-    event naming; 30-min session cap). This config models the xAI-native shape
+    event naming). This config models the xAI-native shape
     directly; the OpenAI provider is NOT reused. See Provider-Grok-Setup.md.
     """
 
@@ -1075,7 +1075,7 @@ class GrokProviderConfig(CloudConnectionConfig, GrokSessionSettings):
     # YAML escape hatch for xAI-native tools (file_search, web_search, x_search, mcp).
     # Each entry is sent as-is in session.update.tools, appended after function tools.
     extra_tools: List[Dict[str, Any]] = Field(default_factory=list)
-    # 30-min session cap: warn at this elapsed second count
+    # Operator warning threshold in seconds (0 disables).
     session_warn_after_seconds: int = Field(default=28 * 60)
 
     class TurnDetectionConfig(BaseModel):

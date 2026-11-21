@@ -241,13 +241,13 @@ providers:
     voice: "alloy"
     base_url: "wss://api.openai.com/v1/realtime"
   # xAI Grok Voice Agent — full-agent realtime provider with native μ-law support.
-  # 30-min hard session cap (we log a warning at 28 min and let xAI close cleanly).
+  # AVA logs a long-session warning at 28 minutes by default.
   # Single-instance config: provider key == kind. See docs/Provider-Grok-Setup.md.
   grok:
     enabled: true
     api_key: "${XAI_API_KEY}"
     base_url: "wss://api.x.ai/v1/realtime"
-    model: "grok-voice-latest"  # or grok-voice-think-fast-1.0 (flagship)
+    model: "grok-voice-latest"  # or pin grok-voice-3.0
     voice: "eve"  # named: eve|ara|rex|sal|leo, or a custom cloned voice ID
     # Input: μ-law @ 8 kHz passthrough (no resample) — matches Asterisk's native telephony.
     # Output: PCM16 @ 24 kHz — xAI emits 24 kHz PCM16 regardless of what we declare in
@@ -261,7 +261,7 @@ providers:
     output_sample_rate_hz: 24000
     target_encoding: "ulaw"
     target_sample_rate_hz: 8000
-    session_warn_after_seconds: 1680  # 28 min — warn before 30-min hard cap
+    session_warn_after_seconds: 1680  # 28-minute AVA warning threshold
     # Optional speech controls (also editable in Admin). Omit to use xAI defaults.
     # speed: 1.15
     # reasoning_effort: none
