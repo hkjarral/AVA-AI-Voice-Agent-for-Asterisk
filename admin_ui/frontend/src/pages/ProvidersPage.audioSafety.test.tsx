@@ -40,7 +40,7 @@ vi.mock('../utils/configCache', () => ({
     loadConfigYaml: mocks.loadConfigYaml,
 }));
 
-describe('ProvidersPage OpenAI Realtime save contract', () => {
+describe('ProvidersPage provider save contracts', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         mocks.confirm.mockResolvedValue(true);
@@ -50,6 +50,58 @@ describe('ProvidersPage OpenAI Realtime save contract', () => {
         }));
         vi.mocked(axios.get).mockResolvedValue({ data: {} });
         vi.mocked(axios.post).mockResolvedValue({ data: {}, status: 200 });
+    });
+
+    it('validates, saves and clears speech overrides on a named Grok instance', async () => {
+        mocks.config = {
+            providers: { sales_realtime: { type: 'grok', enabled: true, voice: 'ara', capabilities: ['stt', 'llm', 'tts'] } },
+            default_provider: 'sales_realtime',
+        };
+        vi.mocked(axios.post).mockImplementation(async (url, body) => {
+            if (url === '/api/config/yaml') {
+                mocks.config = yaml.load((body as { content: string }).content) as Record<string, unknown>;
+            }
+            return { data: {}, status: 200 };
+        });
+        render(<MemoryRouter><ProvidersPage /></MemoryRouter>);
+        const open = async () => {
+            fireEvent.click(await screen.findByRole('button', { name: 'Settings for sales_realtime' }));
+            return within(await screen.findByRole('dialog', { name: 'Edit Provider: sales_realtime' }));
+        };
+        let dialog = await open();
+        const edit = (label: RegExp, value: string) =>
+            fireEvent.change(dialog.getByLabelText(label), { target: { value } });
+        const save = () => fireEvent.click(dialog.getByRole('button', { name: 'Save Changes' }));
+        const saved = () => (mocks.config.providers as Record<string, Record<string, unknown>>).sales_realtime;
+
+        edit(/Playback speed/, '1.25');
+        edit(/Reasoning effort/, 'none');
+        edit(/Transcription language hint/, 'es-MX');
+        edit(/Transcription keyterms/, 'Acme\nSan José');
+        edit(/Pronunciation replacements/, '{"Acme":');
+        save();
+        expect(mocks.toastError).toHaveBeenCalledWith(expect.stringMatching(/pronunciation replacements/i));
+        expect(axios.post).not.toHaveBeenCalledWith('/api/config/yaml', expect.anything());
+        edit(/Pronunciation replacements/, '{"Acme":"Ack-mee"}');
+        save();
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+        expect(saved()).toMatchObject({
+            speed: 1.25, reasoning_effort: 'none', language_hint: 'es-MX',
+            keyterms: ['Acme', 'San José'], pronunciation_replacements: { Acme: 'Ack-mee' }, voice: 'ara',
+        });
+        dialog = await open();
+        expect(dialog.getByLabelText(/Transcription keyterms/)).toHaveValue('Acme\nSan José');
+        fireEvent.click(dialog.getByRole('button', { name: 'Reset speed' }));
+        edit(/Reasoning effort/, '');
+        edit(/Transcription language hint/, '');
+        edit(/Transcription keyterms/, '');
+        edit(/Pronunciation replacements/, '');
+        save();
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+        for (const field of ['speed', 'reasoning_effort', 'language_hint', 'keyterms', 'pronunciation_replacements']) {
+            expect(saved()).not.toHaveProperty(field);
+        }
+        expect(saved().voice).toBe('ara');
     });
 
     it.each([

@@ -24,6 +24,7 @@ import OllamaProviderForm from '../components/config/providers/OllamaProviderFor
 import OpenAIRealtimeProviderForm from '../components/config/providers/OpenAIRealtimeProviderForm';
 import DeepgramProviderForm from '../components/config/providers/DeepgramProviderForm';
 import GoogleLiveProviderForm from '../components/config/providers/GoogleLiveProviderForm';
+import { grokSpeechSettingsForSave } from '../utils/grokSpeechSettings';
 import GrokProviderForm from '../components/config/providers/GrokProviderForm';
 import OpenAIProviderForm from '../components/config/providers/OpenAIProviderForm';
 import ElevenLabsProviderForm from '../components/config/providers/ElevenLabsProviderForm';
@@ -699,6 +700,14 @@ const ProvidersPage: React.FC = () => {
             // stale Beta audio pair after the operator switches to GA.
             providerData = enforceOpenAIRealtimeGaAudioContract(providerData);
         }
+        if (fullAgentKind === 'grok') {
+            try {
+                Object.assign(providerData, grokSpeechSettingsForSave(providerData));
+            } catch (error) {
+                toast.error(error instanceof Error ? error.message : 'Invalid Grok speech settings.');
+                return;
+            }
+        }
         if (fullAgentKind === 'deepgram') {
             const listenModel = String(providerData.model || 'nova-3').trim().toLowerCase();
             if (listenModel === 'nova-3' || listenModel === 'nova-2-phonecall') {
@@ -868,6 +877,12 @@ const ProvidersPage: React.FC = () => {
             return <GenericProviderForm config={providerForm} onChange={updateForm} isNew={isNewProvider} />;
         }
 
+        // Match the save path for named Grok instances, including keys such as sales_realtime.
+        const credKey = isNewProvider ? undefined : (editingProvider || undefined);
+        if (getEffectiveFullAgentKind(providerForm, providerName) === 'grok') {
+            return <GrokProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
+        }
+
         // Local provider (including full agent mode) uses LocalProviderForm
         if (providerForm.type === 'local' || providerName === 'local' || providerName.includes('local')) {
             return <LocalProviderForm config={providerForm} onChange={updateForm} />;
@@ -877,7 +892,6 @@ const ProvidersPage: React.FC = () => {
         // This ensures Deepgram, Google Live, etc. use their specific forms
         // Per-instance credentials require a saved YAML entry; pass `editingProvider`
         // when editing an existing provider, undefined for unsaved new ones.
-        const credKey = isNewProvider ? undefined : (editingProvider || undefined);
         if (providerName === 'deepgram' || providerName.includes('deepgram')) {
             return <DeepgramProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
         }
@@ -889,9 +903,6 @@ const ProvidersPage: React.FC = () => {
         }
         if (providerName === 'openai_realtime' || providerName.includes('realtime')) {
             return <OpenAIRealtimeProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
-        }
-        if (providerName === 'grok' || providerName.includes('grok') || providerForm.type === 'grok') {
-            return <GrokProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
         }
         if (providerName.includes('elevenlabs')) {
             return <ElevenLabsProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
@@ -908,8 +919,6 @@ const ProvidersPage: React.FC = () => {
                 return <DeepgramProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
             case 'google_live':
                 return <GoogleLiveProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
-            case 'grok':
-                return <GrokProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
             case 'openai':
                 return <OpenAIProviderForm config={providerForm} onChange={updateForm} />;
             case 'elevenlabs_agent':

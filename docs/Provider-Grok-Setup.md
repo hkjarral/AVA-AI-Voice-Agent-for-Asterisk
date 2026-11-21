@@ -90,8 +90,9 @@ normal telephony output conversion remains 24 kHz PCM16 → 8 kHz μ-law.
 
 ## Barge-in and platform announcements
 
-- xAI server VAD is the primary turn detector. `turn_detection` controls the
-  threshold, prefix padding, and end-of-turn silence.
+- xAI server VAD is the primary turn detector. AVA continues to forward the legacy
+  threshold, prefix padding and silence duration fields for compatibility. xAI’s
+  session parameter table does not specify their effects.
 - ExternalMedia also enables AVA's local fallback so caller speech can flush
   caller-facing and provider-side buffers before the xAI interruption event.
   Cancelled deltas are discarded until the replacement response.
@@ -100,6 +101,33 @@ normal telephony output conversion remains 24 kHz PCM16 → 8 kHz μ-law.
 - Caller-inactivity check-ins use xAI's interruptible `force_message` item. It
   speaks the configured text verbatim and supplies a normal response lifecycle;
   AVA waits for generated audio to drain before starting grace or hangup.
+
+## Speech settings
+
+Open **Providers → Settings** on the Grok instance, or add these optional fields to its YAML block. Apply the configuration and start a new call. Named instances inherit missing fields from the canonical `providers.grok` block. Put customer-specific terms and pronunciations on the named instance to keep them scoped to that customer.
+
+```yaml
+providers:
+  sales:
+    type: grok
+    speed: 1.15
+    reasoning_effort: none
+    keyterms: ["Acme Mobile", "San José"]
+    language_hint: es-MX
+    pronunciation_replacements: {"Acme Mobile": "Ack-mee Mobile"}
+```
+
+| YAML field | xAI session parameter | Behavior |
+| --- | --- | --- |
+| `speed` | `audio.output.speed` | 0.7–1.5× playback speed. xAI defaults to 1.0. The PCM fallback retains the configured speed. |
+| `reasoning_effort` | `reasoning.effort` | `high` (xAI default) or `none`. |
+| `keyterms` | `audio.input.transcription.keyterms` | Up to 100 recognition hints, each up to 50 characters. Enter one per line in Admin. |
+| `language_hint` | `audio.input.transcription.language_hint` | Use a supported BCP-47 tag. Spanish and Portuguese require regional forms. xAI falls back to auto-detection for unrecognized codes. |
+| `pronunciation_replacements` | `replace` | Phrase-to-spoken-text map. xAI applies whole-word, case-insensitive substitutions during synthesis and retains the original transcript. Enter a JSON object in Admin. |
+
+Clearing an override restores inheritance. AVA omits each field from the session when it has no configured value. Configuration loading warns about unrecognized Grok provider keys and unrecognized `turn_detection` keys by name. Other providers retain their existing validation because modular adapters accept provider-specific options.
+
+**Inactivity and reconnects.** Use AVA’s `no_input` policy for check-ins and hangup. xAI’s `turn_detection.idle_timeout_ms` would re-arm after each response and could overlap AVA’s check-in and grace timer. AVA therefore leaves the xAI timer unset. On reconnect, AVA reapplies speech settings to a fresh session. Enabling xAI resumption would also require retaining the call’s xAI conversation ID, reconnecting with it and handling replayed items alongside in-flight tool calls. Session resumption is deferred. [xAI Speech to Speech](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech)
 
 ## Tool calling
 

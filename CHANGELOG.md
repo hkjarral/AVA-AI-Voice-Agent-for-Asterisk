@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Grok providers can set playback speed, reasoning effort, transcription hints and spoken pronunciation replacements in YAML or Admin. The PCM fallback preserves playback speed, and the config loader reports unrecognized Grok field names (#886).
 - **SenseVoice STT in Sherpa offline mode** ([#407](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/407)): `stt_backend=sherpa` with `sherpa_model_type=offline` now auto-detects SenseVoice model directories (`model*.onnx` + `tokens.txt`) and loads them through the bundled `sherpa-onnx`, with no new dependencies. New `SHERPA_SENSE_VOICE_LANGUAGE` (`auto|zh|en|ja|ko|yue`) and `SHERPA_SENSE_VOICE_USE_ITN` settings are available in the Models page, Environment page and Health widget (the Local Provider editor links to these global controls), are persisted to `.env`/YAML, are verified after a switch even when the model path is unchanged, and roll back on failure. Runtime status reports the model family and effective settings. Models without SenseVoice metadata are rejected with a diagnostic before native loading instead of terminating the server. Emotion and audio-event tags are kept out of transcripts. Catalog adds the int8 SenseVoiceSmall export (zh/en/ja/ko/yue); applying it from the Models page selects offline mode unless an operator chose a mode.
 
 ### Changed

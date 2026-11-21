@@ -1112,15 +1112,21 @@ class GrokProvider(AIProviderInterface):
         base = base.rstrip("/")
         return f"{base}?model={self.config.model}"
 
+    def _audio_output_config(self, mime_type: str, rate: int) -> Dict[str, Any]:
+        output: Dict[str, Any] = {"format": {"type": mime_type, "rate": rate}}
+        if self.config.speed is not None:
+            output["speed"] = self.config.speed
+        return output
+
     async def _send_session_update(self):
         """Build and send the xAI Grok session.update payload.
 
-        xAI shape (per https://docs.x.ai/developers/model-capabilities/audio/voice-agent):
+        xAI shape (per https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech):
           - voice, instructions, turn_detection at session level
           - audio.{input,output}.format with MIME type ("audio/pcm" / "audio/pcmu" /
             "audio/pcma") and rate
           - tools array (function tools + optional xAI-native extras)
-        No ``transcription``, no ``output_modalities``, no GA/Beta dialect branching.
+        Optional transcription hints belong under audio.input.transcription.
         """
         output_enc = (self.config.output_encoding or "ulaw").lower()
         input_enc = (getattr(self.config, "provider_input_encoding", None) or "ulaw").lower()
@@ -1145,9 +1151,17 @@ class GrokProvider(AIProviderInterface):
             "voice": self._session_voice or self.config.voice,
             "audio": {
                 "input":  {"format": {"type": in_fmt_type,  "rate": in_rate}},
-                "output": {"format": {"type": out_fmt_type, "rate": out_rate}},
+                "output": self._audio_output_config(out_fmt_type, out_rate),
             },
         }
+
+        transcription = self.config.model_dump(include={"keyterms", "language_hint"}, exclude_none=True)
+        if transcription:
+            session["audio"]["input"]["transcription"] = transcription
+        if self.config.reasoning_effort is not None:
+            session["reasoning"] = {"effort": self.config.reasoning_effort}
+        if self.config.pronunciation_replacements is not None:
+            session["replace"] = self.config.pronunciation_replacements
 
         # turn_detection at session level (xAI shape, NOT nested under audio.input)
         td_config: Dict[str, Any] = {
@@ -3289,7 +3303,7 @@ class GrokProvider(AIProviderInterface):
         except Exception:
             pass
         if self._is_ga:
-            pcm_session = {"audio": {"output": {"format": {"type": "audio/pcm", "rate": 24000}}}}
+            pcm_session = {"audio": {"output": self._audio_output_config("audio/pcm", 24000)}}
         else:
             pcm_session = {"output_audio_format": "pcm16"}
         payload: Dict[str, Any] = {

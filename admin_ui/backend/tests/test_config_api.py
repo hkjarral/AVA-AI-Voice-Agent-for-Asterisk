@@ -90,6 +90,19 @@ def test_config_validation_rejects_non_finite_provider_numbers(value):
     assert "providers.google_live.input_gain_max_db" in str(exc_info.value.detail)
 
 
+def test_yaml_validation_rejects_invalid_named_grok_setting_without_values():
+    parsed = yaml.safe_load(Path(config.settings.CONFIG_PATH).read_text())
+    parsed["providers"]["sales"] = {
+        "type": "grok",
+        "pronunciation_replacements": {"private-phrase": ["private-value"]},
+    }
+    with pytest.raises(HTTPException) as exc_info:
+        config._validate_ai_agent_config(yaml.safe_dump(parsed))
+    assert exc_info.value.status_code == 400
+    assert "providers.sales.pronunciation_replacements" in exc_info.value.detail
+    assert "private-" not in exc_info.value.detail
+
+
 def test_get_config_reports_existing_non_finite_value_with_recovery_path(monkeypatch):
     monkeypatch.setattr(
         config,

@@ -530,6 +530,8 @@ def test_named_grok_instance_inherits_base_runtime_config():
         providers={
             "grok": {
                 "api_key": "base-key",
+                "speed": 1.25,
+                "language_hint": "ja",
                 "voice": "ara",
                 "turn_detection": {
                     "type": "server_vad",
@@ -547,6 +549,7 @@ def test_named_grok_instance_inherits_base_runtime_config():
             "type": "grok",
             "api_key": "instance-key",
             "display_name": "Grok Three",
+            "language_hint": "es-MX",
         },
         "grok3",
     )
@@ -558,3 +561,5 @@ def test_named_grok_instance_inherits_base_runtime_config():
     assert cfg.turn_detection.silence_duration_ms == 1000
     assert cfg.turn_detection.prefix_padding_ms == 300
     assert cfg.display_name == "Grok Three"
+    assert cfg.speed == 1.25
+    assert cfg.language_hint == "es-MX"

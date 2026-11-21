@@ -262,6 +262,12 @@ providers:
     target_encoding: "ulaw"
     target_sample_rate_hz: 8000
     session_warn_after_seconds: 1680  # 28 min — warn before 30-min hard cap
+    # Optional speech controls (also editable in Admin). Omit to use xAI defaults.
+    # speed: 1.15
+    # reasoning_effort: none
+    # keyterms: ["Acme Mobile"]
+    # language_hint: es-MX
+    # pronunciation_replacements: {"Acme Mobile": "Ack-mee Mobile"}
     # Advanced (YAML-only): xAI-native tools (web_search, x_search, file_search, MCP).
     # Each entry is forwarded verbatim into session.update.tools.
     # extra_tools:

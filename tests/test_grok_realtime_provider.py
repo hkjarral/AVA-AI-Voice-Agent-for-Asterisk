@@ -15,6 +15,7 @@ import json
 import time
 import types
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -117,6 +118,16 @@ async def test_session_update_payload_shape_ulaw_default(provider):
     assert "modalities" not in session
     assert "output_modalities" not in session
 
+    assert "speed" not in session["audio"]["output"]
+    assert "transcription" not in session["audio"]["input"]
+    assert {"speed", "reasoning", "replace", "resumption"}.isdisjoint(session)
+    assert "idle_timeout_ms" not in session["turn_detection"]
+
+    await provider._switch_to_pcm24k_output()
+    assert ws.parsed_events()[-1]["session"]["audio"] == {
+        "output": {"format": {"type": "audio/pcm", "rate": 24000}}
+    }
+
     # Instructions present
     assert "instructions" in session
     assert "Be helpful." in session["instructions"]
@@ -142,6 +153,43 @@ async def test_session_update_payload_shape_pcm_fallback(grok_config):
     assert session["audio"]["input"]["format"]["rate"] == 24000
     assert session["audio"]["output"]["format"]["type"] == "audio/pcm"
     assert session["audio"]["output"]["format"]["rate"] == 24000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("speed,effort", [(0.7, "high"), (1.5, "none")])
+async def test_grok_speech_settings_on_session_fallback_and_reconnect(grok_config, monkeypatch, speed, effort):
+    settings = {
+        "speed": speed, "reasoning_effort": effort, "keyterms": ["Acme"],
+        "language_hint": "es-MX", "pronunciation_replacements": {"Acme": "Ack-mee"},
+    }
+    cfg = GrokProviderConfig(**{**grok_config.model_dump(), **settings})
+    provider = GrokProvider(cfg, on_event=None)
+    provider._call_id = "test-call"
+    provider.websocket = ws = _RecordingWebSocket()
+
+    await provider._send_session_update()
+    session = ws.parsed_events()[0]["session"]
+    assert session["audio"] == {
+        "output": {"format": {"type": "audio/pcmu", "rate": 8000}, "speed": speed},
+        "input": {"format": {"type": "audio/pcmu", "rate": 8000},
+                  "transcription": {"keyterms": ["Acme"], "language_hint": "es-MX"}},
+    }
+    assert session["reasoning"] == {"effort": effort}
+    assert session["replace"] == {"Acme": "Ack-mee"}
+    assert settings.keys().isdisjoint(session)
+
+    await provider._switch_to_pcm24k_output()
+    assert ws.parsed_events()[-1]["session"]["audio"] == {
+        "output": {"format": {"type": "audio/pcm", "rate": 24000}, "speed": speed}
+    }
+
+    new_ws = _RecordingWebSocket()
+    monkeypatch.setattr("src.providers.grok.websockets.connect", AsyncMock(return_value=new_ws))
+    monkeypatch.setattr(provider, "_receive_loop", AsyncMock())
+    monkeypatch.setattr(provider, "_keepalive_loop", AsyncMock())
+    await provider._reconnect_with_backoff()
+    await asyncio.gather(provider._receive_task, provider._keepalive_task)
+    assert new_ws.parsed_events()[0]["session"] == session
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,11 @@
 """Multi-instance validation tests for the ``grok`` full-agent provider kind."""
 
 import pytest
+import yaml
+from pydantic import ValidationError
+from structlog.testing import capture_logs
+
+from src.config import GrokProviderConfig, load_config
 
 from src.config.normalization import ConfigValidationError, validate_providers
 from src.config.provider_instances import (
@@ -123,3 +128,40 @@ def test_context_routing_to_unknown_grok_key_fails():
     }
     with pytest.raises(ConfigValidationError):
         validate_providers(config_data)
+
+@pytest.mark.parametrize("field,value", [
+    ("speed", 0.69), ("speed", 1.51), ("speed", True), ("speed", float("nan")),
+    ("reasoning_effort", "low"), ("keyterms", "not-a-list"),
+    ("keyterms", ["x"] * 101), ("keyterms", ["x" * 51]), ("keyterms", [" "]),
+    ("language_hint", "pt"), ("language_hint", "en us"),
+    ("pronunciation_replacements", ["value"]), ("pronunciation_replacements", {"Acme": 1}),
+])
+def test_reject_invalid_speech_setting(field, value):
+    with pytest.raises(ValidationError):
+        GrokProviderConfig(**{field: value})
+
+
+def test_grok_yaml_load_warns_only_about_unrecognized_keys(tmp_path, monkeypatch):
+    monkeypatch.setenv("ASTERISK_ARI_USERNAME", "test")
+    monkeypatch.setenv("ASTERISK_ARI_PASSWORD", "test")
+    path = tmp_path / "example.yaml"
+    speech = {
+        "speed": 1.0, "reasoning_effort": "high", "language_hint": "pt-BR",
+        "keyterms": ["x" * 50] * 100,
+        "pronunciation_replacements": {"Private name": "Private pronunciation"},
+    }
+    path.write_text(yaml.safe_dump({
+        "default_provider": "sales", "providers": {
+            "sales": {"type": "grok", "name": "sales", "capabilities": ["stt", "llm", "tts"],
+                      "speeed": "private-value", "turn_detection": {"idle_timeout_ms": 5000},
+                      **speech},
+        },
+    }))
+    with capture_logs() as logs:
+        loaded = load_config(str(path))
+    assert GrokProviderConfig(**loaded.providers["sales"]).keyterms == speech["keyterms"]
+    warnings = [entry for entry in logs if entry["event"] == "Unrecognized Grok configuration keys"]
+    assert len(warnings) == 1
+    assert warnings[0]["provider"] == "sales"
+    assert warnings[0]["keys"] == ["speeed", "turn_detection.idle_timeout_ms"]
+    assert "private" not in str(warnings).lower()

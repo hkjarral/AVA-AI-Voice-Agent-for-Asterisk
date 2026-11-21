@@ -203,6 +203,44 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                             />
                         )}
                     </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium" htmlFor="grok-speed">Playback speed</label>
+                        <div className="flex items-center gap-3">
+                            <input id="grok-speed" type="range" min="0.7" max="1.5" step="0.01"
+                                value={config.speed ?? 1}
+                                onChange={(e) => handleChange('speed', e.target.valueAsNumber)} />
+                            <span>{config.speed == null ? 'Inherited / xAI default' : `${config.speed}×`}</span>
+                            {config.speed != null && <button type="button" className="text-sm underline"
+                                onClick={() => handleChange('speed', undefined)}>Reset speed</button>}
+                        </div>
+                    </div>
+                    <label className="text-sm font-medium">Reasoning effort
+                        <select className="w-full p-2 rounded border border-input bg-background"
+                            value={config.reasoning_effort ?? ''}
+                            onChange={(e) => handleChange('reasoning_effort', e.target.value || undefined)}>
+                            <option value="">Inherited / xAI default</option>
+                            <option value="high">High</option>
+                            <option value="none">None</option>
+                        </select>
+                    </label>
+                    <label className="text-sm font-medium">Transcription language hint
+                        <input className="w-full p-2 rounded border border-input bg-background"
+                            placeholder="e.g. ja, es-MX, pt-BR" value={config.language_hint ?? ''}
+                            onChange={(e) => handleChange('language_hint', e.target.value || undefined)} />
+                    </label>
+                    <label className="text-sm font-medium">Transcription keyterms (one per line)
+                        <textarea className="w-full p-2 rounded border border-input bg-background" rows={3}
+                            placeholder="Up to 100 terms, 50 characters each"
+                            value={Array.isArray(config.keyterms) ? config.keyterms.join('\n') : config.keyterms ?? ''}
+                            onChange={(e) => handleChange('keyterms', e.target.value || undefined)} />
+                    </label>
+                    <label className="text-sm font-medium">Pronunciation replacements (JSON object)
+                        <textarea className="w-full p-2 rounded border border-input bg-background" rows={3}
+                            placeholder='{"Acme": "Ack-mee"}'
+                            value={typeof config.pronunciation_replacements === 'string'
+                                ? config.pronunciation_replacements : JSON.stringify(config.pronunciation_replacements ?? undefined, null, 2) ?? ''}
+                            onChange={(e) => handleChange('pronunciation_replacements', e.target.value || undefined)} />
+                    </label>
                 </div>
             </div>
 
@@ -543,24 +581,12 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
 
             <div>
                 <h4 className="font-semibold mb-3">Turn Detection (server VAD)</h4>
+                <p className="text-xs text-muted-foreground mb-3">
+                    AVA forwards these legacy VAD settings. xAI does not document their effect for Grok.
+                </p>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div className="space-y-2">
-                        <div className="flex items-center gap-1.5">
-                            <label className="text-sm font-medium">Threshold</label>
-                            <HelpTooltip
-                                content={
-                                    <>
-                                        <strong>VAD Threshold</strong> — voice activity detection sensitivity (0.1 to 0.9).
-                                        Default <code>0.5</code>.
-                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                            <li>Lower (e.g. <code>0.3</code>) — picks up quiet/soft callers, but may trigger on background noise</li>
-                                            <li>Higher (e.g. <code>0.7</code>) — ignores noisy environments, but may miss soft-spoken callers</li>
-                                        </ul>
-                                        Tune up for call-center floors, down for quiet office lines.
-                                    </>
-                                }
-                            />
-                        </div>
+                        <label className="text-sm font-medium">Threshold</label>
                         <input
                             type="number"
                             step="0.1"
@@ -572,21 +598,7 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                         />
                     </div>
                     <div className="space-y-2">
-                        <div className="flex items-center gap-1.5">
-                            <label className="text-sm font-medium">Silence (ms)</label>
-                            <HelpTooltip
-                                content={
-                                    <>
-                                        <strong>Silence Duration</strong> — how long of a silence before xAI considers
-                                        the caller's turn done and starts responding. Default <code>200</code> ms.
-                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                            <li>Lower (100–200 ms) — snappier, but may cut off slow speakers mid-sentence</li>
-                                            <li>Higher (400–800 ms) — more patient, but adds noticeable response latency</li>
-                                        </ul>
-                                    </>
-                                }
-                            />
-                        </div>
+                        <label className="text-sm font-medium">Silence (ms)</label>
                         <input
                             type="number"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -595,19 +607,7 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                         />
                     </div>
                     <div className="space-y-2">
-                        <div className="flex items-center gap-1.5">
-                            <label className="text-sm font-medium">Prefix Padding (ms)</label>
-                            <HelpTooltip
-                                content={
-                                    <>
-                                        <strong>Prefix Padding</strong> — how much audio before the detected speech-start
-                                        to include when sending the turn to xAI. Default <code>200</code> ms.
-                                        Prevents clipping the leading consonant of words like "yes" or "no". Raise
-                                        slightly (300–500 ms) if you hear cut-off word beginnings in transcripts.
-                                    </>
-                                }
-                            />
-                        </div>
+                        <label className="text-sm font-medium">Prefix Padding (ms)</label>
                         <input
                             type="number"
                             className="w-full p-2 rounded border border-input bg-background"
