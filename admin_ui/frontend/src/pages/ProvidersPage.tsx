@@ -1653,14 +1653,14 @@ const ProvidersPage: React.FC = () => {
                             {
                                 id: 'grok',
                                 name: 'xAI Grok Voice Agent',
-                                desc: 'Grok Voice (μ-law direct, 5 named voices, 30-min session cap)',
+                                desc: 'Grok Voice (μ-law direct, built-in and cloned voices)',
                                 doc: 'https://docs.x.ai/developers/model-capabilities/audio/voice-agent',
                                 tooltip: (
                                     <>
                                         <strong>xAI Grok Voice Agent</strong> — newest cloud option.
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                             <li>~5¢/min ($3/hr flat)</li>
-                                            <li>5 named voices (eve, ara, rex, sal, leo) + custom cloned IDs</li>
+                                            <li>Built-in xAI voices and custom cloned IDs</li>
                                             <li>μ-law direct @ 8 kHz — no resampling for telephony</li>
                                             <li>30-minute hard session cap (xAI limit)</li>
                                             <li>Multi-instance ready (per-tenant keys via secret files)</li>

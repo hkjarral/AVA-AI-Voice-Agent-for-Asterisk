@@ -638,7 +638,7 @@ For ElevenLabs full-agent deployments, also follow the provider-side client-even
 
 - providers.grok.api_key: injected from `XAI_API_KEY` (env-only legacy fallback for single-instance setups). Multi-instance deployments should use per-instance `api_key_file: /app/project/secrets/providers/<provider_key>/api-key` instead — never commit secrets to YAML.
 - providers.grok.model: `grok-voice-latest` (default; xAI's only published Voice Agent model as of v6.5.2).
-- providers.grok.voice: One of `eve`, `ara`, `rex`, `sal`, `leo`, or a custom cloned-voice ID from your xAI workspace.
+- providers.grok.voice: A built-in xAI voice or a cloned voice ID from your workspace. The default is `eve`. See [Grok voice selection](Provider-Grok-Setup.md#supported-voices).
 - providers.grok.instructions / greeting: Persona override + explicit greeting. Leave empty to inherit `llm.prompt` / `llm.initial_greeting`.
 - providers.grok.input_encoding / input_sample_rate_hz: AudioSocket inbound format. Default `ulaw` @ 8 kHz (matches Asterisk telephony format with no resampling).
 - providers.grok.provider_input_encoding / provider_input_sample_rate_hz: Format actually sent to xAI. Default `ulaw` @ 8 kHz (xAI accepts `audio/pcmu` natively). Set to `linear16` @ 24 kHz for wideband AudioSocket (`slin16`) setups.

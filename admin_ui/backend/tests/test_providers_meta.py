@@ -86,3 +86,13 @@ def test_meta_survives_non_dict_and_empty_providers(monkeypatch):
 
     client = _client(monkeypatch, {})
     assert client.get("/api/config/providers/meta").json() == {"providers": []}
+
+
+def test_grok_editor_and_agent_share_catalog_even_for_first_instance(monkeypatch):
+    empty_client = _client(monkeypatch, {})
+    catalog = empty_client.get("/api/config/providers/voice-catalog/grok").json()
+    client = _client(monkeypatch, {"customer_grok": {"type": "grok", "voice": "myCloneID"}})
+    agent_meta, = client.get("/api/config/providers/meta").json()["providers"]
+    assert agent_meta["voices"] == catalog["voices"]
+    assert len(catalog["voices"]) == 28
+    assert agent_meta["default_voice"] == "myCloneID"
