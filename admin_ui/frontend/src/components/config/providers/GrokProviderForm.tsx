@@ -151,7 +151,7 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                             <HelpTooltip
                                 content={
                                     <>
-                                        <strong>Default Voice</strong> — which speaker xAI uses for synthesized audio. Agents can override this per agent (Agents page); this value is the fallback when an agent doesn't set its own voice.
+                                        <strong>Default Voice</strong> — which speaker xAI uses for synthesized audio. Agents can override this per agent (Agents page); this value also applies when a routed call inherits a recognized voice from another provider.
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                             <li><code>eve</code> — energetic, upbeat</li>
                                             <li><code>ara</code> — warm, friendly</li>

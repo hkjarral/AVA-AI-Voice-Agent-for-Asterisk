@@ -185,6 +185,15 @@ DEEPGRAM_AURA_VOICES: List[Dict[str, str]] = [
     {"id": 'aura-zeus-en', "label": 'Zeus (EN Legacy)'},
 ]
 
+# Only recognized foreign IDs are incompatible. Other IDs may be private xAI
+# clones or newly released voices. A shared built-in name belongs to Grok too.
+GROK_BUILTIN_IDS = frozenset(v["id"] for v in GROK_NAMED_VOICES)
+GROK_FOREIGN_VOICE_IDS = frozenset(
+    v["id"].lower()
+    for voices in (GOOGLE_LIVE_VOICES, OPENAI_VOICES, DEEPGRAM_AURA_VOICES)
+    for v in voices
+).difference(GROK_BUILTIN_IDS)
+
 # Mirrors admin_ui/frontend/src/utils/providerNaming.ts
 _CANONICAL_FULL_AGENT_KEYS = {
     "local", "openai_realtime", "deepgram", "google_live", "elevenlabs_agent", "grok",

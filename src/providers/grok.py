@@ -45,6 +45,7 @@ from ..audio import (
     resolve_output_resampler_policy,
 )
 from ..config import GrokProviderConfig
+from ..utils.voice_catalog import GROK_BUILTIN_IDS
 
 # Tool calling support
 from src.tools.registry import tool_registry
@@ -1230,7 +1231,7 @@ class GrokProvider(AIProviderInterface):
             input_rate=in_rate,
             output_format=out_fmt_type,
             output_rate=out_rate,
-            voice=self.config.voice,
+            voice=session["voice"],
             tool_count=len(tools) if tools else 0,
         )
 
@@ -2349,6 +2350,21 @@ class GrokProvider(AIProviderInterface):
                 input_format = session.get("input_audio_format", "pcm16")
                 output_format = session.get("output_audio_format", "pcm16")
                 
+                confirmed_voice = session.get("voice")
+                requested_voice = self._session_voice or self.config.voice
+                if isinstance(confirmed_voice, str) and confirmed_voice:
+                    if requested_voice.lower() in GROK_BUILTIN_IDS:
+                        voice_matches = requested_voice.lower() == confirmed_voice.lower()
+                    else:
+                        voice_matches = requested_voice == confirmed_voice
+                    if not voice_matches:
+                        logger.warning(
+                            "Grok confirmed a different voice",
+                            call_id=self._call_id,
+                            requested_voice=requested_voice,
+                            confirmed_voice=confirmed_voice,
+                        )
+
                 # Map xAI format names to internal format names and sample rates
                 format_map = {
                     'pcm16': ('pcm16', 24000),
@@ -2364,6 +2380,7 @@ class GrokProvider(AIProviderInterface):
                 
                 logger.info(
                     "✅ Grok session.updated ACK received",
+                    confirmed_voice=confirmed_voice,
                     call_id=self._call_id,
                     input_format=input_format,
                     output_format=output_format,

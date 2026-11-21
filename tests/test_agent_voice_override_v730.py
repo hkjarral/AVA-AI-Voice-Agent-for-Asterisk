@@ -318,6 +318,59 @@ async def test_grok_falls_back_to_config_voice(grok_config):
     assert captured.get("session", {}).get("voice") == "eve"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("agent_kind", "voice", "override", "expected_source", "sent"), [
+    ("google_live", "sChEdAr", None, "provider-default", "celeste"),
+    ("openai_realtime", "marin", " ", "provider-default", "celeste"),
+    ("deepgram", "aura-2-iris-en", None, "provider-default", "celeste"),
+    ("google_live", "Schedar", "myCloneID_123", "override", "myCloneID_123"),
+    ("google_live", "Schedar", "marin", "override", "marin"),
+    ("google_live", "myCloneID_123", None, "agent", "myCloneID_123"),
+    ("grok", "Schedar", None, "agent", "Schedar"),
+    ("google_live", "rex", None, "agent", "rex"),
+])
+async def test_grok_routed_voice_and_payload_log(grok_config, agent_kind, voice, override, expected_source, sent):
+    from unittest.mock import AsyncMock, patch
+    from src.engine import _apply_provider_context_voice
+
+    grok_config.voice = "celeste"
+    provider = GrokProvider(grok_config, on_event=None)
+    context = {}
+    source = _apply_provider_context_voice(
+        provider, context, {"voice": override}, ContextConfig(voice=voice),
+        context_provider_kind=agent_kind,
+    )
+    assert source == expected_source
+    assert context.get("voice") == (None if source == "provider-default" else sent)
+    provider._set_session_voice_from_context(context)
+    with patch.object(provider, "_send_json", new_callable=AsyncMock) as send, patch("src.providers.grok.logger") as log:
+        await provider._send_session_update()
+    assert send.await_args.args[0]["session"]["voice"] == sent
+    payload_log, = [c for c in log.info.call_args_list if c.args[0] == "Grok session.update payload"]
+    assert payload_log.kwargs["voice"] == sent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("voice", "confirmed", "mismatch"), [
+    ("eve", "Eve", False), ("rex", None, False), ("myCloneID", "myCloneID", False),
+    ("myCloneID", "mycloneid", True), ("Schedar", "Ara", True),
+])
+async def test_grok_voice_ack(grok_config, voice, confirmed, mismatch):
+    from unittest.mock import patch
+
+    provider = GrokProvider(grok_config, on_event=None)
+    provider._set_session_voice_from_context({"voice": voice})
+    with patch("src.providers.grok.logger") as log:
+        await provider._handle_event({"type": "session.updated", "session": {"voice": confirmed}})
+    if mismatch:
+        log.warning.assert_called_once_with(
+            "Grok confirmed a different voice", call_id=None,
+            requested_voice=voice, confirmed_voice=confirmed,
+        )
+    else:
+        log.warning.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Deepgram Voice Agent: speak model resolution (primary AND retry payloads
 # consume the same resolved value — see _configure_agent's speak_model local)
