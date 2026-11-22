@@ -83,6 +83,18 @@ describe('ProvidersPage provider save contracts', () => {
         expect(dialog.getByText('0.85× (inherited)')).toBeInTheDocument();
         expect(dialog.queryByText('Response Modalities')).not.toBeInTheDocument();
         expect(dialog.getByLabelText('Silence (ms)')).toHaveValue(900);
+        for (const field of [
+            'playback speed', 'reasoning effort', 'transcription language hint',
+            'transcription keyterms (one per line)', 'pronunciation replacements (json object)',
+            'threshold', 'silence (ms)', 'prefix padding (ms)',
+        ]) {
+            const help = dialog.getByRole('button', { name: `Help for ${field}` });
+            fireEvent.focus(help);
+            expect(help).toHaveAttribute('aria-describedby', dialog.getByRole('tooltip').id);
+            fireEvent.keyDown(help, { key: 'Escape' });
+            expect(dialog.queryByRole('tooltip')).not.toBeInTheDocument();
+            expect(screen.getByRole('dialog')).toBeInTheDocument();
+        }
         edit(/Prefix Padding/, '450');
         edit(/Provider Output Encoding/, 'ulaw');
         expect(dialog.getByLabelText('Provider Output Sample Rate (Hz)')).toHaveValue(8000);

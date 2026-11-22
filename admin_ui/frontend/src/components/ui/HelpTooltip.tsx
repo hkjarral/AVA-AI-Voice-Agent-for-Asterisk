@@ -122,7 +122,10 @@ const HelpTooltip: React.FC<HelpTooltipProps> = ({
                     setIsOpen(true);
                 }}
                 onKeyDown={event => {
-                    if (event.key === 'Escape') setIsOpen(false);
+                    if (event.key === 'Escape' && isOpen) {
+                        event.stopPropagation();
+                        setIsOpen(false);
+                    }
                 }}
             >
                 <HelpCircle className="w-4 h-4" />

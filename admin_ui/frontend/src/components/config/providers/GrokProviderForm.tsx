@@ -23,6 +23,15 @@ const GROK_MODELS = [
     { value: 'grok-voice-3.0', label: 'grok-voice-3.0 (versioned)' },
 ];
 
+function GrokFieldLabel({ id, label, children }: { id: string; label: string; children: React.ReactNode }) {
+    return (
+        <div className="flex items-center gap-1.5">
+            <label htmlFor={id} className="text-sm font-medium">{label}</label>
+            <HelpTooltip ariaLabel={`Help for ${label.toLowerCase()}`} content={children} />
+        </div>
+    );
+}
+
 const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, providerKey, baseConfig }) => {
     const inheritedSpeed = config.speed === undefined ? baseConfig?.speed : undefined;
     const inheritedEffort = config.reasoning_effort === undefined ? baseConfig?.reasoning_effort : undefined;
@@ -211,7 +220,10 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                         )}
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium" htmlFor="grok-speed">Playback speed</label>
+                        <GrokFieldLabel id="grok-speed" label="Playback speed">
+                            Set how fast Grok speaks. The range is 0.7× to 1.5×. At 0.8×, the same greeting takes about 25%
+                            longer than at 1×. Reset speed uses the base Grok setting or xAI’s default of 1×.
+                        </GrokFieldLabel>
                         <div className="flex items-center gap-3">
                             <input id="grok-speed" type="range" min="0.7" max="1.5" step="0.01"
                                 value={config.speed ?? inheritedSpeed ?? 1}
@@ -223,33 +235,50 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                                 onClick={() => handleChange('speed', undefined)}>Reset speed</button>}
                         </div>
                     </div>
-                    <label className="text-sm font-medium">Reasoning effort
-                        <select className="w-full p-2 rounded border border-input bg-background"
+                    <div className="space-y-2">
+                        <GrokFieldLabel id="grok-reasoning" label="Reasoning effort">
+                            High lets Grok reason before answering. None skips that step. Leave the default selected to use the
+                            base Grok setting, or High when no base setting exists.
+                        </GrokFieldLabel>
+                        <select id="grok-reasoning" className="w-full p-2 rounded border border-input bg-background"
                             value={config.reasoning_effort ?? ''}
                             onChange={(e) => handleChange('reasoning_effort', e.target.value || undefined)}>
                             <option value="">{inheritedEffort ? `Inherited (${inheritedEffort})` : 'xAI default (high)'}</option>
                             <option value="high">High</option>
                             <option value="none">None</option>
                         </select>
-                    </label>
-                    <label className="text-sm font-medium">Transcription language hint
-                        <input className="w-full p-2 rounded border border-input bg-background"
+                    </div>
+                    <div className="space-y-2">
+                        <GrokFieldLabel id="grok-language" label="Transcription language hint">
+                            Suggest the language callers will speak. Use a language tag such as ja, es-MX or pt-BR. Spanish and
+                            Portuguese need a region. With no hint set or inherited, xAI detects the language.
+                        </GrokFieldLabel>
+                        <input id="grok-language" className="w-full p-2 rounded border border-input bg-background"
                             placeholder="e.g. ja, es-MX, pt-BR" value={config.language_hint ?? ''}
                             onChange={(e) => handleChange('language_hint', e.target.value || undefined)} />
-                    </label>
-                    <label className="text-sm font-medium">Transcription keyterms (one per line)
-                        <textarea className="w-full p-2 rounded border border-input bg-background" rows={3}
+                    </div>
+                    <div className="space-y-2">
+                        <GrokFieldLabel id="grok-keyterms" label="Transcription keyterms (one per line)">
+                            Help Grok recognize names and specialized terms in caller speech. Enter one term per line, up to 100
+                            terms of 50 characters each. For example, add a company name callers often mention.
+                        </GrokFieldLabel>
+                        <textarea id="grok-keyterms" className="w-full p-2 rounded border border-input bg-background" rows={3}
                             placeholder="Up to 100 terms, 50 characters each"
                             value={Array.isArray(config.keyterms) ? config.keyterms.join('\n') : config.keyterms ?? ''}
                             onChange={(e) => handleChange('keyterms', e.target.value || undefined)} />
-                    </label>
-                    <label className="text-sm font-medium">Pronunciation replacements (JSON object)
-                        <textarea className="w-full p-2 rounded border border-input bg-background" rows={3}
+                    </div>
+                    <div className="space-y-2">
+                        <GrokFieldLabel id="grok-replacements" label="Pronunciation replacements (JSON object)">
+                            Control how Grok says a phrase while keeping its original spelling in the transcript.
+                            Enter a JSON object mapping each phrase to its spoken form, for example
+                            <code className="ml-1">{'{"SQL": "sequel"}'}</code>.
+                        </GrokFieldLabel>
+                        <textarea id="grok-replacements" className="w-full p-2 rounded border border-input bg-background" rows={3}
                             placeholder='{"Acme": "Ack-mee"}'
                             value={typeof config.pronunciation_replacements === 'string'
                                 ? config.pronunciation_replacements : JSON.stringify(config.pronunciation_replacements ?? undefined, null, 2) ?? ''}
                             onChange={(e) => handleChange('pronunciation_replacements', e.target.value || undefined)} />
-                    </label>
+                    </div>
                 </div>
             </div>
 
@@ -557,7 +586,10 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                 </p>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div className="space-y-2">
-                        <label className="text-sm font-medium" htmlFor="grok-threshold">Threshold</label>
+                        <GrokFieldLabel id="grok-threshold" label="Threshold">
+                            The speech detector’s sensitivity setting. Higher thresholds typically require a stronger signal to
+                            count as speech. AVA forwards this legacy setting to xAI.
+                        </GrokFieldLabel>
                         <input id="grok-threshold"
                             type="number"
                             step="0.1"
@@ -569,7 +601,10 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                         />
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium" htmlFor="grok-silence">Silence (ms)</label>
+                        <GrokFieldLabel id="grok-silence" label="Silence (ms)">
+                            The requested pause in milliseconds before the detector treats a caller’s turn as finished. xAI does
+                            not document how Grok applies this legacy setting.
+                        </GrokFieldLabel>
                         <input id="grok-silence"
                             type="number"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -578,7 +613,10 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                         />
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium" htmlFor="grok-prefix">Prefix Padding (ms)</label>
+                        <GrokFieldLabel id="grok-prefix" label="Prefix Padding (ms)">
+                            The requested amount of audio to keep from just before speech is detected, in milliseconds. It helps
+                            capture the start of a word when supported.
+                        </GrokFieldLabel>
                         <input id="grok-prefix"
                             type="number"
                             className="w-full p-2 rounded border border-input bg-background"
