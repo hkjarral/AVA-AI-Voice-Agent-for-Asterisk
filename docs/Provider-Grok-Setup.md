@@ -58,21 +58,15 @@ When a Google Live Agent uses `Schedar` and the dialplan routes the call to a Gr
 Default input: **μ-law @ 8 kHz passthrough.** xAI accepts `audio/pcmu`
 natively, so caller audio can pass from Asterisk without input resampling.
 
-Default output: **PCM16 @ 24 kHz from xAI, converted to μ-law @ 8 kHz for
-Asterisk.** Live sessions have shown that xAI emits 24 kHz PCM16 even when a
-different per-session output format is requested. AAVA declares that observed
-provider rate explicitly, then downsamples and encodes it at the transport
-boundary. Do not configure Grok output as 8 kHz μ-law unless a captured
-session trace proves that your xAI endpoint actually emits it.
+The default telephony configuration requests **24 kHz PCM16** and converts it to **8 kHz μ-law**. A wideband transport profile can request 16 kHz PCM. AVA uses the negotiated output codec and rate for playback. When xAI omits the PCM rate, AVA retains the current PCM rate for that session. The session update log records the requested rate and speed. The acknowledgement log records the reported rate separately from the rate used for playback.
 
-For wideband caller input (when AudioSocket runs in `slin16` mode), switch the
-provider input encoding while retaining the observed 24 kHz output:
+For wideband caller input with a 24 kHz provider request:
 
 ```yaml
 grok:
   provider_input_encoding: "linear16"
   provider_input_sample_rate_hz: 24000
-  output_encoding: "linear16"          # xAI output observed by AAVA
+  output_encoding: "linear16"          # requested xAI output
   output_sample_rate_hz: 24000
   target_encoding: "ulaw"              # Asterisk transport output
   target_sample_rate_hz: 8000

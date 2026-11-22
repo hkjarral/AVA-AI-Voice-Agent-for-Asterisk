@@ -49,6 +49,14 @@ from src.tools.telephony.hangup_policy import text_contains_marker_word
 logger = get_logger(__name__)
 
 
+# Names used by the current nested session format and older realtime sessions.
+_GROK_AUDIO_CODECS = {
+    "audio/pcm": "pcm16", "pcm16": "pcm16", "linear16": "pcm16", "slin": "pcm16", "slin16": "pcm16",
+    "audio/pcmu": "g711_ulaw", "g711_ulaw": "g711_ulaw", "ulaw": "g711_ulaw", "mulaw": "g711_ulaw", "mu-law": "g711_ulaw",
+    "audio/pcma": "g711_alaw", "g711_alaw": "g711_alaw", "alaw": "g711_alaw",
+}
+
+
 def _log_provider_task_exception(task: asyncio.Task) -> None:
     """Done-callback: log exceptions from fire-and-forget provider tasks."""
     if task.cancelled():
@@ -205,7 +213,7 @@ class GrokProvider(AIProviderInterface):
         self._last_commit_ts: float = 0.0
         # Serialize append/commit to avoid empty commits from races
         self._audio_lock: asyncio.Lock = asyncio.Lock()
-        self._provider_output_format: str = "pcm16"
+        self._provider_output_format = _GROK_AUDIO_CODECS.get((config.output_encoding or "").lower(), "pcm16")
         self._provider_reported_output_rate: Optional[int] = None
         self._output_meter_start_ts: float = 0.0
         self._output_meter_last_log_ts: float = 0.0
@@ -215,11 +223,9 @@ class GrokProvider(AIProviderInterface):
             float(self.config.output_sample_rate_hz) if getattr(self.config, "output_sample_rate_hz", None) else None
         )
         self._session_output_bytes_per_sample: int = 2
-        self._session_output_encoding: str = "pcm16"
         # Output format acknowledgment flag: only enable μ-law pass-through after server ACK
         self._outfmt_acknowledged: bool = False
         # Heuristic inference state when provider does not ACK output format
-        self._inferred_provider_encoding: Optional[str] = None
         self._inference_logged: bool = False
         # Egress pacing and buffering (telephony cadence)
         self._egress_pacer_enabled: bool = bool(getattr(config, "egress_pacer_enabled", True))
@@ -357,58 +363,57 @@ class GrokProvider(AIProviderInterface):
             wideband_output_sample_rate_hz=16000,
         )
     
+    def _ack_audio_format(self, session: Dict[str, Any], direction: str) -> tuple[Optional[str], Optional[int]]:
+        audio = session.get("audio")
+        channel = audio.get(direction) if isinstance(audio, dict) else None
+        fmt = channel.get("format") if isinstance(channel, dict) else None
+        if fmt is None:
+            fmt = session.get(f"{direction}_audio_format")
+        encoding = self._extract_encoding(fmt)
+        rate = self._extract_sample_rate(fmt)
+        if rate not in (8000, 16000, 22050, 24000, 32000, 44100, 48000):
+            rate = None
+        # Only PCM has a configurable sample rate in xAI's session schema.
+        if encoding is None and rate is not None:
+            encoding = "audio/pcm"
+        return _GROK_AUDIO_CODECS.get(encoding), rate
+
+    def _set_output_format(self, codec: str, rate: int, *, acknowledged: bool) -> None:
+        if (codec, rate) != (self._provider_output_format, self._active_output_sample_rate_hz):
+            self._output_resample_state = None
+            self._output_resampler_logged = False
+            self._provider_reported_output_rate = None
+            self._reset_output_meter()
+        self._provider_output_format = codec
+        self._active_output_sample_rate_hz = rate
+        self._session_output_bytes_per_sample = 2 if codec == "pcm16" else 1
+        self._outfmt_acknowledged = acknowledged
+
+    def _ack_output_rate(self, codec: str, reported_rate: Optional[int]) -> int:
+        if codec in ("g711_ulaw", "g711_alaw"):
+            return 8000
+        if reported_rate:
+            return reported_rate
+        # Some legacy acknowledgements name PCM without a rate. Keep the
+        # requested/negotiated PCM rate, including a mid-call format update.
+        if codec == self._provider_output_format and self._active_output_sample_rate_hz:
+            return int(self._active_output_sample_rate_hz)
+        return 24000
+
     def parse_ack(self, event_data: Dict[str, Any]) -> Optional[ProviderCapabilities]:
-        """
-        Parse session.updated event from Grok Voice Agent API to extract negotiated formats.
-        
-        Returns capabilities based on provider ACK, or None if not a session.updated event.
-        """
-        event_type = event_data.get('type')
-        if event_type != 'session.updated':
+        if event_data.get("type") != "session.updated":
             return None
-        
         try:
-            session = event_data.get('session', {})
-            
-            # Grok session.updated includes input_audio_format and output_audio_format
-            input_format = session.get('input_audio_format', 'pcm16')
-            output_format = session.get('output_audio_format', 'pcm16')
-            
-            audio = session.get("audio", {}) if isinstance(session, dict) else {}
-            input_audio = audio.get("input", {}) if isinstance(audio, dict) else {}
-            output_audio = audio.get("output", {}) if isinstance(audio, dict) else {}
-            input_format_obj = input_audio.get("format", {}) if isinstance(input_audio, dict) else {}
-            output_format_obj = output_audio.get("format", {}) if isinstance(output_audio, dict) else {}
-            input_rate = int(
-                input_format_obj.get("rate")
-                or getattr(self.config, "provider_input_sample_rate_hz", 0)
-                or 24000
-            )
-            output_rate = int(
-                output_format_obj.get("rate")
-                or getattr(self.config, "output_sample_rate_hz", 0)
-                or 24000
-            )
-            
-            # Map xAI format names to our encoding names
-            format_map = {
-                'pcm16': 'linear16',
-                'g711_ulaw': 'mulaw',
-                'g711_alaw': 'alaw',
-            }
-            
-            input_enc = format_map.get(input_format, input_format)
-            output_enc = format_map.get(output_format, output_format)
-            
-            logger.info(
-                "Parsed Grok session.updated ACK",
-                call_id=self._call_id,
-                input_format=input_format,
-                output_format=output_format,
-                input_sample_rate=input_rate,
-                output_sample_rate=output_rate,
-            )
-            
+            session = event_data.get("session") or {}
+            input_codec, input_rate = self._ack_audio_format(session, "input")
+            output_codec, output_rate = self._ack_audio_format(session, "output")
+            names = {"pcm16": "linear16", "g711_ulaw": "mulaw", "g711_alaw": "alaw"}
+            input_codec = input_codec or _GROK_AUDIO_CODECS.get(self.config.provider_input_encoding, "pcm16")
+            input_enc = names[input_codec]
+            output_codec = output_codec or self._provider_output_format
+            output_enc = names[output_codec]
+            input_rate = (input_rate or self.config.provider_input_sample_rate_hz) if input_codec == "pcm16" else 8000
+            output_rate = self._ack_output_rate(output_codec, output_rate)
             return ProviderCapabilities(
                 input_encodings=[input_enc],
                 input_sample_rates_hz=[input_rate],
@@ -1238,10 +1243,17 @@ class GrokProvider(AIProviderInterface):
             input_rate=in_rate,
             output_format=out_fmt_type,
             output_rate=out_rate,
+            requested_speed=self.config.speed,
             voice=session["voice"],
             tool_count=len(tools) if tools else 0,
         )
 
+        self._reset_output_meter()
+        self._output_resample_state = None
+        self._output_resampler_logged = False
+        self._inference_logged = False
+        self._set_output_format(_GROK_AUDIO_CODECS[out_fmt_type], out_rate, acknowledged=False)
+        self._provider_reported_output_rate = None
         await self._send_json(payload)
 
     async def _send_explicit_greeting(self):
@@ -2354,8 +2366,7 @@ class GrokProvider(AIProviderInterface):
         if event_type == "session.updated":
             try:
                 session = event.get("session", {})
-                input_format = session.get("input_audio_format", "pcm16")
-                output_format = session.get("output_audio_format", "pcm16")
+                output_codec, reported_rate = self._ack_audio_format(session, "output")
                 
                 confirmed_voice = session.get("voice")
                 requested_voice = self._session_voice or self.config.voice
@@ -2372,29 +2383,24 @@ class GrokProvider(AIProviderInterface):
                             confirmed_voice=confirmed_voice,
                         )
 
-                # Map xAI format names to internal format names and sample rates
-                format_map = {
-                    'pcm16': ('pcm16', 24000),
-                    'g711_ulaw': ('g711_ulaw', 8000),
-                    'g711_alaw': ('g711_alaw', 8000),
-                }
-                
-                if output_format in format_map:
-                    fmt, rate = format_map[output_format]
-                    self._provider_output_format = fmt
-                    self._active_output_sample_rate_hz = rate
-                    self._outfmt_acknowledged = True
-                
+                if output_codec:
+                    self._set_output_format(
+                        output_codec, self._ack_output_rate(output_codec, reported_rate), acknowledged=True
+                    )
+                    if reported_rate:
+                        self._provider_reported_output_rate = reported_rate
+                        _GROK_PROVIDER_OUTPUT_RATE.set(reported_rate)
+
                 logger.info(
                     "✅ Grok session.updated ACK received",
                     confirmed_voice=confirmed_voice,
                     call_id=self._call_id,
-                    input_format=input_format,
-                    output_format=output_format,
+                    output_format=self._provider_output_format,
+                    reported_output_rate_hz=reported_rate,
                     sample_rate=self._active_output_sample_rate_hz,
                     acknowledged=self._outfmt_acknowledged,
                 )
-                
+
                 # Unblock audio streaming (similar to Deepgram's _ack_event.set())
                 if hasattr(self, '_session_ack_event') and self._session_ack_event:
                     self._session_ack_event.set()
@@ -2512,49 +2518,14 @@ class GrokProvider(AIProviderInterface):
             # Otherwise, normalize to PCM16 using either ACK'ed format or our declared format, then convert.
             effective_fmt = self._provider_output_format
             if not self._outfmt_acknowledged:
-                # xAI does NOT send session.updated ACK (observed empirically on live voiprnd calls
-                # 2026-05-22). Per the xAI Voice Agent docs the default output is "24 kHz PCM" and
-                # per-session output_format declarations are accepted. So trust our session.update
-                # declaration as authoritative.
-                #
-                # The prior RMS-fingerprint heuristic (compare ulaw-decoded RMS vs raw-pcm16 RMS) was
-                # unreliable: μ-law's logarithmic decode amplifies mid-range bytes regardless of source
-                # content, biasing the result toward "ulaw" for speech-shaped data. That caused
-                # pcm16-@-24kHz bytes to be mis-decoded as μ-law → garbled playback.
-                configured_enc = (self.config.output_encoding or "").lower().strip()
-                if configured_enc in ("linear16", "pcm16", "slin16", "slin"):
-                    declared_fmt = "pcm16"
-                elif configured_enc in ("ulaw", "mulaw", "g711_ulaw", "mu-law"):
-                    declared_fmt = "ulaw"
-                elif configured_enc in ("alaw", "g711_alaw"):
-                    declared_fmt = "alaw"
-                else:
-                    declared_fmt = "pcm16"  # xAI documented default
-                self._inferred_provider_encoding = declared_fmt
-                effective_fmt = declared_fmt
                 if not self._inference_logged:
-                    try:
-                        logger.info(
-                            "Grok output format not ACKed; trusting session.update declaration",
-                            call_id=self._call_id,
-                            declared=effective_fmt,
-                            configured_output_encoding=configured_enc,
-                            configured_output_sample_rate_hz=getattr(self.config, "output_sample_rate_hz", None),
-                            bytes=len(raw_bytes),
-                        )
-                    except Exception:
-                        pass
+                    logger.info(
+                        "Using requested Grok output format pending acknowledgement",
+                        call_id=self._call_id, output_format=effective_fmt,
+                        sample_rate=self._active_output_sample_rate_hz,
+                    )
                     self._inference_logged = True
 
-            # CRITICAL FIX #3: Warn loudly if format not ACKed (following Deepgram strict pattern)
-            if not self._outfmt_acknowledged and not self._inference_logged:
-                logger.warning(
-                    "⚠️ Processing audio without format ACK - using inference fallback",
-                    call_id=self._call_id,
-                    inferred_format=effective_fmt,
-                    note="Audio quality may be degraded. Grok should send session.updated ACK."
-                )
-            
             # Decode to PCM16 according to effective format
             if effective_fmt in ("g711_ulaw", "ulaw", "mulaw", "g711", "mu-law"):
                 try:
@@ -2562,18 +2533,13 @@ class GrokProvider(AIProviderInterface):
                 except Exception:
                     logger.warning("Failed to convert μ-law provider output to PCM16", call_id=self._call_id, exc_info=True)
                     return
+            elif effective_fmt == "g711_alaw":
+                pcm_provider_output = audioop.alaw2lin(raw_bytes, 2)
             else:
                 pcm_provider_output = raw_bytes
 
             target_rate = self.config.target_sample_rate_hz
-            # Determine source_rate more safely when provider hasn't ACKed.
-            # If we inferred μ-law, the true source is 8000 Hz regardless of config defaults.
-            if not self._outfmt_acknowledged and effective_fmt in ("g711_ulaw", "ulaw", "mulaw", "g711", "mu-law"):
-                source_rate = 8000
-            else:
-                source_rate = int(round(self._active_output_sample_rate_hz or self.config.output_sample_rate_hz or 0))
-                if not source_rate:
-                    source_rate = self.config.output_sample_rate_hz
+            source_rate = int(self._active_output_sample_rate_hz or self.config.output_sample_rate_hz)
             pcm_target, self._output_resample_state = resample_audio(
                 pcm_provider_output,
                 source_rate,
@@ -2947,11 +2913,6 @@ class GrokProvider(AIProviderInterface):
         self._output_meter_last_log_ts = 0.0
         self._output_meter_bytes = 0
         self._output_rate_warned = False
-        self._provider_reported_output_rate = None
-        try:
-            self._active_output_sample_rate_hz = float(self.config.output_sample_rate_hz)
-        except Exception:
-            self._active_output_sample_rate_hz = None
 
     def _log_session_assumptions(self) -> None:
         call_id = self._call_id
@@ -2969,7 +2930,7 @@ class GrokProvider(AIProviderInterface):
             "input_sample_rate_hz": str(getattr(self.config, "input_sample_rate_hz", "") or ""),
             "provider_input_encoding": str(getattr(self.config, "provider_input_encoding", "") or ""),
             "provider_input_sample_rate_hz": str(getattr(self.config, "provider_input_sample_rate_hz", "") or ""),
-            "output_encoding": self._session_output_encoding,
+            "output_encoding": self._provider_output_format,
             "output_sample_rate_hz": str(int(self._active_output_sample_rate_hz or getattr(self.config, "output_sample_rate_hz", "") or 0)),
             "target_encoding": str(getattr(self.config, "target_encoding", "") or ""),
             "target_sample_rate_hz": str(getattr(self.config, "target_sample_rate_hz", "") or ""),
@@ -2993,68 +2954,6 @@ class GrokProvider(AIProviderInterface):
             )
         except Exception:
             logger.debug("Failed to log Grok session assumptions", exc_info=True)
-
-    def _handle_session_info_event(self, event: Dict[str, Any]) -> None:
-        call_id = self._call_id
-        if not call_id:
-            return
-
-        session_data = event.get("session") or {}
-        output_meta = session_data.get("output_audio_format") or {}
-        provider_rate = self._extract_sample_rate(output_meta)
-        provider_encoding = self._extract_encoding(output_meta)
-
-        if provider_rate:
-            self._provider_reported_output_rate = provider_rate
-            try:
-                _GROK_PROVIDER_OUTPUT_RATE.set(provider_rate)
-            except Exception:
-                pass
-            try:
-                self._active_output_sample_rate_hz = float(provider_rate)
-            except Exception:
-                self._active_output_sample_rate_hz = provider_rate
-
-        # Acknowledge μ-law only when provider confirms it
-        enc_norm = (provider_encoding or "").lower()
-        if enc_norm in ("g711_ulaw", "ulaw", "mulaw", "mu-law") and int(provider_rate or 0) == 8000:
-            self._outfmt_acknowledged = True
-            self._provider_output_format = "g711_ulaw"
-            self._session_output_bytes_per_sample = 1
-            self._session_output_encoding = "g711_ulaw"
-        else:
-            # Default to PCM16 assumptions until μ-law is confirmed
-            self._outfmt_acknowledged = False
-            self._provider_output_format = "pcm16"
-            self._session_output_bytes_per_sample = 2
-            self._session_output_encoding = "pcm16"
-
-        info_payload = {
-            "input_encoding": str(getattr(self.config, "input_encoding", "") or ""),
-            "input_sample_rate_hz": str(getattr(self.config, "input_sample_rate_hz", "") or ""),
-            "provider_input_encoding": str(getattr(self.config, "provider_input_encoding", "") or ""),
-            "provider_input_sample_rate_hz": str(getattr(self.config, "provider_input_sample_rate_hz", "") or ""),
-            "output_encoding": provider_encoding or self._session_output_encoding,
-            "output_sample_rate_hz": str(provider_rate or self._active_output_sample_rate_hz or getattr(self.config, "output_sample_rate_hz", "") or ""),
-            "target_encoding": str(getattr(self.config, "target_encoding", "") or ""),
-            "target_sample_rate_hz": str(getattr(self.config, "target_sample_rate_hz", "") or ""),
-        }
-
-        try:
-            _GROK_SESSION_AUDIO_INFO.info(info_payload)
-        except Exception:
-            pass
-
-        try:
-            logger.info(
-                "Grok session acknowledged audio format",
-                call_id=call_id,
-                provider_output_encoding=provider_encoding,
-                provider_output_sample_rate_hz=provider_rate,
-                event_type=event.get("type"),
-            )
-        except Exception:
-            logger.debug("Failed to log Grok session metadata", exc_info=True)
 
     def _update_output_meter(self, chunk_bytes: int) -> None:
         if not chunk_bytes or not self._call_id:
@@ -3152,15 +3051,9 @@ class GrokProvider(AIProviderInterface):
                     except Exception:
                         logger.debug("Failed to log Grok output rate info", exc_info=True)
 
-            # Fallback trigger: if stream has been running >10s and measured rate remains <7.6–8 kHz, switch to PCM16@24k.
-            # Guardrail: when the server has ACKed G.711 (μ-law/a-law) output, this heuristic is unreliable because
-            # the "measured_rate" is an average over wall-clock time and naturally drops during user-speech/silence.
-            # Switching formats mid-call can introduce audible artifacts, so only allow the fallback when we are not
-            # currently in an ACKed G.711 mode.
+            # Sparse bursts and caller silence cannot invalidate a negotiated format.
             try:
-                if not self._fallback_pcm24k_done:
-                    if self._outfmt_acknowledged and self._provider_output_format in ("g711_ulaw", "g711_alaw"):
-                        return
+                if not self._fallback_pcm24k_done and not self._outfmt_acknowledged:
                     # Use pacer start when available, otherwise meter start as a conservative window
                     window_anchor = self._pacer_start_ts if self._pacer_start_ts > 0.0 else self._output_meter_start_ts
                     window = now - window_anchor if window_anchor > 0.0 else elapsed
@@ -3320,13 +3213,8 @@ class GrokProvider(AIProviderInterface):
         }
         try:
             await self._send_json(payload)
-            self._provider_output_format = "pcm16"
-            self._session_output_bytes_per_sample = 2
-            try:
-                self._active_output_sample_rate_hz = float(24000)
-            except Exception:
-                self._active_output_sample_rate_hz = 24000.0
-            self._reset_output_meter()
+            self._set_output_format("pcm16", 24000, acknowledged=False)
+            self._provider_reported_output_rate = None
         except Exception:
             logger.debug("Failed to switch Grok session to PCM16@24k", call_id=call_id, exc_info=True)
 
@@ -3336,8 +3224,8 @@ class GrokProvider(AIProviderInterface):
             # Some previews may send "pcm16@24000"
             if "@" in fmt:
                 try:
-                    return int(float(fmt.split("@", 1)[1]))
-                except (IndexError, ValueError):
+                    return int(fmt.split("@", 1)[1])
+                except (IndexError, ValueError, OverflowError):
                     return None
             return None
         if not isinstance(fmt, dict):
@@ -3347,8 +3235,10 @@ class GrokProvider(AIProviderInterface):
             if value is None:
                 continue
             try:
-                return int(float(value))
-            except (TypeError, ValueError):
+                rate = float(value)
+                if rate.is_integer():
+                    return int(rate)
+            except (TypeError, ValueError, OverflowError):
                 continue
         return None
 

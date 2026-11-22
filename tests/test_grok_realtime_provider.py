@@ -11,6 +11,7 @@ Focus areas (highest-value first):
 """
 
 import asyncio
+import base64
 import json
 import time
 import types
@@ -183,6 +184,10 @@ async def test_grok_speech_settings_on_session_fallback_and_reconnect(grok_confi
         "output": {"format": {"type": "audio/pcm", "rate": 24000}, "speed": speed}
     }
 
+    assert provider._active_output_sample_rate_hz == 24000
+    await provider._handle_event({"type": "session.updated", "session": {"voice": "eve"}})
+    assert provider._active_output_sample_rate_hz == 24000
+
     new_ws = _RecordingWebSocket()
     monkeypatch.setattr("src.providers.grok.websockets.connect", AsyncMock(return_value=new_ws))
     monkeypatch.setattr(provider, "_receive_loop", AsyncMock())
@@ -190,6 +195,50 @@ async def test_grok_speech_settings_on_session_fallback_and_reconnect(grok_confi
     await provider._reconnect_with_backoff()
     await asyncio.gather(provider._receive_task, provider._keepalive_task)
     assert new_ws.parsed_events()[0]["session"] == session
+    assert provider._active_output_sample_rate_hz == 8000
+
+
+@pytest.mark.asyncio
+async def test_grok_nested_pcm_ack_preserves_greeting_duration(grok_config):
+    # The transport normally requests 16 kHz. A differing configured rate also
+    # proves the explicit ACK wins over the local assumption.
+    grok_config.output_encoding = "linear16"
+    grok_config.output_sample_rate_hz = 24000
+    grok_config.target_encoding = "slin16"
+    grok_config.target_sample_rate_hz = 16000
+    on_event = AsyncMock()
+    provider = GrokProvider(grok_config, on_event)
+    provider._call_id = "grok-16k"
+    ack = {"type": "session.updated", "session": {"audio": {
+        "output": {"format": {"type": "audio/pcm", "rate": 16000}},
+    }}}
+    await provider._handle_event(ack)
+    # Voice/VAD-only updates during the greeting must retain the negotiated rate.
+    await provider._handle_event({"type": "session.updated", "session": {"voice": "eve"}})
+    frame = b"\x34\x12" * 320  # 20 ms of 16-bit mono PCM at 16 kHz
+    await provider._handle_event({
+        "type": "response.output_audio.delta", "delta": base64.b64encode(frame).decode(),
+    })
+    assert on_event.await_args.args[0]["data"] == frame
+    assert provider.parse_ack(ack).output_sample_rates_hz == [16000]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fmt,codec,rate", [
+    ({"audio": {"output": {"format": {"type": "audio/pcm", "rate": 24000}}}}, "pcm16", 24000),
+    ({"output_audio_format": "pcm16"}, "pcm16", 16000),
+    ({"output_audio_format": "g711_ulaw"}, "g711_ulaw", 8000),
+    ({"audio": {"output": {"format": {"type": "audio/pcma"}}}}, "g711_alaw", 8000),
+])
+async def test_grok_ack_format_compatibility(grok_config, fmt, codec, rate):
+    grok_config.output_encoding = "linear16"
+    grok_config.output_sample_rate_hz = 16000
+    provider = GrokProvider(grok_config, None)
+    ack = {"type": "session.updated", "session": fmt}
+    await provider._handle_event(ack)
+    assert provider._provider_output_format == codec
+    assert provider._active_output_sample_rate_hz == rate
+    assert provider.parse_ack(ack).output_sample_rates_hz == [rate]
 
 
 @pytest.mark.asyncio
