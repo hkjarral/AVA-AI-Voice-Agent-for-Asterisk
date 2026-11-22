@@ -8,18 +8,31 @@ interface HelpTooltipProps {
     ariaLabel?: string;
 }
 
-/**
- * Click-or-hover help tooltip with viewport-aware positioning.
- *
- * Defaults to opening ABOVE the trigger. If the popover would be clipped
- * by the top of the viewport (e.g. trigger near the top of a scrolled
- * modal), it flips BELOW. Horizontal alignment also nudges left/right to
- * keep the popover within the visible width.
- *
- * Previous version was always `bottom-full -left-28` which silently
- * truncated tooltips opened from trigger icons near the top of any
- * scrolled container (the Provider edit modal was the canonical bug).
- */
+// Intersect the viewport with each ancestor that clips on the relevant axis.
+// clientWidth/clientHeight exclude borders and space reserved for scrollbars.
+function visibleBounds(element: HTMLElement) {
+    let left = 0;
+    let top = 0;
+    let right = document.documentElement.clientWidth || window.innerWidth;
+    let bottom = document.documentElement.clientHeight || window.innerHeight;
+    for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+        const { overflowX, overflowY } = getComputedStyle(parent);
+        if (overflowX === 'visible' && overflowY === 'visible') continue;
+        const rect = parent.getBoundingClientRect();
+        if (overflowX && overflowX !== 'visible') {
+            const x = rect.left + parent.clientLeft;
+            left = Math.max(left, x);
+            right = Math.min(right, x + parent.clientWidth);
+        }
+        if (overflowY && overflowY !== 'visible') {
+            const y = rect.top + parent.clientTop;
+            top = Math.max(top, y);
+            bottom = Math.min(bottom, y + parent.clientHeight);
+        }
+    }
+    return { left, top, right, bottom };
+}
+
 const HelpTooltip: React.FC<HelpTooltipProps> = ({
     content,
     link,
@@ -33,43 +46,24 @@ const HelpTooltip: React.FC<HelpTooltipProps> = ({
     const buttonRef = useRef<HTMLButtonElement | null>(null);
     const popoverRef = useRef<HTMLDivElement | null>(null);
 
-    // The popover is 256px (w-64) wide + 24px padding (p-3). Use these to
-    // compute available space without re-reading the popover DOM.
-    const POPOVER_WIDTH = 256;
-    const POPOVER_GAP = 8; // matches mb-2 / mt-2
-
     const recomputePlacement = useCallback(() => {
-        const btn = buttonRef.current;
+        const button = buttonRef.current;
         const popover = popoverRef.current;
-        if (!btn) return;
+        if (!button || !popover) return;
 
-        const rect = btn.getBoundingClientRect();
-        const viewportH = window.innerHeight;
-        const viewportW = window.innerWidth;
+        const bounds = visibleBounds(button);
+        const gap = 8;
+        // Measure after constraining the width so wrapped text has its final height.
+        popover.style.maxWidth = `${Math.max(0, bounds.right - bounds.left - 2 * gap)}px`;
+        const rect = button.getBoundingClientRect();
+        const width = popover.offsetWidth;
+        const center = rect.left + rect.width / 2;
+        const left = Math.max(bounds.left + gap, Math.min(center - width / 2, bounds.right - width - gap));
+        setHorizontalOffset(left - rect.left);
 
-        // Measured popover height if we have it; otherwise assume 200px (a
-        // reasonable cap for our bulleted-list tooltips).
-        const popoverH = popover?.offsetHeight ?? 200;
-
-        // Prefer top; flip to bottom if the popover would be clipped above
-        // AND there's more room below.
-        const spaceAbove = rect.top;
-        const spaceBelow = viewportH - rect.bottom;
-        const needsFlip = spaceAbove < popoverH + POPOVER_GAP && spaceBelow > spaceAbove;
-        setPlacement(needsFlip ? 'bottom' : 'top');
-
-        // Horizontal: nudge so the popover stays on-screen. Default offset
-        // aims to roughly center under the icon (-112px = -7rem ≈ half of
-        // 256-32 to compensate for the icon width).
-        const buttonCenterX = rect.left + rect.width / 2;
-        const idealLeft = buttonCenterX - POPOVER_WIDTH / 2;
-        const clampedLeft = Math.max(
-            8, // 8px margin from viewport edge
-            Math.min(idealLeft, viewportW - POPOVER_WIDTH - 8)
-        );
-        // Convert to an offset relative to the button (which is `position:
-        // relative` parent via .relative on the wrapper).
-        setHorizontalOffset(clampedLeft - rect.left);
+        const above = rect.top - bounds.top;
+        const below = bounds.bottom - rect.bottom;
+        setPlacement(above < popover.offsetHeight + gap && below > above ? 'bottom' : 'top');
     }, []);
 
     // Recompute every time the popover opens; also when window resizes /
@@ -153,7 +147,7 @@ const HelpTooltip: React.FC<HelpTooltipProps> = ({
                     )}
                     <div
                         className={`absolute w-2 h-2 bg-popover transform rotate-45 ${arrowPositionClasses}`}
-                        style={{ left: `${-horizontalOffset - 4}px` }}
+                        style={{ left: `calc(${-horizontalOffset}px + 0.25rem)` }}
                     />
                 </div>
             )}
