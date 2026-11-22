@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Grok calls routed from another provider now use the Grok instance’s default when the inherited Agent voice belongs to a different catalog. Per-call overrides and clone IDs retain their values. Logs identify the voice sent and any different voice confirmed by xAI (#884).
+- The Grok provider and Agent editors now share the 28 built-in xAI voices and continue to accept custom cloned voice IDs (#883).
+
 - **SenseVoice final review:** overlapping Admin model switches are rejected for the entire apply/verify/rollback lifecycle, failed switches restore absent environment overrides, dry-run changes retain their pending reload across concurrent requests and degraded model loads, invalid native metadata values (including float32 overflow and unsupported numeric syntax) are rejected, failed UI applies retain pending settings, normalization-vector dimensions are checked before native decoding, displayed settings match model-switch payloads, and SenseVoice selects have accessible labels (#879).
 
 - **SenseVoice Environment apply:** language and ITN changes now request Local AI container recreation, including when removing an override. The Environment page retains the pending action after refresh until the running container matches the saved environment (#879).

@@ -43,6 +43,7 @@ from src.fish_audio_url import (
 )
 from src.config.loaders import substitute_braced_env_vars
 from src.config.provider_instances import PROVIDER_SECRETS_ROOT
+from src.utils.voice_catalog import full_agent_kind, provider_voice_meta
 from src.tools.execution_history import CALL_HISTORY_TOOL_REDACTION_MODES
 from services.provider_validation import (
     MODULAR_HTTP_KINDS, test_modular_provider,
@@ -5971,6 +5972,12 @@ async def disconnect_microsoft_calendar(req: _MicrosoftDisconnectRequest):
     return {"status": "success", "removed": removed, "token_cache_path": safe_path}
 
 
+@router.get("/providers/voice-catalog/{kind}")
+async def get_provider_voice_catalog(kind: str):
+    """Voice choices for the provider editor, including the first unsaved instance."""
+    return provider_voice_meta(kind)
+
+
 @router.get("/providers/meta")
 async def get_providers_voice_meta():
     """Per-provider voice metadata for the Agent form (v7.3.0).
@@ -5983,11 +5990,6 @@ async def get_providers_voice_meta():
     Catalog + kind inference live in src/utils/voice_catalog.py (single source
     shared with the engine's soft validation).
     """
-    project_root = getattr(settings, "PROJECT_ROOT", None)
-    if project_root and project_root not in sys.path:
-        sys.path.insert(0, project_root)
-    from src.utils.voice_catalog import full_agent_kind, provider_voice_meta
-
     cfg = _read_merged_config_dict() or {}
     providers = cfg.get("providers") or {}
     out = []

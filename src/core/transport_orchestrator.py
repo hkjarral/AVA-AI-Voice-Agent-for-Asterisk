@@ -133,6 +133,7 @@ def apply_context_voice(
     call_id: Optional[str] = None,
     allowed_voices: Optional[Union[set, Dict[str, str]]] = None,
     voice_unsupported: bool = False,
+    foreign_agent_voices: frozenset[str] = frozenset(),
 ) -> str:
     """Apply the resolved session voice to a provider context and log the decision.
 
@@ -152,6 +153,12 @@ def apply_context_voice(
     if voice and voice_unsupported:
         logger.info(
             "Agent voice not applicable for this provider; using provider default",
+            call_id=call_id, requested_voice=voice,
+        )
+        voice, source = None, "provider-default"
+    elif voice and source == "agent" and voice.lower() in foreign_agent_voices:
+        logger.info(
+            "Inherited voice belongs to another provider; using provider default",
             call_id=call_id, requested_voice=voice,
         )
         voice, source = None, "provider-default"

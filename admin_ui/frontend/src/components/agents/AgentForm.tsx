@@ -578,9 +578,10 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent, 
                         <div className="mb-4">
                             <div className="flex items-center gap-1.5 mb-1.5">
                                 <label htmlFor="agent-voice" className="block text-sm font-medium">
-                                    Voice
+                                    {toolState.provider && vc.control !== 'disabled'
+                                        ? `Voice for ${toolState.provider}` : 'Voice'}
                                 </label>
-                                <HelpTooltip content="Overrides the provider's default voice for this agent. Leave empty to use the provider's configured voice. Multiple agents can share one provider, each with its own voice." />
+                                <HelpTooltip content="Choose a voice for the selected AI Engine. Leave empty to use its default. When a call is routed to Grok, a voice recognized as belonging to another provider falls back to the Grok instance’s default." />
                             </div>
                             {vc.control === 'select' && (
                                 <select
