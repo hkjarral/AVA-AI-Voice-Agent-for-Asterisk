@@ -24,6 +24,7 @@ import OllamaProviderForm from '../components/config/providers/OllamaProviderFor
 import OpenAIRealtimeProviderForm from '../components/config/providers/OpenAIRealtimeProviderForm';
 import DeepgramProviderForm from '../components/config/providers/DeepgramProviderForm';
 import GoogleLiveProviderForm from '../components/config/providers/GoogleLiveProviderForm';
+import { grokSpeechSettingsForSave } from '../utils/grokSpeechSettings';
 import GrokProviderForm from '../components/config/providers/GrokProviderForm';
 import OpenAIProviderForm from '../components/config/providers/OpenAIProviderForm';
 import ElevenLabsProviderForm from '../components/config/providers/ElevenLabsProviderForm';
@@ -205,11 +206,13 @@ const ProvidersPage: React.FC = () => {
             await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
             setConfig(sanitized);
             await refetch();
+            return true;
         } catch (err) {
             console.error('Failed to save config', err);
             toast.error('Failed to save configuration', {
                 description: err instanceof Error ? err.message : undefined,
             });
+            return false;
         }
     };
 
@@ -351,16 +354,14 @@ const ProvidersPage: React.FC = () => {
                 input_sample_rate_hz: 8000,
                 provider_input_encoding: 'ulaw',
                 provider_input_sample_rate_hz: 8000,
-                // xAI emits 24 kHz PCM16; we resample down to μ-law for Asterisk
+                // AVA's tested output baseline is PCM16 at 24 kHz.
                 output_encoding: 'linear16',
                 output_sample_rate_hz: 24000,
                 target_encoding: 'ulaw',
                 target_sample_rate_hz: 8000,
                 output_resampler: 'inherit',
-                response_modalities: ['audio', 'text'],
                 greeting: 'Hello, how can I help you today?',
                 instructions: 'You are a helpful AI assistant.',
-                turn_detection: { type: 'server_vad', threshold: 0.5, silence_duration_ms: 200, prefix_padding_ms: 200 },
                 session_warn_after_seconds: 1680,
             },
             elevenlabs_agent: {
@@ -657,8 +658,7 @@ const ProvidersPage: React.FC = () => {
         const providerKey = isNewProvider ? finalName : editingProvider;
         if (!providerKey) return;
 
-        const newConfig = { ...config };
-        if (!newConfig.providers) newConfig.providers = {};
+        const newConfig = { ...config, providers: { ...config.providers } };
 
         if ((isNewProvider || editingProvider !== finalName) && newConfig.providers[finalName]) {
             toast.error(`Provider "${finalName}" already exists.`);
@@ -698,6 +698,14 @@ const ProvidersPage: React.FC = () => {
             // (for example credential operations) can otherwise reintroduce a
             // stale Beta audio pair after the operator switches to GA.
             providerData = enforceOpenAIRealtimeGaAudioContract(providerData);
+        }
+        if (fullAgentKind === 'grok') {
+            try {
+                Object.assign(providerData, grokSpeechSettingsForSave(providerData));
+            } catch (error) {
+                toast.error(error instanceof Error ? error.message : 'Invalid Grok speech settings.');
+                return;
+            }
         }
         if (fullAgentKind === 'deepgram') {
             const listenModel = String(providerData.model || 'nova-3').trim().toLowerCase();
@@ -770,8 +778,7 @@ const ProvidersPage: React.FC = () => {
 
         newConfig.providers[finalName] = providerData;
 
-        await saveConfig(newConfig);
-        updateEditingProvider(null);
+        if (await saveConfig(newConfig)) updateEditingProvider(null);
     };
 
     const handleTestConnection = async (name: string, providerData: any) => {
@@ -868,6 +875,13 @@ const ProvidersPage: React.FC = () => {
             return <GenericProviderForm config={providerForm} onChange={updateForm} isNew={isNewProvider} />;
         }
 
+        // Match the save path for named Grok instances, including keys such as sales_realtime.
+        const credKey = isNewProvider ? undefined : (editingProvider || undefined);
+        if (getEffectiveFullAgentKind(providerForm, providerName) === 'grok') {
+            return <GrokProviderForm config={providerForm} onChange={updateForm} providerKey={credKey}
+                baseConfig={providerName === 'grok' ? undefined : config.providers?.grok} />;
+        }
+
         // Local provider (including full agent mode) uses LocalProviderForm
         if (providerForm.type === 'local' || providerName === 'local' || providerName.includes('local')) {
             return <LocalProviderForm config={providerForm} onChange={updateForm} />;
@@ -877,7 +891,6 @@ const ProvidersPage: React.FC = () => {
         // This ensures Deepgram, Google Live, etc. use their specific forms
         // Per-instance credentials require a saved YAML entry; pass `editingProvider`
         // when editing an existing provider, undefined for unsaved new ones.
-        const credKey = isNewProvider ? undefined : (editingProvider || undefined);
         if (providerName === 'deepgram' || providerName.includes('deepgram')) {
             return <DeepgramProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
         }
@@ -889,9 +902,6 @@ const ProvidersPage: React.FC = () => {
         }
         if (providerName === 'openai_realtime' || providerName.includes('realtime')) {
             return <OpenAIRealtimeProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
-        }
-        if (providerName === 'grok' || providerName.includes('grok') || providerForm.type === 'grok') {
-            return <GrokProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
         }
         if (providerName.includes('elevenlabs')) {
             return <ElevenLabsProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
@@ -908,8 +918,6 @@ const ProvidersPage: React.FC = () => {
                 return <DeepgramProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
             case 'google_live':
                 return <GoogleLiveProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
-            case 'grok':
-                return <GrokProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
             case 'openai':
                 return <OpenAIProviderForm config={providerForm} onChange={updateForm} />;
             case 'elevenlabs_agent':
@@ -1654,15 +1662,14 @@ const ProvidersPage: React.FC = () => {
                                 id: 'grok',
                                 name: 'xAI Grok Voice Agent',
                                 desc: 'Grok Voice (μ-law direct, built-in and cloned voices)',
-                                doc: 'https://docs.x.ai/developers/model-capabilities/audio/voice-agent',
+                                doc: 'https://docs.x.ai/developers/models/speech-to-speech',
                                 tooltip: (
                                     <>
-                                        <strong>xAI Grok Voice Agent</strong> — newest cloud option.
+                                        <strong>xAI Grok Voice Agent</strong>
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                            <li>~5¢/min ($3/hr flat)</li>
                                             <li>Built-in xAI voices and custom cloned IDs</li>
                                             <li>μ-law direct @ 8 kHz — no resampling for telephony</li>
-                                            <li>30-minute hard session cap (xAI limit)</li>
+                                            <li>Configurable speech speed, transcription hints and pronunciations</li>
                                             <li>Multi-instance ready (per-tenant keys via secret files)</li>
                                             <li>Requires <code>XAI_API_KEY</code></li>
                                         </ul>

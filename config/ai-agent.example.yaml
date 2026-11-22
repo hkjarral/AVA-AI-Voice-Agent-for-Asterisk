@@ -241,18 +241,16 @@ providers:
     voice: "alloy"
     base_url: "wss://api.openai.com/v1/realtime"
   # xAI Grok Voice Agent — full-agent realtime provider with native μ-law support.
-  # 30-min hard session cap (we log a warning at 28 min and let xAI close cleanly).
+  # AVA logs a long-session warning at 28 minutes by default.
   # Single-instance config: provider key == kind. See docs/Provider-Grok-Setup.md.
   grok:
     enabled: true
     api_key: "${XAI_API_KEY}"
     base_url: "wss://api.x.ai/v1/realtime"
-    model: "grok-voice-latest"  # or grok-voice-think-fast-1.0 (flagship)
+    model: "grok-voice-latest"  # or pin grok-voice-3.0
     voice: "eve"  # any xAI built-in voice or a custom cloned voice ID
     # Input: μ-law @ 8 kHz passthrough (no resample) — matches Asterisk's native telephony.
-    # Output: PCM16 @ 24 kHz — xAI emits 24 kHz PCM16 regardless of what we declare in
-    # session.update (no session.updated ACK arrives). Declaring it correctly here means
-    # the resampler downsamples 24 kHz → 8 kHz for AudioSocket egress (no garble).
+    # Request 24 kHz PCM16 for the 8 kHz telephony target. The resampler honors the negotiated output rate.
     input_encoding: "ulaw"
     input_sample_rate_hz: 8000
     provider_input_encoding: "ulaw"
@@ -261,7 +259,13 @@ providers:
     output_sample_rate_hz: 24000
     target_encoding: "ulaw"
     target_sample_rate_hz: 8000
-    session_warn_after_seconds: 1680  # 28 min — warn before 30-min hard cap
+    session_warn_after_seconds: 1680  # 28-minute AVA warning threshold
+    # Optional speech controls (also editable in Admin). Omit to use xAI defaults.
+    # speed: 1.15
+    # reasoning_effort: none
+    # keyterms: ["Acme Mobile"]
+    # language_hint: es-MX
+    # pronunciation_replacements: {"Acme Mobile": "Ack-mee Mobile"}
     # Advanced (YAML-only): xAI-native tools (web_search, x_search, file_search, MCP).
     # Each entry is forwarded verbatim into session.update.tools.
     # extra_tools:

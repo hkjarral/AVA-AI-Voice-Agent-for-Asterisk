@@ -530,6 +530,8 @@ def test_named_grok_instance_inherits_base_runtime_config():
         providers={
             "grok": {
                 "api_key": "base-key",
+                "speed": 1.25,
+                "language_hint": "ja",
                 "voice": "ara",
                 "turn_detection": {
                     "type": "server_vad",
@@ -547,6 +549,7 @@ def test_named_grok_instance_inherits_base_runtime_config():
             "type": "grok",
             "api_key": "instance-key",
             "display_name": "Grok Three",
+            "language_hint": "es-MX",
         },
         "grok3",
     )
@@ -558,3 +561,20 @@ def test_named_grok_instance_inherits_base_runtime_config():
     assert cfg.turn_detection.silence_duration_ms == 1000
     assert cfg.turn_detection.prefix_padding_ms == 300
     assert cfg.display_name == "Grok Three"
+    assert cfg.speed == 1.25
+    assert cfg.language_hint == "es-MX"
+
+
+@pytest.mark.parametrize("base_instance,expected", [(True, 1.15), (False, None)])
+def test_named_grok_speed_null_in_local_override(base_instance, expected):
+    from src.config.loaders import deep_merge_dicts
+
+    base = {"grok": {"speed": 1.15}}
+    if base_instance:
+        base["sales"] = {"type": "grok", "speed": 1.3}
+    providers = deep_merge_dicts(base, {"sales": {"type": "grok", "speed": None}})
+    engine = Engine.__new__(Engine)
+    engine.config = SimpleNamespace(providers=providers, llm=LLMConfig())
+    cfg = engine._build_grok_config(providers["sales"], "sales")
+    assert cfg is not None
+    assert cfg.speed == expected

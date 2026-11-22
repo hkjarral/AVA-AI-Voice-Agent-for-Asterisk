@@ -3301,8 +3301,7 @@ def _save_setup_config_locked(config: SetupConfig, selected_google_live_model: s
                         "model": "grok-voice-latest",
                         "voice": "eve",
                         "capabilities": ["stt", "llm", "tts"],
-                        # Audio: μ-law in / PCM16-24k out (xAI emits 24 kHz PCM16 regardless of
-                        # output_format declaration). See docs/Provider-Grok-Setup.md.
+                        # AVA telephony baseline: μ-law input and PCM16 at 24 kHz output.
                         "input_encoding": "ulaw",
                         "input_sample_rate_hz": 8000,
                         "provider_input_encoding": "ulaw",
@@ -3311,14 +3310,13 @@ def _save_setup_config_locked(config: SetupConfig, selected_google_live_model: s
                         "output_sample_rate_hz": 24000,
                         "target_encoding": "ulaw",
                         "target_sample_rate_hz": 8000,
-                        "response_modalities": ["audio", "text"],
                         "turn_detection": {
                             "type": "server_vad",
                             "threshold": 0.5,
                             "silence_duration_ms": 1000,
                             "prefix_padding_ms": 300,
                         },
-                        "session_warn_after_seconds": 1680,  # 28 min (30-min xAI hard cap)
+                        "session_warn_after_seconds": 1680,  # 28-minute AVA warning threshold
                     })
                 providers["grok"]["greeting"] = config.greeting
                 providers["grok"]["instructions"] = f"You are {config.ai_name}, a {config.ai_role}. Be helpful and concise. Always speak your responses out loud."

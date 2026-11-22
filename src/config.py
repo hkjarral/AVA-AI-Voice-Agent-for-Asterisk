@@ -12,10 +12,11 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    ValidationError,
     field_validator,
     model_validator,
 )
-from typing import Dict, Any, Literal, Optional, List
+from typing import Annotated, Dict, Any, Literal, Optional, List
 import ipaddress
 import re
 import structlog
@@ -1003,12 +1004,33 @@ class OpenAIRealtimeProviderConfig(CloudConnectionConfig):
     turn_detection: Optional[TurnDetectionConfig] = None
 
 
-class GrokProviderConfig(CloudConnectionConfig):
+class GrokSessionSettings(BaseModel):
+    """Optional speech controls shared by YAML validation and the realtime provider."""
+
+    speed: Optional[float] = Field(default=None, ge=0.7, le=1.5, strict=True)
+    reasoning_effort: Optional[Literal["high", "none"]] = None
+    keyterms: Optional[List[Annotated[str, Field(max_length=50, pattern=r"\S")]]] = Field(
+        default=None, max_length=100
+    )
+    language_hint: Optional[str] = Field(default=None, pattern=r"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$")
+    pronunciation_replacements: Optional[Dict[
+        Annotated[str, Field(pattern=r"\S")], Annotated[str, Field(pattern=r"\S")]
+    ]] = None
+
+    @field_validator("language_hint")
+    @classmethod
+    def require_regional_hint(cls, value):
+        if value and value.lower() in {"es", "pt"}:
+            raise ValueError("Spanish and Portuguese language hints require a region")
+        return value
+
+
+class GrokProviderConfig(CloudConnectionConfig, GrokSessionSettings):
     """Configuration for the xAI Grok Voice Agent realtime provider.
 
     The Voice Agent API is OpenAI-Realtime-compatible at the wire level with
     minor deviations (nested audio.{input,output}.format shape; ``response.text.delta``
-    event naming; 30-min session cap). This config models the xAI-native shape
+    event naming). This config models the xAI-native shape
     directly; the OpenAI provider is NOT reused. See Provider-Grok-Setup.md.
     """
 
@@ -1053,7 +1075,7 @@ class GrokProviderConfig(CloudConnectionConfig):
     # YAML escape hatch for xAI-native tools (file_search, web_search, x_search, mcp).
     # Each entry is sent as-is in session.update.tools, appended after function tools.
     extra_tools: List[Dict[str, Any]] = Field(default_factory=list)
-    # 30-min session cap: warn at this elapsed second count
+    # Operator warning threshold in seconds (0 disables).
     session_warn_after_seconds: int = Field(default=28 * 60)
 
     class TurnDetectionConfig(BaseModel):
@@ -1653,6 +1675,35 @@ def _generate_default_pipeline(config_data: Dict[str, Any]) -> None:
     config_data.setdefault("active_pipeline", pipeline_name)
 
 
+def _validate_grok_session_settings(providers: Any) -> None:
+    from src.config.normalization import ConfigValidationError
+
+    if not isinstance(providers, dict):
+        return
+    for name, cfg in providers.items():
+        if not isinstance(cfg, dict) or provider_kind(name, cfg) != "grok":
+            continue
+        # Validate these settings before Admin saves YAML or the engine starts.
+        # Validation locations below stop at field names: dictionary keys can
+        # themselves contain private pronunciation phrases.
+        try:
+            GrokSessionSettings.model_validate(cfg)
+        except ValidationError as exc:
+            error = exc.errors(include_input=False)[0]
+            raise ConfigValidationError(
+                f"providers.{name}.{error['loc'][0]}: {error['msg']}"
+            ) from None
+        unknown = set(cfg) - GrokProviderConfig.model_fields.keys() - {"name", "type", "capabilities"}
+        turn_detection = cfg.get("turn_detection")
+        if isinstance(turn_detection, dict):
+            unknown.update(
+                f"turn_detection.{key}" for key in turn_detection
+                if key not in GrokProviderConfig.TurnDetectionConfig.model_fields
+            )
+        if unknown:
+            logger.warning("Unrecognized Grok configuration keys", provider=name, keys=sorted(map(str, unknown)))
+
+
 def load_config(path: str = "config/ai-agent.yaml") -> AppConfig:
     """
     Load and validate configuration from YAML file.
@@ -1731,6 +1782,7 @@ def load_config(path: str = "config/ai-agent.yaml") -> AppConfig:
     try:
         validate_providers(config_data)
         validate_pipelines(config_data)
+        _validate_grok_session_settings(config_data.get("providers"))
     except ConfigValidationError as e:
         logger.error("Configuration validation failed", error=str(e))
         raise

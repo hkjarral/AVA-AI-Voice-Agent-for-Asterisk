@@ -1144,7 +1144,7 @@ const Wizard = () => {
                             <ProviderCard
                                 id="grok"
                                 title="xAI Grok Voice Agent"
-                                description="Multilingual realtime (24+ languages including Hindi, Urdu, Arabic). $3/hr flat. μ-law direct telephony path; OpenAI-Realtime-compatible API."
+                                description="Multilingual speech-to-speech with direct μ-law caller input and configurable voice and playback speed."
                                 icon={Cloud}
                             />
                         </div>
@@ -1980,8 +1980,7 @@ const Wizard = () => {
                                 <div className="bg-blue-50/50 dark:bg-blue-900/10 p-4 rounded-md border border-blue-100 dark:border-blue-900/20 text-sm text-blue-800 dark:text-blue-300">
                                     <p className="font-semibold mb-1">xAI Grok Voice Agent</p>
                                     <p className="text-blue-700 dark:text-blue-400">
-                                        Realtime speech-to-speech with multilingual support (24+ languages). Wire-compatible with the
-                                        OpenAI Realtime API. Requires an xAI API key plus credits/license on the team account.
+                                        Connect calls to xAI’s Speech to Speech API using a key from a team with voice access.
                                     </p>
                                 </div>
                                 <div className="space-y-2">
@@ -1990,7 +1989,7 @@ const Wizard = () => {
                                         <HelpTooltip
                                             content={
                                                 <>
-                                                    <strong>xAI API Key</strong> — authorizes Grok Voice (wire-compatible with OpenAI Realtime).
+                                                    <strong>xAI API Key</strong> — authorizes Grok speech sessions.
                                                     <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                                         <li>Starts with <code>xai-</code></li>
                                                         <li>Stored as <code>XAI_API_KEY</code></li>
@@ -2024,15 +2023,15 @@ const Wizard = () => {
                                         <a href="https://console.x.ai/team/default/api-keys" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
                                             console.x.ai
                                         </a>
-                                        . Defaults to voice <code>eve</code>, model <code>grok-voice-latest</code>. Tune both on the Providers page after setup.
+                                        . Defaults to voice <code>eve</code>, model <code>grok-voice-latest</code>. Edit the model, voice and speech settings on the Providers page after setup.
                                     </p>
                                 </div>
                                 <div className="bg-amber-50/50 dark:bg-amber-900/10 p-4 rounded-md border border-amber-100 dark:border-amber-900/20">
                                     <h4 className="font-semibold mb-2 text-amber-800 dark:text-amber-300 text-sm">Notes</h4>
                                     <ul className="text-xs text-amber-700 dark:text-amber-400 space-y-1 list-disc list-inside">
-                                        <li>xAI documents a 30-minute hard session cap. We log a warning at 28 min.</li>
-                                        <li>Cost: $3/hour flat (≈ $0.05/min), regardless of voice or model.</li>
-                                        <li>Output is PCM16 @ 24 kHz (xAI emits this regardless of session.update declaration).</li>
+                                        <li>AVA requests PCM16 at 24 kHz for playback and logs a long-session warning after 28 minutes by default.</li>
+                                        <li><a className="underline" href="https://docs.x.ai/developers/models/speech-to-speech"
+                                            target="_blank" rel="noopener noreferrer">xAI pricing and session limits</a></li>
                                     </ul>
                                 </div>
                             </div>

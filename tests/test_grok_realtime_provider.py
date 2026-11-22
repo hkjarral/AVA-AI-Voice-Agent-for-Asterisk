@@ -7,14 +7,16 @@ Focus areas (highest-value first):
 2. Audio passthrough — verify μ-law direct path does NOT resample.
 3. Event alias handling — ``response.text.delta`` is xAI's text-delta name.
 4. provider_key propagation — multi-instance support.
-5. 30-min session cap — warning emission at the configured threshold.
+5. Long sessions — warning emission at the configured threshold.
 """
 
 import asyncio
+import base64
 import json
 import time
 import types
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -117,6 +119,16 @@ async def test_session_update_payload_shape_ulaw_default(provider):
     assert "modalities" not in session
     assert "output_modalities" not in session
 
+    assert "speed" not in session["audio"]["output"]
+    assert "transcription" not in session["audio"]["input"]
+    assert {"speed", "reasoning", "replace", "resumption"}.isdisjoint(session)
+    assert "idle_timeout_ms" not in session["turn_detection"]
+
+    await provider._switch_to_pcm24k_output()
+    assert ws.parsed_events()[-1]["session"]["audio"] == {
+        "output": {"format": {"type": "audio/pcm", "rate": 24000}}
+    }
+
     # Instructions present
     assert "instructions" in session
     assert "Be helpful." in session["instructions"]
@@ -142,6 +154,91 @@ async def test_session_update_payload_shape_pcm_fallback(grok_config):
     assert session["audio"]["input"]["format"]["rate"] == 24000
     assert session["audio"]["output"]["format"]["type"] == "audio/pcm"
     assert session["audio"]["output"]["format"]["rate"] == 24000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("speed,effort", [(0.7, "high"), (1.5, "none")])
+async def test_grok_speech_settings_on_session_fallback_and_reconnect(grok_config, monkeypatch, speed, effort):
+    settings = {
+        "speed": speed, "reasoning_effort": effort, "keyterms": ["Acme"],
+        "language_hint": "es-MX", "pronunciation_replacements": {"Acme": "Ack-mee"},
+    }
+    cfg = GrokProviderConfig(**{**grok_config.model_dump(), **settings})
+    provider = GrokProvider(cfg, on_event=None)
+    provider._call_id = "test-call"
+    provider.websocket = ws = _RecordingWebSocket()
+
+    await provider._send_session_update()
+    session = ws.parsed_events()[0]["session"]
+    assert session["audio"] == {
+        "output": {"format": {"type": "audio/pcmu", "rate": 8000}, "speed": speed},
+        "input": {"format": {"type": "audio/pcmu", "rate": 8000},
+                  "transcription": {"keyterms": ["Acme"], "language_hint": "es-MX"}},
+    }
+    assert session["reasoning"] == {"effort": effort}
+    assert session["replace"] == {"Acme": "Ack-mee"}
+    assert settings.keys().isdisjoint(session)
+
+    await provider._switch_to_pcm24k_output()
+    assert ws.parsed_events()[-1]["session"]["audio"] == {
+        "output": {"format": {"type": "audio/pcm", "rate": 24000}, "speed": speed}
+    }
+
+    assert provider._active_output_sample_rate_hz == 24000
+    await provider._handle_event({"type": "session.updated", "session": {"voice": "eve"}})
+    assert provider._active_output_sample_rate_hz == 24000
+
+    new_ws = _RecordingWebSocket()
+    monkeypatch.setattr("src.providers.grok.websockets.connect", AsyncMock(return_value=new_ws))
+    monkeypatch.setattr(provider, "_receive_loop", AsyncMock())
+    monkeypatch.setattr(provider, "_keepalive_loop", AsyncMock())
+    await provider._reconnect_with_backoff()
+    await asyncio.gather(provider._receive_task, provider._keepalive_task)
+    assert new_ws.parsed_events()[0]["session"] == session
+    assert provider._active_output_sample_rate_hz == 8000
+
+
+@pytest.mark.asyncio
+async def test_grok_nested_pcm_ack_preserves_greeting_duration(grok_config):
+    # The transport normally requests 16 kHz. A differing configured rate also
+    # proves the explicit ACK wins over the local assumption.
+    grok_config.output_encoding = "linear16"
+    grok_config.output_sample_rate_hz = 24000
+    grok_config.target_encoding = "slin16"
+    grok_config.target_sample_rate_hz = 16000
+    on_event = AsyncMock()
+    provider = GrokProvider(grok_config, on_event)
+    provider._call_id = "grok-16k"
+    ack = {"type": "session.updated", "session": {"audio": {
+        "output": {"format": {"type": "audio/pcm", "rate": 16000}},
+    }}}
+    await provider._handle_event(ack)
+    # Voice/VAD-only updates during the greeting must retain the negotiated rate.
+    await provider._handle_event({"type": "session.updated", "session": {"voice": "eve"}})
+    frame = b"\x34\x12" * 320  # 20 ms of 16-bit mono PCM at 16 kHz
+    await provider._handle_event({
+        "type": "response.output_audio.delta", "delta": base64.b64encode(frame).decode(),
+    })
+    assert on_event.await_args.args[0]["data"] == frame
+    assert provider.parse_ack(ack).output_sample_rates_hz == [16000]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fmt,codec,rate", [
+    ({"audio": {"output": {"format": {"type": "audio/pcm", "rate": 24000}}}}, "pcm16", 24000),
+    ({"output_audio_format": "pcm16"}, "pcm16", 16000),
+    ({"output_audio_format": "g711_ulaw"}, "g711_ulaw", 8000),
+    ({"audio": {"output": {"format": {"type": "audio/pcma"}}}}, "g711_alaw", 8000),
+])
+async def test_grok_ack_format_compatibility(grok_config, fmt, codec, rate):
+    grok_config.output_encoding = "linear16"
+    grok_config.output_sample_rate_hz = 16000
+    provider = GrokProvider(grok_config, None)
+    ack = {"type": "session.updated", "session": fmt}
+    await provider._handle_event(ack)
+    assert provider._provider_output_format == codec
+    assert provider._active_output_sample_rate_hz == rate
+    assert provider.parse_ack(ack).output_sample_rates_hz == [rate]
 
 
 @pytest.mark.asyncio
@@ -362,7 +459,7 @@ async def test_start_session_raises_without_api_key(grok_config):
 
 
 # --------------------------------------------------------------------------- #
-# 5. 30-min session cap warning                                                #
+# 5. Long-session warning                                                      #
 # --------------------------------------------------------------------------- #
 
 
