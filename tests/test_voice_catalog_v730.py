@@ -37,7 +37,10 @@ def test_openai_catalog_matches_provider_module_constant():
 def test_grok_meta_is_freeform_with_named_voices():
     meta = provider_voice_meta("grok")
     assert meta["voice_mode"] == "freeform"  # custom clone IDs allowed
-    assert set(_ids(meta)) == {"eve", "ara", "rex", "sal", "leo"}
+    assert sorted(_ids(meta)) == (
+        "altair ara atlas aurora carina castor celeste cosmo eve helios helix iris kepler leo "
+        "liora lumen luna lux naksh orion perseus rex rigel sal sirius ursa zagan zenith"
+    ).split()
     assert meta["voice_field"] == "voice"
 
 

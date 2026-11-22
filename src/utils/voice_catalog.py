@@ -3,15 +3,10 @@
 Pure data + tiny helpers — no heavy imports, safe to import from
 admin_ui/backend (via the /app/project mount) and from provider adapters.
 
-Lists are transcribed from the catalogs the repo ships in the Admin UI
-provider forms (OpenAIRealtimeProviderForm, GrokProviderForm,
-GoogleLiveProviderForm, DeepgramProviderForm). When a provider adds voices,
-update BOTH until the provider forms consume /api/config/providers/meta.
-
-Verified complete against official provider docs on 2026-07-02:
-developers.openai.com realtime guide (10/10), docs.x.ai voice-agent (5 named
-+ custom clone IDs), ai.google.dev speech-generation (30/30),
-developers.deepgram.com tts-models (103/103 ID-level match).
+The Grok provider and Agent forms consume this catalog via the Admin API.
+Grok IDs verified 2026-11-21 against the xAI voice table shared by its realtime
+and TTS APIs: https://docs.x.ai/developers/model-capabilities/audio/text-to-speech#voices
+Other provider forms still maintain their own lists.
 
 voice_mode semantics for the Agent form:
   static           closed list; each provider enforces its documented failure policy
@@ -44,6 +39,29 @@ GROK_NAMED_VOICES: List[Dict[str, str]] = [
     {"id": 'rex', "label": 'rex — confident, clear'},
     {"id": 'sal', "label": 'sal — smooth, balanced'},
     {"id": 'leo', "label": 'leo — authoritative, strong'},
+    {"id": "altair", "label": "Altair"},
+    {"id": "atlas", "label": "Atlas"},
+    {"id": "aurora", "label": "Aurora"},
+    {"id": "carina", "label": "Carina"},
+    {"id": "castor", "label": "Castor"},
+    {"id": "celeste", "label": "Celeste"},
+    {"id": "cosmo", "label": "Cosmo"},
+    {"id": "helios", "label": "Helios"},
+    {"id": "helix", "label": "Helix"},
+    {"id": "iris", "label": "Iris"},
+    {"id": "kepler", "label": "Kepler"},
+    {"id": "liora", "label": "Liora"},
+    {"id": "lumen", "label": "Lumen"},
+    {"id": "luna", "label": "Luna"},
+    {"id": "lux", "label": "Lux"},
+    {"id": "naksh", "label": "Naksh"},
+    {"id": "orion", "label": "Orion"},
+    {"id": "perseus", "label": "Perseus"},
+    {"id": "rigel", "label": "Rigel"},
+    {"id": "sirius", "label": "Sirius"},
+    {"id": "ursa", "label": "Ursa"},
+    {"id": "zagan", "label": "Zagan"},
+    {"id": "zenith", "label": "Zenith"},
 ]
 
 GOOGLE_LIVE_VOICES: List[Dict[str, str]] = [
@@ -184,6 +202,15 @@ DEEPGRAM_AURA_VOICES: List[Dict[str, str]] = [
     {"id": 'aura-helios-en', "label": 'Helios (EN Legacy)'},
     {"id": 'aura-zeus-en', "label": 'Zeus (EN Legacy)'},
 ]
+
+# Only recognized foreign IDs are incompatible. Other IDs may be private xAI
+# clones or newly released voices. A shared built-in name belongs to Grok too.
+GROK_BUILTIN_IDS = frozenset(v["id"] for v in GROK_NAMED_VOICES)
+GROK_FOREIGN_VOICE_IDS = frozenset(
+    v["id"].lower()
+    for voices in (GOOGLE_LIVE_VOICES, OPENAI_VOICES, DEEPGRAM_AURA_VOICES)
+    for v in voices
+).difference(GROK_BUILTIN_IDS)
 
 # Mirrors admin_ui/frontend/src/utils/providerNaming.ts
 _CANONICAL_FULL_AGENT_KEYS = {

@@ -17,8 +17,7 @@ For every call, the engine resolves the session voice in this order:
 
 The decision is logged once per call:
 `Session voice resolved  voice=<name>  source=override|agent|provider-default` — and recorded
-in Call History (detail view shows e.g. **"Voice: marin (from agent)"**), so you can always
-verify which voice a call actually used.
+in Call History (detail view shows e.g. **"Voice: marin (from agent)"**), so you can trace AVA’s selection. For Grok, the session update log records the sent ID and a warning identifies a different voice confirmed by xAI.
 
 Agent voice changes apply **immediately** — agents.db is read at call time, no engine restart.
 
@@ -27,7 +26,7 @@ Agent voice changes apply **immediately** — agents.db is read at call time, no
 | Provider | Agent voice? | Voice values | Validation |
 |---|---|---|---|
 | **OpenAI Realtime** | ✅ Dropdown | 10 GA voices (alloy, ash, ballad, cedar, coral, echo, marin, sage, shimmer, verse) | Closed list. An unrecognized value (e.g. stale text from the pre-7.3.0 display-only field) logs a warning and **falls back to the provider default — the call never fails** |
-| **xAI Grok** | ✅ Suggestions + free text | eve, ara, rex, sal, leo — or a custom cloned `voice_id` | Pass-through (clone IDs are valid, so no local validation) |
+| **xAI Grok** | ✅ Suggestions + free text | 28 built-in voices and custom cloned IDs | A call routed from another provider falls back to the Grok default for a recognized foreign Agent voice. Explicit per-call overrides and opaque clone IDs pass through. |
 | **Google Live** | ✅ Dropdown | 30 prebuilt voices (Aoede, Kore, Charon, Puck, …) | Validated against the prebuilt catalog (case-insensitive) — unknown values warn and **fall back to the configured voice**, never failing the call |
 | **Deepgram Voice Agent** | ✅ Language-filtered dropdown | Aura models matching the provider's `agent_language` (`aura-2-thalia-en`, `aura-2-celeste-es`, …) | An unknown Aura value or a known voice with a different language is preserved for review but fails closed before the remote session opens; select a supported matching voice before calling. |
 | **ElevenLabs Agent** | ❌ Platform-managed | Voice is baked into the agent on the ElevenLabs platform | An agent voice set in AVA is ignored with an explanatory log |

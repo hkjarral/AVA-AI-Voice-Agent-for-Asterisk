@@ -248,7 +248,7 @@ providers:
     api_key: "${XAI_API_KEY}"
     base_url: "wss://api.x.ai/v1/realtime"
     model: "grok-voice-latest"  # or grok-voice-think-fast-1.0 (flagship)
-    voice: "eve"  # named: eve|ara|rex|sal|leo, or a custom cloned voice ID
+    voice: "eve"  # any xAI built-in voice or a custom cloned voice ID
     # Input: μ-law @ 8 kHz passthrough (no resample) — matches Asterisk's native telephony.
     # Output: PCM16 @ 24 kHz — xAI emits 24 kHz PCM16 regardless of what we declare in
     # session.update (no session.updated ACK arrives). Declaring it correctly here means

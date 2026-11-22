@@ -1,5 +1,7 @@
 import ConnectionRecoveryFields from './ConnectionRecoveryFields';
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import axios from 'axios';
+import type { VoiceOption } from '../../../utils/agentVoice';
 import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 import HelpTooltip from '../../ui/HelpTooltip';
 import OutputResamplerField from './OutputResamplerField';
@@ -9,14 +11,6 @@ interface GrokProviderFormProps {
     onChange: (newConfig: any) => void;
     providerKey?: string;
 }
-
-const GROK_VOICES = [
-    { value: 'eve', label: 'eve — energetic, upbeat' },
-    { value: 'ara', label: 'ara — warm, friendly' },
-    { value: 'rex', label: 'rex — confident, clear' },
-    { value: 'sal', label: 'sal — smooth, balanced' },
-    { value: 'leo', label: 'leo — authoritative, strong' },
-];
 
 const GROK_MODELS = [
     { value: 'grok-voice-latest', label: 'grok-voice-latest (recommended)' },
@@ -38,13 +32,21 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
         });
     };
 
-    const isNamedVoice = GROK_VOICES.some((v) => v.value === config.voice);
-    // Treat undefined/null as named (initial state), but empty string as
-    // custom — picking "Custom voice ID" sets voice to '' and we used to
-    // collapse straight back to named, making custom unselectable
-    // (CodeRabbit on PR #396).
-    const voiceMode =
-        config.voice === undefined || config.voice === null || isNamedVoice ? 'named' : 'custom';
+    const [voices, setVoices] = useState<VoiceOption[] | null>(null);
+    const [editingCustom, setEditingCustom] = useState(false);
+    useEffect(() => {
+        const controller = new AbortController();
+        axios.get('/api/config/providers/voice-catalog/grok', { signal: controller.signal })
+            .then(({ data }) => {
+                if (!controller.signal.aborted) setVoices(Array.isArray(data?.voices) ? data.voices : []);
+            })
+            .catch(() => {
+                if (!controller.signal.aborted) setVoices([]);
+            });
+        return () => controller.abort();
+    }, []);
+    const voice = String(config.voice ?? 'eve');
+    const builtin = voices?.find(option => option.id === voice.toLowerCase());
 
     return (
         <div className="space-y-6">
@@ -147,60 +149,54 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                     </div>
                     <div className="space-y-2">
                         <div className="flex items-center gap-1.5">
-                            <label className="text-sm font-medium">Default Voice</label>
+                            <label htmlFor="grok-default-voice" className="text-sm font-medium">Default Voice</label>
                             <HelpTooltip
                                 content={
                                     <>
-                                        <strong>Default Voice</strong> — which speaker xAI uses for synthesized audio. Agents can override this per agent (Agents page); this value is the fallback when an agent doesn't set its own voice.
-                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                            <li><code>eve</code> — energetic, upbeat</li>
-                                            <li><code>ara</code> — warm, friendly</li>
-                                            <li><code>rex</code> — confident, clear</li>
-                                            <li><code>sal</code> — smooth, balanced</li>
-                                            <li><code>leo</code> — authoritative, strong</li>
-                                        </ul>
-                                        Switch to <em>Custom voice ID</em> to use a voice cloned in the xAI dashboard
-                                        (paste the voice ID it returns).
+                                        An explicit per-call voice takes priority over the Agent voice.
+                                        Grok uses this default when the Agent voice is empty or a routed call
+                                        inherits a recognized voice from another provider. Choose a built-in
+                                        voice or paste a cloned voice ID from your xAI workspace.
                                     </>
                                 }
                                 link="https://docs.x.ai/developers/model-capabilities/audio/voice-agent"
                                 linkText="xAI voice options"
                             />
                         </div>
-                        <select
-                            className="w-full p-2 rounded border border-input bg-background"
-                            value={voiceMode}
-                            onChange={(e) => {
-                                if (e.target.value === 'named') {
-                                    handleChange('voice', 'eve');
-                                } else {
-                                    handleChange('voice', '');
-                                }
-                            }}
-                        >
-                            <option value="named">Named voice (eve / ara / rex / sal / leo)</option>
-                            <option value="custom">Custom voice ID (cloned voice)</option>
-                        </select>
-                        {voiceMode === 'named' ? (
+                        {voices?.length ? (
                             <select
+                                id="grok-default-voice"
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.voice || 'eve'}
-                                onChange={(e) => handleChange('voice', e.target.value)}
+                                value={editingCustom ? '' : builtin?.id ?? ''}
+                                onChange={(e) => {
+                                    setEditingCustom(false);
+                                    handleChange('voice', e.target.value);
+                                }}
                             >
-                                {GROK_VOICES.map((v) => (
-                                    <option key={v.value} value={v.value}>
-                                        {v.label}
-                                    </option>
-                                ))}
+                                <optgroup label="Built-in voices">
+                                    {voices.map(option => (
+                                        <option key={option.id} value={option.id}>{option.label}</option>
+                                    ))}
+                                </optgroup>
+                                <option value="">Custom voice ID (cloned voice)</option>
                             </select>
-                        ) : (
+                        ) : null}
+                        {(!voices?.length || !builtin || editingCustom) && (
                             <input
+                                id={voices?.length ? 'grok-custom-voice' : 'grok-default-voice'}
+                                aria-label={voices?.length ? 'Custom voice ID' : 'Default Voice'}
                                 type="text"
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.voice || ''}
+                                value={voice}
+                                disabled={voices === null}
+                                onFocus={() => setEditingCustom(true)}
+                                onBlur={() => setEditingCustom(false)}
                                 onChange={(e) => handleChange('voice', e.target.value)}
-                                placeholder="e.g. custom-voice-abc123"
+                                placeholder="Enter a voice ID"
                             />
+                        )}
+                        {voices?.length === 0 && (
+                            <p className="text-xs text-muted-foreground">Voice catalog unavailable. Enter a built-in or cloned voice ID.</p>
                         )}
                     </div>
                 </div>

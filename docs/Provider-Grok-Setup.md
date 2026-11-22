@@ -49,16 +49,9 @@ with `AI_AGENT=<slug>`. See [Multi-Instance-Full-Agent-Providers.md](Multi-Insta
 
 ## Supported voices
 
-| Name | Notes |
-|---|---|
-| `eve` | Energetic, upbeat (default) |
-| `ara` | Warm, friendly |
-| `rex` | Confident, clear |
-| `sal` | Smooth, balanced |
-| `leo` | Authoritative, strong |
-| `<voice-id>` | Custom cloned voice from your xAI workspace |
+Choose **Default Voice** in the Grok provider editor. The built-in list includes 28 voices, including `eve` (the AVA default), `celeste`, and `atlas`. Choose **Custom voice ID** to enter a clone ID exactly as supplied by your xAI workspace. The Agent form uses the same catalog. [xAI voice table and samples](https://docs.x.ai/developers/model-capabilities/audio/text-to-speech#voices)
 
-Set `voice:` to either a named voice or a custom voice ID. The admin UI exposes both modes.
+When a Google Live Agent uses `Schedar` and the dialplan routes the call to a Grok instance, AVA uses that instance’s default voice. An explicit per-call voice override still takes priority. The payload log shows the voice AVA sent. If xAI confirms a different voice, the engine logs both IDs.
 
 ## Audio path
 

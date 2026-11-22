@@ -1021,7 +1021,7 @@ class GrokProviderConfig(CloudConnectionConfig):
     # Connection
     base_url: str = Field(default="wss://api.x.ai/v1/realtime")
     model: str = Field(default="grok-voice-latest")
-    voice: str = Field(default="eve")  # named: eve|ara|rex|sal|leo, or a custom voice ID
+    voice: str = Field(default="eve")  # any xAI built-in voice or a custom voice ID
     instructions: Optional[str] = None
     greeting: Optional[str] = None
     # Audio defaults:
