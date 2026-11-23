@@ -29,6 +29,12 @@ No application database migration or automatic calendar-event backfill is added.
   Environment language/ITN edits or removals require Local AI recreation, while
   model controls follow their apply/verification path. Preserve language, ITN and
   mode choices when switching or rolling back. See [local model setup](LOCAL_ONLY_SETUP.md#sherpa-onnx-offline-sensevoice-vad-gated-multilingual).
+- **CPU image glibc fix.** Both CPU Local AI stages explicitly install and verify
+  `libc6`/`libc-bin` at `2.41-12+deb13u5` or newer. Rebuild installed CPU profiles
+  with their existing flags; stale mirrors fail closed. Hosted scans removed all
+  28 targeted package/advisory results (14 advisories). This does not fix the
+  Ubuntu GPU image, Bookworm services or vendored packaging-tool findings. See
+  [CPU image security updates](LOCAL_ONLY_SETUP.md#cpu-image-security-updates).
 - **Local AI dependency set.** Shared pins are Torch 2.13.0, TorchAudio 2.11.0,
   Transformers 5.10.1 and Hugging Face Hub 1.27.0. Optional installs are constrained
   to this set; retain the original backend flags, including MeloTTS/T-one choices.

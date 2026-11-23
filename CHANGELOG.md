@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [7.7.4] - 2026-11-22
 
-Prepared from main `872a34eb` after v7.7.3, covering 18 merged PRs. Includes
+Prepared from main `15cc1e7e` after v7.7.3, covering 19 merged PRs. Includes
 SenseVoice STT, Grok speech/voice controls, calendar corrections, audio and
 telephony lifecycle recovery, and shared Local AI security hardening. The date
 is provisional until publication approval. See the [migration guide](docs/MIGRATION.md#v773-to-v774)
@@ -24,6 +24,11 @@ maintainer `hkjarral`; verified roles are recorded in [contributors](CONTRIBUTOR
   their own release-specific assessment. The v7.7.3-only exception does not
   authorize publication of v7.7.4. See the validation matrix for the pending
   security disposition and limits of the reused runtime evidence.
+
+- Update CPU Local AI builder/runtime `libc6` and `libc-bin` explicitly and
+  require Debian Trixie version `2.41-12+deb13u5` or newer. Cached base images and
+  lean profiles cannot silently retain the older packages; a stale mirror fails
+  the build. Backend/model pins and the existing zlib floor are preserved (#889).
 
 ### Added
 

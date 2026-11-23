@@ -8,6 +8,21 @@ This is the **canonical guide** for all local deployment topologies:
 - [GPU (same machine)](#topology-2-gpu-same-machine) — Asterisk + AI engine + GPU inference on one box
 - [Split-Server (remote GPU)](#topology-3-split-server-remote-gpu) — PBX on one machine, GPU inference on another
 
+### CPU image security updates
+
+Rebuild installed CPU Local AI images with the original backend flags to receive
+the glibc update. Both builder and runtime explicitly install `libc6`/`libc-bin`
+and refuse versions below `2.41-12+deb13u5`, even when an upstream base layer is
+cached or native-build backends are disabled. If a mirror lacks the fixed
+packages, refresh/retry the build after mirror availability is restored; do not
+remove the version checks. Preserve models and configuration. Build the
+replacement before recreation, drain calls, and keep unused services stopped.
+
+This Trixie change does not update the Ubuntu CUDA image, Bookworm services,
+Python packaging tools or other residual dependency findings. The release's
+separate security disposition still applies; a successful build is not a claim
+that every optional backend or physical GPU was tested.
+
 ## Overview
 
 For authenticated batch uploads using your installed local STT backend, see the

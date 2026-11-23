@@ -55,7 +55,7 @@ Thanks to all the people who have contributed to the Asterisk AI Voice Agent!
   Implementation was integrated through the linked release PRs in the
   [validation matrix](docs/baselines/golden/v7.7.4-validation-matrix.md).
 - **hkjarral:** runtime and Admin corrections, review hardening, Local AI dependency
-  integration, validation, guides and release preparation. Existing dependency
+  integration, CPU glibc hardening (#889), validation, guides and release preparation. Existing dependency
   proposal origins remain credited in their PR histories; unmerged Dependabot
   work is excluded.
 

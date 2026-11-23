@@ -65,7 +65,9 @@ When upgrading from v7.7.3, stop new call admissions, drain calls, and rebuild/r
 Engine and Admin UI. Update installed CPU or CUDA Local AI images with their
 original build flags to receive the shared model-dependency security updates.
 Preserve models, configuration and running-state intent; do not start an unused
-Local AI service. Update the host CLI and updater image with the release.
+Local AI service. CPU Local AI builds now require `libc6`/`libc-bin` at least
+`2.41-12+deb13u5` in both stages; stale mirrors fail the build rather than silently
+retaining old packages. See [CPU image updates](LOCAL_ONLY_SETUP.md#cpu-image-security-updates). Update the host CLI and updater image with the release.
 Review Google Calendar title-prefix booking repair and datetime/custom-prompt
 compatibility before scheduling calls. CUDA Torch/TorchAudio wheels now target
 CUDA 12.6 within the existing CUDA 12.4.1 base; qualify the host driver and selected
