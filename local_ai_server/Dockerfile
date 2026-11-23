@@ -23,7 +23,15 @@ WORKDIR /usr/src/app
 
 # Some optional backends require native builds (e.g., llama-cpp-python) or git installs (MeloTTS).
 # Install build tooling only when those backends are enabled to keep CI "ci-min" builds lean.
+# Explicitly upgrade both glibc packages even when the base tag still contains
+# deb13u4; fail closed if the configured mirror cannot supply the fixed version.
 RUN apt-get -o Acquire::Retries=5 update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libc6 libc-bin && \
+    for AAVA_GLIBC_PACKAGE in libc6 libc-bin; do \
+        AAVA_GLIBC_VERSION="$(dpkg-query -W -f='${Version}' "$AAVA_GLIBC_PACKAGE")" || exit 1; \
+        echo "$AAVA_GLIBC_PACKAGE=$AAVA_GLIBC_VERSION"; \
+        dpkg --compare-versions "$AAVA_GLIBC_VERSION" ge '2.41-12+deb13u5' || exit 1; \
+    done && \
     if [ "$INCLUDE_LLAMA" = "true" ] || [ "$INCLUDE_MELOTTS" = "true" ] || [ "$INCLUDE_WHISPER_CPP" = "true" ] || [ "$INCLUDE_TONE" = "true" ]; then \
         apt-get install -y --no-install-recommends \
             build-essential \
@@ -184,8 +192,10 @@ FROM python:3.11-slim-trixie
 # Build argument to optionally include Kroko embedded server
 ARG INCLUDE_KROKO_EMBEDDED=false
 
-# Install runtime dependencies. Require the Debian Trixie zlib fix (DSA-6613-1).
+# Install runtime dependencies and enforce the fixed Trixie glibc/zlib floors.
 RUN apt-get -o Acquire::Retries=5 update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    libc6 \
+    libc-bin \
     tzdata \
     libsndfile1 \
     libasound2 \
@@ -197,6 +207,11 @@ RUN apt-get -o Acquire::Retries=5 update && DEBIAN_FRONTEND=noninteractive apt-g
     espeak-ng \
     zlib1g \
     && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' zlib1g)" ge '1:1.3.dfsg+really1.3.1-1+deb13u1' \
+    && for AAVA_GLIBC_PACKAGE in libc6 libc-bin; do \
+        AAVA_GLIBC_VERSION="$(dpkg-query -W -f='${Version}' "$AAVA_GLIBC_PACKAGE")" || exit 1; \
+        echo "$AAVA_GLIBC_PACKAGE=$AAVA_GLIBC_VERSION"; \
+        dpkg --compare-versions "$AAVA_GLIBC_VERSION" ge '2.41-12+deb13u5' || exit 1; \
+    done \
     && rm -rf /var/lib/apt/lists/*
 
 # ─────────────────────────────────────────────────────────────────────────────

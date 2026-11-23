@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Update CPU Local AI builder/runtime `libc6` and `libc-bin` explicitly and
+  require Debian Trixie version `2.41-12+deb13u5` or newer. Cached base images and
+  lean profiles cannot silently retain the older packages; a stale mirror fails
+  the build. Backend/model pins and the existing zlib floor are preserved.
+
 ### Added
 
 - Grok providers can set playback speed, reasoning effort, transcription hints and spoken pronunciation replacements in YAML or Admin. The PCM fallback preserves playback speed, and the config loader reports unrecognized Grok field names (#886). The provider editor supports versioned Grok Voice 3.0 selection and preserves existing model pins. Setup now links to current xAI pricing and explains AVA’s configurable long-session warning.
