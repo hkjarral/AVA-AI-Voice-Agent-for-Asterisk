@@ -17,7 +17,18 @@ checks and tag it only after the applicable release gates pass.
 
 ## Manual Golden Baselines (Must Pass Before Tagging)
 
-For v7.7.3, use the [current validation matrix](baselines/golden/v7.7.3-validation-matrix.md).
+For v7.7.4, use the [current validation matrix](baselines/golden/v7.7.4-validation-matrix.md).
+The maintainer approved a fresh v7.7.4-only waiver of additional deployment,
+runtime, live-call and upgrade testing, including exact-candidate acceptance and
+a successful-call golden baseline. Reuse existing revision/configuration-qualified
+evidence and retain all unverified lanes. Required CI, automated/image checks,
+security assessment and review are not waived. Merge/tag remain held for explicit
+approval. Residual security findings need their own v7.7.4 disposition; the
+v7.7.3 exception does not carry forward.
+
+### Historical v7.7.3 evidence acceptance
+
+For v7.7.3, use the [historical validation matrix](baselines/golden/v7.7.3-validation-matrix.md).
 The maintainer approved reuse of existing testing evidence for this release.
 Additional runtime, deployment, live-call and upgrade testing, including an
 exact-candidate successful-call baseline, is waived for v7.7.3. Keep original

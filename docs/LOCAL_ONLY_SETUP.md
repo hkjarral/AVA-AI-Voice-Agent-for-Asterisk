@@ -163,6 +163,26 @@ and venv at the same paths, without requiring uv or host Python. Both stages
 point Python TLS at Ubuntu's maintained CA bundle. Native GPU
 inference still requires the NVIDIA driver/toolkit and separate hardware testing.
 
+#### v7.7.4 dependency and GPU compatibility
+
+Rebuild installed Local AI images with the original backend flags to receive
+Torch 2.13.0, TorchAudio 2.11.0, Transformers 5.10.1 and Hugging Face Hub 1.27.0.
+Both Dockerfiles constrain optional installs to the shared pins. MeloTTS includes
+SoXR for its BERT path, and the existing T-one source revision is adapted to Hub
+1.x. Faster-Whisper can reuse its persistent model cache after an HTTPX proxy
+connection failure; a missing cache still needs model access.
+
+Torch and TorchAudio in the CUDA image use official CUDA 12.6 (`cu126`) wheels;
+the image base remains CUDA 12.4.1/cuDNN and managed Python 3.11.15. Hosted GPU
+packaging checks cover installed versions, imports, cuDNN loading, resampling
+and llama.cpp linkage on a CPU runner. They do not establish physical-GPU
+inference or compatibility with every installed NVIDIA driver. Preserve your
+previous image/model set and qualify the selected hardware/backends before
+rollout. The [v7.7.4 matrix](baselines/golden/v7.7.4-validation-matrix.md) records
+existing evidence and the maintainer's waiver of further release acceptance.
+Only load trusted model artifacts; the dependency update does not make arbitrary
+model code or pickle files safe.
+
 > AVA's supported GPU image is NVIDIA CUDA-only. AMD/ROCm and Apple Metal are
 > not currently implemented by the Docker deployment path; those hosts must use
 > CPU mode unless they maintain a custom inference server.
@@ -606,6 +626,8 @@ Models are **not bundled** in Docker images. Download them via:
   - `SHERPA_OFFLINE_PREROLL_MS=350`
   - `SHERPA_OFFLINE_DEBUG_SEGMENTS=true` for targeted diagnostics only
 - See [Sherpa-ONNX Models](https://github.com/k2-fsa/sherpa-onnx/releases)
+
+<a id="sherpa-onnx-offline-sensevoice-vad-gated-multilingual"></a>
 
 **Sherpa-ONNX Offline SenseVoice** (VAD-gated, multilingual):
 - `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17` (~155 MB, original SenseVoiceSmall export; Chinese, English, Japanese, Korean, Cantonese)

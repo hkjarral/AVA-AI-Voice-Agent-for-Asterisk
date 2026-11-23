@@ -38,10 +38,26 @@ Thanks to all the people who have contributed to the Asterisk AI Voice Agent!
 | <img src="https://github.com/jjaroztegi.png" width="50" alt="jjaroztegi"> | **[jjaroztegi](https://github.com/jjaroztegi)** | Report — AudioSocket squelch and WebSocket pacing reports ([#799](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/799), [#808](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/808)) |
 | <img src="https://github.com/ibewackofreak.png" width="50" alt="ibewackofreak"> | **[ibewackofreak](https://github.com/ibewackofreak)** | Report — Docker entitlement failure during Quick Start ([#802](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/802)) |
 | <img src="https://github.com/lucivan212.png" width="50" alt="lucivan212"> | **[lucivan212](https://github.com/lucivan212)** | Proposal and Requirements — Call History recording access and authenticated downloads ([#767](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/767)); the broader reconciliation proposal remains follow-up |
-
+| <img src="https://github.com/comedianhhh.png" width="50" alt="comedianhhh"> | **[comedianhhh](https://github.com/comedianhhh)** | Code, Tests, Docs — SenseVoice STT ([#879](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/879)) |
+| <img src="https://github.com/LauraGPT.png" width="50" alt="LauraGPT"> | **[LauraGPT](https://github.com/LauraGPT)** | Proposal — SenseVoice STT ([#407](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/407)) |
 <!-- markdownlint-restore -->
 <!-- prettier-ignore-end -->
 <!-- ALL-CONTRIBUTORS-LIST:END -->
+
+### v7.7.4 contribution updates
+
+- **comedianhhh:** SenseVoice implementation, model controls, documentation and
+  real-model contributor evidence ([#879](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/879)).
+- **LauraGPT:** original SenseVoice proposal ([#407](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/407)).
+- **MVECoder:** reports and reproduction requirements for Google input protection
+  (#849–#850), gain and lifecycle defects (#853–#856, #862–#864), calendar
+  corrections (#855, #865–#867), and Grok voices/settings (#883–#884, #886).
+  Implementation was integrated through the linked release PRs in the
+  [validation matrix](docs/baselines/golden/v7.7.4-validation-matrix.md).
+- **hkjarral:** runtime and Admin corrections, review hardening, Local AI dependency
+  integration, validation, guides and release preparation. Existing dependency
+  proposal origins remain credited in their PR histories; unmerged Dependabot
+  work is excluded.
 
 ### v7.7.3 contribution updates
 

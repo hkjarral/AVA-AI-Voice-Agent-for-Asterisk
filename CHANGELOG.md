@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.7.4] - 2026-11-22
+
+Prepared from main `872a34eb` after v7.7.3, covering 18 merged PRs. Includes
+SenseVoice STT, Grok speech/voice controls, calendar corrections, audio and
+telephony lifecycle recovery, and shared Local AI security hardening. The date
+is provisional until publication approval. See the [migration guide](docs/MIGRATION.md#v773-to-v774)
+and [validation matrix](docs/baselines/golden/v7.7.4-validation-matrix.md).
+Thanks to `comedianhhh`, proposal author `LauraGPT`, reporter `MVECoder` and
+maintainer `hkjarral`; verified roles are recorded in [contributors](CONTRIBUTORS.md).
+
+### Security
+
+- Integrate the already-merged Torch/Transformers hardening from #712. The current
+  manifest snapshot has seven open alerts; image and Bookworm findings require
+  their own release-specific assessment. The v7.7.3-only exception does not
+  authorize publication of v7.7.4. See the validation matrix for the pending
+  security disposition and limits of the reused runtime evidence.
+
 ### Added
 
 - Grok providers can set playback speed, reasoning effort, transcription hints and spoken pronunciation replacements in YAML or Admin. The PCM fallback preserves playback speed, and the config loader reports unrecognized Grok field names (#886). The provider editor supports versioned Grok Voice 3.0 selection and preserves existing model pins. Setup now links to current xAI pricing and explains AVA’s configurable long-session warning.

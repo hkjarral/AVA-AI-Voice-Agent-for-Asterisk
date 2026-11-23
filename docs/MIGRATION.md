@@ -2,17 +2,72 @@
 
 This guide covers upgrading between releases of Asterisk AI Voice Agent.
 
-**Pending Google Calendar datetime correction (#865).**
+## v7.7.3 to v7.7.4
 
-After installing the correction, `Z` and explicit offsets preserve their instant;
-naive datetimes remain calendar-local. Review custom prompts that appended `Z`
-to local times or discarded returned offsets. No configuration/database migration
-moves existing events. See [datetime compatibility and restart/rollback guidance](Google-calendar-tool.md#datetime-contract-and-upgrade-compatibility).
+Use the [v7.7.4 upgrade procedure](INSTALLATION.md#upgrade-to-v774-existing-checkout)
+only after its tag/artifacts are published. Stop new admissions and drain calls
+before replacing Engine and Admin UI together. Rebuild installed Local AI CPU or
+CUDA images with their original profiles; preserve model volumes, managed
+credentials, state backups, configuration overlays and intentionally stopped
+services. Update the host CLI/updater with the release and hard-refresh Admin UI.
+No application database migration or automatic calendar-event backfill is added.
+
+- **Calendar instants and availability.** `Z` and explicit offsets now preserve
+  the supplied instant; naive inputs remain calendar-local. Review custom prompts
+  that appended `Z` to local wall times or discarded offsets. Google/Microsoft
+  slot grids handle repeated/nonexistent DST times and round subminute interval
+  starts up. Google excludes elapsed starts and rejects past bookings. Existing
+  events are not moved. See [datetime compatibility](Google-calendar-tool.md#datetime-contract-and-upgrade-compatibility).
+- **Older title-prefix bookings.** New Google bookings carry a private AVA marker
+  and remain busy after later calls/restarts without changing their titles.
+  Older unmarked bookings need the documented one-time review and busy-prefix
+  title repair in [booking identity and older appointments](Google-calendar-tool.md#booking-identity-all-day-events-and-older-appointments).
+  AVA does not perform that repair automatically. Native free/busy remains a
+  separate operator-selected mode; changing modes affects the whole calendar.
+- **SenseVoice.** Optional Sherpa offline STT supports the documented SenseVoice
+  export and language/ITN controls; it is not a change of default backend.
+  Environment language/ITN edits or removals require Local AI recreation, while
+  model controls follow their apply/verification path. Preserve language, ITN and
+  mode choices when switching or rolling back. See [local model setup](LOCAL_ONLY_SETUP.md#sherpa-onnx-offline-sensevoice-vad-gated-multilingual).
+- **Local AI dependency set.** Shared pins are Torch 2.13.0, TorchAudio 2.11.0,
+  Transformers 5.10.1 and Hugging Face Hub 1.27.0. Optional installs are constrained
+  to this set; retain the original backend flags, including MeloTTS/T-one choices.
+  CUDA Torch/TorchAudio use `cu126` wheels with the retained CUDA 12.4.1 image
+  base. Hosted build/import/linkage checks do not qualify inference on a physical
+  GPU. Check the deployed driver/backend combination before rollout; this release's
+  scoped waiver records hardware acceptance as unverified. See [Local AI dependency compatibility](LOCAL_ONLY_SETUP.md#v774-dependency-and-gpu-compatibility).
+- **Grok configuration.** Provider/Agent editors share 28 built-in voices and
+  retain custom clone IDs. Routing an Agent with a recognized foreign-provider
+  voice falls back to the selected Grok instance's default. Optional speed,
+  reasoning, keyterm, language and pronunciation controls apply to new sessions;
+  explicit model pins remain. Reset/inheritance rules and unsupported legacy
+  turn-detection effects are in [Grok setup](Provider-Grok-Setup.md).
+  Session resumption remains deferred.
+- **Audio, handoff and recovery.** Configured provider input gain is smoothed with
+  a noise floor and peak limiting; an unset/disabled gain remains disabled.
+  Google engine-gated greetings and post-TTS protection follow caller-facing
+  drain. Voicemail distinguishes accepted, rejected and uncertain ARI outcomes;
+  uncertain handoffs must not be blindly replayed. Outbound campaigns with
+  voicemail drop disabled retain that setting and do not play a recording.
+  The outbound campaign feature remains alpha. See [tool lifecycle guidance](TOOL_CALLING_GUIDE.md).
+- **Branch migration and rollback.** Release candidates are validated at an exact
+  main commit; legacy development branches are retired. Follow
+  [testing from source](contributing/testing-from-source.md) for checkout migration.
+  Keep the previous image set and coherent backups. Restore compatible Engine,
+  Admin and changed Local AI images together; remove unsupported optional Grok
+  fields and restore saved SenseVoice/backend settings when reverting. Rollback
+  does not undo calendar writes, title repairs or external handoffs, and reverting
+  Local AI dependencies restores their earlier security exposure.
+
+The supported trains remain 7.7.x and 7.6.x. Existing evidence is reused under the
+fresh [v7.7.4-only testing waiver](baselines/golden/v7.7.4-validation-matrix.md#scoped-acceptance-of-existing-evidence).
+Required CI/security checks remain mandatory. Residual security findings require
+an explicit [v7.7.4 disposition](baselines/golden/v7.7.4-validation-matrix.md#security-assessment);
+the historical v7.7.3 exception is not carried forward.
 
 ## v7.7.2 to v7.7.3
 
-Use the [pinned upgrade](INSTALLATION.md#upgrade-to-v773-existing-checkout) after
-publication. Stop new PBX admissions and drain calls before replacing services.
+Use the [published v7.7.3 upgrade](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/v7.7.3/docs/INSTALLATION.md#upgrade-to-v773-existing-checkout). Stop new PBX admissions and drain calls before replacing services.
 Update the Engine and Admin UI together, the host CLI/updater with the release,
 and installed CPU or CUDA Local AI images using their original profiles. Retain
 model volumes, managed credentials, Agents, configuration overlays, and stopped
