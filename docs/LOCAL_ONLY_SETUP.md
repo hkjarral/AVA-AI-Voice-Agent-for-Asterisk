@@ -179,7 +179,9 @@ and llama.cpp linkage on a CPU runner. They do not establish physical-GPU
 inference or compatibility with every installed NVIDIA driver. Preserve your
 previous image/model set and qualify the selected hardware/backends before
 rollout. The [v7.7.4 matrix](baselines/golden/v7.7.4-validation-matrix.md) records
-existing evidence and the maintainer's waiver of further release acceptance.
+existing evidence and the maintainer's waiver of additional deployment, runtime,
+live-call and upgrade testing only. Required CI, image and security checks remain
+mandatory publication gates; this waiver does not satisfy or waive them.
 Only load trusted model artifacts; the dependency update does not make arbitrary
 model code or pickle files safe.
 
