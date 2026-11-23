@@ -67,9 +67,12 @@ No application database migration or automatic calendar-event backfill is added.
 
 The supported trains remain 7.7.x and 7.6.x. Existing evidence is reused under the
 fresh [v7.7.4-only testing waiver](baselines/golden/v7.7.4-validation-matrix.md#scoped-acceptance-of-existing-evidence).
-Required CI/security checks remain mandatory. Residual security findings require
-an explicit [v7.7.4 disposition](baselines/golden/v7.7.4-validation-matrix.md#security-assessment);
-the historical v7.7.3 exception is not carried forward.
+Required CI/security checks remain mandatory. The approved
+[v7.7.4-only security exception](baselines/golden/v7.7.4-validation-matrix.md#v774-only-security-exception)
+records the remaining findings, exposure controls and release-maintainer
+remediation review due 2026-11-29 or before the next stable tag, whichever comes
+first. This is not package remediation, and the historical v7.7.3 approval is not
+carried forward. The v7.7.4 tag remains held for separate authorization.
 
 ## v7.7.2 to v7.7.3
 

@@ -19,11 +19,13 @@ maintainer `hkjarral`; verified roles are recorded in [contributors](CONTRIBUTOR
 
 ### Security
 
-- Integrate the already-merged Torch/Transformers hardening from #712. The current
-  manifest snapshot has seven open alerts; image and Bookworm findings require
-  their own release-specific assessment. The v7.7.3-only exception does not
-  authorize publication of v7.7.4. See the validation matrix for the pending
-  security disposition and limits of the reused runtime evidence.
+- Integrate the already-merged Torch/Transformers hardening from #712. The
+  maintainer approved a [v7.7.4-only security exception](docs/baselines/golden/v7.7.4-validation-matrix.md#v774-only-security-exception)
+  for the seven remaining manifest alerts, recorded image findings and listed
+  Bookworm exposure, retaining the documented access/input controls. Release
+  maintainers review remediation by **2026-11-29 or before the next stable tag**,
+  whichever comes first. This is risk acceptance, not package remediation or
+  dismissal of alerts; future releases need their own disposition. Tag remains held.
 
 - Update CPU Local AI builder/runtime `libc6` and `libc-bin` explicitly and
   require Debian Trixie version `2.41-12+deb13u5` or newer. Cached base images and

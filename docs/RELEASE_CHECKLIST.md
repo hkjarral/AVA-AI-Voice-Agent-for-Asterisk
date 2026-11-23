@@ -22,9 +22,12 @@ The maintainer approved a fresh v7.7.4-only waiver of additional deployment,
 runtime, live-call and upgrade testing, including exact-candidate acceptance and
 a successful-call golden baseline. Reuse existing revision/configuration-qualified
 evidence and retain all unverified lanes. Required CI, automated/image checks,
-security assessment and review are not waived. Merge/tag remain held for explicit
-approval. Residual security findings need their own v7.7.4 disposition; the
-v7.7.3 exception does not carry forward.
+security assessment and review are not waived. The maintainer approved the
+[v7.7.4-only security exception](baselines/golden/v7.7.4-validation-matrix.md#v774-only-security-exception)
+and #888 merge after successful final checks. Release maintainers review the
+remaining-risk remediation by 2026-11-29 or before the next stable tag, whichever
+comes first. Verify exact-main CI after merge. The tag remains held; the v7.7.3
+exception does not carry forward.
 
 ### Historical v7.7.3 evidence acceptance
 
