@@ -8,12 +8,13 @@ Asterisk AI Voice Agent (AAVA) aims to be the definitive open-source AI voice ag
 
 ## What's Next
 
-### v7.7.3 — Transfers, recordings and Admin reliability
+### v7.7.4 — Voice controls, calendar correctness and lifecycle recovery
 
-Prepared from main `00c32c49`. Includes attended-transfer recovery and
-announcement voices, recording downloads, Admin lifecycle fixes, React 19,
-Node 22 and WebSockets 17.4. See the [migration guide](MIGRATION.md#v772-to-v773)
-and [validation matrix](baselines/golden/v7.7.3-validation-matrix.md). v7.7.2 is
+Prepared from main `15cc1e7e`, covering 19 merged PRs after v7.7.3. Includes
+SenseVoice STT, Grok speech/voice controls, calendar timezone and availability
+corrections, safer voicemail/hangup recovery, smoother input gain and Local AI
+dependency hardening, including the CPU glibc floor. See [migration](MIGRATION.md#v773-to-v774) and the
+[validation matrix](baselines/golden/v7.7.4-validation-matrix.md). v7.7.3 remains
 the published release during preparation. Supported trains remain 7.7.x and 7.6.x.
 
 Active and upcoming work. Pick something up and [get involved](#how-to-contribute-to-the-roadmap)!
@@ -240,4 +241,4 @@ Longer-term goals that will shape the project's direction:
 
 ---
 
-**Last Updated**: November 2026 | **Latest Stable**: v7.7.3 after publication | **Published during preparation**: v7.7.2
+**Last Updated**: November 2026 | **Latest Stable**: v7.7.4 after publication | **Published during preparation**: v7.7.3
