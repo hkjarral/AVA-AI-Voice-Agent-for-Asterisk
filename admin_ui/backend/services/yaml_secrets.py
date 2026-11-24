@@ -400,6 +400,10 @@ def _retained_field(path):
 class CredentialDestinationError(ValueError):
     """A public refusal identifying only the affected configuration fields."""
 
+    def __init__(self, fields):
+        self.public_message = "Re-enter the stored value for the new destination in " + ", ".join(fields) + "."
+        super().__init__(self.public_message)
+
 
 def _credential_sources(document, path, value):
     """Identify the saved source independently of the syntax used to select it."""
@@ -565,7 +569,7 @@ def restore_config(edited, current):
     refused = sorted({(f"{label} {field}" if (label := mcp_server_label(owner)) else field)
                       for owner, field, allowed in bindings if target_destinations[owner] not in allowed})
     if refused:
-        raise CredentialDestinationError("Re-enter the stored value for the new destination in " + ", ".join(refused) + ".")
+        raise CredentialDestinationError(refused)
     return result
 
 

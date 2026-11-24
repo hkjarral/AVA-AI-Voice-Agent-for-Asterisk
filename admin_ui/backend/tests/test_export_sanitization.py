@@ -122,6 +122,17 @@ def test_success_logs_only_the_actor(client, password, caplog):
     assert password not in caplog.text
     assert response.headers["cache-control"] == "no-store"
 
+def test_export_audit_encodes_actor_as_one_field(client, password, caplog):
+    users = auth.load_users()
+    name = "ops team\nbackup"
+    users[name] = {**users["operator"], "username": name}
+    auth.save_users(users)
+    client.headers["Authorization"] = "Bearer " + auth.create_access_token({"sub": name})
+    with caplog.at_level(logging.INFO, logger=config_mod.__name__):
+        response = client.post("/api/config/export", json={"password": password})
+    assert response.status_code == 200
+    assert "config_export actor=ops%20team%0Abackup" in [record.getMessage() for record in caplog.records]
+
 def test_repeated_failed_reauthentication_respects_session_limit(client, password):
     for _ in range(5):
         assert client.post("/api/config/export", json={"password": secrets.token_urlsafe()}).status_code == 401

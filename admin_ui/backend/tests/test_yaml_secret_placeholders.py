@@ -555,3 +555,11 @@ def test_equivalent_environment_sources_keep_the_saved_provider_origin(draft_fie
     draft = {"providers": {"fixture": {draft_field: reference, "base_url": "https://replacement.invalid"}}}
     with pytest.raises(ValueError, match=draft_field):
         restore_config(draft, saved)
+
+
+def test_template_scanner_preserves_public_text_between_private_values():
+    from services.credential_spans import credential_spans
+
+    text = 'Before {"api_key":"first","note":"visible","password":{"value":"second"}} after eyJabc.def.ghi'
+    spans = credential_spans(text, template=True)
+    assert [text[start:end] for start, end in spans] == ['first', '{"value":"second"}', 'eyJabc.def.ghi']

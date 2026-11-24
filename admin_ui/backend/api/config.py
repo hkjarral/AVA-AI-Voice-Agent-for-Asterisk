@@ -23,6 +23,7 @@ from copy import deepcopy
 from email.message import EmailMessage
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import quote
 from pydantic import BaseModel, StrictBool, SecretStr
 from typing import Dict, Any, Optional, Union
 import settings
@@ -2399,7 +2400,7 @@ async def test_provider_connection(request: ProviderTestRequest):
             try:
                 resolved = restore_config(draft, current)["providers"][request.name]
             except CredentialDestinationError as exc:
-                return {"success": False, "message": str(exc)}
+                return {"success": False, "message": exc.public_message}
             except ValueError:
                 return {"success": False, "message": "Reload the provider's saved configuration and retry."}
             # Untrusted form changes may alter both the destination and the
@@ -2955,7 +2956,8 @@ async def export_configuration(
         
         # Return as downloadable file
         from fastapi.responses import StreamingResponse
-        logger.info("config_export actor=%s", current_user.username)
+        actor = quote(current_user.username, safe="@")
+        logger.info("config_export actor=%s", actor)
         return StreamingResponse(
             zip_buffer, 
             media_type="application/zip",

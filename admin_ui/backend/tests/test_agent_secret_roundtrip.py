@@ -1,4 +1,5 @@
 import json
+from urllib.parse import urlsplit
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -39,7 +40,9 @@ def test_agent_read_write_surfaces_and_editor_echo(agent_api):
         assert response.status_code<300 and 'fixture-private' not in response.text
     public=created.json()
     extra=json.loads(public['extra_json'])
-    assert extra['pipeline']=='public-pipeline' and 'https://one.invalid' in extra['tool_overrides']['help.desk']['url']
+    assert extra['pipeline'] == 'public-pipeline'
+    origin = urlsplit(extra['tool_overrides']['help.desk']['url'])
+    assert (origin.scheme, origin.netloc) == ('https', 'one.invalid')
     extra['language']='en'
     reply=client.patch('/api/agents/agent',json={'extra_json':json.dumps(extra),'mcp_json':public['mcp_json']})
     assert reply.status_code==200 and 'fixture-private' not in reply.text

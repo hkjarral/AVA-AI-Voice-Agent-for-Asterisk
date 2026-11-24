@@ -1,6 +1,7 @@
 """Bounded login counters and recognition of previously successful login origins."""
 
 import hashlib
+import hmac
 import ipaddress
 import math
 import os
@@ -19,12 +20,13 @@ class LoginThrottle:
         self._lockout_s = lockout_s
         self._clock = clock
         self._capacity = capacity
+        self._index_key = os.urandom(32)
         self._partial = OrderedDict()
         self._locks = OrderedDict()
 
-    @staticmethod
-    def _key_id(key: str) -> bytes:
-        return hashlib.sha256(key.encode()).digest()
+    def _key_id(self, key: str) -> bytes:
+        # Session tokens and origin labels index ephemeral counters.
+        return hmac.digest(self._index_key, key.encode(), "sha256")
 
     def _expire_locks(self, now):
         # Fixed lock duration means insertion order is also expiry order.

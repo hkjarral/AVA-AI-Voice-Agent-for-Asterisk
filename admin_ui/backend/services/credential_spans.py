@@ -6,10 +6,12 @@ from services.secret_keys import connection_password_spans, is_secret_key
 
 _REFERENCE = re.compile(r"(?:Bearer |Basic )?\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*(?::[-=])?\})\Z")
 _PREFIXED = re.compile(r"(?<![A-Za-z0-9])(?:sk[-_]|xai-|gsk_|AIza|AKIA|gh[pousr]_|github_pat_|xox[baprs]-)[A-Za-z0-9_.-]{12,}")
-_JWT = re.compile(r"(?<![\w-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+_TOKEN_SEGMENT = re.compile(r"[A-Za-z0-9_-]+")
+_JWT_TAIL = re.compile(r"\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
 _AUTH = re.compile(r"""\b(?:Bearer|Token|ApiKey)[ \t]+([^\s"'<>,;}{]{20,})""")
 _ASSIGN = re.compile(r"""(?:^|[\s?&;,"\'])(?:--?)?([\w.-]+)=(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([^\s,;&"\']+))""")
-_JSON_KEY = re.compile(r'"(?:\\.|[^"\\])*"\s*:\s*')
+_JSON_QUOTES = re.compile(r'\\.|"')
+_JSON_SEPARATOR = re.compile(r'\s*:\s*')
 
 
 def is_reference(value):
@@ -18,6 +20,52 @@ def is_reference(value):
 
 def private_name(name):
     return is_secret_key(name.replace("-", "_")) or name.lower() in {"apikey", "authorization", "x-auth"}
+
+
+def _jwt_spans(text):
+    last_end = 0
+    for segment in _TOKEN_SEGMENT.finditer(text):
+        start, end = segment.span()
+        if start < last_end or end - start <= 3 or not text.startswith("eyJ", start):
+            continue
+        if start and text[start - 1].isalnum():
+            continue
+        tail = _JWT_TAIL.match(text, end)
+        if tail:
+            last_end = tail.end()
+            yield start, last_end
+
+
+def _json_private_spans(text):
+    # Consider each pair of consecutive unescaped quotes, including in a JSON
+    # fragment surrounded by free text. Never rescan a private compound value.
+    decoder = json.JSONDecoder()
+    previous_quote = None
+    protected_until = 0
+    for quote in _JSON_QUOTES.finditer(text):
+        if quote.group() != '"':
+            continue
+        opening, previous_quote = previous_quote, quote.start()
+        if opening is None or opening < protected_until:
+            continue
+        separator = _JSON_SEPARATOR.match(text, quote.end())
+        if not separator:
+            continue
+        try:
+            key = json.loads(text[opening:quote.end()])
+        except ValueError:
+            continue
+        if not private_name(key):
+            continue
+        start = separator.end()
+        try:
+            item, end = decoder.raw_decode(text, start)
+        except (ValueError, RecursionError):
+            yield start, len(text)
+            return
+        protected_until = end
+        if not is_reference(item):
+            yield (start + 1, end - 1) if isinstance(item, str) else (start, end)
 
 
 def credential_spans(value, *, template=False, provider_url=False):
@@ -32,33 +80,14 @@ def credential_spans(value, *, template=False, provider_url=False):
             found.append((query + 1, query_end))
     if template:
         found.extend(m.span() for m in _PREFIXED.finditer(value))
-        found.extend(m.span() for m in _JWT.finditer(value))
+        found.extend(_jwt_spans(value))
         found.extend(m.span(1) for m in _AUTH.finditer(value))
         for m in _ASSIGN.finditer(value):
             if private_name(m[1]):
                 group = next(n for n in (2, 3, 4) if m[n] is not None)
                 if not is_reference(m[group]):
                     found.append(m.span(group))
-        for m in _JSON_KEY.finditer(value):
-            try:
-                key, _ = json.JSONDecoder().raw_decode(m.group())
-            except ValueError:
-                continue
-            if not private_name(key):
-                continue
-            start = m.end()
-            try:
-                item, end = json.JSONDecoder().raw_decode(value, start)
-            except ValueError:
-                # A malformed private value has no reliable end.
-                end = len(value)
-                item = None
-            if is_reference(item):
-                continue
-            if isinstance(item, str):
-                start += 1
-                end -= 1
-            found.append((start, end))
+        found.extend(_json_private_spans(value))
     merged = []
     for start, end in sorted(found):
         if merged and start < merged[-1][1]:
