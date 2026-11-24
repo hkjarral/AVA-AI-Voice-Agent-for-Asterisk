@@ -68,6 +68,9 @@ const AgentToolPicker: React.FC<Props> = ({
     return (
         <div className="space-y-3">
             <FormLabel tooltip="Choose which tools this agent can use in each call phase. Global tools are on for every agent unless you turn them off here.">Tools</FormLabel>
+            {state.storedJson?.tool_configs_json && (
+                <p className="text-sm text-muted-foreground">This Agent has stored tool policies that the form cannot display. Saving preserves those policies.</p>
+            )}
             {PHASES.map(({ key, label, hint }) => {
                 const tools = catalog
                     .filter((t) => phaseOf(t) === key)
@@ -123,14 +126,14 @@ const AgentToolPicker: React.FC<Props> = ({
                                                 <span className="text-[11px] text-muted-foreground ml-auto">on by default</span>
                                             ) : null}
                                         </label>
-                                        {tool.name === transferEditorToolName && checked && (
+                                        {!state.storedJson?.tool_configs_json && tool.name === transferEditorToolName && checked && (
                                             <TransferAccessEditor
                                                 destinations={transferDestinations}
                                                 state={state}
                                                 onChange={onChange}
                                             />
                                         )}
-                                        {tool.name === 'google_calendar' && checked && (
+                                        {!state.storedJson?.tool_configs_json && tool.name === 'google_calendar' && checked && (
                                             <ResourceAccessEditor
                                                 title="Google Calendar access"
                                                 description="Choose which globally configured calendars this Agent can read or update."
@@ -147,7 +150,7 @@ const AgentToolPicker: React.FC<Props> = ({
                                                 onSelectedKeysChange={keys => onChange({ ...state, googleCalendarKeys: keys })}
                                             />
                                         )}
-                                        {tool.name === 'calendly_calendar' && checked && (
+                                        {!state.storedJson?.tool_configs_json && tool.name === 'calendly_calendar' && checked && (
                                             <ResourceAccessEditor title="Calendly appointment access"
                                                 description="Select appointments this agent may book. Later changes use the Calendly confirmation or staff."
                                                 resourceName="appointment" options={calendlyAppointments}
@@ -156,7 +159,7 @@ const AgentToolPicker: React.FC<Props> = ({
                                                 onSelectedKeysChange={keys => onChange({ ...state, calendlyKeys: keys })}
                                             />
                                         )}
-                                        {tool.name === 'microsoft_calendar' && checked && (
+                                        {!state.storedJson?.tool_configs_json && tool.name === 'microsoft_calendar' && checked && (
                                             <ResourceAccessEditor
                                                 title="Microsoft Calendar access"
                                                 description="Choose this Agent’s Microsoft calendar access. Invitation policy, templates and hours are configured in Tools. Caller-confirmed emails are supplied per booking. Only bookings created in the current call can be cancelled or rescheduled; later-call requests require staff."
@@ -173,7 +176,7 @@ const AgentToolPicker: React.FC<Props> = ({
                                                 onSelectedKeysChange={keys => onChange({ ...state, microsoftAccountKeys: keys })}
                                             />
                                         )}
-                                        {tool.name === 'leave_voicemail' && checked && (
+                                        {!state.storedJson?.tool_configs_json && tool.name === 'leave_voicemail' && checked && (
                                             <ResourceAccessEditor
                                                 title="Voicemail mailbox access"
                                                 description="Assign the one mailbox this Agent uses when sending a caller to voicemail."

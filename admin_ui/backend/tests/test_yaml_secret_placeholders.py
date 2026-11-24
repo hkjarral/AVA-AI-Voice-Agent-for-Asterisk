@@ -175,16 +175,21 @@ def test_saved_provider_probe_uses_credential_only_for_saved_config(api, monkeyp
 def test_http_tool_probe_uses_scoped_saved_header_and_masks_receiver_echo(api, monkeypatch):
     import httpx
 
-    client, _, _, key = api
+    client, base, _, key = api
+    key = key * 3
+    config_doc = yaml.safe_load(base.read_text())
+    config_doc["tools"]["lookup"]["headers"]["Authorization"] = key
+    base.write_text(yaml.safe_dump(config_doc))
     doc = yaml.safe_load(client.get("/config/yaml").json()["content"])["tools"]["lookup"]
     payload = {"tool_name": "lookup", "url": doc["url"], "headers": doc["headers"]}
     stub = AsyncMock()
     stub.__aenter__.return_value = stub
-    stub.request.return_value = httpx.Response(200, text=key)
+    stub.request.return_value = httpx.Response(200, json={"message": key})
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_: stub)
     monkeypatch.setattr(tools, "_validate_http_tool_test_target", lambda url: None)
     response = client.post("/tools/test-http", json=payload)
-    assert response.status_code == 200 and key not in response.text
+    assert response.status_code == 200 and key[:100] not in response.text
+    assert response.json()["suggested_mappings"][0]["value"] == "***"
     assert stub.request.await_args.kwargs["headers"]["Authorization"] == key
     refused = client.post("/tools/test-http", json={**payload, "url": "https://changed.invalid"})
     assert refused.status_code == 400 and stub.request.await_count == 1

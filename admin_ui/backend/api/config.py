@@ -2027,10 +2027,20 @@ async def get_yaml_config():
         raise HTTPException(500, "Failed to read config YAML") from None
 
 
-def _credential_env_references() -> set[str]:
+def _credential_env_references() -> set[str] | None:
+    try:
+        return _read_credential_env_references()
+    except (HTTPException, OSError, ValueError, yaml.YAMLError, sqlite3.Error, RecursionError):
+        # A damaged store can hide an arbitrarily named credential selector.
+        return None
+
+
+def _read_credential_env_references() -> set[str]:
     """Include operator-named credential sources as well as conventional env names."""
-    references = set()
-    pending = [_read_merged_config_dict()]
+    document = _read_merged_config_dict()
+    references = {name for sources in credential_references(document).values()
+                  for kind, name in sources if kind == "env"}
+    pending = [document]
     seen = set()
     while pending:
         item = pending.pop()
@@ -2243,7 +2253,7 @@ def _update_env_locked(env_data):
                 _rotate_backups(settings.ENV_PATH)
             atomic_write_text(settings.ENV_PATH, "".join(new_lines))
 
-        impacts_ai_engine = any(_ai_engine_env_key(k) or k in references for k in changed_keys)
+        impacts_ai_engine = any(references is None or k in references or _ai_engine_env_key(k) for k in changed_keys)
         impacts_local_ai = any(_local_ai_env_key(k) for k in changed_keys)
         impacts_admin_ui = any(_admin_ui_env_key(k) for k in changed_keys)
 
@@ -2339,7 +2349,8 @@ async def get_env_status():
     admin_env = _container_env("admin_ui") if "admin_ui" in running else {}
 
     references = _credential_env_references()
-    drift_ai = _diff_keys(desired=env_map, actual=ai_env, key_pred=lambda key: key in references or _ai_engine_env_key(key)) if "ai_engine" in running else []
+    monitored = env_map.keys() if references is None else references
+    drift_ai = _diff_keys(desired=env_map, actual=ai_env, key_pred=lambda key: key in monitored or _ai_engine_env_key(key)) if "ai_engine" in running else []
     drift_local = _diff_keys(desired=env_map, actual=local_env, key_pred=_local_ai_env_key) if "local_ai_server" in running else []
     drift_admin = _diff_keys(desired=env_map, actual=admin_env, key_pred=_admin_ui_env_key) if "admin_ui" in running else []
 

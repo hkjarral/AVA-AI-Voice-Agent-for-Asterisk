@@ -2,7 +2,7 @@
 
 import re
 
-_CONNECTION = re.compile(r'''\b[a-zA-Z][a-zA-Z0-9+.-]*://[^/@?:#"\s]*:([^/@?#"\s]+)@''')
+_CONNECTION = re.compile(r"""\b[a-zA-Z][a-zA-Z0-9+.-]*://([^/?#"\s]*)""")
 
 _PATH_SETTINGS = {"GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CALENDAR_CREDENTIALS", "CALENDLY_TOKEN_PATH"}
 _SECRET_SEGMENTS = frozenset({"KEY", "SECRET", "TOKEN", "PASSWORD", "PASSWD", "PASS", "PWD", "APIKEY", "CREDENTIAL", "CREDENTIALS"})
@@ -22,7 +22,15 @@ def is_secret_key(name: str) -> bool:
 
 def connection_password_spans(value):
     """Find password userinfo without parsing or connecting to the destination."""
-    return [match.span(1) for match in _CONNECTION.finditer(value)] if isinstance(value, str) else []
+    spans = []
+    if isinstance(value, str):
+        for match in _CONNECTION.finditer(value):
+            start, end = match.span(1)
+            at = value.rfind("@", start, end)
+            colon = value.find(":", start, at) if at >= 0 else -1
+            if colon >= 0 and colon + 1 < at:
+                spans.append((colon + 1, at))
+    return spans
 
 
 _CREDENTIAL_RE = re.compile(

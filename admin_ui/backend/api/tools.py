@@ -1020,7 +1020,6 @@ async def test_http_tool(request: TestHTTPRequest):
             try:
                 json_body = resp.json()
                 response_data.body = json_body
-                response_data.suggested_mappings = _extract_json_paths(json_body)
             except (ValueError, httpx.DecodingError):
                 # Not JSON, just use raw text
                 response_data.body = resp.text
@@ -1076,9 +1075,7 @@ async def test_http_tool(request: TestHTTPRequest):
     safe_response = response_data.model_dump()
     for field in ("headers", "body", "body_raw", "resolved_body", "resolved_url", "error"):
         safe_response[field] = redact(safe_response[field])
-    safe_response["suggested_mappings"] = [
-        {key: redact(value) for key, value in item.items()} for item in safe_response["suggested_mappings"]
-    ]
+    safe_response["suggested_mappings"] = _extract_json_paths(safe_response["body"])
     if safe_response["body_raw"] is not None:
         safe_response["body_raw"] = safe_response["body_raw"][:10000]
     if isinstance(safe_response["body"], str):

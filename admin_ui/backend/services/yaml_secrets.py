@@ -535,11 +535,11 @@ def restore_config(edited, current):
                     raise ValueError("A stored credential requires a secret destination field.")
             if entry is None:
                 raise ValueError("The stored credential changed. Reload the configuration.")
-            _, secret = entry
+            source_path, secret = entry
             if path[:1] == (_AGENT_ROWS,) and (origin != _name(path) or _fingerprint(secret) != fingerprint):
                 raise ValueError("The stored agent field changed. Reload the agent.")
             if owner and secret:
-                bind(path, {destination})
+                bind(path, {destination} & {saved_destination(_owner(source_path))})
             if index == -1:
                 if _is_tool_url(path, secret):
                     origin_text = url_origin(secret)

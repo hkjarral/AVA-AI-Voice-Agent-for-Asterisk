@@ -69,3 +69,52 @@ def test_provider_query_remains_private_with_env_selected_host():
     masked = mask_config(document, raw=True)
     assert "fixture-private" not in json.dumps(masked)
     assert restore_config(masked, document) == document
+
+
+@pytest.mark.asyncio
+async def test_structural_env_aliases_and_invalid_override_recovery(tmp_path, monkeypatch):
+    base = tmp_path / "base.yaml"
+    local = tmp_path / "local.yaml"
+    env = tmp_path / ".env"
+    base.write_text("tools:\n  lookup:\n    headers:\n      Authorization: Bearer ${LOOKUP_VALUE}\n")
+    env.write_text("LOOKUP_VALUE=example\nMODEL_LABEL=local\n")
+    for name, path in (("CONFIG_PATH", base), ("LOCAL_CONFIG_PATH", local), ("ENV_PATH", env)):
+        monkeypatch.setattr(config.settings, name, str(path))
+    monkeypatch.setattr(config, "_running_container_names", lambda: set())
+    assert await config.get_env_config() == {"LOOKUP_VALUE": {"set": True}, "MODEL_LABEL": "local"}
+    local.write_text("broken: [")
+    projected = await config.get_env_config()
+    assert projected == {"LOOKUP_VALUE": {"set": True}, "MODEL_LABEL": {"set": True}}
+    await config.update_env(projected)
+    assert env.read_text() == "LOOKUP_VALUE=example\nMODEL_LABEL=local\n"
+    await config.update_env({"LOOKUP_VALUE": None, "MODEL_LABEL": "updated"})
+    assert "LOOKUP_VALUE" not in env.read_text() and "updated" in env.read_text()
+
+
+def test_template_basic_header_masks_short_credential_and_preserves_reference():
+    text = "Authorization: bAsIc YTpi"
+    source = {"tools": {"example": {"args": [text, "Authorization: Basic ${HEADER_VALUE}", "basic information"]}}}
+    masked = mask_config(source, raw=True)
+    args = masked["tools"]["example"]["args"]
+    assert "YTpi" not in args[0]
+    assert args[1:] == source["tools"]["example"]["args"][1:]
+    assert restore_config(masked, source) == source
+
+
+def test_editor_can_preserve_rotation_only_at_same_live_destination():
+    def provider(host, key):
+        return {"providers": {"example": {"base_url": host, "api_key": key}}}
+    old = provider("https://first.invalid", "fixture-first")
+    edited = mask_config(old, raw=True)
+    rotated = provider("https://first.invalid", "fixture-rotated")
+    assert restore_config(edited, rotated) == rotated
+    with pytest.raises(ValueError):
+        restore_config(edited, provider("https://second.invalid", "fixture-second"))
+
+
+def test_connection_password_uses_final_authority_separator():
+    from src.core.credential_fields import mask_business_data
+
+    url = "redis://user:fixture@piece@cache.invalid/path@view"
+    assert redact_mapping({"DATA_SOURCE": url}) == {"DATA_SOURCE": {"set": True}}
+    assert mask_business_data(url) == "redis://user:<redacted>@cache.invalid/path@view"
