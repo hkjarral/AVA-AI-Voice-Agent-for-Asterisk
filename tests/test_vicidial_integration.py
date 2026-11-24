@@ -1604,6 +1604,11 @@ def test_store_persists_pending_dnc_actions_across_instances(tmp_path):
         "campaign_id": "TESTCAMP",
     }
 
+    result = {"external_disposition": "DNC", "external_metadata": {"finalized": True}}
+    assert first_store.mark_pending_action_workflow_completed(queued["id"])
+    assert first_store.save_pending_terminal_result(queued["id"], result)
+    assert VicidialStore(db_path).get_pending_action(queued["id"])["terminal_result"] == result
+
     assert first_store.complete_pending_action(queued["id"]) is True
     assert first_store.complete_pending_action(queued["id"]) is True
     assert VicidialStore(db_path).list_pending_actions() == []
@@ -2994,6 +2999,11 @@ async def test_missing_session_is_reconstructed_for_terminal_retry(monkeypatch):
             assert mapping_id == "map-1"
             return {"id": mapping_id, **_mapping()}
 
+        def save_pending_terminal_result(self, action_id, result):
+            assert action_id == action["id"]
+            action["terminal_result"] = result
+            return True
+
         def complete_pending_action(self, action_id):
             self.completed.append(action_id)
             return True
@@ -3074,8 +3084,8 @@ async def test_missing_session_is_reconstructed_for_terminal_retry(monkeypatch):
     assert session_store.removed == [
         "ari-missing-session",
         "ari-missing-session",
-        "ari-missing-session",
     ]
+    assert finalizer.await_count == 2
     history_store.update_external_lifecycle.assert_awaited_once()
     history_call = history_store.update_external_lifecycle.await_args
     assert history_call.args == ("ari-missing-session",)

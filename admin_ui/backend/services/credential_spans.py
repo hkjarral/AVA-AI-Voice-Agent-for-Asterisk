@@ -8,7 +8,8 @@ _REFERENCE = re.compile(r"(?:Bearer |Basic )?\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za
 _PREFIXED = re.compile(r"(?<![A-Za-z0-9])(?:sk[-_]|xai-|gsk_|AIza|AKIA|gh[pousr]_|github_pat_|xox[baprs]-)[A-Za-z0-9_.-]{12,}")
 _TOKEN_SEGMENT = re.compile(r"[A-Za-z0-9_-]+")
 _JWT_TAIL = re.compile(r"\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
-_AUTH = re.compile(r"""\b(?:Bearer|Token|ApiKey)[ \t]+([^\s"'<>,;}{]{20,})""")
+_AUTH = re.compile(r"""\b(?:Token|ApiKey)[ \t]+([^\s"'<>,;}{]{20,})""")
+_BEARER = re.compile(r"""\bBearer[ \t]+(\$\{[^}\s]*\}|[^\s"'<>,;}{]+)""", re.I)
 _BASIC_HEADER = re.compile(r"\b(?:Proxy-)?Authorization:[ \t]*Basic[ \t]+([A-Za-z0-9+/]+=*)(?=[\s\"\'<>;,]|$)", re.I)
 _ASSIGN = re.compile(r"""(?:^|[\s?&;,"\'])(?:--?)?([\w.-]+)=(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([^\s,;&"\']+))""")
 _JSON_QUOTES = re.compile(r'\\.|"')
@@ -85,7 +86,8 @@ def credential_spans(value, *, template=False, provider_url=False):
     if template:
         found.extend(m.span() for m in _PREFIXED.finditer(value))
         found.extend(_jwt_spans(value))
-        found.extend(m.span(1) for m in _AUTH.finditer(value))
+        for pattern in (_BEARER, _AUTH):
+            found.extend(m.span(1) for m in pattern.finditer(value) if not is_reference(m[1]))
         found.extend(m.span(1) for m in _BASIC_HEADER.finditer(value))
         for m in _ASSIGN.finditer(value):
             if private_name(m[1]):

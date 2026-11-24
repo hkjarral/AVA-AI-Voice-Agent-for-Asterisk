@@ -209,17 +209,20 @@ def test_http_tool_probe_uses_scoped_saved_header_and_masks_receiver_echo(api, m
     client, base, _, tokens = api
     key = tokens["Authorization"] * 3
     config_doc = yaml.safe_load(base.read_text())
-    config_doc["tools"]["lookup"]["headers"]["Authorization"] = key
+    numeric = str(100 + int(token_hex(5), 16))
+    config_doc["tools"]["lookup"]["headers"].update({"Authorization": key, "X-Pin": numeric})
     base.write_text(yaml.safe_dump(config_doc))
     doc = yaml.safe_load(client.get("/config/yaml").json()["content"])["tools"]["lookup"]
     payload = {"tool_name": "lookup", "url": doc["url"], "headers": doc["headers"]}
     stub = AsyncMock()
     stub.__aenter__.return_value = stub
-    stub.request.return_value = httpx.Response(200, json={"message": key})
+    stub.request.return_value = httpx.Response(200, json={"message": key, "echo": [int(numeric), float(numeric)], "count": 2, "ok": True})
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_: stub)
     monkeypatch.setattr(tools, "_validate_http_tool_test_target", lambda url: None)
     response = client.post("/tools/test-http", json=payload)
     assert response.status_code == 200 and key[:100] not in response.text
+    assert numeric not in response.text
+    assert response.json()["body"] == {"message": "***", "echo": ["***", "***"], "count": 2, "ok": True}
     assert response.json()["suggested_mappings"][0]["value"] == "***"
     assert stub.request.await_args.kwargs["headers"]["Authorization"] == key
     refused = client.post("/tools/test-http", json={**payload, "url": "https://changed.invalid"})
@@ -551,10 +554,11 @@ def test_provider_editor_verification_checks_saved_reference_before_resolution(a
     lookup.assert_not_awaited()
 
 
-def test_mcp_stdio_flag_credential_reference_stays_bound_to_the_saved_command():
+@pytest.mark.parametrize("arguments", [["--api-key", "${FIXTURE_AUTH}"], ["--api-key=${FIXTURE_AUTH}"]])
+def test_mcp_stdio_flag_credential_reference_stays_bound_to_the_saved_command(arguments):
     from services.yaml_secrets import mask_config, restore_config
 
-    saved = {"mcp": {"servers": {"fixture": {"command": ["service", "--api-key", "${FIXTURE_AUTH}"]}}}}
+    saved = {"mcp": {"servers": {"fixture": {"command": ["service", *arguments]}}}}
     draft = deepcopy(mask_config(saved, raw=True))
     draft["mcp"]["servers"]["fixture"]["command"][0] = "replacement"
     with pytest.raises(ValueError, match="command"):
@@ -624,3 +628,79 @@ def test_raw_tool_draft_follows_rotation_only_for_same_definition(api, change):
     else:
         assert result.status_code == 200
     assert config._read_merged_config_dict()["tools"]["lookup"] == tool
+
+def test_short_bearer_and_embedded_alias_are_private_across_editors():
+    from services.yaml_secrets import check_persisted_aliases, inherited_aliases, mask_config, omit_private_fields, restore_config
+
+    secret = token_hex(4)
+    text = f"Authorization: Bearer {secret}"
+    doc = yaml.safe_load(f'body_template: &template "{text}"\nlabel: *template\n')
+    for raw in (True, False):
+        masked = mask_config(doc, raw=raw)
+        assert secret not in repr(masked)
+        assert restore_config(masked, doc) == doc
+    assert omit_private_fields(doc) == {}
+    check_persisted_aliases(inherited_aliases(doc), doc)
+    with pytest.raises(ValueError, match="alias"):
+        check_persisted_aliases(inherited_aliases(doc), yaml.safe_load(yaml.safe_dump(doc)))
+    check_persisted_aliases(inherited_aliases(doc), {"label": "public"})
+    for reference in ("${MODEL_AUTH}", "$MODEL_AUTH"):
+        template = {"body_template": "Send Authorization: Bearer " + reference}
+        assert mask_config(template) == template
+    assert mask_config({"prompt": text}) == {"prompt": text}
+
+
+@pytest.mark.parametrize("arguments", [["--password", "old"], ["--password=old"]])
+def test_stdio_password_rotation_retains_environment_for_same_receiver(arguments):
+    from services.yaml_secrets import mask_config, restore_config
+
+    saved = {"mcp": {"servers": {"fixture": {
+        "command": "service", "args": ["--target", "original", *arguments], "env": {"AUTH": token_hex()},
+    }}}}
+    draft = deepcopy(mask_config(saved, raw=True))
+    server = draft["mcp"]["servers"]["fixture"]
+    server["args"][-1] = "--password=new" if "=" in arguments[-1] else "new"
+    restored = restore_config(draft, saved)
+    assert restored["mcp"]["servers"]["fixture"]["env"] == saved["mcp"]["servers"]["fixture"]["env"]
+    for field, value in (("command", "other"), ("args", ["--target", "other", *server["args"][2:]])):
+        changed = deepcopy(draft)
+        changed["mcp"]["servers"]["fixture"][field] = value
+        with pytest.raises(ValueError):
+            restore_config(changed, saved)
+
+
+def test_moved_marker_selects_its_signed_origin_in_either_live_order():
+    from services.yaml_secrets import mask_config, restore_config
+
+    secret = token_hex()
+    def tool(host):
+        return {"url": f"https://{host}.invalid", "headers": {"Authorization": secret}}
+    original = {"tools": {"old": tool("first")}}
+    header = mask_config(original, raw=True)["tools"]["old"]["headers"]
+    edited = {"tools": {"new": {**tool("first"), "headers": header}}}
+    entries = [("moved", tool("first")), ("other", tool("second"))]
+    for order in (entries, reversed(entries)):
+        assert restore_config(edited, {"tools": dict(order)}) == {"tools": {"new": tool("first")}}
+    with pytest.raises(ValueError):
+        restore_config(edited, {"tools": {"other": tool("second")}})
+
+def test_local_embedded_alias_survives_edit_and_refuses_detached_credential(api, monkeypatch):
+    client, base, local, _ = api
+    base.write_text("{}\n")
+    secret = token_hex(4)
+    local.write_text(f'# operator comment\nbody_template: &source "Authorization: Bearer {secret}"\nlabel: *source\n')
+    content = client.get("/config/yaml").json()["content"]
+    assert secret not in content
+    updated = client.post("/config/yaml", json={"content": content + "log_level: INFO\n"})
+    assert updated.status_code == 200
+    assert secret not in client.get("/config").text
+    saved = local.read_bytes()
+    assert b"# operator comment" in saved
+    draft = yaml.safe_load(client.get("/config/yaml").json()["content"])
+    draft.pop("body_template")
+    writes = []
+    monkeypatch.setattr(config, "_migrate_inline_provider_secrets", lambda _: [("fixture", "api-key", b"value")])
+    monkeypatch.setattr(config, "_write_provider_secret", lambda *args: writes.append(args))
+    refused = client.post("/config/yaml", json={"content": yaml.safe_dump(draft)})
+    assert refused.status_code == 400 and secret not in refused.text
+    assert local.read_bytes() == saved and not writes

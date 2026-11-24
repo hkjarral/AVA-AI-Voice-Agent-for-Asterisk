@@ -258,3 +258,12 @@ async def test_password_change_obeys_the_valid_session_budget(login, monkeypatch
                                   json={"old_password":password, "new_password":secrets.token_urlsafe()})
     assert response.status_code == 429
     assert (await post(username, password)).status_code == 200
+
+def test_invalid_proxy_configuration_warns_once_without_logging_its_value(caplog):
+    from services.login_throttle import client_address
+
+    invalid = uuid4().hex
+    for _ in range(2):
+        assert client_address("127.0.0.1", "192.0.2.1", "127.0.0.1," + invalid) == "127.0.0.1"
+    assert caplog.text.count("AAVA_TRUSTED_PROXIES entry 2") == 1
+    assert invalid not in caplog.text

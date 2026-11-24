@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Mask numeric credential echoes in HTTP tool tests, short Bearer credentials in templates, and embedded credentials shared through YAML aliases. MCP password rotation can retain other credentials for the same command.
+
 - Local AI connection checks report model readiness without returning the WebSocket URL or provider-supplied text.
 
 - Preserve stored Agent credentials when a malformed JSON edit contains an escaped placeholder. Keep existing call metadata names compatible, mask sensitive names on reads, and record the call even when an enrichment field is rejected.
@@ -78,6 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove the unused external-media prototype, retired configuration components, HealthWidget and three superseded Local AI backend classes.
 
 ### Fixed
+
+- Persist confirmed VICIdial terminal results before retrying a late Call History write. Clearing the log file path while file logging is enabled restores the standard path.
 
 - The setup wizard resolves environment references in the ARI port and preserves credential edits made while saving. SMTP verification accepts equivalent numeric ports.
 

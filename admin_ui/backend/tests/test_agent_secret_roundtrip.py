@@ -242,3 +242,16 @@ def test_renamed_mcp_server_refusal_identifies_position_without_echoing_identifi
     assert "MCP server 2" in response.json()["detail"]
     assert "fixture-" not in response.text
     assert store.get_by_slug("agent") == before
+
+def test_agent_prose_and_custom_presence_objects_round_trip(agent_api):
+    client, store = agent_api
+    state = {"custom_state": {"set": True}, "source": {"origin": "local", "set": False}}
+    prompt = "The label is «secret: example»"
+    created = create(client, prompt=prompt, extra_json=json.dumps(state))
+    assert created.status_code == 201
+    state["custom_state"]["set"] = False
+    edited = {"prompt": prompt + ".", "extra_json": json.dumps(state)}
+    assert client.patch("/api/agents/agent", json=edited).status_code == 200
+    assert store.get_by_slug("agent")["prompt"] == edited["prompt"]
+    assert json.loads(store.get_by_slug("agent")["extra_json"]) == state
+    assert client.patch("/api/agents/agent", json={"prompt": "«secret:malformed»"}).status_code == 422

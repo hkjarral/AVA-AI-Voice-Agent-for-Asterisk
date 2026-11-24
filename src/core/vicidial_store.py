@@ -193,6 +193,7 @@ class VicidialStore:
                     external_call_id TEXT,
                     status TEXT NOT NULL DEFAULT 'pending',
                     workflow_completed INTEGER NOT NULL DEFAULT 0,
+                    terminal_result_json TEXT,
                     attempt_count INTEGER NOT NULL DEFAULT 0,
                     next_attempt_at TEXT NOT NULL,
                     last_error TEXT,
@@ -243,6 +244,9 @@ class VicidialStore:
                     ADD COLUMN workflow_completed INTEGER NOT NULL DEFAULT 0
                     """
                 )
+
+            if "terminal_result_json" not in pending_action_columns:
+                conn.execute("ALTER TABLE vicidial_pending_actions ADD COLUMN terminal_result_json TEXT")
 
             # Preview databases stored only one retired route per mapping.
             # Normalize that table so every superseded generated route can
@@ -605,6 +609,9 @@ class VicidialStore:
         data = dict(row)
         data["connection"] = _decode(data.pop("connection_json", None), {})
         data["payload"] = _decode(data.pop("payload_json", None), {})
+        checkpoint = data.pop("terminal_result_json", None)
+        if checkpoint is not None:
+            data["terminal_result"] = json.loads(checkpoint)
         data["workflow_completed"] = bool(data.get("workflow_completed"))
         data["attempt_count"] = int(data.get("attempt_count") or 0)
         return data
@@ -773,6 +780,10 @@ class VicidialStore:
                         THEN 0
                         ELSE vicidial_pending_actions.workflow_completed
                     END,
+                    terminal_result_json=CASE
+                        WHEN vicidial_pending_actions.status='canceled' THEN NULL
+                        ELSE vicidial_pending_actions.terminal_result_json
+                    END,
                     attempt_count=CASE
                         WHEN vicidial_pending_actions.status='canceled'
                         THEN 0
@@ -864,6 +875,16 @@ class VicidialStore:
                  WHERE id=? AND status='pending'
                 """,
                 (next_attempt, str(error or "")[:500], now_dt.isoformat(), action_id),
+            )
+        return cur.rowcount > 0
+
+    def save_pending_terminal_result(self, action_id: str, result: Dict[str, Any]) -> bool:
+        """Checkpoint confirmed terminal control before writing the separate history DB."""
+        with self._lock, self._connection() as conn:
+            cur = conn.execute(
+                """UPDATE vicidial_pending_actions SET terminal_result_json=?,updated_at=?
+                   WHERE id=? AND status='pending' AND workflow_completed=1""",
+                (_json(result, {}), _now(), action_id),
             )
         return cur.rowcount > 0
 

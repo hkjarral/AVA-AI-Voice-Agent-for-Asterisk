@@ -33,7 +33,7 @@ if str(PROJECT_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_SOURCE_ROOT))
 
 from services.secret_keys import is_secret_env_value, is_secret_key, redact_mapping
-from services.yaml_secrets import (CredentialDestinationError, credential_references, has_markers, mask_config, mask_yaml_secrets, recover_flat_override,
+from services.yaml_secrets import (CredentialDestinationError, check_persisted_aliases, credential_references, has_markers, inherited_aliases, mask_config, mask_yaml_secrets, recover_flat_override,
                                    repair_revision, restore_config, restore_yaml_secrets)
 
 try:
@@ -1494,8 +1494,8 @@ def _persist_config_content_locked(
         migrated_warnings = validation.get("warnings")
         warnings = warnings if migrated_warnings is None else migrated_warnings
 
-    secrets_migrated = _migrate_inline_provider_secrets(new_parsed)
-    if secrets_migrated:
+    secret_writes = _migrate_inline_provider_secrets(new_parsed)
+    if secret_writes:
         content = yaml.dump(new_parsed, default_flow_style=False, sort_keys=False)
         validation = validate_migrated_content(content)
         migrated_warnings = validation.get("warnings")
@@ -1521,10 +1521,45 @@ def _persist_config_content_locked(
     local_override = _compute_local_override(base, new_parsed)
     local_content = yaml.dump(local_override or {}, default_flow_style=False, sort_keys=False)
 
+    aliases = inherited_aliases(old_merged)
+    if aliases:
+        # PyYAML normally expands scalar anchors. Reuse one scalar node per
+        # previously protected value so an unrelated override edit keeps it private.
+        anchor_values = {value: value for value, _ in aliases.values()}
+
+        class AliasDumper(yaml.SafeDumper):
+            def ignore_aliases(self, data):
+                if isinstance(data, str) and data in anchor_values:
+                    return False
+                return super().ignore_aliases(data)
+
+            def represent_data(self, data):
+                if isinstance(data, str):
+                    data = anchor_values.get(data, data)
+                return super().represent_data(data)
+
+        local_content = yaml.dump(local_override or {}, Dumper=AliasDumper, sort_keys=False)
+        if not secret_writes and recovery_baseline is None and os.path.isfile(settings.LOCAL_CONFIG_PATH):
+            with open(settings.LOCAL_CONFIG_PATH, "rb") as source:
+                with_comments = _keep_local_comments(source.read(), local_content)
+            if with_comments != local_content:
+                try:
+                    check_persisted_aliases(aliases, _deep_merge_dicts(base, yaml.safe_load(with_comments)))
+                except ValueError:
+                    pass  # Use the plain dump when the previous layout detaches an alias.
+                else:
+                    local_content = with_comments
+        try:
+            check_persisted_aliases(aliases, _deep_merge_dicts(base, yaml.safe_load(local_content)))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
     # Write to LOCAL override file (keeps base ai-agent.yaml clean for git)
-    if secrets_migrated or recovery_baseline is not None:
-        # Comments may hold the old key material (a commented-out key line,
-        # "old: sk-..."); write the file without them.
+    for provider_key, credential_name, contents in secret_writes or ():
+        _write_provider_secret(provider_key, credential_name, contents)
+    if secret_writes or recovery_baseline is not None or aliases:
+        # Migrations discard comments that could contain old credentials. For
+        # aliases, the exact serialized layout was already checked above.
         _write_local_config(local_content, keep_comments=False)
     else:
         _write_local_config(local_content)
@@ -3448,11 +3483,11 @@ def _update_provider_credentials_field(provider_key: str, field: str, value: Opt
     _save_merged_config(merged)
 
 
-def _migrate_inline_provider_secrets(config_data: Dict[str, Any]) -> bool:
-    """Move inline Admin UI secrets into provider-scoped secret files."""
+def _migrate_inline_provider_secrets(config_data: Dict[str, Any]) -> list[tuple[str, str, bytes]]:
+    """Plan provider secret writes so validation can finish before files change."""
     helpers = _provider_instances_module()
     providers = config_data.get("providers") if isinstance(config_data.get("providers"), dict) else {}
-    changed = False
+    writes = []
     for provider_key, provider_cfg in providers.items():
         if not isinstance(provider_cfg, dict):
             continue
@@ -3473,11 +3508,10 @@ def _migrate_inline_provider_secrets(config_data: Dict[str, Any]) -> bool:
             if not _credential_allowed_for_kind(kind, credential_name):
                 continue
             path = _provider_secret_path(str(provider_key), credential_name)
-            _write_provider_secret(str(provider_key), credential_name, value.strip().encode("utf-8"))
+            writes.append((str(provider_key), credential_name, value.strip().encode("utf-8")))
             provider_cfg[file_field] = path
             provider_cfg.pop(inline_field, None)
-            changed = True
-    return changed
+    return writes
 
 
 def _credential_metadata(provider_key: str, credential_name: str) -> Dict[str, Any]:

@@ -775,6 +775,7 @@ class CallHistoryStore:
         *,
         external_disposition: Optional[str],
         external_metadata: Dict[str, Any],
+        retry_action_id: Optional[str] = None,
     ) -> bool:
         """Merge a late external-dialer result into an existing history row.
 
@@ -813,6 +814,12 @@ class CallHistoryStore:
                         current = {}
 
                     updates = dict(external_metadata or {})
+                    if retry_action_id:
+                        applied = current.get("applied_retry_actions")
+                        applied = applied if isinstance(applied, list) else []
+                        if retry_action_id in applied:
+                            return True
+                        updates["applied_retry_actions"] = [*applied, retry_action_id]
                     previous_events = current.get("events")
                     retry_events = updates.pop("events", None)
                     current.update(updates)

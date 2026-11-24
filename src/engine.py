@@ -2969,6 +2969,21 @@ class Engine:
         """Run one current action while its per-call lifecycle lock is held."""
         action_id = str(action.get("id") or "").strip()
         operation = str(action.get("operation") or "").strip().lower()
+        call_id = str(action.get("call_id") or "").strip()
+
+        async def persist_history(result):
+            from src.core.call_history import get_call_history_store_async
+
+            history = await get_call_history_store_async()
+            if not await history.update_external_lifecycle(call_id, retry_action_id=action_id, **result):
+                raise RuntimeError("VICIdial retry result could not be persisted to Call History")
+
+        if "terminal_result" in action:
+            await persist_history(action["terminal_result"])
+            if not store.complete_pending_action(action_id):
+                raise RuntimeError("VICIdial retry record could not be completed")
+            return
+
         connection = dict(action.get("connection") or {})
         payload = dict(action.get("payload") or {})
         connection_id = str(connection.get("id") or "").strip()
@@ -3009,7 +3024,6 @@ class Engine:
                 )
 
         retry_terminal = payload.get("retry_terminal")
-        call_id = str(action.get("call_id") or "").strip()
         if isinstance(retry_terminal, dict) and call_id:
             session = await self.session_store.get_by_call_id(call_id)
             reconstructed_session = False
@@ -3113,56 +3127,21 @@ class Engine:
                             ),
                         )
                         if finalized and reconstructed_session:
-                            from src.core.call_history import get_call_history_store_async
-
-                            history_store = await get_call_history_store_async()
-                            history_updated = (
-                                await history_store.update_external_lifecycle(
-                                    call_id,
-                                    external_disposition=getattr(
-                                        session, "external_disposition", None
-                                    ),
-                                    external_metadata={
-                                        "session": getattr(
-                                            session, "external_session", {}
-                                        ) or {},
-                                        "mapping_id": (
-                                            getattr(
-                                                session, "external_mapping", {}
-                                            ) or {}
-                                        ).get("id"),
-                                        "mapping_name": (
-                                            getattr(
-                                                session, "external_mapping", {}
-                                            ) or {}
-                                        ).get("name"),
-                                        "events": getattr(
-                                            session, "external_events", []
-                                        ) or [],
-                                        "requested_disposition": getattr(
-                                            session,
-                                            "external_requested_disposition",
-                                            None,
-                                        ),
-                                        "disposition_label": getattr(
-                                            session,
-                                            "external_disposition_label",
-                                            None,
-                                        ),
-                                        "finalized": bool(
-                                            getattr(
-                                                session,
-                                                "external_finalized",
-                                                False,
-                                            )
-                                        ),
-                                    },
-                                )
-                            )
-                            if not history_updated:
-                                raise RuntimeError(
-                                    "VICIdial retry result could not be persisted to Call History"
-                                )
+                            result = {
+                                "external_disposition": session.external_disposition,
+                                "external_metadata": {
+                                    "session": session.external_session or {},
+                                    "mapping_id": (session.external_mapping or {}).get("id"),
+                                    "mapping_name": (session.external_mapping or {}).get("name"),
+                                    "events": session.external_events or [],
+                                    "requested_disposition": session.external_requested_disposition,
+                                    "disposition_label": session.external_disposition_label,
+                                    "finalized": bool(session.external_finalized),
+                                },
+                            }
+                            if not store.save_pending_terminal_result(action_id, result):
+                                raise RuntimeError("VICIdial terminal result could not be checkpointed")
+                            await persist_history(result)
                     finally:
                         if reconstructed_session:
                             await self.session_store.remove_call(call_id)

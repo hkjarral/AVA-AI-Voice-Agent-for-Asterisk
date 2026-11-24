@@ -386,9 +386,9 @@ const EnvPage = () => {
                 envToSave.AAVA_OUTBOUND_PBX_TYPE = normalizeOutboundPbxType(env.AAVA_OUTBOUND_PBX_TYPE);
             }
             // If file logging is enabled, ensure LOG_FILE_PATH is persisted (UI shows a recommended default).
-            const logToFile = (envToSave['LOG_TO_FILE'] || '').toLowerCase();
+            const logToFile = (env['LOG_TO_FILE'] || '').toLowerCase();
             const logEnabled = logToFile === '1' || logToFile === 'true' || logToFile === 'on' || logToFile === 'yes';
-            if (logEnabled && !isSecretMarker(savedEnv.LOG_FILE_PATH)) {
+            if (logEnabled && ('LOG_TO_FILE' in changes || 'LOG_FILE_PATH' in changes) && !isSecretMarker(savedEnv.LOG_FILE_PATH)) {
                 envToSave['LOG_FILE_PATH'] = env['LOG_FILE_PATH']?.trim() || '/mnt/asterisk_media/ai-engine.log';
             }
 

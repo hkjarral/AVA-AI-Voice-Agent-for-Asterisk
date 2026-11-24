@@ -1052,6 +1052,13 @@ async def test_http_tool(request: TestHTTPRequest):
             secret_values.update((value, json.dumps(value, ensure_ascii=True)[1:-1],
                                   json.dumps(value, ensure_ascii=False)[1:-1],
                                   quote(value, safe=""), quote_plus(value)))
+    numeric_secrets = set()
+    for value in secret_values:
+        if value[0] in "-0123456789":
+            try:
+                numeric_secrets.add(json.loads(value))
+            except ValueError:
+                continue
     secret_values = sorted(secret_values, key=len, reverse=True)
     secret_patterns = []
     for secret in secret_values:
@@ -1067,6 +1074,8 @@ async def test_http_tool(request: TestHTTPRequest):
             return {redact(key): redact(item) for key, item in value.items()}
         if isinstance(value, list):
             return [redact(item) for item in value]
+        if type(value) in (int, float) and value in numeric_secrets:
+            return "***"
         if isinstance(value, str) and secret_pattern is not None:
             value = secret_pattern.sub("***", value)
         return value

@@ -19,7 +19,7 @@ describe('EnvPage provider credential audit', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         vi.mocked(axios.get).mockImplementation(async url => {
-            if (url === '/api/config/env') return { data: { AAVA_OUTBOUND_PBX_TYPE: { set: true }, OPENAI_API_KEY: { set: true }, CUSTOM_SUPPLIER_KEY: { set: false }, SMTP_PASSWORD: { set: true }, ASTERISK_ARI_PASSWORD: { set: true } } };
+            if (url === '/api/config/env') return { data: { LOG_TO_FILE: '1', LOG_FILE_PATH: '/old.log', AAVA_OUTBOUND_PBX_TYPE: { set: true }, OPENAI_API_KEY: { set: true }, CUSTOM_SUPPLIER_KEY: { set: false }, SMTP_PASSWORD: { set: true }, ASTERISK_ARI_PASSWORD: { set: true } } };
             if (url === '/api/config/env/status') {
                 return { data: { apply_plan: [], pending_restart: false } };
             }
@@ -79,6 +79,16 @@ describe('EnvPage provider credential audit', () => {
         fireEvent.click(save);
         await waitFor(() => expect(vi.mocked(axios.post).mock.calls).toHaveLength(3));
         expect(vi.mocked(axios.post).mock.calls[2][1]).not.toHaveProperty('OPENAI_API_KEY');
+    });
+
+    it('saves the default path when the operator clears it with file logging enabled', async () => {
+        vi.mocked(axios.post).mockResolvedValue({ data: {} });
+        render(<MemoryRouter><EnvPage /></MemoryRouter>);
+        const path = await screen.findByDisplayValue('/old.log');
+        fireEvent.change(path, { target: { value: '' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/config/env',
+            expect.objectContaining({ LOG_FILE_PATH: '/mnt/asterisk_media/ai-engine.log' }), expect.anything()));
     });
 
     it('offers Replace for server-assigned credential aliases, including known setting names', async () => {

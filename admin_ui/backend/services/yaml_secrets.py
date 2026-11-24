@@ -187,9 +187,11 @@ def _field_spans(path, value):
                             provider_url=provider_url)
 
 
-def _stored_paths(config):
+def _stored_paths(config, *, inherited=None):
     whole = {}
     parts = {}
+
+    embedded_by_id = {}
 
     def collect(path, value):
         policy = field_classification(path)
@@ -199,6 +201,7 @@ def _stored_paths(config):
             whole[path] = value
         elif ranges := _field_spans(path, value):
             parts[path] = [(a, b, value[a:b]) for a, b in ranges]
+            embedded_by_id.setdefault(id(value), set()).update(ranges)
         return _MISSING
 
     _walk(config, collect)
@@ -207,9 +210,52 @@ def _stored_paths(config):
     def aliases(path, value):
         if id(value) in aliased and not _prose(path):
             whole[path] = value
+        if path not in whole and id(value) in embedded_by_id:
+            ranges = embedded_by_id[id(value)]
+            local = {(a, b) for a, b, _ in parts.get(path, ())}
+            if not ranges <= local:
+                # This path cannot itself protect every embedded credential. Retain
+                # the original scalar as one signed value when it is echoed.
+                whole[path] = value
+                if inherited is not None:
+                    inherited[path] = (value, {value[a:b] for a, b in ranges - local})
         return _MISSING
     _walk(config, aliases)
     return whole, parts
+
+
+def inherited_aliases(current):
+    inherited = {}
+    _stored_paths(current, inherited=inherited)
+    return inherited
+
+
+def check_persisted_aliases(inherited, persisted):
+    """An override rewrite can expand a scalar alias or detach it from its source."""
+    if not inherited:
+        return
+    whole, parts = _stored_paths(persisted)
+    for path, (_, literals) in inherited.items():
+        node = persisted
+        for i, key in enumerate(path):
+            if path[:i + 1] in whole:
+                break
+            if isinstance(node, dict) and key in node:
+                node = node[key]
+            elif isinstance(node, list) and isinstance(key, int) and 0 <= key < len(node):
+                node = node[key]
+            else:
+                break
+        else:
+            if isinstance(node, str):
+                visible = []
+                end = 0
+                for start, stop, _ in parts.get(path, ()):
+                    visible.append(node[end:start])
+                    end = stop
+                visible.append(node[end:])
+                if any(literal and literal in text for literal in literals for text in visible):
+                    raise ValueError("Remove the credential-bearing YAML alias or replace it with a public value.")
 
 
 def credential_literals(config):
@@ -365,6 +411,30 @@ def _tool_revision(document, owner, whole, parts):
     return _fingerprint(fields)
 
 
+def _inline_private_option(arg):
+    if isinstance(arg, str) and arg.startswith("-"):
+        name, separator, value = arg.partition("=")
+        if separator and private_name(name.lstrip("-")):
+            return name, value
+    return None
+
+
+def _stdio_identity(key, value):
+    if key not in ("args", "command") or not isinstance(value, list):
+        return value
+    identity = []
+    for i, arg in enumerate(value):
+        if key == "command" and i == 0:
+            identity.append(arg)
+        elif _flag_value({key: value}, (key, i)) and isinstance(arg, str) and not arg.startswith("-"):
+            identity.append(None)
+        elif inline := _inline_private_option(arg):
+            identity.append([inline[0]])
+        else:
+            identity.append(arg)
+    return identity
+
+
 def _destination(document, owner):
     if not owner:
         return {}
@@ -386,7 +456,7 @@ def _destination(document, owner):
         if settings["transport"] == "stdio":
             for key in ("command", "args", "cwd"):
                 if document.get(key):
-                    settings[key] = document[key]
+                    settings[key] = _stdio_identity(key, document[key])
     else:
         from src.config.provider_instances import credential_provider_kind
         settings = {"provider_type": credential_provider_kind(str(owner[1]), document)}
@@ -445,7 +515,13 @@ def _credential_sources(document, path, value):
     if not private and path[-1] in _CREDENTIAL_SOURCES:
         return (("env" if path[-1].endswith("_env") else "file", value),)
     if not private and not _flag_value(document, path):
-        return ()
+        if (len(path) < 2 or path[-2] not in ("args", "command") or not isinstance(path[-1], int)
+                or (path[-2] == "command" and path[-1] == 0)):
+            return ()
+        inline = _inline_private_option(value)
+        if not inline:
+            return ()
+        value = inline[1]
     if "${" in value:
         from src.config.loaders import substitute_braced_env_vars
         names = set()
@@ -528,6 +604,9 @@ def restore_config(edited, current):
         if path[:1] == (_AGENT_ROWS,) and isinstance(value, dict) and set(value) in ({"set"}, {"origin", "set"}):
             # Agent editors receive a signed, row-bound string. An unsigned
             # YAML presence flag cannot stand in for a stored agent value.
+            if not (path in whole or path in parts or _secret_field(path)
+                    or _is_tool_url(path) or _flag_value(edited, path)):
+                return _MISSING
             raise ValueError("A signed stored agent marker is required. Reload the agent.")
         if isinstance(value, dict) and set(value) == {"origin", "set"}:
             if (not _is_tool_url(path, whole.get(path)) or path not in whole or type(value["set"]) is not bool
@@ -544,6 +623,12 @@ def restore_config(edited, current):
             raise ValueError("No stored credential for the presence marker")
         if not isinstance(value, str) or _PREFIX not in value:
             return _MISSING
+        def invalid_prefix(fragment):
+            # A space after the colon quotes the literal prefix in Agent prose.
+            if path[:1] == (_AGENT_ROWS,) and _prose(path):
+                fragment = fragment.replace(_PREFIX + " ", "")
+            return _PREFIX in fragment
+
         offsets = []
         result = []
         cursor = 0
@@ -554,18 +639,20 @@ def restore_config(edited, current):
             if revision:
                 payload += "~" + revision
             entry = entries.get((origin, index))
-            if not hmac.compare_digest(tag, _mac("marker:" + payload)) or _PREFIX in value[cursor:match.start()]:
+            if not hmac.compare_digest(tag, _mac("marker:" + payload)) or invalid_prefix(value[cursor:match.start()]):
                 raise ValueError("Invalid secret placeholder. Reload the configuration.")
             if origin != _name(path):
                 if label := mcp_server_label(owner):
                     raise ValueError(f"{label} cannot retain a moved credential. Re-enter it or reload the agent.")
                 if _field_shape(origin) != _field_shape(_name(path)):
                     raise ValueError("A moved credential belongs to a different field.")
-                if entry is None or _fingerprint(entry[1]) != fingerprint:
+                if (entry is None or _fingerprint(entry[1]) != fingerprint
+                        or saved_destination(_owner(entry[0])) != destination):
                     if not by_fingerprint:
                         for (name, slot), candidate in entries.items():
-                            by_fingerprint[(_field_shape(name), slot, _fingerprint(candidate[1]))] = candidate
-                    entry = by_fingerprint.get((_field_shape(origin), index, fingerprint))
+                            by_fingerprint[(_field_shape(name), slot, _fingerprint(candidate[1]),
+                                            saved_destination(_owner(candidate[0])))] = candidate
+                    entry = by_fingerprint.get((_field_shape(origin), index, fingerprint, destination))
                 if index == -1 and not (_secret_field(path) or _is_tool_url(path) or _flag_value(edited, path)):
                     raise ValueError("A stored credential requires a secret destination field.")
             if entry is None:
@@ -595,7 +682,7 @@ def restore_config(edited, current):
             offsets.append((sum(map(len, result)), len(secret)))
             result.append(secret)
             cursor = match.end()
-        if _PREFIX in value[cursor:]:
+        if invalid_prefix(value[cursor:]):
             raise ValueError("Invalid secret placeholder. Reload the configuration.")
         result.append(value[cursor:])
         rebuilt = "".join(result)
@@ -639,8 +726,11 @@ def restore_yaml_secrets(new_text: str, current_text: str) -> str:
         return current_text
     editor = _yaml()
     edited = editor.load(new_text)
-    restored = restore_config(edited, editor.load(current_text))
-    return new_text if edited == restored else _render(editor, restored)
+    current = editor.load(current_text)
+    restored = restore_config(edited, current)
+    output = new_text if edited == restored else _render(editor, restored)
+    check_persisted_aliases(inherited_aliases(current), editor.load(output))
+    return output
 
 
 def repair_revision(base: bytes, local: bytes) -> str:

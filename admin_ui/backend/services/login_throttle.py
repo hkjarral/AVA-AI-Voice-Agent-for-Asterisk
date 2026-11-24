@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import ipaddress
+import logging
 import math
 import os
 import sqlite3
@@ -10,6 +11,7 @@ import time
 from collections import OrderedDict, deque
 from collections.abc import Hashable
 from contextlib import closing
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -86,12 +88,28 @@ class LoginThrottle:
         self._locks.pop(key, None)
 
 
+@lru_cache(maxsize=16)
+def _trusted_networks(setting):
+    networks = []
+    for index, entry in enumerate(setting.split(","), start=1):
+        try:
+            networks.append(ipaddress.ip_network(entry.strip(), strict=False))
+        except ValueError:
+            logging.getLogger(__name__).warning(
+                "Invalid IP or CIDR at AAVA_TRUSTED_PROXIES entry %d. Using the socket peer.", index
+            )
+            return ()
+    return tuple(networks)
+
+
 def client_address(peer: str, forwarded: str, trusted: str) -> str:
     """Walk from the socket peer towards the first untrusted forwarding hop."""
     if not trusted.strip() or not forwarded:
         return peer
     try:
-        networks = [ipaddress.ip_network(entry.strip(), strict=False) for entry in trusted.split(",")]
+        networks = _trusted_networks(trusted)
+        if not networks:
+            return peer
         address = ipaddress.ip_address(peer)
         for hop in reversed(forwarded.split(",")):
             if not any(address in network for network in networks):

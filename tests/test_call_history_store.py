@@ -233,15 +233,17 @@ async def test_external_lifecycle_update_merges_late_retry_result(tmp_path, monk
         )
     ) is True
 
-    assert await store.update_external_lifecycle(
-        "vicidial-late-retry",
-        external_disposition="AIHU",
-        external_metadata={
-            "events": [{"operation": "hangup", "success": True}],
-            "disposition_label": "ai_hangup",
-            "finalized": True,
-        },
-    ) is True
+    for _ in range(2):
+        assert await store.update_external_lifecycle(
+            "vicidial-late-retry",
+            retry_action_id="history-retry",
+            external_disposition="AIHU",
+            external_metadata={
+                "events": [{"operation": "hangup", "success": True}],
+                "disposition_label": "ai_hangup",
+                "finalized": True,
+            },
+        ) is True
 
     updated = await store.get_by_call_id("vicidial-late-retry")
     assert updated is not None
