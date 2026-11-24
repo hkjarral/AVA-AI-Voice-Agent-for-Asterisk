@@ -159,29 +159,57 @@ async def test_invalid_agent_tool_policy_records_failure_before_provider_resolut
 
 
 @pytest.mark.asyncio
-async def test_invalid_named_full_provider_does_not_fall_back_to_default():
+@pytest.mark.parametrize(
+    ("channel_override", "agent_pipeline", "expected_route"),
+    [
+        ("", "", None),
+        ("", "agent_pipeline", "agent_pipeline"),
+        ("invalid_deepgram", "agent_pipeline", None),
+        ("local", "agent_pipeline", "local"),
+        ("dialplan_pipeline", "agent_pipeline", "dialplan_pipeline"),
+    ],
+)
+async def test_validate_provider_only_when_selected_by_call_route(
+    channel_override, agent_pipeline, expected_route,
+):
     engine = Engine.__new__(Engine)
     engine.config = SimpleNamespace(
         default_provider="local",
         providers={"invalid_deepgram": {"type": "deepgram", "tts_version": "v3"}},
+        pipelines={"agent_pipeline": {}, "dialplan_pipeline": {}},
     )
     engine.providers = {"local": object()}
     engine.transport_orchestrator = MagicMock()
     engine.transport_orchestrator.agent_store.default_slug.return_value = None
     engine.transport_orchestrator.yaml_context_shadowed_by_agent_db.return_value = False
-    engine.transport_orchestrator.get_context_config.return_value = SimpleNamespace(provider="invalid_deepgram")
+    engine.transport_orchestrator.get_context_config.return_value = SimpleNamespace(
+        provider="invalid_deepgram", pipeline=agent_pipeline,
+    )
+    transport = SimpleNamespace(
+        wire_sample_rate=8000, wire_encoding="ulaw", profile_name="test", context=None,
+        provider_input_encoding="mulaw", provider_input_sample_rate=8000,
+        provider_output_encoding="mulaw", provider_output_sample_rate=8000,
+    )
+    engine.transport_orchestrator.resolve_transport.return_value = transport
     engine._tool_generation = ToolRuntimeGeneration.build(generation_id=1, config={})
     engine._save_session = AsyncMock()
     engine.ari_client = MagicMock()
 
+    values = {"AI_AGENT": "named-agent", "AI_PROVIDER": channel_override}
+
     async def get_variable(_method, _resource, **kwargs):
-        return {"value": "named-agent" if kwargs["params"]["variable"] == "AI_AGENT" else ""}
+        return {"value": values.get(kwargs["params"]["variable"], "")}
 
     engine.ari_client.send_command = AsyncMock(side_effect=get_variable)
     session = CallSession(call_id="call-invalid-provider", caller_channel_id="chan-invalid-provider")
 
     await Engine._resolve_audio_profile(engine, session, "chan-invalid-provider")
 
-    assert "providers.invalid_deepgram" in session.context_resolution_error
-    assert session.error_message == session.context_resolution_error
-    engine.transport_orchestrator.resolve_transport.assert_not_called()
+    if expected_route is None:
+        assert "providers.invalid_deepgram" in session.context_resolution_error
+        assert session.error_message == session.context_resolution_error
+        engine.transport_orchestrator.resolve_transport.assert_not_called()
+    else:
+        assert session.context_resolution_error is None
+        assert session.transport_profile is transport
+        assert engine.transport_orchestrator.resolve_transport.call_args.kwargs["provider_name"] == expected_route

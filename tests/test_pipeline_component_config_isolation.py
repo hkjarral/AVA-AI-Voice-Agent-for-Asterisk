@@ -283,3 +283,39 @@ def test_blank_elevenlabs_endpoint_never_inherits_missing_role_credentials(monke
     }, tts=key))
     with pytest.raises(PipelineOrchestratorError, match=key):
         orchestrator._validate_pipeline_entry("test", orchestrator.config.pipelines["test"])
+
+
+@pytest.mark.parametrize("name", ["openai", "openai_stt", "openai_llm", "openai_tts", "customer_tts"])
+def test_empty_typed_openai_wrapper_resolves_environment_credential(monkeypatch, name):
+    from src.config import OpenAIProviderConfig
+
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-owned-secret")
+    orchestrator = PipelineOrchestrator(_config({name: OpenAIProviderConfig()}))
+    component = "openai_llm" if name == "openai" else name
+    adapter = orchestrator._build_component(component, {})
+    assert adapter._provider_defaults.api_key == "environment-owned-secret"
+    assert "reasoning_effort" not in adapter._provider_defaults.model_fields_set
+    if component == "openai_llm":
+        assert adapter._compose_options({"model": "gpt-6.2-sol"})["reasoning_effort"] is None
+
+
+def test_empty_mapping_remains_omitted_but_typed_openai_is_an_explicit_wrapper(monkeypatch):
+    from src.config import OpenAIProviderConfig
+
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-owned-secret")
+    orchestrator = PipelineOrchestrator(_config({}))
+    assert orchestrator._hydrate_openai_config({}, component_key="openai_llm") is None
+    typed = orchestrator._hydrate_openai_config(OpenAIProviderConfig(), component_key="openai_llm")
+    assert typed is not None and typed.api_key == "environment-owned-secret"
+
+
+@pytest.mark.parametrize("name", ["openai_llm", "customer_tts"])
+def test_typed_openai_keeps_explicit_reasoning_after_environment_key_resolution(monkeypatch, name):
+    from src.config import OpenAIProviderConfig
+
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-owned-secret")
+    orchestrator = PipelineOrchestrator(_config({name: OpenAIProviderConfig(reasoning_effort="low")}))
+    adapter = orchestrator._build_component(name, {})
+    assert adapter._provider_defaults.api_key == "environment-owned-secret"
+    assert adapter._provider_defaults.reasoning_effort == "low"
+    assert "reasoning_effort" in adapter._provider_defaults.model_fields_set

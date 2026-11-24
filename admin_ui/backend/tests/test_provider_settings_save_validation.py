@@ -73,6 +73,40 @@ def test_changed_shorthand_pipeline_includes_its_shared_provider_dependency():
     assert config_api._affected_provider_settings(previous, desired, effective) == {"deepgram"}
 
 
+@pytest.mark.parametrize("referenced", [True, False])
+def test_deleted_role_validates_shared_fallback_only_when_still_referenced(monkeypatch, tmp_path, referenced):
+    previous = {"default_provider": "local", "providers": {
+        "local": {},
+        "openai": {"tts_model": "gpt-realtime-2.1-mini", "tts_transport": "speech"},
+        "openai_tts": {"type": "openai", "tts_model": "tts-1", "tts_transport": "speech"},
+    }, "pipelines": {"test": {
+        "stt": "local_stt", "llm": "local_llm", "tts": "openai_tts" if referenced else "local_tts",
+    }}}
+    monkeypatch.setattr(config_api.settings, "ENV_PATH", str(tmp_path / ".env"))
+    monkeypatch.setattr(config_api, "_read_merged_config_dict", lambda: deepcopy(previous))
+    desired = deepcopy(previous)
+    del desired["providers"]["openai_tts"]
+    if referenced:
+        with pytest.raises(HTTPException, match="providers.openai.settings"):
+            config_api._validate_ai_agent_config(yaml.safe_dump(desired))
+    else:
+        assert config_api._validate_ai_agent_config(yaml.safe_dump(desired))["provider_settings_scope"] == []
+
+
+def test_deleted_role_does_not_revalidate_an_unrelated_unused_canonical_role(monkeypatch, tmp_path):
+    previous = {"default_provider": "local", "providers": {
+        "local": {},
+        "openai": {"tts_model": "tts-1", "tts_transport": "speech"},
+        "openai_tts": {"type": "openai", "tts_model": "tts-1-hd", "tts_transport": "speech"},
+        "openai_stt": {"type": "openai", "tts_model": "gpt-realtime-2.1-mini", "tts_transport": "speech"},
+    }, "pipelines": {"test": {"stt": "local_stt", "llm": "local_llm", "tts": "openai_tts"}}}
+    monkeypatch.setattr(config_api.settings, "ENV_PATH", str(tmp_path / ".env"))
+    monkeypatch.setattr(config_api, "_read_merged_config_dict", lambda: deepcopy(previous))
+    desired = deepcopy(previous)
+    del desired["providers"]["openai_tts"]
+    assert config_api._validate_ai_agent_config(yaml.safe_dump(desired))["provider_settings_scope"] == ["openai"]
+
+
 def test_automatic_secret_migration_preserves_original_validation_scope(monkeypatch, tmp_path):
     previous = _legacy_provider_config()
     previous["providers"]["unused_tts"]["api_key"] = "legacy-private-key"

@@ -20178,29 +20178,16 @@ class Engine:
         explicit_channel_provider = str(
             channel_vars.get("AI_PROVIDER") or ""
         ).strip()
-        channel_pipeline = (
-            explicit_channel_provider
-            if explicit_channel_provider in configured_pipelines
-            else ""
-        )
-        effective_pipeline = channel_pipeline or context_pipeline
-        pipeline_profile_only = bool(
-            effective_pipeline
-            and (
-                channel_pipeline
-                or (
-                    not explicit_channel_provider
-                    and not str(
-                        getattr(no_input_context, "provider", None) or ""
-                    ).strip()
-                )
+        # Match call admission: a channel override wins. Without one, the
+        # Agent's pipeline takes precedence over its full-provider setting.
+        if explicit_channel_provider:
+            effective_pipeline = (
+                explicit_channel_provider if explicit_channel_provider in configured_pipelines else ""
             )
-        )
-        # Pipeline-only Agents and an explicit AI_PROVIDER=<pipeline> dialplan
-        # selection have no monolithic provider by design. Do not let
-        # CallSession's compatibility default accidentally select one; use the
-        # pipeline identity and the Agent/profile preferences directly.
-        if pipeline_profile_only:
+        else:
+            effective_pipeline = context_pipeline
+
+        if effective_pipeline:
             provider_name = effective_pipeline
             provider = None
         else:
@@ -20208,7 +20195,7 @@ class Engine:
                 getattr(self, "_call_providers", {}).get(session.call_id)
                 or self.providers.get(provider_name)
             )
-        if not provider and not pipeline_profile_only:
+        if not provider and not effective_pipeline:
             try:
                 validate_provider_settings(
                     getattr(self.config, "providers", None), provider_names={provider_name}
@@ -20222,7 +20209,6 @@ class Engine:
                     call_id=session.call_id, provider=provider_name, error=str(exc),
                 )
                 return
-        if not provider and not effective_pipeline:
             logger.warning(
                 "Provider not found for audio profile resolution",
                 call_id=session.call_id,

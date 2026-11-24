@@ -52,6 +52,7 @@ def test_extract_urls_preserves_ellipsis_for_template_filtering() -> None:
     ("url", "reason_fragment"),
     [
         ("https://api.example.com/test", "example"),
+        ("https://speech-gateway.example/v1/audio/speech", "example"),
         ("https://127.0.0.1/health", "local"),
         ("https://$", "template"),
         ("https://&lt;region&gt;.example.net/v1", "template"),

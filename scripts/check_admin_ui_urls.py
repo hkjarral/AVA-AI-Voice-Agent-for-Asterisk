@@ -154,7 +154,8 @@ def skip_reason(url: str) -> str | None:
         return "not a complete secure external URL"
     if parsed.username or parsed.password:
         return "embedded credentials are forbidden"
-    if host in SKIPPED_HOSTS or host.endswith(".example.com"):
+    # The .example top-level domain is reserved for examples (RFC 2606).
+    if host in SKIPPED_HOSTS or host.endswith((".example", ".example.com")):
         return "example or local endpoint"
     if _is_private_literal(host):
         return "private or non-routable address"

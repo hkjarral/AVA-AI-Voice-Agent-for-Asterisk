@@ -1185,6 +1185,19 @@ def _affected_provider_settings(previous: Dict[str, Any], desired: Dict[str, Any
     affected = {str(name) for name, value in providers.items() if value != old_providers.get(name)}
     pipelines = effective.get("pipelines") or {}
 
+    def include_component(component: Any, role: str) -> None:
+        if not isinstance(component, str):
+            return
+        component = component.strip()
+        if component in providers:
+            affected.add(component)
+        elif component.endswith(f"_{role}"):
+            # Legacy canonical roles can hydrate from a shared full
+            # provider when no explicit role block exists.
+            shared = component[:-(len(role) + 1)]
+            if shared in providers:
+                affected.add(shared)
+
     def include_route(target: Any) -> None:
         if not isinstance(target, str):
             return
@@ -1194,18 +1207,19 @@ def _affected_provider_settings(previous: Dict[str, Any], desired: Dict[str, Any
         pipeline = pipelines.get(target) if isinstance(pipelines, dict) else None
         if isinstance(pipeline, dict):
             for role in ("stt", "llm", "tts"):
+                include_component(pipeline.get(role), role)
+
+    removed = set(old_providers) - set(providers)
+    if removed and isinstance(pipelines, dict):
+        for pipeline in pipelines.values():
+            if not isinstance(pipeline, dict):
+                continue
+            for role in ("stt", "llm", "tts"):
                 component = pipeline.get(role)
-                if not isinstance(component, str):
-                    continue
-                component = component.strip()
-                if component in providers:
-                    affected.add(component)
-                elif component.endswith(f"_{role}"):
-                    # Legacy canonical roles can hydrate from a shared full
-                    # provider when no explicit role block exists.
-                    shared = component[:-(len(role) + 1)]
-                    if shared in providers:
-                        affected.add(shared)
+                if isinstance(component, str) and component.strip() in removed:
+                    # Deleting a referenced override changes the effective
+                    # dependency even if the pipeline itself is untouched.
+                    include_component(component, role)
 
     for key in ("default_provider", "active_pipeline"):
         if previous.get(key) != desired.get(key):
@@ -1227,7 +1241,7 @@ def _affected_provider_settings(previous: Dict[str, Any], desired: Dict[str, Any
                 for key in ("provider", "default_provider", "pipeline"):
                     include_route(effective_body.get(key))
     # The canonical OpenAI speech/LLM roles inherit the shared block.
-    if "openai" in affected:
+    if "openai" in affected and providers.get("openai") != old_providers.get("openai"):
         affected.update(name for name in ("openai_stt", "openai_llm", "openai_tts") if name in providers)
     return affected
 

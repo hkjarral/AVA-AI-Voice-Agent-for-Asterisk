@@ -1114,7 +1114,7 @@ class PipelineOrchestrator:
             fish_config = self._fishaudio_component_configs.get(str(name))
             if isinstance(raw, (LocalProviderConfig, OpenAIProviderConfig)):
                 typed_kind = "local" if isinstance(raw, LocalProviderConfig) else "openai"
-                raw = {**raw.model_dump(), "type": typed_kind}
+                raw = {**raw.model_dump(exclude_unset=typed_kind == "openai"), "type": typed_kind}
             prefix = _extract_provider(str(name)) or ""
             kind = (
                 str(raw.get("type") or prefix).strip().lower()
@@ -1858,7 +1858,7 @@ class PipelineOrchestrator:
             )
             return None
 
-        if not merged:
+        if not merged and not isinstance(raw_config, OpenAIProviderConfig):
             return None
 
         provider_prefix = _extract_provider(component_key) or "openai"
