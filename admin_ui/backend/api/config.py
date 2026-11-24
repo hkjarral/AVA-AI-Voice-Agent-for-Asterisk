@@ -1195,8 +1195,17 @@ def _affected_provider_settings(previous: Dict[str, Any], desired: Dict[str, Any
         if isinstance(pipeline, dict):
             for role in ("stt", "llm", "tts"):
                 component = pipeline.get(role)
-                if isinstance(component, str) and component.strip() in providers:
-                    affected.add(component.strip())
+                if not isinstance(component, str):
+                    continue
+                component = component.strip()
+                if component in providers:
+                    affected.add(component)
+                elif component.endswith(f"_{role}"):
+                    # Legacy canonical roles can hydrate from a shared full
+                    # provider when no explicit role block exists.
+                    shared = component[:-(len(role) + 1)]
+                    if shared in providers:
+                        affected.add(shared)
 
     for key in ("default_provider", "active_pipeline"):
         if previous.get(key) != desired.get(key):

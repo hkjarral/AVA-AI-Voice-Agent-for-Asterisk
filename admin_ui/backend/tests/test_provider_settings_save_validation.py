@@ -66,6 +66,13 @@ def test_shared_openai_edits_include_inheriting_canonical_roles():
     assert config_api._affected_provider_settings(previous, desired, desired) == {"openai", "openai_tts", "openai_llm"}
 
 
+def test_changed_shorthand_pipeline_includes_its_shared_provider_dependency():
+    previous = {"providers": {"deepgram": {"tts_model": "legacy"}}}
+    desired = {**deepcopy(previous), "pipelines": {"new": "deepgram"}}
+    effective = {**deepcopy(previous), "pipelines": {"new": {"stt": "deepgram_stt", "llm": "deepgram_llm", "tts": "deepgram_tts"}}}
+    assert config_api._affected_provider_settings(previous, desired, effective) == {"deepgram"}
+
+
 def test_automatic_secret_migration_preserves_original_validation_scope(monkeypatch, tmp_path):
     previous = _legacy_provider_config()
     previous["providers"]["unused_tts"]["api_key"] = "legacy-private-key"
