@@ -3,6 +3,7 @@ import docker
 import logging
 import copy
 from fastapi import APIRouter, HTTPException
+from services.private_inputs import PrivateInputRoute
 from pydantic import BaseModel
 import httpx
 import os
@@ -28,6 +29,8 @@ import zipfile
 logger = logging.getLogger(__name__)
 from settings import ENV_PATH, CONFIG_PATH, LOCAL_CONFIG_PATH, ensure_env_file, PROJECT_ROOT
 from services.fs import upsert_env_vars, atomic_write_text
+from services.saved_ari import ARI_PASSWORD_ENV, saved_ari_password
+from dotenv import dotenv_values
 from api.models_catalog import (
     get_full_catalog, get_models_by_language, get_available_languages,
     LANGUAGE_NAMES, REGION_NAMES, VOSK_STT_MODELS, SHERPA_STT_MODELS,
@@ -46,7 +49,7 @@ from services.google_live_validation import (
     select_google_live_model as _select_google_live_model,
 )
 
-router = APIRouter()
+router = APIRouter(route_class=PrivateInputRoute)
 
 DISK_WARNING_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
 DISK_BLOCK_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB (hard stop for downloads)
@@ -58,7 +61,7 @@ async def _discover_google_live_model(api_key: str) -> Optional[str]:
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 GOOGLE_MODELS_URL,
-                params={"key": api_key},
+                headers={"x-goog-api-key": api_key},
                 timeout=10.0,
             )
             if response.status_code != 200:
@@ -726,6 +729,20 @@ async def init_env():
     return {"created": created, "env_path": ENV_PATH}
 
 
+_WIZARD_CREDENTIALS = {
+    "asterisk_password": ARI_PASSWORD_ENV,
+    "openai_key": "OPENAI_API_KEY",
+    "groq_key": "GROQ_API_KEY",
+    "deepgram_key": "DEEPGRAM_API_KEY",
+    "google_key": "GOOGLE_API_KEY",
+    "elevenlabs_key": "ELEVENLABS_API_KEY",
+    "xai_key": "XAI_API_KEY",
+    "cartesia_key": "CARTESIA_API_KEY",
+    "kroko_api_key": "KROKO_API_KEY",
+    "kokoro_api_key": "KOKORO_API_KEY",
+}
+
+
 @router.get("/load-config")
 async def load_existing_config():
     """Load existing configuration from .env file.
@@ -740,11 +757,10 @@ async def load_existing_config():
     
     # Load from .env if it exists
     if os.path.exists(ENV_PATH):
-        env_values = dotenv_values(ENV_PATH)
+        env_values = dotenv_values(ENV_PATH, interpolate=False)
         config = {
             "asterisk_host": env_values.get("ASTERISK_HOST", "127.0.0.1"),
             "asterisk_username": env_values.get("ASTERISK_ARI_USERNAME", ""),
-            "asterisk_password": env_values.get("ASTERISK_ARI_PASSWORD", ""),
             "asterisk_port": int(env_values.get("ASTERISK_ARI_PORT", "8088")),
             "asterisk_scheme": env_values.get("ASTERISK_ARI_SCHEME", "http"),
             # App name is YAML-owned (asterisk.app_name). Keep env fallbacks for legacy setups only.
@@ -753,21 +769,13 @@ async def load_existing_config():
                 or env_values.get("ASTERISK_ARI_APP")
                 or "asterisk-ai-voice-agent"
             ),
-            "openai_key": env_values.get("OPENAI_API_KEY", ""),
-            "groq_key": env_values.get("GROQ_API_KEY", ""),
-            "deepgram_key": env_values.get("DEEPGRAM_API_KEY", ""),
-            "google_key": env_values.get("GOOGLE_API_KEY", ""),
-            "elevenlabs_key": env_values.get("ELEVENLABS_API_KEY", ""),
             "elevenlabs_agent_id": env_values.get("ELEVENLABS_AGENT_ID", ""),
-            "xai_key": env_values.get("XAI_API_KEY", ""),
             "local_stt_backend": env_values.get("LOCAL_STT_BACKEND", "vosk"),
             "local_tts_backend": env_values.get("LOCAL_TTS_BACKEND", "piper"),
             "kroko_embedded": _parse_optional_bool(env_values.get("KROKO_EMBEDDED")) is True,
-            "kroko_api_key": env_values.get("KROKO_API_KEY", ""),
             "kokoro_mode": (env_values.get("KOKORO_MODE", "local") or "local").strip().lower(),
             "kokoro_voice": env_values.get("KOKORO_VOICE", "af_heart"),
             "kokoro_api_base_url": env_values.get("KOKORO_API_BASE_URL", ""),
-            "kokoro_api_key": env_values.get("KOKORO_API_KEY", ""),
             "local_llm_model": "",
         }
     
@@ -803,6 +811,7 @@ async def load_existing_config():
     except Exception:
         logger.exception("Could not load effective setup configuration")
         raise HTTPException(503, "Could not load saved settings. Check config/data permissions and retry before saving.")
+    config.update({field: {"set": bool(env_values.get(name))} for field, name in _WIZARD_CREDENTIALS.items()})
     return config
 
 
@@ -2629,13 +2638,13 @@ async def switch_local_model(request: ModelSwitchRequest):
 
 class ApiKeyValidation(BaseModel):
     provider: str
-    api_key: str
+    api_key: Optional[str] = None
     agent_id: Optional[str] = None  # Required for ElevenLabs Conversational AI
 
 class AsteriskConnection(BaseModel):
     host: str
     username: str
-    password: str
+    password: Optional[str] = None
     port: int = 8088
     scheme: str = "http"
     ssl_verify: bool = True  # Set to False for self-signed certs or IP/hostname mismatches
@@ -2648,12 +2657,19 @@ async def validate_api_key(validation: ApiKeyValidation):
         import httpx
         
         provider = validation.provider.lower()
-        api_key = validation.api_key.strip() if validation.api_key else ""
+        api_key = validation.api_key
+        if api_key is None:
+            field = "xai_key" if provider == "grok" else f"{provider}_key"
+            # Only the fixed provider endpoints below may consume saved credentials.
+            if provider not in {"openai", "groq", "deepgram", "google", "elevenlabs", "grok"}:
+                return {"valid": False, "error": "Unknown provider"}
+            api_key = dotenv_values(ENV_PATH).get(_WIZARD_CREDENTIALS[field])
+        api_key = (api_key or "").strip()
         
         if not api_key:
             return {"valid": False, "error": "API key is empty"}
         
-        logger.info(f"Validating {provider} API key (length: {len(api_key)})")
+
         
         async with httpx.AsyncClient() as client:
             if provider == "openai":
@@ -2698,7 +2714,7 @@ async def validate_api_key(validation: ApiKeyValidation):
             elif provider == "google":
                 response = await client.get(
                     GOOGLE_MODELS_URL,
-                    params={"key": api_key},
+                    headers={"x-goog-api-key": api_key},
                     timeout=10.0
                 )
                 if response.status_code == 200:
@@ -2708,23 +2724,9 @@ async def validate_api_key(validation: ApiKeyValidation):
                 elif response.status_code in [400, 401]:
                     return {"valid": False, "error": "Invalid API key"}
                 elif response.status_code == 403:
-                    detail = response.text if hasattr(response, "text") else ""
-                    try:
-                        payload = response.json()
-                    except ValueError:
-                        payload = None
-                    if isinstance(payload, dict):
-                        error_detail = payload.get("error", {})
-                        if isinstance(error_detail, dict):
-                            detail = error_detail.get("message", "") or detail
-                        elif isinstance(error_detail, str):
-                            detail = error_detail or detail
                     return {
                         "valid": False,
-                        "error": detail or (
-                            "Google API access denied. Verify API enablement, key restrictions, "
-                            "and project permissions."
-                        ),
+                        "error": "API key not authorized for this project",
                     }
                 elif response.status_code == 429:
                     return {
@@ -2761,9 +2763,7 @@ async def validate_api_key(validation: ApiKeyValidation):
                         agent_name = agent_data.get("name", "Unknown")
                         return {"valid": True, "message": f"ElevenLabs API key valid. Agent: {agent_name}"}
                     elif response.status_code == 401:
-                        error_detail = response.json().get("detail", {})
-                        error_msg = error_detail.get("message", "Invalid API key") if isinstance(error_detail, dict) else "Invalid API key"
-                        return {"valid": False, "error": error_msg}
+                        return {"valid": False, "error": "Invalid API key or missing permission to read the agent."}
                     elif response.status_code == 404:
                         return {"valid": False, "error": "Agent not found. Check your Agent ID."}
                     else:
@@ -2778,12 +2778,7 @@ async def validate_api_key(validation: ApiKeyValidation):
                     if response.status_code == 200:
                         return {"valid": True, "message": "ElevenLabs API key is valid"}
                     elif response.status_code == 401:
-                        error_detail = response.json().get("detail", {})
-                        error_msg = error_detail.get("message", "Invalid API key") if isinstance(error_detail, dict) else "Invalid API key"
-                        # Hint about agent_id if it's a permissions issue
-                        if "missing_permissions" in str(error_detail):
-                            error_msg = "API key valid but agent-scoped. Please provide Agent ID for validation."
-                        return {"valid": False, "error": error_msg}
+                        return {"valid": False, "error": "Invalid API key or missing permission. For an agent-scoped key, provide the Agent ID."}
                     else:
                         return {"valid": False, "error": f"API error: HTTP {response.status_code}"}
 
@@ -2800,30 +2795,7 @@ async def validate_api_key(validation: ApiKeyValidation):
                 if response.status_code == 401:
                     return {"valid": False, "error": "Invalid xAI API key"}
                 if response.status_code == 403:
-                    detail = ""
-                    try:
-                        body = response.json()
-                        # xAI sometimes returns {"error": {"message": "..."}} (Google-like shape)
-                        # and sometimes {"error": "string"}. Unwrap the nested message
-                        # so the UI doesn't show "Details: {'message': ...}" verbatim
-                        # (CodeRabbit on PR #396).
-                        error = body.get("error")
-                        if isinstance(error, dict):
-                            detail = error.get("message") or error.get("code") or ""
-                        elif isinstance(error, str):
-                            detail = error
-                        else:
-                            detail = body.get("message") or ""
-                    except ValueError:
-                        detail = response.text or ""
-                    return {
-                        "valid": False,
-                        "error": (
-                            "xAI rejected the key (403). Common cause: team has no credits or licenses yet — "
-                            "add credits at https://console.x.ai/."
-                            + (f" Details: {detail}" if detail else "")
-                        ),
-                    }
+                    return {"valid": False, "error": "xAI rejected the key (403). Check team credits and licenses."}
                 return {"valid": False, "error": f"API error: HTTP {response.status_code}"}
 
             else:
@@ -2831,12 +2803,18 @@ async def validate_api_key(validation: ApiKeyValidation):
                 
     except httpx.TimeoutException:
         return {"valid": False, "error": "Connection timeout"}
-    except Exception as e:
-        return {"valid": False, "error": str(e)}
+    except Exception:
+        return {"valid": False, "error": "Provider validation failed."}
 
 @router.post("/validate-connection")
 async def validate_asterisk_connection(conn: AsteriskConnection):
     """Test Asterisk ARI connection"""
+    password = conn.password
+    if password is None:
+        password = saved_ari_password(
+            dotenv_values(ENV_PATH), host=conn.host, port=conn.port, scheme=conn.scheme,
+            username=conn.username, ssl_verify=conn.ssl_verify,
+        )
     try:
         import httpx
         
@@ -2849,7 +2827,7 @@ async def validate_asterisk_connection(conn: AsteriskConnection):
         async with httpx.AsyncClient(verify=verify) as client:
             response = await client.get(
                 f"{base_url}/asterisk/info",
-                auth=(conn.username, conn.password),
+                auth=(conn.username, password),
                 timeout=5.0
             )
             
@@ -2913,7 +2891,7 @@ class SetupConfig(BaseModel):
     provider: str = "openai_realtime"
     asterisk_host: str
     asterisk_username: str
-    asterisk_password: str
+    asterisk_password: Optional[str] = None
     asterisk_port: int = 8088
     asterisk_scheme: str = "http"
     asterisk_app: str = "asterisk-ai-voice-agent"
@@ -2977,10 +2955,22 @@ def _validate_setup_provider_credentials(config: SetupConfig) -> None:
         raise HTTPException(status_code=400, detail="xAI API Key is required for Grok Voice Agent provider")
 
 
+def _check_wizard_credentials(config: SetupConfig) -> dict:
+    saved = dotenv_values(ENV_PATH)
+    if config.asterisk_password is None:
+        saved_ari_password(saved, host=config.asterisk_host, port=config.asterisk_port,
+                           scheme=config.asterisk_scheme, username=config.asterisk_username,
+                           ssl_verify=config.asterisk_ssl_verify)
+    effective = {field: saved.get(name) for field, name in _WIZARD_CREDENTIALS.items()
+                 if getattr(config, field) is None}
+    _validate_setup_provider_credentials(config.model_copy(update=effective))
+    return saved
+
+
 @router.post("/save")
 async def save_setup_config(config: SetupConfig):
     """Persist wizard configuration into `.env` and baseline config files."""
-    _validate_setup_provider_credentials(config)
+    saved = _check_wizard_credentials(config)
     from services.dialplan import identifier
     try:
         config.asterisk_app = identifier(config.asterisk_app, "Stasis application")
@@ -2995,8 +2985,8 @@ async def save_setup_config(config: SetupConfig):
     except ValueError as exc:
         raise HTTPException(400, f"Media/application configuration: {exc}")
     selected_google_live_model = GOOGLE_LIVE_DEFAULT_MODEL
-    if config.provider == "google_live" and config.google_key:
-        discovered_model = await _discover_google_live_model(config.google_key)
+    if config.provider == "google_live":
+        discovered_model = await _discover_google_live_model(config.google_key or saved["GOOGLE_API_KEY"])
         if discovered_model:
             selected_google_live_model = discovered_model
             logger.info("Resolved Google Live model for setup: %s", selected_google_live_model)
@@ -3010,6 +3000,7 @@ async def save_setup_config(config: SetupConfig):
 
     def save() -> dict:
         with _CONFIG_UPDATE_LOCK:
+            _check_wizard_credentials(config)
             return _save_setup_config_locked(config, selected_google_live_model)
 
     return await asyncio.to_thread(save)
@@ -3028,7 +3019,6 @@ def _save_setup_config_locked(config: SetupConfig, selected_google_live_model: s
         env_updates = {
             "ASTERISK_HOST": config.asterisk_host,
             "ASTERISK_ARI_USERNAME": config.asterisk_username,
-            "ASTERISK_ARI_PASSWORD": config.asterisk_password,
             "ASTERISK_ARI_PORT": str(config.asterisk_port),
             "ASTERISK_ARI_SCHEME": config.asterisk_scheme,
             "ASTERISK_ARI_SSL_VERIFY": "true" if config.asterisk_ssl_verify else "false",
@@ -3036,6 +3026,8 @@ def _save_setup_config_locked(config: SetupConfig, selected_google_live_model: s
             "AI_ROLE": config.ai_role,
             "GREETING": config.greeting,
         }
+        if config.asterisk_password is not None:
+            env_updates[ARI_PASSWORD_ENV] = config.asterisk_password
         if config.deployment_topology and config.audio_transport in {"audiosocket", "externalmedia"}:
             key = "AUDIOSOCKET_ADVERTISE_HOST" if config.audio_transport == "audiosocket" else "EXTERNAL_MEDIA_ADVERTISE_HOST"
             # Runtime environment overrides YAML for these two fields.

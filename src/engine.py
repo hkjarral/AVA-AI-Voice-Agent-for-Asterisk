@@ -1229,8 +1229,8 @@ class Engine:
         # LOW-CH1: warm the call-history store off the event loop so the first call's
         # teardown doesn't pay a synchronous _init_db() (mkdir/connect/CREATE) on the loop.
         try:
-            from src.core.call_history import get_call_history_store
-            await asyncio.get_event_loop().run_in_executor(None, get_call_history_store)
+            from src.core.call_history import get_call_history_store_async
+            await get_call_history_store_async()
         except Exception:
             logger.debug("Call-history store warm-up failed", exc_info=True)
         # Call-history retention cleanup (HIGH-7): only runs when retention is set
@@ -2839,8 +2839,8 @@ class Engine:
         costs nothing on installs that don't configure retention. Runs once shortly
         after startup, then daily."""
         try:
-            from src.core.call_history import get_call_history_store
-            store = get_call_history_store()
+            from src.core.call_history import get_call_history_store_async
+            store = await get_call_history_store_async()
             if getattr(store, "_retention_days", 0) <= 0:
                 logger.debug("Retention cleanup disabled (CALL_HISTORY_RETENTION_DAYS unset)")
                 return
@@ -3113,9 +3113,9 @@ class Engine:
                             ),
                         )
                         if finalized and reconstructed_session:
-                            from src.core.call_history import get_call_history_store
+                            from src.core.call_history import get_call_history_store_async
 
-                            history_store = get_call_history_store()
+                            history_store = await get_call_history_store_async()
                             history_updated = (
                                 await history_store.update_external_lifecycle(
                                     call_id,
@@ -11893,9 +11893,9 @@ class Engine:
         CallHistoryStore.save() dedupe-by-call_id, so the normal path never double-writes.
         """
         try:
-            from src.core.call_history import CallRecord, get_call_history_store
+            from src.core.call_history import CallRecord, get_call_history_store_async
 
-            store = get_call_history_store()
+            store = await get_call_history_store_async()
             if not store._enabled:
                 return
 
@@ -11918,9 +11918,9 @@ class Engine:
     async def _persist_call_history(self, session: CallSession, call_id: str) -> None:
         """Persist call record to history database (Milestone 21)."""
         try:
-            from src.core.call_history import CallRecord, get_call_history_store
+            from src.core.call_history import CallRecord, get_call_history_store_async
             
-            store = get_call_history_store()
+            store = await get_call_history_store_async()
             if not store._enabled:
                 return
             
@@ -24950,8 +24950,8 @@ class Engine:
             # placeholder per tool BEFORE scheduling (so a killed engine still
             # shows what was supposed to run), then update with the result.
             try:
-                from src.core.call_history import get_call_history_store
-                history_store = get_call_history_store()
+                from src.core.call_history import get_call_history_store_async
+                history_store = await get_call_history_store_async()
             except Exception:
                 history_store = None
             phase = "post_call"

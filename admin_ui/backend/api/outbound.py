@@ -37,6 +37,9 @@ if project_root not in sys.path:
 
 from src.audio.resampler import resample_audio
 from src.core.outbound_config import VOICEMAIL_RECORDING_REQUIRED, voicemail_drop_enabled
+from services.credential_spans import credential_spans
+from services.yaml_secrets import _fingerprint, _marker, has_markers
+from services.private_inputs import PrivateInputRoute
 from src.core.outbound_schedule import normalize_outbound_daily_window
 
 try:
@@ -47,7 +50,7 @@ except Exception:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/outbound", tags=["outbound"])
+router = APIRouter(prefix="/outbound", tags=["outbound"], route_class=PrivateInputRoute)
 
 def _dotenv_value(key: str) -> Optional[str]:
     """Read a key from the project's `.env` file (best-effort)."""
@@ -635,16 +638,38 @@ async def download_sample_csv():
     )
 
 
+_CAMPAIGN_MEDIA = ("voicemail_drop_media_uri", "consent_media_uri")
+
+
+def _media_view(campaign_id, field, value):
+    spans = credential_spans(value, provider_url=True)
+    if not spans:
+        return value
+    binding = _fingerprint(value)
+    shown = value
+    for index in reversed(range(len(spans))):
+        start, end = spans[index]
+        marker = _marker(("outbound_campaigns", campaign_id, field), index, value[start:end], binding)
+        shown = shown[:start] + marker + shown[end:]
+    return shown
+
+
+def _campaign_view(row):
+    return {**row, **{key: _media_view(row["id"], key, row[key]) for key in _CAMPAIGN_MEDIA if key in row}}
+
+
 @router.get("/campaigns")
 async def list_campaigns(include_archived: bool = Query(False)):
     store = _get_outbound_store()
-    return await store.list_campaigns(include_archived=bool(include_archived))
+    return [_campaign_view(row) for row in await store.list_campaigns(include_archived=bool(include_archived))]
 
 
 @router.post("/campaigns")
 async def create_campaign(req: CampaignCreateRequest):
     store = _get_outbound_store()
     payload = req.model_dump()
+    if any(has_markers(payload.get(field)) for field in _CAMPAIGN_MEDIA):
+        raise HTTPException(400, "Enter a complete media URI for a new campaign.")
     try:
         if payload.get("voicemail_drop_enabled") and not (payload.get("voicemail_drop_media_uri") or "").strip():
             if _media_uri_exists(DEFAULT_VOICEMAIL_MEDIA_URI):
@@ -654,14 +679,14 @@ async def create_campaign(req: CampaignCreateRequest):
                 payload["consent_media_uri"] = DEFAULT_CONSENT_MEDIA_URI
     except Exception:
         pass
-    return await store.create_campaign(payload)
+    return _campaign_view(await store.create_campaign(payload))
 
 
 @router.get("/campaigns/{campaign_id}")
 async def get_campaign(campaign_id: str):
     store = _get_outbound_store()
     try:
-        return await store.get_campaign(campaign_id)
+        return _campaign_view(await store.get_campaign(campaign_id))
     except KeyError:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
@@ -670,7 +695,19 @@ async def get_campaign(campaign_id: str):
 async def update_campaign(campaign_id: str, body: Dict[str, Any]):
     store = _get_outbound_store()
     try:
-        return await store.update_campaign(campaign_id, body or {})
+        retained = {field: body[field] for field in _CAMPAIGN_MEDIA if has_markers(body.get(field))}
+        if not retained:
+            return _campaign_view(await store.update_campaign(campaign_id, body))
+
+        def validate(current):
+            for field, shown in retained.items():
+                if not isinstance(shown, str) or _media_view(campaign_id, field, current[field]) != shown:
+                    raise ValueError(f"Reload {field} or enter a complete replacement URI.")
+
+        # Validate under the store's write transaction; omit unchanged fields so
+        # the signed view cannot become an executable URI.
+        changes = {key: value for key, value in body.items() if key not in retained}
+        return _campaign_view(await store.update_campaign(campaign_id, changes, validate_retained_media=validate))
     except KeyError:
         raise HTTPException(status_code=404, detail="Campaign not found")
     except ValueError as e:
@@ -681,7 +718,7 @@ async def update_campaign(campaign_id: str, body: Dict[str, Any]):
 async def clone_campaign(campaign_id: str):
     store = _get_outbound_store()
     try:
-        return await store.clone_campaign(campaign_id)
+        return _campaign_view(await store.clone_campaign(campaign_id))
     except KeyError:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
@@ -692,7 +729,7 @@ async def archive_campaign(campaign_id: str):
         campaign = await store.get_campaign(campaign_id)
         if str(campaign.get("status") or "").strip().lower() == "running":
             raise HTTPException(status_code=400, detail="Pause/stop the campaign before archiving")
-        return await store.set_campaign_status(campaign_id, "archived", cancel_pending=False)
+        return _campaign_view(await store.set_campaign_status(campaign_id, "archived", cancel_pending=False))
     except KeyError:
         raise HTTPException(status_code=404, detail="Campaign not found")
     except ValueError as e:
@@ -743,7 +780,7 @@ async def set_campaign_status(campaign_id: str, req: CampaignStatusRequest):
                         detail="Consent gate is enabled but no consent recording is set. Upload consent before starting.",
                     )
             _validate_campaign_schedule_for_start(campaign)
-        return await store.set_campaign_status(campaign_id, req.status, cancel_pending=bool(req.cancel_pending))
+        return _campaign_view(await store.set_campaign_status(campaign_id, req.status, cancel_pending=bool(req.cancel_pending)))
     except KeyError:
         raise HTTPException(status_code=404, detail="Campaign not found")
     except ValueError as e:
@@ -854,7 +891,11 @@ async def list_leads(
     q: Optional[str] = Query(None),
 ):
     store = _get_outbound_store()
-    return await store.list_leads(campaign_id, page=page, page_size=page_size, state=state, q=q)
+    from src.core.credential_fields import mask_business_data
+
+    result = await store.list_leads(campaign_id, page=page, page_size=page_size, state=state, q=q)
+    return {**result, "leads": [{**lead, "custom_vars": mask_business_data(lead["custom_vars"])}
+                                if "custom_vars" in lead else lead for lead in result["leads"]]}
 
 
 @router.post("/leads/{lead_id}/cancel")
@@ -966,7 +1007,7 @@ async def upload_voicemail_media(campaign_id: str, file: UploadFile = File(...))
         campaign = await store.update_campaign(campaign_id, {"voicemail_drop_media_uri": media_uri})
     except KeyError:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    return {"media_uri": media_uri, "campaign": campaign}
+    return {"media_uri": media_uri, "campaign": _campaign_view(campaign)}
 
 @router.post("/campaigns/{campaign_id}/consent/upload")
 async def upload_consent_media(campaign_id: str, file: UploadFile = File(...)):
@@ -1025,7 +1066,7 @@ async def upload_consent_media(campaign_id: str, file: UploadFile = File(...)):
         campaign = await store.update_campaign(campaign_id, {"consent_media_uri": media_uri})
     except KeyError:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    return {"media_uri": media_uri, "campaign": campaign}
+    return {"media_uri": media_uri, "campaign": _campaign_view(campaign)}
 
 
 @router.get("/campaigns/{campaign_id}/voicemail/preview.wav")

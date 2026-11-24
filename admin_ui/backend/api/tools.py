@@ -2,8 +2,10 @@
 Tools API endpoints for testing HTTP tools before saving.
 """
 import asyncio
+from copy import deepcopy
 
 from fastapi import APIRouter, HTTPException, Request
+from services.private_inputs import PrivateInputRoute
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 from typing import Dict, Any, Optional, List, Literal
 import httpx
@@ -17,14 +19,15 @@ import ipaddress
 import socket
 import yaml
 from string import Formatter
-from urllib.parse import urlparse, urljoin, quote, quote_plus
+from urllib.parse import urlparse, quote, quote_plus
 from settings import get_setting
 from . import config as config_api
 from src.tools.http.template import TemplateError, _PLACEHOLDER, body_media_type, render_template
 from src.tools.http.template_contract import assert_valid_template, render_request, request_preview, validate_template, variable_catalog
+from services.yaml_secrets import credential_literals, has_markers, mask_config, restore_config, url_origin
 from services.ari_endpoint_discovery import DestinationReview, validate_additions
 
-router = APIRouter()
+router = APIRouter(route_class=PrivateInputRoute)
 logger = logging.getLogger(__name__)
 
 
@@ -70,6 +73,7 @@ async def validate_a2a_settings(request: Request):
     previous = (cfg.get("in_call_tools") or {}).get(name)
     if _raw_name_exists(cfg, name) and (not isinstance(previous, dict) or previous.get("kind") != "a2a_agent"):
         raise HTTPException(409, "That tool name is already in use")
+    doc = _restore_tool_settings({"in_call_tools": {name: doc}}, cfg)["in_call_tools"][name]
     validate_document(name, doc, previous)
     return {"valid": True}
 
@@ -101,12 +105,22 @@ DEFAULT_TEST_VALUES = {
 }
 
 
+class StoredSecret(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    set: StrictBool
+
+
+class StoredURL(StoredSecret):
+    origin: str
+
+
 class TestHTTPRequest(BaseModel):
     """Request model for testing HTTP tools."""
-    url: str
+    tool_name: Optional[str] = None
+    url: str | StoredURL
     method: str = "GET"
-    headers: Dict[str, str] = {}
-    query_params: Dict[str, str] = {}
+    headers: Dict[str, str | StoredSecret] = {}
+    query_params: Dict[str, str | StoredSecret] = {}
     body_template: Optional[str] = None
     timeout_ms: int = 5000
     test_values: Dict[str, str] = {}
@@ -139,7 +153,25 @@ class HTTPTemplateReview(BaseModel):
 async def review_http_template(request: HTTPTemplateReview):
     """Synthetic validation/preview only: no credential lookup, LLM, or HTTP."""
     try:
-        return validate_template(request.config, request.phase)
+        config = dict(request.config)
+        saved_url = config.get("url")
+        if isinstance(saved_url, dict) and set(saved_url) == {"origin", "set"}:
+            config["url"] = url_origin(saved_url["origin"]) or "https://example.invalid"
+        elif isinstance(saved_url, str) and has_markers(saved_url):
+            config["url"] = url_origin(saved_url) or "https://example.invalid"
+        for field in ("body_template", "payload_template"):
+            template = config.get(field)
+            if isinstance(template, str) and has_markers(template):
+                # null is valid as an unquoted JSON scalar and as literal text
+                # inside a JSON string. Preview never resolves the real value.
+                config[field] = re.sub(r"«secret:[^«»]+»", "null", template)
+        for field in ("headers", "query_params"):
+            if isinstance(config.get(field), dict):
+                config[field] = {k: "<stored>" if isinstance(v, dict) else v for k, v in config[field].items()}
+        result = validate_template(config, request.phase)
+        if isinstance(result.get("preview"), dict):
+            result["preview"]["url"] = url_origin(result["preview"]["url"])
+        return mask_config(result, display_only=True)
     except (TypeError, ValueError, AttributeError):
         raise HTTPException(status_code=422, detail="Invalid HTTP template configuration shape") from None
 
@@ -849,6 +881,31 @@ async def test_http_tool(request: TestHTTPRequest):
     2. Makes the HTTP request
     3. Returns the response with suggested variable mappings
     """
+    if has_markers(request.model_dump()):
+        cfg = _load_cfg()
+        name = request.tool_name or ""
+        block, saved = _find_managed_tool(cfg, name)
+        if not saved or request.phase != _phase_for(block, saved):
+            raise HTTPException(400, "Save the tool destination before testing with a stored credential.")
+        body_field = "payload_template" if request.phase == "post_call" else "body_template"
+        submitted = request.model_dump()
+        fields = {"url": submitted["url"], "headers": submitted["headers"], "query_params": submitted["query_params"],
+                  body_field: request.body_template}
+        restored = _restore_tool_settings({block: {name: fields}}, cfg)[block][name]
+        # Bind the complete outbound URL and every saved-marker field to this
+        # tool. A marker from a clone cannot authorize a different destination.
+        if restored["url"] != saved.get("url") or any(
+                has_markers(fields[field]) and restored[field] != saved.get(field) for field in fields):
+            raise HTTPException(400, "Save the tool destination before testing with a stored credential.")
+        # render_url below validates that only operator environment values can
+        # supply the authority and encodes every call-data substitution.
+        if any(k.lower() == "host" for k in request.headers):
+            raise HTTPException(400, "A stored credential requires a fixed tool destination.")
+        restored["body_template"] = restored.pop(body_field)
+        request = request.model_copy(update=restored)
+
+    stored_values = credential_literals({"tools": {"request": request.model_dump(exclude={"test_values"})}})
+
     # Merge default test values with provided ones
     test_values = {**DEFAULT_TEST_VALUES,
                    **{item["name"]: item["example"] for item in variable_catalog(request.phase, request.generate_summary)},
@@ -882,6 +939,7 @@ async def test_http_tool(request: TestHTTPRequest):
     resolved_body = prepared["body"]
     # Never return expanded server credentials in the test response.
     safe_preview = request_preview(prepared)
+    safe_preview["url"] = url_origin(resolved_url)
     
     # Prepare the response
     response_data = TestHTTPResponse(
@@ -925,6 +983,8 @@ async def test_http_tool(request: TestHTTPRequest):
             # private one). Accepted for this admin-only authenticated endpoint; see the note
             # at the resolve site and docs/Configuration-Reference.md.
             max_hops = 10
+            initial_url = httpx.URL(resolved_url)
+            initial_origin = (initial_url.scheme, initial_url.raw_host, initial_url.port)
             resp = None
             for _ in range(max_hops + 1):
                 resp = await client.request(**kwargs)
@@ -933,8 +993,12 @@ async def test_http_tool(request: TestHTTPRequest):
                 if not (follow_redirects and is_redirect):
                     break
 
-                next_url = urljoin(str(resp.url), str(resp.headers.get("location") or ""))
-                _validate_http_tool_test_target(next_url)
+                # Compare HTTPX's actual request origins, including the effective
+                # port. Headers, query parameters and bodies can all carry secrets.
+                next_url = resp.url.join(resp.headers["location"])
+                if (next_url.scheme, next_url.raw_host, next_url.port) != initial_origin:
+                    break
+                _validate_http_tool_test_target(str(next_url))
 
                 # RFC-ish behavior: 303 always becomes GET.
                 if resp.status_code == 303:
@@ -983,7 +1047,7 @@ async def test_http_tool(request: TestHTTPRequest):
 
     # A test receiver may echo credentials in its body or response headers.
     secret_values = set()
-    for value in environments.values():
+    for value in [*environments.values(), *stored_values]:
         if value:
             # Receivers can echo a JSON string or an encoded URL/form value.
             secret_values.update((value, json.dumps(value, ensure_ascii=True)[1:-1],
@@ -1007,7 +1071,14 @@ async def test_http_tool(request: TestHTTPRequest):
         if isinstance(value, str) and secret_pattern is not None:
             value = secret_pattern.sub("***", value)
         return value
-    safe_response = redact(response_data.model_dump())
+    # The response envelope and mapping schema use fixed protocol keys. Only
+    # receiver-controlled keys (in body/headers) can echo a stored value.
+    safe_response = response_data.model_dump()
+    for field in ("headers", "body", "body_raw", "resolved_body", "resolved_url", "error"):
+        safe_response[field] = redact(safe_response[field])
+    safe_response["suggested_mappings"] = [
+        {key: redact(value) for key, value in item.items()} for item in safe_response["suggested_mappings"]
+    ]
     if safe_response["body_raw"] is not None:
         safe_response["body_raw"] = safe_response["body_raw"][:10000]
     if isinstance(safe_response["body"], str):
@@ -1158,14 +1229,14 @@ class ManagedToolWrite(BaseModel):
     """Body for create (POST) and full replace (PUT)."""
     name: Optional[str] = None  # required for POST; taken from path on PUT
     phase: ToolPhase
-    url: Optional[str] = None
+    url: Optional[str | StoredURL] = None
     enabled: bool = True
     is_global: bool = False
     kind: Optional[str] = None
     method: Optional[str] = None
     timeout_ms: Optional[int] = None
-    headers: Dict[str, str] = {}
-    query_params: Optional[Dict[str, str]] = None
+    headers: Dict[str, str | StoredSecret] = {}
+    query_params: Optional[Dict[str, str | StoredSecret]] = None
     body_template: Optional[str] = None
     payload_template: Optional[str] = None
     output_variables: Optional[Dict[str, str]] = None
@@ -1182,7 +1253,7 @@ class ManagedToolWrite(BaseModel):
     parameters: Optional[List[ManagedToolParameter]] = None
     return_raw_json: Optional[bool] = None
     error_message: Optional[str] = None
-    agent_url: Optional[str] = None
+    agent_url: Optional[str | StoredURL] = None
     bearer_token_file: Optional[str] = None
     bearer_token_env: Optional[str] = None
     poll_interval_ms: Optional[int] = None
@@ -1203,7 +1274,7 @@ class ManagedToolWrite(BaseModel):
     @field_validator("url")
     @classmethod
     def validate_url(cls, value: str) -> str:
-        return _validate_managed_tool_url(value) if value is not None else None
+        return _validate_managed_tool_url(value) if isinstance(value, str) and not has_markers(value) else value
 
     @field_validator("method")
     @classmethod
@@ -1258,14 +1329,14 @@ class ManagedToolWrite(BaseModel):
 class ManagedToolPatch(BaseModel):
     """Body for partial update (PATCH). All fields optional."""
     phase: Optional[ToolPhase] = None
-    url: Optional[str] = None
+    url: Optional[str | StoredURL] = None
     enabled: Optional[bool] = None
     is_global: Optional[bool] = None
     kind: Optional[str] = None
     method: Optional[str] = None
     timeout_ms: Optional[int] = None
-    headers: Optional[Dict[str, str]] = None
-    query_params: Optional[Dict[str, str]] = None
+    headers: Optional[Dict[str, str | StoredSecret]] = None
+    query_params: Optional[Dict[str, str | StoredSecret]] = None
     body_template: Optional[str] = None
     payload_template: Optional[str] = None
     output_variables: Optional[Dict[str, str]] = None
@@ -1282,7 +1353,7 @@ class ManagedToolPatch(BaseModel):
     parameters: Optional[List[ManagedToolParameter]] = None
     return_raw_json: Optional[bool] = None
     error_message: Optional[str] = None
-    agent_url: Optional[str] = None
+    agent_url: Optional[str | StoredURL] = None
     bearer_token_file: Optional[str] = None
     bearer_token_env: Optional[str] = None
     poll_interval_ms: Optional[int] = None
@@ -1303,9 +1374,7 @@ class ManagedToolPatch(BaseModel):
     @field_validator("url")
     @classmethod
     def validate_url(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return None
-        return _validate_managed_tool_url(value)
+        return _validate_managed_tool_url(value) if isinstance(value, str) and not has_markers(value) else value
 
     @field_validator("method")
     @classmethod
@@ -1584,6 +1653,13 @@ def _build_tool_doc(data: Dict[str, Any], phase: str) -> Dict[str, Any]:
     return doc
 
 
+def _restore_tool_settings(data, current):
+    try:
+        return restore_config(data, current)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
 def _load_cfg() -> Dict[str, Any]:
     cfg = config_api._read_merged_config_dict() or {}
     if not isinstance(cfg, dict):
@@ -1591,9 +1667,19 @@ def _load_cfg() -> Dict[str, Any]:
     return cfg
 
 
-async def _persist_cfg(cfg: Dict[str, Any]) -> dict:
-    content = yaml.dump(cfg, default_flow_style=False, sort_keys=False)
-    result = await asyncio.to_thread(config_api.persist_config_content, content)
+def _begin_config_edit():
+    current = _load_cfg()
+    return current, deepcopy(current)
+
+
+async def _persist_cfg(cfg: Dict[str, Any], previous: Optional[dict] = None) -> dict:
+    def save():
+        with config_api._CONFIG_UPDATE_LOCK:
+            if previous is not None and not config_api._same(previous, _load_cfg()):
+                raise HTTPException(409, "Configuration changed during this edit. Reload and retry.")
+            content = yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False)
+            return config_api.persist_config_content(content)
+    result = await asyncio.to_thread(save)
     return await config_api.reconcile_apply_result_with_engine_state(result)
 
 
@@ -1634,8 +1720,7 @@ def _to_out(
     apply_result: Optional[dict] = None,
 ) -> ManagedToolOut:
     phase = _phase_for(block, doc)
-    if doc.get("kind") == "a2a_agent":
-        doc = {key: value for key, value in doc.items() if key not in {"token", "bearer_token", "api_key"}}
+    safe_doc = config_api.public_config({block: {name: doc}})[block][name]
     return ManagedToolOut(
         name=name,
         phase=phase,
@@ -1643,7 +1728,7 @@ def _to_out(
         block=block,
         enabled=bool(doc.get("enabled", True)),
         is_global=bool(doc.get("is_global", False)),
-        config=_safe_jsonable(doc),
+        config=safe_doc,
         **(_apply_metadata(apply_result) if apply_result is not None else {}),
     )
 
@@ -1701,12 +1786,13 @@ async def create_managed_tool(body: ManagedToolWrite):
     name = (body.name or "").strip()
     _validate_tool_name(name, max_length=64 if body.kind in {"pushover", "a2a_agent"} else None)
 
-    cfg = _load_cfg()
+    previous, cfg = _begin_config_edit()
     if _raw_name_exists(cfg, name):
         raise HTTPException(status_code=409, detail=f"A tool named '{name}' already exists")
 
     block = _block_for_phase(body.phase)
-    doc = _build_tool_doc({**body.model_dump(exclude_none=True), "name": name}, body.phase)
+    data = _restore_tool_settings({block: {name: body.model_dump(exclude_none=True)}}, cfg)[block][name]
+    doc = _build_tool_doc({**data, "name": name}, body.phase)
     await _validate_summary_provider_selection(doc)
 
     section = cfg.setdefault(block, {})
@@ -1714,7 +1800,7 @@ async def create_managed_tool(body: ManagedToolWrite):
         raise HTTPException(status_code=500, detail=f"Config '{block}' block is not a mapping")
     section[name] = doc
 
-    apply_result = await _persist_cfg(cfg)
+    apply_result = await _persist_cfg(cfg, previous)
     return _to_out(block, name, doc, apply_result)
 
 
@@ -1732,13 +1818,14 @@ async def get_managed_tool(name: str):
 async def replace_managed_tool(name: str, body: ManagedToolWrite):
     """Replace a managed HTTP tool's full configuration (changing phase moves it between blocks)."""
     _validate_tool_name(name, max_length=64 if body.kind in {"pushover", "a2a_agent"} else None)
-    cfg = _load_cfg()
-    cur_block, _ = _find_managed_tool(cfg, name)
+    previous, cfg = _begin_config_edit()
+    cur_block, current = _find_managed_tool(cfg, name)
     if cur_block is None:
         raise HTTPException(status_code=404, detail=f"Tool '{name}' not found")
 
     target_block = _block_for_phase(body.phase)
-    doc = _build_tool_doc({**body.model_dump(exclude_none=True), "name": name}, body.phase)
+    data = _restore_tool_settings({cur_block: {name: body.model_dump(exclude_none=True)}}, cfg)[cur_block][name]
+    doc = _build_tool_doc({**data, "name": name}, body.phase)
     await _validate_summary_provider_selection(doc)
 
     _remove_tool_everywhere(cfg, name)
@@ -1747,19 +1834,26 @@ async def replace_managed_tool(name: str, body: ManagedToolWrite):
         raise HTTPException(status_code=500, detail=f"Config '{target_block}' block is not a mapping")
     section[name] = doc
 
-    apply_result = await _persist_cfg(cfg)
+    apply_result = await _persist_cfg(cfg, previous)
     return _to_out(target_block, name, doc, apply_result)
 
 
 @router.patch("/managed/{name}", response_model=ManagedToolOut)
 async def patch_managed_tool(name: str, body: ManagedToolPatch):
     """Partially update a managed HTTP tool. Only provided fields change."""
-    cfg = _load_cfg()
+    previous, cfg = _begin_config_edit()
     cur_block, cur_doc = _find_managed_tool(cfg, name)
     if cur_block is None:
         raise HTTPException(status_code=404, detail=f"Tool '{name}' not found")
 
     patch = body.model_dump(exclude_unset=True)
+    # Omitted PATCH fields keep their stored credentials just as echoed
+    # placeholders do. Resolve the effective document before accepting a move.
+    baseline = mask_config({cur_block: {name: cur_doc}}, raw=True)[cur_block][name]
+    effective = {cur_block: {name: {**baseline, **patch}}}
+    resolved = _restore_tool_settings(effective, cfg)[cur_block][name]
+    patch = {key: resolved[key] for key in patch}
+
     if "parameters" in patch and patch["parameters"] is not None:
         patch["parameters"] = [
             p if isinstance(p, dict) else p.model_dump() for p in patch["parameters"]
@@ -1788,7 +1882,7 @@ async def patch_managed_tool(name: str, body: ManagedToolPatch):
             raise HTTPException(422, "A2A tool type and phase cannot change")
         validate_document(name, merged, cur_doc)
         cfg[cur_block][name] = merged
-        apply_result = await _persist_cfg(cfg)
+        apply_result = await _persist_cfg(cfg, previous)
         return _to_out(cur_block, name, merged, apply_result)
     if current_kind == "pushover" and requested_kind not in (None, "", "pushover"):
         raise HTTPException(status_code=422, detail="kind cannot be changed for a Pushover tool")
@@ -1832,19 +1926,19 @@ async def patch_managed_tool(name: str, body: ManagedToolPatch):
         raise HTTPException(status_code=500, detail=f"Config '{target_block}' block is not a mapping")
     section[name] = merged
 
-    apply_result = await _persist_cfg(cfg)
+    apply_result = await _persist_cfg(cfg, previous)
     return _to_out(target_block, name, merged, apply_result)
 
 
 @router.delete("/managed/{name}", response_model=ManagedToolDeleteOut)
 async def delete_managed_tool(name: str):
     """Delete a managed HTTP tool from the config."""
-    cfg = _load_cfg()
+    previous, cfg = _begin_config_edit()
     block, _ = _find_managed_tool(cfg, name)
     if block is None:
         raise HTTPException(status_code=404, detail=f"Tool '{name}' not found")
     _remove_tool_everywhere(cfg, name)
-    apply_result = await _persist_cfg(cfg)
+    apply_result = await _persist_cfg(cfg, previous)
     return ManagedToolDeleteOut(name=name, **_apply_metadata(apply_result))
 
 
@@ -1941,7 +2035,7 @@ def _builtin_to_out(name: str, cfg: Dict[str, Any]) -> BuiltinToolOut:
         name=name,
         enabled=bool(doc.get("enabled", False)),
         configured=configured,
-        config=_safe_jsonable(doc),
+        config=mask_config({"tools": {name: doc}})["tools"][name],
     )
 
 
@@ -1985,13 +2079,15 @@ async def patch_builtin_tool(name: str, body: Dict[str, Any]):
     _validate_builtin_name(name)
     if not isinstance(body, dict):
         raise HTTPException(status_code=422, detail="Request body must be a JSON object")
-    cfg = _load_cfg()
+    previous, cfg = _begin_config_edit()
     tools = cfg.setdefault("tools", {})
     if not isinstance(tools, dict):
         raise HTTPException(status_code=500, detail="Config 'tools' block is not a mapping")
     current = tools.get(name)
-    tools[name] = _deep_merge(current if isinstance(current, dict) else {}, body)
-    await _persist_cfg(cfg)
+    baseline = mask_config({"tools": {name: current or {}}}, raw=True)["tools"][name]
+    merged = _deep_merge(baseline, body)
+    tools[name] = _restore_tool_settings({"tools": {name: merged}}, previous)["tools"][name]
+    await _persist_cfg(cfg, previous)
     return _builtin_to_out(name, cfg)
 
 
@@ -2001,12 +2097,12 @@ async def replace_builtin_tool(name: str, body: Dict[str, Any]):
     _validate_builtin_name(name)
     if not isinstance(body, dict):
         raise HTTPException(status_code=422, detail="Request body must be a JSON object")
-    cfg = _load_cfg()
+    previous, cfg = _begin_config_edit()
     tools = cfg.setdefault("tools", {})
     if not isinstance(tools, dict):
         raise HTTPException(status_code=500, detail="Config 'tools' block is not a mapping")
-    tools[name] = dict(body)
-    await _persist_cfg(cfg)
+    tools[name] = _restore_tool_settings({"tools": {name: body}}, previous)["tools"][name]
+    await _persist_cfg(cfg, previous)
     return _builtin_to_out(name, cfg)
 
 
@@ -2022,7 +2118,7 @@ async def get_tools_settings():
     delay = cfg.get(_FAREWELL_DELAY_KEY)
     return ToolsSettingsOut(
         farewell_hangup_delay_sec=delay if isinstance(delay, (int, float)) else None,
-        settings=_safe_jsonable(_non_tool_settings(cfg)),
+        settings=mask_config({"tools": _non_tool_settings(cfg)})["tools"],
     )
 
 
@@ -2037,7 +2133,7 @@ async def patch_tools_settings(body: Dict[str, Any]):
     """
     if not isinstance(body, dict):
         raise HTTPException(status_code=422, detail="Request body must be a JSON object")
-    cfg = _load_cfg()
+    previous, cfg = _begin_config_edit()
 
     patch = dict(body)
     if _FAREWELL_DELAY_KEY in patch:
@@ -2084,11 +2180,15 @@ async def patch_tools_settings(body: Dict[str, Any]):
                 raise HTTPException(status_code=422, detail=f"'{k}' is a reserved built-in/engine tool name; use the Tools API, not /settings")
             if isinstance(v, dict) and "kind" in v:
                 raise HTTPException(status_code=422, detail=f"'{k}' looks like a managed tool (has 'kind'); use POST/PUT /api/tools/managed/{k}")
-        cfg["tools"] = _deep_merge(tools, patch)
+        editable = _non_tool_settings(cfg)
+        baseline = mask_config({"tools": editable}, raw=True)["tools"]
+        merged = _deep_merge(baseline, patch)
+        restored = _restore_tool_settings({"tools": merged}, cfg)["tools"]
+        cfg["tools"] = {**{k: v for k, v in tools.items() if k not in editable}, **restored}
 
-    await _persist_cfg(cfg)
+    await _persist_cfg(cfg, previous)
     delay = cfg.get(_FAREWELL_DELAY_KEY)
     return ToolsSettingsOut(
         farewell_hangup_delay_sec=delay if isinstance(delay, (int, float)) else None,
-        settings=_safe_jsonable(_non_tool_settings(cfg)),
+        settings=mask_config({"tools": _non_tool_settings(cfg)})["tools"],
     )

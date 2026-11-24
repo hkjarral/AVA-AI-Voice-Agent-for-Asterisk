@@ -29,8 +29,9 @@ def _fake_google_models_client(captured):
     fake_resp = MagicMock()
     fake_resp.status_code = 200
 
-    async def fake_get(url, timeout=None):
+    async def fake_get(url, headers=None, timeout=None):
         captured["url"] = url
+        captured["headers"] = headers
         return fake_resp
 
     fake_client = MagicMock()
@@ -70,7 +71,8 @@ async def test_uses_resolved_key_from_api_key_file(monkeypatch, tmp_path):
         result = await config.test_provider_connection(request)
 
     assert result["success"] is True
-    assert "key=key-from-file" in captured["url"]
+    assert captured["headers"] == {"x-goog-api-key": "key-from-file"}
+    assert "key-from-file" not in captured["url"]
 
 
 @pytest.mark.asyncio
@@ -92,7 +94,8 @@ async def test_uses_resolved_key_from_api_key_env(monkeypatch, tmp_path):
         result = await config.test_provider_connection(request)
 
     assert result["success"] is True
-    assert "key=key-from-env-ref" in captured["url"]
+    assert captured["headers"] == {"x-goog-api-key": "key-from-env-ref"}
+    assert "key-from-env-ref" not in captured["url"]
 
 
 @pytest.mark.asyncio
@@ -109,7 +112,8 @@ async def test_falls_back_to_dotenv_when_no_managed_secret_configured(monkeypatc
         result = await config.test_provider_connection(request)
 
     assert result["success"] is True
-    assert "key=dotenv-key" in captured["url"]
+    assert captured["headers"] == {"x-goog-api-key": "dotenv-key"}
+    assert "dotenv-key" not in captured["url"]
 
 
 @pytest.mark.asyncio

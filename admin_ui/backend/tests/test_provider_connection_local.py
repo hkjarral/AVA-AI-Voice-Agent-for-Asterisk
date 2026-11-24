@@ -11,6 +11,16 @@ sys.path.insert(0, str(BACKEND_ROOT))
 from api import config  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def isolate_unsaved_local_provider_forms(tmp_path, monkeypatch):
+    # These tests verify unsaved Local AI forms. A shipped provider with the
+    # same name may bind its credential to a different environment-backed URL.
+    base = tmp_path / "base.yaml"
+    base.write_text("providers: {}\n")
+    monkeypatch.setattr(config.settings, "CONFIG_PATH", str(base))
+    monkeypatch.setattr(config.settings, "LOCAL_CONFIG_PATH", str(tmp_path / "local.yaml"))
+
+
 class _FakeLocalAIWebSocket:
     def __init__(self, sent_messages, status_payload, auth_status="ok"):
         self._sent_messages = sent_messages

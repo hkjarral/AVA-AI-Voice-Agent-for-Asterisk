@@ -1,4 +1,8 @@
 import os
+import asyncio
+import logging
+import sqlite3
+from pathlib import Path
 import json
 import secrets
 from datetime import datetime, timedelta
@@ -8,6 +12,8 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from passlib.context import CryptContext
 from jose import JWTError, jwt
+from services.proxy_peer import raw_http_peer
+from services.login_throttle import LoginThrottle, client_address, known_login_origin, remember_login_origin
 from settings import USERS_PATH
 
 # Paths exempt from the must_change_password 403 gate (router mounted at prefix="/api/auth" in main.py)
@@ -33,6 +39,18 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 router = APIRouter()
+_pair_throttle = LoginThrottle()
+_username_throttle = LoginThrottle(max_failures=20, capacity=None)
+_unregistered_throttle = LoginThrottle(max_failures=20)
+_known_pair_throttle = LoginThrottle(capacity=None)
+_account_guards = tuple(asyncio.Lock() for _ in range(64))
+_export_throttle = LoginThrottle()
+# Serialize attempts from each origin across the asynchronous hash verification.
+_login_guards = tuple(asyncio.Lock() for _ in range(64))
+_export_guards = tuple(asyncio.Lock() for _ in range(64))
+_delay_login = asyncio.sleep
+_dummy_password_hash = pwd_context.hash(secrets.token_urlsafe())
+_address_throttle = LoginThrottle(max_failures=30)
 
 class Token(BaseModel):
     access_token: str
@@ -187,7 +205,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
         expire = datetime.utcnow() + expires_delta
     else:
         expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
+    to_encode.update({"exp": expire, "jti": secrets.token_hex(16)})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
@@ -222,16 +240,87 @@ async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)
 
 # --- Routes ---
 
-@router.post("/login", response_model=Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = get_user(form_data.username)
-    if not user or not verify_password(form_data.password, user.hashed_password):
+def check_password_budget(retry_after: int) -> None:
+    if retry_after:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed attempts",
+            headers={"Retry-After": str(retry_after)},
         )
-    
+
+
+def _verify_login(username: str, password: str):
+    user = get_user(username)
+    matched = verify_password(password, user.hashed_password if user else _dummy_password_hash)
+    return user, matched
+
+
+async def verify_session_password(request: Request, user: UserInDB, password: str, *, changing=False) -> None:
+    # The bearer dependency has verified this session. Keep a separate budget
+    # for password re-entry, including when the same account has two sessions.
+    token = await oauth2_scheme(request)
+    async with _export_guards[hash(token) % len(_export_guards)]:
+        check_password_budget(_export_throttle.retry_after(token))
+        if not await asyncio.to_thread(verify_password, password, user.hashed_password):
+            _export_throttle.record_failure(token)
+            if changing:
+                raise HTTPException(400, "Incorrect old password")
+            raise HTTPException(401, "Incorrect current password.", headers={"X-AVA-Reauthentication": "required"})
+        _export_throttle.record_success(token)
+
+
+async def verify_export_password(request: Request, user: UserInDB, password: str) -> None:
+    await verify_session_password(request, user, password)
+
+
+@router.post("/login", response_model=Token)
+async def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
+    username = form_data.username.lower()
+    address = client_address(raw_http_peer(request), ", ".join(request.headers.getlist("x-forwarded-for")),
+                             os.getenv("AAVA_TRUSTED_PROXIES", ""))
+    pair = f"{username}\0{address}"
+    origins = Path(USERS_PATH).with_name("login_origins.db")
+
+    try:
+        known = await asyncio.to_thread(known_login_origin, origins, username, address)
+    except (OSError, sqlite3.Error):
+        known = False
+
+    def check_origin_budget():
+        check_password_budget(max(
+            _pair_throttle.retry_after(pair, include_saturation=not known),
+            _address_throttle.retry_after(address, include_saturation=not known),
+            _known_pair_throttle.retry_after(pair) if known else 0,
+        ))
+        if not known:
+            check_password_budget(max(_username_throttle.retry_after(username),
+                                      _unregistered_throttle.retry_after(username, include_saturation=False)))
+
+    check_origin_budget()
+    count = max(_username_throttle.failure_count(username), _unregistered_throttle.failure_count(username))
+    if count >= 5 and not known:
+        await _delay_login(min(2.0, 0.125 * 2 ** (count - 5)))
+
+    async with _account_guards[hash(username) % len(_account_guards)], _login_guards[hash(address) % len(_login_guards)]:
+        check_origin_budget()
+        user, matched = await asyncio.to_thread(_verify_login, form_data.username, form_data.password)
+        if not user or not matched:
+            # Keep real account budgets outside the capped pool of arbitrary names.
+            (_username_throttle if user else _unregistered_throttle).record_failure(username)
+            (_known_pair_throttle if known else _pair_throttle).record_failure(pair)
+            _address_throttle.record_failure(address)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        _pair_throttle.record_success(pair)
+        _known_pair_throttle.record_success(pair)
+    try:
+        await asyncio.to_thread(remember_login_origin, origins, username, address)
+    except (OSError, sqlite3.Error):
+        logging.getLogger(__name__).warning("Could not remember a successful login origin")
+
     # Check if user needs to change password
     users = load_users()
     user_dict = users.get(user.username, {})
@@ -246,19 +335,20 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 @router.post("/change-password")
 async def change_password(
     request: ChangePasswordRequest,
-    current_user: User = Depends(get_current_user)
+    http_request: Request,
+    current_user: UserInDB = Depends(get_current_user)
 ):
+    await verify_session_password(http_request, current_user, request.old_password, changing=True)
+    new_hash = await asyncio.to_thread(get_password_hash, request.new_password)
     users = load_users()
     user_dict = users.get(current_user.username)
-    
     if not user_dict:
         raise HTTPException(status_code=404, detail="User not found")
-        
-    if not verify_password(request.old_password, user_dict["hashed_password"]):
-        raise HTTPException(status_code=400, detail="Incorrect old password")
-        
+    if user_dict["hashed_password"] != current_user.hashed_password:
+        raise HTTPException(status_code=409, detail="Password changed during this request")
+
     # Update password and clear must_change_password flag
-    users[current_user.username]["hashed_password"] = get_password_hash(request.new_password)
+    users[current_user.username]["hashed_password"] = new_hash
     users[current_user.username]["must_change_password"] = False
     save_users(users)
     

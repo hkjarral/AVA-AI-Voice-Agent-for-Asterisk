@@ -1,3 +1,4 @@
+import { envString, envStrings, isSecretMarker, type EnvValue } from '../../utils/envValue';
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -23,7 +24,7 @@ const CHAT_FORMAT_OPTIONS = [
 
 const LLMPage = () => {
     const [config, setConfig] = useState<any>({});
-    const [env, setEnv] = useState<Record<string, string>>({});
+    const [env, setEnv] = useState<Record<string, EnvValue>>({});
     const [loading, setLoading] = useState(true);
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
     const [saving, setSaving] = useState(false);
@@ -61,7 +62,10 @@ const LLMPage = () => {
             }
 
             if (envRes.status === 'fulfilled') {
-                setEnv(envRes.value.data || {});
+                const values = envRes.value.data || {};
+                setEnv(Object.fromEntries(['LOCAL_LLM_CHAT_FORMAT', 'LOCAL_LLM_VOICE_PREAMBLE']
+                    .filter(name => name in values)
+                    .map(name => [name, values[name]])));
             }
 
             const liveLocalAI = liveStatusRes.status === 'fulfilled'
@@ -102,7 +106,7 @@ const LLMPage = () => {
             const sanitized = sanitizeConfigForSave(config);
             const [yamlSave, envSave] = await Promise.allSettled([
                 axios.post('/api/config/yaml', { content: yaml.dump(sanitized) }),
-                axios.post('/api/config/env', env),
+                axios.post('/api/config/env', envStrings(env)),
             ]);
 
             const yamlOk = yamlSave.status === 'fulfilled';
@@ -252,6 +256,7 @@ const LLMPage = () => {
             <ConfigSection title="Default Parameters" description="Fallback settings when not specified by a context.">
                 <ConfigCard>
                     <div className="space-y-6">
+                        <p className="text-xs text-muted-foreground">Greetings and prompts are visible in configuration. AVA does not scan free text in prompts, lead variables or call metadata for credentials. Keep credentials in dedicated credential fields.</p>
                         <FormInput
                             label="Initial Greeting"
                             value={llmConfig.initial_greeting || ''}
@@ -291,6 +296,9 @@ const LLMPage = () => {
             </ConfigSection>
 
             <ConfigSection title="Local LLM Prompting" description="Chat template and voice preamble for the local LLM (llama-cpp). Requires local_ai_server restart.">
+                {Object.values(env).some(isSecretMarker) && (
+                    <p className="text-sm text-muted-foreground">A prompting setting is used as a credential. Replace it under <a href="/env#system" className="underline">Environment → Other Variables</a>.</p>
+                )}
                 <ConfigCard>
                     <div className="space-y-6">
                         <div className="space-y-2">
@@ -311,7 +319,8 @@ const LLMPage = () => {
                             </div>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background text-sm"
-                                value={env['LOCAL_LLM_CHAT_FORMAT'] || ''}
+                                disabled={isSecretMarker(env.LOCAL_LLM_CHAT_FORMAT)}
+                                value={envString(env.LOCAL_LLM_CHAT_FORMAT)}
                                 onChange={(e) => updateEnv('LOCAL_LLM_CHAT_FORMAT', e.target.value)}
                             >
                                 {CHAT_FORMAT_OPTIONS.map(opt => (
@@ -341,7 +350,8 @@ const LLMPage = () => {
                             </div>
                             <textarea
                                 className="flex min-h-[100px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                                value={env['LOCAL_LLM_VOICE_PREAMBLE'] || ''}
+                                disabled={isSecretMarker(env.LOCAL_LLM_VOICE_PREAMBLE)}
+                                value={envString(env.LOCAL_LLM_VOICE_PREAMBLE)}
                                 onChange={(e) => updateEnv('LOCAL_LLM_VOICE_PREAMBLE', e.target.value)}
                                 placeholder="You are a voice assistant on a phone call. Keep responses short and conversational. Do not use markdown, bullet points, numbered lists, or any visual formatting. Speak naturally as if talking to someone on the phone."
                             />

@@ -483,7 +483,8 @@ async def vicidial_activity(
 ):
     """Summarize only VICIdial calls that reached AAVA and entered Call History."""
     now = datetime.now(timezone.utc)
-    records = await _call_history_store().list_external_activity(
+    history = await asyncio.to_thread(_call_history_store)
+    records = await history.list_external_activity(
         "vicidial",
         start_date=_activity_start(range_name, now),
         end_date=now,

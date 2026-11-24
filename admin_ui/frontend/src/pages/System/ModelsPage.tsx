@@ -1,3 +1,4 @@
+import { envStrings, isSecretMarker } from '../../utils/envValue';
 import { useState, useEffect, useCallback, useLayoutEffect, useRef } from 'react';
 import { useAsyncScope } from '../../hooks/useAsyncScope';
 import { HardDrive, Download, Trash2, RefreshCw, CheckCircle2, XCircle, Loader2, Mic, Volume2, Brain, AlertTriangle, Cpu, Terminal, Settings, Play, Wrench } from 'lucide-react';
@@ -402,7 +403,7 @@ const ModelsPage = () => {
             setCapabilities(capabilitiesRes.value.data);
         }
         if (envRes.status === 'fulfilled' && envRes.value.data) {
-            setEnvConfig(envRes.value.data || {});
+            setEnvConfig(envStrings(envRes.value.data || {}));
         }
         request.finish();
     }, [beginRead, applyLocalAILiveStatus, hydrateLocalAIStatus]);
@@ -853,10 +854,11 @@ const ModelsPage = () => {
                     );
                     const catalogChatFormat = matchedModel?.chat_format || '';
                     try {
-                        const currentEnv = (await axios.get('/api/config/env')).data || {};
-                        currentEnv['LOCAL_LLM_CHAT_FORMAT'] = catalogChatFormat;
-                        await axios.post('/api/config/env', currentEnv);
-                        updateApplyProgress('switching', 84, 'Applying LLM changes...', `Chat format auto-set to: ${catalogChatFormat || '(legacy)'}`);
+                        const { data } = await axios.get('/api/config/env');
+                        if (!isSecretMarker(data?.LOCAL_LLM_CHAT_FORMAT)) {
+                            await axios.post('/api/config/env', { LOCAL_LLM_CHAT_FORMAT: catalogChatFormat });
+                            updateApplyProgress('switching', 84, 'Applying LLM changes...', `Chat format auto-set to: ${catalogChatFormat || '(legacy)'}`);
+                        }
                     } catch (envErr) {
                         console.warn('Failed to auto-set LOCAL_LLM_CHAT_FORMAT', envErr);
                     }

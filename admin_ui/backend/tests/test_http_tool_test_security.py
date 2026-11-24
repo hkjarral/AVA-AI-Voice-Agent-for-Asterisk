@@ -1,10 +1,61 @@
-import os
+from secrets import token_hex
 
+import httpx
 import pytest
 from fastapi import HTTPException
 
 import api.tools as tools_module
 from api.tools import _validate_http_tool_test_target, router as tools_router
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("location", "follow"), [
+    ("/result", True),
+    ("https://service.invalid:443/result", True),
+    ("https://other.invalid/result", False),
+    ("http://service.invalid/result", False),
+    ("https://service.invalid:8443/result", False),
+])
+@pytest.mark.parametrize("credential_source", ["saved", "environment"])
+async def test_http_redirects_keep_credentials_at_initial_origin(monkeypatch, location, follow, credential_source):
+    origin = "https://service.invalid"
+    token = token_hex()
+    if credential_source == "saved":
+        saved = {"url": origin, "headers": {"Authorization": token},
+                 "kind": "generic_http_lookup", "phase": "pre_call"}
+        monkeypatch.setattr(tools_module, "_load_cfg", lambda: {"tools": {"lookup": saved}})
+        probe = tools_module.TestHTTPRequest(tool_name="lookup", url=origin, headers={"Authorization": {"set": True}})
+    else:
+        env = {"PROBE_ORIGIN": origin, "PROBE_TOKEN": token}
+        monkeypatch.setattr(tools_module, "get_setting", lambda name, default: env.get(name, default))
+        probe = tools_module.TestHTTPRequest(url="${PROBE_ORIGIN}", headers={"Authorization": "${PROBE_TOKEN}"})
+
+    sent = []
+    def respond(request):
+        sent.append(request)
+        if len(sent) == 1:
+            return httpx.Response(307, headers={"Location": "/step"})
+        if len(sent) == 2:
+            return httpx.Response(307, headers={"Location": location})
+        return httpx.Response(200)
+
+    client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: client(transport=httpx.MockTransport(respond), **kw))
+    monkeypatch.setattr(tools_module, "_dotenv_value",
+                        lambda name: "1" if name == "AAVA_HTTP_TOOL_TEST_FOLLOW_REDIRECTS" else None)
+    checked = []
+    monkeypatch.setattr(tools_module, "_validate_http_tool_test_target", checked.append)
+
+    result = await tools_module.test_http_tool(probe)
+    expected = [origin, origin + "/step"]
+    if follow:
+        expected.append(origin + "/result")
+    assert [str(request.url) for request in sent] == expected
+    assert [str(httpx.URL(url)) for url in checked] == expected
+    assert all(request.headers["Authorization"] == token for request in sent)
+    assert result.status_code == (200 if follow else 307)
+    assert result.success is follow
+    assert token not in result.model_dump_json()
 
 
 def test_dead_test_values_endpoint_removed():

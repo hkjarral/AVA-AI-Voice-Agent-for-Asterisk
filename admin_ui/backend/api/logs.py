@@ -143,12 +143,12 @@ async def _resolve_call_history_window(
     pull the right slice of Docker logs even when `tail` would miss it.
     """
     try:
-        from src.core.call_history import get_call_history_store
+        from src.core.call_history import get_call_history_store_async
     except Exception:
         return None, None, None
 
     try:
-        store = get_call_history_store()
+        store = await get_call_history_store_async()
         record = await store.get_by_call_id(call_id)
         if not record:
             return None, None, None

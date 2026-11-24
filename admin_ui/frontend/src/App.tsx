@@ -3,42 +3,34 @@ import { createBrowserRouter, RouterProvider, Routes, Route, Navigate, useNaviga
 import { Toaster } from 'sonner';
 import { ConfirmDialogProvider } from './hooks/useConfirmDialog';
 import AppShell from './components/layout/AppShell';
-import Dashboard from './pages/Dashboard';
-import CallHistoryPage from './pages/CallHistoryPage';
-import CallSchedulingPage from './pages/CallSchedulingPage';
 import axios from 'axios';
+import { loadProvidersPage } from './pages/loadProvidersPage';
 
 // Auth
 import { AuthProvider } from './auth/AuthContext';
 import { RequireAuth } from './auth/RequireAuth';
-import LoginPage from './pages/LoginPage';
 
-// Core Configuration Pages
-import ProvidersPage from './pages/ProvidersPage';
-import PipelinesPage from './pages/PipelinesPage';
-import AgentsPage from './pages/AgentsPage';
-import AgentEditorPage from './pages/AgentEditorPage';
-import MigrationStatusPage from './pages/MigrationStatusPage';
-import LegacyContextsRedirect from './pages/LegacyContextsRedirect';
-import ProfilesPage from './pages/ProfilesPage';
-import ToolsPage from './pages/ToolsPage';
-import MCPPage from './pages/MCPPage';
-
-// Advanced Configuration Pages
-import VADPage from './pages/Advanced/VADPage';
-import StreamingPage from './pages/Advanced/StreamingPage';
-import LLMPage from './pages/Advanced/LLMPage';
-import TransportPage from './pages/Advanced/TransportPage';
-import BargeInPage from './pages/Advanced/BargeInPage';
-
-// System Pages (eagerly loaded)
-import EnvPage from './pages/System/EnvPage';
-import DockerPage from './pages/System/DockerPage';
-
-// Help
-import HelpPage from './pages/HelpPage';
-
-// Lazy-loaded heavy pages (code-splitting for better initial load)
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const CallHistoryPage = lazy(() => import('./pages/CallHistoryPage'));
+const CallSchedulingPage = lazy(() => import('./pages/CallSchedulingPage'));
+const LoginPage = lazy(() => import('./pages/LoginPage'));
+const ProvidersPage = lazy(loadProvidersPage);
+const PipelinesPage = lazy(() => import('./pages/PipelinesPage'));
+const AgentsPage = lazy(() => import('./pages/AgentsPage'));
+const AgentEditorPage = lazy(() => import('./pages/AgentEditorPage'));
+const MigrationStatusPage = lazy(() => import('./pages/MigrationStatusPage'));
+const LegacyContextsRedirect = lazy(() => import('./pages/LegacyContextsRedirect'));
+const ProfilesPage = lazy(() => import('./pages/ProfilesPage'));
+const ToolsPage = lazy(() => import('./pages/ToolsPage'));
+const MCPPage = lazy(() => import('./pages/MCPPage'));
+const VADPage = lazy(() => import('./pages/Advanced/VADPage'));
+const StreamingPage = lazy(() => import('./pages/Advanced/StreamingPage'));
+const LLMPage = lazy(() => import('./pages/Advanced/LLMPage'));
+const TransportPage = lazy(() => import('./pages/Advanced/TransportPage'));
+const BargeInPage = lazy(() => import('./pages/Advanced/BargeInPage'));
+const EnvPage = lazy(() => import('./pages/System/EnvPage'));
+const DockerPage = lazy(() => import('./pages/System/DockerPage'));
+const HelpPage = lazy(() => import('./pages/HelpPage'));
 const Wizard = lazy(() => import('./pages/Wizard'));
 const RawYamlPage = lazy(() => import('./pages/Advanced/RawYamlPage'));
 const LogsPage = lazy(() => import('./pages/System/LogsPage'));
@@ -130,12 +122,14 @@ export const SetupGuard = ({ children }: { children: React.ReactNode }) => {
         };
     }, [retryCount]);
 
+    const Frame = location.pathname === '/wizard' ? React.Fragment : AppShell;
+
     if (loading || (redirectingToWizard && location.pathname !== '/wizard')) {
         return (
-            <div className="min-h-screen flex items-center justify-center flex-col gap-4">
+            <Frame><div className="min-h-[400px] flex items-center justify-center flex-col gap-4">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
                 <p className="text-muted-foreground text-sm">Connecting to system...</p>
-            </div>
+            </div></Frame>
         );
     }
 
@@ -143,7 +137,7 @@ export const SetupGuard = ({ children }: { children: React.ReactNode }) => {
         const isHttpError = error.kind === 'http';
         console.warn("SetupGuard: setup status check failed:", error.message);
         return (
-            <div className="min-h-screen flex items-center justify-center flex-col gap-4 px-6 text-center">
+            <Frame><div className="min-h-[400px] flex items-center justify-center flex-col gap-4 px-6 text-center">
                 <h1 className="text-xl font-semibold">
                     {isHttpError ? 'Setup status check failed' : 'Backend unavailable'}
                 </h1>
@@ -158,17 +152,17 @@ export const SetupGuard = ({ children }: { children: React.ReactNode }) => {
                 >
                     Retry
                 </button>
-            </div>
+            </div></Frame>
         );
     }
 
-    return <>{children}</>;
+    return <Frame>{children}</Frame>;
 };
 
 function ApplicationRoutes() {
     return (
         <Routes>
-            <Route path="/login" element={<LoginPage />} />
+            <Route path="/login" element={<Suspense fallback={<PageLoader />}><LoginPage /></Suspense>} />
 
             <Route path="*" element={
                 <RequireAuth>
@@ -178,47 +172,44 @@ function ApplicationRoutes() {
                                 {/* Setup Wizard Route (lazy) */}
                                 <Route path="/wizard" element={<Wizard />} />
 
-                                {/* Main Application Layout */}
-                                <Route element={<AppShell />}>
-                                    <Route path="/" element={<Dashboard />} />
-                                    <Route path="/history" element={<CallHistoryPage />} />
-                                    <Route path="/scheduling" element={<CallSchedulingPage />} />
+                                <Route path="/" element={<Dashboard />} />
+                                <Route path="/history" element={<CallHistoryPage />} />
+                                <Route path="/scheduling" element={<CallSchedulingPage />} />
 
-                                    {/* Core Configuration */}
-                                    <Route path="/providers" element={<ProvidersPage />} />
-                                    <Route path="/pipelines" element={<PipelinesPage />} />
-                                    <Route path="/agents" element={<AgentsPage />} />
-                                    <Route path="/agents/new" element={<AgentEditorPage />} />
-                                    <Route path="/agents/:slug/edit" element={<AgentEditorPage />} />
-                                    <Route path="/agents/migration" element={<MigrationStatusPage />} />
-                                    <Route path="/contexts" element={<LegacyContextsRedirect />} />
-                                    <Route path="/profiles" element={<ProfilesPage />} />
-                                    <Route path="/tools" element={<ToolsPage />} />
-                                    <Route path="/mcp" element={<MCPPage />} />
+                                {/* Core Configuration */}
+                                <Route path="/providers" element={<ProvidersPage />} />
+                                <Route path="/pipelines" element={<PipelinesPage />} />
+                                <Route path="/agents" element={<AgentsPage />} />
+                                <Route path="/agents/new" element={<AgentEditorPage />} />
+                                <Route path="/agents/:slug/edit" element={<AgentEditorPage />} />
+                                <Route path="/agents/migration" element={<MigrationStatusPage />} />
+                                <Route path="/contexts" element={<LegacyContextsRedirect />} />
+                                <Route path="/profiles" element={<ProfilesPage />} />
+                                <Route path="/tools" element={<ToolsPage />} />
+                                <Route path="/mcp" element={<MCPPage />} />
 
-                                    {/* Advanced Settings */}
-                                    <Route path="/vad" element={<VADPage />} />
-                                    <Route path="/streaming" element={<StreamingPage />} />
-                                    <Route path="/llm" element={<LLMPage />} />
-                                    <Route path="/transport" element={<TransportPage />} />
-                                    <Route path="/barge-in" element={<BargeInPage />} />
-                                    <Route path="/yaml" element={<RawYamlPage />} />
+                                {/* Advanced Settings */}
+                                <Route path="/vad" element={<VADPage />} />
+                                <Route path="/streaming" element={<StreamingPage />} />
+                                <Route path="/llm" element={<LLMPage />} />
+                                <Route path="/transport" element={<TransportPage />} />
+                                <Route path="/barge-in" element={<BargeInPage />} />
+                                <Route path="/yaml" element={<RawYamlPage />} />
 
-                                    {/* System Management */}
-                                    <Route path="/env" element={<EnvPage />} />
-                                    <Route path="/docker" element={<DockerPage />} />
-                                    <Route path="/asterisk" element={<AsteriskPage />} />
-                                    <Route path="/logs" element={<LogsPage />} />
-                                    <Route path="/terminal" element={<TerminalPage />} />
-                                    <Route path="/models" element={<ModelsPage />} />
-                                    <Route path="/updates" element={<UpdatesPage />} />
+                                {/* System Management */}
+                                <Route path="/env" element={<EnvPage />} />
+                                <Route path="/docker" element={<DockerPage />} />
+                                <Route path="/asterisk" element={<AsteriskPage />} />
+                                <Route path="/logs" element={<LogsPage />} />
+                                <Route path="/terminal" element={<TerminalPage />} />
+                                <Route path="/models" element={<ModelsPage />} />
+                                <Route path="/updates" element={<UpdatesPage />} />
 
-                                    {/* Help */}
-                                    <Route path="/help" element={<HelpPage />} />
+                                {/* Help */}
+                                <Route path="/help" element={<HelpPage />} />
 
-                                    {/* Fallback */}
-                                    <Route path="*" element={<Navigate to="/" replace />} />
-                                </Route>
+                                {/* Fallback */}
+                                <Route path="*" element={<Navigate to="/" replace />} />
                             </Routes>
                         </Suspense>
                     </SetupGuard>

@@ -28,7 +28,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import structlog
 
@@ -491,7 +491,10 @@ class OutboundStore:
         campaigns = await self.list_campaigns(include_archived=False)
         return [c for c in campaigns if (str(c.get("status") or "").lower() == "running")]
 
-    async def update_campaign(self, campaign_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def update_campaign(
+        self, campaign_id: str, payload: Dict[str, Any], *,
+        validate_retained_media: Optional[Callable[[sqlite3.Row], None]] = None,
+    ) -> Dict[str, Any]:
         if not self._enabled:
             raise RuntimeError("OutboundStore disabled")
 
@@ -557,6 +560,8 @@ class OutboundStore:
                     ).fetchone()
                     if current is None:
                         raise KeyError("campaign not found")
+                    if validate_retained_media is not None:
+                        validate_retained_media(current)
                     merged = {**dict(current), **updates}
                     if str(current["status"]).lower() == "running":
                         validate_voicemail_recording(merged)

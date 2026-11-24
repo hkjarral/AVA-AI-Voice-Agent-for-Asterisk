@@ -1,9 +1,9 @@
-import { Outlet } from 'react-router-dom';
+import type { ReactNode } from 'react';
 import Sidebar from './Sidebar';
 import Header from './Header';
 import CommandPalette from '../CommandPalette';
 
-const AppShell = () => {
+const AppShell = ({ children }: { children: ReactNode }) => {
     return (
         <div className="flex h-screen bg-background text-foreground font-sans overflow-hidden">
             <a
@@ -20,7 +20,7 @@ const AppShell = () => {
 
                 <div id="main-content" tabIndex={-1} className="flex-1 overflow-auto p-6 focus:outline-none">
                     <div className="max-w-6xl mx-auto">
-                        <Outlet />
+                        {children}
                     </div>
                 </div>
             </main>

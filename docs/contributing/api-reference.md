@@ -63,13 +63,13 @@ curl -H "Authorization: Bearer eyJ..." \
 ### Config (`/api/config`)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/config/yaml` | Get merged YAML configuration |
-| POST | `/api/config/yaml` | Update YAML configuration |
-| GET | `/api/config/env` | Get environment variables |
-| POST | `/api/config/env` | Update environment variables |
+| GET | `/api/config/yaml` | Read the masked merged YAML. A malformed operator override returns HTTP 400 with a safe location and a `detail.repair` object containing `revision`, `partial` and masked `content`. An empty recovery document requires a complete replacement override. |
+| POST | `/api/config/yaml` | Save a merged document using `content`. For a confirmed repair, send the complete local override in `content` and the GET response’s `detail.repair.revision` in `repair_revision`. A stale revision returns HTTP 409. |
+| GET | `/api/config/env` | Read ordinary settings and credential presence objects (`{"set": true}` or `{"set": false}`) |
+| POST | `/api/config/env` | Patch supplied settings. Omit a stored credential or echo its presence object to preserve it. Send a string to replace it. |
 | GET | `/api/config/env/status` | Check if containers are out-of-sync with .env |
 | POST | `/api/config/providers/test` | Test provider connection |
-| GET | `/api/config/export` | Export configuration as ZIP |
+| POST | `/api/config/export` | Export a configuration ZIP after verifying the signed-in user’s current password in the JSON body. Use the optional `include_secrets=true` query parameter to include the environment file. |
 | POST | `/api/config/import` | Import configuration from ZIP |
 | POST | `/api/config/env/smtp/test` | Test SMTP settings |
 | GET | `/api/config/export-logs` | Deprecated compatibility alias for the bounded sanitized system-diagnostics package |
@@ -199,6 +199,12 @@ not individual tools.
 > `phase` (`pre_call` → `generic_http_lookup`, `in_call` → `in_call_http_lookup`,
 > `post_call` → `generic_webhook`); a mismatched `kind` is rejected with `422`.
 > Managed tool names may not collide with built-in tool names.
+
+Managed reads return a saved tool URL as `{"origin":"https://example.invalid","set":true}`.
+The origin is empty when the URL uses an environment-supplied authority. Echo
+the object to preserve the URL, or provide the complete replacement as a string.
+Raw YAML represents the same URL with a single signed placeholder. Enter fresh
+credentials when changing the scheme, host or port of a tool with stored credentials.
 
 Managed tool URLs must be absolute HTTP(S) URLs or start with an environment
 placeholder such as `${CRM_BASE_URL}`. Timeouts must be between 1 and 300,000 ms,

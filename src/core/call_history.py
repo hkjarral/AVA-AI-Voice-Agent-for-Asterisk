@@ -10,15 +10,76 @@ import logging
 import os
 import sqlite3
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_EXTERNAL_ACTIVITY_MAX_ROWS = 5000
+
+
+def _migrate_v1(conn: sqlite3.Connection) -> None:
+    """Backfill the nullable call history columns on pre-versioning installations."""
+    cur = conn.cursor()
+    existing = {str(r[1]) for r in cur.execute("PRAGMA table_info(call_records)").fetchall()}
+    if "pre_call_tool_calls" not in existing:
+        cur.execute("ALTER TABLE call_records ADD COLUMN pre_call_tool_calls TEXT")
+    if "post_call_tool_calls" not in existing:
+        cur.execute("ALTER TABLE call_records ADD COLUMN post_call_tool_calls TEXT")
+    if "routing_method" not in existing:
+        cur.execute("ALTER TABLE call_records ADD COLUMN routing_method TEXT")
+    if "voice" not in existing:
+        cur.execute("ALTER TABLE call_records ADD COLUMN voice TEXT")
+    if "voice_source" not in existing:
+        cur.execute("ALTER TABLE call_records ADD COLUMN voice_source TEXT")
+    additive_columns = {
+        "called_number": "TEXT",
+        "external_platform": "TEXT",
+        "external_call_id": "TEXT",
+        "external_direction": "TEXT",
+        "external_disposition": "TEXT",
+        "external_metadata": "TEXT",
+        "call_metadata": "TEXT",
+        "call_metadata_updates": "TEXT",
+        "diagnostics_snapshot": "TEXT",
+    }
+    for name, sql_type in additive_columns.items():
+        if name not in existing:
+            cur.execute(f"ALTER TABLE call_records ADD COLUMN {name} {sql_type}")
+
+
+MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [(1, _migrate_v1)]
+
+
+def current_schema_version(conn: sqlite3.Connection) -> int:
+    """Return zero for an unversioned call history database."""
+    table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+    ).fetchone()
+    if table is None:
+        return 0
+    return conn.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()[0]
+
+
+@lru_cache(maxsize=128)
+def _warn_newer_schema(db_path: str, version: int, latest: int) -> None:
+    logger.warning(
+        "Call history database %s has a newer schema version (%s) than supported (%s); continuing",
+        db_path, version, latest,
+    )
+
+
+@lru_cache(maxsize=128)
+def _warn_optional_migration(db_path: str, error_type: str) -> None:
+    logger.warning(
+        "Call history migration failed (%s) for %s. Recording with available columns until restart.",
+        error_type, db_path,
+    )
 
 
 def _calendly_path_present_or_unknown(path: Path) -> bool:
@@ -191,9 +252,8 @@ class CallHistoryStore:
                 values.append(item)
         return values
 
-    @classmethod
     def _build_filter_conditions(
-        cls,
+        self,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         caller_number: Optional[str] = None,
@@ -242,11 +302,11 @@ class CallHistoryStore:
         if context_name:
             conditions.append("context_name = ?")
             params.append(context_name)
-        outcomes = cls._split_values(outcome)
+        outcomes = self._split_values(outcome)
         if outcomes:
             conditions.append(f"outcome IN ({', '.join('?' for _ in outcomes)})")
             params.extend(outcomes)
-        excluded = cls._split_values(exclude_outcome)
+        excluded = self._split_values(exclude_outcome)
         if excluded:
             conditions.append(f"(outcome IS NULL OR outcome NOT IN ({', '.join('?' for _ in excluded)}))")
             params.extend(excluded)
@@ -262,10 +322,12 @@ class CallHistoryStore:
             conditions.append("duration_seconds <= ?")
             params.append(max_duration)
         if transcript_search:
-            escaped = cls._escape_like(transcript_search)
+            escaped = self._escape_like(transcript_search)
             conditions.append("LOWER(conversation_history) LIKE LOWER(?) ESCAPE '\\'")
             params.append(f"%{escaped}%")
         if call_metadata_key is not None and call_metadata_value is not None:
+            if "call_metadata" not in self._columns:
+                return ["0"], []
             from src.core.call_metadata import call_metadata_json_path
 
             conditions.append("CAST(json_extract(call_metadata, ?) AS TEXT) = ?")
@@ -357,23 +419,44 @@ class CallHistoryStore:
                 Path(db_dir).mkdir(parents=True, exist_ok=True)
             
             with self._lock:
-                conn = self._get_connection()
+                conn = self._get_startup_connection()
                 try:
                     cursor = conn.cursor()
                     cursor.execute("BEGIN IMMEDIATE")
                     cursor.execute(self._CREATE_TABLE_SQL)
                     cursor.execute("CREATE TABLE IF NOT EXISTS pending_calendly_purges (call_id TEXT PRIMARY KEY)")
-                    self._ensure_schema_sync(conn)
                     columns = {row[1] for row in cursor.execute("PRAGMA table_info(call_records)")}
                     if "calendly_erasure_required" not in columns:
                         # SQLite applies the default to existing rows without
                         # copying history. Older writers also retain the prior
                         # unconditional erasure contract if code is rolled back.
-                        # Unlike optional display migrations, failure must close
-                        # history writes/deletion rather than lose privacy work.
+                        # Check on every open so a missing privacy column always
+                        # blocks writes and deletion if its repair fails.
                         cursor.execute("ALTER TABLE call_records ADD COLUMN calendly_erasure_required INTEGER NOT NULL DEFAULT 1")
+                    conn.commit()
+
+                    # The privacy guard above is mandatory. Optional migrations can
+                    # retry at the next open after their DDL and version row roll back.
+                    try:
+                        self._ensure_schema_sync(conn)
+                    except Exception as exc:
+                        _warn_optional_migration(self._db_path, type(exc).__name__)
+                    self._columns = {row[1] for row in cursor.execute("PRAGMA table_info(call_records)")}
+                    # Only application-owned identifiers are interpolated. Newer schemas
+                    # may have additional columns that must retain their own defaults.
+                    writable = [name for name in CallRecord.__dataclass_fields__ if name in self._columns]
+                    writable.append("calendly_erasure_required")
+                    placeholders = ", ".join(":" + name for name in writable)
+                    self._insert_record_sql = (
+                        f"INSERT OR REPLACE INTO call_records ({', '.join(writable)}) VALUES ({placeholders})"
+                    )
+                    cursor.execute("BEGIN IMMEDIATE")
                     for idx_sql in self._CREATE_INDEXES_SQL:
-                        cursor.execute(idx_sql)
+                        try:
+                            cursor.execute(idx_sql)
+                        except sqlite3.OperationalError as exc:
+                            if "no such column:" not in str(exc):
+                                raise
                     conn.commit()
                     self._initialized = True
                     logger.info(f"Call history database initialized: {self._db_path}")
@@ -383,52 +466,52 @@ class CallHistoryStore:
             logger.error(f"Failed to initialize call history database: {e}", exc_info=True)
             self._enabled = False
 
-    def _ensure_schema_sync(self, conn: sqlite3.Connection) -> None:
-        """
-        Best-effort additive migrations for existing installs.
+    def _get_startup_connection(self) -> sqlite3.Connection:
+        # Concurrent first opens can receive SQLITE_BUSY immediately while changing
+        # journal mode, before SQLite's normal busy timeout takes effect.
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                return self._get_connection()
+            except sqlite3.OperationalError as exc:
+                if getattr(exc, "sqlite_errorcode", None) != sqlite3.SQLITE_BUSY or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
 
-        SQLite has limited ALTER TABLE support; we only add nullable columns when
-        missing — never drop or rename. Failures are logged and never block startup.
-        """
-        try:
-            cur = conn.cursor()
-            existing = {str(r[1]) for r in cur.execute("PRAGMA table_info(call_records)").fetchall()}
-            if "pre_call_tool_calls" not in existing:
-                cur.execute("ALTER TABLE call_records ADD COLUMN pre_call_tool_calls TEXT")
-            if "post_call_tool_calls" not in existing:
-                cur.execute("ALTER TABLE call_records ADD COLUMN post_call_tool_calls TEXT")
-            if "routing_method" not in existing:
-                cur.execute("ALTER TABLE call_records ADD COLUMN routing_method TEXT")
-            if "voice" not in existing:
-                cur.execute("ALTER TABLE call_records ADD COLUMN voice TEXT")
-            if "voice_source" not in existing:
-                cur.execute("ALTER TABLE call_records ADD COLUMN voice_source TEXT")
-            additive_columns = {
-                "called_number": "TEXT",
-                "external_platform": "TEXT",
-                "external_call_id": "TEXT",
-                "external_direction": "TEXT",
-                "external_disposition": "TEXT",
-                "external_metadata": "TEXT",
-                "call_metadata": "TEXT",
-                "call_metadata_updates": "TEXT",
-                "diagnostics_snapshot": "TEXT",
-            }
-            for name, sql_type in additive_columns.items():
-                if name not in existing:
-                    cur.execute(f"ALTER TABLE call_records ADD COLUMN {name} {sql_type}")
-        except Exception:
-            logger.debug("call_records schema migration failed (non-fatal)", exc_info=True)
-    
+    def _ensure_schema_sync(self, conn: sqlite3.Connection) -> None:
+        """Serialize concurrent upgrades and commit each version with its DDL."""
+        for version, migrate in MIGRATIONS:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS schema_migrations (
+                        version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+                    )
+                """)
+                current = current_schema_version(conn)
+                if current > MIGRATIONS[-1][0]:
+                    _warn_newer_schema(self._db_path, current, MIGRATIONS[-1][0])
+                    return
+                if current < version:
+                    migrate(conn)
+                    conn.execute(
+                        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                        (version, datetime.now(timezone.utc).isoformat()),
+                    )
+
     def _get_connection(self) -> sqlite3.Connection:
         """Get a database connection with WAL mode and busy timeout for multi-process safety."""
         conn = sqlite3.connect(self._db_path, timeout=30.0, check_same_thread=False)  # 30s busy timeout
-        conn.row_factory = sqlite3.Row
-        # Enable WAL mode for better concurrent read/write performance
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=30000;")  # 30s in milliseconds
-        conn.execute("PRAGMA foreign_keys=ON;")
+        try:
+            conn.row_factory = sqlite3.Row
+            # Enable WAL mode for better concurrent read/write performance
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            conn.execute("PRAGMA busy_timeout=30000;")  # 30s in milliseconds
+            conn.execute("PRAGMA foreign_keys=ON;")
+        except sqlite3.Error:
+            conn.close()
+            raise
         return conn
     
     async def save(self, record: CallRecord) -> bool:
@@ -448,15 +531,6 @@ class CallHistoryStore:
             with self._lock:
                 conn = self._get_connection()
                 try:
-                    from src.core.call_metadata import (
-                        normalize_call_metadata_updates,
-                        validate_call_metadata_document,
-                    )
-
-                    call_metadata = validate_call_metadata_document(record.call_metadata or {})
-                    call_metadata_updates = normalize_call_metadata_updates(
-                        record.call_metadata_updates or []
-                    )
                     cursor = conn.cursor()
                     # Check if record with same call_id already exists (prevent duplicates)
                     cursor.execute("SELECT id FROM call_records WHERE call_id = ?", (record.call_id,))
@@ -465,65 +539,33 @@ class CallHistoryStore:
                         # Already saved, skip duplicate
                         return True
                     
+                    from src.core.call_metadata import history_metadata
+                    call_metadata, call_metadata_updates, omitted = history_metadata(
+                        record.call_metadata or {}, record.call_metadata_updates or []
+                    )
+                    if omitted:
+                        logger.warning("Omitted invalid call metadata while recording the call")
+
                     # Current writers explicitly opt into footprint-based
                     # tracking (literal 0). Older INSERTs omit this column and
                     # retain DEFAULT 1, including during an application rollback.
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO call_records (
-                            id, call_id, caller_number, caller_name, called_number,
-                            start_time, end_time, duration_seconds,
-                            provider_name, pipeline_name, pipeline_components, context_name,
-                            routing_method, voice, voice_source,
-                            conversation_history, outcome, transfer_destination, error_message,
-                            external_platform, external_call_id, external_direction,
-                            external_disposition, external_metadata,
-                            call_metadata, call_metadata_updates,
-                            tool_calls, pre_call_tool_calls, post_call_tool_calls,
-                            avg_turn_latency_ms, max_turn_latency_ms, total_turns,
-                            caller_audio_format, codec_alignment_ok, barge_in_count,
-                            diagnostics_snapshot, created_at, calendly_erasure_required
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-                    """, (
-                        record.id,
-                        record.call_id,
-                        record.caller_number,
-                        record.caller_name,
-                        record.called_number,
-                        record.start_time.isoformat() if record.start_time else None,
-                        record.end_time.isoformat() if record.end_time else None,
-                        record.duration_seconds,
-                        # LOW-CH3: normalize provider casing at write so stored values
-                        # match the case-insensitive filter / provider-health buckets.
-                        (record.provider_name or "unknown").lower(),
-                        record.pipeline_name,
-                        json.dumps(record.pipeline_components),
-                        record.context_name,
-                        record.routing_method,
-                        record.voice,
-                        record.voice_source,
-                        json.dumps(record.conversation_history),
-                        record.outcome,
-                        record.transfer_destination,
-                        record.error_message,
-                        record.external_platform,
-                        record.external_call_id,
-                        record.external_direction,
-                        record.external_disposition,
-                        json.dumps(record.external_metadata),
-                        json.dumps(call_metadata),
-                        json.dumps(call_metadata_updates),
-                        json.dumps(record.tool_calls),
-                        json.dumps(record.pre_call_tool_calls),
-                        json.dumps(record.post_call_tool_calls),
-                        record.avg_turn_latency_ms,
-                        record.max_turn_latency_ms,
-                        record.total_turns,
-                        record.caller_audio_format,
-                        1 if record.codec_alignment_ok else 0,
-                        record.barge_in_count,
-                        json.dumps(record.diagnostics_snapshot or {}),
-                        record.created_at.isoformat() if record.created_at else None,
-                    ))
+                    values = vars(record).copy()
+                    values.update(
+                        provider_name=(record.provider_name or "unknown").lower(),
+                        call_metadata=call_metadata,
+                        call_metadata_updates=call_metadata_updates,
+                        diagnostics_snapshot=record.diagnostics_snapshot or {},
+                        calendly_erasure_required=0,
+                    )
+                    for key in ("start_time", "end_time", "created_at"):
+                        values[key] = values[key].isoformat() if values[key] else None
+                    for key in (
+                        "pipeline_components", "conversation_history", "external_metadata",
+                        "call_metadata", "call_metadata_updates", "tool_calls", "pre_call_tool_calls",
+                        "post_call_tool_calls", "diagnostics_snapshot",
+                    ):
+                        values[key] = json.dumps(values[key])
+                    cursor.execute(self._insert_record_sql, values)
                     conn.commit()
                     return True
                 except Exception as e:
@@ -560,7 +602,7 @@ class CallHistoryStore:
         persist runs first.
         """
         column = self._PHASE_COLUMN.get(phase)
-        if not self._enabled or column is None:
+        if not self._enabled or column not in self._columns:
             return False
 
         def _sync():
@@ -614,7 +656,7 @@ class CallHistoryStore:
         placeholder).
         """
         column = self._PHASE_COLUMN.get(phase)
-        if not self._enabled or column is None:
+        if not self._enabled or column not in self._columns:
             return False
 
         def _sync():
@@ -745,6 +787,10 @@ class CallHistoryStore:
         """
         if not self._enabled:
             return True
+
+        # Keep a durable external action retryable until both fields can be saved.
+        if not {"external_metadata", "external_disposition"} <= self._columns:
+            return False
 
         def _update_sync():
             with self._lock:
@@ -891,7 +937,7 @@ class CallHistoryStore:
                     select_cols = "*"
                     if not include_details:
                         # Exclude transcript/tool payloads to keep list views fast and reduce exposure.
-                        select_cols = ", ".join([
+                        select_cols = ", ".join(col for col in (
                             "id",
                             "call_id",
                             "caller_number",
@@ -919,7 +965,7 @@ class CallHistoryStore:
                             "codec_alignment_ok",
                             "barge_in_count",
                             "created_at",
-                        ])
+                        ) if col in self._columns)
 
                     query = f"""
                         SELECT {select_cols} FROM call_records 
@@ -958,9 +1004,11 @@ class CallHistoryStore:
             return []
 
         normalized_platform = str(platform or "").strip().lower()
-        if not normalized_platform:
+        if not normalized_platform or "external_platform" not in self._columns:
             return []
         normalized_mapping_id = str(mapping_id or "").strip()
+        if normalized_mapping_id and "external_metadata" not in self._columns:
+            return []
         bounded_max_rows = max(1, min(int(max_rows), 50000))
 
         def _list_sync():
@@ -984,16 +1032,15 @@ class CallHistoryStore:
                         )
                         params.append(normalized_mapping_id)
 
+                    projection = ", ".join(col for col in (
+                        'id', 'call_id', 'caller_number', 'called_number',
+                        'start_time', 'end_time', 'duration_seconds', 'context_name', 'outcome', 'error_message',
+                        'external_platform', 'external_call_id', 'external_direction', 'external_disposition', 'external_metadata'
+                    ) if col in self._columns)
                     cursor = conn.cursor()
                     cursor.execute(
                         f"""
-                        SELECT
-                            id, call_id, caller_number, called_number,
-                            start_time, end_time, duration_seconds,
-                            context_name, outcome, error_message,
-                            external_platform, external_call_id,
-                            external_direction, external_disposition,
-                            external_metadata
+                        SELECT {projection}
                         FROM call_records
                         WHERE {' AND '.join(conditions)}
                         ORDER BY start_time DESC
@@ -1354,11 +1401,21 @@ class CallHistoryStore:
 
 # Global instance (lazy initialization)
 _call_history_store: Optional[CallHistoryStore] = None
+_call_history_init_lock = threading.Lock()
 
 
 def get_call_history_store() -> CallHistoryStore:
     """Get the global call history store instance."""
     global _call_history_store
     if _call_history_store is None:
-        _call_history_store = CallHistoryStore()
+        with _call_history_init_lock:
+            if _call_history_store is None:
+                _call_history_store = CallHistoryStore()
     return _call_history_store
+
+
+async def get_call_history_store_async() -> CallHistoryStore:
+    """Acquire the process singleton without blocking an event loop on first open."""
+    if _call_history_store is None:
+        return await asyncio.to_thread(get_call_history_store)
+    return get_call_history_store()

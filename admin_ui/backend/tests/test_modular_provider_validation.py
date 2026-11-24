@@ -159,6 +159,9 @@ async def test_explicit_openai_groq_without_endpoint_rejects_before_sending_key(
         with pytest.raises(HTTPException, match="requires an explicit"):
             await run_api(monkeypatch, cfg, saved=True, name="groq_llm")
     else:
+        # This draft is new. Independently exercise endpoint validation without
+        # borrowing credential sources from a packaged provider of the same name.
+        monkeypatch.setattr(config_api, "_read_merged_config_dict", lambda: {})
         result = await run_api(monkeypatch, cfg, name="groq_llm")
         assert not result["success"] and "requires an explicit" in result["message"]
     assert calls == []

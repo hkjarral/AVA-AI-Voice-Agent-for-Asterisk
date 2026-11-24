@@ -19,7 +19,7 @@ describe('AudioEnvironmentOverrideWarning', () => {
         vi.mocked(axios.get).mockResolvedValue({
             data: {
                 AAVA_OPENAI_OUTPUT_RESAMPLER: 'bandlimited',
-                AAVA_GOOGLE_OUTPUT_RESAMPLER: '',
+                AAVA_GOOGLE_OUTPUT_RESAMPLER: { set: true },
                 OPENAI_API_KEY: 'must-not-render',
             },
         });
@@ -32,6 +32,7 @@ describe('AudioEnvironmentOverrideWarning', () => {
 
         expect(await screen.findByText('Environment audio override active')).toBeInTheDocument();
         expect(screen.getByText('AAVA_OPENAI_OUTPUT_RESAMPLER=bandlimited')).toBeInTheDocument();
+        expect(screen.queryByText(/object Object/)).not.toBeInTheDocument();
         expect(screen.queryByText(/must-not-render/)).not.toBeInTheDocument();
         expect(screen.getByRole('link', { name: /System.*Environment/i })).toHaveAttribute('href', '/env');
     });

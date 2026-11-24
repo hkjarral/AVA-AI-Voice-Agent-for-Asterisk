@@ -6,30 +6,38 @@ import { toast } from 'sonner';
 import { useAsyncScope } from '../hooks/useAsyncScope';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import HelpTooltip from '../components/ui/HelpTooltip';
+import { SecretInput } from '../components/ui/SecretInput';
+import { hasEnvValue, isSecretMarker, type EnvValue } from '../utils/envValue';
 import SetupHandoff from '../components/SetupHandoff';
 import { readWizardDraft, saveWizardDraft, clearWizardDraft } from '../utils/wizardDraft';
 
-interface SetupConfig {
+const secretFields = [
+    'asterisk_password', 'openai_key', 'groq_key', 'deepgram_key', 'google_key',
+    'elevenlabs_key', 'cartesia_key', 'xai_key', 'kroko_api_key', 'kokoro_api_key',
+] as const;
+
+type WizardSecret = (typeof secretFields)[number];
+
+function storedWizardSecrets(values: Partial<Record<WizardSecret, EnvValue>>) {
+    return Object.fromEntries(secretFields.map(key => [key, { set: hasEnvValue(values[key]) }]));
+}
+
+const replacementField = (field: string, value: EnvValue | undefined) =>
+    typeof value === 'string' ? { [field]: value } : {};
+
+interface SetupConfig extends Partial<Record<WizardSecret, EnvValue>> {
     provider: string;
     deployment_topology?: 'same_host' | 'remote';
     audio_transport?: 'audiosocket' | 'externalmedia' | 'websocket';
     media_advertise_host?: string;
     asterisk_host: string;
     asterisk_username: string;
-    asterisk_password: string;
     asterisk_port?: number;
     asterisk_scheme?: string;
     asterisk_app?: string;
     asterisk_server_ip?: string;  // Required when asterisk_host is a hostname (for RTP security)
     asterisk_ssl_verify?: boolean;  // Skip SSL cert verification for self-signed certs
-    openai_key?: string;
-    groq_key?: string;
-    deepgram_key?: string;
-    google_key?: string;
-    elevenlabs_key?: string;
     elevenlabs_agent_id?: string;
-    cartesia_key?: string;
-    xai_key?: string;
     greeting: string;
     ai_name: string;
     ai_role: string;
@@ -38,12 +46,10 @@ interface SetupConfig {
     local_stt_backend?: string;
     local_stt_model?: string;
     kroko_embedded?: boolean;
-    kroko_api_key?: string;
     local_tts_backend?: string;
     local_tts_model?: string;
     kokoro_mode?: string;
     kokoro_voice?: string;
-    kokoro_api_key?: string;
     kokoro_api_base_url?: string;
     silero_speaker?: string;
     silero_language?: string;
@@ -262,6 +268,8 @@ const Wizard = () => {
                     setConfig(prev => ({
                         ...prev,
                         ...res.data,
+                        // Only an explicit edit may introduce credential text into the form.
+                        ...storedWizardSecrets(res.data),
                         ...draft?.config,
                         // Keep provider selection if not set in loaded config
                         provider: draft?.config.provider as string || res.data.provider || prev.provider
@@ -510,7 +518,7 @@ const Wizard = () => {
             const res = await axios.post('/api/wizard/validate-connection', {
                 host: config.asterisk_host,
                 username: config.asterisk_username,
-                password: config.asterisk_password,
+                ...replacementField('password', config.asterisk_password),
                 port: config.asterisk_port,
                 scheme: config.asterisk_scheme,
                 ssl_verify: config.asterisk_ssl_verify !== false
@@ -526,8 +534,8 @@ const Wizard = () => {
         }
     };
 
-    const handleTestKey = async (provider: string, key: string, agentId?: string) => {
-        if (!key) {
+    const handleTestKey = async (provider: string, key: EnvValue, agentId?: string) => {
+        if (!hasEnvValue(key)) {
             showToast(`${provider} API Key is required`, 'error');
             return;
         }
@@ -535,7 +543,7 @@ const Wizard = () => {
         try {
             const payload: any = {
                 provider: provider === 'openai_realtime' ? 'openai' : provider,
-                api_key: key
+                ...replacementField('api_key', key)
             };
             // Include agent_id for ElevenLabs Conversational AI
             if (provider === 'elevenlabs' && agentId) {
@@ -694,7 +702,7 @@ const Wizard = () => {
                 llm: config.local_llm_model || pickRecommendedLlmId(),
                 tts: config.local_tts_backend,
                 kroko_embedded: config.kroko_embedded,
-                kroko_api_key: config.kroko_api_key,
+                ...replacementField('kroko_api_key', config.kroko_api_key),
                 kokoro_mode: config.kokoro_mode,
                 kokoro_voice: config.kokoro_voice,
                 language: selectedLanguage,
@@ -703,7 +711,7 @@ const Wizard = () => {
                 llm_download_url: config.local_llm_custom_url,
                 llm_model_path: config.local_llm_custom_filename,
                 kokoro_api_base_url: config.kokoro_api_base_url,
-                kokoro_api_key: config.kokoro_api_key,
+                ...replacementField('kokoro_api_key', config.kokoro_api_key),
                 silero_speaker: sileroSpeaker,
                 silero_language: sileroLanguage,
                 skip_llm_download: skipLlmDownload
@@ -772,7 +780,7 @@ const Wizard = () => {
             const missing: string[] = [];
             if (!config.asterisk_host) missing.push('Asterisk host');
             if (!config.asterisk_username) missing.push('ARI username');
-            if (!config.asterisk_password) missing.push('ARI password');
+            if (!hasEnvValue(config.asterisk_password)) missing.push('ARI password');
 
             if (config.deployment_topology === 'remote' && config.audio_transport !== 'websocket' && !config.media_advertise_host) {
                 missing.push('AVA media IPv4 address reachable from Asterisk');
@@ -794,33 +802,33 @@ const Wizard = () => {
             }
 
             // Provider key requirement for selected provider
-            if (config.provider === 'openai_realtime' && !config.openai_key) {
+            if (config.provider === 'openai_realtime' && !hasEnvValue(config.openai_key)) {
                 showToast('OpenAI API key is required for OpenAI Realtime.', 'error');
                 return;
             }
             if (config.provider === 'deepgram') {
-                if (!config.deepgram_key) {
+                if (!hasEnvValue(config.deepgram_key)) {
                     showToast('Deepgram API key is required for Deepgram.', 'error');
                     return;
                 }
             }
-            if (config.provider === 'google_live' && !config.google_key) {
+            if (config.provider === 'google_live' && !hasEnvValue(config.google_key)) {
                 showToast('Google API key is required for Google Live.', 'error');
                 return;
             }
             if (config.provider === 'local_hybrid') {
                 const llmProvider = (config.hybrid_llm_provider || 'openai').toLowerCase();
-                if (llmProvider === 'openai' && !config.openai_key) {
+                if (llmProvider === 'openai' && !hasEnvValue(config.openai_key)) {
                     showToast('OpenAI API key is required for Local Hybrid when using OpenAI.', 'error');
                     return;
                 }
-                if (llmProvider === 'groq' && !config.groq_key) {
+                if (llmProvider === 'groq' && !hasEnvValue(config.groq_key)) {
                     showToast('Groq API key is required for Local Hybrid when using Groq.', 'error');
                     return;
                 }
             }
             if (config.provider === 'elevenlabs_agent') {
-                if (!config.elevenlabs_key) {
+                if (!hasEnvValue(config.elevenlabs_key)) {
                     showToast('ElevenLabs API key is required.', 'error');
                     return;
                 }
@@ -829,7 +837,7 @@ const Wizard = () => {
                     return;
                 }
             }
-            if (config.provider === 'grok' && !config.xai_key) {
+            if (config.provider === 'grok' && !hasEnvValue(config.xai_key)) {
                 showToast('xAI API key is required for Grok Voice Agent.', 'error');
                 return;
             }
@@ -851,10 +859,10 @@ const Wizard = () => {
             setLoading(true);
             try {
                 if (config.provider === 'openai_realtime') {
-                    if (config.openai_key) {
+                    if (hasEnvValue(config.openai_key)) {
                         const res = await axios.post('/api/wizard/validate-key', {
                             provider: 'openai',
-                            api_key: config.openai_key
+                            ...replacementField('api_key', config.openai_key)
                         });
                         if (!res.data.valid) throw new Error(`OpenAI Key Invalid: ${res.data.error}`);
                     } else {
@@ -865,20 +873,20 @@ const Wizard = () => {
                 if (config.provider === 'local_hybrid') {
                     const llmProvider = (config.hybrid_llm_provider || 'openai').toLowerCase();
                     if (llmProvider === 'openai') {
-                        if (config.openai_key) {
+                        if (hasEnvValue(config.openai_key)) {
                             const res = await axios.post('/api/wizard/validate-key', {
                                 provider: 'openai',
-                                api_key: config.openai_key
+                                ...replacementField('api_key', config.openai_key)
                             });
                             if (!res.data.valid) throw new Error(`OpenAI Key Invalid: ${res.data.error}`);
                         } else {
                             throw new Error('OpenAI API Key is required for Local Hybrid when using OpenAI');
                         }
                     } else if (llmProvider === 'groq') {
-                        if (config.groq_key) {
+                        if (hasEnvValue(config.groq_key)) {
                             const res = await axios.post('/api/wizard/validate-key', {
                                 provider: 'groq',
-                                api_key: config.groq_key
+                                ...replacementField('api_key', config.groq_key)
                             });
                             if (!res.data.valid) throw new Error(`Groq Key Invalid: ${res.data.error}`);
                         } else {
@@ -888,10 +896,10 @@ const Wizard = () => {
                 }
 
                 if (config.provider === 'deepgram') {
-                    if (config.deepgram_key) {
+                    if (hasEnvValue(config.deepgram_key)) {
                         const res = await axios.post('/api/wizard/validate-key', {
                             provider: 'deepgram',
-                            api_key: config.deepgram_key
+                            ...replacementField('api_key', config.deepgram_key)
                         });
                         if (!res.data.valid) throw new Error(`Deepgram Key Invalid: ${res.data.error}`);
                     } else {
@@ -900,10 +908,10 @@ const Wizard = () => {
                 }
 
                 if (config.provider === 'google_live') {
-                    if (config.google_key) {
+                    if (hasEnvValue(config.google_key)) {
                         const res = await axios.post('/api/wizard/validate-key', {
                             provider: 'google',
-                            api_key: config.google_key
+                            ...replacementField('api_key', config.google_key)
                         });
                         if (!res.data.valid) throw new Error(`Google Key Invalid: ${res.data.error}`);
                         if (res.data.warning) showToast(res.data.warning, 'warning');
@@ -916,10 +924,10 @@ const Wizard = () => {
                     if (!config.elevenlabs_agent_id) {
                         throw new Error('ElevenLabs Agent ID is required');
                     }
-                    if (config.elevenlabs_key) {
+                    if (hasEnvValue(config.elevenlabs_key)) {
                         const res = await axios.post('/api/wizard/validate-key', {
                             provider: 'elevenlabs',
-                            api_key: config.elevenlabs_key,
+                            ...replacementField('api_key', config.elevenlabs_key),
                             agent_id: config.elevenlabs_agent_id
                         });
                         if (!res.data.valid) throw new Error(`ElevenLabs Key Invalid: ${res.data.error}`);
@@ -929,12 +937,12 @@ const Wizard = () => {
                 }
 
                 if (config.provider === 'grok') {
-                    if (!config.xai_key) {
+                    if (!hasEnvValue(config.xai_key)) {
                         throw new Error('xAI API Key is required for Grok Voice Agent');
                     }
                     const res = await axios.post('/api/wizard/validate-key', {
                         provider: 'grok',
-                        api_key: config.xai_key
+                        ...replacementField('api_key', config.xai_key)
                     });
                     if (!res.data.valid) throw new Error(`xAI Key Invalid: ${res.data.error}`);
                 }
@@ -961,13 +969,13 @@ const Wizard = () => {
                 showToast('ARI Username is required', 'error');
                 return;
             }
-            if (!config.asterisk_password) {
+            if (!hasEnvValue(config.asterisk_password)) {
                 showToast('ARI Password is required', 'error');
                 return;
             }
 
             // Validate secret strength (basic check)
-            if (config.asterisk_password.length < 8) {
+            if (typeof config.asterisk_password === 'string' && config.asterisk_password.length < 8) {
                 showToast('ARI Password must be at least 8 characters long', 'error');
                 return;
             }
@@ -988,7 +996,10 @@ const Wizard = () => {
             // Save config
             setLoading(true);
             try {
-                await axios.post('/api/wizard/save', config);
+                await axios.post('/api/wizard/save', Object.fromEntries(
+                    Object.entries(config).filter(([, value]) => !isSecretMarker(value)),
+                ));
+                setConfig(previous => ({ ...previous, ...storedWizardSecrets(previous) }));
                 clearWizardDraft();
 
                 // Check engine status for completion step
@@ -1180,11 +1191,10 @@ const Wizard = () => {
                                         />
                                     </div>
                                     <div className="flex space-x-2">
-                                        <input
-                                            type="password"
-                                            className="w-full p-2 rounded-md border border-input bg-background"
-                                            value={config.openai_key || ''}
-                                            onChange={e => setConfig({ ...config, openai_key: e.target.value })}
+                                        <SecretInput
+                                            hideLabel name="openai_key" label="OpenAI API Key"
+                                            value={config.openai_key ?? ''}
+                                            onChange={value => setConfig({ ...config, openai_key: value })}
                                             placeholder="sk-..."
                                         />
                                         <button
@@ -1355,11 +1365,10 @@ const Wizard = () => {
                                                         linkText="Kroko docs"
                                                     />
                                                 </div>
-                                                <input
-                                                    type="password"
-                                                    className="w-full p-2 rounded-md border border-input bg-background mt-1"
-                                                    value={config.kroko_api_key || ''}
-                                                    onChange={e => setConfig({ ...config, kroko_api_key: e.target.value })}
+                                                <SecretInput
+                                                    hideLabel name="kroko_api_key" label="Kroko API Key"
+                                                    value={config.kroko_api_key ?? ''}
+                                                    onChange={value => setConfig({ ...config, kroko_api_key: value })}
                                                     placeholder="Kroko API Key"
                                                 />
                                             </div>
@@ -1611,11 +1620,10 @@ const Wizard = () => {
                                                         }
                                                     />
                                                 </div>
-                                                <input
-                                                    type="password"
-                                                    className="w-full p-2 rounded-md border border-input bg-background mt-1"
-                                                    value={config.kokoro_api_key || ''}
-                                                    onChange={e => setConfig({ ...config, kokoro_api_key: e.target.value })}
+                                                <SecretInput
+                                                    hideLabel name="kokoro_api_key" label="Kokoro API Key"
+                                                    value={config.kokoro_api_key ?? ''}
+                                                    onChange={value => setConfig({ ...config, kokoro_api_key: value })}
                                                     placeholder="Kokoro API Key"
                                                 />
                                             </div>
@@ -1763,11 +1771,10 @@ const Wizard = () => {
                                             />
                                         </div>
                                         <div className="flex space-x-2">
-                                            <input
-                                                type="password"
-                                                className="w-full p-2 rounded-md border border-input bg-background"
-                                                value={config.hybrid_llm_provider === 'groq' ? (config.groq_key || '') : (config.openai_key || '')}
-                                                onChange={e => setConfig({ ...config, [config.hybrid_llm_provider === 'groq' ? 'groq_key' : 'openai_key']: e.target.value })}
+                                            <SecretInput
+                                                hideLabel name={config.hybrid_llm_provider === 'groq' ? 'groq_key' : 'openai_key'} label={config.hybrid_llm_provider === 'groq' ? 'Groq API Key' : 'OpenAI API Key'}
+                                                value={(config.hybrid_llm_provider === 'groq' ? config.groq_key : config.openai_key) ?? ''}
+                                                onChange={value => setConfig({ ...config, [config.hybrid_llm_provider === 'groq' ? 'groq_key' : 'openai_key']: value })}
                                                 placeholder={config.hybrid_llm_provider === 'groq' ? 'gsk_...' : 'sk-...'}
                                             />
                                             <button
@@ -1811,11 +1818,10 @@ const Wizard = () => {
                                         />
                                     </div>
                                     <div className="flex space-x-2">
-                                        <input
-                                            type="password"
-                                            className="w-full p-2 rounded-md border border-input bg-background"
-                                            value={config.deepgram_key}
-                                            onChange={e => setConfig({ ...config, deepgram_key: e.target.value })}
+                                        <SecretInput
+                                            hideLabel name="deepgram_key" label="Deepgram API Key"
+                                            value={config.deepgram_key ?? ''}
+                                            onChange={value => setConfig({ ...config, deepgram_key: value })}
                                             placeholder="Token..."
                                         />
                                         <button
@@ -1855,11 +1861,10 @@ const Wizard = () => {
                                         />
                                     </div>
                                     <div className="flex space-x-2">
-                                        <input
-                                            type="password"
-                                            className="w-full p-2 rounded-md border border-input bg-background"
-                                            value={config.google_key}
-                                            onChange={e => setConfig({ ...config, google_key: e.target.value })}
+                                        <SecretInput
+                                            hideLabel name="google_key" label="Google API Key"
+                                            value={config.google_key ?? ''}
+                                            onChange={value => setConfig({ ...config, google_key: value })}
                                             placeholder="AIza..."
                                         />
                                         <button
@@ -1945,11 +1950,10 @@ const Wizard = () => {
                                         />
                                     </div>
                                     <div className="flex space-x-2">
-                                        <input
-                                            type="password"
-                                            className="w-full p-2 rounded-md border border-input bg-background"
-                                            value={config.elevenlabs_key}
-                                            onChange={e => setConfig({ ...config, elevenlabs_key: e.target.value })}
+                                        <SecretInput
+                                            hideLabel name="elevenlabs_key" label="ElevenLabs API Key"
+                                            value={config.elevenlabs_key ?? ''}
+                                            onChange={value => setConfig({ ...config, elevenlabs_key: value })}
                                             placeholder="xi-..."
                                         />
                                         <button
@@ -2002,11 +2006,10 @@ const Wizard = () => {
                                         />
                                     </div>
                                     <div className="flex space-x-2">
-                                        <input
-                                            type="password"
-                                            className="w-full p-2 rounded-md border border-input bg-background"
-                                            value={config.xai_key || ''}
-                                            onChange={e => setConfig({ ...config, xai_key: e.target.value })}
+                                        <SecretInput
+                                            hideLabel name="xai_key" label="xAI API Key"
+                                            value={config.xai_key ?? ''}
+                                            onChange={value => setConfig({ ...config, xai_key: value })}
                                             placeholder="xai-..."
                                         />
                                         <button
@@ -2287,11 +2290,10 @@ const Wizard = () => {
                                                         }
                                                     />
                                                 </div>
-                                                <input
-                                                    type="password"
-                                                    className="w-full p-2 rounded-md border border-input bg-background mt-1"
-                                                    value={config.kroko_api_key || ''}
-                                                    onChange={e => setConfig({ ...config, kroko_api_key: e.target.value })}
+                                                <SecretInput
+                                                    hideLabel name="kroko_api_key" label="Kroko API Key"
+                                                    value={config.kroko_api_key ?? ''}
+                                                    onChange={value => setConfig({ ...config, kroko_api_key: value })}
                                                     placeholder="Kroko API Key"
                                                 />
                                             </div>
@@ -2486,11 +2488,10 @@ const Wizard = () => {
                                                         }
                                                     />
                                                 </div>
-                                                <input
-                                                    type="password"
-                                                    className="w-full p-2 rounded-md border border-input bg-background mt-1"
-                                                    value={config.kokoro_api_key || ''}
-                                                    onChange={e => setConfig({ ...config, kokoro_api_key: e.target.value })}
+                                                <SecretInput
+                                                    hideLabel name="kokoro_api_key" label="Kokoro API Key"
+                                                    value={config.kokoro_api_key ?? ''}
+                                                    onChange={value => setConfig({ ...config, kokoro_api_key: value })}
                                                     placeholder="Bearer token (optional; Dashboard requires a token to enable Cloud/API selection)"
                                                 />
                                             </div>
@@ -2906,11 +2907,10 @@ const Wizard = () => {
                                     }
                                 />
                             </div>
-                            <input
-                                type="password"
-                                className="w-full p-2 rounded-md border border-input bg-background"
-                                value={config.asterisk_password}
-                                onChange={e => setConfig({ ...config, asterisk_password: e.target.value })}
+                            <SecretInput
+                                hideLabel name="asterisk_password" label="ARI Password"
+                                value={config.asterisk_password ?? ''}
+                                onChange={value => setConfig({ ...config, asterisk_password: value })}
                             />
                         </div>
                         <div className="flex justify-end gap-2">
@@ -3040,6 +3040,7 @@ const Wizard = () => {
                                     }
                                 />
                             </div>
+                            <p className="text-xs text-muted-foreground">The role and greeting are visible in configuration. Keep credentials in dedicated credential fields.</p>
                             <textarea
                                 className="w-full p-2 rounded-md border border-input bg-background min-h-[80px]"
                                 value={config.greeting}

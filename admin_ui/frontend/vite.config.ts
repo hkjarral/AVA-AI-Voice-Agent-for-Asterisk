@@ -30,6 +30,19 @@ export default defineConfig({
             "@": path.resolve(__dirname, "./src"),
         },
     },
+    build: {
+        rolldownOptions: {
+            output: {
+                codeSplitting: {
+                    groups: [
+                        { name: 'router', test: /node_modules\/react-router(?:-dom)?\//, priority: 30 },
+                        { name: 'react', test: /node_modules\/(?:react|react-dom|scheduler)\//, priority: 20 },
+                        { name: 'editor', test: /node_modules\/@monaco-editor\// },
+                    ],
+                },
+            },
+        },
+    },
     server: {
         proxy: {
             '/api': {

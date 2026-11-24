@@ -18,6 +18,10 @@ def validate_document(name, doc, previous=None):
     if any(key in doc for key in ('bearer_token', 'token', 'api_key')):
         raise HTTPException(422, 'Save A2A tokens through the credential field')
     previous = previous if isinstance(previous, dict) else {}
+    from services.yaml_secrets import url_origin
+    if any(doc.get(key) and doc[key] == previous.get(key) for key in ('bearer_token_env', 'bearer_token_file')):
+        if url_origin(doc.get('agent_url')) != url_origin(previous.get('agent_url')):
+            raise HTTPException(422, 'Re-enter the credential for the new agent destination.')
     env = doc.get('bearer_token_env')
     if env and not str(env).startswith(('AVA_A2A_', 'AAVA_A2A_')) and env != (previous or {}).get('bearer_token_env'):
         raise HTTPException(422, 'New A2A environment references must start with AVA_A2A_ or AAVA_A2A_')

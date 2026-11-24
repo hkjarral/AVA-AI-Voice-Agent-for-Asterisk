@@ -105,6 +105,9 @@ def _install_wizard_import_stubs(monkeypatch):
     class APIRouter:
         """Tiny APIRouter stand-in whose decorators return functions unchanged."""
 
+        def __init__(self, *, route_class=None):
+            self.route_class = route_class
+
         def post(self, *args, **kwargs):
             """Return a no-op route decorator for POST handlers."""
             return lambda func: func
@@ -120,6 +123,13 @@ def _install_wizard_import_stubs(monkeypatch):
     fastapi.APIRouter = APIRouter
     fastapi.HTTPException = HTTPException
     monkeypatch.setitem(sys.modules, "fastapi", fastapi)
+
+    # These isolated tests exercise provider responses without an HTTP server.
+    # Stub the routing adapter rather than importing real FastAPI submodules
+    # against a stubbed parent package.
+    private_inputs = types.ModuleType("services.private_inputs")
+    private_inputs.PrivateInputRoute = object
+    monkeypatch.setitem(sys.modules, "services.private_inputs", private_inputs)
 
     pydantic = types.ModuleType("pydantic")
 

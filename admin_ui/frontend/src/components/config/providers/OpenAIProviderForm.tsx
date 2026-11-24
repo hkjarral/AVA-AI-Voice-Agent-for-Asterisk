@@ -153,6 +153,7 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                                             <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                                 <li>Default: <code>https://api.openai.com/v1</code></li>
                                                 <li>Override for Azure OpenAI, OpenRouter, LM Studio, or local proxies</li>
+                                                <li>A saved URL hides its entire query string, including public model parameters.</li>
                                                 <li>Must speak the OpenAI Chat Completions wire format</li>
                                             </ul>
                                         </>
@@ -431,6 +432,7 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                                             <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                                 <li>Default: <code>https://api.openai.com/v1/audio/speech</code></li>
                                                 <li>Override for Azure OpenAI TTS deployments or proxies</li>
+                                                <li>A saved URL hides its entire query string, including public model parameters.</li>
                                             </ul>
                                         </>
                                     }

@@ -2,6 +2,8 @@
 
 This guide covers upgrading between releases of Asterisk AI Voice Agent.
 
+For changes currently under review, see [Upcoming Admin API changes](#upcoming-admin-api-changes).
+
 ## v7.7.3 to v7.7.4
 
 Use the [v7.7.4 upgrade procedure](INSTALLATION.md#upgrade-to-v774-existing-checkout)
@@ -73,6 +75,25 @@ records the remaining findings, exposure controls and release-maintainer
 remediation review due 2026-11-29 or before the next stable tag, whichever comes
 first. This is not package remediation, and the historical v7.7.3 approval is not
 carried forward. The v7.7.4 tag remains held for separate authorization.
+
+## Upcoming Admin API changes
+
+- Environment clients reading `GET /api/config/env` receive `{"set": true}` for a populated credential and `{"set": false}` for an empty one. An absent variable can still be absent from the response. Read ordinary settings as strings. To preserve a credential, omit it from the patch or echo its presence object. To replace it, send the new string in `POST /api/config/env`. Send JSON `null` to delete a credential. The API rejects the legacy `__DELETE__` string for credentials. Credential file paths remain editable as ordinary strings.
+- Tool and webhook URLs show only their scheme, host and port. Leave a stored URL untouched to keep it, or replace the entire URL. A URL supplied by an environment variable can have no visible origin. Raw Configuration uses signed placeholders for saved values. Renaming, cloning or reordering can preserve a stored credential at its saved destination while the value remains current. Enter a new credential when changing the destination. Reload the editor after a signing-key change. AVA masks passwords in connection URLs. Prompts, greetings, descriptions, lead variables and call metadata otherwise contain operator-supplied text. AVA does not scan that text for arbitrary credentials. Store credentials in their designated fields. Environment settings are classified by name and by password userinfo in connection URLs.
+- To repair a damaged `config/ai-agent.local.yaml`, open **Raw Configuration → Repair override**. The editor retains simple settings it can mask safely. For an ambiguous document, enter a complete replacement override, or `{}` to use the shipped defaults. Saving requires confirmation, validates the resulting configuration and backs up the damaged bytes. Concurrent edits require a reload. For a damaged shipped `config/ai-agent.yaml`, repair that file on the server and reload.
+- Switch backup scripts from `GET /api/config/export` to `POST /api/config/export` with a valid bearer session and the current operator password in the JSON body. Read the password from a protected input. The optional `include_secrets=true` query parameter adds the environment file. Treat every downloaded ZIP as sensitive because operator YAML may also contain credentials. A rejected password returns HTTP 401 and repeated failures can return HTTP 429 with a retry time.
+
+### Login origins and lockout recovery
+
+Behind a reverse proxy, set `AAVA_TRUSTED_PROXIES` to the IP addresses or CIDRs of the proxies that supply the client address. With it unset, login uses the socket peer. If a same-host proxy connects from `127.0.0.1`, every client shares that origin. Once the administrator signs in, strangers using that proxy can also attempt the account’s password during protected mode. Five failures lock the shared account and origin for 15 minutes.
+
+For that topology, configure the proxy to supply the correct `X-Forwarded-For` chain, set `AAVA_TRUSTED_PROXIES=127.0.0.1` and recreate the Admin UI container to load the setting. Uvicorn’s redirects and access logs use `AAVA_TRUSTED_PROXIES` when set, otherwise `FORWARDED_ALLOW_IPS` or its default `127.0.0.1`.
+
+Twenty failed logins to one account within 15 minutes put it in protected mode for 15 minutes. The account can still sign in from an address it used successfully in the past 30 days, subject to that account and address pair’s own five-failure limit. On first login, from a new address, or after 30 days without a successful login from that address, repeated batches of 20 failures every 15 minutes can keep the administrator locked out. Export password retries are counted separately for each signed-in session.
+
+1. Try a known origin, or use a separately configured recovery administrator.
+2. If neither is available, restrict access to the Admin UI to your management connection. Run `docker restart admin_ui` from the host to clear the in-memory limits and preserve the accounts. Sign in before reopening access.
+3. If you also lost the password, follow the host password recovery procedure. [Password Management](../admin_ui/UI_Setup_Guide.md#password-management)
 
 ## v7.7.2 to v7.7.3
 

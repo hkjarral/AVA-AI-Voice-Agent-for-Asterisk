@@ -26,6 +26,7 @@ export interface AgentToolState {
     hangupEndCallMarkers: string[];
     extraPassthrough: Record<string, unknown>; // extra keys we do not own (+ object-form in_call_http_tools)
     mcpJsonRaw: string;               // mcp_json preserved verbatim — NOTE: no runtime effect, MCP is configured globally not per-agent (audit LOW-T2)
+    storedJson?: Partial<Record<'tools_json' | 'tool_configs_json' | 'hangup_policy_json', string>>;
     transferDestinationPolicy: ResourcePolicy;
     transferDestinationKeys: string[];
     googleCalendarPolicy: ResourcePolicy;
@@ -109,6 +110,17 @@ export interface AgentLike {
 }
 
 export function parseAgentConfig(agent: AgentLike | null | undefined): AgentToolState {
+    const storedJson: AgentToolState['storedJson'] = {};
+    for (const column of ['tools_json', 'tool_configs_json', 'hangup_policy_json'] as const) {
+        const raw = agent?.[column];
+        const marker = raw && safeParseObject(raw).__ava_stored_json__;
+        if (raw && typeof marker === 'string' && marker.includes('«secret:')) {
+            storedJson[column] = raw;
+        }
+    }
+    // Legacy Context imports can store a tool-to-settings object. The tool
+    // picker edits a list, so preserve this form until a replacement is chosen.
+    if (agent?.tools_json?.trimStart().startsWith('{')) storedJson.tools_json = agent.tools_json;
     const extra = safeParseObject(agent?.extra_json);
     const toolConfigs = safeParseObject(agent?.tool_configs_json);
     const hangupPolicy = safeParseObject(agent?.hangup_policy_json);
@@ -162,6 +174,7 @@ export function parseAgentConfig(agent: AgentLike | null | undefined): AgentTool
             ? [] : asStrArray(hangupPolicy['end_call']),
         extraPassthrough: passthrough,
         mcpJsonRaw: agent?.mcp_json || '',
+        storedJson,
         transferDestinationPolicy,
         transferDestinationKeys: transferDestinationPolicy === 'selected' || !isKnownPolicy(transferDestinationPolicy)
             ? asStrArray(transferConfig['destination_keys']) : [],
@@ -248,11 +261,11 @@ export function serializeAgentConfig(state: AgentToolState): SerializedAgentConf
 
     return {
         provider: state.pipeline ? '' : state.provider,
-        tools_json: state.inCallTools.length ? JSON.stringify(state.inCallTools) : null,
+        tools_json: state.inCallTools.length ? JSON.stringify(state.inCallTools) : state.storedJson?.tools_json ?? null,
         mcp_json: state.mcpJsonRaw.trim() || null,
         extra_json: Object.keys(extra).length ? JSON.stringify(extra) : null,
-        tool_configs_json: Object.keys(toolConfigs).length ? JSON.stringify(toolConfigs) : null,
-        hangup_policy_json: state.hangupMarkerStrategy === 'inherit' ? null : JSON.stringify({
+        tool_configs_json: Object.keys(toolConfigs).length ? JSON.stringify(toolConfigs) : state.storedJson?.tool_configs_json ?? null,
+        hangup_policy_json: state.hangupMarkerStrategy === 'inherit' ? state.storedJson?.hangup_policy_json ?? null : JSON.stringify({
             strategy: state.hangupMarkerStrategy,
             end_call: [...new Set(state.hangupEndCallMarkers.map((marker) => marker.trim()).filter(Boolean))],
         }),

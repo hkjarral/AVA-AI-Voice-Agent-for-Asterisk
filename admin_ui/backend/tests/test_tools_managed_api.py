@@ -46,7 +46,7 @@ def client(monkeypatch):
     }
     monkeypatch.setattr(tools_api, "_load_cfg", lambda: copy.deepcopy(state["cfg"]))
 
-    async def fake_persist(cfg):
+    async def fake_persist(cfg, previous=None):
         state["cfg"] = copy.deepcopy(cfg)
         return {
             "status": "success",
@@ -101,7 +101,7 @@ def test_crud_roundtrip_pre_call(client):
     assert r.json()["enabled"] is False
     assert r.json()["config"]["timeout_ms"] == 1234
     # url preserved by partial update
-    assert r.json()["config"]["url"] == "https://api.example.com/lookup"
+    assert r.json()["config"]["url"] == {"origin": "https://api.example.com", "set": True}
 
     # Delete
     deleted = client.delete("/api/tools/managed/crm_lookup")
@@ -505,7 +505,7 @@ def test_put_replaces_and_can_move_block(client):
         "description": "now in-call"})
     assert r.status_code == 200
     assert r.json()["block"] == "in_call_tools"
-    assert r.json()["config"]["url"] == "https://b.example.com"
+    assert r.json()["config"]["url"] == {"origin": "https://b.example.com", "set": True}
     # Old pre_call entry must be gone, not duplicated
     assert "mover" not in client.cfg_state["cfg"]["tools"]
     assert "mover" in client.cfg_state["cfg"]["in_call_tools"]
@@ -775,7 +775,7 @@ def test_a2a_managed_roundtrip_and_legacy_reference(client):
     doc = {'name': 'delegate', 'kind': 'a2a_agent', 'phase': 'in_call', 'agent_url': 'https://agent.example', 'description': 'Delegate requests'}
     response = client.post('/api/tools/managed', json=doc)
     assert response.status_code == 201, response.text
-    assert response.json()['config']['agent_url'] == doc['agent_url']
+    assert response.json()['config']['agent_url'] == {'origin': doc['agent_url'], 'set': True}
     assert 'delegate' in {t['name'] for t in client.get('/api/tools/managed').json()}
     # YAML-defined credentials can be kept while editing other fields.
     client.cfg_state['cfg']['in_call_tools']['delegate']['bearer_token_env'] = 'OLD_TOKEN'

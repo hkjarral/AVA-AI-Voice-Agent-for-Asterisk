@@ -1,8 +1,9 @@
+import { ToolURLInput, type ToolURL } from './ToolURLInput';
 import { FormInput, FormLabel, FormSelect } from '../ui/FormComponents';
 
 interface A2AToolValue {
     [key: string]: unknown;
-    agent_url?: string;
+    agent_url?: ToolURL;
     description?: string;
     bearer_token_file?: string;
     bearer_token_env?: string;
@@ -23,9 +24,10 @@ export function A2AToolFields({ value, onChange, token, onTokenChange }: {
     const authentication = value.bearer_token_file ? 'token' : value.bearer_token_env ? 'environment' : value.a2a_auth || 'none';
     return <div className="space-y-4">
         <p className="text-sm text-muted-foreground">Configure this remote agent here, then grant access under Agents → Tools → In-call. AVA discovers its Agent Card when a call invokes this tool.</p>
-        <FormInput label="Agent endpoint" tooltip="Base URL of an A2A 1.0 service with a public Agent Card and a JSON-RPC endpoint on the same origin." value={value.agent_url || ''} placeholder="https://agents.example.com" onChange={e => onChange({ ...value, agent_url: e.target.value })} />
+        <ToolURLInput label="Agent endpoint" tooltip="Base URL of an A2A 1.0 service with a public Agent Card and a JSON-RPC endpoint on the same origin." value={value.agent_url} placeholder="https://agents.example.com" onChange={agent_url => onChange({ ...value, agent_url })} />
         <div className="space-y-2">
             <FormLabel htmlFor="a2a-description" tooltip="Tell the voice agent when to use this tool and what request to send.">Description</FormLabel>
+            <p className="text-xs text-muted-foreground">This text is visible in configuration. Keep credentials in dedicated credential fields.</p>
             <textarea id="a2a-description" className="w-full rounded-md border border-input bg-background p-3 text-sm" rows={3} value={value.description || ''} onChange={e => onChange({ ...value, description: e.target.value })} />
         </div>
         <FormSelect label="Authentication" value={authentication} options={[

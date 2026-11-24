@@ -1,4 +1,5 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, Request
+from services.private_inputs import PrivateInputRoute
 import yaml
 from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode, SequenceNode, ScalarNode
@@ -22,13 +23,17 @@ from copy import deepcopy
 from email.message import EmailMessage
 from contextlib import contextmanager
 from pathlib import Path
-from pydantic import BaseModel, StrictBool
+from pydantic import BaseModel, StrictBool, SecretStr
 from typing import Dict, Any, Optional, Union
 import settings
-
+import auth
 PROJECT_SOURCE_ROOT = Path(settings.PROJECT_ROOT)
 if str(PROJECT_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_SOURCE_ROOT))
+
+from services.secret_keys import is_secret_env_value, is_secret_key, redact_mapping
+from services.yaml_secrets import (CredentialDestinationError, credential_references, has_markers, mask_config, mask_yaml_secrets, recover_flat_override,
+                                   repair_revision, restore_config, restore_yaml_secrets)
 
 try:
     # The production Admin image copies the shared module into /app.
@@ -53,7 +58,7 @@ from services.provider_validation import (
 # A11: Maximum number of backups to keep
 MAX_BACKUPS = 5
 
-router = APIRouter()
+router = APIRouter(route_class=PrivateInputRoute)
 logger = logging.getLogger(__name__)
 # Transactions call _write_local_config(), which re-enters this lock while
 # preserving the writer's direct-call safety for tests and synchronous helpers.
@@ -508,29 +513,27 @@ def _read_merged_config_dict() -> dict:
     if not os.path.exists(settings.CONFIG_PATH):
         return {}
     with open(settings.CONFIG_PATH, "r") as f:
-        base = _safe_load_no_duplicates(f.read()) or {}
+        base = _safe_load_no_duplicates(f.read())
+    if base is None:
+        base = {}
+    if not isinstance(base, dict):
+        raise HTTPException(400, "Invalid YAML. The base configuration must be a mapping.")
 
     if not os.path.exists(settings.LOCAL_CONFIG_PATH):
         return base
 
     try:
         with open(settings.LOCAL_CONFIG_PATH, "r") as f:
-            local = _safe_load_no_duplicates(f.read()) or {}
-    except (_RecursiveYamlAliasError, _NonFiniteYamlKeyError):
-        raise
-    except Exception:
+            local = _safe_load_no_duplicates(f.read())
+    except FileNotFoundError:
         return base
 
-    if not isinstance(local, dict):
+    if local is None:
         return base
+    if not isinstance(local, dict):
+        raise HTTPException(400, "Invalid YAML. The local configuration must be a mapping.")
 
     return _deep_merge_dicts(base, local)
-
-
-def _read_merged_config_content() -> str:
-    """Return the merged config as a YAML string (for display / validation)."""
-    merged = _read_merged_config_dict()
-    return yaml.dump(merged, default_flow_style=False, sort_keys=False) if merged else ""
 
 
 class _CommentsNotKept(Exception):
@@ -801,7 +804,7 @@ def _keep_local_comments(previous: bytes, content: str) -> str:
             return content
         return kept
     except Exception:
-        logger.debug("Could not keep comments in local config", exc_info=True)
+        logger.debug("Could not keep comments in local config")
         return content
 
 
@@ -831,7 +834,7 @@ def _write_local_config_locked(content: str, *, keep_comments: bool = True) -> N
     previous_bytes: Optional[bytes] = None
     backup_path: Optional[str] = None
     if os.path.exists(settings.LOCAL_CONFIG_PATH):
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         backup_path = f"{settings.LOCAL_CONFIG_PATH}.bak.{timestamp}"
         with open(settings.LOCAL_CONFIG_PATH, "rb") as src:
             previous_bytes = src.read()
@@ -1019,6 +1022,7 @@ def _rotate_backups(base_path: str) -> None:
 
 class ConfigUpdate(BaseModel):
     content: str
+    repair_revision: Optional[str] = None
 
 @contextmanager
 def _temporary_dotenv(path: str, defaults: Dict[str, str] | None = None):
@@ -1246,7 +1250,7 @@ def _affected_provider_settings(previous: Dict[str, Any], desired: Dict[str, Any
     return affected
 
 
-def _validate_ai_agent_config(content: str, *, provider_names: Optional[set[str]] = None) -> Dict[str, Any]:
+def _validate_ai_agent_config(content: str, *, provider_names: Optional[set[str]] = None, previous_config: Optional[dict] = None) -> Dict[str, Any]:
     """
     Validate ai-agent.yaml content against the canonical AppConfig schema.
 
@@ -1259,7 +1263,7 @@ def _validate_ai_agent_config(content: str, *, provider_names: Optional[set[str]
     try:
         parsed = _safe_load_no_duplicates(content) or {}
     except yaml.YAMLError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid YAML: {str(exc)}")
+        raise _yaml_input_error(exc) from None
 
     if not isinstance(parsed, dict):
         raise HTTPException(status_code=400, detail="Invalid YAML: expected a mapping at the document root")
@@ -1325,7 +1329,8 @@ def _validate_ai_agent_config(content: str, *, provider_names: Optional[set[str]
                 try:
                     parse_a2a_agent_config(name, doc)
                     from services.a2a_tools import validate_document
-                    previous = ((_read_merged_config_dict() or {}).get("in_call_tools") or {}).get(name)
+                    previous_doc = previous_config if previous_config is not None else _read_merged_config_dict()
+                    previous = ((previous_doc or {}).get("in_call_tools") or {}).get(name)
                     validate_document(name, doc, previous)
                 except (TypeError, ValueError) as exc:
                     raise HTTPException(400, str(exc)) from None
@@ -1387,10 +1392,23 @@ def _validate_ai_agent_config(content: str, *, provider_names: Optional[set[str]
     try:
         with _temporary_dotenv(settings.ENV_PATH, defaults=env_required_defaults):
             loaded = load_config(tmp_path)
-            affected = provider_names if provider_names is not None else _affected_provider_settings(_read_merged_config_dict() or {}, parsed, loaded.model_dump())
+            if provider_names is None:
+                baseline = previous_config if previous_config is not None else _read_merged_config_dict()
+                affected = _affected_provider_settings(baseline or {}, parsed, loaded.model_dump())
+            else:
+                affected = provider_names
             validate_provider_settings(loaded.providers, provider_names=affected)
     except ValidationError as exc:
-        raise HTTPException(status_code=400, detail=f"Config schema validation failed: {exc}")
+        errors = exc.errors(include_input=False, include_context=False)
+        problems = []
+        for error in errors:
+            location = ".".join(map(str, error["loc"]))
+            # Model-level validators include the setting path and recovery action
+            # in their first line. Nested Pydantic errors can embed raw input on
+            # subsequent lines, or after a "; got ..." suffix.
+            message = error["msg"].splitlines()[0].split("; got ", 1)[0]
+            problems.append(f"{location}: {message}" if location else message)
+        raise HTTPException(400, "Config schema validation failed: " + "; ".join(problems)) from None
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Config validation failed: {exc}")
     finally:
@@ -1434,6 +1452,7 @@ def persist_config_content(
 def _persist_config_content_locked(
     content: str,
     *,
+    recovery_baseline: Optional[dict] = None,
     trusted_profile_reset: Optional[tuple[str, Dict[str, Any]]] = None,
 ) -> dict:
     """Persist a complete config while the shared update lock is held."""
@@ -1445,7 +1464,8 @@ def _persist_config_content_locked(
     _assert_tool_emails_valid(content)
 
     # Validate YAML + schema before saving.
-    validation = _validate_ai_agent_config(content)
+    validation_options = {"previous_config": recovery_baseline} if recovery_baseline is not None else {}
+    validation = _validate_ai_agent_config(content, **validation_options)
     warnings = validation.get("warnings") or []
     provider_scope = validation.get("provider_settings_scope")
 
@@ -1453,8 +1473,8 @@ def _persist_config_content_locked(
         # Automatic format/secret migrations do not expand the operator's edit
         # scope. Explicit credential changes were included by the initial pass.
         if provider_scope is None:
-            return _validate_ai_agent_config(migrated)
-        return _validate_ai_agent_config(migrated, provider_names=set(provider_scope))
+            return _validate_ai_agent_config(migrated, **validation_options)
+        return _validate_ai_agent_config(migrated, provider_names=set(provider_scope), **validation_options)
 
     # Parse desired merged config content from UI.
     new_parsed = _safe_load_no_duplicates(content) or {}
@@ -1481,7 +1501,7 @@ def _persist_config_content_locked(
         warnings = warnings if migrated_warnings is None else migrated_warnings
 
     # Snapshot current merged config for hot-reload comparison
-    old_merged = _read_merged_config_dict()
+    old_merged = recovery_baseline if recovery_baseline is not None else _read_merged_config_dict()
 
     # Audio profiles are referenced from the independent Agent store. Guard
     # every persistence path (structured pages and Raw YAML), not only the
@@ -1501,7 +1521,7 @@ def _persist_config_content_locked(
     local_content = yaml.dump(local_override or {}, default_flow_style=False, sort_keys=False)
 
     # Write to LOCAL override file (keeps base ai-agent.yaml clean for git)
-    if secrets_migrated:
+    if secrets_migrated or recovery_baseline is not None:
         # Comments may hold the old key material (a commented-out key line,
         # "old: sk-..."); write the file without them.
         _write_local_config(local_content, keep_comments=False)
@@ -1763,7 +1783,7 @@ async def reset_pipeline_audio(pipeline_name: str):
 @router.get("/")
 async def get_config():
     try:
-        safe = _redact_websocket_media_secrets(_read_merged_config_dict())
+        safe = public_config(_read_merged_config_dict())
     except _RecursiveYamlAliasError as exc:
         raise HTTPException(
             status_code=422,
@@ -1780,15 +1800,17 @@ async def get_config():
                 "configuration file by replacing .nan/.inf keys with ordinary text keys."
             ),
         ) from exc
+    except yaml.YAMLError as exc:
+        raise _yaml_input_error(exc) from None
     # Existing operator overrides may predate write-time validation. Return a
     # controlled, actionable response while leaving /yaml available for repair.
     _assert_finite_config_numbers(safe, status_code=422)
     return safe
 
 
-def _redact_websocket_media_secrets(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Defensively keep an accidentally hand-written WS secret out of API reads."""
-    safe = deepcopy(config)
+def public_config(config: Dict[str, Any], *, raw: bool = False) -> Dict[str, Any]:
+    """Omit forbidden credential inputs and mask supported inline credentials."""
+    safe = deepcopy(mask_config(config, raw=raw))
     if isinstance(safe.get("tools"), dict) and "calendly_calendar" in safe["tools"]:
         from src.tools.business.calendly_client import public_config
         safe["tools"]["calendly_calendar"] = public_config(safe["tools"]["calendly_calendar"])
@@ -1870,122 +1892,232 @@ async def get_websocket_media_status():
         ) from exc
 
 
+def _yaml_input_error(exc):
+    # PyYAML's str(exc) includes source lines, including inline credentials.
+    mark = getattr(exc, "problem_mark", None)
+    location = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+    if isinstance(exc, _RecursiveYamlAliasError):
+        return HTTPException(400, f"Configuration contains a recursive YAML alias{location}")
+    return HTTPException(400, f"Invalid YAML{location}. Check the configuration file.")
+
+
+def _override_repair_snapshot():
+    """Inspect the broken operator-owned file. The shipped base stays read-only."""
+    from src.config import AppConfig
+
+    base_bytes = Path(settings.CONFIG_PATH).read_bytes()
+    try:
+        base = _safe_load_no_duplicates(base_bytes.decode())
+        if base is None:
+            base = {}
+        if not isinstance(base, dict):
+            raise ValueError()
+    except (ValueError, yaml.YAMLError) as exc:
+        mark = getattr(exc, "problem_mark", None)
+        loc = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+        raise HTTPException(400, f"Invalid YAML{loc}. Repair the shipped config/ai-agent.yaml on the server, then reload.") from None
+    local_path = Path(settings.LOCAL_CONFIG_PATH)
+    if not local_path.is_file():
+        return None
+    local_bytes = local_path.read_bytes()
+    text = ""
+    try:
+        text = local_bytes.decode()
+        local = _safe_load_no_duplicates(text)
+        if local is None or isinstance(local, dict):
+            return None
+        raise ValueError()
+    except (ValueError, yaml.YAMLError) as exc:
+        mark = getattr(exc, "problem_mark", None)
+        loc = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+
+    def parse_line(line):
+        try:
+            return _safe_load_no_duplicates(line)
+        except yaml.YAMLError:
+            raise ValueError() from None
+
+    allowed = set(AppConfig.model_fields) | {"password", "api_key", "token", "secret", "service_account_json", "log_level"}
+    recovered = recover_flat_override(text, parse_line, allowed)
+    original = yaml.safe_dump(recovered, sort_keys=False, allow_unicode=True)
+    repair = {"revision": repair_revision(base_bytes, local_bytes), "partial": bool(recovered),
+              "content": mask_yaml_secrets(original) if recovered else ""}
+    return base, original, {"message": f"Invalid YAML{loc} in ai-agent.local.yaml.", "repair": repair}
+
+
+def _repair_editor_override(content, revision):
+    with _CONFIG_UPDATE_LOCK:
+        snapshot = _override_repair_snapshot()
+        if snapshot is None or revision != snapshot[2]["repair"]["revision"]:
+            raise HTTPException(409, "Configuration changed. Reload before repairing.")
+        base, original, _ = snapshot
+        incoming = _safe_load_no_duplicates(content)
+        if not isinstance(incoming, dict):
+            raise HTTPException(400, "Enter a YAML mapping for the replacement override.")
+        try:
+            restored_text = restore_yaml_secrets(content, original)
+        except ValueError:
+            raise HTTPException(400, "Invalid repair placeholder. Reload before repairing.") from None
+        local = _safe_load_no_duplicates(restored_text)
+        desired = _deep_merge_dicts(base, local)
+        baseline = _deep_merge_dicts(base, _safe_load_no_duplicates(original))
+        return _persist_config_content_locked(yaml.safe_dump(desired, sort_keys=False),
+                                              recovery_baseline=baseline)
+
+
+def _save_editor_config(content):
+    # Resolve references under the writer lock so a concurrent password rotation
+    # cannot be reverted by an older form's unchanged marker.
+    with _CONFIG_UPDATE_LOCK:
+        incoming = _safe_load_no_duplicates(content)
+        if not isinstance(incoming, dict):
+            raise HTTPException(400, "Config YAML must be a mapping at the top level")
+        _assert_finite_config_numbers(incoming)
+        current = _read_merged_config_dict()
+        try:
+            restored = restore_config(incoming, current)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        if not _same(restored, incoming):
+            if _same(restored, current):
+                return {
+                    "status": "success", "apply_required": False, "restart_required": False,
+                    "recommended_apply_method": "none", "apply_plan": [], "warnings": [],
+                    "message": "Configuration unchanged.",
+                }
+            content = yaml.safe_dump(restored, sort_keys=False, allow_unicode=True)
+        return persist_config_content(content)
+
+
 @router.post("/yaml")
 async def update_yaml_config(update: ConfigUpdate):
     try:
-        # Persist via the shared helper (also used by the structured tools CRUD
-        # API). MED-E1 email validation now lives inside persist_config_content
-        # so every persistence path enforces it (not just this endpoint).
-        result = await asyncio.to_thread(persist_config_content, update.content)
+        if update.repair_revision is None:
+            result = await asyncio.to_thread(_save_editor_config, update.content)
+        else:
+            result = await asyncio.to_thread(_repair_editor_override, update.content, update.repair_revision)
         return await reconcile_apply_result_with_engine_state(result)
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except yaml.YAMLError as exc:
+        raise _yaml_input_error(exc) from None
+    except Exception:
+        logger.warning("Unable to save config YAML")
+        raise HTTPException(500, "Unable to save configuration") from None
+
 
 @router.get("/yaml")
 async def get_yaml_config():
-    print(f"Accessing config at {settings.CONFIG_PATH}")
     if not os.path.exists(settings.CONFIG_PATH):
-        print("Config file not found")
-        raise HTTPException(status_code=404, detail="Config file not found")
+        raise HTTPException(404, "Config file not found")
     try:
-        # Return the merged config (base + local overrides) so the editor
-        # always shows the effective configuration the engine will use.
-        config_content = _read_merged_config_content()
-        parsed = _safe_load_no_duplicates(config_content)  # Validate YAML and reject duplicate keys
-        safe_content = yaml.dump(
-            _redact_websocket_media_secrets(parsed or {}),
-            default_flow_style=False,
-            sort_keys=False,
-        )
-        return {"content": safe_content}
-    except yaml.YAMLError as e:
-        logger.info("YAML parse error while reading config YAML", exc_info=True)
-        # Extract detailed error information for user-friendly display
-        error_info = {
-            "type": "yaml_error",
-            "message": "Invalid YAML",
-            "line": None,
-            "column": None,
-            "context": None,
-            "snippet": None,
-        }
-        # Extract line/column from YAML error marks
-        if hasattr(e, 'problem_mark') and e.problem_mark:
-            mark = e.problem_mark
-            error_info["line"] = mark.line + 1  # Convert to 1-indexed
-            error_info["column"] = mark.column + 1
-        if hasattr(e, 'context_mark') and e.context_mark:
-            ctx_mark = e.context_mark
-            error_info["context"] = f"Line {ctx_mark.line + 1}, column {ctx_mark.column + 1}"
-        # Try to extract a snippet around the error line
-        if error_info["line"]:
-            try:
-                lines = config_content.splitlines()
-                line_num = error_info["line"] - 1  # 0-indexed
-                start = max(0, line_num - 2)
-                end = min(len(lines), line_num + 3)
-                snippet_lines = []
-                for i in range(start, end):
-                    prefix = ">>> " if i == line_num else "    "
-                    snippet_lines.append(f"{prefix}{i+1}: {lines[i]}")
-                error_info["snippet"] = "\n".join(snippet_lines)
-            except Exception:
-                pass
-        # Return content along with error so Raw YAML editor can still load it for fixing
-        return {
-            "content": config_content,
-            "yaml_error": error_info
-        }
-    except Exception as e:
-        logger.error("Unexpected error while reading config YAML", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to read config YAML") from e
+        merged = _read_merged_config_dict()
+        content = yaml.safe_dump(public_config(merged, raw=True), sort_keys=False, allow_unicode=True)
+        return {"content": content}
+    except (HTTPException, ValueError, yaml.YAMLError) as exc:
+        with _CONFIG_UPDATE_LOCK:
+            repair = _override_repair_snapshot()
+        if repair:
+            raise HTTPException(400, repair[2]) from None
+        if isinstance(exc, HTTPException):
+            raise
+        raise _yaml_input_error(exc) from None
+    except Exception:
+        logger.warning("Unable to read config YAML")
+        raise HTTPException(500, "Failed to read config YAML") from None
+
+
+def _credential_env_references() -> set[str]:
+    """Include operator-named credential sources as well as conventional env names."""
+    references = set()
+    pending = [_read_merged_config_dict()]
+    seen = set()
+    while pending:
+        item = pending.pop()
+        if not isinstance(item, (dict, list)) or id(item) in seen:
+            continue
+        seen.add(id(item))
+        if isinstance(item, list):
+            pending.extend(item)
+            continue
+        for field, value in item.items():
+            if isinstance(field, str) and isinstance(value, str) and is_secret_key(field):
+                if field.endswith("_env"):
+                    references.add(value)
+                elif ref := _parse_api_key_reference(value):
+                    references.add(ref[0])
+            elif isinstance(value, (dict, list)):
+                pending.append(value)
+
+    # The optional VICIdial store owns operator-chosen password variable names.
+    # A read must never create or initialize a database on a fresh install.
+    db = Path(os.getenv("VICIDIAL_DB_PATH", "/app/data/operator/vicidial.db"))
+    if db.is_file():
+        from contextlib import closing
+        with closing(sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True)) as conn:
+            for (ref,) in conn.execute("SELECT password_env FROM vicidial_connections"):
+                references.add(ref.removeprefix("${").removesuffix("}").split(":", 1)[0])
+    return references
+
 
 @router.get("/env")
 async def get_env_config():
-    """
-    Read .env file and return parsed key-value pairs.
-    Uses dotenv_values for correct parsing of quoted/escaped values.
-    """
-    env_vars = {}
-    if os.path.exists(settings.ENV_PATH):
-        try:
-            # Use dotenv_values for proper parsing of quoted values
-            from dotenv import dotenv_values
-            env_vars = dotenv_values(settings.ENV_PATH)
-            # Convert to regular dict (dotenv_values returns OrderedDict)
-            # and filter out None values (unset keys)
-            env_vars = {k: v for k, v in env_vars.items() if v is not None}
-        except ImportError:
-            # Fallback to manual parsing if python-dotenv not available
-            with open(settings.ENV_PATH, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        if '=' in line:
-                            key, value = line.split('=', 1)
-                            # Strip surrounding quotes if present
-                            value = value.strip()
-                            if (value.startswith('"') and value.endswith('"')) or \
-                               (value.startswith("'") and value.endswith("'")):
-                                value = value[1:-1]
-                            env_vars[key.strip()] = value
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-    return env_vars
+    from dotenv import dotenv_values
+
+    try:
+        # An alias in an ordinary setting may refer to a credential in .env or
+        # the process environment. Operators edit its literal source text.
+        values = dotenv_values(settings.ENV_PATH, interpolate=False)
+        return redact_mapping({k: v for k, v in values.items() if v is not None}, _credential_env_references())
+    except Exception:
+        raise HTTPException(500, "Unable to read environment settings")
+
 
 @router.post("/env")
-async def update_env(env_data: Dict[str, Optional[str]]):
-    """
-    Update .env file with provided key-value pairs.
-    
-    - Pass a string value to set/update a key
-    - Pass None or "__DELETE__" to remove a key entirely (line is removed, not commented)
-    - Values with spaces, #, quotes, $, etc. are automatically quoted
-    - Already-quoted values from UI are stored as-is (no double-quoting)
-    """
+async def update_env(env_data: Dict[str, Any]):
+    """Patch supplied settings. An echoed presence marker always preserves its credential."""
+    def save():
+        with _CONFIG_UPDATE_LOCK:
+            return _update_env_locked(env_data)
+    return await asyncio.to_thread(save)
+
+
+def _update_env_locked(env_data):
     try:
+        references = _credential_env_references()
+        # Index complete dotenv bindings, including exported and multiline
+        # assignments. Removing a credential must remove each complete binding.
+        from collections import defaultdict
+        from dotenv.parser import parse_stream
+
+        path = Path(settings.ENV_PATH)
+        original = path.read_text() if path.exists() else ""
+        lines = []
+        key_occurrences = defaultdict(list)
+        existing_values = {}
+        for binding in parse_stream(io.StringIO(original)):
+            if binding.key is not None:
+                key_occurrences[binding.key].append(len(lines))
+                existing_values[binding.key] = binding.value
+            lines.append(binding.original.string)
+
+        changes = {}
+        for key, value in env_data.items():
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+                raise HTTPException(400, "Invalid environment variable name")
+            private = is_secret_env_value(key, existing_values.get(key), references)
+            if isinstance(value, dict) and private:
+                if set(value) == {"set"} and type(value["set"]) is bool:
+                    continue
+            if value == "__DELETE__" and private:
+                raise HTTPException(400, "Use JSON null to delete a credential")
+            if value is not None and not isinstance(value, str):
+                raise HTTPException(400, "Expected a string, null, or a secret presence marker")
+            if value is not None and any(c in value for c in ("\n", "\r", "\0")):
+                raise HTTPException(400, f"Control characters not allowed in value: {key}")
+            changes[key] = value
+        env_data = changes
+
         redaction_mode = env_data.get("CALL_HISTORY_TOOL_REDACTION_MODE")
         if redaction_mode not in (None, "__DELETE__"):
             normalized_mode = str(redaction_mode).strip().lower()
@@ -2009,52 +2141,6 @@ async def update_env(env_data: Dict[str, Optional[str]]):
         except Exception:
             pass
 
-        # A12: Validate env data before writing
-        for key, value in env_data.items():
-            if not key or not key.strip():
-                raise HTTPException(status_code=400, detail="Empty key not allowed")
-            if value is not None and '\n' in str(value):
-                raise HTTPException(status_code=400, detail=f"Newlines not allowed in value: {key}")
-            if '\n' in key:
-                raise HTTPException(status_code=400, detail=f"Newlines not allowed in key: {key}")
-            if '=' in key:
-                raise HTTPException(status_code=400, detail=f"Key cannot contain '=': {key}")
-        
-        # Create backup before saving
-        if os.path.exists(settings.ENV_PATH):
-            import datetime
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_path = f"{settings.ENV_PATH}.bak.{timestamp}"
-            with open(settings.ENV_PATH, 'r') as src:
-                with open(backup_path, 'w') as dst:
-                    dst.write(src.read())
-            # A11: Rotate backups
-            _rotate_backups(settings.ENV_PATH)
-
-        # Read existing lines
-        lines = []
-        if os.path.exists(settings.ENV_PATH):
-            with open(settings.ENV_PATH, 'r') as f:
-                lines = f.readlines()
-
-        # Create a map of keys to ALL their line indices (handles duplicates)
-        # SECURITY: Track all occurrences so we can remove duplicates that might contain old secrets
-        from collections import defaultdict
-        key_occurrences = defaultdict(list)  # key -> [line_idx, line_idx, ...]
-        existing_values = {}  # key -> current value (for change detection)
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped and not stripped.startswith('#'):
-                if '=' in stripped:
-                    key, raw_val = stripped.split('=', 1)
-                    key = key.strip()
-                    key_occurrences[key].append(i)
-                    # Parse existing value for change detection (strip quotes)
-                    val = raw_val.strip()
-                    if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
-                        val = val[1:-1]
-                    existing_values[key] = val
-
         # Update existing keys or append new ones
         new_lines = lines.copy()
         
@@ -2075,7 +2161,8 @@ async def update_env(env_data: Dict[str, Optional[str]]):
             # Support deletion: None or special "__DELETE__" marker removes the key
             # SECURITY: Actually remove the line to avoid leaking old secrets
             if value is None or value == "__DELETE__":
-                keys_to_delete.add(key)
+                if key in key_occurrences:
+                    keys_to_delete.add(key)
                 continue
             
             str_value = str(value)
@@ -2086,8 +2173,9 @@ async def update_env(env_data: Dict[str, Optional[str]]):
             cmp_value = str_value
             if (cmp_value.startswith('"') and cmp_value.endswith('"')) or (cmp_value.startswith("'") and cmp_value.endswith("'")):
                 cmp_value = cmp_value[1:-1]
-            if existing_val != cmp_value:
-                keys_to_update.add(key)
+            if existing_val == cmp_value and len(key_occurrences[key]) == 1:
+                continue
+            keys_to_update.add(key)
             
             # Check if value is already properly quoted (from UI round-trip)
             # Don't double-quote values that are already quoted
@@ -2139,43 +2227,30 @@ async def update_env(env_data: Dict[str, Optional[str]]):
         # Filter out removed lines
         new_lines = [line for line in new_lines if line is not None]
 
-        # A8: Atomic write via temp file + rename (preserve permissions)
-        dir_path = os.path.dirname(settings.ENV_PATH)
-        # Get original file permissions if file exists
-        original_mode = None
-        if os.path.exists(settings.ENV_PATH):
-            original_mode = os.stat(settings.ENV_PATH).st_mode
-        
-        with tempfile.NamedTemporaryFile('w', dir=dir_path, delete=False, suffix='.tmp') as f:
-            f.writelines(new_lines)
-            temp_path = f.name
-        
-        # Restore original permissions before replace
-        if original_mode is not None:
-            os.chmod(temp_path, original_mode)
-        
-        os.replace(temp_path, settings.ENV_PATH)  # Atomic on POSIX
-        
-        changed_keys = sorted(set(keys_to_update) | set(keys_to_delete))
+        changed_keys = sorted(keys_to_update | keys_to_delete)
+        if changed_keys:
+            from datetime import datetime
+            from services.fs import atomic_write_text
 
-        impacts_ai_engine = any(_ai_engine_env_key(k) for k in changed_keys)
-        # A WebSocket credential may use an operator-selected env name rather
-        # than the default ASTERISK_* prefix. Its value still enters ai_engine
-        # through env_file and requires recreation, including on deletion.
-        try:
-            effective = _read_merged_config_dict()
-            ws_auth = ((effective.get("websocket_media") or {}).get("auth") or {})
-            ws_password_env = str(ws_auth.get("password_env") or "ASTERISK_MEDIA_WS_PASSWORD")
-            impacts_ai_engine = impacts_ai_engine or ws_password_env in changed_keys
-        except Exception:
-            logger.warning("Unable to resolve custom media credential reference for environment apply plan")
+            if path.exists():
+                # Backups contain credentials. Create them privately even when
+                # the operator's project directory or process umask is public.
+                with tempfile.NamedTemporaryFile(
+                    "w", dir=path.parent, prefix=f"{path.name}.bak.{datetime.now():%Y%m%d_%H%M%S}.",
+                    delete=False,
+                ) as backup:
+                    backup.write(original)
+                _rotate_backups(settings.ENV_PATH)
+            atomic_write_text(settings.ENV_PATH, "".join(new_lines))
+
+        impacts_ai_engine = any(_ai_engine_env_key(k) or k in references for k in changed_keys)
         impacts_local_ai = any(_local_ai_env_key(k) for k in changed_keys)
         impacts_admin_ui = any(_admin_ui_env_key(k) for k in changed_keys)
 
         # Only suggest restart for containers that are actually running.
         # This avoids confusing "Apply Changes" prompts for e.g. local_ai_server
         # when it is not deployed.
-        running = _running_container_names()
+        running = _running_container_names() if changed_keys else set()
 
         apply_plan = []
         # NOTE: For ai_engine/local_ai_server, env_file (.env) changes require a force-recreate.
@@ -2202,8 +2277,8 @@ async def update_env(env_data: Dict[str, Optional[str]]):
         }
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unable to save environment settings")
 
 
 @router.get("/env/status")
@@ -2226,7 +2301,7 @@ async def get_env_status():
         import docker  # type: ignore
         client = docker.from_env()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Docker unavailable for env status: {str(e)}")
+        raise HTTPException(status_code=500, detail="Docker unavailable for env status")
 
     def _container_env(name: str) -> Dict[str, str]:
         try:
@@ -2263,7 +2338,8 @@ async def get_env_status():
     local_env = _container_env("local_ai_server") if "local_ai_server" in running else {}
     admin_env = _container_env("admin_ui") if "admin_ui" in running else {}
 
-    drift_ai = _diff_keys(desired=env_map, actual=ai_env, key_pred=_ai_engine_env_key) if "ai_engine" in running else []
+    references = _credential_env_references()
+    drift_ai = _diff_keys(desired=env_map, actual=ai_env, key_pred=lambda key: key in references or _ai_engine_env_key(key)) if "ai_engine" in running else []
     drift_local = _diff_keys(desired=env_map, actual=local_env, key_pred=_local_ai_env_key) if "local_ai_server" in running else []
     drift_admin = _diff_keys(desired=env_map, actual=admin_env, key_pred=_admin_ui_env_key) if "admin_ui" in running else []
 
@@ -2313,6 +2389,26 @@ async def test_provider_connection(request: ProviderTestRequest):
         import httpx
         import os
         
+        marker_input = has_markers(request.config)
+        draft = {"providers": {request.name: request.config}}
+        if marker_input or credential_references(draft):
+            if not os.path.isfile(settings.CONFIG_PATH):
+                return {"success": False, "message": "Restore the saved configuration before verifying its credential sources."}
+            current = _read_merged_config_dict()
+            saved = (current.get("providers") or {}).get(request.name)
+            try:
+                resolved = restore_config(draft, current)["providers"][request.name]
+            except CredentialDestinationError as exc:
+                return {"success": False, "message": str(exc)}
+            except ValueError:
+                return {"success": False, "message": "Reload the provider's saved configuration and retry."}
+            # Untrusted form changes may alter both the destination and the
+            # provider branch performing the probe. Bind stored inputs to the
+            # complete saved instance before sending its credential.
+            if marker_input and (not isinstance(saved, dict) or not _same(resolved, saved)):
+                return {"success": False, "message": "Save provider changes before testing with a stored credential."}
+            request = request.model_copy(update={"config": resolved})
+
         # Helper to read API keys from .env file
         def get_env_key(key_name: str) -> str:
             """Read API key from .env file"""
@@ -2515,8 +2611,8 @@ async def test_provider_connection(request: ProviderTestRequest):
                     }
                 return {"success": False, "message": "Local AI Server responded but status invalid"}
             except Exception as e:
-                logger.debug("Local AI Server validation failed", error=str(e), exc_info=True)
-                return {"success": False, "message": f"Cannot connect to Local AI Server at {ws_url} (see server logs)"}
+                logger.debug("Local AI Server validation failed")
+                return {"success": False, "message": "Cannot connect to Local AI Server. Check its URL and authentication settings."}
         
         # ============================================================
         # FISH AUDIO TTS - perform a minimal real synthesis. A key-only model
@@ -2629,7 +2725,8 @@ async def test_provider_connection(request: ProviderTestRequest):
                 return {"success": False, "message": "No Google API key configured (checked api_key_file/api_key_env and GOOGLE_API_KEY in .env)"}
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}",
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    headers={"x-goog-api-key": api_key},
                     timeout=10.0
                 )
                 if response.status_code == 200:
@@ -2652,7 +2749,7 @@ async def test_provider_connection(request: ProviderTestRequest):
                  return {"success": False, "message": "websockets library not installed"}
             except Exception as e:
                 # If local-ai-server is on host network, ensure we use host.docker.internal or host networking properties
-                return {"success": False, "message": f"Cannot reach local AI server at {ws_url}. Error: {str(e)}"}
+                return {"success": False, "message": "Cannot reach local AI server. Check its URL."}
         
         # ============================================================
         # OLLAMA - Self-hosted LLM
@@ -2672,11 +2769,11 @@ async def test_provider_connection(request: ProviderTestRequest):
                         else:
                             return {"success": False, "message": f"Ollama returned status {response.status}"}
             except aiohttp.ClientConnectorError:
-                return {"success": False, "message": f"Cannot connect to Ollama at {base_url}. Ensure Ollama is running and accessible."}
+                return {"success": False, "message": "Cannot connect to Ollama. Ensure Ollama is running and accessible."}
             except asyncio.TimeoutError:
                 return {"success": False, "message": "Connection timeout - is Ollama running?"}
             except Exception as e:
-                return {"success": False, "message": f"Ollama connection failed: {str(e)}"}
+                return {"success": False, "message": "Ollama connection failed. Check the configured URL."}
                 
         elif 'model' in provider_config or 'stt_model' in provider_config or 'chat_model' in provider_config or 'tts_model' in provider_config:
             # Check if it's Deepgram or OpenAI standard
@@ -2730,7 +2827,7 @@ async def test_provider_connection(request: ProviderTestRequest):
             _azure_region_re = re.compile(r"^[a-z][a-z0-9-]{0,48}[a-z0-9]$")
             region = str(region).strip().lower()
             if not region or not _azure_region_re.match(region):
-                return {"success": False, "message": f"Invalid Azure region '{region}'. Expected lowercase alphanumeric (e.g. 'eastus')."}
+                return {"success": False, "message": "Invalid Azure region. Use a lowercase alphanumeric region such as eastus."}
             # Hit the token endpoint — a 200 or 400 response proves the key is recognized
             token_url = f"https://{region}.api.cognitive.microsoft.com/sts/v1.0/issueToken"
             try:
@@ -2756,11 +2853,28 @@ async def test_provider_connection(request: ProviderTestRequest):
     except httpx.TimeoutException:
         return {"success": False, "message": "Connection timeout"}
     except Exception as e:
-        return {"success": False, "message": f"Test failed: {str(e)}"}
+        return {"success": False, "message": "Provider test failed. Check the saved connection settings."}
 
-@router.get("/export")
-async def export_configuration(include_secrets: bool = False):
-    """Export configuration as a ZIP file"""
+class BackupExportRequest(BaseModel):
+    password: SecretStr
+
+
+@router.get("/export", include_in_schema=False)
+async def retired_export():
+    # The frontend SPA otherwise intercepts unmatched GETs with a 404.
+    raise HTTPException(405, "Use POST to export a backup.", headers={"Allow": "POST"})
+
+
+@router.post("/export")
+async def export_configuration(
+    payload: BackupExportRequest,
+    request: Request,
+    include_secrets: bool = False,
+    current_user: auth.UserInDB = Depends(auth.get_current_user),
+):
+    """Reauthenticate the signed-in operator before reading any backup contents."""
+    await auth.verify_export_password(request, current_user, payload.password.get_secret_value())
+
     try:
         import zipfile
         import io
@@ -2841,10 +2955,11 @@ async def export_configuration(include_secrets: bool = False):
         
         # Return as downloadable file
         from fastapi.responses import StreamingResponse
+        logger.info("config_export actor=%s", current_user.username)
         return StreamingResponse(
             zip_buffer, 
             media_type="application/zip",
-            headers={"Content-Disposition": f"attachment; filename=config-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"}
+            headers={"Cache-Control": "no-store", "Content-Disposition": f"attachment; filename=config-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"}
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -2896,6 +3011,16 @@ async def test_smtp_settings(req: SmtpTestRequest):
         tls_verify = tls_verify_raw
     else:
         tls_verify = str(tls_verify_raw or "true").strip().lower() in {"1", "true", "yes", "on"}
+    if req.smtp_password is None and password:
+        saved_mode = (env_map.get("SMTP_TLS_MODE") or "starttls").strip().lower()
+        saved_port = (env_map.get("SMTP_PORT") or ("465" if saved_mode == "smtps" else "587")).strip()
+        saved_verify = (env_map.get("SMTP_TLS_VERIFY") or "true").strip().lower() in {"1", "true", "yes", "on"}
+        if (
+            host != (env_map.get("SMTP_HOST") or "").strip()
+            or str(port) != saved_port or tls_mode != saved_mode or tls_verify != saved_verify
+            or username != ((env_map.get("SMTP_USERNAME") or "").strip() or None)
+        ):
+            raise HTTPException(400, "Enter the SMTP password for the changed connection settings.")
     context = ssl.create_default_context()
     if not tls_verify:
         context.check_hostname = False
@@ -2946,9 +3071,8 @@ async def test_smtp_settings(req: SmtpTestRequest):
             "tls_mode": tls_mode,
             "tls_verify": tls_verify,
         }
-    except Exception as e:
-        # Do not echo secrets; only return the error string.
-        raise HTTPException(status_code=500, detail=f"SMTP test failed: {str(e)}")
+    except Exception:
+        raise HTTPException(status_code=500, detail="SMTP test failed. Check connectivity and authentication settings.")
 
 @router.get("/export-logs")
 async def export_logs():
@@ -4219,7 +4343,7 @@ async def verify_provider_credentials(provider_key: str):
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(
                     "https://generativelanguage.googleapis.com/v1beta/models",
-                    params={"key": api_key},
+                    headers={"x-goog-api-key": api_key},
                 )
             if resp.status_code >= 400:
                 raise HTTPException(status_code=400, detail="Google API key verification failed")
@@ -4251,9 +4375,13 @@ async def verify_provider_credentials(provider_key: str):
         if kind == "fishaudio":
             if not api_key:
                 raise HTTPException(status_code=400, detail="Fish Audio API key is not configured")
-            model_url = fish_audio_verification_url(
-                str(provider_cfg.get("base_url") or "https://api.fish.audio/v1")
-            )
+            try:
+                model_url = fish_audio_verification_url(
+                    str(provider_cfg.get("base_url") or "https://api.fish.audio/v1")
+                )
+            except RuntimeError as exc:
+                # This validator returns fixed messages with the supported endpoints.
+                raise HTTPException(400, detail=str(exc)) from exc
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(
                     model_url,
@@ -4269,7 +4397,7 @@ async def verify_provider_credentials(provider_key: str):
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(
                     "https://generativelanguage.googleapis.com/v1beta/models",
-                    params={"key": api_key},
+                    headers={"x-goog-api-key": api_key},
                 )
             if resp.status_code >= 400:
                 raise HTTPException(status_code=400, detail="Google API key verification failed")
@@ -4277,8 +4405,8 @@ async def verify_provider_credentials(provider_key: str):
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error(f"Error verifying provider credentials: {exc}")
-        raise HTTPException(status_code=400, detail=f"Verification failed: {exc}")
+        logger.warning("Provider credential verification failed")
+        raise HTTPException(status_code=400, detail="Provider credential verification failed.") from exc
     raise HTTPException(status_code=400, detail=f"Unsupported provider type '{kind}'")
 VERTEX_REGIONS = [
     {"value": "us", "label": "US (multi-region)"},
@@ -5158,35 +5286,40 @@ def _discover_accessible_calendars(creds_path: str) -> dict:
                 "error_message": "credentials_path could not be resolved."}
     try:
         _assert_creds_path_in_allowed_dir(norm_creds, creds_path)
-    except HTTPException as e:
-        return {"ok": False, "error_code": e.detail.get("error_code", "credentials_path_disallowed"),
-                "error_message": e.detail.get("message", str(e))}
+    except HTTPException:
+        return {"ok": False, "error_code": "credentials_path_disallowed",
+                "error_message": "The calendar credential path is outside the allowed directory."}
 
     try:
         creds = service_account.Credentials.from_service_account_file(
             norm_creds,
             scopes=["https://www.googleapis.com/auth/calendar"],
         )
-    except Exception as e:
-        return {"ok": False, "error_code": "invalid_credentials", "error_message": str(e)}
+    except Exception as exc:
+        logger.warning("Google Calendar discovery failed (%s, %s)", "invalid_credentials", type(exc).__name__)
+        return {"ok": False, "error_code": "invalid_credentials", "error_message": "The calendar credential file could not be parsed."}
 
     try:
         creds.refresh(Request())
-    except Exception as e:
-        return {"ok": False, "error_code": "auth_failed", "error_message": str(e)}
+    except Exception as exc:
+        logger.warning("Google Calendar discovery failed (%s, %s)", "auth_failed", type(exc).__name__)
+        return {"ok": False, "error_code": "auth_failed", "error_message": "Google Calendar could not authenticate the service account."}
 
     try:
         service = build("calendar", "v3", credentials=creds, cache_discovery=False)
         result = service.calendarList().list(maxResults=250).execute()
     except HttpError as e:
         status = getattr(getattr(e, "resp", None), "status", None)
+        status = status if type(status) is int and 100 <= status <= 599 else None
+        logger.warning("Google Calendar list request failed (HTTP %s)", status)
         return {
             "ok": False,
             "error_code": f"calendar_list_http_{status or 'unknown'}",
-            "error_message": str(e),
+            "error_message": "Google Calendar refused the calendar list request.",
         }
-    except Exception as e:
-        return {"ok": False, "error_code": "unknown", "error_message": str(e)}
+    except Exception as exc:
+        logger.warning("Google Calendar discovery failed (%s, %s)", "unknown", type(exc).__name__)
+        return {"ok": False, "error_code": "unknown", "error_message": "Google Calendar discovery failed."}
 
     calendars = []
     for c in result.get("items", []) or []:
@@ -5653,13 +5786,11 @@ def _ms_device_flow_worker(flow_id: str, tenant_id: str, client_id: str, account
     try:
         result = app.acquire_token_by_device_flow(flow)
         if not result or "access_token" not in result:
-            error = (result or {}).get("error") if isinstance(result, dict) else None
-            description = (result or {}).get("error_description") if isinstance(result, dict) else None
             with _ms_flow_lock():
                 _MS_DEVICE_FLOWS[flow_id]["status"] = "error"
                 _MS_DEVICE_FLOWS[flow_id]["error"] = {
                     "error_code": "authorization_failed",
-                    "message": description or error or "Microsoft device-code authorization failed.",
+                    "message": "Microsoft device-code authorization failed.",
                 }
             return
         # This cache is fresh for the explicitly authorized device flow. Persist
@@ -5722,12 +5853,12 @@ def _ms_device_flow_worker(flow_id: str, tenant_id: str, client_id: str, account
                 ],
             }
     except Exception as exc:
-        logger.error("Microsoft device-code flow failed", exc_info=True)
+        logger.warning("Microsoft device-code flow failed (%s)", type(exc).__name__)
         with _ms_flow_lock():
             _MS_DEVICE_FLOWS[flow_id]["status"] = "error"
             _MS_DEVICE_FLOWS[flow_id]["error"] = {
                 "error_code": "authorization_failed",
-                "message": str(exc),
+                "message": "Microsoft device-code authorization failed.",
             }
 
 
@@ -5768,7 +5899,7 @@ async def start_microsoft_calendar_device_flow(req: _MicrosoftDeviceStartRequest
             status_code=400,
             detail={
                 "error_code": "device_flow_start_failed",
-                "message": flow.get("error_description") if isinstance(flow, dict) else "Could not start Microsoft device-code flow.",
+                "message": "Could not start Microsoft device-code flow.",
             },
         )
 
@@ -5934,7 +6065,9 @@ async def verify_microsoft_calendar(req: _MicrosoftVerifyRequest):
             status_code=exc.status or 400,
             detail={
                 "error_code": exc.error_code,
-                "message": str(exc),
+                "message": ("Verify the signed-in account and correct user_principal_name."
+                            if exc.error_code == "account_identity_mismatch"
+                            else "Microsoft Graph could not verify the selected calendar."),
             },
         )
     if not isinstance(matched, dict) or not matched.get("id"):
@@ -6048,7 +6181,8 @@ async def get_providers_voice_meta():
             agent_language = raw_language.replace("_", "-").split("-", 1)[0] or "en"
             from src.config.loaders import _expand_env_vars_with_defaults
             with _temporary_dotenv(settings.ENV_PATH):
-                tts_version = _expand_env_vars_with_defaults(str(entry.get("tts_version") or "v1")) or "v1"
+                version = _expand_env_vars_with_defaults(str(entry.get("tts_version") or "v1"))
+                tts_version = "v2" if version == "v2" else "v1"
         out.append({
             "name": name,
             "kind": kind,

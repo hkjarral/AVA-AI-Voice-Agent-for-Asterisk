@@ -64,3 +64,13 @@ def test_canonical_tool_configs_win_over_stale_extra_payload(tmp_path):
     assert doc["contexts"]["scoped"]["tool_configs"] == {
         "voicemail": {"mailbox_policy": "selected", "mailbox_key": "sales"}
     }
+
+
+def test_redacted_recovery_export_omits_private_fields_and_preserves_public_values(tmp_path):
+    with AgentsStore(db_path=str(tmp_path / "agents.db")) as store:
+        store.create(display_name="Support", provider="local", prompt="Public prompt",
+                     extra_json='{"pipeline":"local","tool_overrides":{"hook":{"url":"https://fixture.invalid/secret","headers":{"X-Version":"private","Content-Type":"text/plain"}}}}')
+        assert "fixture.invalid/secret" in export_yaml(store)
+        context = yaml.safe_load(export_yaml(store, redact=True))["contexts"]["support"]
+        assert context["pipeline"] == "local" and context["prompt"] == "Public prompt"
+        assert context["tool_overrides"]["hook"] == {"headers": {"Content-Type": "text/plain"}}

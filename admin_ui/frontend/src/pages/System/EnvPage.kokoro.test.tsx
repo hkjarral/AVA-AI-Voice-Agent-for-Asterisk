@@ -23,7 +23,7 @@ beforeEach(() => {
     return { data: {} };
   });
   vi.mocked(axios.post).mockImplementation(async (url: string, payload: unknown) => {
-    if (url === '/api/config/env') savedEnv = payload as Record<string, string>;
+    if (url === '/api/config/env') savedEnv = { ...savedEnv, ...payload as Record<string, string> };
     return { data: { changed_keys: ['KOKORO_VOICE', 'KOKORO_LANG'] } };
   });
 });

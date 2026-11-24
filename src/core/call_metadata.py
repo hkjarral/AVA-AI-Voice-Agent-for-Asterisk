@@ -7,6 +7,8 @@ selected pre-call outputs may enter this namespace.
 
 from __future__ import annotations
 
+from src.core.credential_fields import rejected_call_metadata_key
+
 import json
 import re
 from typing import Any, Dict, Mapping
@@ -19,12 +21,6 @@ MAX_CALL_METADATA_TOTAL_BYTES = 16_384
 MAX_CALL_METADATA_UPDATES = 128
 
 _KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
-_CREDENTIAL_RE = re.compile(
-    r"(?:^|_)(?:api_?key|access_?token|refresh_?token|token|secret|password|"
-    r"authorization|auth|credential|private_?key)(?:$|_)",
-    re.IGNORECASE,
-)
-
 # These names map to authoritative engine/session state or built-in template
 # variables.  Persisting a same-named enrichment value would create ambiguous
 # precedence and could accidentally turn a convenience field into call control.
@@ -63,23 +59,6 @@ class CallMetadataValidationError(ValueError):
     """Raised when metadata configuration or a value violates its boundary."""
 
 
-def _tokenize_camel_case(value: str) -> str:
-    """Insert separators at camel/Pascal-case boundaries in linear time."""
-    tokenized: list[str] = []
-    for index, character in enumerate(value):
-        previous = value[index - 1] if index else ""
-        following = value[index + 1] if index + 1 < len(value) else ""
-        starts_word = character.isupper() and (
-            previous.islower()
-            or previous.isdigit()
-            or (previous.isupper() and following.islower())
-        )
-        if tokenized and starts_word:
-            tokenized.append("_")
-        tokenized.append(character)
-    return "".join(tokenized)
-
-
 def validate_call_metadata_key(key: Any) -> str:
     normalized = str(key or "").strip()
     if not _KEY_RE.fullmatch(normalized):
@@ -94,8 +73,7 @@ def validate_call_metadata_key(key: Any) -> str:
     # Split camel/Pascal-case boundaries before checking credential tokens so
     # names such as ``customerAccessToken`` and ``crmPassword`` receive the
     # same treatment as their snake_case equivalents.
-    credential_key = _tokenize_camel_case(normalized)
-    if _CREDENTIAL_RE.search(credential_key):
+    if rejected_call_metadata_key(normalized):
         raise CallMetadataValidationError(
             f"'{normalized}' looks credential-related and cannot be persisted"
         )
@@ -236,6 +214,31 @@ def normalize_call_metadata_updates(raw: Any) -> list[Dict[str, str]]:
             item["updated_at"] = updated_at
         normalized.append(item)
     return normalized
+
+
+def history_metadata(values, updates):
+    """Retain valid enrichment when one field or provenance entry is malformed."""
+    try:
+        return validate_call_metadata_document(values), normalize_call_metadata_updates(updates), False
+    except (CallMetadataValidationError, UnicodeError):
+        pass
+    kept = {}
+    if isinstance(values, Mapping):
+        for key, value in values.items():
+            if len(kept) >= MAX_CALL_METADATA_FIELDS:
+                break
+            try:
+                kept = validate_call_metadata_document({**kept, key: value})
+            except (CallMetadataValidationError, UnicodeError):
+                continue
+    provenance = []
+    if isinstance(updates, list):
+        for item in updates[-MAX_CALL_METADATA_UPDATES:]:
+            try:
+                provenance.extend(normalize_call_metadata_updates([item]))
+            except (CallMetadataValidationError, UnicodeError):
+                continue
+    return kept, provenance, True
 
 
 def call_metadata_json_path(key: Any) -> str:

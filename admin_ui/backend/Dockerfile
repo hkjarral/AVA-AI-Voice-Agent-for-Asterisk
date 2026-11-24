@@ -13,4 +13,4 @@ COPY . .
 # Expose port 8000
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "exec uvicorn main:app --http services.proxy_peer:PeerAwareHTTPProtocol --forwarded-allow-ips \"${AAVA_TRUSTED_PROXIES:-${FORWARDED_ALLOW_IPS:-127.0.0.1}}\" --host 0.0.0.0 --port 8000"]

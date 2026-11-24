@@ -102,3 +102,24 @@ describe('Agent settings', () => {
         await waitFor(() => expect(axios.patch).toHaveBeenCalledWith('/api/agents/sales', { avatar_image: null }));
     });
 });
+
+it('keeps all five opaque legacy settings on a normal save and reopening the form', async () => {
+    const columns = ['tools_json', 'extra_json', 'tool_configs_json', 'hangup_policy_json', 'mcp_json'] as const;
+    const opaque = JSON.stringify({ __ava_stored_json__: 'Stored, cannot display. «secret:synthetic-fixture»' });
+    let row = { ...agent, ...Object.fromEntries(columns.map(key => [key, opaque])) };
+    vi.mocked(axios.patch).mockImplementation(async (_url, patch) => {
+        row = { ...row, ...patch as Partial<Agent> };
+        return { data: row };
+    });
+    const renderEditor = () => render(<AgentForm isOpen agent={row} onClose={vi.fn()} onSaved={vi.fn()} />);
+    const first = renderEditor();
+    const name = screen.getByLabelText('Display Name');
+    await userEvent.clear(name);
+    await userEvent.type(name, 'Renamed agent');
+    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(axios.patch).toHaveBeenCalledWith('/api/agents/sales', { display_name: 'Renamed agent' }));
+    first.unmount();
+    renderEditor();
+    expect(screen.getByLabelText('Display Name')).toHaveValue('Renamed agent');
+    for (const column of columns) expect(row[column]).toBe(opaque);
+});

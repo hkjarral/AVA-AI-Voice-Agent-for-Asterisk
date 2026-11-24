@@ -3,10 +3,12 @@ import { toast } from 'sonner';
 import { useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import { useAsyncScope } from '../../hooks/useAsyncScope';
 import { useConfirmDialog } from '../../hooks/useConfirmDialog';
-import { Save, Eye, EyeOff, RefreshCw, AlertTriangle, AlertCircle, CheckCircle, XCircle, Loader2, Cpu, Server, Settings } from 'lucide-react';
+import { Save, RefreshCw, AlertTriangle, AlertCircle, CheckCircle, XCircle, Loader2, Cpu, Server, Settings } from 'lucide-react';
 import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput, FormLabel, FormSelect, FormSwitch } from '../../components/ui/FormComponents';
+import { SecretInput } from '../../components/ui/SecretInput';
+import { envString, envStrings, hasEnvValue, isSecretMarker, type EnvValue } from '../../utils/envValue';
 import { Link } from 'react-router-dom';
 import {
     getOutboundPbxTypeOptions,
@@ -23,6 +25,13 @@ const PROVIDER_CREDENTIAL_TYPES: Record<string, string[]> = {
     elevenlabs_agent: ['api-key', 'agent-id'],
     grok: ['api-key'],
 };
+// Additional server-classified credential aliases use the same control in Other Variables.
+const managedSecretKeys = new Set([
+    'ASTERISK_ARI_PASSWORD', 'HEALTH_API_TOKEN', 'OPENAI_API_KEY', 'GROQ_API_KEY', 'DEEPGRAM_API_KEY',
+    'GOOGLE_API_KEY', 'TELNYX_API_KEY', 'RESEND_API_KEY', 'ELEVENLABS_API_KEY', 'XAI_API_KEY',
+    'GOOGLE_APPLICATION_CREDENTIALS', 'SMTP_PASSWORD', 'LOCAL_WS_AUTH_TOKEN', 'KROKO_API_KEY',
+    'KOKORO_API_KEY', 'JWT_SECRET', 'VICIDIAL_API_PASS',
+]);
 const MODULAR_PROVIDER_KEY_RE = /_(stt|llm|tts|vad)$/;
 
 interface PerInstanceCredentialRow {
@@ -40,41 +49,6 @@ type ApplyStep = { service: string; method: string; endpoint: string };
 
 type EnvTab = 'ai-engine' | 'local-ai' | 'system';
 
-// SecretInput defined OUTSIDE EnvPage to prevent re-creation on every render
-const SecretInput = ({ 
-    label, 
-    placeholder,
-    value,
-    onChange,
-    showSecret,
-    onToggleSecret
-}: { 
-    label: string;
-    placeholder?: string;
-    value: string;
-    onChange: (value: string) => void;
-    showSecret: boolean;
-    onToggleSecret: () => void;
-}) => (
-    <div className="relative">
-        <FormInput
-            label={label}
-            type={showSecret ? 'text' : 'password'}
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            placeholder={placeholder}
-        />
-        <button
-            type="button"
-            onClick={onToggleSecret}
-            aria-label={showSecret ? 'Hide value' : 'Show value'}
-            className="absolute right-3 top-[38px] text-muted-foreground hover:text-foreground"
-        >
-            {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-        </button>
-    </div>
-);
-
 const EnvPage = () => {
     const { confirm } = useConfirmDialog();
     const { token, loading: authLoading } = useAuth();
@@ -84,12 +58,14 @@ const EnvPage = () => {
     const operation = useRef<object | null>(null);
     const [operationBusy, setOperationBusy] = useState(false);
     const [statusKnown, setStatusKnown] = useState(false);
-    const [env, setEnv] = useState<Record<string, string>>({});
+    const [savedEnv, setSavedEnv] = useState<Record<string, EnvValue>>({});
+    const [changes, setChanges] = useState<Record<string, string>>({});
+    const [secretChanges, setSecretChanges] = useState<Record<string, string>>({});
+    const env = useMemo(() => ({ ...envStrings(savedEnv), ...changes }), [savedEnv, changes]);
     const [loading, setLoading] = useState(true);
     const configuredSenseVoiceLanguage = (env['SHERPA_SENSE_VOICE_LANGUAGE'] || 'auto').trim().toLowerCase();
     const displayedSenseVoiceLanguage = ['auto', 'zh', 'en', 'ja', 'ko', 'yue'].includes(configuredSenseVoiceLanguage) ? configuredSenseVoiceLanguage : 'auto';
     const [saving, setSaving] = useState(false);
-    const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
     const [ariTestResult, setAriTestResult] = useState<{success: boolean; message?: string; error?: string; asterisk_version?: string} | null>(null);
     const [ariTesting, setAriTesting] = useState(false);
     const [pendingRestart, setPendingRestart] = useState(false);
@@ -111,8 +87,9 @@ const EnvPage = () => {
     useLayoutEffect(() => {
         currentAuth.current = authScope;
         setLoading(true);
-        setEnv({});
-        setShowSecrets({});
+        setSavedEnv({});
+        setChanges({});
+        setSecretChanges({});
         setPerInstanceRows([]);
         setApplyPlan([]);
         setPendingRestart(false);
@@ -351,12 +328,16 @@ const EnvPage = () => {
                 headers: { Authorization: `Bearer ${token}` }, signal: request.signal, timeout: 15000,
             });
             if (!current()) return;
-            const loadedEnv = res.data || {};
-            setEnv(loadedEnv);
+            const loadedEnv: Record<string, EnvValue> = res.data || {};
+            setSavedEnv(Object.fromEntries(Object.entries(loadedEnv).map(([name, value]) =>
+                [name, managedSecretKeys.has(name) ? { set: hasEnvValue(value) } : value]
+            )));
+            setChanges({});
+            setSecretChanges({});
             setSavedCallHistoryRedactionMode(
-                (loadedEnv['CALL_HISTORY_TOOL_REDACTION_MODE'] || 'strict').trim().toLowerCase()
+                (envString(loadedEnv.CALL_HISTORY_TOOL_REDACTION_MODE) || 'strict').trim().toLowerCase()
             );
-            setShowAdvancedKokoro((loadedEnv['KOKORO_MODE'] || '').toLowerCase() === 'hf');
+            setShowAdvancedKokoro(envString(loadedEnv.KOKORO_MODE).toLowerCase() === 'hf');
             await refreshApplyStatus(current);
         } catch (err: any) {
             if (!current()) return;
@@ -400,15 +381,15 @@ const EnvPage = () => {
 
             if (!action.isCurrent()) return;
             setSaving(true);
-            const envToSave = { ...env };
-            envToSave['AAVA_OUTBOUND_PBX_TYPE'] = normalizeOutboundPbxType(
-                envToSave['AAVA_OUTBOUND_PBX_TYPE']
-            );
+            const envToSave = { ...changes, ...secretChanges };
+            if (!isSecretMarker(savedEnv.AAVA_OUTBOUND_PBX_TYPE)) {
+                envToSave.AAVA_OUTBOUND_PBX_TYPE = normalizeOutboundPbxType(env.AAVA_OUTBOUND_PBX_TYPE);
+            }
             // If file logging is enabled, ensure LOG_FILE_PATH is persisted (UI shows a recommended default).
             const logToFile = (envToSave['LOG_TO_FILE'] || '').toLowerCase();
             const logEnabled = logToFile === '1' || logToFile === 'true' || logToFile === 'on' || logToFile === 'yes';
-            if (logEnabled && !(envToSave['LOG_FILE_PATH'] || '').trim()) {
-                envToSave['LOG_FILE_PATH'] = '/mnt/asterisk_media/ai-engine.log';
+            if (logEnabled && !isSecretMarker(savedEnv.LOG_FILE_PATH)) {
+                envToSave['LOG_FILE_PATH'] = env['LOG_FILE_PATH']?.trim() || '/mnt/asterisk_media/ai-engine.log';
             }
 
             const response = await axios.post('/api/config/env', envToSave, {
@@ -416,6 +397,12 @@ const EnvPage = () => {
             });
             if (!action.isCurrent()) return;
             const keys = (response.data?.changed_keys || []) as string[];
+            setSavedEnv(previous => ({
+                ...previous, ...envToSave,
+                ...Object.fromEntries(Object.entries(secretChanges).map(([key, text]) => [key, { set: Boolean(text) }])),
+            }));
+            setChanges({});
+            setSecretChanges({});
             setChangedKeys(keys);
             setSavedCallHistoryRedactionMode(requestedRedactionMode);
 
@@ -450,11 +437,11 @@ const EnvPage = () => {
 
     const updateEnv = (key: string, value: string) => {
         if (operation.current) return;
-        setEnv(prev => ({ ...prev, [key]: value }));
-    };
-
-    const toggleSecret = (key: string) => {
-        setShowSecrets(prev => ({ ...prev, [key]: !prev[key] }));
+        if (isSecretMarker(savedEnv[key])) {
+            toast.info('This setting is used as a credential. Replace it under System → Other Variables.');
+            return;
+        }
+        setChanges(prev => ({ ...prev, [key]: value }));
     };
 
     const handleApplyChanges = async (force: boolean = false) => {
@@ -558,8 +545,8 @@ const EnvPage = () => {
                 host: env['ASTERISK_HOST'] || '127.0.0.1',
                 port: parseInt(env['ASTERISK_ARI_PORT'] || '8088'),
                 username: env['ASTERISK_ARI_USERNAME'] || '',
-                password: env['ASTERISK_ARI_PASSWORD'] || '',
-                scheme: env['ASTERISK_ARI_WEBSOCKET_SCHEME'] === 'wss' ? 'https' : 'http',
+                ...(secretChanges.ASTERISK_ARI_PASSWORD !== undefined && { password: secretChanges.ASTERISK_ARI_PASSWORD }),
+                scheme: env.ASTERISK_ARI_SCHEME || (env.ASTERISK_ARI_WEBSOCKET_SCHEME === 'wss' ? 'https' : 'http'),
                 ssl_verify: env['ASTERISK_ARI_SSL_VERIFY'] !== 'false'
             }, {
                 headers: { Authorization: `Bearer ${token}` }
@@ -595,7 +582,7 @@ const EnvPage = () => {
                 smtp_host: (env['SMTP_HOST'] || '').trim() || undefined,
                 smtp_port: (env['SMTP_PORT'] || '').trim() || undefined,
                 smtp_username: (env['SMTP_USERNAME'] || '').trim() || undefined,
-                smtp_password: (env['SMTP_PASSWORD'] || '').toString() || undefined,
+                ...(secretChanges.SMTP_PASSWORD !== undefined && { smtp_password: secretChanges.SMTP_PASSWORD }),
                 smtp_tls_mode: (env['SMTP_TLS_MODE'] || '').trim() || undefined,
                 smtp_tls_verify: isTrue(env['SMTP_TLS_VERIFY'] || 'true'),
                 smtp_timeout_seconds: (env['SMTP_TIMEOUT_SECONDS'] || '').trim() || undefined,
@@ -628,16 +615,12 @@ const EnvPage = () => {
         } finally { action.finish(); }
     };
 
-    // Helper to render SecretInput with current state
-    const renderSecretInput = (label: string, envKey: string, placeholder?: string) => (
-        <SecretInput
-            label={label}
-            placeholder={placeholder}
-            value={env[envKey] || ''}
-            onChange={(value) => updateEnv(envKey, value)}
-            showSecret={showSecrets[envKey] || false}
-            onToggleSecret={() => toggleSecret(envKey)}
-        />
+    const renderSecretInput = (label: string, name: string, placeholder?: string, tooltip?: string) => (
+        <SecretInput key={name} name={name} label={label} tooltip={tooltip} placeholder={placeholder}
+            value={secretChanges[name] ?? { set: hasEnvValue(savedEnv[name]) }}
+            onChange={value => {
+                if (!operation.current) setSecretChanges(previous => ({ ...previous, [name]: value }));
+            }} />
     );
 
     if (loading) return <div className="p-8 text-center text-muted-foreground">Loading environment variables...</div>;
@@ -659,7 +642,7 @@ const EnvPage = () => {
     // Define known keys to exclude from "Other Variables"
     const knownKeys = [
         // AI Engine - Asterisk
-        'ASTERISK_HOST', 'ASTERISK_ARI_USERNAME', 'ASTERISK_ARI_PASSWORD',
+        'ASTERISK_HOST', 'ASTERISK_ARI_USERNAME',
         'ASTERISK_ARI_PORT', 'ASTERISK_ARI_SCHEME', 'ASTERISK_ARI_WEBSOCKET_SCHEME', 'ASTERISK_ARI_SSL_VERIFY',
         'ASTERISK_APP_NAME', 'AST_MEDIA_DIR',
         // AI Engine - Diagnostics
@@ -671,18 +654,17 @@ const EnvPage = () => {
         // AI Engine - Local AI Connection
         'LOCAL_WS_URL', 'LOCAL_WS_CONNECT_TIMEOUT', 'LOCAL_WS_RESPONSE_TIMEOUT', 'LOCAL_WS_CHUNK_MS',
         // AI Engine - Health Endpoint
-        'HEALTH_BIND_HOST', 'HEALTH_BIND_PORT', 'HEALTH_API_TOKEN',
+        'HEALTH_BIND_HOST', 'HEALTH_BIND_PORT',
         // AI Engine - NAT/Hybrid Network
         'AUDIOSOCKET_ADVERTISE_HOST', 'EXTERNAL_MEDIA_ADVERTISE_HOST',
         // AI Engine - API Keys
-        'OPENAI_API_KEY', 'GROQ_API_KEY', 'DEEPGRAM_API_KEY', 'GOOGLE_API_KEY', 'TELNYX_API_KEY', 'RESEND_API_KEY',
-        'ELEVENLABS_API_KEY', 'ELEVENLABS_AGENT_ID', 'XAI_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS',
+        'ELEVENLABS_AGENT_ID',
         'GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION',
         // Email (SMTP)
-        'SMTP_HOST', 'SMTP_PORT', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'SMTP_TLS_MODE', 'SMTP_TLS_VERIFY',
+        'SMTP_HOST', 'SMTP_PORT', 'SMTP_USERNAME', 'SMTP_TLS_MODE', 'SMTP_TLS_VERIFY',
         'SMTP_TIMEOUT_SECONDS',
         // Local AI Server - Bind
-        'LOCAL_WS_HOST', 'LOCAL_WS_PORT', 'LOCAL_WS_AUTH_TOKEN',
+        'LOCAL_WS_HOST', 'LOCAL_WS_PORT',
         // Local AI Server - Logging
         'LOCAL_LOG_LEVEL', 'LOCAL_DEBUG',
         // Local AI Server - Runtime
@@ -691,13 +673,13 @@ const EnvPage = () => {
         'LOCAL_STT_BACKEND', 'LOCAL_STT_MODEL_PATH', 'LOCAL_STT_IDLE_MS', 'LOCAL_STT_IDLE_TIMEOUT_MS',
         'LOCAL_STT_SEGMENT_ENERGY_THRESHOLD', 'LOCAL_STT_SEGMENT_PREROLL_MS', 'LOCAL_STT_SEGMENT_MIN_MS',
         'LOCAL_STT_SEGMENT_SILENCE_MS', 'LOCAL_STT_SEGMENT_MAX_MS',
-        'KROKO_URL', 'KROKO_API_KEY', 'KROKO_LANGUAGE', 'KROKO_EMBEDDED', 'KROKO_MODEL_PATH', 'KROKO_PORT',
+        'KROKO_URL', 'KROKO_LANGUAGE', 'KROKO_EMBEDDED', 'KROKO_MODEL_PATH', 'KROKO_PORT',
         'SHERPA_MODEL_PATH',
         'FASTER_WHISPER_MODEL', 'FASTER_WHISPER_DEVICE', 'FASTER_WHISPER_COMPUTE_TYPE', 'FASTER_WHISPER_LANGUAGE',
         'WHISPER_CPP_MODEL_PATH', 'WHISPER_CPP_LANGUAGE', 'LOCAL_WHISPER_CPP_MODEL_PATH',
         // Local AI Server - TTS backends
         'LOCAL_TTS_BACKEND', 'LOCAL_TTS_MODEL_PATH',
-        'KOKORO_VOICE', 'KOKORO_LANG', 'KOKORO_MODEL_PATH', 'KOKORO_MODE', 'KOKORO_API_BASE_URL', 'KOKORO_API_KEY', 'KOKORO_API_MODEL',
+        'KOKORO_VOICE', 'KOKORO_LANG', 'KOKORO_MODEL_PATH', 'KOKORO_MODE', 'KOKORO_API_BASE_URL', 'KOKORO_API_MODEL',
         'MELOTTS_VOICE', 'MELOTTS_DEVICE', 'MELOTTS_SPEED',
         // Local AI Server - LLM
         'LOCAL_LLM_MODEL_PATH', 'LOCAL_LLM_THREADS',
@@ -705,7 +687,7 @@ const EnvPage = () => {
         'LOCAL_LLM_GPU_LAYERS', 'LOCAL_LLM_GPU_LAYERS_AUTO_DEFAULT', 'LOCAL_LLM_TOP_P', 'LOCAL_LLM_REPEAT_PENALTY',
         'LOCAL_LLM_USE_MLOCK', 'LOCAL_LLM_SYSTEM_PROMPT', 'LOCAL_LLM_STOP_TOKENS', 'LOCAL_TOOL_GATEWAY_ENABLED',
         // System - General
-        'TZ', 'JWT_SECRET', 'UVICORN_HOST', 'UVICORN_PORT',
+        'TZ', 'UVICORN_HOST', 'UVICORN_PORT',
         'HEALTH_CHECK_LOCAL_AI_URL', 'HEALTH_CHECK_AI_ENGINE_URL',
         // System - Container Permissions
         'ASTERISK_UID', 'ASTERISK_GID', 'DOCKER_GID',
@@ -714,7 +696,7 @@ const EnvPage = () => {
         // System - Outbound Campaign
         'AAVA_OUTBOUND_EXTENSION_IDENTITY', 'AAVA_OUTBOUND_AMD_CONTEXT', 'AAVA_MEDIA_DIR', 'AAVA_VM_UPLOAD_MAX_BYTES',
         'AAVA_OUTBOUND_PBX_TYPE', 'AAVA_OUTBOUND_DIAL_CONTEXT', 'AAVA_OUTBOUND_DIAL_PREFIX', 'AAVA_OUTBOUND_CHANNEL_TECH',
-        'VICIDIAL_API_USER', 'VICIDIAL_API_PASS',
+        'VICIDIAL_API_USER',
         // System - Docker Build Settings (build-time ARGs, require rebuild)
         'INCLUDE_VOSK', 'INCLUDE_SHERPA', 'INCLUDE_FASTER_WHISPER',
         'INCLUDE_PIPER', 'INCLUDE_KOKORO', 'INCLUDE_MELOTTS', 'INCLUDE_LLAMA', 'INCLUDE_KROKO_EMBEDDED',
@@ -732,9 +714,9 @@ const EnvPage = () => {
         'INCLUDE_SILERO', 'SILERO_SPEAKER', 'SILERO_LANGUAGE', 'SILERO_MODEL_ID',
         'SILERO_SAMPLE_RATE', 'SILERO_MODEL_PATH'
     ];
-
-    const otherSettings = Object.keys(env).filter(k => !knownKeys.includes(k));
-
+    const otherSettings = Object.keys(savedEnv).filter(key =>
+        !managedSecretKeys.has(key) && (!knownKeys.includes(key) || isSecretMarker(savedEnv[key]))
+    );
     // Helper to check boolean values (handles 'true', '1', 'on', etc.)
     const isTrue = (val: string | undefined) => {
         if (!val) return false;
@@ -985,13 +967,7 @@ const EnvPage = () => {
                         />
                         {renderSecretInput('xAI API Key', 'XAI_API_KEY', 'xai-...')}
                         {renderSecretInput('Resend API Key', 'RESEND_API_KEY', 're_...')}
-                        <FormInput
-                            label="Google Service Account"
-                            value={env['GOOGLE_APPLICATION_CREDENTIALS'] || ''}
-                            onChange={(e) => updateEnv('GOOGLE_APPLICATION_CREDENTIALS', e.target.value)}
-                            placeholder="/path/to/service-account-key.json"
-                            tooltip="Path to Google Cloud service account JSON key file. Required for Vertex AI mode."
-                        />
+                        {renderSecretInput('Google Service Account', 'GOOGLE_APPLICATION_CREDENTIALS', '/path/to/service-account-key.json', 'Path to Google Cloud service account JSON key file. Required for Vertex AI mode.')}
                         <FormInput
                             label="GCP Project ID (Vertex AI)"
                             value={env['GOOGLE_CLOUD_PROJECT'] || ''}
@@ -1434,13 +1410,7 @@ const EnvPage = () => {
                                     onChange={(e) => updateEnv('LOCAL_WS_PORT', e.target.value)}
                                     tooltip="Port local_ai_server listens on."
                                 />
-                                <FormInput
-                                    label="Auth Token (optional)"
-                                    type="password"
-                                    value={env['LOCAL_WS_AUTH_TOKEN'] || ''}
-                                    onChange={(e) => updateEnv('LOCAL_WS_AUTH_TOKEN', e.target.value)}
-                                    tooltip="If set, local_ai_server requires an auth handshake."
-                                />
+                                {renderSecretInput('Auth Token (optional)', 'LOCAL_WS_AUTH_TOKEN', undefined, 'If set, local_ai_server requires an auth handshake.')}
                             </div>
                         </ConfigCard>
                     </ConfigSection>
@@ -2494,7 +2464,7 @@ const EnvPage = () => {
                         <ConfigSection title="Other Variables" description="Additional environment variables found in .env file.">
                             <ConfigCard>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    {otherSettings.map(key => (
+                                    {otherSettings.map(key => isSecretMarker(savedEnv[key]) ? renderSecretInput(key, key) : (
                                         <FormInput
                                             key={key}
                                             label={key}

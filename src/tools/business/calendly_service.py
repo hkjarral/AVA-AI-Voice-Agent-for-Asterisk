@@ -454,8 +454,9 @@ async def recovery_loop():
                         log.warning("Calendly cleanup failed (%s); reconciliation continues", type(exc).__name__)
                 if Path(os.getenv("CALL_HISTORY_DB_PATH", "/app/data/call_history.db")).exists():
                     try:
-                        from src.core.call_history import get_call_history_store
-                        await get_call_history_store().retry_pending_calendly_purges()
+                        from src.core.call_history import get_call_history_store_async
+                        history = await get_call_history_store_async()
+                        await history.retry_pending_calendly_purges()
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:

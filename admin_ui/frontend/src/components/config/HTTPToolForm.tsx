@@ -1,3 +1,4 @@
+import { ToolURLInput, displayToolURL, type ToolURL } from './ToolURLInput';
 import { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -38,6 +39,11 @@ interface HTTPToolFormProps {
     contexts?: Record<string, any>; // P1: For in-use check on delete
 }
 
+function displaySetting(value: unknown): string {
+    if (value && typeof value === 'object' && 'set' in value) return value.set ? 'Stored value' : 'Empty';
+    return String(value).includes('«secret:') ? 'Stored value' : String(value);
+}
+
 interface ToolParameter {
     name: string;
     type: string;
@@ -52,7 +58,7 @@ interface HTTPToolConfig {
     enabled: boolean;
     is_global: boolean;
     timeout_ms: number;
-    url: string;
+    url: ToolURL;
     method: string;
     headers: Record<string, string>;
     query_params?: Record<string, string>;
@@ -76,7 +82,7 @@ interface HTTPToolConfig {
     parameters?: ToolParameter[];
     return_raw_json?: boolean;
     error_message?: string;
-    agent_url?: string;
+    agent_url?: ToolURL;
 }
 
 const DEFAULT_WEBHOOK_PAYLOAD = `{
@@ -688,6 +694,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
             const response = await axios.post(
                 '/api/tools/test-http',
                 {
+                    tool_name: editingTool === 'new_tool' ? undefined : editingTool,
                     url: committedToolForm.url,
                     method: committedToolForm.method || 'GET',
                     headers: committedToolForm.headers || {},
@@ -709,7 +716,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                 success: false,
                 response_time_ms: 0,
                 headers: {},
-                resolved_url: committedToolForm.url,
+                resolved_url: '',
                 error: err.response?.data?.detail || err.message || 'Test failed',
                 suggested_mappings: [],
             });
@@ -763,7 +770,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
     const phaseConfig = getPhaseConfig();
     useEffect(() => { onEditingChange?.(!!editingTool); }, [editingTool, onEditingChange]);
     const filteredTools = Object.entries(httpTools).filter(([key, tool]) =>
-        `${key} ${tool.description || ''} ${tool.url || tool.agent_url || ''}`.toLowerCase().includes(query.trim().toLowerCase())
+        `${key} ${tool.description || ''} ${displayToolURL(tool.url || tool.agent_url)}`.toLowerCase().includes(query.trim().toLowerCase())
     );
 
     return (
@@ -811,12 +818,8 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                                         )}
                                     </div>
                                     <div className="text-xs text-muted-foreground">
-                                        {tool.kind === 'a2a_agent' ? `A2A • ${tool.agent_url || ''}` : tool.kind === 'pushover' ? `Pushover • ${tool.recipient_label || 'Recipient'}` : <>{tool.method} •{' '}
-                                        {tool.url
-                                            ? tool.url.length > 50
-                                                ? tool.url.substring(0, 50) + '...'
-                                                : tool.url
-                                            : 'No URL'}</>}
+                                        {tool.kind === 'a2a_agent' ? `A2A • ${displayToolURL(tool.agent_url)}` : tool.kind === 'pushover' ? `Pushover • ${tool.recipient_label || 'Recipient'}` : <>{tool.method} •{' '}
+                                        {displayToolURL(tool.url)}</>}
                                     </div>
                                 </div>
                             </div>
@@ -932,10 +935,10 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                     </div>
 
                     {toolForm.kind === 'a2a_agent' ? <A2AToolFields value={toolForm} onChange={setToolForm} token={a2aToken} onTokenChange={setA2AToken} /> : toolForm.kind === 'pushover' ? <PushoverToolFields value={toolForm} onChange={setToolForm} credentials={pushoverCredentials} onCredentialsChange={setPushoverCredentials} templateReview={templateReview} /> : <>
-                    <FormInput
+                    <ToolURLInput
                         label="URL"
-                        value={toolForm.url || ''}
-                        onChange={e => setToolForm({ ...toolForm, url: e.target.value })}
+                        value={toolForm.url}
+                        onChange={url => setToolForm({ ...toolForm, url })}
                         placeholder="https://api.example.com/webhook"
                         tooltip="Use {caller_number}, {call_id}, etc. for variable substitution. Use ${ENV_VAR} for secrets."
                     />
@@ -973,8 +976,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                                     className="flex items-center gap-2 text-xs bg-accent/50 px-2 py-1 rounded"
                                 >
                                     <span className="font-mono">
-                                        {k}: {String(v).substring(0, 30)}
-                                        {String(v).length > 30 ? '...' : ''}
+                                        {k}: {displaySetting(v)}
                                     </span>
                                     <button
                                         onClick={() => removeHeader(k)}
@@ -1023,7 +1025,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                                             className="flex items-center gap-2 text-xs bg-accent/50 px-2 py-1 rounded"
                                         >
                                             <span className="font-mono">
-                                                {k}={String(v)}
+                                                {k}={displaySetting(v)}
                                             </span>
                                             <button
                                                 onClick={() => removeQueryParam(k)}
@@ -1377,6 +1379,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                                 <FormLabel tooltip="Description shown to the AI so it knows when to use this tool">
                                     Tool Description
                                 </FormLabel>
+                                <p className="text-xs text-muted-foreground">This text is visible in configuration. Keep credentials in dedicated credential fields.</p>
                                 <textarea
                                     className={`${editorTextareaClass} min-h-[80px]`}
                                     value={toolForm.description || ''}
@@ -1528,7 +1531,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                                             className="flex items-center gap-2 text-xs bg-accent/50 px-2 py-1 rounded"
                                         >
                                             <span className="font-mono">
-                                                {k}={String(v)}
+                                                {k}={displaySetting(v)}
                                             </span>
                                             <button
                                                 onClick={() => removeQueryParam(k)}
@@ -2051,6 +2054,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts, presentation = 'modal
                                                     Reset to recommended
                                                 </button>
                                             </div>
+                                            <p className="text-xs text-muted-foreground">This text is visible in configuration. Keep credentials in dedicated credential fields.</p>
                                             <textarea
                                                 id="post-call-summary-prompt"
                                                 className={`${editorTextareaClass} min-h-[140px]`}

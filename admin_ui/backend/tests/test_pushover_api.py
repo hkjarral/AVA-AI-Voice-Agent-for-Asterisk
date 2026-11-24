@@ -11,7 +11,7 @@ def client(monkeypatch):
     state = {"tools": {}, "in_call_tools": {}}
     monkeypatch.setattr(tools, "_load_cfg", lambda: copy.deepcopy(state))
 
-    async def persist(cfg):
+    async def persist(cfg, previous=None):
         state.clear()
         state.update(copy.deepcopy(cfg))
         return {"apply_required": True, "restart_required": False}

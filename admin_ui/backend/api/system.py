@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+from services.private_inputs import PrivateInputRoute
 import asyncio
 import docker
 from typing import List, Optional
@@ -242,7 +243,7 @@ def get_docker_compose_cmd() -> List[str]:
     
     raise FileNotFoundError('docker-compose not found in PATH or standard locations')
 
-router = APIRouter()
+router = APIRouter(route_class=PrivateInputRoute)
 
 class ContainerInfo(BaseModel):
     id: str
@@ -3528,7 +3529,7 @@ class AriTestRequest(BaseModel):
     host: str
     port: int = 8088
     username: str
-    password: str
+    password: Optional[str] = None
     scheme: str = "http"
     ssl_verify: bool = True  # Set to False for self-signed certs
 
@@ -3648,6 +3649,16 @@ async def test_ari_connection(request: AriTestRequest):
     """Test connection to Asterisk ARI endpoint"""
     import httpx
     
+    password = request.password
+    if password is None:
+        from dotenv import dotenv_values
+        from services.saved_ari import saved_ari_password
+        from settings import ENV_PATH
+
+        password = saved_ari_password(
+            dotenv_values(ENV_PATH), host=request.host, port=request.port, scheme=request.scheme,
+            username=request.username, ssl_verify=request.ssl_verify,
+        )
     try:
         # Build ARI URL
         ari_url = f"{request.scheme}://{request.host}:{request.port}/ari/asterisk/info"
@@ -3658,7 +3669,7 @@ async def test_ari_connection(request: AriTestRequest):
         async with httpx.AsyncClient(timeout=10.0, verify=verify) as client:
             response = await client.get(
                 ari_url,
-                auth=(request.username, request.password)
+                auth=(request.username, password)
             )
             
             if response.status_code == 200:

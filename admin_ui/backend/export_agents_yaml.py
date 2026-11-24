@@ -1,6 +1,10 @@
 """Disaster-recovery: dump agents.db back to an ai-agent.yaml-compatible contexts block.
 Usage: docker exec admin_ui python -m export_agents_yaml > contexts-recovered.yaml"""
-import json, sys, yaml
+import argparse
+import json
+import sys
+
+import yaml
 from agents_store import AgentsStore
 import settings
 
@@ -23,7 +27,7 @@ def _safe_json(raw):
         return None
 
 
-def export_yaml(store: AgentsStore) -> str:
+def export_yaml(store: AgentsStore, *, redact: bool = False) -> str:
     contexts = {}
     for a in store.list_all():
         extra = _safe_json(a["extra_json"])
@@ -64,7 +68,17 @@ def export_yaml(store: AgentsStore) -> str:
             if canonical is not None:
                 ctx["hangup_policy"] = json.loads(canonical)
         contexts[a["slug"]] = ctx
-    return yaml.safe_dump({"contexts": contexts}, sort_keys=True)
+    document = {"contexts": contexts}
+    if redact:
+        from services.yaml_secrets import omit_private_fields
+        document = omit_private_fields(document)
+    return yaml.safe_dump(document, sort_keys=True)
 
 if __name__ == "__main__":
-    sys.stdout.write(export_yaml(AgentsStore()))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--redact", action="store_true", help="Omit fields containing stored credentials.")
+    options = parser.parse_args()
+    if not options.redact:
+        print("Warning: this recovery export may contain credentials. Store it securely.", file=sys.stderr)
+    with AgentsStore() as store:
+        sys.stdout.write(export_yaml(store, redact=options.redact))

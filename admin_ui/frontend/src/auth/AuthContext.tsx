@@ -156,7 +156,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const interceptor = axios.interceptors.response.use(
             response => response,
             error => {
-                if (error.response && error.response.status === 401) {
+                // A rejected backup password leaves the authenticated editor session active.
+                if (error.response?.status === 401 && error.response.headers?.['x-ava-reauthentication'] !== 'required') {
                     logout();
                 }
                 return Promise.reject(error);
