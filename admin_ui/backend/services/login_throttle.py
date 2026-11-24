@@ -8,8 +8,17 @@ import os
 import sqlite3
 import time
 from collections import OrderedDict, deque
+from collections.abc import Hashable
 from contextlib import closing
 from pathlib import Path
+
+
+_LABEL_KEY = os.urandom(32)
+
+
+def login_label(value: str) -> bytes:
+    """Keep untrusted login names and addresses out of the bounded counter table."""
+    return hmac.digest(_LABEL_KEY, value.encode(), "sha256")
 
 
 class LoginThrottle:
@@ -20,48 +29,41 @@ class LoginThrottle:
         self._lockout_s = lockout_s
         self._clock = clock
         self._capacity = capacity
-        self._index_key = os.urandom(32)
         self._partial = OrderedDict()
         self._locks = OrderedDict()
-
-    def _key_id(self, key: str) -> bytes:
-        # Session tokens and origin labels index ephemeral counters.
-        return hmac.digest(self._index_key, key.encode(), "sha256")
 
     def _expire_locks(self, now):
         # Fixed lock duration means insertion order is also expiry order.
         while self._locks and next(iter(self._locks.values())) <= now:
             self._locks.popitem(last=False)
 
-    def retry_after(self, key: str, *, include_saturation=True) -> int:
+    def retry_after(self, key: Hashable, *, include_saturation=True) -> int:
         now = self._clock()
         self._expire_locks(now)
-        until = self._locks.get(self._key_id(key))
+        until = self._locks.get(key)
         if until is None and include_saturation and len(self._locks) == self._capacity:
             until = next(iter(self._locks.values()))
         return math.ceil(until - now) if until is not None else 0
 
-    def failure_count(self, key: str) -> int:
+    def failure_count(self, key: Hashable) -> int:
         now = self._clock()
         self._expire_locks(now)
-        identity = self._key_id(key)
-        if identity in self._locks:
+        if key in self._locks:
             return self._max_failures
-        recent = self._partial.get(identity)
+        recent = self._partial.get(key)
         if recent is None:
             return 0
         while recent and recent[0] <= now - self._window_s:
             recent.popleft()
         if not recent:
-            del self._partial[identity]
+            del self._partial[key]
         return len(recent)
 
-    def record_failure(self, key: str) -> None:
+    def record_failure(self, key: Hashable) -> None:
         if self.retry_after(key):
             return
         self.failure_count(key)
-        identity = self._key_id(key)
-        recent = self._partial.get(identity)
+        recent = self._partial.get(key)
         if recent is None:
             # Reserved budgets accept only registered accounts or previously
             # authenticated pairs. Expire idle entries in last-failure order.
@@ -71,18 +73,17 @@ class LoginThrottle:
                     self._partial.popitem(last=False)
             elif len(self._partial) + len(self._locks) >= self._capacity:
                 self._partial.popitem(last=False)
-            recent = self._partial[identity] = deque()
-        self._partial.move_to_end(identity)
+            recent = self._partial[key] = deque()
+        self._partial.move_to_end(key)
         now = self._clock()
         recent.append(now)
         if len(recent) >= self._max_failures:
-            del self._partial[identity]
-            self._locks[identity] = now + self._lockout_s
+            del self._partial[key]
+            self._locks[key] = now + self._lockout_s
 
-    def record_success(self, key: str) -> None:
-        identity = self._key_id(key)
-        self._partial.pop(identity, None)
-        self._locks.pop(identity, None)
+    def record_success(self, key: Hashable) -> None:
+        self._partial.pop(key, None)
+        self._locks.pop(key, None)
 
 
 def client_address(peer: str, forwarded: str, trusted: str) -> str:

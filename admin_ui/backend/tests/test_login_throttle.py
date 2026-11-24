@@ -219,7 +219,7 @@ async def test_account_protection_recognizes_existing_origin_for_full_window(log
     monkeypatch.setattr(auth, "_username_throttle", account)
     monkeypatch.setattr(auth, "_delay_login", AsyncMock())
     for _ in range(20):
-        account.record_failure(username)
+        assert (await post(host=uuid4().hex)).status_code == 401
     assert (await post(username, password, host="new")).status_code == 429
     assert (await post(username, password, host="known")).status_code == 200
     assert (await post(username, password, host="new")).status_code == 429

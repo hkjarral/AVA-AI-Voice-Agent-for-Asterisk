@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from services.proxy_peer import raw_http_peer
-from services.login_throttle import LoginThrottle, client_address, known_login_origin, remember_login_origin
+from services.login_throttle import LoginThrottle, client_address, login_label, known_login_origin, remember_login_origin
 from settings import USERS_PATH
 
 # Paths exempt from the must_change_password 403 gate (router mounted at prefix="/api/auth" in main.py)
@@ -281,7 +281,9 @@ async def login_for_access_token(request: Request, form_data: OAuth2PasswordRequ
     username = form_data.username.lower()
     address = client_address(raw_http_peer(request), ", ".join(request.headers.getlist("x-forwarded-for")),
                              os.getenv("AAVA_TRUSTED_PROXIES", ""))
-    pair = f"{username}\0{address}"
+    account_key = login_label(username)
+    address_key = login_label(address)
+    pair = (account_key, address_key)
     origins = Path(USERS_PATH).with_name("login_origins.db")
 
     try:
@@ -292,15 +294,15 @@ async def login_for_access_token(request: Request, form_data: OAuth2PasswordRequ
     def check_origin_budget():
         check_password_budget(max(
             _pair_throttle.retry_after(pair, include_saturation=not known),
-            _address_throttle.retry_after(address, include_saturation=not known),
+            _address_throttle.retry_after(address_key, include_saturation=not known),
             _known_pair_throttle.retry_after(pair) if known else 0,
         ))
         if not known:
-            check_password_budget(max(_username_throttle.retry_after(username),
-                                      _unregistered_throttle.retry_after(username, include_saturation=False)))
+            check_password_budget(max(_username_throttle.retry_after(account_key),
+                                      _unregistered_throttle.retry_after(account_key, include_saturation=False)))
 
     check_origin_budget()
-    count = max(_username_throttle.failure_count(username), _unregistered_throttle.failure_count(username))
+    count = max(_username_throttle.failure_count(account_key), _unregistered_throttle.failure_count(account_key))
     if count >= 5 and not known:
         await _delay_login(min(2.0, 0.125 * 2 ** (count - 5)))
 
@@ -309,9 +311,9 @@ async def login_for_access_token(request: Request, form_data: OAuth2PasswordRequ
         user, matched = await asyncio.to_thread(_verify_login, form_data.username, form_data.password)
         if not user or not matched:
             # Keep real account budgets outside the capped pool of arbitrary names.
-            (_username_throttle if user else _unregistered_throttle).record_failure(username)
+            (_username_throttle if user else _unregistered_throttle).record_failure(account_key)
             (_known_pair_throttle if known else _pair_throttle).record_failure(pair)
-            _address_throttle.record_failure(address)
+            _address_throttle.record_failure(address_key)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect username or password",
