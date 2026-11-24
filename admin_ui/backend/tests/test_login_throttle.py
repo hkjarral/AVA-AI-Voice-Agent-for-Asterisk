@@ -248,10 +248,12 @@ async def test_password_change_obeys_the_valid_session_budget(login, monkeypatch
     token = (await post(username, password)).json()["access_token"]
     budget = LoginThrottle(max_failures=1)
     monkeypatch.setattr(auth, "_export_throttle", budget)
-    budget.record_failure(token)
     app = FastAPI()
     app.include_router(auth.router, prefix="/api/auth")
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as cli:
+        first = await cli.post("/api/auth/change-password", headers={"Authorization": f"Bearer {token}"},
+                               json={"old_password": secrets.token_urlsafe(), "new_password": secrets.token_urlsafe()})
+        assert first.status_code == 400
         response = await cli.post("/api/auth/change-password", headers={"Authorization": f"Bearer {token}"},
                                   json={"old_password":password, "new_password":secrets.token_urlsafe()})
     assert response.status_code == 429

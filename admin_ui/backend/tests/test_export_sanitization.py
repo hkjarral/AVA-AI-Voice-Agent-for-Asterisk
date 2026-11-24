@@ -3,6 +3,7 @@ import io
 import zipfile
 import secrets
 import logging
+import time
 
 import pytest
 from fastapi import FastAPI
@@ -131,7 +132,7 @@ def test_export_audit_encodes_actor_as_one_field(client, password, caplog):
     with caplog.at_level(logging.INFO, logger=config_mod.__name__):
         response = client.post("/api/config/export", json={"password": password})
     assert response.status_code == 200
-    assert "config_export actor=ops%20team%0Abackup" in [record.getMessage() for record in caplog.records]
+    assert r"config_export actor=ops team\nbackup" in [record.getMessage() for record in caplog.records]
 
 def test_repeated_failed_reauthentication_respects_session_limit(client, password):
     for _ in range(5):
@@ -146,4 +147,11 @@ def test_export_sessions_have_independent_password_budgets(client, password):
         assert client.post("/api/config/export", json={"password": secrets.token_urlsafe()}).status_code == 401
     assert client.post("/api/config/export", json={"password": password}).status_code == 429
     response = client.post("/api/config/export", json={"password": password}, headers={"Authorization": "Bearer " + second})
+    assert response.status_code == 200
+
+
+def test_export_accepts_existing_sessions_without_jti(client, password):
+    legacy = auth.jwt.encode({"sub": "operator", "exp": int(time.time()) + 600}, auth.SECRET_KEY, algorithm=auth.ALGORITHM)
+    client.headers["Authorization"] = "Bearer " + legacy
+    response = client.post("/api/config/export", json={"password": password})
     assert response.status_code == 200

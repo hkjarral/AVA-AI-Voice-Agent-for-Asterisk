@@ -236,6 +236,9 @@ async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)
             detail="Password change required before using the API",
         )
 
+    # Older sessions predate jti. Their validated claims still identify the
+    # session without using its bearer credential as a counter key.
+    request.state.password_budget_id = payload.get("jti") or json.dumps(payload, sort_keys=True)
     return user
 
 # --- Routes ---
@@ -258,15 +261,15 @@ def _verify_login(username: str, password: str):
 async def verify_session_password(request: Request, user: UserInDB, password: str, *, changing=False) -> None:
     # The bearer dependency has verified this session. Keep a separate budget
     # for password re-entry, including when the same account has two sessions.
-    token = await oauth2_scheme(request)
-    async with _export_guards[hash(token) % len(_export_guards)]:
-        check_password_budget(_export_throttle.retry_after(token))
+    session_id = request.state.password_budget_id
+    async with _export_guards[hash(session_id) % len(_export_guards)]:
+        check_password_budget(_export_throttle.retry_after(session_id))
         if not await asyncio.to_thread(verify_password, password, user.hashed_password):
-            _export_throttle.record_failure(token)
+            _export_throttle.record_failure(session_id)
             if changing:
                 raise HTTPException(400, "Incorrect old password")
             raise HTTPException(401, "Incorrect current password.", headers={"X-AVA-Reauthentication": "required"})
-        _export_throttle.record_success(token)
+        _export_throttle.record_success(session_id)
 
 
 async def verify_export_password(request: Request, user: UserInDB, password: str) -> None:

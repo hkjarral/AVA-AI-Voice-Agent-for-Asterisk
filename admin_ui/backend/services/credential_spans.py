@@ -11,7 +11,6 @@ _JWT_TAIL = re.compile(r"\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
 _AUTH = re.compile(r"""\b(?:Bearer|Token|ApiKey)[ \t]+([^\s"'<>,;}{]{20,})""")
 _ASSIGN = re.compile(r"""(?:^|[\s?&;,"\'])(?:--?)?([\w.-]+)=(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([^\s,;&"\']+))""")
 _JSON_QUOTES = re.compile(r'\\.|"')
-_JSON_SEPARATOR = re.compile(r'\s*:\s*')
 
 
 def is_reference(value):
@@ -48,8 +47,10 @@ def _json_private_spans(text):
         opening, previous_quote = previous_quote, quote.start()
         if opening is None or opening < protected_until:
             continue
-        separator = _JSON_SEPARATOR.match(text, quote.end())
-        if not separator:
+        start = quote.end()
+        while start < len(text) and text[start].isspace():
+            start += 1
+        if start == len(text) or text[start] != ":":
             continue
         try:
             key = json.loads(text[opening:quote.end()])
@@ -57,7 +58,9 @@ def _json_private_spans(text):
             continue
         if not private_name(key):
             continue
-        start = separator.end()
+        start += 1
+        while start < len(text) and text[start].isspace():
+            start += 1
         try:
             item, end = decoder.raw_decode(text, start)
         except (ValueError, RecursionError):

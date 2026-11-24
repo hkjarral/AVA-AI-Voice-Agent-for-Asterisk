@@ -23,7 +23,6 @@ from copy import deepcopy
 from email.message import EmailMessage
 from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import quote
 from pydantic import BaseModel, StrictBool, SecretStr
 from typing import Dict, Any, Optional, Union
 import settings
@@ -2956,7 +2955,8 @@ async def export_configuration(
         
         # Return as downloadable file
         from fastapi.responses import StreamingResponse
-        actor = quote(current_user.username, safe="@")
+        actor = current_user.username.replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n")
+        actor = "".join(char if char.isprintable() else ascii(char)[1:-1] for char in actor)
         logger.info("config_export actor=%s", actor)
         return StreamingResponse(
             zip_buffer, 
