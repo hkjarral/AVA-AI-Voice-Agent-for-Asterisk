@@ -1,3 +1,4 @@
+import { providerDefault } from '../config/providerCatalog';
 import { connectionRecoveryError } from '../utils/connectionRecovery';
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
@@ -296,10 +297,9 @@ const ProvidersPage: React.FC = () => {
                 capabilities: ['stt', 'llm', 'tts'],
                 // GA defaults — OpenAI sunset the Beta Realtime API on 2026-05-12
                 // and removed gpt-4o-realtime-preview-* on 2026-05-07. The
-                // OpenAI Realtime provider form lists all four current GA models
-                // (gpt-realtime, gpt-realtime-1.5, gpt-realtime-2, gpt-realtime-mini).
+                // OpenAI Realtime model choices are generated from the verified catalog.
                 api_version: 'ga',
-                model: 'gpt-realtime',
+                model: providerDefault('openai_realtime', 'model'),
                 voice: 'alloy',
                 input_encoding: 'ulaw',
                 input_sample_rate_hz: 8000,
@@ -318,7 +318,8 @@ const ProvidersPage: React.FC = () => {
                 // Pre-v6.5.0 the runtime hardcoded nova-3 regardless; v6.5.0 makes the listen
                 // model honor config and this default preserves that effective behavior.
                 model: 'nova-3',
-                tts_model: 'aura-2-thalia-en',
+                tts_model: providerDefault('deepgram', 'tts_model'),
+                tts_version: providerDefault('deepgram', 'tts_version'),
                 input_encoding: 'mulaw',
                 input_sample_rate_hz: 8000,
                 output_encoding: 'mulaw',
@@ -388,7 +389,7 @@ const ProvidersPage: React.FC = () => {
                 capabilities: ['llm'],
                 api_key_env: 'GOOGLE_API_KEY',
                 llm_base_url: 'https://generativelanguage.googleapis.com/v1',
-                llm_model: 'gemini-3.8-flash',
+                llm_model: providerDefault('google', 'llm_model'),
             },
             telnyx_llm: {
                 enabled: false,
@@ -396,7 +397,7 @@ const ProvidersPage: React.FC = () => {
                 capabilities: ['llm'],
                 chat_base_url: 'https://api.telnyx.com/v2/ai',
                 api_key: '${TELNYX_API_KEY}',
-                chat_model: 'Qwen/Qwen3-235B-A22B',
+                chat_model: providerDefault('telnyx', 'chat_model'),
                 temperature: 0.7,
                 response_timeout_sec: 30.0,
             },
@@ -406,7 +407,7 @@ const ProvidersPage: React.FC = () => {
                 capabilities: ['llm'],
                 chat_base_url: 'https://api.deepseek.com',
                 api_key_env: 'DEEPSEEK_API_KEY',
-                chat_model: 'deepseek-v4-flash',
+                chat_model: providerDefault('deepseek', 'chat_model'),
                 temperature: 0.3,
                 max_tokens: 200,
                 response_timeout_sec: 30.0,
@@ -736,7 +737,7 @@ const ProvidersPage: React.FC = () => {
             const isLLMOnly = Array.isArray(providerData.capabilities) && providerData.capabilities.length === 1 && providerData.capabilities[0] === 'llm';
             if (isTelnyx && isLLMOnly) {
                 if (!providerData.chat_base_url) providerData.chat_base_url = 'https://api.telnyx.com/v2/ai';
-                if (!providerData.chat_model) providerData.chat_model = 'Qwen/Qwen3-235B-A22B';
+                if (!providerData.chat_model) providerData.chat_model = providerDefault('telnyx', 'chat_model');
                 if (providerData.temperature === undefined || providerData.temperature === null) providerData.temperature = 0.7;
                 if (!providerData.response_timeout_sec) providerData.response_timeout_sec = 30.0;
             }
@@ -1593,9 +1594,9 @@ const ProvidersPage: React.FC = () => {
                                 doc: 'https://platform.openai.com/docs/guides/realtime',
                                 tooltip: (
                                     <>
-                                        <strong>OpenAI Realtime</strong> — native speech-to-speech with the <code>gpt-realtime</code> model family (gpt-realtime, gpt-realtime-1.5, gpt-realtime-2, gpt-realtime-mini).
+                                        <strong>OpenAI Realtime</strong> — native speech-to-speech with the <code>gpt-realtime</code> model family (current default: gpt-realtime-2.1).
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                            <li>~5–8¢/min (gpt-realtime) · ~3¢/min (gpt-realtime-mini)</li>
+                                            <li>Usage-based pricing varies by model and audio/text token mix.</li>
                                             <li>10 voices (alloy, echo, ash, ballad, cedar, coral, marin, sage, shimmer, verse)</li>
                                             <li>Server-side VAD, native barge-in</li>
                                             <li>Most natural conversational quality</li>
@@ -1607,11 +1608,11 @@ const ProvidersPage: React.FC = () => {
                             {
                                 id: 'deepgram',
                                 name: 'Deepgram',
-                                desc: 'Nova-3 STT + Aura-2 TTS voice agent (Flux available)',
+                                desc: 'Nova/Flux STT and Aura/Flux TTS voice agent',
                                 doc: 'https://developers.deepgram.com/docs/voice-agent',
                                 tooltip: (
                                     <>
-                                        <strong>Deepgram Voice Agent</strong> — Nova-3 STT + Aura-2 TTS, with built-in Think stage for reasoning.
+                                        <strong>Deepgram Voice Agent</strong> — Nova/Flux STT and Aura/Flux TTS, with a managed reasoning model.
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                             <li>~8¢/min</li>
                                             <li>Lowest STT latency (Nova-3)</li>
@@ -1790,7 +1791,7 @@ const ProvidersPage: React.FC = () => {
                                         <strong>Telnyx LLM</strong> — modular LLM slot. Use inside a Pipeline alongside any STT/TTS.
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                             <li>OpenAI-compatible <code>/chat/completions</code> endpoint</li>
-                                            <li>Default model: <code>Qwen/Qwen3-235B-A22B</code></li>
+                                            <li>Default model: <code>{providerDefault('telnyx', 'chat_model')}</code></li>
                                             <li>Pay per token (~$0.40 / 1M input)</li>
                                             <li>Requires <code>TELNYX_API_KEY</code></li>
                                         </ul>
@@ -1807,7 +1808,7 @@ const ProvidersPage: React.FC = () => {
                                         <strong>DeepSeek LLM</strong> — modular LLM slot for post-call summaries and pipelines.
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                             <li>Official OpenAI-compatible <code>/chat/completions</code> endpoint</li>
-                                            <li>Default model: <code>deepseek-v4-flash</code></li>
+                                            <li>Default model: <code>{providerDefault('deepseek', 'chat_model')}</code></li>
                                             <li>Also supports <code>deepseek-v4-pro</code></li>
                                             <li>Requires <code>DEEPSEEK_API_KEY</code></li>
                                         </ul>

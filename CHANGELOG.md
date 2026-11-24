@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Shared, sourced provider model/voice catalogs with generated Admin UI data,
+  lifecycle labels and a deterministic CI gate covering runtime defaults,
+  sample configuration, model/voice compatibility and catalog drift.
+- Opt-in OpenAI modular Realtime TTS, Deepgram Flux TTS and multilingual Flux
+  STT, model-aware Groq Arabic voices, Google Live Extended Thinking with
+  explicit tool restrictions, and all 54 Kokoro voice/language choices.
+
+### Changed
+
+- Refresh new-provider model defaults and remove retired suggestions while
+  preserving explicit operator pins. Synchronize provider forms and the
+  options API with the runtime catalog. See [provider migration and call
+  acceptance](docs/Provider-Catalog-Updates.md).
+- Explicit modular speech provider instances now own their settings and
+  credentials; disabled or invalid role blocks cannot inherit a shared
+  full-provider adapter. ElevenLabs output choices match implemented decoders.
+
 ## [7.7.4] - 2026-11-22
 
 Prepared from main `15cc1e7e` after v7.7.3, covering 19 merged PRs. Includes

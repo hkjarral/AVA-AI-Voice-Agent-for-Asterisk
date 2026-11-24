@@ -10,6 +10,8 @@
 export interface VoiceOption {
     id: string;
     label: string;
+    language?: string;
+    version?: string;
 }
 
 export interface ProviderVoiceMeta {
@@ -22,6 +24,7 @@ export interface ProviderVoiceMeta {
     default_voice: string | null;
     /** Normalized full-agent conversation language (Deepgram only). */
     agent_language?: string | null;
+    tts_version?: string | null;
 }
 
 export interface VoiceControlState {
@@ -34,6 +37,7 @@ export interface VoiceControlState {
     unrecognizedFailsClosed: boolean;
     /** A known Deepgram voice whose language conflicts with the provider. */
     languageMismatch: boolean;
+    familyMismatch?: boolean;
     /** Normalized provider language when the voice catalog is constrained. */
     requiredLanguage: string | null;
     note: string;
@@ -92,11 +96,14 @@ export function voiceControlState(
             const requiredLanguage = entry.kind === 'deepgram'
                 ? normalizeLanguage(entry.agent_language)
                 : null;
+            const requiredVersion = entry.tts_version ?? (entry.default_voice?.startsWith('flux-') ? 'v2' : 'v1');
+            const familyMismatch = entry.kind === 'deepgram' && !!currentVoice && !unrecognized && (currentVoice.startsWith('flux-') ? 'v2' : 'v1') !== requiredVersion;
+            const familyVoices = entry.kind === 'deepgram' ? entry.voices.filter(candidate => (candidate.version ?? (candidate.id.startsWith('flux-') ? 'v2' : 'v1')) === requiredVersion) : entry.voices;
             const selectableVoices = requiredLanguage
-                ? entry.voices.filter(
+                ? familyVoices.filter(
                     (candidate) => deepgramVoiceLanguage(candidate.id) === requiredLanguage
                 )
-                : entry.voices;
+                : familyVoices;
             const languageMismatch = !!currentVoice
                 && !unrecognized
                 && requiredLanguage !== null
@@ -112,6 +119,8 @@ export function voiceControlState(
                         ? `${currentVoice} (unrecognized — call will fail)`
                         : `${currentVoice} (unrecognized — will fall back to provider default)`,
                 });
+            } else if (familyMismatch) {
+                options.push({ id: currentVoice, label: `${currentVoice} (does not match provider TTS version ${requiredVersion} — call will fail)` });
             } else if (languageMismatch) {
                 options.push({
                     id: currentVoice,
@@ -121,7 +130,7 @@ export function voiceControlState(
             options.push(...selectableVoices);
             return {
                 control: 'select', options, unrecognized, unrecognizedFailsClosed,
-                languageMismatch,
+                languageMismatch, familyMismatch,
                 requiredLanguage, note: '',
             };
         }

@@ -51,8 +51,9 @@ jobs:
       - name: Test fork-review trust boundaries
         run: node --test tests/codex_review.test.cjs
 
-      - name: Check provider model catalogs
+      - name: Check provider model and voice catalogs (offline)
         run: |
+          python scripts/generate_provider_catalog.py --check
           python scripts/check_provider_models.py
 
       - name: Preflight script smoke (syntax)

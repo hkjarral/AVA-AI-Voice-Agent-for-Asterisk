@@ -123,3 +123,12 @@ def test_silero_config_from_env(monkeypatch):
     assert cfg.silero_model_id == "v3_1_ru"
     assert cfg.silero_sample_rate == 24000
     assert cfg.silero_model_path == "/custom/silero"
+
+
+def test_kokoro_language_derived_only_when_environment_is_unset(monkeypatch):
+    config_mod = _load_local_ai_config_module()
+    monkeypatch.setenv("KOKORO_VOICE", "jf_alpha")
+    monkeypatch.delenv("KOKORO_LANG", raising=False)
+    assert config_mod.LocalAIConfig.from_env().kokoro_lang == "j"
+    monkeypatch.setenv("KOKORO_LANG", "a")
+    assert config_mod.LocalAIConfig.from_env().kokoro_lang == "a"

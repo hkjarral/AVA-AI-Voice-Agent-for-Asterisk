@@ -44,6 +44,22 @@ def test_grok_meta_is_freeform_with_named_voices():
     assert meta["voice_field"] == "voice"
 
 
+def test_flux_agent_voice_falls_back_when_routed_to_grok():
+    from src.core.transport_orchestrator import ContextConfig, apply_context_voice
+    from src.utils.voice_catalog import GROK_FOREIGN_VOICE_IDS
+
+    context = {}
+    source = apply_context_voice(
+        context,
+        {},
+        ContextConfig(voice="flux-kit-en"),
+        foreign_agent_voices=GROK_FOREIGN_VOICE_IDS,
+    )
+
+    assert source == "provider-default"
+    assert "voice" not in context
+
+
 def test_google_live_meta_is_static_with_prebuilt_names():
     # Runtime validates against the verified prebuilt catalog (closed set),
     # so the UI must offer a dropdown, not invite free-text values the engine
@@ -56,13 +72,16 @@ def test_google_live_meta_is_static_with_prebuilt_names():
     assert meta["voice_field"] == "tts_voice_name"
 
 
-def test_deepgram_meta_is_static_with_aura_models():
-    # Same as Google: the Aura catalog is validated at runtime — closed set.
+def test_deepgram_meta_is_static_with_aura_and_flux_models():
+    # Both TTS API versions use the same verified, version-qualified catalog.
     meta = provider_voice_meta("deepgram")
     assert meta["voice_mode"] == "static"
     ids = set(_ids(meta))
     assert "aura-2-thalia-en" in ids       # aura-2 generation
     assert "aura-asteria-en" in ids        # legacy aura, still supported
+    assert "flux-kit-en" in ids           # v2 default voice
+    assert len([voice for voice in ids if voice.startswith("aura-")]) == 103
+    assert len([voice for voice in ids if voice.startswith("flux-")]) == 266
     assert meta["voice_field"] == "tts_model"
 
 

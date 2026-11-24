@@ -16,7 +16,7 @@ resample, no waiting for the full sentence.
 |---|---|
 | Capability | TTS (pipeline adapter) |
 | Provider key | `fishaudio_tts` |
-| Models | `s1`, `s2-pro`, `s2.1-pro` (default), `drama-3-preview`, `s2.1-pro-free` (no API credit needed, for testing) |
+| Models | `s2.1-pro` (default), `s2.1-pro-free`, `s2-pro`, `drama-3`, `s3-pro`, and deprecated `s1` (retires 2026-12-31) |
 | Output used | `pcm` (streamed) or `wav` (buffered) |
 | Pricing | Usage is measured in UTF-8 text bytes; see [Fish Audio developers](https://fish.audio/developers/) for current rates |
 | Per-agent voice | Not applicable (modular adapter); the voice is set on the provider or pipeline |
@@ -64,7 +64,7 @@ providers:
     capabilities:
       - tts
     enabled: true
-    model: s2.1-pro        # also: s1, s2-pro, s2.1-pro-free, drama-3-preview
+    model: s2.1-pro        # also: s2.1-pro-free, s2-pro, drama-3, s3-pro; s1 is deprecated
     reference_id: voice-model-id # required voice id from your Fish Audio library
     audio_format: pcm      # pcm (streamed) or wav (buffered)
     sample_rate: null      # null follows the call: 8 kHz telephony, 16 kHz wideband

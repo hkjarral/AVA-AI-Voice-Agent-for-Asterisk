@@ -462,6 +462,25 @@ async def test_pipeline_orchestrator_skips_disabled_provider():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("entry", [
+    {"enabled": False},
+    {"enabled": True, "type": "invalid-provider"},
+])
+async def test_explicit_fish_role_never_inherits_legacy_base(entry):
+    app_config = _build_app_config()
+    role = {**app_config.providers["fishaudio_tts"], **entry}
+    # Put the legacy base last to exercise precedence independent of YAML order.
+    app_config.providers = {
+        **app_config.providers,
+        "fishaudio_tts": role,
+        "fishaudio": {"api_key": "other-customer-key", "reference_id": "other-voice"},
+    }
+    orchestrator = PipelineOrchestrator(app_config)
+    with pytest.raises(PipelineOrchestratorError, match="fishaudio_tts"):
+        await orchestrator.start()
+
+
+@pytest.mark.asyncio
 async def test_pipeline_orchestrator_fails_closed_when_api_key_is_missing(monkeypatch):
     monkeypatch.delenv("FISH_AUDIO_API_KEY", raising=False)
     app_config = _build_app_config(api_key="")

@@ -44,6 +44,7 @@ def test_meta_reports_full_agents_with_voice_info(monkeypatch):
     assert deepgram["kind"] == "deepgram"
     assert deepgram["default_voice"] == "aura-2-celeste-es"
     assert deepgram["agent_language"] == "es"
+    assert deepgram["tts_version"] == "v1"
     # The backend retains the complete catalog; the Agent form applies the
     # instance-specific language filter while preserving a stored mismatch.
     assert any(v["id"] == "aura-2-thalia-en" for v in deepgram["voices"])
@@ -78,6 +79,25 @@ def test_meta_defaults_deepgram_agent_language_to_english(monkeypatch):
     entry = client.get("/api/config/providers/meta").json()["providers"][0]
 
     assert entry["agent_language"] == "en"
+
+
+def test_meta_exposes_flux_tts_version_for_agent_voice_filter(monkeypatch):
+    client = _client(monkeypatch, {
+        "deepgram": {"type": "deepgram", "tts_model": "flux-kit-en", "tts_version": "v2"},
+    })
+    entry = client.get("/api/config/providers/meta").json()["providers"][0]
+    assert entry["tts_version"] == "v2"
+    assert any(v["id"] == "flux-kit-en" for v in entry["voices"])
+
+
+def test_legacy_options_endpoint_uses_verified_shared_models(monkeypatch):
+    client = _client(monkeypatch, {})
+    options = client.get("/api/config/options/openai").json()
+    assert options["defaults"]["tts_model"] == "gpt-realtime-2.1-mini"
+    assert "gpt-transcribe" in {m["id"] for m in options["stt_models"]}
+    assert "gpt-4-turbo" not in {m["id"] for m in options["llm_models"]}
+    elevenlabs = client.get("/api/config/options/elevenlabs").json()
+    assert "eleven_monolingual_v1" not in {m["id"] for m in elevenlabs["models"]}
 
 
 def test_meta_survives_non_dict_and_empty_providers(monkeypatch):

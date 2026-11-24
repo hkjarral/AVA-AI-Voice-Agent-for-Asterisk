@@ -127,3 +127,23 @@ describe('voiceControlState', () => {
         expect(s.note).toMatch(/not supported/i);
     });
 });
+
+describe('Deepgram TTS family compatibility', () => {
+    const meta: ProviderVoiceMeta[] = [{
+        name: 'deepgram_flux', kind: 'deepgram', is_full_agent: true, enabled: true,
+        voice_mode: 'static', agent_language: 'en', tts_version: 'v2', default_voice: 'flux-kit-en',
+        voices: [
+            { id: 'aura-2-thalia-en', label: 'Thalia' },
+            { id: 'flux-kit-en', label: 'Kit', version: 'v2', language: 'en' },
+            { id: 'flux-bruno-pt', label: 'Bruno', version: 'v2', language: 'pt' },
+        ],
+    }];
+    it('filters new selections by both language and API version', () => {
+        expect(voiceControlState(meta, 'provider:deepgram_flux', '').options.map(voice => voice.id)).toEqual(['', 'flux-kit-en']);
+    });
+    it('preserves an incompatible saved Aura voice with a fails-call warning', () => {
+        const state = voiceControlState(meta, 'provider:deepgram_flux', 'aura-2-thalia-en');
+        expect(state.familyMismatch).toBe(true);
+        expect(state.options[1]).toEqual(expect.objectContaining({ id: 'aura-2-thalia-en', label: expect.stringMatching(/call will fail/) }));
+    });
+});

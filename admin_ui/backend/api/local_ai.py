@@ -129,6 +129,8 @@ class ModelInfo(BaseModel):
     backend: Optional[str] = None  # vosk, sherpa, kroko, piper, kokoro
     size_mb: Optional[float] = None
     voice_files: Optional[Dict[str, str]] = None  # For Kokoro voices
+    voice_languages: Optional[Dict[str, str]] = None
+    voice_lang_codes: Optional[Dict[str, str]] = None
     chat_format: Optional[str] = None  # llama-cpp-python chat template (LLM only)
 
 
@@ -168,6 +170,7 @@ class SwitchModelRequest(BaseModel):
     whisper_cpp_model_path: Optional[str] = None
     # Kokoro mode/model controls (optional)
     kokoro_mode: Optional[str] = None  # local|api|hf
+    kokoro_lang: Optional[str] = None  # a,b,e,f,h,i,j,p,z (KPipeline phonemizer)
     kokoro_model_path: Optional[str] = None
     kokoro_api_base_url: Optional[str] = None
     kokoro_api_key: Optional[str] = None
@@ -256,6 +259,18 @@ def _catalog_sherpa_model_type(model_path: Optional[str]) -> Optional[str]:
 def _normalize_switch_request(request: SwitchModelRequest) -> SwitchModelRequest:
     backend = (request.backend or "").strip().lower()
     updater = getattr(request, "model_copy", None) or getattr(request, "copy", None)
+    if request.model_type == "tts" and backend == "kokoro" and updater:
+        from api.models_catalog import KOKORO_LANGUAGE_CODES
+        language = request.kokoro_lang
+        if language is None and request.voice:
+            import re
+            if re.fullmatch(r"[abefhijpz][fm]_[a-z]+", request.voice.strip()):
+                language = request.voice.strip()[0]
+        if language is not None:
+            language = language.strip().lower()
+            if language not in KOKORO_LANGUAGE_CODES:
+                raise HTTPException(status_code=400, detail="Kokoro language must be one of: " + ", ".join(KOKORO_LANGUAGE_CODES))
+            request = updater(update={"kokoro_lang": language})
     if request.model_type == "stt" and backend == "sherpa" and updater:
         update: Dict[str, Any] = {}
         if not request.sherpa_model_type:
@@ -308,6 +323,20 @@ def _sherpa_status_matches(request: SwitchModelRequest, stt: Dict[str, Any]) -> 
     return True
 
 
+def _kokoro_status_matches(request: SwitchModelRequest, kokoro: Dict[str, Any]) -> bool:
+    """Verify effective voice/language even when the model path is unchanged."""
+    if request.kokoro_mode and (kokoro.get("mode") or "").lower() != request.kokoro_mode.lower():
+        return False
+    if request.voice and kokoro.get("voice") != request.voice:
+        return False
+    if request.kokoro_lang and kokoro.get("lang") != request.kokoro_lang:
+        return False
+    if request.kokoro_api_base_url and kokoro.get("api_base_url") != request.kokoro_api_base_url:
+        return False
+    expected_model = request.kokoro_model_path or request.model_path
+    return not expected_model or kokoro.get("model_path") == expected_model
+
+
 def _build_local_ai_env_and_yaml_updates(request: SwitchModelRequest) -> tuple[Dict[str, str], Dict[str, Any]]:
     """
     Pure mapping from SwitchModelRequest -> env_updates/yaml_updates.
@@ -315,6 +344,7 @@ def _build_local_ai_env_and_yaml_updates(request: SwitchModelRequest) -> tuple[D
     Keep this logic side-effect free so we can unit test switch mapping without
     needing Docker/websockets.
     """
+    request = _normalize_switch_request(request)
     env_updates: Dict[str, str] = {}
     yaml_updates: Dict[str, Any] = {}
 
@@ -442,6 +472,9 @@ def _build_local_ai_env_and_yaml_updates(request: SwitchModelRequest) -> tuple[D
                 if request.voice:
                     env_updates["KOKORO_VOICE"] = request.voice
                     yaml_updates["kokoro_voice"] = request.voice
+                if request.kokoro_lang:
+                    env_updates["KOKORO_LANG"] = request.kokoro_lang
+                    yaml_updates["kokoro_lang"] = request.kokoro_lang
                 # Auto-detect Kokoro model path for local mode if not provided
                 kokoro_model_path = request.kokoro_model_path or request.model_path
                 if not kokoro_model_path and request.kokoro_mode in ("local", "hf"):
@@ -490,6 +523,7 @@ def _build_local_ai_ws_switch_payload(request: SwitchModelRequest) -> Optional[D
 
     Returns None if the request does not map to a WS switch payload.
     """
+    request = _normalize_switch_request(request)
     if request.model_type not in ("stt", "tts") or not request.backend:
         return None
 
@@ -576,6 +610,8 @@ def _build_local_ai_ws_switch_payload(request: SwitchModelRequest) -> Optional[D
     if request.backend == "kokoro":
         if request.voice:
             payload["kokoro_voice"] = request.voice
+        if request.kokoro_lang:
+            payload["kokoro_lang"] = request.kokoro_lang
         if request.kokoro_mode:
             payload["kokoro_mode"] = request.kokoro_mode
         kokoro_model_path = request.kokoro_model_path or request.model_path
@@ -756,14 +792,17 @@ async def list_available_models():
                             voice_name = voice.replace(".pt", "")
                             voice_files[voice_name] = voice
 
+                from api.models_catalog import KOKORO_LANGUAGE_CODES
                 tts_models["kokoro"].append(ModelInfo(
                     id="kokoro_82m",
-                    name="Kokoro v0.19 (82M)",
+                    name="Kokoro v1.0 (82M)",
                     path="/app/models/tts/kokoro",
                     type="tts",
                     backend="kokoro",
                     size_mb=get_dir_size_mb(item_path),
-                    voice_files=voice_files
+                    voice_files=voice_files,
+                    voice_languages={voice: KOKORO_LANGUAGE_CODES[voice[0]] for voice in voice_files if voice and voice[0] in KOKORO_LANGUAGE_CODES},
+                    voice_lang_codes={voice: voice[0] for voice in voice_files if voice and voice[0] in KOKORO_LANGUAGE_CODES},
                 ))
 
     # Silero models are virtual (auto-downloaded via torch.hub at runtime),
@@ -1183,16 +1222,7 @@ async def _switch_model(request: SwitchModelRequest):
                     return False
                 return True
             if request.backend == "kokoro":
-                if request.kokoro_mode and (kokoro.get("mode") or "").lower() != request.kokoro_mode.lower():
-                    return False
-                if request.voice and kokoro.get("voice") != request.voice:
-                    return False
-                if request.kokoro_api_base_url and kokoro.get("api_base_url") != request.kokoro_api_base_url:
-                    return False
-                expected_model = request.kokoro_model_path or request.model_path
-                if expected_model and kokoro.get("model_path") != expected_model:
-                    return False
-                return True
+                return _kokoro_status_matches(request, kokoro)
             return True
 
         return True
@@ -1238,7 +1268,7 @@ async def _switch_model(request: SwitchModelRequest):
         "KROKO_LANGUAGE", "KROKO_EMBEDDED", "KROKO_PORT", "KROKO_URL", "KROKO_MODEL_PATH",
         "LOCAL_TTS_BACKEND", "LOCAL_TTS_MODEL_PATH",
         "SILERO_SPEAKER", "SILERO_LANGUAGE", "SILERO_MODEL_ID", "SILERO_SAMPLE_RATE", "SILERO_MODEL_PATH",
-        "KOKORO_MODE", "KOKORO_VOICE", "KOKORO_MODEL_PATH",
+        "KOKORO_MODE", "KOKORO_VOICE", "KOKORO_LANG", "KOKORO_MODEL_PATH",
         "KOKORO_API_BASE_URL", "KOKORO_API_KEY", "KOKORO_API_MODEL",
         "MATCHA_MODEL_PATH", "MATCHA_VOCODER_PATH",
         "MELOTTS_VOICE", "MELOTTS_DEVICE", "FASTER_WHISPER_MODEL", "FASTER_WHISPER_DEVICE",
@@ -1663,6 +1693,7 @@ async def rebuild_local_ai_server(request: RebuildRequest):
         env_file,
         [
             "KOKORO_VOICE",
+            "KOKORO_LANG",
             "KOKORO_MODE",
             "KOKORO_MODEL_PATH",
         ],
@@ -1714,6 +1745,9 @@ async def rebuild_local_ai_server(request: RebuildRequest):
                     env_updates["KOKORO_VOICE"] = (previous_env.get("KOKORO_VOICE") or "af_heart").strip() or "af_heart"
                 else:
                     env_updates["KOKORO_VOICE"] = request.tts_voice
+                    normalized = _normalize_switch_request(SwitchModelRequest(model_type="tts", backend="kokoro", voice=request.tts_voice))
+                    if normalized.kokoro_lang:
+                        env_updates["KOKORO_LANG"] = normalized.kokoro_lang
             elif request.tts_backend == "silero":
                 if request.silero_speaker:
                     env_updates["SILERO_SPEAKER"] = request.silero_speaker

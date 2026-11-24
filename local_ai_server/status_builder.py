@@ -226,6 +226,7 @@ def build_status_response(server) -> Dict[str, Any]:
         "kokoro": {
             "mode": server.kokoro_mode,
             "voice": server.kokoro_voice,
+            "lang": getattr(server, "kokoro_lang", "a"),
             "model_path": server.kokoro_model_path,
             "api_base_url": server.kokoro_api_base_url,
             "api_key_set": bool(server.kokoro_api_key),

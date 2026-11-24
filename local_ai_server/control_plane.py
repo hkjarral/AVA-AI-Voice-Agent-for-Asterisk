@@ -5,7 +5,7 @@ from dataclasses import replace
 from typing import Any, Dict, List, Tuple
 
 from config import LocalAIConfig
-from constants import SENSE_VOICE_LANGUAGES
+from constants import SENSE_VOICE_LANGUAGES, KOKORO_LANGUAGES, kokoro_voice_language
 
 
 _STT_CONFIG_MAP = {
@@ -123,6 +123,20 @@ def apply_switch_model_request(
 ) -> Tuple[LocalAIConfig, List[str]]:
     changed: List[str] = []
     new_config = config
+
+    # Normalize before applying any field so an invalid language cannot partially
+    # mutate a switch. Flat and nested wire shapes have the same precedence.
+    data = dict(data)
+    tts_settings = dict(data.get("tts_config") or {})
+    voice = data.get("kokoro_voice", tts_settings.get("voice"))
+    explicit_lang = data.get("kokoro_lang", tts_settings.get("lang"))
+    backend = (data.get("tts_backend") or config.tts_backend or "").strip().lower()
+    if backend == "kokoro":
+        language = str(explicit_lang).strip().lower() if explicit_lang is not None else kokoro_voice_language(voice)
+        if language is not None:
+            if language not in KOKORO_LANGUAGES:
+                raise ValueError("Kokoro language must be one of: " + ", ".join(KOKORO_LANGUAGES))
+            data["kokoro_lang"] = language
 
     if "stt_config" in data and isinstance(data["stt_config"], dict):
         backend = (data.get("stt_backend") or new_config.stt_backend or "").strip().lower()
@@ -293,6 +307,12 @@ def apply_switch_model_request(
         value = data["kokoro_voice"]
         new_config = replace(new_config, kokoro_voice=value)
         changed.append(f"kokoro_voice={value}")
+
+    if "kokoro_lang" in data:
+        value = data["kokoro_lang"]
+        if value != new_config.kokoro_lang:
+            new_config = replace(new_config, kokoro_lang=value)
+            changed.append(f"kokoro_lang={value}")
 
     if "kokoro_mode" in data:
         value = (data["kokoro_mode"] or "local").strip().lower()

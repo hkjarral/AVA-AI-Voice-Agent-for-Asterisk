@@ -28,8 +28,9 @@ describe('ModularSubtypeForm', () => {
             's2.1-pro',
             's2.1-pro-free',
             's2-pro',
+            'drama-3',
+            's3-pro',
             's1',
-            'drama-3-preview',
         ]);
 
         fireEvent.change(model, { target: { value: 's2-pro' } });
@@ -113,5 +114,60 @@ describe('Google temperature compatibility', () => {
         render(<ModularSubtypeForm subtype={openai} config={{ chat_model: 'gemini-3.8-flash', llm_model: 'gemini-3.8-flash', temperature: 0.4 }} onChange={vi.fn()} />);
         expect(screen.getByRole('spinbutton', { name: 'Temperature' })).toBeEnabled();
         expect(screen.queryByText(temperatureHelp)).not.toBeInTheDocument();
+    });
+});
+
+describe('model-aware speech options', () => {
+    it('preserves an incompatible configured OpenAI voice and asks the operator to fix it', () => {
+        const openai = MODULAR_SUBTYPES.tts.find(subtype => subtype.id === 'openai')!;
+        const onChange = vi.fn();
+        render(<ModularSubtypeForm subtype={openai} config={{ tts_model: 'tts-1', voice: 'ballad' }} onChange={onChange} />);
+        expect(screen.getByDisplayValue('ballad')).toBeInTheDocument();
+        expect(screen.getByRole('alert')).toHaveTextContent('incompatible with this model');
+        expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it('offers the version-specific Flux model list without rewriting the saved Aura voice', () => {
+        const deepgram = MODULAR_SUBTYPES.tts.find(subtype => subtype.id === 'deepgram')!;
+        const onChange = vi.fn();
+        render(<ModularSubtypeForm subtype={deepgram} config={{ tts_version: 'v2', tts_model: 'aura-2-thalia-en' }} onChange={onChange} />);
+        expect(screen.getByDisplayValue('aura-2-thalia-en')).toBeInTheDocument();
+        expect(screen.getByRole('spinbutton', { name: 'Flux Expressivity' })).toBeInTheDocument();
+        expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it('stores multilingual Flux hints as an array', () => {
+        const flux = MODULAR_SUBTYPES.stt.find(subtype => subtype.id === 'deepgram_flux')!;
+        const onChange = vi.fn();
+        render(<ModularSubtypeForm subtype={flux} config={{ language_hints: ['en', 'es'] }} onChange={onChange} />);
+        fireEvent.change(screen.getByRole('textbox', { name: 'Language Hints' }), { target: { value: 'en, fr, ' } });
+        expect(onChange).toHaveBeenCalledWith('language_hints', ['en', 'fr']);
+    });
+});
+
+describe('current model-specific controls', () => {
+    it('selects a matching Arabic voice only when the operator changes the Groq model', () => {
+        const groq = MODULAR_SUBTYPES.tts.find(subtype => subtype.id === 'groq')!;
+        const onChange = vi.fn();
+        render(<ModularSubtypeForm subtype={groq} config={{ tts_model: 'canopylabs/orpheus-v1-english', voice: 'hannah' }} onChange={onChange} />);
+        expect(onChange).not.toHaveBeenCalled();
+        fireEvent.change(screen.getByPlaceholderText('e.g., canopylabs/orpheus-v1-english'), { target: { value: 'canopylabs/orpheus-arabic-saudi' } });
+        expect(onChange).toHaveBeenCalledWith('tts_model', 'canopylabs/orpheus-arabic-saudi', { voice: 'abdullah' });
+    });
+    it('preserves an invalid Eleven v3 stability and offers only its supported replacements', () => {
+        const eleven = MODULAR_SUBTYPES.tts.find(subtype => subtype.id === 'elevenlabs')!;
+        const onChange = vi.fn();
+        render(<ModularSubtypeForm subtype={eleven} config={{ model_id: 'eleven_v3', stability: 0.3 }} onChange={onChange} />);
+        expect(screen.getByRole('combobox', { name: 'Stability' })).toHaveValue('0.3');
+        expect(screen.getByRole('alert')).toHaveTextContent('must be 0, 0.5, or 1');
+        expect(screen.queryByRole('spinbutton', { name: 'Similarity' })).not.toBeInTheDocument();
+        expect(onChange).not.toHaveBeenCalled();
+    });
+    it('clears incompatible none reasoning only when selecting GPT-6.2', () => {
+        const openai = MODULAR_SUBTYPES.llm.find(subtype => subtype.id === 'openai')!;
+        const onChange = vi.fn();
+        render(<ModularSubtypeForm subtype={openai} config={{ chat_model: 'gpt-6-luna', reasoning_effort: 'none' }} onChange={onChange} />);
+        fireEvent.change(screen.getByPlaceholderText('mlx-community/Qwen3-8B-4bit'), { target: { value: 'gpt-6.2-sol' } });
+        expect(onChange).toHaveBeenCalledWith('chat_model', 'gpt-6.2-sol', { reasoning_effort: null });
     });
 });

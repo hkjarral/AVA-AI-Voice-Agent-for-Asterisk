@@ -79,7 +79,7 @@ describe('provider audio displayed defaults', () => {
 
         expect(onChange).toHaveBeenCalledWith({
             api_version: 'ga',
-            model: 'gpt-realtime',
+            model: 'gpt-realtime-2.1',
             output_encoding: 'linear16',
             output_sample_rate_hz: 24000,
             voice: 'alloy',

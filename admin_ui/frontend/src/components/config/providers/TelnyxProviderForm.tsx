@@ -1,3 +1,4 @@
+import { modelOptions, providerDefault } from '../../../config/providerCatalog';
 import React from 'react';
 import HelpTooltip from '../../ui/HelpTooltip';
 
@@ -127,11 +128,10 @@ const TelnyxProviderForm: React.FC<TelnyxProviderFormProps> = ({ config, onChang
                                     <>
                                         <strong>Chat Model</strong> — which Telnyx-hosted model serves chat completions.
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                            <li><code>Qwen/Qwen3-235B-A22B</code> — default, strong reasoning</li>
-                                            <li><code>meta-llama/Meta-Llama-3.1-70B-Instruct</code> — Llama 3.1 70B</li>
-                                            <li><code>mistralai/Mixtral-8x7B-Instruct-v0.1</code> — Mixtral MoE</li>
+                                            <li><code>{providerDefault('telnyx', 'chat_model')}</code> — default, strong reasoning</li>
+                                            {modelOptions('telnyx', 'llm').slice(1, 4).map(model => <li key={model.value}><code>{model.value}</code></li>)}
                                         </ul>
-                                        Pricing varies by model (~$0.40 / 1M input tokens for Qwen). External models
+                                        Pricing and availability vary by model. External models
                                         like <code>openai/*</code> additionally require <code>api_key_ref</code>.
                                     </>
                                 }
@@ -144,7 +144,7 @@ const TelnyxProviderForm: React.FC<TelnyxProviderFormProps> = ({ config, onChang
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.chat_model ?? ''}
                             onChange={(e) => handleChange('chat_model', e.target.value)}
-                            placeholder="Qwen/Qwen3-235B-A22B"
+                            placeholder={providerDefault('telnyx', 'chat_model')}
                         />
                         <p className="text-xs text-muted-foreground">
                             Telnyx-hosted models like <code>meta-llama/*</code> work with only <code>TELNYX_API_KEY</code>. External models
@@ -152,7 +152,7 @@ const TelnyxProviderForm: React.FC<TelnyxProviderFormProps> = ({ config, onChang
                         </p>
                         {!config.chat_model && (
                             <p className="text-xs text-muted-foreground">
-                                Not set in YAML. Recommended default: <code>Qwen/Qwen3-235B-A22B</code>.
+                                Not set in YAML. Recommended default: <code>{providerDefault('telnyx', 'chat_model')}</code>.
                             </p>
                         )}
                     </div>

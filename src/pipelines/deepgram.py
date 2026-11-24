@@ -48,14 +48,14 @@ def _normalize_stt_url(base_url: Optional[str]) -> str:
     return urlunparse(parsed._replace(path=path))
 
 
-def _normalize_rest_url(base_url: Optional[str]) -> str:
-    default = "https://api.deepgram.com/v1/speak"
+def _normalize_rest_url(base_url: Optional[str], version: str = "v1") -> str:
+    default = f"https://api.deepgram.com/{version}/speak"
     if not base_url:
         return default
     parsed = urlparse(base_url)
-    if parsed.path.endswith("/v1/speak"):
-        return urlunparse(parsed)
-    path = parsed.path.rstrip("/") + "/v1/speak"
+    if parsed.path.endswith(("/v1/speak", "/v2/speak")):
+        return urlunparse(parsed._replace(path=parsed.path.rsplit("/", 2)[0] + f"/{version}/speak"))
+    path = parsed.path.rstrip("/") + f"/{version}/speak"
     return urlunparse(parsed._replace(path=path))
 
 
@@ -692,7 +692,7 @@ class DeepgramTTSAdapter(TTSComponent):
         }
 
         started_at = time.perf_counter()
-        async with self._session.post(url, json=payload, params=params, headers=headers) as response:
+        async with self._session.post(url, json=payload, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=float(merged["timeout_sec"]))) as response:
             if response.status >= 400:
                 body = await response.text()
                 logger.error(
@@ -748,7 +748,11 @@ class DeepgramTTSAdapter(TTSComponent):
 
         merged = {
             "base_url": runtime_options.get("base_url", self._pipeline_defaults.get("base_url", self._provider_defaults.base_url)),
-            "model": runtime_options.get("model", self._pipeline_defaults.get("model", self._provider_defaults.tts_model or self._provider_defaults.model)),
+            "model": runtime_options.get("model", runtime_options.get("tts_model", self._pipeline_defaults.get("model", self._pipeline_defaults.get("tts_model", self._provider_defaults.tts_model or self._provider_defaults.model)))),
+            "tts_version": runtime_options.get("tts_version", self._pipeline_defaults.get("tts_version", getattr(self._provider_defaults, "tts_version", "v1"))),
+            "tts_speed": runtime_options.get("tts_speed", self._pipeline_defaults.get("tts_speed", getattr(self._provider_defaults, "tts_speed", None))),
+            "tts_expressivity": runtime_options.get("tts_expressivity", self._pipeline_defaults.get("tts_expressivity", getattr(self._provider_defaults, "tts_expressivity", None))),
+            "timeout_sec": runtime_options.get("timeout_sec", self._pipeline_defaults.get("timeout_sec", 30.0)),
             "voice": runtime_options.get("voice", self._pipeline_defaults.get("voice", self._provider_defaults.tts_model)),
             "language": runtime_options.get("language", self._pipeline_defaults.get("language", self._provider_defaults.stt_language)),
             "chunk_size_ms": runtime_options.get("chunk_size_ms", self._pipeline_defaults.get("chunk_size_ms", 20)),
@@ -781,12 +785,42 @@ class DeepgramTTSAdapter(TTSComponent):
         target_encoding: str,
         target_sample_rate: int,
     ) -> Tuple[str, Dict[str, Any]]:
-        url = _normalize_rest_url(options.get("base_url"))
+        version = options.get("tts_version", "v1")
+        model = str(options.get("model") or options.get("voice") or "")
+        if version not in {"v1", "v2"} or model.startswith("flux-") != (version == "v2"):
+            raise ValueError("Deepgram TTS version must match the selected Aura (v1) or Flux (v2) voice")
+        url = _normalize_rest_url(options.get("base_url"), version)
+        if version == "v2":
+            source = options.get("source_format", {})
+            encoding = source.get("encoding", "linear16")
+            rate = int(source.get("sample_rate", target_sample_rate))
+            allowed_rates = {8000, 16000, 24000, 32000, 44100, 48000} if encoding == "linear16" else {8000, 16000}
+            if encoding not in {"linear16", "mulaw"} or rate not in allowed_rates or source.get("container", "none") != "none":
+                raise ValueError("Flux TTS requires raw linear16/mulaw at a supported sample rate")
+            params = {"model": model, "encoding": encoding, "sample_rate": rate, "container": "none"}
+            if options.get("tts_speed") is not None:
+                speed = float(options["tts_speed"])
+                if not 0.5 <= speed <= 1.5 or abs(speed * 20 - round(speed * 20)) > 1e-7:
+                    raise ValueError("Flux TTS speed must be 0.5–1.5 in 0.05 increments")
+                params["speed"] = speed
+            if options.get("tts_expressivity") is not None:
+                expressivity = options["tts_expressivity"]
+                if isinstance(expressivity, bool) or not isinstance(expressivity, int) or expressivity not in range(-2, 3):
+                    raise ValueError("Flux TTS expressivity must be an integer from -2 to 2")
+                params["expressivity"] = expressivity
+            return url, params
         params: Dict[str, Any] = {
             "model": options.get("model") or options.get("voice"),
             "voice": options.get("voice"),
             "language": options.get("language"),
         }
+        if options.get("tts_expressivity") is not None:
+            raise ValueError("Deepgram TTS expressivity requires a Flux v2 voice")
+        if options.get("tts_speed") is not None:
+            speed = float(options["tts_speed"])
+            if not 0.7 <= speed <= 1.5:
+                raise ValueError("Aura TTS speed must be 0.7–1.5")
+            params["speed"] = speed
         source_format = options.get("source_format", {})
         params["encoding"] = source_format.get("encoding", "linear16")
         # Request provider to emit audio at the downstream target sample rate by default

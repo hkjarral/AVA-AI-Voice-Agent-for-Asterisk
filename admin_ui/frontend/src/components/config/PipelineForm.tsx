@@ -1,3 +1,4 @@
+import { providerDefault } from '../../config/providerCatalog';
 import React, { useState, useEffect } from 'react';
 import { FormInput, FormLabel, FormSwitch, FormSelect } from '../ui/FormComponents';
 import { ensureModularKey, isFullAgentProvider, isRegisteredProvider, capabilityFromKey } from '../../utils/providerNaming';
@@ -460,8 +461,8 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                                     label="OpenAI Realtime Model"
                                     value={localConfig.options?.llm?.realtime_model || ''}
                                     onChange={(e) => updateRoleOptions('llm', { realtime_model: e.target.value })}
-                                    placeholder="gpt-realtime"
-                                    tooltip="Adapter-level realtime model override for OpenAI pipeline LLM. Current GA aliases: gpt-realtime (default), gpt-realtime-1.5, gpt-realtime-2, gpt-realtime-mini. Legacy gpt-4o-realtime-preview-* values were removed by OpenAI on 2026-05-07."
+                                    placeholder={providerDefault('openai_realtime', 'model')}
+                                    tooltip="Adapter-level realtime model override for OpenAI pipeline LLM. Current default: gpt-realtime-2.1. Additional supported choices are listed in Providers. Legacy gpt-4o-realtime-preview-* values were removed by OpenAI on 2026-05-07."
                                     disabled={!showLlmExpert}
                                 />
                             )}

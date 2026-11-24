@@ -122,17 +122,18 @@ class DeepgramFluxSTTAdapter(STTComponent):
         if not base_url or not base_url.startswith("wss://"):
             base_url = "wss://api.deepgram.com/v2/listen"
         query_params = {
-            "model": "flux-general-en",
-            "language": merged.get("language", "en-US"),
+            "model": merged["model"],
             "encoding": merged.get("encoding", "linear16"),
             "sample_rate": merged.get("sample_rate", "16000"),
             "channels": "1",
         }
         
+        if merged.get("language_hints"):
+            query_params["language_hints"] = merged["language_hints"]
         parsed = urlparse(base_url)
         existing = dict(parse_qsl(parsed.query))
         existing.update(query_params)
-        flux_url = urlunparse(parsed._replace(query=urlencode(existing)))
+        flux_url = urlunparse(parsed._replace(query=urlencode(existing, doseq=True)))
         
         # Create options with Flux URL for base class validation
         flux_options = {**merged, "base_url": flux_url}
@@ -149,8 +150,7 @@ class DeepgramFluxSTTAdapter(STTComponent):
         
         # Build Flux-specific query parameters
         query_params = {
-            "model": "flux-general-en",  # Required for Flux
-            "language": merged.get("language", "en-US"),
+            "model": merged["model"],  # Required for Flux
             "encoding": merged.get("encoding", "linear16"),
             "sample_rate": merged.get("sample_rate", "16000"),
             "channels": "1",  # Mono audio (required for Flux)
@@ -159,12 +159,15 @@ class DeepgramFluxSTTAdapter(STTComponent):
             "eot_timeout_ms": merged.get("eot_timeout_ms", "5000"),
         }
         
+        if merged.get("language_hints"):
+            query_params["language_hints"] = merged["language_hints"]
+
         # Optional: Enable EagerEndOfTurn for faster LLM triggering
         if "eager_eot_threshold" in merged:
             query_params["eager_eot_threshold"] = merged["eager_eot_threshold"]
         
         # Remove None values
-        query_params = {k: str(v) for k, v in query_params.items() if v is not None}
+        query_params = {k: v for k, v in query_params.items() if v is not None}
         
         # Always use WSS for Flux, ignore HTTP(S) from provider config
         base_url = merged.get("base_url", "")
@@ -176,7 +179,7 @@ class DeepgramFluxSTTAdapter(STTComponent):
         parsed = urlparse(ws_url)
         existing = dict(parse_qsl(parsed.query))
         existing.update(query_params)
-        ws_url = urlunparse(parsed._replace(query=urlencode(existing)))
+        ws_url = urlunparse(parsed._replace(query=urlencode(existing, doseq=True)))
         
         logger.info(
             "Deepgram Flux STT opening session",
@@ -507,7 +510,20 @@ class DeepgramFluxSTTAdapter(STTComponent):
     def _compose_options(self, runtime_options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Merge runtime options with pipeline and provider defaults."""
         runtime_options = runtime_options or {}
+        model = runtime_options.get("model", self._pipeline_defaults.get("model", self._provider_defaults.model))
+        # A shared Nova provider still seeds the original English Flux adapter.
+        if not str(model).startswith("flux-"):
+            model = "flux-general-en"
+        if model not in {"flux-general-en", "flux-general-multi"}:
+            raise ValueError("Select flux-general-en or flux-general-multi for the Flux STT adapter")
+        hints = runtime_options.get("language_hints", self._pipeline_defaults.get("language_hints", getattr(self._provider_defaults, "language_hints", None)))
+        if hints is not None and (not isinstance(hints, list) or any(not isinstance(x, str) or not x.strip() for x in hints)):
+            raise ValueError("Flux STT language_hints must be a list of language codes")
+        if hints and model != "flux-general-multi":
+            raise ValueError("Flux STT language_hints requires flux-general-multi")
         merged = {
+            "model": model,
+            "language_hints": hints,
             "base_url": runtime_options.get(
                 "base_url",
                 self._pipeline_defaults.get("base_url", self._provider_defaults.base_url),

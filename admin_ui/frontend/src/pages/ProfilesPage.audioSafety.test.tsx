@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import axios from 'axios';
 import yaml from 'js-yaml';
@@ -172,7 +172,9 @@ describe('ProfilesPage audio contract safety', () => {
             data: { recommended_apply_method: 'hot_reload' },
         });
 
-        render(<ProfilesPage />);
+        // Resolve the baseline metadata before asserting the built-in-specific
+        // confirmation; cached profiles can render before that request finishes.
+        await act(async () => { render(<ProfilesPage />); });
 
         fireEvent.click(await screen.findByRole('button', {
             name: 'Restore profile baseline for telephony_ulaw_8k',

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from constants import kokoro_voice_language
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -337,7 +338,7 @@ class LocalAIConfig:
             melotts_speed=float(os.getenv("MELOTTS_SPEED", "1.0")),
             kokoro_voice=os.getenv("KOKORO_VOICE") or os.getenv("LOCAL_TTS_VOICE", "af_heart"),
             kokoro_mode=(os.getenv("KOKORO_MODE", "local") or "local").strip().lower(),
-            kokoro_lang=os.getenv("KOKORO_LANG", "a"),
+            kokoro_lang=os.getenv("KOKORO_LANG") or kokoro_voice_language(os.getenv("KOKORO_VOICE") or os.getenv("LOCAL_TTS_VOICE", "af_heart")) or "a",
             kokoro_model_path=os.getenv("KOKORO_MODEL_PATH", "/app/models/tts/kokoro"),
             kokoro_api_base_url=(os.getenv("KOKORO_API_BASE_URL", "") or "").strip(),
             kokoro_api_key=(os.getenv("KOKORO_API_KEY", "") or "").strip(),

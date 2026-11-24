@@ -140,8 +140,12 @@ class _GoogleCredentialManager:
     """# Milestone7: Resolve Google Cloud credentials (API key or service account)."""
 
     def __init__(self, provider_config: GoogleProviderConfig):
-        self._api_key = provider_config.api_key or os.getenv("GOOGLE_API_KEY")
-        self._service_account_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        configured_path = provider_config.credentials_path
+        # Explicit per-provider credentials own this instance. A Gemini key in
+        # the process environment must not displace an explicitly selected
+        # Cloud service account; an explicit API key retains its old priority.
+        self._api_key = provider_config.api_key or (None if configured_path else os.getenv("GOOGLE_API_KEY"))
+        self._service_account_path = configured_path or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         self._token_cache: Dict[Tuple[str, ...], Tuple[str, Optional[datetime]]] = {}
         self._lock = asyncio.Lock()
 

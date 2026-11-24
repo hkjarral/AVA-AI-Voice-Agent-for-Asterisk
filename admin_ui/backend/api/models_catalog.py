@@ -1174,6 +1174,21 @@ PIPER_TTS_MODELS = [
      "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/zh/zh_CN/huayan/x_low/zh_CN-huayan-x_low.onnx.json"},
 ]
 
+# Kokoro v1.0 uses the voice prefix as its KPipeline language code.
+# Verified against the upstream voice files and VOICES.md on 2026-11-23:
+# https://huggingface.co/hexgrad/Kokoro-82M/blob/main/VOICES.md
+KOKORO_LANGUAGE_CODES = {
+    "a": "en-US",
+    "b": "en-GB",
+    "e": "es-ES",
+    "f": "fr-FR",
+    "h": "hi-IN",
+    "i": "it-IT",
+    "j": "ja-JP",
+    "p": "pt-BR",
+    "z": "zh-CN",
+}
+
 KOKORO_TTS_MODELS = [
     {"id": "kokoro_82m", "name": "Kokoro 82M (Multi-language)", "language": "multi", "region": "global", "backend": "kokoro",
      "size_mb": 330, "size_display": "330 MB", "model_path": "kokoro",
@@ -1181,23 +1196,72 @@ KOKORO_TTS_MODELS = [
      "config_url": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/config.json",
      "supported_languages": ["en-US", "en-GB", "ja-JP", "zh-CN", "es-ES", "fr-FR", "hi-IN", "it-IT", "pt-BR"],
      "voice_files": {
-         # American English Female
-         "af_heart": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/af_heart.pt",
+         "af_alloy": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/af_alloy.pt",
+         "af_aoede": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/af_aoede.pt",
          "af_bella": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/af_bella.pt",
+         "af_heart": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/af_heart.pt",
+         "af_jessica": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/af_jessica.pt",
+         "af_kore": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/af_kore.pt",
          "af_nicole": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/af_nicole.pt",
+         "af_nova": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/af_nova.pt",
+         "af_river": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/af_river.pt",
          "af_sarah": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/af_sarah.pt",
          "af_sky": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/af_sky.pt",
-         # American English Male
          "am_adam": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/am_adam.pt",
+         "am_echo": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/am_echo.pt",
+         "am_eric": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/am_eric.pt",
+         "am_fenrir": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/am_fenrir.pt",
+         "am_liam": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/am_liam.pt",
          "am_michael": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/am_michael.pt",
-         # British English Female
+         "am_onyx": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/am_onyx.pt",
+         "am_puck": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/am_puck.pt",
+         "am_santa": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/am_santa.pt",
+         "bf_alice": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/bf_alice.pt",
          "bf_emma": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/bf_emma.pt",
          "bf_isabella": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/bf_isabella.pt",
-         # British English Male
+         "bf_lily": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/bf_lily.pt",
+         "bm_daniel": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/bm_daniel.pt",
+         "bm_fable": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/bm_fable.pt",
          "bm_george": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/bm_george.pt",
          "bm_lewis": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/bm_lewis.pt",
+         "ef_dora": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/ef_dora.pt",
+         "em_alex": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/em_alex.pt",
+         "em_santa": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/em_santa.pt",
+         "ff_siwis": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/ff_siwis.pt",
+         "hf_alpha": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/hf_alpha.pt",
+         "hf_beta": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/hf_beta.pt",
+         "hm_omega": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/hm_omega.pt",
+         "hm_psi": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/hm_psi.pt",
+         "if_sara": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/if_sara.pt",
+         "im_nicola": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/im_nicola.pt",
+         "jf_alpha": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/jf_alpha.pt",
+         "jf_gongitsune": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/jf_gongitsune.pt",
+         "jf_nezumi": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/jf_nezumi.pt",
+         "jf_tebukuro": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/jf_tebukuro.pt",
+         "jm_kumo": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/jm_kumo.pt",
+         "pf_dora": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/pf_dora.pt",
+         "pm_alex": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/pm_alex.pt",
+         "pm_santa": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/pm_santa.pt",
+         "zf_xiaobei": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/zf_xiaobei.pt",
+         "zf_xiaoni": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/zf_xiaoni.pt",
+         "zf_xiaoxiao": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/zf_xiaoxiao.pt",
+         "zf_xiaoyi": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/zf_xiaoyi.pt",
+         "zm_yunjian": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/zm_yunjian.pt",
+         "zm_yunxi": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/zm_yunxi.pt",
+         "zm_yunxia": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/zm_yunxia.pt",
+         "zm_yunyang": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/zm_yunyang.pt",
      }},
 ]
+
+# Return language metadata with the catalog so selectors can save a matching
+# voice and phonemizer together.
+for _kokoro_model in KOKORO_TTS_MODELS:
+    _kokoro_model["voice_languages"] = {
+        voice: KOKORO_LANGUAGE_CODES[voice[0]] for voice in _kokoro_model["voice_files"]
+    }
+    _kokoro_model["voice_lang_codes"] = {
+        voice: voice[0] for voice in _kokoro_model["voice_files"]
+    }
 
 MELOTTS_MODELS = [
     # MeloTTS - lightweight CPU-optimized TTS with multiple English accents

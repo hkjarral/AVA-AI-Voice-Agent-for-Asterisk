@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 import HelpTooltip from '../../ui/HelpTooltip';
 import { localAIStatusFromLiveSnapshot } from '../../../utils/liveStatus';
+import { KOKORO_LANGUAGE_OPTIONS, KOKORO_VOICES } from '../../../config/kokoroVoices';
 
 interface LocalProviderFormProps {
     config: any;
@@ -23,6 +24,10 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
     // Current status from Local AI Server
     const [currentStatus, setCurrentStatus] = useState<any>(null);
     const [statusLoading, setStatusLoading] = useState(true);
+    const installedKokoroVoices = Object.keys(modelCatalog.tts.find((model: any) => model.id === 'kokoro_82m')?.voice_files || {});
+    const kokoroVoices = installedKokoroVoices.length ? installedKokoroVoices : KOKORO_VOICES.map(voice => voice.id);
+    const kokoroDisplayedVoice = currentStatus?.kokoro?.voice || config.kokoro_voice || 'af_heart';
+    const kokoroDisplayedLanguage = currentStatus?.kokoro?.lang || config.kokoro_lang || 'a';
 
     useEffect(() => {
         const fetchModels = async () => {
@@ -1166,13 +1171,14 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
                         {/* Kokoro settings */}
                         {config.tts_backend === 'kokoro' && (
                             <>
+                                <p className="text-sm text-muted-foreground">Kokoro voice and language are shared Local AI server settings. Change them in <Link to="/env#local-ai" className="text-primary underline">System → Environment</Link> and recreate Local AI, or use the global <Link to="/models" className="text-primary underline">Models</Link> switch. Saving this provider does not switch the running server.</p>
                                 <div className="space-y-2">
                                     <div className="flex items-center gap-1.5">
-                                        <label className="text-sm font-medium">Voice</label>
+                                        <label htmlFor="kokoro-voice" className="text-sm font-medium">Kokoro Voice (server setting)</label>
                                         <HelpTooltip
                                             content={
                                                 <>
-                                                    <strong>Kokoro Voice</strong> — voice preset. Naming: <code>af_*</code> American female, <code>am_*</code> American male, <code>bf_*</code> British female, <code>bm_*</code> British male.
+                                                    <strong>Kokoro Voice</strong> — the server voice is shown when connected; otherwise the saved provider hint is shown. Change the effective setting in System → Environment or Models.
                                                     <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                                         <li><code>af_heart</code> — warm female (default)</li>
                                                         <li><code>af_bella</code>, <code>af_nicole</code>, <code>af_sarah</code>, <code>af_sky</code> — varied female</li>
@@ -1186,32 +1192,24 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
                                         />
                                     </div>
                                     <select
+                                        id="kokoro-voice"
                                         className="w-full p-2 rounded border border-input bg-background"
-                                        value={config.kokoro_voice || 'af_heart'}
-                                        onChange={(e) => handleChange('kokoro_voice', e.target.value)}
+                                        value={kokoroDisplayedVoice}
+                                        disabled
                                     >
-                                        {/* Use backend voice files list if available, else fallback */}
-                                        {modelCatalog.tts.find((m: any) => m.id === 'kokoro_82m')?.voice_files
-                                            ? Object.keys(modelCatalog.tts.find((m: any) => m.id === 'kokoro_82m').voice_files).map((v: string) => (
-                                                <option key={v} value={v}>{v}</option>
-                                            ))
-                                            : (
-                                                <>
-                                                    <option value="af_heart">Heart (Female, American)</option>
-                                                    <option value="af_bella">Bella (Female, American)</option>
-                                                    <option value="af_nicole">Nicole (Female, American)</option>
-                                                    <option value="af_sarah">Sarah (Female, American)</option>
-                                                    <option value="af_sky">Sky (Female, American)</option>
-                                                    <option value="am_adam">Adam (Male, American)</option>
-                                                    <option value="am_michael">Michael (Male, American)</option>
-                                                    <option value="bf_emma">Emma (Female, British)</option>
-                                                    <option value="bf_isabella">Isabella (Female, British)</option>
-                                                    <option value="bm_george">George (Male, British)</option>
-                                                    <option value="bm_lewis">Lewis (Male, British)</option>
-                                                </>
-                                            )
-                                        }
+                                        {!kokoroVoices.includes(kokoroDisplayedVoice) && <option value={kokoroDisplayedVoice}>{kokoroDisplayedVoice} (custom/current)</option>}
+                                        {/* Prefer installed voices; the verified catalog is the offline fallback. */}
+                                        {kokoroVoices.map(voice => <option key={voice} value={voice}>{voice}</option>)}
                                     </select>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <label htmlFor="kokoro-language" className="text-sm font-medium">Kokoro Language</label>
+                                    <select id="kokoro-language" className="w-full p-2 rounded border border-input bg-background" value={kokoroDisplayedLanguage} disabled>
+                                        {!KOKORO_LANGUAGE_OPTIONS.some(option => option.value === kokoroDisplayedLanguage) && <option value={kokoroDisplayedLanguage}>{kokoroDisplayedLanguage} (current)</option>}
+                                        {KOKORO_LANGUAGE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                                    </select>
+                                    <p className="text-xs text-muted-foreground">System → Environment selects this automatically with the stock voice. Provider hints do not change server-global phonemization.</p>
                                 </div>
                                 <div className="space-y-2">
                                     <div className="flex items-center gap-1.5">
@@ -1233,20 +1231,18 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
                                         type="text"
                                         className="w-full p-2 rounded border border-input bg-background"
                                         value={config.kokoro_model_path || ''}
-                                        onChange={(e) => handleChange('kokoro_model_path', e.target.value)}
+                                        readOnly
                                         placeholder={getModelPathPlaceholder('kokoro', 'tts')}
                                     />
                                     {modelCatalog.tts.some((m: any) => m.id === 'kokoro_82m') && (
                                         <div className="mt-1 text-xs text-muted-foreground">
                                             Available: {modelCatalog.tts.filter((m: any) => m.id === 'kokoro_82m').map((m: any) => (
-                                                <button
+                                                <span
                                                     key={m.id}
-                                                    type="button"
-                                                    className="underline mr-2 text-primary"
-                                                    onClick={() => handleChange('kokoro_model_path', m.path)}
+                                                    className="mr-2"
                                                 >
                                                     {m.path}
-                                                </button>
+                                                </span>
                                             ))}
                                         </div>
                                     )}

@@ -28,7 +28,7 @@ from .base import TTSComponent
 
 logger = get_logger(__name__)
 
-# CAMB AI streaming TTS returns PCM at 24kHz by default for pcm_s16le
+# Explicitly request this rate for headerless PCM; model-native rates vary.
 CAMB_AI_PCM_SAMPLE_RATE = 24000
 
 
@@ -127,6 +127,8 @@ class CambAiTTSAdapter(TTSComponent):
             "speech_model": speech_model,
             "output_configuration": {"format": output_format},
         }
+        if output_format == "pcm_s16le":
+            payload["output_configuration"]["sample_rate"] = CAMB_AI_PCM_SAMPLE_RATE
 
         headers = {
             "x-api-key": api_key,

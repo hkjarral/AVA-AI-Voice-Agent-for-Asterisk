@@ -1,3 +1,5 @@
+import ProviderCatalogNotice from './ProviderCatalogNotice';
+import { modelOptions, modelIds, providerDefault, providerVoices } from '../../../config/providerCatalog';
 import ConnectionRecoveryFields from './ConnectionRecoveryFields';
 import React from 'react';
 import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
@@ -5,22 +7,8 @@ import HelpTooltip from '../../ui/HelpTooltip';
 import OutputResamplerField from './OutputResamplerField';
 import { enforceOpenAIRealtimeGaAudioContract } from '../../../utils/providerAudioContracts';
 
-// Current GA Realtime model catalog. Verified against OpenAI's official model
-// pages on 2026-05-25:
-//   - https://developers.openai.com/api/docs/models/gpt-realtime
-//   - https://developers.openai.com/api/docs/models/gpt-realtime-1.5
-//   - https://developers.openai.com/api/docs/models/gpt-realtime-2
-//   - https://developers.openai.com/api/docs/models/gpt-realtime-mini
-// The Beta Realtime API and `gpt-4o-realtime-preview-*` model snapshots were
-// removed on 2026-05-12 / 2026-05-07 respectively. Operators with pinned legacy
-// values are rendered in a "Custom (legacy preview model — will not connect)"
-// optgroup so the form displays the YAML state honestly without swapping it.
-const OPENAI_REALTIME_MODELS = [
-    { value: 'gpt-realtime', label: 'GPT Realtime — stable conversational (~5–8¢/min)' },
-    { value: 'gpt-realtime-1.5', label: 'GPT Realtime 1.5 — best audio-in/audio-out quality' },
-    { value: 'gpt-realtime-2', label: 'GPT Realtime 2 — reasoning voice model (GPT-5-class, configurable effort)' },
-    { value: 'gpt-realtime-mini', label: 'GPT Realtime Mini — cost-optimized (~3¢/min)' },
-];
+// Generated from the verified provider catalog; explicit configured values are preserved.
+const OPENAI_REALTIME_MODELS = modelOptions('openai_realtime', 'realtime');
 
 // Known sunset preview model aliases — values OpenAI removed on 2026-05-07.
 // The legacy banner / "Custom (legacy — will not connect)" optgroup only
@@ -38,21 +26,7 @@ const isSunsetPreviewModel = (model: string | undefined): boolean => {
     return OPENAI_REALTIME_SUNSET_PREFIXES.some(prefix => model.startsWith(prefix));
 };
 
-// Realtime API voice catalog (10 voices). `cedar` + `marin` were added on
-// 2026-05-14 with the Realtime API GA launch and are Realtime-exclusive.
-// Voice membership is enforced by OpenAI's session.update accepted-values set.
-const OPENAI_REALTIME_VOICES = [
-    { value: 'alloy', label: 'Alloy — neutral, balanced' },
-    { value: 'ash', label: 'Ash — clear, direct' },
-    { value: 'ballad', label: 'Ballad — warm, storytelling' },
-    { value: 'cedar', label: 'Cedar — warm, natural (Realtime-exclusive, added 2026-05-14)' },
-    { value: 'coral', label: 'Coral — friendly, conversational' },
-    { value: 'echo', label: 'Echo — soft, calm' },
-    { value: 'marin', label: 'Marin — clear, professional (Realtime-exclusive, added 2026-05-14)' },
-    { value: 'sage', label: 'Sage — wise, authoritative' },
-    { value: 'shimmer', label: 'Shimmer — bright, optimistic' },
-    { value: 'verse', label: 'Verse — expressive, dynamic' },
-];
+const OPENAI_REALTIME_VOICES = providerVoices('openai_realtime', 'realtime').map(voice => ({ value: voice.id, label: voice.label }));
 
 interface OpenAIRealtimeProviderFormProps {
     config: any;
@@ -185,7 +159,7 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                                     onChange(enforceOpenAIRealtimeGaAudioContract({
                                         ...config,
                                         api_version: apiVersion,
-                                        model: isGaModel ? config.model : 'gpt-realtime',
+                                        model: isGaModel ? config.model : providerDefault('openai_realtime', 'model'),
                                     }));
                                 } else {
                                     onChange({ ...config, api_version: apiVersion });
@@ -262,12 +236,9 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                             <HelpTooltip
                                 content={
                                     <>
-                                        <strong>Model</strong> — which Realtime model the WebSocket connects to. All four current GA options:
+                                        <strong>Model</strong> — which Realtime model the WebSocket connects to. Current supported choices:
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                            <li><code>gpt-realtime</code> — stable conversational baseline (~5–8¢/min)</li>
-                                            <li><code>gpt-realtime-1.5</code> — best audio-in/audio-out quality (per OpenAI's model page)</li>
-                                            <li><code>gpt-realtime-2</code> — reasoning voice model, GPT-5-class, configurable reasoning effort (slower + higher cost — better for hard requests)</li>
-                                            <li><code>gpt-realtime-mini</code> — cost-optimized (~3¢/min), good for high-volume</li>
+                                            {OPENAI_REALTIME_MODELS.map(model => <li key={model.value}><code>{model.value}</code>{model.label.includes('deprecated') ? ' — deprecated; choose a current model before retirement' : ''}</li>)}
                                         </ul>
                                         Preview models (<code>gpt-4o-realtime-preview-*</code>) were removed by OpenAI on 2026-05-07 — pinned values render in a "Custom (legacy)" optgroup but will not connect.
                                     </>
@@ -278,7 +249,7 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                         </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
-                            value={config.model || 'gpt-realtime'}
+                            value={config.model || providerDefault('openai_realtime', 'model')}
                             onChange={(e) => handleChange('model', e.target.value)}
                         >
                             <optgroup label="GA Models">
@@ -296,8 +267,25 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                                 </optgroup>
                             )}
                         </select>
+                            <ProviderCatalogNotice provider="openai_realtime" model={config.model ?? providerDefault('openai_realtime', 'model')} />
                     </div>
 
+                    <div className="space-y-2">
+                        <label htmlFor="openai-realtime-reasoning" className="text-sm font-medium">Reasoning Effort</label>
+                        <select id="openai-realtime-reasoning" className="w-full p-2 rounded border border-input bg-background" disabled={!String(config.model ?? providerDefault('openai_realtime', 'model')).startsWith('gpt-realtime-2')} value={config.reasoning_effort ?? ''} onChange={event => handleChange('reasoning_effort', event.target.value || null)}>
+                            <option value="">Provider default</option>
+                            {['minimal', 'low', 'medium', 'high', 'xhigh'].map(value => <option key={value} value={value}>{value}</option>)}
+                        </select>
+                        <p className="text-xs text-muted-foreground">GPT Realtime 2 family only. Higher effort can increase latency. An existing value is preserved and omitted for older models.</p>
+                    </div>
+                    <div className="space-y-2">
+                        <label htmlFor="openai-realtime-input-transcription" className="text-sm font-medium">Input Transcription Model</label>
+                        <select id="openai-realtime-input-transcription" className="w-full p-2 rounded border border-input bg-background" value={config.input_transcription_model ?? providerDefault('openai_realtime', 'input_transcription_model')} onChange={event => handleChange('input_transcription_model', event.target.value)}>
+                            {config.input_transcription_model && !modelIds('openai', 'stt').includes(config.input_transcription_model) && <option value={config.input_transcription_model}>{config.input_transcription_model} (configured)</option>}
+                            {modelOptions('openai', 'stt').map(model => <option key={model.value} value={model.value}>{model.label}</option>)}
+                        </select>
+                        <p className="text-xs text-muted-foreground">Transcribes caller speech for history and tools; the Realtime model still handles the audio conversation. Test names and numbers after changing it.</p>
+                    </div>
                     <div className="space-y-2">
                         <div className="flex items-center gap-1.5">
                             <label className="text-sm font-medium">Default Voice</label>

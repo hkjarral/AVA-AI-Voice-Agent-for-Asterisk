@@ -19,6 +19,8 @@ from src.providers.google_live import GoogleLiveProvider
 
 def provider(*, enabled=True, vertex=False):
     p = GoogleLiveProvider(GoogleProviderConfig(
+        # Keep this local-cancellation suite independent of the new 3.8 default.
+        llm_model="gemini-2.5-flash-native-audio-preview-09-2025",
         api_key="test", use_vertex_ai=vertex, long_audio_playback_enabled=enabled,
         output_encoding="slin16", output_sample_rate_hz=16000,
     ), AsyncMock())

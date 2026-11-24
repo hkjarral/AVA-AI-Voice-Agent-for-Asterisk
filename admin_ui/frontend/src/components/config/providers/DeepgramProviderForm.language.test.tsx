@@ -158,9 +158,9 @@ describe('Deepgram Voice Agent supported language surface', () => {
         render(<DeepgramProviderForm config={{ agent_language: 'es' }} onChange={vi.fn()} />);
 
         const voice = selectBesideLabel('Default Voice Model');
-        expect(voice).toHaveValue('aura-asteria-en');
+        expect(voice).toHaveValue('aura-2-thalia-en');
         const preservationOption = screen.getByRole('option', {
-            name: /Current effective fallback — aura-asteria-en/i,
+            name: /Current effective fallback — aura-2-thalia-en/i,
         });
         expect(preservationOption).not.toHaveAttribute('hidden');
         expect(preservationOption).not.toBeDisabled();
@@ -190,5 +190,23 @@ describe('Deepgram Voice Agent supported language surface', () => {
                 tts_model: 'aura-2-thalia-en',
             })
         );
+    });
+});
+
+describe('Deepgram opt-in Flux TTS surface', () => {
+    it('offers Flux languages and voices when explicitly selecting v2', () => {
+        const onChange = vi.fn();
+        render(<DeepgramProviderForm config={{ tts_version: 'v2', tts_model: 'flux-bruno-pt', agent_language: 'pt', model: 'nova-3' }} onChange={onChange} />);
+        expect(selectBesideLabel('Agent Language').querySelector('option[value="pt"]')).toBeEnabled();
+        expect(selectBesideLabel('Default Voice Model')).toHaveValue('flux-bruno-pt');
+        expect(screen.getByLabelText('Flux Expressivity (-2 to 2)')).toBeInTheDocument();
+        expect(onChange).not.toHaveBeenCalled();
+    });
+    it('preserves an Aura voice after selecting the Flux workflow until the operator fixes it', () => {
+        const onChange = vi.fn();
+        render(<DeepgramProviderForm config={{ tts_version: 'v2', tts_model: 'aura-2-thalia-en' }} onChange={onChange} />);
+        expect(selectBesideLabel('Default Voice Model')).toHaveValue('aura-2-thalia-en');
+        expect(screen.getByText(/AAVA will not silently replace it/)).toBeInTheDocument();
+        expect(onChange).not.toHaveBeenCalled();
     });
 });

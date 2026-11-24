@@ -1,3 +1,4 @@
+import { modelIds, providerVoices } from '../../../config/providerCatalog';
 import React, { useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { Plus, Trash2, AlertTriangle } from 'lucide-react';
@@ -49,56 +50,22 @@ const getManagedSubtypeKeys = (subtype?: ProviderSubtype) =>
 
 const PROVIDER_OPTIONS: Record<string, Record<string, string[]>> = {
     deepgram: {
-        model: ['nova-3', 'nova-2', 'nova-2-general', 'nova-2-meeting', 'enhanced', 'base', 'flux-general-en', 'flux-general-multi'],
-        stt_model: ['nova-3', 'nova-2', 'nova-2-general', 'nova-2-meeting', 'enhanced', 'base', 'flux-general-en', 'flux-general-multi'],
-        tts_model: ['aura-asteria-en', 'aura-luna-en', 'aura-orion-en', 'aura-arcas-en', 'aura-perseus-en', 'aura-angus-en', 'aura-orpheus-en', 'aura-helios-en', 'aura-zeus-en'],
+        model: [...modelIds('deepgram', 'stt'), ...modelIds('deepgram', 'flux_stt')],
+        stt_model: [...modelIds('deepgram', 'stt'), ...modelIds('deepgram', 'flux_stt')],
+        tts_model: [...providerVoices('deepgram', 'tts'), ...providerVoices('deepgram', 'flux_tts')].map(voice => voice.id),
     },
     openai: {
-        model: ['gpt-4o', 'gpt-4o-mini'],
-        llm_model: ['gpt-4o', 'gpt-4o-mini'],
-        // STT models per OpenAI Speech-to-Text guide.
-        stt_model: [
-            'whisper-1',
-            'gpt-4o-mini-transcribe',
-            'gpt-4o-mini-transcribe-2025-12-15',
-            'gpt-4o-transcribe',
-            'gpt-4o-transcribe-diarize',
-        ],
-        tts_model: ['gpt-4o-mini-tts', 'gpt-4o-mini-tts-2025-12-15', 'tts-1', 'tts-1-hd'],
-        // OpenAI audio.speech voices (validated by API). Keep this aligned with engine validation.
-        voice: ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse', 'marin', 'cedar'],
-        tts_voice: ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse', 'marin', 'cedar'],
-        response_format: ['wav', 'pcm'],
+        model: modelIds('openai', 'llm'), llm_model: modelIds('openai', 'llm'),
+        chat_model: modelIds('openai', 'llm'), stt_model: modelIds('openai', 'stt'), tts_model: modelIds('openai', 'tts'),
+        voice: providerVoices('openai', 'tts').map(voice => voice.id), tts_voice: providerVoices('openai', 'tts').map(voice => voice.id), response_format: ['wav', 'pcm'],
     },
     groq: {
-        stt_model: ['whisper-large-v3-turbo', 'whisper-large-v3'],
-        response_format: ['json', 'verbose_json', 'text', 'wav'],
-        tts_model: ['canopylabs/orpheus-v1-english', 'canopylabs/orpheus-arabic-saudi'],
-        voice: ['autumn', 'diana', 'hannah', 'austin', 'daniel', 'troy', 'fahad', 'sultan', 'lulwa', 'noura'],
+        stt_model: modelIds('groq', 'stt'), tts_model: modelIds('groq', 'tts'),
+        voice: providerVoices('groq', 'tts').map(voice => voice.id), response_format: ['json', 'verbose_json', 'text', 'wav'],
     },
-    openai_realtime: {
-        // Current GA Realtime models (verified against OpenAI's official docs on
-        // 2026-05-25). Preview models (gpt-4o-realtime-preview-*) were removed
-        // on 2026-05-07 and the Beta Realtime API was sunset on 2026-05-12.
-        model: ['gpt-realtime', 'gpt-realtime-1.5', 'gpt-realtime-2', 'gpt-realtime-mini'],
-        // 10-voice Realtime API catalog. cedar + marin added 2026-05-14.
-        voice: ['alloy', 'ash', 'ballad', 'cedar', 'coral', 'echo', 'marin', 'sage', 'shimmer', 'verse'],
-    },
-    google_live: {
-        model: GOOGLE_LIVE_SUGGESTED_MODELS,
-        llm_model: GOOGLE_LIVE_SUGGESTED_MODELS,
-        tts_voice_name: [
-            'Achernar', 'Achird', 'Algenib', 'Algieba', 'Alnilam', 'Aoede', 'Autonoe',
-            'Callirrhoe', 'Charon', 'Despina', 'Enceladus', 'Erinome', 'Fenrir', 'Gacrux',
-            'Iapetus', 'Kore', 'Laomedeia', 'Leda', 'Orus', 'Puck', 'Pulcherrima',
-            'Rasalgethi', 'Sadachbia', 'Sadaltager', 'Schedar', 'Sulafat', 'Umbriel',
-            'Vindemiatrix', 'Zephyr', 'Zubenelgenubi',
-        ],
-    },
-    minimax: {
-        chat_model: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'],
-        model: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'],
-    },
+    openai_realtime: { model: modelIds('openai_realtime', 'realtime'), voice: providerVoices('openai_realtime', 'realtime').map(voice => voice.id) },
+    google_live: { model: GOOGLE_LIVE_SUGGESTED_MODELS, llm_model: GOOGLE_LIVE_SUGGESTED_MODELS, tts_voice_name: providerVoices('google_live', 'live').map(voice => voice.id) },
+    minimax: { chat_model: modelIds('minimax', 'llm'), model: modelIds('minimax', 'llm') },
 };
 
 const initialCustomFields = (config: GenericProviderFormProps['config'], isNew?: boolean) => {
@@ -256,11 +223,11 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
         updateConfig(defaults, additionalFields);
     };
 
-    const handleSubtypeFieldChange = (key: string, value: any) => {
-        setCustomFields(fields => fields.filter(field => field.key !== key));
+    const handleSubtypeFieldChange = (key: string, value: any, related?: Record<string, any>) => {
+        setCustomFields(fields => fields.filter(field => field.key !== key && !Object.prototype.hasOwnProperty.call(related ?? {}, field.key)));
         // Directly merge into config without going through getBaseConfig()
         // which strips subtype-specific keys like chat_base_url, chat_model, etc.
-        const updated = { ...config, [key]: value };
+        const updated = { ...config, [key]: value, ...related };
         onChange(updated);
     };
 
@@ -493,13 +460,13 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
                                     config={config}
                                     onChange={handleSubtypeFieldChange}
                                 />
-                                {cap === 'llm' && ['openai', 'google', 'telnyx', 'telenyx', 'minimax'].includes(selectedSubtype.yamlType) && (
+                                {((cap === 'llm' && ['openai', 'google', 'telnyx', 'telenyx', 'minimax'].includes(selectedSubtype.yamlType)) || (cap === 'stt' && ['deepgram', 'deepgram_flux', 'google'].includes(selectedSubtype.id))) && (
                                     <ProviderCredentialsCard
                                         providerKey={isNew ? undefined : config.name}
                                         credentialType="api-key"
                                         label={`${selectedSubtype.label} API Key`}
                                         placeholder="Paste provider API key"
-                                        envVarFallback={`${String(config.name || selectedSubtype.yamlType).replace(/_llm$/i, '').toUpperCase()}_API_KEY`}
+                                        envVarFallback={cap === 'stt' ? `${selectedSubtype.yamlType.toUpperCase()}_API_KEY` : `${String(config.name || selectedSubtype.yamlType).replace(/_llm$/i, '').toUpperCase()}_API_KEY`}
                                         inlineValue={
                                             config.api_key ||
                                             (config.api_key_env

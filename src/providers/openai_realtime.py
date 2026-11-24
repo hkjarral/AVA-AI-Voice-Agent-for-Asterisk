@@ -1230,7 +1230,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             # Build audio.input with turn_detection nested inside
             audio_input: Dict[str, Any] = {
                 "format": {"type": in_fmt, "rate": in_rate},
-                "transcription": {"model": "whisper-1"},
+                "transcription": {"model": self.config.input_transcription_model},
             }
             # turn_detection lives under audio.input per official GA schema
             td_config: Dict[str, Any] = {
@@ -1283,7 +1283,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 "output_audio_format": out_fmt,
                 "voice": self._session_voice or self.config.voice,
                 "input_audio_transcription": {
-                    "model": "whisper-1"
+                    "model": self.config.input_transcription_model
                 },
             }
             # Beta: turn_detection at session level
@@ -1305,6 +1305,9 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 except Exception:
                     logger.debug("Failed to include turn_detection in session.update", call_id=self._call_id, exc_info=True)
         
+        if self._is_ga and str(self.config.model).startswith("gpt-realtime-2") and self.config.reasoning_effort is not None:
+            session["reasoning"] = {"effort": self.config.reasoning_effort}
+
         # GA API requires session type
         self._ga_session_type(session)
         

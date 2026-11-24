@@ -47,6 +47,7 @@ from prometheus_client import Gauge, Counter
 
 from .base import AIProviderInterface, ProviderCapabilities
 from ..utils.voice_catalog import known_voice_map
+from ..utils.provider_catalog import provider_default
 from ..audio import (
     convert_pcm16le_to_target_format,
     mulaw_to_pcm16le,
@@ -170,8 +171,10 @@ class GoogleLiveProvider(AIProviderInterface):
     - Input: 8kHz µ-law → 16kHz PCM16 → Gemini Live API
     - Output: 24kHz PCM16 from Gemini → 8kHz µ-law/PCM16 → AudioSocket
     """
-    DEFAULT_LIVE_MODEL = "gemini-2.5-flash-native-audio-latest"
+    DEFAULT_LIVE_MODEL = provider_default("google_live", "llm_model")
     GEMINI_3_8_LIVE_MODEL = "gemini-3.8-live"
+    GEMINI_3_8_THINKING_MODEL = "gemini-3.8-live-extended-thinking"
+    GEMINI_3_8_MODELS = frozenset({GEMINI_3_8_LIVE_MODEL, GEMINI_3_8_THINKING_MODEL})
     GEMINI_3_8_NON_BLOCKING_TOOLS = frozenset({"check_extension_status"})
     TOOL_DRAIN_GRACE_SEC = 2.0
     LEGACY_LIVE_MODEL_MAP = {
@@ -182,7 +185,7 @@ class GoogleLiveProvider(AIProviderInterface):
     def uses_full_duplex_barge_in(self) -> bool:
         """Only 3.8 opts into provider-owned interruption during playback."""
         return bool(
-            self._normalize_model_name(self.config.llm_model) == self.GEMINI_3_8_LIVE_MODEL
+            self._normalize_model_name(self.config.llm_model) in self.GEMINI_3_8_MODELS
             and getattr(self.config, "full_duplex_barge_in_3_8", True)
         )
 
@@ -880,6 +883,7 @@ class GoogleLiveProvider(AIProviderInterface):
             self._allowed_tools = []
 
         effective_model = self._normalize_model_name(self.config.llm_model)
+        self._validate_thinking_configuration(self._allowed_tools)
         logger.info(
             "Starting Google Live session",
             call_id=call_id,
@@ -995,6 +999,9 @@ class GoogleLiveProvider(AIProviderInterface):
             if not endpoint:
                 endpoint = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
+            if effective_model == self.GEMINI_3_8_THINKING_MODEL:
+                endpoint = endpoint.replace(".v1beta.", ".v1alpha.")
+
             logger.debug(
                 "Connecting to Google Live API",
                 call_id=call_id,
@@ -1108,14 +1115,24 @@ class GoogleLiveProvider(AIProviderInterface):
             return GoogleLiveProvider.DEFAULT_LIVE_MODEL
         return m
 
+    def _validate_thinking_configuration(self, tool_names) -> None:
+        if self._normalize_model_name(self.config.llm_model) != self.GEMINI_3_8_THINKING_MODEL:
+            return
+        if self.config.use_vertex_ai:
+            raise ValueError("Gemini Live Extended Thinking is qualified only for the Developer API")
+        blocking = [name for name in tool_names if self._tool_policy(name)[0] != ToolExecutionBehavior.NON_BLOCKING]
+        if blocking:
+            raise ValueError("Gemini Live Extended Thinking requires non-blocking tools; remove blocking tools: " + ", ".join(blocking))
+
     async def _send_setup(self, context: Optional[Dict[str, Any]]) -> None:
         """Send session setup message to Gemini Live API."""
         # Use instructions from config (like OpenAI Realtime pattern)
         system_prompt = self.config.instructions
-        
+        self._validate_thinking_configuration((context or {}).get("tools") or [])
+
         response_modalities = self._normalize_response_modalities(self.config.response_modalities)
         model_name = self._normalize_model_name(self.config.llm_model)
-        is_gemini_3_8 = model_name == self.GEMINI_3_8_LIVE_MODEL
+        is_gemini_3_8 = model_name in self.GEMINI_3_8_MODELS
         if is_gemini_3_8 and response_modalities != ["AUDIO"]:
             logger.warning("Gemini 3.8 Live supports AUDIO responses only; overriding response modalities", call_id=self._call_id)
             response_modalities = ["AUDIO"]
@@ -1139,6 +1156,9 @@ class GoogleLiveProvider(AIProviderInterface):
             "topP": self.config.llm_top_p,
             "topK": self.config.llm_top_k,
         }
+
+        if model_name == self.GEMINI_3_8_THINKING_MODEL:
+            generation_config["thinkingConfig"] = {"thinkingLevel": (self.config.thinking_level or "low").upper()}
 
         # Detailed debug logging for speech configuration
         speech_cfg = generation_config.get("speechConfig", {})
@@ -1715,7 +1735,13 @@ class GoogleLiveProvider(AIProviderInterface):
     async def _handle_server_message(self, data: Dict[str, Any]) -> None:
         """Handle incoming message from Gemini Live API."""
         message_type = None
-        
+        thinking = self._normalize_model_name(self.config.llm_model) == self.GEMINI_3_8_THINKING_MODEL
+        interaction_status = data.get("interactionStatus") or data.get("interaction_status")
+        if thinking and interaction_status == "IDLE" and "serverContent" not in data:
+            # Keep any tool/control event intact; completion is processed after it.
+            if not any(key in data for key in ("toolCall", "toolCallCancellation", "setupComplete", "goAway")):
+                data = {**data, "serverContent": {}}
+
         # Determine message type
         if "setupComplete" in data:
             message_type = "setupComplete"
@@ -1752,7 +1778,7 @@ class GoogleLiveProvider(AIProviderInterface):
             )
             if (
                 self._normalize_model_name(self.config.llm_model)
-                == self.GEMINI_3_8_LIVE_MODEL
+                in self.GEMINI_3_8_MODELS
                 or has_non_blocking
             ):
                 self._schedule_tool_calls(data)
@@ -1762,6 +1788,8 @@ class GoogleLiveProvider(AIProviderInterface):
             await self._handle_tool_call_cancellation(data)
         elif message_type == "goAway":
             await self._handle_go_away(data)
+        if thinking and interaction_status == "IDLE" and message_type != "serverContent":
+            await self._handle_server_content({"serverContent": {}, "interactionStatus": "IDLE"})
         # Note: inputTranscription and outputTranscription are NOT separate message types
         # They are fields within serverContent and are handled in _handle_server_content()
 
@@ -1999,6 +2027,10 @@ class GoogleLiveProvider(AIProviderInterface):
         
         # Check if model turn is complete - THIS is when we save the final transcription
         turn_complete = content.get("turnComplete", False)
+        if self._normalize_model_name(self.config.llm_model) == self.GEMINI_3_8_THINKING_MODEL:
+            # Intermediate filler utterances also emit turnComplete. Only IDLE
+            # closes the interaction / arms terminal cleanup / emits TTSEnd.
+            turn_complete = (data.get("interactionStatus") or data.get("interaction_status")) == "IDLE"
 
         # Save final transcriptions when turn completes (per API recommendation)
         if turn_complete and not self.long_audio_playback_enabled:
@@ -2046,6 +2078,8 @@ class GoogleLiveProvider(AIProviderInterface):
         if model_parts:
             self._turn_has_assistant_output = True
         for part in model_parts:
+            if part.get("thought"):
+                continue  # Reasoning is neither caller speech nor transcript.
             # Handle audio output
             if "inlineData" in part:
                 inline_data = part["inlineData"]
@@ -2662,7 +2696,7 @@ class GoogleLiveProvider(AIProviderInterface):
                 # matching the server's function-call id on both API surfaces.
                 safe_result = self._build_tool_response_payload(func_name, result)
                 use_vertex = getattr(self, '_vertex_active', getattr(self.config, 'use_vertex_ai', False))
-                is_gemini_3_8 = self._normalize_model_name(self.config.llm_model) == self.GEMINI_3_8_LIVE_MODEL
+                is_gemini_3_8 = self._normalize_model_name(self.config.llm_model) in self.GEMINI_3_8_MODELS
                 terminal_after_spoken_farewell = bool(
                     func_name == "hangup_call"
                     and result.get("will_hangup")

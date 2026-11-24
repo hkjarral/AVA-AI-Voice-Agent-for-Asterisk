@@ -219,7 +219,7 @@ async def test_transfer_failure_waits_until_originating_tool_response_is_sent(tr
     provider.websocket.send = send
     provider._allowed_tools = ['attended_transfer']
     provider._tool_adapter = SimpleNamespace(
-        registry=SimpleNamespace(is_tool_allowed=lambda *_: True), execute_tool=execute)
+        registry=SimpleNamespace(is_tool_allowed=lambda *_: True, get=lambda *_: None), execute_tool=execute)
     provider.prepare_handoff_result = AsyncMock()
     provider.handoff_result_sent = AsyncMock()
     tool = asyncio.create_task(provider._handle_tool_call({'toolCall': {'functionCalls': [

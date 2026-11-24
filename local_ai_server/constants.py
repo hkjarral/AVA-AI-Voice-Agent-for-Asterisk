@@ -39,3 +39,16 @@ def _normalize_text(value: str) -> str:
 
 # SenseVoice language hints accepted by sherpa-onnx's OfflineRecognizer.from_sense_voice().
 SENSE_VOICE_LANGUAGES = ("auto", "zh", "en", "ja", "ko", "yue")
+
+# Kokoro's language code is the first character of its built-in voice ID.
+# Mirrors the publisher-verified catalog; checked by provider catalog CI.
+KOKORO_LANGUAGES = ("a", "b", "e", "f", "h", "i", "j", "p", "z")
+
+
+def kokoro_voice_language(voice: str) -> str | None:
+    """Infer the phonemizer for a single stock voice; leave custom values alone."""
+    import re
+    value = str(voice or "").strip()
+    if re.fullmatch(r"[abefhijpz][fm]_[a-z]+", value):
+        return value[0]
+    return None

@@ -147,7 +147,8 @@ def test_configured_model_supports_typed_configs_and_adapter_defaults():
     defaulted = PipelineOrchestrator(_app_config({
         "deepseek_llm": {"type": "openai", "api_key": "test-key"},
     }))
-    assert defaulted._configured_llm_model("deepseek_llm") == "gpt-4o-mini"
+    from src.utils.provider_catalog import provider_default
+    assert defaulted._configured_llm_model("deepseek_llm") == provider_default("openai", "chat_model")
 
 
 @pytest.mark.asyncio
