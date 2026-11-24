@@ -652,6 +652,9 @@ class DeepgramTTSAdapter(TTSComponent):
         # Nothing to tear down per call.
         return
 
+    async def validate_connectivity(self, options: Dict[str, Any]) -> Dict[str, Any]:
+        return await super().validate_connectivity(self._compose_options(options))
+
     async def synthesize(
         self,
         call_id: str,

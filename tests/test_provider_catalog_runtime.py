@@ -314,8 +314,35 @@ async def test_flux_modular_multilingual_handshake_uses_configured_model_and_hin
     await adapter.validate_connectivity({})
     query = parse_qs(urlparse(captured["url"]).query)
     assert query["model"] == ["flux-general-multi"]
-    assert query["language_hints"] == ["en", "es"]
+    assert query["language_hint"] == ["en", "es"]
+    assert "language_hints" not in query
     assert "language" not in query
+    assert "channels" not in query
+
+    socket = AsyncMock()
+    connect = AsyncMock(return_value=socket)
+    monkeypatch.setattr("src.pipelines.deepgram_flux.websockets.connect", connect)
+    try:
+        await adapter.open_call("synthetic", {})
+        url = connect.await_args.args[0]
+        call_query = parse_qs(urlparse(url).query)
+        assert call_query["language_hint"] == ["en", "es"]
+        assert "language_hints" not in call_query
+        assert "channels" not in call_query
+    finally:
+        await adapter.close_call("synthetic")
+
+
+@pytest.mark.asyncio
+async def test_deepgram_tts_readiness_uses_instance_endpoint_and_key(monkeypatch):
+    cfg = DeepgramProviderConfig(api_key="instance-key", base_url="https://api.eu.deepgram.com",
+                                 tts_model="flux-haley-en", tts_version="v2")
+    adapter = DeepgramTTSAdapter("deepgram_customer_tts", None, cfg)
+    probe = AsyncMock(return_value={"healthy": True})
+    monkeypatch.setattr(adapter, "_test_http_connection", probe)
+
+    assert (await adapter.validate_connectivity({}))["healthy"]
+    probe.assert_awaited_once_with("https://api.eu.deepgram.com", "instance-key")
 
 
 @pytest.mark.asyncio

@@ -125,11 +125,10 @@ class DeepgramFluxSTTAdapter(STTComponent):
             "model": merged["model"],
             "encoding": merged.get("encoding", "linear16"),
             "sample_rate": merged.get("sample_rate", "16000"),
-            "channels": "1",
         }
         
         if merged.get("language_hints"):
-            query_params["language_hints"] = merged["language_hints"]
+            query_params["language_hint"] = merged["language_hints"]
         parsed = urlparse(base_url)
         existing = dict(parse_qsl(parsed.query))
         existing.update(query_params)
@@ -153,14 +152,13 @@ class DeepgramFluxSTTAdapter(STTComponent):
             "model": merged["model"],  # Required for Flux
             "encoding": merged.get("encoding", "linear16"),
             "sample_rate": merged.get("sample_rate", "16000"),
-            "channels": "1",  # Mono audio (required for Flux)
             # Turn detection parameters
             "eot_threshold": merged.get("eot_threshold", "0.7"),
             "eot_timeout_ms": merged.get("eot_timeout_ms", "5000"),
         }
         
         if merged.get("language_hints"):
-            query_params["language_hints"] = merged["language_hints"]
+            query_params["language_hint"] = merged["language_hints"]
 
         # Optional: Enable EagerEndOfTurn for faster LLM triggering
         if "eager_eot_threshold" in merged:
