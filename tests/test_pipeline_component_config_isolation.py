@@ -19,6 +19,38 @@ def _config(providers, *, stt="local_stt", llm="local_llm", tts="local_tts"):
     )
 
 
+@pytest.mark.parametrize("entry,retained", [
+    ({"type": "deepgram"}, True),
+    ({"type": "operator_extension", "custom": "setting"}, True),
+    ({"type": "deepgram", "enabled": False}, False),
+    ({"type": "deepgram", "tts_model": "flux-kit-en", "tts_version": "v1"}, False),
+    ({"type": "deepgram", "api_key_file": "/missing/explicit-secret"}, False),
+    ("invalid-shape", False),
+    ({"type": "deepgram", "api_key": "synthetic"}, False),
+])
+def test_injected_speech_extension_precedence(monkeypatch, entry, retained):
+    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+    extension = lambda *_: object()
+    orchestrator = PipelineOrchestrator(_config({"customer_tts": entry}), registry={"customer_tts": extension})
+    assert (orchestrator._resolve_factory("customer_tts") is extension) is retained
+
+
+@pytest.mark.parametrize("raw_model", [None, "", "  "])
+def test_canonical_openai_blank_model_hydration_matches_validation(raw_model):
+    from src.config import validate_provider_settings
+    providers = {"openai_tts": {"api_key": "synthetic", "tts_model": raw_model}}
+    validate_provider_settings(providers, provider_names={"openai_tts"})
+    orchestrator = PipelineOrchestrator(_config(providers))
+    adapter = orchestrator._build_component("openai_tts", {})
+    assert adapter._provider_defaults.tts_model == "gpt-realtime-2.1-mini"
+
+
+def test_openai_factory_keeps_implicit_reasoning_distinct_from_explicit_override():
+    orchestrator = PipelineOrchestrator(_config({"openai_llm": {"api_key": "synthetic"}}))
+    adapter = orchestrator._build_component("openai_llm", {"model": "gpt-6.2-sol"})
+    assert adapter._compose_options({})["reasoning_effort"] is None
+
+
 def test_local_component_blocks_are_hydrated_independently():
     orchestrator = PipelineOrchestrator(
         _config(

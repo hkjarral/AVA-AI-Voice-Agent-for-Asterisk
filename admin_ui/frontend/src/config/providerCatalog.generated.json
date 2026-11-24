@@ -6,6 +6,7 @@
       "sources": [
         "https://developers.openai.com/api/docs/models/all",
         "https://developers.openai.com/api/docs/guides/realtime-conversations",
+        "https://developers.openai.com/api/docs/guides/speech-to-text",
         "https://developers.openai.com/api/docs/deprecations"
       ],
       "defaults": {
@@ -64,12 +65,6 @@
           {
             "id": "gpt-4o-transcribe",
             "label": "gpt-4o-transcribe (deprecated)",
-            "status": "deprecated",
-            "shutdown_date": "2027-02-26"
-          },
-          {
-            "id": "gpt-4o-transcribe-diarize",
-            "label": "gpt-4o-transcribe-diarize (deprecated)",
             "status": "deprecated",
             "shutdown_date": "2027-02-26"
           },
@@ -732,6 +727,7 @@
     "deepgram": {
       "sources": [
         "https://developers.deepgram.com/docs/voice-agent-stt-models",
+        "https://developers.deepgram.com/docs/models-languages-overview/",
         "https://developers.deepgram.com/docs/tts-models",
         "https://developers.deepgram.com/docs/voice-agent-tts-models",
         "https://developers.deepgram.com/docs/flux-tts/voices",
@@ -757,11 +753,26 @@
         "flux_stt": [
           {
             "id": "flux-general-en",
-            "label": "flux-general-en"
+            "label": "flux-general-en",
+            "languages": [
+              "en"
+            ]
           },
           {
             "id": "flux-general-multi",
-            "label": "flux-general-multi"
+            "label": "flux-general-multi",
+            "languages": [
+              "en",
+              "es",
+              "fr",
+              "de",
+              "hi",
+              "ru",
+              "pt",
+              "ja",
+              "it",
+              "nl"
+            ]
           }
         ],
         "llm": [
@@ -2957,6 +2968,40 @@
           {
             "id": "gemini-3.5-flash-lite",
             "label": "gemini-3.5-flash-lite"
+          }
+        ]
+      },
+      "voices": {
+        "tts": [
+          {
+            "id": "en-US-Standard-A",
+            "label": "en-US-Standard-A (US male, Standard)",
+            "language": "en-US"
+          },
+          {
+            "id": "en-US-Standard-B",
+            "label": "en-US-Standard-B (US male, Standard)",
+            "language": "en-US"
+          },
+          {
+            "id": "en-US-Neural2-A",
+            "label": "en-US-Neural2-A (US male, Neural2)",
+            "language": "en-US"
+          },
+          {
+            "id": "en-US-Neural2-C",
+            "label": "en-US-Neural2-C (US female, Neural2)",
+            "language": "en-US"
+          },
+          {
+            "id": "en-US-Studio-O",
+            "label": "en-US-Studio-O (US female, Studio)",
+            "language": "en-US"
+          },
+          {
+            "id": "en-US-Studio-Q",
+            "label": "en-US-Studio-Q (US male, Studio)",
+            "language": "en-US"
           }
         ]
       }

@@ -28,7 +28,8 @@ from ..audio import (
     resample_audio,
     resolve_output_resampler_policy,
 )
-from ..config import AppConfig, OpenAIProviderConfig
+from ..config import AppConfig, OpenAIProviderConfig, resolve_openai_tts_transport
+from ..utils.provider_catalog import provider_default
 from ..logging_config import get_logger
 from .base import LLMComponent, STTComponent, TTSComponent, LLMResponse
 from .openai_realtime_tts import RealtimeTTSPool
@@ -870,6 +871,21 @@ class OpenAILLMAdapter(LLMComponent):
             merged["chat_base_url"] = self._provider_defaults.chat_base_url
             merged["chat_model"] = self._provider_defaults.chat_model
 
+        # Defaults belong to the effective model after pipeline/runtime
+        # overrides, while explicit settings (including None) retain priority.
+        explicit_effort = next((options["reasoning_effort"] for options in (runtime_options, self._pipeline_defaults)
+                                if "reasoning_effort" in options), ...)
+        if explicit_effort is ... and "reasoning_effort" in self._provider_defaults.model_fields_set:
+            explicit_effort = self._provider_defaults.reasoning_effort
+        if explicit_effort is ...:
+            merged["reasoning_effort"] = (
+                provider_default("openai", "reasoning_effort")
+                if _url_host(merged["chat_base_url"]) == "api.openai.com" and merged["chat_model"] == provider_default("openai", "chat_model")
+                else None
+            )
+        else:
+            merged["reasoning_effort"] = explicit_effort
+
         # Fallback persona when missing
         try:
             sys_p = (merged.get("system_prompt") or "").strip()
@@ -1014,8 +1030,7 @@ class OpenAITTSAdapter(TTSComponent):
         # those values typically live in provider defaults, so we validate using composed options.
         merged = self._compose_options(options or {})
         model = str(merged["tts_model"])
-        transport = merged["tts_transport"]
-        if transport != "realtime" and not (transport == "auto" and model.startswith("gpt-realtime")):
+        if resolve_openai_tts_transport(merged["tts_model"], merged["tts_transport"]) != "realtime":
             return await super().validate_connectivity(merged)
         if not merged["api_key"]:
             return {"healthy": False, "error": "No OpenAI Realtime TTS credential configured"}
@@ -1083,12 +1098,7 @@ class OpenAITTSAdapter(TTSComponent):
             )
             merged["voice"] = fallback_voice
 
-        transport = merged["tts_transport"]
-        realtime_model = str(merged["tts_model"]).startswith("gpt-realtime")
-        if transport == "auto":
-            transport = "realtime" if realtime_model else "speech"
-        if (transport == "realtime") != realtime_model:
-            raise ValueError("OpenAI TTS transport and model are incompatible")
+        transport = resolve_openai_tts_transport(merged["tts_model"], merged["tts_transport"])
         if transport == "realtime":
             from ..utils.voice_catalog import OPENAI_GA_VOICES
             if merged["voice"] not in OPENAI_GA_VOICES:
@@ -1265,6 +1275,13 @@ class OpenAITTSAdapter(TTSComponent):
                 ),
             ),
         }
+        route = {key: merged[key] for key in ("tts_model", "tts_transport", "tts_base_url")}
+        model_selected = any(key in options for options in (runtime_options, self._pipeline_defaults) for key in ("model", "tts_model")) or "tts_model" in self._provider_defaults.model_fields_set
+        if not model_selected:
+            route.pop("tts_model")
+        route = OpenAIProviderConfig(**route)
+        merged["tts_model"] = route.tts_model
+        merged["tts_transport"] = route.tts_transport
         merged["output_resampler"] = resolve_output_resampler_policy(
             provider_mode=merged.get("output_resampler")
         )[0]

@@ -1,4 +1,4 @@
-import { modelOptions, modelIds, providerDefault, providerVoices } from '../../../config/providerCatalog';
+import { modelOptions, modelIds, providerDefault, providerVoices, providerModels } from '../../../config/providerCatalog';
 import ConnectionRecoveryFields from './ConnectionRecoveryFields';
 import React, { useEffect, useState } from 'react';
 import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
@@ -23,6 +23,8 @@ const DEEPGRAM_AGENT_LANGUAGES = [
 
 const DEEPGRAM_RECOMMENDED_MODELS = new Set([...modelIds('deepgram', 'stt'), ...modelIds('deepgram', 'flux_stt')]);
 const DEEPGRAM_ENGLISH_ONLY_MODELS = new Set<string>(['flux-general-en', 'nova-2-phonecall']);
+const listenLanguagesForModel = (model: string): string[] | undefined => providerModels('deepgram', 'flux_stt').find(item => item.id === model)?.languages
+    ?? (DEEPGRAM_ENGLISH_ONLY_MODELS.has(model) ? ['en'] : undefined);
 const normalizeAgentLanguage = (value: unknown): string => String(value || 'en').trim().toLowerCase().replace('_', '-').split('-', 1)[0] || 'en';
 const allDeepgramVoices = [...providerVoices('deepgram', 'tts'), ...providerVoices('deepgram', 'flux_tts')];
 const auraVoiceLanguage = (value: unknown): string | null => {
@@ -53,15 +55,16 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
     const agentLanguage = normalizeAgentLanguage(configuredAgentLanguage);
     const selectedVersion = config.tts_version ?? providerDefault('deepgram', 'tts_version');
     const familyVoices = providerVoices('deepgram', selectedVersion === 'v2' ? 'flux_tts' : 'tts');
-    const agentLanguages = selectedVersion === 'v2'
+    const listenLanguages = listenLanguagesForModel(selectedModel);
+    const ttsLanguages = selectedVersion === 'v2'
         ? [...new Set(familyVoices.map(voice => voice.language ?? voice.id.split('-').slice(-1)[0] ?? 'en'))].map(value => ({ value, label: value.toUpperCase() }))
         : DEEPGRAM_AGENT_LANGUAGES;
+    const agentLanguages = ttsLanguages.filter(language => !listenLanguages || listenLanguages.includes(language.value));
     const configuredVoice = String(config.tts_model || providerDefault('deepgram', 'tts_model'));
     const configuredVoiceLanguage = auraVoiceLanguage(configuredVoice);
     const legacyModel = !DEEPGRAM_RECOMMENDED_MODELS.has(selectedModel);
     const legacyLanguage = !agentLanguages.some(language => language.value === agentLanguage);
-    const modelLanguageMismatch =
-        DEEPGRAM_ENGLISH_ONLY_MODELS.has(selectedModel) && agentLanguage !== 'en';
+    const modelLanguageMismatch = listenLanguages !== undefined && !listenLanguages.includes(agentLanguage);
     const voiceLanguageMismatch = configuredVoiceLanguage !== agentLanguage || !familyVoices.some(voice => voice.id === configuredVoice);
 
     return (
@@ -247,7 +250,7 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
                             }}
                         >
                             <optgroup label="Flux — Conversational (built-in turn detection)">
-                                {modelOptions('deepgram', 'flux_stt').map(model => <option key={model.value} value={model.value} disabled={DEEPGRAM_ENGLISH_ONLY_MODELS.has(model.value) && agentLanguage !== 'en'}>{model.label}</option>)}
+                                {modelOptions('deepgram', 'flux_stt').map(model => <option key={model.value} value={model.value} disabled={listenLanguagesForModel(model.value)?.includes(agentLanguage) === false}>{model.label}</option>)}
                             </optgroup>
                             <optgroup label="Nova — Streaming Recognition">
                                 {modelOptions('deepgram', 'stt').map(model => <option key={model.value} value={model.value} disabled={DEEPGRAM_ENGLISH_ONLY_MODELS.has(model.value) && agentLanguage !== 'en'}>{model.label}</option>)}
@@ -278,8 +281,7 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
                         )}
                         {modelLanguageMismatch && (
                             <p className="text-xs text-red-600" role="alert">
-                                {selectedModel} is English-only. Select English or use Flux
-                                Multilingual/Nova-3 before placing a call.
+                                {selectedModel} does not support the selected listen language ({agentLanguage}). Select a language supported by both recognition and synthesis, or change the listen model before placing a call.
                             </p>
                         )}
                     </div>
@@ -361,10 +363,6 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
                                 <option
                                     key={value}
                                     value={value}
-                                    disabled={
-                                        DEEPGRAM_ENGLISH_ONLY_MODELS.has(selectedModel) &&
-                                        value !== 'en'
-                                    }
                                 >
                                     {label}
                                 </option>
@@ -378,7 +376,7 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
                             )}
                         </select>
                         <p className="text-xs text-muted-foreground">
-                            Supported languages for the selected TTS family. Locale variants are preserved and
+                            Supported languages shared by the selected listen model and TTS family. Locale variants are preserved and
                             normalized to their base language at runtime.
                         </p>
                         {legacyLanguage && (

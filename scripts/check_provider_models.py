@@ -115,6 +115,7 @@ def check_catalog(data: Any) -> list[str]:
         ):
             failures.append(f"{provider_id}: document at least one HTTPS official source")
         model_entries: dict[str, dict[str, Any]] = {}
+        voice_entries: dict[str, dict[str, Any]] = {}
         all_voices: set[str] = set()
         for kind in ("models", "voices"):
             roles = provider.get(kind, {})
@@ -142,10 +143,20 @@ def check_catalog(data: Any) -> list[str]:
                         failures.append(f"{provider_id}.{kind}.{role}.{identifier}: invalid shutdown_date")
                     if entry.get("status") == "deprecated" and not (entry.get("shutdown_date") or entry.get("retirement_date_unknown") is True):
                         failures.append(f"{provider_id}.{kind}.{role}.{identifier}: document the retirement date or explicitly mark it unknown")
+                    if "languages" in entry:
+                        languages = entry["languages"]
+                        if not isinstance(languages, list) or not languages or any(
+                            not isinstance(language, str) or not re.fullmatch(r"[a-z]{2,3}(?:-[A-Za-z0-9]+)*", language)
+                            for language in languages
+                        ):
+                            failures.append(f"{provider_id}.{kind}.{role}.{identifier}: languages must be non-empty language codes")
+                        elif len(languages) != len(set(languages)):
+                            failures.append(f"{provider_id}.{kind}.{role}.{identifier}: duplicate language codes")
                     if kind == "models":
                         model_entries[identifier] = entry
                     else:
                         all_voices.add(identifier)
+                        voice_entries[identifier] = entry
         defaults = provider.get("defaults", {})
         if not isinstance(defaults, dict):
             failures.append(f"{provider_id}: defaults must be an object")
@@ -156,7 +167,7 @@ def check_catalog(data: Any) -> list[str]:
             # Aura/Flux encode the voice directly in the model identifier.
             if model_entries and value not in model_entries and value not in all_voices:
                 failures.append(f"{provider_id}.{field}: default {value!r} is absent from the catalog")
-            if model_entries.get(value, {}).get("status") in {"retired", "deprecated", "legacy"}:
+            if any(entry.get("status") in {"retired", "deprecated", "legacy"} for entry in (model_entries.get(value, {}), voice_entries.get(value, {}))):
                 failures.append(f"{provider_id}.{field}: new-provider default {value!r} is not active")
             roles = {
                 "stt_model": ("stt", "flux_stt"), "input_transcription_model": ("stt",),

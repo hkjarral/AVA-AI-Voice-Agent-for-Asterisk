@@ -1176,7 +1176,54 @@ def _assert_tool_emails_valid(content: str) -> None:
                     _check(v, f"{tool_name}.{key}_by_context.{ctx}")
 
 
-def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
+def _affected_provider_settings(previous: Dict[str, Any], desired: Dict[str, Any], effective: Dict[str, Any]) -> set[str]:
+    """Validate edited providers and routes' dependencies, leaving unused legacy entries alone."""
+    providers = desired.get("providers") or {}
+    old_providers = previous.get("providers") or {}
+    if not isinstance(providers, dict) or not isinstance(old_providers, dict):
+        return set()
+    affected = {str(name) for name, value in providers.items() if value != old_providers.get(name)}
+    pipelines = effective.get("pipelines") or {}
+
+    def include_route(target: Any) -> None:
+        if not isinstance(target, str):
+            return
+        target = target.strip()
+        if target in providers:
+            affected.add(target)
+        pipeline = pipelines.get(target) if isinstance(pipelines, dict) else None
+        if isinstance(pipeline, dict):
+            for role in ("stt", "llm", "tts"):
+                component = pipeline.get(role)
+                if isinstance(component, str) and component.strip() in providers:
+                    affected.add(component.strip())
+
+    for key in ("default_provider", "active_pipeline"):
+        if previous.get(key) != desired.get(key):
+            include_route(effective.get(key))
+    for section in ("pipelines", "contexts"):
+        old_entries, entries = previous.get(section) or {}, desired.get(section) or {}
+        if not isinstance(old_entries, dict) or not isinstance(entries, dict):
+            continue
+        for name, body in entries.items():
+            if body == old_entries.get(name):
+                continue
+            if section == "pipelines":
+                include_route(name)
+            if isinstance(body, dict):
+                effective_entries = effective.get(section)
+                effective_body = effective_entries.get(name) if isinstance(effective_entries, dict) else None
+                if not isinstance(effective_body, dict):
+                    effective_body = body
+                for key in ("provider", "default_provider", "pipeline"):
+                    include_route(effective_body.get(key))
+    # The canonical OpenAI speech/LLM roles inherit the shared block.
+    if "openai" in affected:
+        affected.update(name for name in ("openai_stt", "openai_llm", "openai_tts") if name in providers)
+    return affected
+
+
+def _validate_ai_agent_config(content: str, *, provider_names: Optional[set[str]] = None) -> Dict[str, Any]:
     """
     Validate ai-agent.yaml content against the canonical AppConfig schema.
 
@@ -1206,7 +1253,7 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
 
     try:
         from pydantic import ValidationError
-        from src.config import AppConfig, load_config
+        from src.config import AppConfig, load_config, validate_provider_settings
         from src.config.provider_instances import validate_provider_instances
     except Exception as exc:
         raise HTTPException(
@@ -1316,7 +1363,9 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
 
     try:
         with _temporary_dotenv(settings.ENV_PATH, defaults=env_required_defaults):
-            load_config(tmp_path)
+            loaded = load_config(tmp_path)
+            affected = provider_names if provider_names is not None else _affected_provider_settings(_read_merged_config_dict() or {}, parsed, loaded.model_dump())
+            validate_provider_settings(loaded.providers, provider_names=affected)
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=f"Config schema validation failed: {exc}")
     except Exception as exc:
@@ -1333,7 +1382,7 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    return {"warnings": warnings}
+    return {"warnings": warnings, "provider_settings_scope": sorted(affected)}
 
 
 def persist_config_content(
@@ -1375,6 +1424,14 @@ def _persist_config_content_locked(
     # Validate YAML + schema before saving.
     validation = _validate_ai_agent_config(content)
     warnings = validation.get("warnings") or []
+    provider_scope = validation.get("provider_settings_scope")
+
+    def validate_migrated_content(migrated: str) -> Dict[str, Any]:
+        # Automatic format/secret migrations do not expand the operator's edit
+        # scope. Explicit credential changes were included by the initial pass.
+        if provider_scope is None:
+            return _validate_ai_agent_config(migrated)
+        return _validate_ai_agent_config(migrated, provider_names=set(provider_scope))
 
     # Parse desired merged config content from UI.
     new_parsed = _safe_load_no_duplicates(content) or {}
@@ -1389,14 +1446,14 @@ def _persist_config_content_locked(
 
     if normalize_legacy_openai_audio(new_parsed):
         content = yaml.dump(new_parsed, default_flow_style=False, sort_keys=False)
-        validation = _validate_ai_agent_config(content)
+        validation = validate_migrated_content(content)
         migrated_warnings = validation.get("warnings")
         warnings = warnings if migrated_warnings is None else migrated_warnings
 
     secrets_migrated = _migrate_inline_provider_secrets(new_parsed)
     if secrets_migrated:
         content = yaml.dump(new_parsed, default_flow_style=False, sort_keys=False)
-        validation = _validate_ai_agent_config(content)
+        validation = validate_migrated_content(content)
         migrated_warnings = validation.get("warnings")
         warnings = warnings if migrated_warnings is None else migrated_warnings
 
@@ -5966,7 +6023,9 @@ async def get_providers_voice_meta():
         if kind == "deepgram":
             raw_language = str(entry.get("agent_language") or "en").strip().lower()
             agent_language = raw_language.replace("_", "-").split("-", 1)[0] or "en"
-            tts_version = str(entry.get("tts_version") or "v1")
+            from src.config.loaders import _expand_env_vars_with_defaults
+            with _temporary_dotenv(settings.ENV_PATH):
+                tts_version = _expand_env_vars_with_defaults(str(entry.get("tts_version") or "v1")) or "v1"
         out.append({
             "name": name,
             "kind": kind,

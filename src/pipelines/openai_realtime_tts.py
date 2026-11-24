@@ -47,8 +47,9 @@ class RealtimeTTSPool:
     async def _close(websocket: Any) -> None:
         try:
             await asyncio.wait_for(websocket.close(), timeout=3.0)
-        except (Exception, asyncio.CancelledError):
-            # Closing never masks the original provider/timeout/cancellation error.
+        except Exception:
+            # Close failures do not mask synthesis errors. Task cancellation
+            # propagates, including cancellation that arrives during close.
             pass
 
     async def validate_session(self, options: dict[str, Any]) -> None:
@@ -182,10 +183,12 @@ class RealtimeTTSPool:
                 raise RuntimeError("OpenAI Realtime TTS model_not_found for the configured credential") from exc
             raise RuntimeError("OpenAI Realtime TTS session closed before completion") from exc
         finally:
-            if request.websocket is not None:
-                await self._close(request.websocket)
-            requests = self._requests.get(call_id)
-            if requests is not None:
-                requests.discard(request)
-                if not requests:
-                    self._requests.pop(call_id, None)
+            try:
+                if request.websocket is not None:
+                    await self._close(request.websocket)
+            finally:
+                requests = self._requests.get(call_id)
+                if requests is not None:
+                    requests.discard(request)
+                    if not requests:
+                        self._requests.pop(call_id, None)

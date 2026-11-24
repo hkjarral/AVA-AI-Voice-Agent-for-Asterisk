@@ -43,6 +43,7 @@ from pydantic import ValidationError
 from .config import (
     AppConfig,
     load_config,
+    validate_provider_settings,
     LocalProviderConfig,
     DeepgramProviderConfig,
     GoogleProviderConfig,
@@ -50,6 +51,7 @@ from .config import (
     GrokProviderConfig,
 )
 from .config_apply import classify_config_change
+from .config.normalization import ConfigValidationError
 from .config.provider_instances import (
     FULL_AGENT_KINDS,
     provider_kind,
@@ -4568,6 +4570,7 @@ class Engine:
                 continue
             self.provider_kinds[name] = kind
             try:
+                validate_provider_settings(self.config.providers, provider_names={name})
                 issues = self._audit_provider_config(name, provider_config_data)
                 if issues:
                     self.provider_alignment_issues[name] = issues
@@ -18034,9 +18037,17 @@ class Engine:
                                 logger.warning("Failed aborting pipeline greeting playback", call_id=call_id, exc_info=True)
 
                 if greeting_failed:
-                    if self._pipeline_output_allowed(call_id, session, stage="greeting-failure"):
+                    if not self._pipeline_output_allowed(call_id, session, stage="greeting-failure"):
+                        return
+                    # The adapters opened successfully. With leave_open the call
+                    # can still handle speech, unless the external dialer owns it.
+                    if (
+                        self.config.on_provider_failure != "leave_open"
+                        or session.external_platform == "vicidial"
+                    ):
                         await self._handle_provider_start_failure(session)
-                    return
+                        return
+                    logger.warning("Continuing pipeline without greeting", call_id=call_id)
 
             # No greeting (or a TTS failure that produced no frames) must not
             # leave an indefinite tone playing after the pipeline is ready.
@@ -20197,6 +20208,20 @@ class Engine:
                 getattr(self, "_call_providers", {}).get(session.call_id)
                 or self.providers.get(provider_name)
             )
+        if not provider and not pipeline_profile_only:
+            try:
+                validate_provider_settings(
+                    getattr(self.config, "providers", None), provider_names={provider_name}
+                )
+            except ConfigValidationError as exc:
+                session.context_resolution_error = f"context_resolution_failed: {exc}"
+                session.error_message = session.context_resolution_error
+                await self._save_session(session)
+                logger.error(
+                    "Selected provider has invalid settings",
+                    call_id=session.call_id, provider=provider_name, error=str(exc),
+                )
+                return
         if not provider and not effective_pipeline:
             logger.warning(
                 "Provider not found for audio profile resolution",
@@ -22248,6 +22273,9 @@ class Engine:
             factory = self.provider_factories.get(provider_name)
 
             if not factory:
+                # A deliberately selected invalid configuration must not send
+                # caller audio or Agent instructions to the default provider.
+                validate_provider_settings(getattr(self.config, "providers", None), provider_names={provider_name})
                 fallback_name = self.config.default_provider
                 fallback_factory = self.provider_factories.get(fallback_name)
                 if fallback_factory:

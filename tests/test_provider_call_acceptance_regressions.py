@@ -69,6 +69,39 @@ async def test_openai_realtime_tts_ignores_audio_received_after_close(monkeypatc
         await waiting
 
 
+@pytest.mark.asyncio
+async def test_realtime_tts_cancellation_during_close_releases_request(monkeypatch):
+    from src.pipelines.openai_realtime_tts import RealtimeTTSPool
+
+    ws = AsyncMock()
+    closing = asyncio.Event()
+
+    async def close():
+        closing.set()
+        await asyncio.Event().wait()
+
+    ws.close.side_effect = close
+    ws.recv.side_effect = [
+        '{"type":"session.updated"}',
+        '{"type":"response.output_audio.delta","delta":"AAAAAA=="}',
+        '{"type":"response.done","response":{"status":"completed"}}',
+    ]
+    monkeypatch.setattr("src.pipelines.openai_realtime_tts.websockets.connect", AsyncMock(return_value=ws))
+    pool = RealtimeTTSPool()
+    chunks = pool.synthesize("test", "hello", {
+        "api_key": "test", "tts_model": "gpt-realtime-2.1-mini", "voice": "marin",
+        "tts_realtime_base_url": "wss://api.openai.com/v1/realtime",
+        "target_format": {"sample_rate": 24000, "encoding": "linear16"},
+    })
+    assert await anext(chunks) == b"\0" * 4
+    task = asyncio.create_task(anext(chunks))
+    await asyncio.wait_for(closing.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert pool._requests == {}
+
+
 def test_explicit_token_limit_layer_wins_over_wider_scope():
     config = OpenAIProviderConfig(api_key="test", max_completion_tokens=900)
     adapter = OpenAILLMAdapter("openai_llm", None, config, {"max_tokens": 300})

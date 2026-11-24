@@ -252,7 +252,40 @@ class WebSocketMediaConfig(BaseModel):
         return self
 
 
-class LocalProviderConfig(BaseModel):
+def provider_settings_payload(cls: type[BaseModel], payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize omitted defaulted strings without changing credential selectors."""
+    selectors = {"api_key", "api_key_file", "api_key_env", "credentials_path", "enabled"}
+    result = dict(payload)
+    for name, field in cls.model_fields.items():
+        if name in selectors or name not in result:
+            continue
+        if isinstance(field.default, str) and field.default and (
+            result[name] is None and type(None) not in get_args(field.annotation)
+            or isinstance(result[name], str) and not result[name].strip()
+        ):
+            result.pop(name)
+    return result
+
+
+def resolve_openai_tts_transport(model: str, transport: str = "auto") -> str:
+    """Shared schema/runtime routing rule, including dated Speech snapshots."""
+    if transport not in {"auto", "speech", "realtime"}:
+        raise ValueError("OpenAI TTS transport must be auto, speech, or realtime")
+    realtime = str(model).strip().lower().startswith("gpt-realtime")
+    effective = ("realtime" if realtime else "speech") if transport == "auto" else transport
+    if (effective == "realtime") != realtime:
+        raise ValueError("OpenAI TTS transport and model are incompatible")
+    return effective
+
+
+class ProviderSettingsModel(BaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_defaulted_settings(cls, value):
+        return provider_settings_payload(cls, value) if isinstance(value, dict) else value
+
+
+class LocalProviderConfig(ProviderSettingsModel):
     enabled: bool = Field(default=True)
     # base_url is preferred for full agent mode (consistent with other providers)
     # ws_url is kept for backward compatibility with modular providers
@@ -330,7 +363,7 @@ class LocalProviderConfig(BaseModel):
         return self.base_url or self.ws_url or "ws://127.0.0.1:8765"
 
 
-class DeepgramProviderConfig(CloudConnectionConfig):
+class DeepgramProviderConfig(CloudConnectionConfig, ProviderSettingsModel):
     api_key: Optional[str] = None
     api_key_file: Optional[str] = None
     api_key_env: Optional[str] = None
@@ -444,7 +477,7 @@ class DeepgramProviderConfig(CloudConnectionConfig):
         return self
 
 
-class OpenAIProviderConfig(BaseModel):
+class OpenAIProviderConfig(ProviderSettingsModel):
     """# Milestone7: Canonical defaults for OpenAI pipeline adapters."""
     api_key: Optional[str] = None
     api_key_file: Optional[str] = None
@@ -496,24 +529,34 @@ class OpenAIProviderConfig(BaseModel):
         deprecated=True,
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _preserve_configured_speech_endpoint(cls, value):
+        if not isinstance(value, dict):
+            return value
+        result = provider_settings_payload(cls, value)
+        endpoint = result.get("tts_base_url")
+        custom_speech = isinstance(endpoint, str) and endpoint.rstrip("/") != cls.model_fields["tts_base_url"].default.rstrip("/")
+        if "tts_model" not in result and (result.get("tts_transport") == "speech" or custom_speech and result.get("tts_transport", "auto") != "realtime"):
+            # Existing compatible Speech endpoints must never acquire a remote
+            # Realtime endpoint merely because their model was omitted.
+            result["tts_model"] = "tts-1"
+        return result
+
     @model_validator(mode="after")
     def _validate_tts_transport(self) -> "OpenAIProviderConfig":
-        realtime_model = self.tts_model.strip().startswith("gpt-realtime")
-        if self.tts_transport == "speech" and realtime_model:
-            raise ValueError("OpenAI Realtime TTS models require tts_transport=auto or realtime")
-        if self.tts_transport == "realtime" and self.tts_model.strip() in {"tts-1", "tts-1-hd", "gpt-4o-mini-tts"}:
-            raise ValueError("Legacy OpenAI Speech models require tts_transport=auto or speech")
+        resolve_openai_tts_transport(self.tts_model, self.tts_transport)
         if "reasoning_effort" not in self.model_fields_set and (
             urlparse(self.chat_base_url).hostname != "api.openai.com"
             or self.chat_model != provider_default("openai", "chat_model")
         ):
             # Compatibility APIs own their parameter contract. Only an explicit
             # operator choice may project OpenAI-specific reasoning controls.
-            self.reasoning_effort = None
+            object.__setattr__(self, "reasoning_effort", None)
         return self
 
 
-class TelnyxLLMProviderConfig(BaseModel):
+class TelnyxLLMProviderConfig(ProviderSettingsModel):
     """
     Canonical defaults for the Telnyx AI Inference LLM adapter.
 
@@ -540,7 +583,7 @@ class TelnyxLLMProviderConfig(BaseModel):
     response_timeout_sec: float = Field(default=30.0)
 
 
-class MiniMaxLLMProviderConfig(BaseModel):
+class MiniMaxLLMProviderConfig(ProviderSettingsModel):
     """
     Canonical defaults for the MiniMax LLM pipeline adapter.
 
@@ -567,7 +610,7 @@ class MiniMaxLLMProviderConfig(BaseModel):
     response_timeout_sec: float = Field(default=30.0)
 
 
-class GoogleProviderConfig(CloudConnectionConfig):
+class GoogleProviderConfig(CloudConnectionConfig, ProviderSettingsModel):
     api_key: Optional[str] = None
     api_key_file: Optional[str] = None
     api_key_env: Optional[str] = None
@@ -671,7 +714,7 @@ class GoogleProviderConfig(CloudConnectionConfig):
     vertex_location: str = Field(default="us-central1")  # GCP region (GOOGLE_CLOUD_LOCATION)
 
 
-class GroqSTTProviderConfig(BaseModel):
+class GroqSTTProviderConfig(ProviderSettingsModel):
     """Groq Speech-to-Text (OpenAI-compatible audio/transcriptions + audio/translations)."""
 
     enabled: bool = Field(default=True)
@@ -687,7 +730,7 @@ class GroqSTTProviderConfig(BaseModel):
     request_timeout_sec: float = Field(default=15.0)
 
 
-class GroqTTSProviderConfig(BaseModel):
+class GroqTTSProviderConfig(ProviderSettingsModel):
     """Groq Text-to-Speech (OpenAI-compatible audio/speech; Orpheus models)."""
 
     enabled: bool = Field(default=True)
@@ -718,7 +761,7 @@ class GroqTTSProviderConfig(BaseModel):
         return self
 
 
-class ElevenLabsProviderConfig(BaseModel):
+class ElevenLabsProviderConfig(ProviderSettingsModel):
     """ElevenLabs TTS provider configuration.
 
     API Reference: https://elevenlabs.io/docs/api-reference/text-to-speech
@@ -751,7 +794,7 @@ class ElevenLabsProviderConfig(BaseModel):
         return self
 
 
-class CambAiProviderConfig(BaseModel):
+class CambAiProviderConfig(ProviderSettingsModel):
     """CAMB AI TTS provider configuration.
 
     Supports MARS speech models: mars-flash (~150ms latency),
@@ -776,7 +819,7 @@ class CambAiProviderConfig(BaseModel):
     )
 
 
-class FishAudioProviderConfig(BaseModel):
+class FishAudioProviderConfig(ProviderSettingsModel):
     """Fish Audio TTS provider configuration.
 
     Fish Audio streams raw PCM at a requested sample rate, so a telephone call
@@ -866,7 +909,7 @@ def validate_azure_region(region: str) -> str:
     return cleaned
 
 
-class AzureSTTProviderConfig(BaseModel):
+class AzureSTTProviderConfig(ProviderSettingsModel):
     """Microsoft Azure Speech Service - Speech-to-Text provider configuration.
 
     Supports two variants:
@@ -904,7 +947,7 @@ class AzureSTTProviderConfig(BaseModel):
     vad_initial_silence_timeout_ms: int = Field(default=5000)
 
 
-class AzureTTSProviderConfig(BaseModel):
+class AzureTTSProviderConfig(ProviderSettingsModel):
     """Microsoft Azure Speech Service - Text-to-Speech provider configuration.
 
     Uses SSML POST to the Azure TTS REST endpoint.
@@ -1012,7 +1055,7 @@ class MCPConfig(BaseModel):
     servers: Dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
-class OpenAIRealtimeProviderConfig(CloudConnectionConfig):
+class OpenAIRealtimeProviderConfig(CloudConnectionConfig, ProviderSettingsModel):
     enabled: bool = Field(default=True)
     api_key: Optional[str] = None
     api_key_file: Optional[str] = None
@@ -1069,7 +1112,7 @@ class OpenAIRealtimeProviderConfig(CloudConnectionConfig):
     turn_detection: Optional[TurnDetectionConfig] = None
 
 
-class GrokSessionSettings(BaseModel):
+class GrokSessionSettings(ProviderSettingsModel):
     """Optional speech controls shared by YAML validation and the realtime provider."""
 
     speed: Optional[float] = Field(default=None, ge=0.7, le=1.5, strict=True)
@@ -1742,20 +1785,7 @@ def _generate_default_pipeline(config_data: Dict[str, Any]) -> None:
     config_data.setdefault("active_pipeline", pipeline_name)
 
 
-def provider_settings_payload(cls: type[BaseModel], payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Treat blank defaulted string settings as omitted, preserving key selectors."""
-    selectors = {"api_key", "api_key_file", "api_key_env", "credentials_path", "enabled"}
-    result = dict(payload)
-    for name, field in cls.model_fields.items():
-        if name in selectors or name not in result:
-            continue
-        if isinstance(field.default, str) and field.default:
-            if result[name] == "" or (result[name] is None and type(None) not in get_args(field.annotation)):
-                result.pop(name)
-    return result
-
-
-def validate_provider_settings(providers: Any) -> None:
+def validate_provider_settings(providers: Any, provider_names=None) -> None:
     """Validate effective settings without resolving keys or contacting vendors.
 
     Keep the saved dictionaries intact: defaults and model-only voice inference
@@ -1779,6 +1809,10 @@ def validate_provider_settings(providers: Any) -> None:
         ("azure", "stt"): AzureSTTProviderConfig, ("azure", "tts"): AzureTTSProviderConfig,
     }
     for name, raw in providers.items():
+        if provider_names is not None and name not in provider_names:
+            continue
+        if isinstance(raw, BaseModel):
+            raw = raw.model_dump(exclude_unset=True)
         if not isinstance(raw, dict) or raw.get("enabled") is False:
             continue
         key = str(name)
@@ -1926,7 +1960,6 @@ def load_config(path: str = "config/ai-agent.yaml") -> AppConfig:
     config = AppConfig(**config_data)
     # Preserve established AppConfig diagnostics (notably audio reset links)
     # before checking model-dependent provider settings.
-    validate_provider_settings(config_data.get("providers"))
     config._legacy_contexts_for_hash = raw_legacy_contexts
     return config
 

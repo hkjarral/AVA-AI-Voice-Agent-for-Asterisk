@@ -18,14 +18,16 @@ INVALID_SETTINGS = [
 
 
 @pytest.mark.parametrize("name,settings", INVALID_SETTINGS)
-def test_loader_rejects_invalid_provider_settings_without_credentials(tmp_path, monkeypatch, name, settings):
+def test_loader_keeps_unused_settings_but_selected_validation_rejects_them(tmp_path, monkeypatch, name, settings):
     monkeypatch.setenv("ASTERISK_ARI_USERNAME", "test")
     monkeypatch.setenv("ASTERISK_ARI_PASSWORD", "test")
     content = {"default_provider": "local", "providers": {"local": {}, name: settings}}
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(content))
+    config = load_config(str(path))
+    validate_provider_settings(config.providers, provider_names={"local"})
     with pytest.raises(ConfigValidationError, match=f"providers.{name}."):
-        load_config(str(path))
+        validate_provider_settings(config.providers, provider_names={name})
 
 
 def test_validation_preserves_saved_custom_models_endpoints_and_credentials():

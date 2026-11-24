@@ -4,7 +4,7 @@ import { googleLLMManagesTemperature } from '../../../utils/googleLLMModels';
 import { FormInput, FormLabel, FormSelect } from '../../ui/FormComponents';
 import HelpTooltip from '../../ui/HelpTooltip';
 import ComboboxInput from '../../ui/ComboboxInput';
-import { providerVoices, voiceIdsForModel } from '../../../config/providerCatalog';
+import { providerVoices, voiceIdsForModel, effectiveOpenAITtsModel } from '../../../config/providerCatalog';
 import type { ProviderSubtype, SubtypeField } from '../../../config/modularProviderSubtypes';
 
 interface ModularSubtypeFormProps {
@@ -55,8 +55,9 @@ const ModularSubtypeForm: React.FC<ModularSubtypeFormProps> = ({ subtype, config
     onChange(field.key, value);
   };
   const renderField = (field: SubtypeField) => {
-    const currentValue = config[field.key] ?? field.default ?? '';
-    const ttsModel = String(config.tts_model ?? subtype.fields.find(item => item.key === 'tts_model')?.default ?? '');
+    const ttsModel = subtype.id === 'openai' ? effectiveOpenAITtsModel(config)
+      : String(config.tts_model ?? subtype.fields.find(item => item.key === 'tts_model')?.default ?? '');
+    const currentValue = subtype.id === 'openai' && field.key === 'tts_model' ? ttsModel : config[field.key] ?? field.default ?? '';
     const voiceSuggestions = field.key === 'voice' && ['openai', 'groq'].includes(subtype.id)
       ? voiceIdsForModel(subtype.id, ttsModel) : [];
     const deepgramVoices = subtype.id === 'deepgram' && field.key === 'tts_model'

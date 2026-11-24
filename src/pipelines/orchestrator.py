@@ -282,6 +282,7 @@ class PipelineOrchestrator:
         registry: Optional[Dict[str, ComponentFactory]] = None,
     ):
         self.config = config
+        self._injected_registry = dict(registry or {})
         self._registry: Dict[str, ComponentFactory] = dict(DEFAULT_COMPONENT_REGISTRY)
         if registry:
             self._registry.update(registry)
@@ -1123,6 +1124,12 @@ class PipelineOrchestrator:
                 kind = prefix
             if kind == "deepgram_flux":
                 kind = "deepgram"
+            def retain_extension():
+                injected = self._injected_registry.get(str(name))
+                if injected is not None:
+                    self.register_factory(str(name), injected)
+            if isinstance(raw, dict) and raw.get("enabled") is False:
+                continue
             if role == "tts" and kind == "fishaudio" and fish_config is not None:
                 self.register_factory(str(name), self._make_fishaudio_tts_factory(fish_config))
                 continue
@@ -1136,6 +1143,8 @@ class PipelineOrchestrator:
                 continue
             spec = specs.get(kind)
             if spec is None or role not in spec[2]:
+                if kind not in {*specs, "local", "fishaudio"}:
+                    retain_extension()
                 continue
             if raw.get("enabled") is False:
                 continue
@@ -1146,6 +1155,15 @@ class PipelineOrchestrator:
             elif kind == "azure":
                 cls = AzureSTTProviderConfig if role == "stt" else AzureTTSProviderConfig
             try:
+                if kind == "openai" and str(name) in {"openai_stt", "openai_llm", "openai_tts"}:
+                    base = providers.get("openai")
+                    if isinstance(base, OpenAIProviderConfig):
+                        base = base.model_dump(exclude_unset=True)
+                    if isinstance(base, dict) and base.get("enabled") is not False:
+                        payload = {**base, **payload}
+                # Distinguish valid-but-unavailable built-ins from invalid
+                # known settings before considering an injected extension.
+                cls(**provider_settings_payload(cls, payload))
                 # Preserve canonical OpenAI roles' historical shared-key fallback.
                 if kind == "openai" and str(name) in self._openai_component_configs:
                     config = self._openai_component_configs[str(name)]
@@ -1159,6 +1177,8 @@ class PipelineOrchestrator:
                         payload.get("credentials_path") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
                     )
                     if not payload["api_key"] and not has_google_credentials:
+                        if not any(payload.get(key) for key in ("api_key", "api_key_file", "api_key_env")):
+                            retain_extension()
                         continue
                     if kind == "deepgram" and prefix == "deepgram_flux" and not payload.get("model"):
                         payload["model"] = "flux-general-en"
@@ -1364,13 +1384,11 @@ class PipelineOrchestrator:
         self,
         provider_config: OpenAIProviderConfig,
     ) -> ComponentFactory:
-        config_payload = provider_config.model_dump()
-
         def factory(component_key: str, options: Dict[str, Any]) -> Component:
             return OpenAISTTAdapter(
                 component_key,
                 self.config,
-                OpenAIProviderConfig(**config_payload),
+                provider_config.model_copy(deep=True),
                 options,
             )
 
@@ -1380,13 +1398,11 @@ class PipelineOrchestrator:
         self,
         provider_config: OpenAIProviderConfig,
     ) -> ComponentFactory:
-        config_payload = provider_config.model_dump()
-
         def factory(component_key: str, options: Dict[str, Any]) -> Component:
             return OpenAILLMAdapter(
                 component_key,
                 self.config,
-                OpenAIProviderConfig(**config_payload),
+                provider_config.model_copy(deep=True),
                 options,
             )
 
@@ -1428,13 +1444,11 @@ class PipelineOrchestrator:
         self,
         provider_config: OpenAIProviderConfig,
     ) -> ComponentFactory:
-        config_payload = provider_config.model_dump()
-
         def factory(component_key: str, options: Dict[str, Any]) -> Component:
             return OpenAITTSAdapter(
                 component_key,
                 self.config,
-                OpenAIProviderConfig(**config_payload),
+                provider_config.model_copy(deep=True),
                 options,
             )
 
@@ -1835,7 +1849,7 @@ class PipelineOrchestrator:
         if isinstance(raw_config, dict):
             merged.update(raw_config)
         elif isinstance(raw_config, OpenAIProviderConfig):
-            merged.update(raw_config.model_dump())
+            merged.update(raw_config.model_dump(exclude_unset=True))
         elif raw_config is not None:
             logger.warning(
                 "Unsupported OpenAI provider config type for pipelines",
@@ -1883,7 +1897,7 @@ class PipelineOrchestrator:
             if raw_base.get("enabled", True):
                 base.update(raw_base)
         elif isinstance(raw_base, OpenAIProviderConfig):
-            base.update(raw_base.model_dump())
+            base.update(raw_base.model_dump(exclude_unset=True))
 
         configs: Dict[str, OpenAIProviderConfig] = {}
         for role in ("stt", "llm", "tts"):

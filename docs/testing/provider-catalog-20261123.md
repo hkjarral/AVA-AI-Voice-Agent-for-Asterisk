@@ -68,5 +68,10 @@ Use the [real-call acceptance matrix](../Provider-Catalog-Updates.md#real-call-a
 before moving existing Agents to new models or workflows. Priority: modular
 Realtime TTS cancellation and pronunciation, Flux turn-taking and multilingual
 recognition, Google extended-thinking completion/interruption, new LLM tool
-calling, and multilingual/new-model voice quality. No real-call IDs are claimed
-for this validation because telephone tests are left to the operator.
+calling, and multilingual/new-model voice quality.
+
+The operator passed the seven priority retest extensions on `754ba2bd`, covering
+OpenAI modular Realtime TTS at 8 and 16 kHz, Deepgram full and modular Flux,
+Google Extended Thinking, Groq Arabic, and ElevenLabs v4. Eight AudioSocket
+sessions, including the 16 kHz redial, confirmed inbound audio, outbound playback
+and bridge teardown. Call IDs are in [PR #892](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/892).

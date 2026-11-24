@@ -119,6 +119,15 @@ describe('Google temperature compatibility', () => {
 });
 
 describe('model-aware speech options', () => {
+    it('keeps a custom Speech endpoint on its runtime legacy model and matching voices when the model is blank', () => {
+        const openai = MODULAR_SUBTYPES.tts.find(subtype => subtype.id === 'openai')!;
+        const onChange = vi.fn();
+        render(<ModularSubtypeForm subtype={openai} config={{ tts_base_url: 'https://speech-gateway.example/v1/audio/speech', tts_model: '', voice: 'fable' }} onChange={onChange} />);
+        expect(screen.getByDisplayValue('tts-1')).toBeInTheDocument();
+        expect(screen.getByDisplayValue('fable')).toBeInTheDocument();
+        expect(screen.queryByText(/configured voice is incompatible/)).not.toBeInTheDocument();
+        expect(onChange).not.toHaveBeenCalled();
+    });
     it('preserves an incompatible configured OpenAI voice and asks the operator to fix it', () => {
         const openai = MODULAR_SUBTYPES.tts.find(subtype => subtype.id === 'openai')!;
         const onChange = vi.fn();

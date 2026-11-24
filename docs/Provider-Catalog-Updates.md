@@ -46,8 +46,10 @@ openai_tts:
 ```
 
 `auto` selects Realtime for `gpt-realtime*` model IDs. Explicit legacy or custom
-Speech model IDs continue to use the configured Speech endpoint. An explicit
-`speech`/`realtime` transport must agree with its model. Realtime synthesis owns
+Speech model IDs continue to use the configured Speech endpoint. A custom Speech
+endpoint with a blank or omitted model retains `tts-1` unless Realtime is
+explicitly selected. An explicit `speech`/`realtime` transport must agree with its
+model. Realtime synthesis owns
 a tools-disabled, bounded session per text fragment; cancellation/hangup closes
 its sockets. It converts native PCM to the negotiated telephone output format.
 `tts_realtime_timeout_sec` bounds each fragment (30 seconds by default) without
@@ -96,6 +98,9 @@ changes its language or API family.
 
 Modular Flux STT supports `flux-general-en` and `flux-general-multi`. The latter
 accepts `language_hints: [en, es]`; the adapter uses the v2 query contract.
+A full agent using Flux must select a language supported by its STT model
+and a matching TTS voice. The [Flux STT language list](https://developers.deepgram.com/docs/models-languages-overview/#flux-stt)
+is narrower than the Flux TTS voice catalog.
 Explicit modular speech blocks now own their configuration and credentials,
 including custom instance keys. A disabled, invalid or uncredentialed role block
 does not inherit a full-agent provider's factory or another customer's settings.

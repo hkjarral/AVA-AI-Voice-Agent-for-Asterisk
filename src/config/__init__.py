@@ -67,6 +67,7 @@ AppConfig = _parent_config.AppConfig
 load_config = _parent_config.load_config
 validate_provider_settings = _parent_config.validate_provider_settings
 provider_settings_payload = _parent_config.provider_settings_payload
+resolve_openai_tts_transport = _parent_config.resolve_openai_tts_transport
 validate_production_config = _parent_config.validate_production_config
 
 __all__ = [
@@ -110,5 +111,6 @@ __all__ = [
     'load_config',
     'validate_provider_settings',
     'provider_settings_payload',
+    'resolve_openai_tts_transport',
     'validate_production_config',
 ]

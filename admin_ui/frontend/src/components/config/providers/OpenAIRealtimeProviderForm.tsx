@@ -281,8 +281,8 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                     <div className="space-y-2">
                         <label htmlFor="openai-realtime-input-transcription" className="text-sm font-medium">Input Transcription Model</label>
                         <select id="openai-realtime-input-transcription" className="w-full p-2 rounded border border-input bg-background" value={config.input_transcription_model ?? providerDefault('openai_realtime', 'input_transcription_model')} onChange={event => handleChange('input_transcription_model', event.target.value)}>
-                            {config.input_transcription_model && !modelIds('openai', 'stt').includes(config.input_transcription_model) && <option value={config.input_transcription_model}>{config.input_transcription_model} (configured)</option>}
-                            {modelOptions('openai', 'stt').map(model => <option key={model.value} value={model.value}>{model.label}</option>)}
+                            {config.input_transcription_model && !modelIds('openai_realtime', 'stt').includes(config.input_transcription_model) && <option value={config.input_transcription_model}>{config.input_transcription_model} (configured)</option>}
+                            {modelOptions('openai_realtime', 'stt').map(model => <option key={model.value} value={model.value}>{model.label}</option>)}
                         </select>
                         <p className="text-xs text-muted-foreground">Transcribes caller speech for history and tools; the Realtime model still handles the audio conversation. Test names and numbers after changing it.</p>
                     </div>

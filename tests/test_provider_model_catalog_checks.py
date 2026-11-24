@@ -37,6 +37,51 @@ def test_catalog_compatible_default_is_accepted(catalog):
     assert checks.check_catalog(catalog) == []
 
 
+def test_google_modular_voice_choices_preserve_legacy_catalog():
+    providers = json.loads((ROOT / checks.CATALOG_PATH).read_text())["providers"]
+    voices = {voice["id"]: voice for voice in providers["google"]["voices"]["tts"]}
+    assert set(voices) == {
+        "en-US-Standard-A", "en-US-Standard-B", "en-US-Neural2-A",
+        "en-US-Neural2-C", "en-US-Studio-O", "en-US-Studio-Q",
+    }
+    assert providers["google"]["defaults"]["tts_voice_name"] in voices
+    assert all(voice["language"] == "en-US" for voice in voices.values())
+
+
+def test_diarization_is_available_only_for_file_transcription():
+    providers = json.loads((ROOT / checks.CATALOG_PATH).read_text())["providers"]
+    realtime = {entry["id"] for entry in providers["openai_realtime"]["models"]["stt"]}
+    files = {entry["id"] for entry in providers["openai"]["models"]["stt"]}
+    assert "gpt-4o-transcribe-diarize" not in realtime
+    assert "gpt-4o-transcribe-diarize" in files
+    assert "gpt-4o-mini-transcribe-2025-12-15" in realtime
+
+
+def test_flux_stt_language_metadata_matches_documented_model_contracts():
+    providers = json.loads((ROOT / checks.CATALOG_PATH).read_text())["providers"]
+    languages = {entry["id"]: entry["languages"] for entry in providers["deepgram"]["models"]["flux_stt"]}
+    assert languages == {
+        "flux-general-en": ["en"],
+        "flux-general-multi": ["en", "es", "fr", "de", "hi", "ru", "pt", "ja", "it", "nl"],
+    }
+
+
+@pytest.mark.parametrize("languages", [[], ["en", "en"], ["English"], "en"])
+def test_model_language_metadata_must_be_valid_unique_codes(catalog, languages):
+    catalog["providers"]["example"]["models"]["tts"][0]["languages"] = languages
+    assert any("language" in failure for failure in checks.check_catalog(catalog))
+
+
+@pytest.mark.parametrize("status", ["deprecated", "retired", "legacy"])
+def test_voice_identifiers_used_as_model_defaults_must_be_active(catalog, status):
+    provider = catalog["providers"]["example"]
+    provider["models"]["tts"] = []
+    provider["defaults"]["tts_model"] = "voice-a"
+    provider["voice_models"] = {}
+    provider["voices"]["tts"][0].update(status=status, retirement_date_unknown=True)
+    assert any("default 'voice-a' is not active" in failure for failure in checks.check_catalog(catalog))
+
+
 @pytest.mark.parametrize("change, expected", [
     (lambda c: c.update(verified_at="yesterday"), "verified_at"),
     (lambda c: c["providers"]["example"].update(sources=["http://example.org"]), "HTTPS"),

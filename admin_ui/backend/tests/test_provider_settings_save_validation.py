@@ -1,5 +1,6 @@
 """Admin saves use runtime model/voice contracts without needing vendor keys."""
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,81 @@ from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from api import config as config_api
+
+
+def _legacy_provider_config():
+    return {"default_provider": "local", "providers": {
+        "local": {},
+        "unused_tts": {"type": "openai", "tts_model": "gpt-realtime-2.1-mini", "tts_transport": "speech"},
+    }}
+
+
+def test_unrelated_save_keeps_an_unchanged_unused_legacy_provider(monkeypatch, tmp_path):
+    previous = _legacy_provider_config()
+    monkeypatch.setattr(config_api.settings, "ENV_PATH", str(tmp_path / ".env"))
+    monkeypatch.setattr(config_api, "_read_merged_config_dict", lambda: deepcopy(previous))
+    desired = {**deepcopy(previous), "audio_transport": "audiosocket"}
+    result = config_api._validate_ai_agent_config(yaml.safe_dump(desired))
+    assert result["provider_settings_scope"] == []
+
+
+@pytest.mark.parametrize("patch", [{"tts_model": "gpt-realtime-2.1"}, {"api_key_env": "NEW_KEY"}])
+def test_changed_provider_settings_and_explicit_credentials_remain_validated(monkeypatch, tmp_path, patch):
+    previous = _legacy_provider_config()
+    monkeypatch.setattr(config_api.settings, "ENV_PATH", str(tmp_path / ".env"))
+    monkeypatch.setattr(config_api, "_read_merged_config_dict", lambda: deepcopy(previous))
+    desired = deepcopy(previous)
+    desired["providers"]["unused_tts"].update(patch)
+    with pytest.raises(HTTPException, match="providers.unused_tts.settings"):
+        config_api._validate_ai_agent_config(yaml.safe_dump(desired))
+
+
+def test_changed_pipeline_validates_its_previously_untouched_provider(monkeypatch, tmp_path):
+    previous = _legacy_provider_config()
+    previous["pipelines"] = {"test": {"stt": "local_stt", "llm": "local_llm", "tts": "local_tts"}}
+    monkeypatch.setattr(config_api.settings, "ENV_PATH", str(tmp_path / ".env"))
+    monkeypatch.setattr(config_api, "_read_merged_config_dict", lambda: deepcopy(previous))
+    desired = deepcopy(previous)
+    desired["pipelines"]["test"]["tts"] = "unused_tts"
+    with pytest.raises(HTTPException, match="providers.unused_tts.settings"):
+        config_api._validate_ai_agent_config(yaml.safe_dump(desired))
+
+
+def test_changed_default_validates_its_previously_untouched_provider(monkeypatch, tmp_path):
+    previous = _legacy_provider_config()
+    previous["providers"]["unused_agent"] = {"type": "openai_realtime", "reasoning_effort": "invalid"}
+    monkeypatch.setattr(config_api.settings, "ENV_PATH", str(tmp_path / ".env"))
+    monkeypatch.setattr(config_api, "_read_merged_config_dict", lambda: deepcopy(previous))
+    desired = {**deepcopy(previous), "default_provider": "unused_agent"}
+    with pytest.raises(HTTPException, match="providers.unused_agent.reasoning_effort"):
+        config_api._validate_ai_agent_config(yaml.safe_dump(desired))
+
+
+def test_shared_openai_edits_include_inheriting_canonical_roles():
+    previous = {"providers": {"openai": {"chat_model": "old"}, "openai_tts": {}, "openai_llm": {}, "custom_tts": {"type": "openai"}}}
+    desired = deepcopy(previous)
+    desired["providers"]["openai"]["chat_model"] = "new"
+    assert config_api._affected_provider_settings(previous, desired, desired) == {"openai", "openai_tts", "openai_llm"}
+
+
+def test_automatic_secret_migration_preserves_original_validation_scope(monkeypatch, tmp_path):
+    previous = _legacy_provider_config()
+    previous["providers"]["unused_tts"]["api_key"] = "legacy-private-key"
+    monkeypatch.setattr(config_api.settings, "ENV_PATH", str(tmp_path / ".env"))
+    monkeypatch.setattr(config_api, "_read_merged_config_dict", lambda: deepcopy(previous))
+    monkeypatch.setattr(config_api, "_read_base_config_dict", lambda: deepcopy(previous))
+    saved = []
+    monkeypatch.setattr(config_api, "_write_local_config", lambda content, **kwargs: saved.append(content))
+    def migrate(doc):
+        provider = doc["providers"]["unused_tts"]
+        provider.pop("api_key")
+        provider["api_key_file"] = "/managed/provider-secret"
+        return True
+    monkeypatch.setattr(config_api, "_migrate_inline_provider_secrets", migrate)
+    desired = {**deepcopy(previous), "audio_transport": "audiosocket"}
+    assert config_api.persist_config_content(yaml.safe_dump(desired))["status"] == "success"
+    assert len(saved) == 1
+    assert "legacy-private-key" not in saved[0]
 
 
 @pytest.mark.parametrize("settings", [

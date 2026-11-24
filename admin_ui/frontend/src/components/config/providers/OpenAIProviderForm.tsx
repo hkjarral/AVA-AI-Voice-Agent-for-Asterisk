@@ -1,4 +1,4 @@
-import { modelOptions, modelIds, providerDefault, voiceIdsForModel } from '../../../config/providerCatalog';
+import { modelOptions, modelIds, providerDefault, voiceIdsForModel, effectiveOpenAITtsModel } from '../../../config/providerCatalog';
 import React from 'react';
 import HelpTooltip from '../../ui/HelpTooltip';
 import OutputResamplerField from './OutputResamplerField';
@@ -15,7 +15,7 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
         onChange({ ...config, [field]: value });
     };
 
-    const ttsModel = config.tts_model ?? providerDefault('openai', 'tts_model');
+    const ttsModel = effectiveOpenAITtsModel(config);
     const voices = voiceIdsForModel('openai', ttsModel);
     const name = (config?.name || '').toLowerCase();
     const isSTT = name.includes('stt');
@@ -467,10 +467,10 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             </div>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.tts_model || providerDefault('openai', 'tts_model')}
+                                value={ttsModel}
                                 onChange={(e) => handleChange('tts_model', e.target.value)}
                             >
-                                {config.tts_model && !modelIds('openai', 'tts').includes(config.tts_model) && <option value={config.tts_model}>{config.tts_model} (configured)</option>}
+                                {ttsModel && !modelIds('openai', 'tts').includes(ttsModel) && <option value={ttsModel}>{ttsModel} (configured)</option>}
                                 {modelOptions('openai', 'tts').map(model => <option key={model.value} value={model.value}>{model.label}</option>)}
                             </select>
                             <p className="text-xs text-muted-foreground">

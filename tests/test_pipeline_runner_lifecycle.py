@@ -319,6 +319,50 @@ async def test_partial_greeting_failure_aborts_playback_before_failure_policy(mo
 
 
 @pytest.mark.asyncio
+async def test_failed_greeting_leave_open_still_dispatches_caller_audio(monkeypatch):
+    from src.core.models import CallSession
+
+    engine = _failure_test_engine(monkeypatch, _FailingGreetingTTS())
+    engine.config.on_provider_failure = "leave_open"
+    llm = _RecordingLLM()
+    resolution = _StubResolution(tts_adapter=_FailingGreetingTTS(), llm_adapter=llm)
+    resolution.llm_options["aggregation_min_words"] = 1
+    engine.ari_client.set_channel_var = AsyncMock()
+    monkeypatch.setattr(engine.pipeline_orchestrator, "get_pipeline", lambda *args: resolution)
+    engine.pipeline_orchestrator._started = True
+    session = CallSession(call_id="greeting-leave-open", caller_channel_id="greeting-leave-open")
+    session.pipeline_name = "test"
+    await engine.session_store.upsert_call(session)
+    await engine._ensure_pipeline_runner(session, forced=True)
+    queue = engine._pipeline_queues[session.call_id]
+    task = engine._pipeline_tasks[session.call_id]
+    try:
+        await queue.put(b"\x10\x10" * 2560)
+        await asyncio.wait_for(llm.called.wait(), timeout=1)
+        assert llm.transcripts == ["hi"]
+        engine._no_input_mark_ready.assert_awaited_once_with(session.call_id)
+        engine._handle_provider_start_failure.assert_not_awaited()
+    finally:
+        await queue.put(None)
+        await asyncio.wait_for(task, timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_failed_greeting_leave_open_preserves_vicidial_ownership(monkeypatch):
+    from src.core.models import CallSession
+
+    engine = _failure_test_engine(monkeypatch, _FailingGreetingTTS())
+    engine.config.on_provider_failure = "leave_open"
+    session = CallSession(call_id="greeting-vicidial", caller_channel_id="greeting-vicidial")
+    session.pipeline_name = "test"
+    session.external_platform = "vicidial"
+    await engine.session_store.upsert_call(session)
+    await asyncio.wait_for(engine._pipeline_runner(session.call_id), timeout=1)
+    engine._handle_provider_start_failure.assert_awaited_once_with(session)
+    engine._no_input_mark_ready.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_cancelled_greeting_during_stream_start_aborts_ownership(monkeypatch):
     from src.core.models import CallSession
     engine = _failure_test_engine(monkeypatch, _StubTTS())

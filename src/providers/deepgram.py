@@ -13,6 +13,7 @@ from websockets.asyncio.client import ClientConnection
 
 from structlog import get_logger
 from prometheus_client import Gauge, Info
+from ..utils.provider_catalog import provider_models
 from ..utils.voice_catalog import known_voice_map
 from ..audio.resampler import (
     mulaw_to_pcm16le,
@@ -38,6 +39,11 @@ logger = get_logger(__name__)
 
 DEEPGRAM_AGENT_LANGUAGES = frozenset({"en", "es", "de", "fr", "it", "nl", "ja"})
 DEEPGRAM_LEGACY_PHONECALL_MODEL = "nova-2-phonecall"
+FLUX_STT_LANGUAGES = {
+    model["id"]: frozenset(model["languages"])
+    for model in provider_models("deepgram", "flux_stt")
+    if "languages" in model
+}
 
 
 def normalize_agent_language(language: Optional[str]) -> str:
@@ -97,6 +103,14 @@ def validate_agent_language_configuration(
             f"Deepgram listen model '{listen_model}' is English-only, but "
             f"agent_language is '{agent_language}'. Select English or use "
             "flux-general-multi/nova-3."
+        )
+
+    listen_languages = FLUX_STT_LANGUAGES.get(normalized_model)
+    if listen_languages is not None and language not in listen_languages:
+        raise ValueError(
+            f"Deepgram listen model '{listen_model}' does not support "
+            f"agent_language '{agent_language}'. Supported listen languages: "
+            f"{', '.join(sorted(listen_languages))}."
         )
 
     if str(speak_model).startswith("flux-") != (tts_version == "v2"):
